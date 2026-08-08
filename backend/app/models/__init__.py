@@ -419,6 +419,13 @@ class Prd(Base):
     # is cleared. Non-null means "this PRD is being re-interrogated", which is exactly
     # the state a UI needs to distinguish from an ordinary first-time review.
     pending_rebaseline: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The terminal record (GRPH-244): when, against which baseline, in which mode, and
+    # what was decided about every piece of intent that had nothing delivered. A SNAPSHOT
+    # — it never recomputes. If it did, a closed PRD could silently acquire undelivered
+    # sections nobody ever dispositioned, and the gate would be a thing that passed once
+    # rather than a thing that holds. Non-null means closed, which is why there is no
+    # separate flag to disagree with it.
+    close_record: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # Lineage (GRPH-246). A PRD created to carry intent DROPPED from an earlier one points
     # back at it, and names the baselined sections it inherited. Both are needed: the link
     # alone says a successor exists, and `promoted_sections` is what makes the chain from

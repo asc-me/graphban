@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 
 from collections import Counter
 
-from app.models import CodeNode, GrillDimension, GrillTurn, Item, Prd, PrdVersion, Verdict
+from app.models import (
+    CodeNode, GrillDimension, GrillTurn, Item, Prd, PrdVersion, Verdict, utcnow,
+)
 from app.services import items as items_svc
 from app.services import keys
 from app.services import events as events_svc
@@ -20,7 +22,9 @@ from app.services import platform as platform_svc
 
 logger = logging.getLogger("graphban.prds")
 
-STATUSES = ["draft", "review", "approved"]
+STATUSES = ["draft", "review", "approved", "closed"]
+# How a section with nothing delivered may be accounted for at close (GRPH-244).
+DISPOSITIONS = ("promoted", "deferred")
 
 TEMPLATES: dict[str, str] = {
     "blank": "# {title}\n\n",
@@ -97,12 +101,27 @@ class ApprovalNotEarned(ValueError):
     """`approved` was set by hand instead of reached by finishing the grill (AL-300)."""
 
 
+class PrdClosed(ValueError):
+    """A closed PRD was edited, reopened, or rebaselined. Terminal is terminal (GRPH-244);
+    post-close work becomes a successor PRD carrying a lineage link back."""
+
+
 def update_prd(db: Session, prd_id: str, **fields) -> Prd | None:
     prd = db.get(Prd, keys.resolve_prd(db, prd_id) or prd_id)
     if prd is None:
         return None
     if fields.get("status") is not None and fields["status"] not in STATUSES:
         raise ValueError(f"invalid status: {fields['status']}")
+    # Terminal means terminal (GRPH-244). No edit, no reopen, no undo — not even when the
+    # close itself turns out to have been wrong; that is corrected by a successor PRD and
+    # the lineage shows it. The moment an exception exists the state is decorative, so
+    # there is one rule. `closed` is REACHED through `close_prd`, never set here.
+    if prd.close_record is not None:
+        raise PrdClosed(
+            f"{prd.key} is closed and cannot be edited. Post-close changes become a new "
+            f"PRD linked back to this one — promote the intent rather than reopening.")
+    if fields.get("status") == "closed":
+        raise PrdClosed("closed is reached by closing the PRD, not by setting a status")
     # `approved` is REACHED, not set (PRD-15). Refusing here rather than in the routers
     # covers REST and MCP at once — and this call is precisely how an agent could
     # otherwise freeze an intent baseline (AL-239) that nobody had read.
@@ -1136,6 +1155,117 @@ def evidence_rollup(db: Session, prd: Prd) -> dict:
     }
 
 
+class CloseRefused(ValueError):
+    """The close cannot proceed: no baseline, a judge that went down, or intent that
+    nobody has accounted for."""
+
+
+def close_prd(
+    db: Session, prd: Prd, *, dispositions: list[dict], closed_by: str,
+    verdict: str = "", judge_reachable: bool = True,
+) -> dict:
+    """Close a PRD — the terminal state (GRPH-244).
+
+    **Close gates on disposition, not on delivery.** A PRD may always be closed; what it
+    may not do is close while pretending nothing was missed. Every baselined section the
+    completeness pass reports as having nothing delivered must first be accounted for as
+    `promoted` (into a backlog item or a successor PRD) or `deferred` (knowingly dropped,
+    with a stated reason).
+
+    That is the grill's completion standard one level up. There: four dimensions by three
+    outcomes, complete at zero *unanswered*, with `deferred` completing rather than
+    blocking because the failure being caught is an implicit non-answer rather than a
+    conscious decision to leave something open. Here: every undelivered section by two
+    dispositions, closed at zero *undispositioned*. The shape is reused deliberately —
+    it has already survived contact with real use.
+
+    It is also what dissolves the negative-verdict question the PRD carried as open from
+    v1.0. The dilemma assumed the PRD has to leave the terminal state; it does not, the
+    *work* does. So a negative verdict is productive rather than punitive: nobody has to
+    declare failure in order to close, they have to say where the missing work went, which
+    is a question people will actually answer. A verdict that merely blocked closing would
+    produce a tracker full of PRDs nobody will touch and an audit everyone routes around.
+
+    The precondition is **set equality**, not a count: a count would let one section be
+    dispositioned twice while another was missed.
+
+    Ordering is deliberate — everything is validated before anything is created, so the
+    overwhelming majority of failures happen with nothing written. A promotion that fails
+    after earlier ones succeeded leaves those items in place and the PRD open; that is
+    stated rather than hidden, because the alternative is a transaction spanning services
+    that each commit, and a close recorded against a disposition that does not exist would
+    be far worse than a promoted item somebody has to look at.
+    """
+    ready = close_readiness(db, prd, judge_reachable=judge_reachable)
+    if not ready["can_close"]:
+        raise CloseRefused(ready["blocked_on"])
+    if prd.close_record is not None:
+        raise CloseRefused(f"{prd.key} is already closed; post-close work is a new PRD")
+
+    outstanding = set(dropped_intent(db, prd))
+    named = [str(d.get("section") or "").strip() for d in dispositions]
+    if len(named) != len(set(named)):
+        raise CloseRefused("a section is dispositioned more than once")
+    missing = sorted(outstanding - set(named))
+    if missing:
+        raise CloseRefused(
+            "these have nothing delivered and nothing decided about them: "
+            + ", ".join(missing) + ". Promote them, or defer them with a reason.")
+    stray = sorted(set(named) - outstanding)
+    if stray:
+        raise CloseRefused(
+            "these were delivered, so there is nothing to disposition: " + ", ".join(stray))
+
+    # Validate every disposition BEFORE creating anything.
+    for d in dispositions:
+        kind = d.get("disposition")
+        if kind not in DISPOSITIONS:
+            raise CloseRefused(f"unknown disposition {kind!r} for {d.get('section')!r}")
+        if kind == "deferred" and not str(d.get("reason") or "").strip():
+            # A deferral with no reason is indistinguishable from an oversight, which is
+            # the precise failure the grill's deferred/unanswered split exists to catch.
+            raise CloseRefused(f"deferring {d.get('section')!r} needs a stated reason")
+        if kind == "promoted" and d.get("promote_to", "item") not in ("item", "prd"):
+            raise CloseRefused(f"promote_to must be 'item' or 'prd' for {d.get('section')!r}")
+
+    recorded = []
+    for d in dispositions:
+        section = str(d["section"]).strip()
+        if d["disposition"] == "deferred":
+            recorded.append({"section": section, "disposition": "deferred",
+                             "target": None, "reason": d["reason"].strip()})
+            continue
+        if d.get("promote_to", "item") == "prd":
+            target = promote_to_prd(db, prd, [section], title=d.get("title", "")).key
+        else:
+            target = promote_to_item(db, prd, section, title=d.get("title", "")).key
+        recorded.append({"section": section, "disposition": "promoted",
+                         "target": target, "reason": str(d.get("reason") or "").strip()})
+
+    base = baseline_of(db, prd.id)
+    prd.close_record = {
+        "closed_at": utcnow().isoformat(),
+        "closed_by": closed_by,
+        "mode": ready["mode"],
+        "baseline_version": base.version if base is not None else "",
+        "verdict": verdict,
+        # Carried verbatim so a `mechanical` close can never be read as a judged one.
+        "disclosure": ready["disclosure"],
+        "dispositions": recorded,
+    }
+    prd.status = "closed"
+    prd.updated = "just now"
+    db.commit()
+    db.refresh(prd)
+    events_svc.record(
+        db, actor_type="agent" if closed_by.startswith("agent:") else "user",
+        actor_label=closed_by, surface="mcp", action="close_prd", target_type="prd",
+        target_id=prd.id, project_id=prd.project_id,
+        meta={"mode": ready["mode"], "dispositions": len(recorded)},
+    )
+    return prd.close_record
+
+
 class MalformedVerdict(ValueError):
     """A verdict that cites nothing, or cites something that does not resolve."""
 
@@ -1728,8 +1858,8 @@ def request_rebaseline(
         )
     if not (reason or "").strip():
         raise ValueError("a rebaseline needs a stated reason in the requester's own words")
-    if prd.status == "closed":
-        raise ValueError("a closed PRD can never be rebaselined; open a successor PRD instead")
+    if prd.status == "closed" or prd.close_record is not None:
+        raise PrdClosed("a closed PRD can never be rebaselined; open a successor PRD instead")
     if baseline_of(db, prd.id) is None:
         raise ValueError("this PRD has no baseline to supersede; it has never been approved")
 
@@ -1782,7 +1912,9 @@ def sync_status(db: Session, prd: Prd) -> Prd:
       no answers yet, but a governing baseline exists and saying otherwise would report a
       spec that was agreed as one that never was.
     """
-    if prd.status == "approved":
+    # A closed PRD is terminal and its status is not derived from anything — recomputing
+    # would silently reopen it the moment a linked item changed (GRPH-244).
+    if prd.status in ("approved", "closed"):
         return prd
     done = completion(db, prd.id)
     target = "approved" if done["complete"] else ("review" if done["answers"] else "draft")
