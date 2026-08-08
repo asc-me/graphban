@@ -157,6 +157,31 @@ def prd_scope_drift(prd_id: str, db: Session = Depends(get_db), user: User = Dep
     return prd_svc.scope_drift(db, prd)
 
 
+@router.get("/{prd_id}/evidence")
+def prd_evidence(prd_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """What the delivered work offers as proof, bound to the intent it supports (GRPH-250).
+
+    Two independent signals: receipts split by whether anyone but their author could check
+    them, and structural corroboration of `touchpoints` against the code graph. No score —
+    a weighted number would be an opinion wearing a measurement's clothes."""
+    prd = _require_readable_prd(db, user, prd_id)
+    return prd_svc.evidence_rollup(db, prd)
+
+
+@router.get("/{prd_id}/verdicts")
+def prd_verdicts(prd_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Sign-off verdicts recorded against this PRD (GRPH-253). Claims with provenance,
+    never truth — `self_signed` and the citations are what make them arguable."""
+    prd = _require_readable_prd(db, user, prd_id)
+    return [
+        {"id": v.id, "outcome": v.outcome, "reasoning": v.reasoning,
+         "citations": v.citations or [], "signed_by": v.signed_by,
+         "baseline_version": v.baseline_version, "self_signed": v.self_signed,
+         "self_signed_items": v.self_signed_items or []}
+        for v in prd_svc.verdicts(db, prd)
+    ]
+
+
 @router.get("/{prd_id}/lineage")
 def prd_lineage(prd_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Where this PRD's dropped intent came from and went (GRPH-246)."""

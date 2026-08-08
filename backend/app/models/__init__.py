@@ -534,6 +534,47 @@ class GrillDimension(Base):
     __table_args__ = (UniqueConstraint("prd_id", "dimension", name="uq_grill_dimension"),)
 
 
+class Verdict(Base):
+    """A sign-off judgement about a PRD, with the provenance that makes it arguable.
+
+    PRD-12 is blunt that an agent-side signer *moves* the self-attestation problem rather
+    than solving it, so the mitigation is falsifiability rather than trust: a verdict
+    cites, the citations are validated against things that exist, and who signed it is on
+    the record. **A verdict is a claim with provenance, never truth**, and every field here
+    exists to keep that readable rather than to make it more believable.
+
+    `outcome` is stored as given. The sign-off taxonomy belongs to the agent judge
+    (GRPH-252); this row owns whether a verdict is admissible and who stands behind it,
+    and inventing the vocabulary here would fix it before the component that uses it
+    exists.
+    """
+
+    __tablename__ = "verdicts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    prd_id: Mapped[str] = mapped_column(ForeignKey("prds.id"), index=True)
+    # The baseline this was judged against. A verdict outlives the intent it was made
+    # about, and without this it silently reads as a judgement of the current spec.
+    baseline_version: Mapped[str] = mapped_column(String, default="")
+    outcome: Mapped[str] = mapped_column(String)
+    reasoning: Mapped[str] = mapped_column(Text, default="")
+    # [{kind, ref}] — validated at submission (prds.validate_verdict) against the code
+    # graph, the baseline's sections, or an item's evidence, per the citation form.
+    citations: Mapped[list] = mapped_column(JSON, default=list)
+    signed_by: Mapped[str] = mapped_column(String, default="")
+    # Which credential submitted it. Two agents can share a display name; the key cannot
+    # be borrowed by accident, so it is the identity that survives a dispute.
+    api_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The signer also held a claim on work under audit — grading their own exam through a
+    # second door. Flagged rather than refused: on a solo project it is unavoidable and
+    # refusing would just stop anyone signing off, but it must never be invisible.
+    self_signed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # The item keys that triggered the flag, so "self-signed" is checkable rather than an
+    # accusation with nothing behind it.
+    self_signed_items: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class PrdVersion(Base):
     __tablename__ = "prd_versions"
 

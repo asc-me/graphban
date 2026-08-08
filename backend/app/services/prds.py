@@ -1,6 +1,7 @@
 """PRD tracker service (Phase 3): CRUD, version snapshots, item links, AI commands."""
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import logging
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from collections import Counter
 
-from app.models import CodeNode, GrillDimension, GrillTurn, Item, Prd, PrdVersion
+from app.models import CodeNode, GrillDimension, GrillTurn, Item, Prd, PrdVersion, Verdict
 from app.services import items as items_svc
 from app.services import keys
 from app.services import events as events_svc
@@ -1019,6 +1020,203 @@ def validate_verdict(db: Session, prd: Prd, citations: list[dict]) -> dict:
         if not ok:
             problems.append(why)
     return {"ok": not problems, "problems": problems, "checked": len(citations)}
+
+
+# Which receipt kinds can be checked by someone other than their author (GRPH-250).
+# PRD-12 names `test`, `health` and `url` as falsifiable and `note` as not. `screenshot`
+# it does not name, and it lands here as unfalsifiable: nothing can re-run or re-fetch it,
+# so it is exactly as easy to produce as a note claiming the same thing. That is a call
+# made here rather than in the baseline, which is why it is written down.
+FALSIFIABLE_EVIDENCE = ("test", "health", "url")
+UNFALSIFIABLE_EVIDENCE = ("note", "screenshot")
+
+
+def _touchpoint_hits(paths: set[str], touchpoint: str) -> int:
+    """Code-graph nodes that actually sit at `touchpoint`.
+
+    Deliberately stricter than `clustering._match`, which also relates two touchpoints
+    that merely share a directory. That looseness is right for "are these items related"
+    and wrong here: a sibling file appearing in the same folder is not evidence that the
+    code an item promised was written. Exact path, a symbol beneath it, or an explicit
+    glob — nothing weaker.
+    """
+    tp = (touchpoint or "").strip()
+    if not tp:
+        return 0
+    if "*" in tp:
+        return sum(1 for p in paths if fnmatch.fnmatch(p, tp))
+    return sum(1 for p in paths if p == tp or p.startswith(f"{tp}::"))
+
+
+def evidence_rollup(db: Session, prd: Prd) -> dict:
+    """What the delivered work actually offers as proof, bound to the intent it supports
+    (GRPH-250).
+
+    Two independent signals, kept apart because they fail differently.
+
+    **Receipts**, aggregated per baselined section. Split by whether anyone but their
+    author could check them: a `test` or a `health` result or a `url` can be re-run or
+    re-fetched; a free-text `note` is as easy to fabricate as the description it sits
+    next to. Both are reported — the split is the finding, not a filter.
+
+    **Structural corroboration**, which needs no model and no author cooperation: did code
+    actually appear where the item said it would? Comparing `touchpoints` against the code
+    graph is not proof — an agent can write a file and still not have done the work — but
+    it is not self-attestation either, and both halves already exist.
+
+    Three things it refuses to do:
+
+    - **No score.** A weighted number here would be an opinion wearing a measurement's
+      clothes, which PRD-12 forbids in as many words.
+    - **No silent pass for missing touchpoints.** An item that claimed nothing is
+      `unknown`, never `uncorroborated`. Treating "made no claim" as "claim unmet" would
+      punish honesty, and treating it as met would reward saying nothing.
+    - **No collapsing of `unsupported`.** A section whose delivered work carries only
+      unfalsifiable receipts is named, because that is the case a reader most needs and
+      is exactly what a total would hide.
+    """
+    base = baseline_of(db, prd.id)
+    if base is None:
+        return {"governed": False, "baseline_version": None, "sections": [],
+                "unsupported": [], "uncorroborated": []}
+
+    renames = {old: new for old, new in diff_sections(base.body, prd.body)["renamed"]}
+    items = [it for it in items_svc.list_items(db, project_id=prd.project_id)
+             if it.prd_id == prd.id]
+    by_section: dict[str, list] = {}
+    for it in items:
+        by_section.setdefault(it.prd_section or "", []).append(it)
+
+    paths = {
+        p for (p,) in db.execute(
+            select(CodeNode.path).where(CodeNode.project_id == prd.project_id)
+        ).all()
+    }
+
+    sections, unsupported, uncorroborated = [], [], []
+    for title in parse_sections(base.body):
+        aliases = [title] + ([renames[title]] if title in renames else [])
+        delivered = [it for a in aliases for it in by_section.get(a, [])
+                     if it.status == "done"]
+        kinds = Counter(e.get("kind", "note") for it in delivered for e in (it.evidence or []))
+        falsifiable = sum(kinds[k] for k in FALSIFIABLE_EVIDENCE)
+        unfalsifiable = sum(kinds[k] for k in UNFALSIFIABLE_EVIDENCE)
+
+        claims = []
+        for it in delivered:
+            for tp in (it.touchpoints or []):
+                claims.append({"item": it.key, "touchpoint": tp,
+                               "nodes": _touchpoint_hits(paths, tp)})
+        checkable = [c for c in claims if c["nodes"] == 0]
+
+        sections.append({
+            "section": title,
+            "delivered_items": [it.key for it in delivered],
+            "receipts": dict(kinds),
+            "falsifiable": falsifiable,
+            "unfalsifiable": unfalsifiable,
+            "claims": claims,
+            # `unknown` when nothing was claimed — distinct from a claim that failed.
+            "corroboration": ("unknown" if not claims
+                              else "partial" if checkable else "corroborated"),
+        })
+        if delivered and not falsifiable:
+            unsupported.append(title)
+        if checkable:
+            uncorroborated.extend(c["item"] + " → " + c["touchpoint"] for c in checkable)
+
+    return {
+        "governed": True,
+        "baseline_version": base.version,
+        "sections": sections,
+        # Delivered work whose only proof is something its author could have typed.
+        "unsupported": unsupported,
+        # Touchpoints an item claimed where the code graph shows nothing.
+        "uncorroborated": sorted(set(uncorroborated)),
+    }
+
+
+class MalformedVerdict(ValueError):
+    """A verdict that cites nothing, or cites something that does not resolve."""
+
+
+def self_signed_against(db: Session, prd: Prd, signer: str) -> list[str]:
+    """Work under audit that this signer also held a claim on (GRPH-253).
+
+    PRD-12: *"the signer must not be the implementer"* — otherwise sign-off is the worker
+    grading their own exam through a second door.
+
+    Compared against `claimed_by`, which is what the PRD names and what survives on a
+    completed item. Known limit, stated rather than hidden: a lease that was released and
+    re-taken leaves only the LAST holder, so an implementer who handed the item on before
+    signing will not be flagged. Closing that needs the event log, and a partial check that
+    is honest about its edge is worth more than a total one that quietly is not.
+    """
+    if not (signer or "").strip():
+        return []
+    return sorted(
+        it.key for it in items_svc.list_items(db, project_id=prd.project_id)
+        if it.prd_id == prd.id and it.claimed_by == signer
+    )
+
+
+def record_verdict(
+    db: Session, prd: Prd, *, outcome: str, citations: list[dict],
+    signed_by: str, reasoning: str = "", api_key_id: str | None = None,
+) -> Verdict:
+    """Store a sign-off verdict, or refuse it (GRPH-253).
+
+    Three things happen here and the order matters.
+
+    **Validity first.** A verdict that cites nothing, or cites something that does not
+    resolve, is rejected as *malformed* rather than recorded as a failed pass. The
+    distinction is the whole point: the server cannot check whether the code is correct,
+    but it can check that the thing pointed at exists, and a claim that can be checked at
+    all is the achievable upgrade over one that cannot.
+
+    **Then provenance.** The signing identity and the key behind it are recorded. Two
+    agents can share a display name; a credential cannot be borrowed by accident, so the
+    key is the identity that survives a dispute.
+
+    **Then separation of duties.** Overlap with `claimed_by` on the work under audit sets
+    `self_signed`, along with the items that triggered it. Flagged, never refused: on a
+    solo project the signer and the implementer are the same person, and refusing there
+    would mean nobody could sign off at all — a rule that stops the ordinary case gets
+    routed around within a day. What it must never be is invisible.
+
+    The baseline version is stamped because a verdict outlives the intent it was made
+    about, and without it a judgement of v1.0 silently reads as a judgement of today.
+    """
+    check = validate_verdict(db, prd, citations)
+    if not check["ok"]:
+        raise MalformedVerdict("; ".join(check["problems"]))
+
+    overlap = self_signed_against(db, prd, signed_by)
+    base = baseline_of(db, prd.id)
+    row = Verdict(
+        prd_id=prd.id,
+        baseline_version=base.version if base is not None else "",
+        outcome=outcome,
+        reasoning=reasoning,
+        citations=list(citations),
+        signed_by=signed_by,
+        api_key_id=api_key_id,
+        self_signed=bool(overlap),
+        self_signed_items=overlap,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def verdicts(db: Session, prd: Prd) -> list[Verdict]:
+    """Every verdict recorded against this PRD, oldest first. Append-only: a later verdict
+    supersedes an earlier one by being later, and nothing overwrites what was claimed
+    before — the same rule the baseline chain follows, for the same reason."""
+    return list(db.scalars(
+        select(Verdict).where(Verdict.prd_id == prd.id).order_by(Verdict.id)
+    ).all())
 
 
 # How a judged close can fail, and why the two are not the same failure (GRPH-311).
