@@ -607,9 +607,30 @@ def _stub_classification(answers: int) -> dict:
     """
     names = list(DIMENSIONS)
     return {
-        name: {"outcome": "resolved", "note": "stub: answer recorded, substance not assessed"}
-        for name in names[:answers]
+        # `answered_by` is 1-based into the answers, exactly like a real verdict's. The
+        # mapping is not a guess: the rule IS "the first `answers` dimensions, in order",
+        # so dimension i was settled by answer i. Emitting it keeps one citation path for
+        # both graders instead of leaving the stub with a pointer to nowhere.
+        name: {"outcome": "resolved", "answered_by": i + 1,
+               "note": "stub: answer recorded, substance not assessed"}
+        for i, name in enumerate(names[:answers])
     }
+
+
+def _cited_turn_seq(answer_turns: list[GrillTurn], cited: int | None) -> int | None:
+    """The global `GrillTurn.seq` of the answer a verdict cites, or None.
+
+    `answered_by` is 1-based into the *answers of the current window*; `GrillTurn.seq` is
+    absolute across the whole transcript. Storing the former in a field named for the
+    latter is what made every dimension appear to cite the same turn (GRPH-323).
+
+    None on anything unmappable — an unanswered verdict, or an index outside the list.
+    A pointer that resolves to the wrong turn is worse than no pointer, because it reads
+    as provenance and a reader has no way to tell it apart from a real one.
+    """
+    if not cited or not (1 <= cited <= len(answer_turns)):
+        return None
+    return answer_turns[cited - 1].seq
 
 
 def classify_grill(db: Session, prd: Prd) -> dict:
@@ -642,15 +663,24 @@ def classify_grill(db: Session, prd: Prd) -> dict:
         d.dimension: d.outcome
         for d in db.scalars(select(GrillDimension).where(GrillDimension.prd_id == prd.id)).all()
     }
-    last_seq = len(history) - 1 if history else None
+    # The answers a citation indexes into, as TURNS — so `answered_by` can be resolved to
+    # a real `GrillTurn.seq` rather than left as prose in a note (GRPH-323). Filtered the
+    # same way `_numbered_answers` filters the prompt's list; if the two ever disagree the
+    # mapping below refuses rather than pointing at the wrong turn.
+    answer_turns = [
+        t for t in grill_turns(db, prd.id, since=grill_window(db, prd.id))
+        if t.role == "user" and (t.text or "").strip()
+    ]
     for name, verdict in graded.items():
         if existing.get(name) == "deferred" and verdict["outcome"] != "deferred":
             continue
         note = verdict.get("note", "")
-        if verdict.get("answered_by"):
-            note = f"{note} — from answer {verdict['answered_by']}"
+        cited = verdict.get("answered_by")
+        if cited:
+            note = f"{note} — from answer {cited}"
         set_dimension(db, prd.id, name, verdict["outcome"],
-                      note=note, turn_seq=last_seq, graded_by=grader)
+                      note=note, turn_seq=_cited_turn_seq(answer_turns, cited),
+                      graded_by=grader)
     # Approval is a consequence of the grill, so it lands here rather than waiting for
     # someone to notice the standard is met (AL-300).
     sync_status(db, prd)

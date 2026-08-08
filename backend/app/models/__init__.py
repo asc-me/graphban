@@ -523,7 +523,9 @@ class GrillDimension(Base):
     # means "an answer was recorded", not "an answer was good" — without this on the
     # record the two are indistinguishable to anyone reading a baseline later.
     graded_by: Mapped[str] = mapped_column(String, default="", server_default="", nullable=False)
-    # Which turn settled it, for traceability back into the conversation.
+    # Which turn settled it, for traceability back into the conversation — the ANSWER the
+    # verdict cites, resolved to its global `GrillTurn.seq`. NULL when the citation could
+    # not be mapped: a wrong pointer is worse than none, because it reads as provenance.
     turn_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
