@@ -587,6 +587,144 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["ref_id", "path"],
         },
     },
+    # Delivery acceptance (PRD-12 / GRPH-254). Four tools, not eight: the item flags the
+    # `tools/list` footprint (AL-146/AL-48), and every READ here is the same question asked
+    # of a different surface, so they take a `view` instead of each claiming a name. There
+    # is deliberately no invalidation tool — the hold rides on every item an agent reads
+    # (GRPH-242/312), because a notice you have to remember to fetch is one you miss.
+    {
+        "name": "prd_acceptance",
+        "description": (
+            "Delivery acceptance for a PRD, read-only; `view` picks the surface. "
+            "completeness (baselined sections with nothing delivered — the only pass that "
+            "surfaces ABSENT work), drift, evidence, close_report (vs ORIGINAL intent, not "
+            "the governing baseline), readiness, lineage, verdicts, baseline. None report "
+            "'complete' — they describe what happened; the judgement is yours."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prd_id": {"type": "string"},
+                "view": {
+                    "type": "string",
+                    "enum": ["completeness", "drift", "evidence", "close_report",
+                             "readiness", "lineage", "verdicts", "baseline"],
+                },
+            },
+            "required": ["prd_id", "view"],
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {"prd_id": {"type": "string"}, "view": {"type": "string"},
+                           "result": {"type": "object"}},
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False,
+                        "idempotentHint": True, "openWorldHint": False},
+    },
+    {
+        "name": "request_rebaseline",
+        "description": (
+            "Ask for new frozen intent on an approved PRD, in your OWN words. Does NOT "
+            "approve: it re-opens the grill, and the existing baseline governs until a new "
+            "one is earned. Cannot ADD sections (that is a sub-PRD); refused on a closed PRD."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prd_id": {"type": "string"},
+                "reason_type": {"type": "string",
+                                "enum": ["learning", "scope-change", "correction"]},
+                "reason": {"type": "string"},
+            },
+            "required": ["prd_id", "reason_type", "reason"],
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "status": {"type": "string"},
+                           "pending_rebaseline": {"type": "object"}},
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False,
+                        "idempotentHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "submit_verdict",
+        "description": (
+            "Record a sign-off claim about a PRD. Citing nothing, or citing something that "
+            "does not resolve, is REJECTED as malformed. Citations are {kind, ref}: code (a "
+            "code-graph path), intent (a baseline section — what an ABSENCE finding cites), "
+            "evidence (an item key). Signing work you claimed is flagged, not refused."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prd_id": {"type": "string"},
+                "outcome": {"type": "string"},
+                "reasoning": {"type": "string"},
+                "citations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string",
+                                     "enum": ["code", "intent", "evidence"]},
+                            "ref": {"type": "string"},
+                        },
+                        "required": ["kind", "ref"],
+                    },
+                },
+            },
+            "required": ["prd_id", "outcome", "citations"],
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"}, "outcome": {"type": "string"},
+                           "self_signed": {"type": "boolean"},
+                           "baseline_version": {"type": "string"}},
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False,
+                        "idempotentHint": False, "openWorldHint": False},
+    },
+    {
+        "name": "close_prd",
+        "description": (
+            "Close a PRD — terminal and irreversible. Gates on DISPOSITION, not delivery: "
+            "every section with nothing delivered (prd_acceptance view=completeness) must "
+            "appear exactly once as promoted (to an item or successor PRD) or deferred with a "
+            "reason. No edit, rebaseline or reopen after; post-close work is a new PRD."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prd_id": {"type": "string"},
+                "verdict": {"type": "string"},
+                "dispositions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "section": {"type": "string"},
+                            "disposition": {"type": "string",
+                                            "enum": ["promoted", "deferred"]},
+                            "promote_to": {"type": "string", "enum": ["item", "prd"]},
+                            "reason": {"type": "string"},
+                            "title": {"type": "string"},
+                        },
+                        "required": ["section", "disposition"],
+                    },
+                },
+            },
+            "required": ["prd_id", "dispositions"],
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {"mode": {"type": "string"},
+                           "baseline_version": {"type": "string"},
+                           "disclosure": {"type": "string"},
+                           "dispositions": {"type": "array", "items": {"type": "object"}}},
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False,
+                        "idempotentHint": False, "openWorldHint": False},
+    },
     {
         "name": "report_graphban_issue",
         "description": (
@@ -629,6 +767,7 @@ _READ_ONLY = {
     "get_context", "list_projects", "setup_project", "search_items", "search_memory",
     "get_backlog", "get_item_details", "suggest_next", "generate_digest", "related_work",
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
+    "prd_acceptance",
 }
 
 _PAGE_META = {  # shared output shape for paged reads (#9)
@@ -1008,6 +1147,36 @@ def _item_dict(item) -> dict:
     if hold:
         out["intent_hold"] = hold
     return out
+
+
+def _readable_prd(db, prd_id: str, readable):
+    prd = prd_svc.get_prd(db, prd_id)
+    if prd is None:
+        raise errors.NotFound(f"prd not found: {prd_id}")
+    if prd.project_id not in readable:
+        raise authz.Forbidden(f"prd {prd_id!r} is outside this key's project scope")
+    return prd
+
+
+def _writable_prd(db, prd_id: str, allowed):
+    """Scope-gated like every other write tool. Checked BEFORE the service call, so a key
+    without write scope cannot learn whether a PRD exists by reading the error."""
+    prd = prd_svc.get_prd(db, prd_id)
+    if prd is None:
+        raise errors.NotFound(f"prd not found: {prd_id}")
+    if prd.project_id not in allowed:
+        raise authz.Forbidden(f"prd {prd_id!r} is outside this key's write scope")
+    return prd
+
+
+def _verdict_dicts(rows) -> list[dict]:
+    return [
+        {"id": v.id, "outcome": v.outcome, "reasoning": v.reasoning,
+         "citations": v.citations or [], "signed_by": v.signed_by,
+         "baseline_version": v.baseline_version, "self_signed": v.self_signed,
+         "self_signed_items": v.self_signed_items or []}
+        for v in rows
+    ]
 
 
 def _ref_key(db, stored_id: str) -> str:
@@ -1499,6 +1668,60 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
         if prd.project_id not in readable:
             raise authz.Forbidden(f"prd {args['prd_id']!r} is outside this key's project scope")
         return {"prd_id": prd.key, "questions": prd_svc.ai_command(db, prd.id, "grill")}
+    if name == "prd_acceptance":
+        prd = _readable_prd(db, args["prd_id"], readable)
+        view = args["view"]
+        if view == "baseline":
+            base = prd_svc.baseline_of(db, prd.id)
+            result = ({"governed": False} if base is None else
+                      {"governed": True, "version": base.version, "body": base.body,
+                       "grill_outcomes": base.grill_outcomes or {}})
+        else:
+            result = {
+                "completeness": prd_svc.completeness,
+                "drift": prd_svc.scope_drift,
+                "evidence": prd_svc.evidence_rollup,
+                "close_report": prd_svc.close_report,
+                "readiness": prd_svc.close_readiness,
+                "lineage": prd_svc.lineage,
+            }.get(view, lambda d, p: {"verdicts": _verdict_dicts(prd_svc.verdicts(d, p))})(db, prd)
+        return {"prd_id": prd.key, "view": view, "result": result}
+    if name == "request_rebaseline":
+        prd = _writable_prd(db, args["prd_id"], allowed)
+        try:
+            prd_svc.request_rebaseline(
+                db, prd, reason_type=args["reason_type"], reason=args["reason"],
+                requested_by=f"agent:{key.name or key.id}")
+        except prd_svc.PrdClosed as e:
+            raise errors.Conflict(str(e), hint="promote the intent into a successor PRD")
+        except ValueError as e:
+            raise errors.Validation(str(e))
+        return {"id": prd.key, "status": prd.status,
+                "pending_rebaseline": prd.pending_rebaseline or {}}
+    if name == "submit_verdict":
+        prd = _writable_prd(db, args["prd_id"], allowed)
+        try:
+            v = prd_svc.record_verdict(
+                db, prd, outcome=args["outcome"], citations=args["citations"],
+                reasoning=args.get("reasoning", ""),
+                signed_by=f"agent:{key.name or key.id}", api_key_id=key.id)
+        except prd_svc.MalformedVerdict as e:
+            # Validation, not conflict: the verdict is malformed and a retry of the same
+            # payload fails identically. The message names which citation did not resolve.
+            raise errors.Validation(str(e))
+        return {"id": v.id, "outcome": v.outcome, "self_signed": v.self_signed,
+                "self_signed_items": v.self_signed_items or [],
+                "baseline_version": v.baseline_version}
+    if name == "close_prd":
+        prd = _writable_prd(db, args["prd_id"], allowed)
+        try:
+            return prd_svc.close_prd(
+                db, prd, dispositions=args["dispositions"], verdict=args.get("verdict", ""),
+                closed_by=f"agent:{key.name or key.id}")
+        except (prd_svc.CloseRefused, prd_svc.PrdClosed) as e:
+            # Conflict, not validation: the request is well-formed and permitted — the PRD
+            # simply is not accounted for yet, and the message says what is outstanding.
+            raise errors.Conflict(str(e), hint="disposition the outstanding sections first")
     if name == "describe_code":
         return code_svc.describe_code(
             db, project_id=pid,

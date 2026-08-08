@@ -115,6 +115,17 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         "related_work", "next_cluster", "claim_next", "heartbeat",
         "release_item", "describe_code", "get_code_map", "code_neighbors",
         "search_code", "link_code", "unlink_code", "report_graphban_issue",
+        # PRD-12's acceptance surface (GRPH-254). All four are QUALITY, not authority.
+        # `prd_acceptance` is read-only. `request_rebaseline` asks for new intent and
+        # explicitly does not grant it — approval is still earned by answering the grill,
+        # so the agent surfaces the need and the interrogation decides. `submit_verdict`
+        # records a claim WITH its provenance rather than a truth, and flags the signer
+        # when they also implemented the work. `close_prd` is the one worth pausing on:
+        # it is terminal and irreversible, but it answers "is this accounted for?", not
+        # "are you allowed?" — the gate it enforces is mechanical (every undelivered
+        # section dispositioned), it grants no permission and crosses no tenant boundary,
+        # and it is scope-gated like every other write.
+        "prd_acceptance", "request_rebaseline", "submit_verdict", "close_prd",
     }, "the agent-reachable surface changed — is the new tool a quality gate or an authority one?"
 
 
