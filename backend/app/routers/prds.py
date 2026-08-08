@@ -179,6 +179,19 @@ def prd_close(prd_id: str, payload: CloseIn, db: Session = Depends(get_db),
         raise HTTPException(422, str(e))
 
 
+@router.get("/{prd_id}/close-report")
+def prd_close_report(prd_id: str, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Delivered work against ORIGINAL intent (GRPH-245).
+
+    Distinct from every other surface, which read the GOVERNING baseline. Reading the
+    governing one here would make the report agree with itself by construction — that is
+    where the spec ended up. No verdict, no score: the counts describe what happened and
+    the judgement belongs to the reader."""
+    prd = _require_readable_prd(db, user, prd_id)
+    return prd_svc.close_report(db, prd)
+
+
 @router.get("/{prd_id}/close-readiness")
 def prd_close_readiness(prd_id: str, db: Session = Depends(get_db),
                         user: User = Depends(get_current_user)):
