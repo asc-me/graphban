@@ -1155,6 +1155,148 @@ def evidence_rollup(db: Session, prd: Prd) -> dict:
     }
 
 
+def _section_histories(chain: list[PrdVersion]) -> dict[str, dict]:
+    """Trace every section through the baseline chain: where it came from, what happened
+    to it, and at which version (GRPH-245).
+
+    Keyed by the section's ORIGINAL title, because that is the name the reader agreed to.
+    Following renames forward is what lets a section that was retitled twice still be
+    reported as the same intent rather than as one drop and two arrivals.
+    """
+    histories: dict[str, dict] = {}
+    current: dict[str, str] = {}  # original title -> title in the latest baseline
+
+    for title in parse_sections(chain[0].body):
+        histories[title] = {"origin": chain[0].version, "events": [], "current_title": title,
+                            "dropped_at": None}
+        current[title] = title
+
+    for older, newer in zip(chain, chain[1:]):
+        d = diff_sections(older.body, newer.body)
+        renamed = dict(d["renamed"])
+        live = {v: k for k, v in current.items() if histories[k]["dropped_at"] is None}
+        for was, now in renamed.items():
+            origin = live.get(was)
+            if origin is not None:
+                histories[origin]["events"].append(
+                    {"version": newer.version, "change": "renamed", "from": was, "to": now})
+                current[origin] = now
+        for title in d["modified"]:
+            origin = live.get(title)
+            if origin is not None:
+                histories[origin]["events"].append(
+                    {"version": newer.version, "change": "modified"})
+        for title in d["removed"]:
+            origin = live.get(title)
+            if origin is not None:
+                histories[origin]["events"].append(
+                    {"version": newer.version, "change": "removed"})
+                histories[origin]["dropped_at"] = newer.version
+        # GRPH-318 forbids a rebaseline adding sections, so this should stay empty. It is
+        # still traced rather than ignored: a PRD baselined before that rule, or a guard
+        # bypassed, is exactly the retroactive legitimisation this report exists to show.
+        for title in d["added"]:
+            histories[title] = {"origin": newer.version, "current_title": title,
+                                "dropped_at": None,
+                                "events": [{"version": newer.version, "change": "added"}]}
+            current[title] = title
+
+    for origin, h in histories.items():
+        h["current_title"] = current.get(origin, origin)
+    return histories
+
+
+def close_report(db: Session, prd: Prd) -> dict:
+    """Delivered work against ORIGINAL intent — the payoff of the whole feature (GRPH-245).
+
+    Sign-off is judged against the *current* baseline. Closing reads against the **first**
+    one: the work is done, *and* here is the drift that accumulated on the way — what was
+    added, what was dropped, and at which baseline each change happened. Reading against
+    the governing baseline instead would make the report agree with itself by construction,
+    since the governing baseline is where the spec ended up.
+
+    The audience is a product manager deciding whether dropped scope should be picked back
+    up, so the shape follows that decision: every piece of original intent, what became of
+    it, and whether anything was delivered against it.
+
+    **Retroactive legitimisation stays visible.** A section that entered at a later
+    baseline is reported with the version that introduced it, never folded in as though it
+    had been agreed at the start. GRPH-318 now forbids a rebaseline adding sections, so
+    that list should be empty — it is still computed, because a PRD baselined before that
+    rule, or a guard bypassed, is precisely the case worth surfacing.
+
+    **It never says "complete".** PRD-12 is explicit: the platform assesses whether
+    *claimed* work covers *stated* intent, and must never render that as a finished PRD.
+    So there is no verdict field here, no score, and no percentage — the counts describe
+    what happened, and the judgement belongs to the reader.
+    """
+    chain = baseline_chain(db, prd.id)
+    if not chain:
+        return {"governed": False, "original_version": None, "sections": [],
+                "dropped": [], "expanded_scope": [], "added_after_approval": []}
+
+    histories = _section_histories(chain)
+    items = [it for it in items_svc.list_items(db, project_id=prd.project_id)
+             if it.prd_id == prd.id]
+    by_section: dict[str, list] = {}
+    for it in items:
+        by_section.setdefault(it.prd_section or "", []).append(it)
+
+    drift = scope_drift(db, prd)
+    dispositions = {d["section"]: d for d in (prd.close_record or {}).get("dispositions", [])}
+
+    sections, dropped, expanded = [], [], []
+    for origin_title, h in histories.items():
+        # Work filed under ANY name this section has held — a rename must not orphan the
+        # work done under the old title.
+        titles = {origin_title, h["current_title"]}
+        titles.update(e["from"] for e in h["events"] if e["change"] == "renamed")
+        titles.update(e["to"] for e in h["events"] if e["change"] == "renamed")
+        linked = [it for t in titles for it in by_section.get(t, [])]
+        delivered = [it for it in linked if it.status == "done"]
+
+        row = {
+            "section": origin_title,
+            "current_title": h["current_title"],
+            "introduced_at": h["origin"],
+            "dropped_at": h["dropped_at"],
+            "history": h["events"],
+            "delivered_items": sorted(it.key for it in delivered),
+            "planned_items": sorted(it.key for it in linked),
+            # `dropped` means dropped FROM THE SPEC by a rebaseline. Work that was simply
+            # never done is `undelivered`, and conflating them would tell a PM that
+            # somebody decided something when nobody did.
+            "fate": ("dropped" if h["dropped_at"]
+                     else "delivered" if delivered
+                     else "undelivered"),
+            "disposition": dispositions.get(origin_title),
+        }
+        sections.append(row)
+        if h["dropped_at"]:
+            dropped.append(row)
+        if h["origin"] != chain[0].version:
+            expanded.append(row)
+
+    return {
+        "governed": True,
+        "original_version": chain[0].version,
+        "governing_version": chain[-1].version,
+        "chain": [{"version": v.version, "reason_type": v.rebaseline_reason_type,
+                   "reason": v.rebaseline_reason} for v in chain],
+        "sections": sections,
+        # The two lists a PM actually acts on.
+        "dropped": [r["section"] for r in dropped],
+        "never_delivered": [r["section"] for r in sections if r["fate"] == "undelivered"],
+        # Intent that was NOT in the original spec. Should be empty since GRPH-318.
+        "expanded_scope": [r["section"] for r in expanded],
+        # Work attached after intent was first agreed, carried through from scope drift.
+        "added_after_approval": drift["scope_added"],
+        "drift": {"accumulated": drift["accumulated"], "current": drift["current"],
+                  "total": drift["total"]},
+        "closed": prd.close_record,
+    }
+
+
 class CloseRefused(ValueError):
     """The close cannot proceed: no baseline, a judge that went down, or intent that
     nobody has accounted for."""
