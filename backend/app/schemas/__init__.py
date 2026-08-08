@@ -693,6 +693,18 @@ class RebaselineIn(BaseModel):
     reason: str  # the requester's own words, never a paraphrase
 
 
+class CloseIn(BaseModel):
+    """Closing a PRD (GRPH-244). One entry per baselined section with nothing delivered:
+    `{section, disposition: promoted|deferred, promote_to: item|prd, reason, title}`.
+    Close gates on disposition, never on delivery — the set must match exactly."""
+
+    dispositions: list[dict] = []
+    verdict: str = ""
+    # A judge that WAS configured and did not answer blocks the close (GRPH-311); one that
+    # was never configured does not. Liveness is an input, not something probed here.
+    judge_reachable: bool = True
+
+
 class PromoteIn(BaseModel):
     """Promote dropped intent out of a PRD (GRPH-246)."""
 

@@ -17,6 +17,7 @@ from app.schemas import (
     PrdAiOut,
     PrdCreate,
     PrdLinkIn,
+    CloseIn,
     PromoteIn,
     PrdOut,
     PrdSummary,
@@ -157,6 +158,37 @@ def prd_scope_drift(prd_id: str, db: Session = Depends(get_db), user: User = Dep
     return prd_svc.scope_drift(db, prd)
 
 
+@router.post("/{prd_id}/close")
+def prd_close(prd_id: str, payload: CloseIn, db: Session = Depends(get_db),
+              user: User = Depends(get_current_user)):
+    """Close a PRD — the terminal state (GRPH-244).
+
+    409 when intent is left undispositioned: the request is well-formed and permitted, the
+    PRD simply is not accountable for yet. Close gates on disposition, never on delivery."""
+    _require_writable_prd(db, user, prd_id)
+    prd = prd_svc.get_prd(db, prd_id)
+    if prd is None:
+        raise HTTPException(404, "prd not found")
+    try:
+        return prd_svc.close_prd(db, prd, dispositions=payload.dispositions,
+                                 closed_by=f"user:{user.id}", verdict=payload.verdict,
+                                 judge_reachable=payload.judge_reachable)
+    except (prd_svc.CloseRefused, prd_svc.PrdClosed) as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@router.get("/{prd_id}/close-readiness")
+def prd_close_readiness(prd_id: str, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """Whether this PRD can close, in which mode, and what is outstanding (GRPH-311/244)."""
+    prd = _require_readable_prd(db, user, prd_id)
+    out = prd_svc.close_readiness(db, prd)
+    out["undispositioned"] = prd_svc.dropped_intent(db, prd) if out["can_close"] else []
+    return out
+
+
 @router.get("/{prd_id}/evidence")
 def prd_evidence(prd_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """What the delivered work offers as proof, bound to the intent it supports (GRPH-250).
@@ -254,6 +286,10 @@ def update_prd(prd_id: str, body: PrdUpdate, db: Session = Depends(get_db), user
     _require_writable_prd(db, user, prd_id)
     try:
         prd = prd_svc.update_prd(db, prd_id, **body.model_dump(exclude_unset=True))
+    except prd_svc.PrdClosed as e:
+        # 409: the request is well-formed and the caller is permitted — the PRD is simply
+        # terminal. A 403 would read as "you may not", when the answer is "nobody may".
+        raise HTTPException(409, str(e))
     except prd_svc.RebaselineExpandsScope as e:
         # 409, like ApprovalNotEarned: the request is fine, the state says no.
         raise HTTPException(409, str(e))
