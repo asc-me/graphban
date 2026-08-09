@@ -10,8 +10,11 @@ import type {
   ApiKey,
   ApiKeyCreated,
   AppConfig,
+  AuditCoverage,
   Billing,
   ChatResponse,
+  CloseReport,
+  EvidenceRollup,
   OrgRequest,
   ProviderConfigUpdate,
   CodeAnswer,
@@ -351,6 +354,12 @@ export const api = {
   grillState: (id: string) => request<GrillState>(`/prds/${id}/grill`),
 
   intentDiff: (id: string) => request<IntentDiff>(`/prds/${id}/intent-diff`),
+  // Delivery acceptance (PRD-12). `close-report` reads the ORIGINAL baseline, which is
+  // why it is the spine of the reviewer view: a section a rebaseline removed does not
+  // exist in the governing one, so no other surface can show it was cut.
+  closeReport: (id: string) => request<CloseReport>(`/prds/${id}/close-report`),
+  prdEvidence: (id: string) => request<EvidenceRollup>(`/prds/${id}/evidence`),
+  auditCoverage: (id: string) => request<AuditCoverage>(`/prds/${id}/audit-coverage`),
 
   grillDefer: (id: string, dimension: string, reason: string) =>
     request<GrillState>(`/prds/${id}/grill/defer`, {

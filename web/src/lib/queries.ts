@@ -18,6 +18,9 @@ export const keys = {
   prds: ["prds"] as const,
   prd: (id: string) => ["prd", id] as const,
   prdVersions: (id: string) => ["prd-versions", id] as const,
+  closeReport: (id: string) => ["close-report", id] as const,
+  prdEvidence: (id: string) => ["prd-evidence", id] as const,
+  auditCoverage: (id: string) => ["audit-coverage", id] as const,
 };
 
 // ── Deploy config + Organizations (hosted-only, AL-74b) ────────────────────
@@ -155,6 +158,18 @@ export function useRevokeInvite(orgId: string) {
 
 export function usePrds(projectId?: string) {
   return useQuery({ queryKey: [...keys.prds, projectId], queryFn: () => api.prds(projectId), enabled: !!projectId });
+}
+
+export function useCloseReport(id: string) {
+  return useQuery({ queryKey: keys.closeReport(id), queryFn: () => api.closeReport(id), enabled: !!id });
+}
+
+export function usePrdEvidence(id: string) {
+  return useQuery({ queryKey: keys.prdEvidence(id), queryFn: () => api.prdEvidence(id), enabled: !!id });
+}
+
+export function useAuditCoverage(id: string) {
+  return useQuery({ queryKey: keys.auditCoverage(id), queryFn: () => api.auditCoverage(id), enabled: !!id });
 }
 
 export function useIntentDiff(id: string) {
