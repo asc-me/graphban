@@ -598,7 +598,8 @@ TOOLS: list[dict[str, Any]] = [
             "Delivery acceptance for a PRD, read-only; `view` picks the surface. "
             "completeness (baselined sections with nothing delivered — the only pass that "
             "surfaces ABSENT work), drift, evidence, close_report (vs ORIGINAL intent, not "
-            "the governing baseline), readiness, lineage, verdicts, baseline. None report "
+            "the governing baseline), readiness, lineage, verdicts, baseline, "
+            "classifications (serves/enables/unrelated per completed item). None report "
             "'complete' — they describe what happened; the judgement is yours."
         ),
         "inputSchema": {
@@ -608,7 +609,8 @@ TOOLS: list[dict[str, Any]] = [
                 "view": {
                     "type": "string",
                     "enum": ["completeness", "drift", "evidence", "close_report",
-                             "readiness", "lineage", "verdicts", "baseline"],
+                             "readiness", "lineage", "verdicts", "baseline",
+                             "classifications"],
                 },
             },
             "required": ["prd_id", "view"],
@@ -1684,6 +1686,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
                 "close_report": prd_svc.close_report,
                 "readiness": prd_svc.close_readiness,
                 "lineage": prd_svc.lineage,
+                "classifications": lambda d, p: {"classifications": prd_svc.classifications(d, p)},
             }.get(view, lambda d, p: {"verdicts": _verdict_dicts(prd_svc.verdicts(d, p))})(db, prd)
         return {"prd_id": prd.key, "view": view, "result": result}
     if name == "request_rebaseline":
