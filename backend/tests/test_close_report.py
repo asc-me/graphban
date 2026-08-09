@@ -204,6 +204,40 @@ def test_the_report_works_before_the_prd_is_closed(db, approved):
     assert out["governed"] is True and out["closed"] is None
 
 
+# ---- framing sections are shown, never counted as work -----------------------------------------
+def test_framing_sections_are_never_reported_as_undelivered(db, approved):
+    """Found by running the report against the real PRD-12, not by a test — and my 14
+    tests all passed without this, because none of them asserted what `never_delivered`
+    CONTAINS, only that specific work sections were in it.
+
+    Live, six of fourteen entries were "Problem", "Goals", "Non-goals", "Success criteria",
+    "Decisions from grilling" and "Risks & open questions" — sections that can never have
+    work. Telling a PM those were never delivered is noise wearing a serious face, in the
+    one artifact they are meant to act on. Same failure GRPH-251 already fixed once, one
+    surface over."""
+    out = prd_svc.close_report(db, approved)
+
+    assert "Problem" not in out["never_delivered"]
+    assert _row(out, "Problem")["fate"] == "framing"
+
+
+def test_framing_sections_are_still_listed(db, approved):
+    """Reported, not hidden. PRD-12's third named problem is that the section defining
+    "done" is parsed and then structurally ignored; dropping them here would repeat it."""
+    titles = [s["section"] for s in prd_svc.close_report(db, approved)["sections"]]
+    assert "Problem" in titles
+
+
+def test_a_dropped_framing_section_is_still_reported_as_dropped(db, approved):
+    """`dropped` is about the SPEC changing, which applies to framing too — a rebaseline
+    that deletes the risks section is a real change worth seeing. Only the work rollup
+    excludes them."""
+    _rebaseline(db, approved, BODY.replace(
+        "## Problem\n\nNothing checks delivery.\n\n", ""))
+
+    assert prd_svc.close_report(db, approved)["dropped"] == ["Problem"]
+
+
 # ---- naming honesty --------------------------------------------------------------------------
 def test_it_never_claims_the_prd_is_complete(db, approved):
     """PRD-12 is explicit: the platform assesses whether CLAIMED work covers STATED intent
