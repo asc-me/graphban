@@ -312,6 +312,13 @@ def get_item_details(db: Session, item_id: str) -> dict | None:
         "pr": item.pr,
         "linked_shards": [{"id": s.id, "text": s.text, "source": s.source} for s in shards],
         "linked_requests": [{"id": r.key, "title": r.title, "type": r.type} for r in reqs],
+        # In-flight invalidation (GRPH-242/312). This is the read an agent makes right
+        # before starting work, so it is the one place the hold most needs to appear — and
+        # it was the one place it did not: this builds its own dict rather than going
+        # through `_item_dict`, so "the hold rides on every item an agent reads" was true
+        # of every surface except the most important one. Absent (not null) when there is
+        # no hold, so it costs nothing on the overwhelming majority of reads.
+        **({"intent_hold": hold} if (hold := _pending_hold(db, item)) else {}),
     }
 
 

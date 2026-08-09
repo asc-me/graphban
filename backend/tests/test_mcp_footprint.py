@@ -128,9 +128,21 @@ def test_manifest_stays_within_token_budget():
     Prose was addressed first: ~740 chars came out of the four new descriptions and the
     shared effort/touchpoint strings before the ceiling moved at all. If this fires
     again, trim before raising — and check the same way, by subtracting whatever tools
-    are new since the last bump."""
+    are new since the last bump.
+
+    Raised 9500 -> 10500 in GRPH-254, by that same procedure. PRD-12's agent surface adds
+    four tools (prd_acceptance, request_rebaseline, submit_verdict, close_prd) totalling
+    ~3.9k chars; subtract them and the manifest measures ~9.0k tokens, comfortably under
+    the old ceiling. They average 987 chars against 1001 for the existing 36, so this is
+    tool COUNT again rather than the verbosity the guard exists to catch — and the count
+    was already held down deliberately, since the eight acceptance READS share one tool
+    behind a `view` argument instead of claiming eight names.
+
+    ~1.0k chars came out of those four descriptions before the ceiling moved. The new
+    headroom (~476 tokens) is the same slack the 9500 ceiling had before this change, so
+    the guard stays as tight as it was rather than being loosened."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 9500, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 10500, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
