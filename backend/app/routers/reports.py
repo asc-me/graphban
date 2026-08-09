@@ -28,6 +28,19 @@ def upstream_report(body: UpstreamReportIn, _: User = Depends(get_current_user))
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    # HTTPStatusError subclasses HTTPError, so it has to come first — otherwise a
+    # permanent 4xx reads as a transient gateway failure.
+    except httpx.HTTPStatusError as e:
+        code = e.response.status_code
+        detail = f"upstream rejected the report (HTTP {code})"
+        if code == 404:
+            detail += (
+                " — a hosted intake honours only the share token; set "
+                "UPSTREAM_FEEDBACK_TOKEN. A project without public sharing enabled "
+                "returns the same 404 by design."
+            )
+        # 502 says the upstream is at fault. A 4xx means ours is: our own config is wrong.
+        raise HTTPException(502 if code >= 500 else 500, detail)
     except httpx.HTTPError as e:
         raise HTTPException(502, f"upstream unreachable: {e}")
     req = result.get("request", {})

@@ -1763,6 +1763,25 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
                 type_=args.get("type", "feedback"), title=args["title"],
                 detail=args.get("detail", ""), source="mcp-agent",
             )
+        # HTTPStatusError first — it subclasses HTTPError, and conflating the two reported
+        # every permanent 4xx as "unreachable, retry later", which sends the next agent
+        # chasing dead hosts instead of reading its own config.
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            if code == 404:
+                raise errors.Conflict(
+                    "upstream accepted the connection but could not resolve its project "
+                    "(404). A hosted intake honours only the share token — set "
+                    "UPSTREAM_FEEDBACK_TOKEN. The same 404 also covers a project that has "
+                    "not enabled public sharing; the intake makes the two "
+                    "indistinguishable on purpose.",
+                    hint="configuration, not transient — retrying will not help",
+                )
+            raise errors.Conflict(
+                f"upstream rejected the report: HTTP {code}",
+                hint=("configuration, not transient — retrying will not help"
+                      if code < 500 else "upstream server error — retry later"),
+            )
         except httpx.HTTPError as e:
             raise errors.Conflict(f"upstream unreachable: {e}", hint="retry later")
         req = result.get("request", {})
