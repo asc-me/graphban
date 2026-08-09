@@ -143,7 +143,18 @@ class Settings(BaseSettings):
     # FROZEN until the upstream instance changes too: this is a project_id on the separate
     # feedback.asc-me.dev deployment, so renaming it here makes every issue report 404 on
     # arrival. It moves when a project with the new id exists there.
+    #
+    # Only consulted by a SELF-HOSTED upstream. `public._public_project` accepts a raw
+    # project_id solely when the receiving instance is not in hosted mode; a hosted intake
+    # takes the share token and nothing else, so this field is inert against one.
     upstream_feedback_project: str = "agentledger"
+    # The receiving project's public share token — REQUIRED when the upstream runs in
+    # hosted mode, which ignores project_id by design so one tenant cannot name another's
+    # project (AL-73). Without it a hosted intake returns 404, deliberately made
+    # indistinguishable from "no such project" so the surface cannot be probed. Mint it on
+    # the upstream instance (project settings -> public sharing). Secret: set via
+    # UPSTREAM_FEEDBACK_TOKEN in the environment, never committed here.
+    upstream_feedback_token: str = ""
 
     # Local↔cloud hybrid (AL-137/139): where a LINKED local instance pushes its code graph,
     # and the org-minted 'sync'-scoped key it authenticates with. Blank = not linked — a pure

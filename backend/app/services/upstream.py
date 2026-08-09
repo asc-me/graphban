@@ -38,6 +38,10 @@ def submit_upstream(*, type_: str, title: str, detail: str = "", source: str = "
     if type_ not in REQUEST_TYPES:
         type_ = "feedback"
     payload = {
+        # Both addressing modes, because the receiver decides which one it honours:
+        # a hosted intake reads ONLY `token` (project_id is refused so one tenant cannot
+        # name another's project, AL-73); a self-hosted one falls back to the raw id.
+        # Sending both keeps a single payload correct against either.
         "project_id": settings.upstream_feedback_project,
         "type": type_,
         "title": title,
@@ -45,6 +49,8 @@ def submit_upstream(*, type_: str, title: str, detail: str = "", source: str = "
         "source_url": f"graphban:{source}",
         "meta": {"reporter": source, "app_version": "0.1.0"},
     }
+    if settings.upstream_feedback_token:
+        payload["token"] = settings.upstream_feedback_token
     resp = httpx.post(url, json=payload, timeout=10.0)
     resp.raise_for_status()
     return resp.json()
