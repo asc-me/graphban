@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from collections import Counter
 
 from app.models import (
-    CodeNode, GrillDimension, GrillTurn, Item, Prd, PrdVersion, Verdict, utcnow,
+    CodeNode, GrillDimension, GrillTurn, Item, Prd, PrdVersion, Verdict,
+    WorkClassification, utcnow,
 )
 from app.services import items as items_svc
 from app.services import keys
@@ -1155,6 +1156,215 @@ def evidence_rollup(db: Session, prd: Prd) -> dict:
     }
 
 
+SERVES, ENABLES, UNRELATED, UNDECIDABLE = "serves", "enables", "unrelated", "undecidable"
+# Only a HIGH-confidence `unrelated` self-flags; the ambiguous middle defers to sign-off,
+# reusing AL-227's memory auto-triage shape. Set where a wrong flag is cheap to dismiss and
+# a missed one is not — an item wrongly called unrelated is argued away in one reply, while
+# stowaway scope that nobody questioned is the failure this exists to catch.
+_UNRELATED_FLAG_MIN = 0.8
+# Above this many stale rows, recompute lazily on first read instead of inline. Named
+# constant, deliberately conservative, and NOT a project setting: we do not know the right
+# value yet, and a slider is how you avoid finding out.
+STALE_INLINE_MAX = 3
+
+JUDGE_SYSTEM = (
+    "You classify one piece of COMPLETED work against a PRD's goal. Answer only the "
+    "question asked.\n\n"
+    "Your ceiling is bounded and you must respect it: you see the item's text, its "
+    "evidence receipts, and the paths it touched. You do NOT see the diff, the tests, or "
+    "the running system. So you can judge whether this work is about the RIGHT THING. You "
+    "cannot judge whether it WORKS, and you must never imply that you can.\n\n"
+    "`serves` — this work advances the goal the PRD states.\n"
+    "`unrelated` — it does not. Not a criticism: plenty of legitimate work has nothing to "
+    "do with a given goal.\n\n"
+    "Do NOT answer `enables`. Whether this unblocks other work is read from the link "
+    "graph, not from you.\n\n"
+    "`confidence` is 0.0-1.0 and should be LOW when the item text is thin, the goal is "
+    "broad, or you are inferring rather than reading. A confident wrong answer is worse "
+    "than an admitted uncertain one.\n\n"
+    'Respond with ONLY a compact JSON object: {"outcome": "serves"|"unrelated", '
+    '"confidence": <float>, "reasoning": "<one sentence>"}.'
+)
+
+
+def _judge_context(prd: Prd, base: PrdVersion, item: Item) -> str:
+    """What the judge is shown. The GOAL leads, then the work — the opposite order to the
+    grill's classifier, and for the opposite reason: there the risk was grading the
+    document instead of the interrogation, here the document IS the standard."""
+    goals = section_bodies(base.body).get("Goals") or section_bodies(base.body).get(
+        "Problem") or base.body[:1200]
+    return "\n\n".join([
+        f"PRD GOAL — {prd.title} (baseline {base.version}). This is the standard:",
+        goals.strip(),
+        "COMPLETED WORK under classification:",
+        f"title: {item.title}",
+        f"section it was filed under: {item.prd_section or '(none)'}",
+        f"description: {(item.description or '(none)')[:1500]}",
+        f"paths touched: {', '.join(item.touchpoints or []) or '(none declared)'}",
+        "evidence receipts: " + (
+            "; ".join(f"{e.get('kind')}: {e.get('detail','')[:120]}"
+                      for e in (item.evidence or [])) or "(none)"),
+    ])
+
+
+def _enabled_by_graph(db: Session, item: Item) -> bool:
+    """Whether this item unblocks other work on the same PRD (GRPH-249).
+
+    Derived, never judged. Typed links and `blocked_by`/`unblocks` already encode it, and
+    asking a model to re-derive a fact the graph holds is both slower and less reliable —
+    the LLM is spent only on the semantic call.
+    """
+    from app.services import links as links_svc
+
+    siblings = {it.id for it in items_svc.list_items(db, project_id=item.project_id)
+                if it.prd_id == item.prd_id and it.id != item.id}
+    for edge in links_svc.list_links(db, project_id=item.project_id):
+        if edge.type != "dependency" or item.id not in (edge.a, edge.b):
+            continue
+        if (edge.b if edge.a == item.id else edge.a) in siblings:
+            return True
+    return False
+
+
+def classify_work(db: Session, item: Item, *, force: bool = False) -> "WorkClassification | None":
+    """Classify one completed item against its PRD's goal (GRPH-249).
+
+    Fires on completion rather than on link: at link time an item is an intention with
+    nothing delivered to judge, and a judgement of an intention is a judgement of a
+    sentence someone typed.
+
+    Three answers come from three different places, deliberately:
+
+    - **`unrelated` / `serves`** is the semantic call, and the only part a model is asked.
+    - **`enables`** is DERIVED from the link graph. Typed links already encode it, so
+      asking a model to re-derive it would be slower, less reliable, and would spend the
+      one expensive call on a question already answered.
+    - **`undecidable`** is what an unconfigured instance returns. `chat_provider` defaults
+      to `stub`, and guessing there would put a clean bill of health on an instance that
+      judged nothing.
+
+    Confidence gates the consequence, not the answer: only a HIGH-confidence `unrelated`
+    self-flags. The ambiguous middle is recorded with `needs_review` and deferred to
+    sign-off, which is AL-227's memory triage shape — the same problem, one domain over.
+    """
+    if not item.prd_id or item.status != "done":
+        return None
+    prd = db.get(Prd, item.prd_id)
+    base = baseline_of(db, item.prd_id) if prd is not None else None
+    if prd is None or base is None:
+        return None  # no agreed intent to judge against
+
+    row = db.scalar(select(WorkClassification).where(WorkClassification.item_id == item.id))
+    if row is not None and not force and not row.stale \
+            and row.baseline_version == base.version:
+        return row
+
+    provider, chat = platform_svc.resolve_chat(db, prd.project_id)
+    if provider == "stub":
+        outcome, confidence, reasoning, grader = (
+            UNDECIDABLE, 0.0,
+            "No chat provider configured — alignment was not assessed.", "stub")
+    else:
+        try:
+            raw = chat.chat(system=JUDGE_SYSTEM,
+                            context=_judge_context(prd, base, item),
+                            question="Classify this work against the goal.",
+                            temperature=0)
+            match = re.search(r"\{.*\}", raw or "", re.DOTALL)
+            parsed = json.loads(match.group(0)) if match else {}
+            outcome = parsed.get("outcome")
+            if outcome not in (SERVES, UNRELATED):
+                raise ValueError(f"unusable outcome {outcome!r}")
+            confidence = float(parsed.get("confidence") or 0.0)
+            reasoning = str(parsed.get("reasoning") or "").strip()
+            grader = _grader_id(db, prd)
+        except Exception:  # noqa: BLE001 — an unusable judge is undecidable, never a guess
+            logger.warning("platform judge: unusable reply for %s; recording undecidable",
+                           item.id)
+            outcome, confidence, reasoning, grader = (
+                UNDECIDABLE, 0.0, "The judge did not return a usable answer.",
+                _grader_id(db, prd))
+
+    # Derived, and it OVERRIDES an `unrelated`: work that unblocks work serving the goal
+    # is not unrelated to it, whatever it looks like read on its own.
+    if outcome == UNRELATED and _enabled_by_graph(db, item):
+        outcome, reasoning = ENABLES, (
+            f"{reasoning} Reclassified from unrelated: the link graph shows this unblocks "
+            f"other work on this PRD.").strip()
+
+    if row is None:
+        row = WorkClassification(item_id=item.id, prd_id=item.prd_id)
+        db.add(row)
+    row.prd_id = item.prd_id
+    row.outcome = outcome
+    row.reasoning = reasoning
+    row.confidence = round(confidence, 3)
+    row.graded_by = grader
+    row.baseline_version = base.version
+    row.stale = False
+    # Only a confident `unrelated` self-flags. Everything uncertain, and everything the
+    # judge could not assess, waits for a human at sign-off rather than acting on itself.
+    row.needs_review = (outcome == UNRELATED and confidence < _UNRELATED_FLAG_MIN) or \
+                       outcome == UNDECIDABLE
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def mark_classifications_stale(db: Session, prd: Prd) -> int:
+    """Invalidate every classification made against a superseded baseline (GRPH-249).
+
+    Called when a new baseline is frozen. Marking is unconditional and recomputation is
+    not: the marker is the single source of truth, and the eager path below is a warm-up
+    on the lazy one rather than a second design that could disagree with it.
+    """
+    rows = list(db.scalars(select(WorkClassification).where(
+        WorkClassification.prd_id == prd.id)).all())
+    base = baseline_of(db, prd.id)
+    stale = [r for r in rows if base is None or r.baseline_version != base.version]
+    for r in stale:
+        r.stale = True
+    if stale:
+        db.commit()
+    # Small sets recompute now so the next reader sees fresh answers; large ones wait, so a
+    # rebaseline on a big PRD never blocks on a hundred model calls.
+    if 0 < len(stale) <= STALE_INLINE_MAX:
+        for r in stale:
+            it = db.get(Item, r.item_id)
+            if it is not None:
+                classify_work(db, it, force=True)
+    return len(stale)
+
+
+def classifications(db: Session, prd: Prd, *, refresh: bool = True) -> list[dict]:
+    """Every classification for this PRD, recomputing stale rows on the way out.
+
+    `refresh` is the lazy half of the staleness design: reading the report is what pays
+    for a large rebaseline's recompute, so the write path stays fast and the numbers a
+    reader sees are never quietly out of date.
+    """
+    rows = list(db.scalars(select(WorkClassification).where(
+        WorkClassification.prd_id == prd.id).order_by(WorkClassification.id)).all())
+    if refresh:
+        for r in [r for r in rows if r.stale]:
+            it = db.get(Item, r.item_id)
+            if it is not None:
+                classify_work(db, it, force=True)
+        db.expire_all()
+        rows = list(db.scalars(select(WorkClassification).where(
+            WorkClassification.prd_id == prd.id).order_by(WorkClassification.id)).all())
+    out = []
+    for r in rows:
+        it = db.get(Item, r.item_id)
+        out.append({
+            "item": it.key if it is not None else r.item_id,
+            "outcome": r.outcome, "reasoning": r.reasoning, "confidence": r.confidence,
+            "graded_by": r.graded_by, "baseline_version": r.baseline_version,
+            "needs_review": r.needs_review, "stale": r.stale,
+        })
+    return out
+
+
 def _section_histories(chain: list[PrdVersion]) -> dict[str, dict]:
     """Trace every section through the baseline chain: where it came from, what happened
     to it, and at which version (GRPH-245).
@@ -1903,6 +2113,10 @@ def freeze_baseline(db: Session, prd: Prd) -> PrdVersion:
     prd.updated = "just now"
     db.commit()
     db.refresh(row)
+    # Every classification was made against the intent this just superseded (GRPH-249).
+    # Marking is unconditional; recomputing is not, so a rebaseline on a large PRD never
+    # blocks on a hundred model calls.
+    mark_classifications_stale(db, prd)
     return row
 
 

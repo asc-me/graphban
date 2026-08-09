@@ -202,6 +202,18 @@ def prd_close_readiness(prd_id: str, db: Session = Depends(get_db),
     return out
 
 
+@router.get("/{prd_id}/classifications")
+def prd_classifications(prd_id: str, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """The platform judge's read on each completed item (GRPH-249).
+
+    serves / enables / unrelated / undecidable, stamped with the baseline judged against.
+    Stale rows recompute on read — that is the lazy half of the staleness design, so a
+    reader is never shown numbers that are quietly out of date."""
+    prd = _require_readable_prd(db, user, prd_id)
+    return prd_svc.classifications(db, prd)
+
+
 @router.get("/{prd_id}/evidence")
 def prd_evidence(prd_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """What the delivered work offers as proof, bound to the intent it supports (GRPH-250).

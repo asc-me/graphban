@@ -541,6 +541,53 @@ class GrillDimension(Base):
     __table_args__ = (UniqueConstraint("prd_id", "dimension", name="uq_grill_dimension"),)
 
 
+class WorkClassification(Base):
+    """The platform judge's read on one completed item against its PRD's goal (GRPH-249).
+
+    One row per item — the LATEST judgement, not a history. A classification is a derived
+    read of "does this work serve the goal", and the thing worth keeping is what that
+    answer is now; the audit trail of who claimed what lives on `Verdict`, which is
+    append-only precisely because it holds claims rather than derivations.
+
+    **Its ceiling is bounded and stated rather than implied.** This judge sees item text,
+    evidence and the code graph. It never sees a diff. It assesses subject-matter alignment
+    well and delivery correctness not at all, so `serves` means "this is about the right
+    thing", never "this works".
+    """
+
+    __tablename__ = "work_classifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), index=True)
+    prd_id: Mapped[str] = mapped_column(String, index=True)
+    # serves | enables | unrelated | undecidable. `enables` is DERIVED from the link graph,
+    # never asked of the model — typed links plus blocked_by/unblocks already encode it,
+    # and the LLM is spent only on the semantic call.
+    outcome: Mapped[str] = mapped_column(String)
+    reasoning: Mapped[str] = mapped_column(Text, default="")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    # Which bar was applied: a real model id, or "stub" when nothing is configured. A
+    # stub-graded row means "not assessed", and without this on the record that is
+    # indistinguishable from "assessed and found fine" (the AL-299 rule).
+    graded_by: Mapped[str] = mapped_column(String, default="", nullable=False)
+    # The intent this was judged against. A baseline change invalidates prior judgements,
+    # so a classification with no baseline stamped could never be known to be current.
+    baseline_version: Mapped[str] = mapped_column(String, default="")
+    # THE single source of truth for whether this needs recomputing. Eager recompute is a
+    # warm-up on the lazy path rather than a second design, so both routes agree by
+    # construction instead of by care.
+    stale: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # A low-confidence `unrelated` is not acted on — it defers to sign-off. Only a
+    # high-confidence one self-flags (the AL-227 auto-triage pattern).
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (UniqueConstraint("item_id", name="uq_classification_item"),)
+
+
 class Verdict(Base):
     """A sign-off judgement about a PRD, with the provenance that makes it arguable.
 

@@ -1,6 +1,8 @@
 """Item (tracker) service — shared by REST routers and the MCP server."""
 from __future__ import annotations
 
+import logging
+
 from datetime import timedelta, timezone
 
 from sqlalchemy import func, or_, select, update
@@ -8,6 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.models import Item, Project, utcnow
 from app.services import keys
+
+logger = logging.getLogger(__name__)
 
 STATUSES = ["backlog", "next", "in_progress", "review", "done", "blocked"]
 FIDELITIES = ["low", "high"]  # low = specifiable now; high = needs a prototype (AL-68)
@@ -167,8 +171,30 @@ def update_item(db: Session, item_id: str, **fields) -> Item | None:
 
     if item.status == "done" and prev_status != "done":
         _record_superseded_intent(db, item, hold_at_completion)
+        _classify_against_goal(db, item)
         _auto_extract_lessons(db, item)
     return item
+
+
+def _classify_against_goal(db: Session, item: Item) -> None:
+    """Fire the platform judge on completion (GRPH-249).
+
+    Here rather than at link time on purpose: at link time an item is an intention with
+    nothing delivered to judge, and a judgement of an intention is a judgement of a
+    sentence somebody typed. At completion it has evidence, touchpoints, and work behind
+    it.
+
+    Never allowed to break the completion. A judge that errors, times out, or is not
+    configured must not stop an agent marking work done — the classification is a read on
+    the work, not a gate on it, and making delivery depend on a model being reachable is
+    how a feature gets routed around.
+    """
+    from app.services import prds as prd_svc  # local: prds imports this module
+
+    try:
+        prd_svc.classify_work(db, item)
+    except Exception:  # noqa: BLE001
+        logger.warning("platform judge: classification failed for %s", item.id, exc_info=True)
 
 
 def _pending_hold(db: Session, item: Item) -> dict | None:
