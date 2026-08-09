@@ -1266,7 +1266,15 @@ def close_report(db: Session, prd: Prd) -> dict:
             # `dropped` means dropped FROM THE SPEC by a rebaseline. Work that was simply
             # never done is `undelivered`, and conflating them would tell a PM that
             # somebody decided something when nobody did.
+            # Framing sections are reported (PRD-12's third problem is that the section
+            # defining "done" is structurally exempt from every check) but never counted
+            # as work. Found live: without this the close report told a PM that "Problem",
+            # "Goals", "Non-goals" and "Success criteria" were never delivered — six of
+            # fourteen entries in the headline finding were sections that can never have
+            # work, which is the AL-96 failure in the one artifact a PM acts on.
+            "framing": not is_implementable_section(origin_title),
             "fate": ("dropped" if h["dropped_at"]
+                     else "framing" if not is_implementable_section(origin_title)
                      else "delivered" if delivered
                      else "undelivered"),
             "disposition": dispositions.get(origin_title),
