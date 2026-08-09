@@ -610,6 +610,12 @@ class Verdict(Base):
     # The baseline this was judged against. A verdict outlives the intent it was made
     # about, and without this it silently reads as a judgement of the current spec.
     baseline_version: Mapped[str] = mapped_column(String, default="")
+    # Which piece of intent this verdict is ABOUT — a baselined section, the intent atom
+    # (GRPH-313). NULL is a PRD-level verdict. PRD-12 asks for "a structured verdict per
+    # intent element", and one verdict for a whole PRD cannot say which part it read: an
+    # auditor that covered three sections of fourteen would be indistinguishable from one
+    # that covered all of them.
+    section: Mapped[str | None] = mapped_column(String, nullable=True)
     outcome: Mapped[str] = mapped_column(String)
     reasoning: Mapped[str] = mapped_column(Text, default="")
     # [{kind, ref}] — validated at submission (prds.validate_verdict) against the code

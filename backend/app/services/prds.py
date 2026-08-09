@@ -1534,6 +1534,110 @@ def close_report(db: Session, prd: Prd) -> dict:
     }
 
 
+def audit_brief(db: Session, prd: Prd) -> dict:
+    """Everything a repo-holding agent needs to audit this PRD, in one read (GRPH-252).
+
+    The agent auditor is the only component that can reach actual code, which is why
+    **completeness authority lives there** — and why it needs no provider key on the
+    instance: it brings its own model. This function is the handover.
+
+    **The authority split is carried in the payload, not left to convention.** Drift
+    history is the platform's finding — it watched the timeline, the auditor sees only the
+    end state — so it arrives as a stated result rather than as raw material to re-derive.
+    Completeness is the auditor's call, so what arrives is the *question*: here are the
+    baselined sections, here is what is linked to each, now go and look at the repo. An
+    auditor handed a conclusion where it should have been handed a question would rubber-
+    stamp the platform's own guess.
+
+    One call rather than five, because an audit assembled differently by every agent is
+    not comparable between them, and comparability is most of what a corpus is for.
+
+    Note what is deliberately NOT here: any instruction on how to decide. The brief is
+    evidence and open questions; the judgement belongs to the agent, and shipping a house
+    opinion inside it would make every auditor agree with us by construction.
+    """
+    base = baseline_of(db, prd.id)
+    if base is None:
+        return {"governed": False, "prd_id": prd.key, "sections": []}
+
+    chain = baseline_chain(db, prd.id)
+    done = completeness(db, prd)
+    rollup = evidence_rollup(db, prd)
+    graded = {c["item"]: c for c in classifications(db, prd)}
+    receipts = {s["section"]: s for s in rollup["sections"]} if rollup["governed"] else {}
+    bodies = section_bodies(base.body)
+    verdicts_by_section: dict[str, list] = {}
+    for v in verdicts(db, prd):
+        verdicts_by_section.setdefault(v.section or "", []).append(
+            {"outcome": v.outcome, "signed_by": v.signed_by, "self_signed": v.self_signed})
+
+    sections = []
+    for s in done["sections"]:
+        title = s["section"]
+        ev = receipts.get(title, {})
+        sections.append({
+            "section": title,
+            "framing": s["framing"],
+            # The intent itself. An auditor asked "was this delivered" without the text of
+            # what was promised is being asked to guess.
+            "intent": bodies.get(title, "").strip(),
+            "state": s["state"],
+            "items": [
+                {**i, "classification": graded.get(i["id"], {}).get("outcome", "unclassified"),
+                 "classification_reasoning": graded.get(i["id"], {}).get("reasoning", "")}
+                for i in s["items"]
+            ],
+            "falsifiable_receipts": ev.get("falsifiable", 0),
+            "unfalsifiable_receipts": ev.get("unfalsifiable", 0),
+            "corroboration": ev.get("corroboration", "unknown"),
+            "verdicts": verdicts_by_section.get(title, []),
+        })
+
+    return {
+        "governed": True,
+        "prd_id": prd.key,
+        "title": prd.title,
+        "baseline_version": base.version,
+        "original_version": chain[0].version,
+        "sections": sections,
+        # THE auditor's question, restated plainly so it cannot be missed in the detail.
+        "outstanding": sorted(set(done["absent"]) | set(done["undelivered"])),
+        # The platform's findings, labelled as such. Authoritative on drift history.
+        "platform_findings": {
+            "drift": {k: rollup.get(k) for k in ("unsupported", "uncorroborated")}
+            | {"scope": scope_drift(db, prd)["total"]},
+            "authority": "The platform is authoritative on drift history; you are "
+                         "authoritative on completeness. Check the repo, not this list.",
+        },
+        # What has already been claimed, so a re-audit sees prior verdicts rather than
+        # silently duplicating or contradicting them without noticing.
+        "existing_verdicts": sum(len(v) for v in verdicts_by_section.values()),
+        "unjudged_items": sorted(k for k, c in graded.items()
+                                 if c["outcome"] in ("unclassified", "undecidable")),
+    }
+
+
+def audit_coverage(db: Session, prd: Prd) -> dict:
+    """Which intent elements the auditor has actually rendered a verdict on (GRPH-252).
+
+    An audit that verdicts three sections of fourteen is not an audit, and without this it
+    is indistinguishable from one that covered everything — the submission succeeded either
+    way. Framing sections are excluded: they describe the work rather than being it, and
+    demanding a verdict on "Problem" would train an auditor to emit filler.
+    """
+    base = baseline_of(db, prd.id)
+    if base is None:
+        return {"governed": False, "covered": [], "uncovered": []}
+    demanded = [t for t in parse_sections(base.body) if is_implementable_section(t)]
+    covered = {v.section for v in verdicts(db, prd) if v.section}
+    return {
+        "governed": True,
+        "covered": sorted(covered & set(demanded)),
+        "uncovered": sorted(set(demanded) - covered),
+        "complete": not (set(demanded) - covered),
+    }
+
+
 class CloseRefused(ValueError):
     """The close cannot proceed: no baseline, a judge that went down, or intent that
     nobody has accounted for."""
@@ -1672,6 +1776,7 @@ def self_signed_against(db: Session, prd: Prd, signer: str) -> list[str]:
 def record_verdict(
     db: Session, prd: Prd, *, outcome: str, citations: list[dict],
     signed_by: str, reasoning: str = "", api_key_id: str | None = None,
+    section: str | None = None,
 ) -> Verdict:
     """Store a sign-off verdict, or refuse it (GRPH-253).
 
@@ -1699,12 +1804,22 @@ def record_verdict(
     check = validate_verdict(db, prd, citations)
     if not check["ok"]:
         raise MalformedVerdict("; ".join(check["problems"]))
+    if section is not None:
+        base = baseline_of(db, prd.id)
+        known = set(parse_sections(base.body)) if base is not None else set()
+        known |= {new for _old, new in diff_sections(base.body, prd.body)["renamed"]} \
+            if base is not None else set()
+        if section not in known:
+            # A verdict about a section the baseline does not contain is unfalsifiable in
+            # the same way a citation to nothing is: there is no intent to check it against.
+            raise MalformedVerdict(f"no such section in the baseline: {section}")
 
     overlap = self_signed_against(db, prd, signed_by)
     base = baseline_of(db, prd.id)
     row = Verdict(
         prd_id=prd.id,
         baseline_version=base.version if base is not None else "",
+        section=section,
         outcome=outcome,
         reasoning=reasoning,
         citations=list(citations),
