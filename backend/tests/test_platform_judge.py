@@ -318,6 +318,49 @@ def test_reading_the_report_refreshes_a_stale_set(db, approved, judge):
     assert all(r["baseline_version"] == "v1.1" for r in rows)
 
 
+# ---- unjudged work is named, not omitted ------------------------------------------------------
+def test_completed_work_with_no_classification_is_reported_as_unclassified(db, approved,
+                                                                            judge):
+    """Found live: PRD-12 had 10 completed items and the report returned an empty list,
+    because the judge fires on completion and none of that work postdated it.
+
+    An empty list reads as "nothing to report"; the truth was "ten items nobody looked
+    at". Those are opposite claims, and the quiet one is the reassuring one."""
+    item = items_svc.create_item(db, title="Finished before the judge existed",
+                                 project_id="core", prd_id=approved.id,
+                                 prd_section="Judging")
+    item.status = "done"          # bypass update_item, so no hook fires
+    db.commit()
+
+    rows = prd_svc.classifications(db, approved)
+    assert [r["item"] for r in rows] == [item.key]
+    assert rows[0]["outcome"] == "unclassified" and rows[0]["needs_review"] is True
+
+
+def test_naming_unclassified_work_costs_no_model_calls(db, approved, judge):
+    """The reader sees the gap and decides whether to spend the calls. Classifying on read
+    would make a first look at a large PRD cost N model calls by surprise — the same
+    expensive-surprise the stale/lazy split already refuses."""
+    for i in range(4):
+        it = items_svc.create_item(db, title=f"Old work {i}", project_id="core",
+                                   prd_id=approved.id, prd_section="Judging")
+        it.status = "done"
+        db.commit()
+    judge["calls"] = 0
+
+    rows = prd_svc.classifications(db, approved)
+    assert len(rows) == 4 and judge["calls"] == 0
+
+
+def test_unfinished_work_is_not_reported_as_unclassified(db, approved, judge):
+    """Only COMPLETED work is judged, so only completed work can be missing a judgement.
+    Listing backlog items here would fill the report with things that are not yet due."""
+    items_svc.create_item(db, title="Not started", project_id="core",
+                          prd_id=approved.id, prd_section="Judging")
+
+    assert prd_svc.classifications(db, approved) == []
+
+
 def test_a_fresh_classification_is_not_re_asked(db, approved, judge):
     """The one expensive call per item, per baseline. Re-asking on every read would make
     opening a report cost a model call per completed item."""

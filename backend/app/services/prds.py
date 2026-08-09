@@ -1353,14 +1353,33 @@ def classifications(db: Session, prd: Prd, *, refresh: bool = True) -> list[dict
         db.expire_all()
         rows = list(db.scalars(select(WorkClassification).where(
             WorkClassification.prd_id == prd.id).order_by(WorkClassification.id)).all())
-    out = []
+    out, seen = [], set()
     for r in rows:
         it = db.get(Item, r.item_id)
+        seen.add(r.item_id)
         out.append({
             "item": it.key if it is not None else r.item_id,
             "outcome": r.outcome, "reasoning": r.reasoning, "confidence": r.confidence,
             "graded_by": r.graded_by, "baseline_version": r.baseline_version,
             "needs_review": r.needs_review, "stale": r.stale,
+        })
+    # Completed work with no row at all (GRPH-325). The judge fires on completion, so
+    # anything finished before it shipped — the entire population on any instance that
+    # adopts this after doing work — has none. Returning only the rows that exist renders
+    # that as an empty list, which reads as "nothing to report" when it means "nobody
+    # looked". Those are opposite claims and the quiet one is the reassuring one.
+    #
+    # Named rather than classified on the spot: a first read of a large PRD must not
+    # silently cost N model calls. The reader sees the gap and decides whether to spend
+    # them, which is the same choice the stale/lazy split already makes.
+    for it in items_svc.list_items(db, project_id=prd.project_id):
+        if it.prd_id != prd.id or it.status != "done" or it.id in seen:
+            continue
+        out.append({
+            "item": it.key, "outcome": "unclassified",
+            "reasoning": "Completed before this was judged, or the judge never ran.",
+            "confidence": 0.0, "graded_by": "", "baseline_version": "",
+            "needs_review": True, "stale": False,
         })
     return out
 
