@@ -599,7 +599,9 @@ TOOLS: list[dict[str, Any]] = [
             "completeness (baselined sections with nothing delivered — the only pass that "
             "surfaces ABSENT work), drift, evidence, close_report (vs ORIGINAL intent, not "
             "the governing baseline), readiness, lineage, verdicts, baseline, "
-            "classifications (serves/enables/unrelated per completed item). None report "
+            "classifications, audit_brief (everything needed to audit this PRD in one "
+            "read — intent, linked work, receipts, open questions), audit_coverage (which "
+            "sections you have actually verdicted). None report "
             "'complete' — they describe what happened; the judgement is yours."
         ),
         "inputSchema": {
@@ -610,7 +612,7 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "enum": ["completeness", "drift", "evidence", "close_report",
                              "readiness", "lineage", "verdicts", "baseline",
-                             "classifications"],
+                             "classifications", "audit_brief", "audit_coverage"],
                 },
             },
             "required": ["prd_id", "view"],
@@ -660,6 +662,7 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "prd_id": {"type": "string"},
+                "section": {"type": "string"},
                 "outcome": {"type": "string"},
                 "reasoning": {"type": "string"},
                 "citations": {
@@ -1687,6 +1690,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
                 "readiness": prd_svc.close_readiness,
                 "lineage": prd_svc.lineage,
                 "classifications": lambda d, p: {"classifications": prd_svc.classifications(d, p)},
+                "audit_brief": prd_svc.audit_brief,
+                "audit_coverage": prd_svc.audit_coverage,
             }.get(view, lambda d, p: {"verdicts": _verdict_dicts(prd_svc.verdicts(d, p))})(db, prd)
         return {"prd_id": prd.key, "view": view, "result": result}
     if name == "request_rebaseline":
@@ -1706,7 +1711,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
         try:
             v = prd_svc.record_verdict(
                 db, prd, outcome=args["outcome"], citations=args["citations"],
-                reasoning=args.get("reasoning", ""),
+                reasoning=args.get("reasoning", ""), section=args.get("section"),
                 signed_by=f"agent:{key.name or key.id}", api_key_id=key.id)
         except prd_svc.MalformedVerdict as e:
             # Validation, not conflict: the verdict is malformed and a retry of the same

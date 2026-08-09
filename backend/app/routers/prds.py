@@ -202,6 +202,25 @@ def prd_close_readiness(prd_id: str, db: Session = Depends(get_db),
     return out
 
 
+@router.get("/{prd_id}/audit-brief")
+def prd_audit_brief(prd_id: str, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """Everything a repo-holding agent needs to audit this PRD, in one read (GRPH-252).
+
+    Carries the authority split in the payload: drift arrives as the platform's stated
+    finding, completeness arrives as the auditor's open question."""
+    prd = _require_readable_prd(db, user, prd_id)
+    return prd_svc.audit_brief(db, prd)
+
+
+@router.get("/{prd_id}/audit-coverage")
+def prd_audit_coverage(prd_id: str, db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    """Which intent elements actually carry a verdict (GRPH-252)."""
+    prd = _require_readable_prd(db, user, prd_id)
+    return prd_svc.audit_coverage(db, prd)
+
+
 @router.get("/{prd_id}/classifications")
 def prd_classifications(prd_id: str, db: Session = Depends(get_db),
                         user: User = Depends(get_current_user)):
