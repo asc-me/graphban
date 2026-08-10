@@ -38,7 +38,13 @@ def db(client):
 
 
 def _line(text, **over):
-    row = {"sessionId": "sess-1", "type": "assistant", "cwd": "/repo",
+    """A record in the shape a transcript actually uses.
+
+    `user`, not `assistant`, because since GRPH-345 only a PERSON's prose is evidence —
+    assistant text is narration of work in progress, and recording it is what turned one
+    transcript into 1,088 shards.
+    """
+    row = {"sessionId": "sess-1", "type": "user", "cwd": "/repo",
            "timestamp": "2026-08-09T00:00:00Z",
            "message": {"content": [{"type": "text", "text": text}]}}
     row.update(over)
@@ -58,8 +64,16 @@ def _write(d, name, lines):
     return str(p)
 
 
-LESSON = ("The migration guard caught a missing revision because the range in AGENTS.md "
-          "was never bumped after adding one.")
+# Long enough to clear MIN_PROSE_CHARS. The length is the point rather than an accident of
+# phrasing: a message this size is someone stating a constraint, which is what the bar is
+# there to select for.
+LESSON = (
+    "The migration guard caught a missing revision because the range in AGENTS.md was never "
+    "bumped after adding one. Please make the guard part of the standard loop rather than "
+    "something we remember to run, because we have now hit this three separate times and "
+    "each time it was found by a human reading a diff rather than by anything automatic. "
+    "The fix should fail the build, not warn, since a warning in a long log is the same as "
+    "silence for our purposes here.")
 
 
 # ---- scrubbing runs before anything is stored -------------------------------------------
@@ -319,11 +333,16 @@ def test_a_tool_call_is_parsed(db, transcripts):
 
 @pytest.mark.parametrize("result,outcome", [
     ({"stdout": "ok", "stderr": ""}, "ok"),
-    ({"stdout": "", "stderr": "command not found"}, "failed"),
     ({"stdout": "", "stderr": "", "interrupted": True}, "failed"),
-    # The gloss is present ONLY when the command returned non-zero, so it IS the signal.
-    ({"stdout": "", "stderr": "", "returnCodeInterpretation": "No matches found"}, "failed"),
+    # A recorded exit code is a fact. Claude Code writes none, but the Event shape is shared.
+    ({"exitCode": 0}, "ok"),
+    ({"exitCode": 2}, "failed"),
     ({}, "unknown"),
+    # **Not a failure, however much it looks like one.** These two shapes are why the
+    # inference was removed: on the real corpus they produced 90 and 28 false failures
+    # respectively, and `Shell cwd was reset` is a routine notice on a command that WORKED.
+    ({"stdout": "fine", "stderr": "\nShell cwd was reset to /repo"}, "ok"),
+    ({"stdout": "", "stderr": "", "returnCodeInterpretation": "No matches found"}, "ok"),
 ])
 def test_the_outcome_is_derived_from_what_the_harness_actually_records(db, transcripts,
                                                                        result, outcome):
@@ -337,14 +356,53 @@ def test_the_outcome_is_derived_from_what_the_harness_actually_records(db, trans
     assert events[0].metadata["outcome"] == outcome
 
 
+def _failed_result(text="Exit code 1\npytest: 3 failed", tool_use_id="t1"):
+    """The shape a FAILED tool call actually arrives in — verified against the corpus.
+
+    There is **no `toolUseResult`**: the call produced no structured output, so the error
+    text sits directly on the `tool_result` block, and `is_error` carries the verdict. All
+    154 real errors look like this, and every one was being dropped (GRPH-345).
+    """
+    return json.dumps({
+        "sessionId": "s", "type": "user", "timestamp": "t",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": tool_use_id,
+                                 "is_error": True, "content": text}]},
+    }) + "\n"
+
+
+def test_the_harness_verdict_beats_any_inference_about_it(db, transcripts):
+    """`is_error` is what Claude Code itself recorded. Inferring from stderr instead
+    disagreed with it on 118 of 118 events in the real corpus."""
+    adapter = ClaudeCodeAdapter(root=str(transcripts))
+    path = _write(transcripts, "s.jsonl", [json.dumps({
+        "sessionId": "s", "type": "user", "timestamp": "t",
+        "message": {"content": [{"type": "tool_result", "is_error": False,
+                                 "content": "done"}]},
+        "toolUseResult": {"stdout": "done", "stderr": "warning: deprecated flag"},
+    }) + "\n"])
+
+    events, _ = adapter.parse(path, None)
+    assert events[0].metadata["outcome"] == "ok", "stderr on a call the harness passed"
+
+
+def test_a_failed_call_carries_its_error_text_with_no_structured_result(db, transcripts):
+    """THE regression. A failed call has no `toolUseResult` at all, so the old guard —
+    no text, no tool name, no result dict — dropped all 154 real errors while GRPH-342
+    believed it had recovered the failure signal."""
+    adapter = ClaudeCodeAdapter(root=str(transcripts))
+    path = _write(transcripts, "s.jsonl", [_failed_result()])
+
+    events, _ = adapter.parse(path, None)
+    assert len(events) == 1
+    assert events[0].metadata["outcome"] == "failed"
+    assert "pytest: 3 failed" in events[0].text
+
+
 def test_a_tool_result_record_is_not_dropped(db, transcripts):
     """The deeper half of GRPH-342, and invisible without real data. A tool CALL and its
     RESULT are separate records — 910 results against 18,173 calls in the real corpus — and
     a result carries neither text nor a tool name. Requiring one dropped every result
-    record, and with it the entire failure signal.
-
-    On 74 real transcripts this recovered ~15,700 events and surfaced 507 failed commands
-    where the count had been zero."""
+    record, and with it the entire failure signal."""
     adapter = ClaudeCodeAdapter(root=str(transcripts))
     path = _write(transcripts, "s.jsonl", [json.dumps({
         "sessionId": "s", "type": "user", "timestamp": "t",
@@ -353,7 +411,6 @@ def test_a_tool_result_record_is_not_dropped(db, transcripts):
 
     events, _ = adapter.parse(path, None)
     assert len(events) == 1
-    assert events[0].metadata["outcome"] == "failed"
     assert "not a git repository" in events[0].text
 
 
@@ -398,3 +455,137 @@ def test_kind_is_a_plain_string_so_a_new_harness_needs_no_core_change(db, transc
 
     events, _ = adapter.parse(path, None)
     assert events[0].kind == "something-brand-new"
+
+
+# ---- what counts as a lesson (GRPH-345) -----------------------------------------------------
+# The filter that exists because the first REAL run recorded 1,088 shards from one transcript
+# — pytest summaries, branch deletions, assertion fragments. PRD-16 says the loop exists so
+# the corpus "does not become landfill"; at that rate it WAS the landfill. Every test below
+# is a claim about where lessons come from, and each was written against measured output.
+def _ok_result(stdout="-- Docs: https://docs.pytest.org/\n124 passed in 64.80s"):
+    """A tool call that WORKED. The single largest source of junk: 6,796 of 6,838 tool
+    results in the sample corpus, every one of them recorded as a lesson."""
+    return json.dumps({
+        "sessionId": "s", "type": "user", "timestamp": "t",
+        "message": {"content": [{"type": "tool_result", "is_error": False,
+                                 "content": stdout}]},
+        "toolUseResult": {"stdout": stdout, "stderr": ""},
+    }) + "\n"
+
+
+def test_a_command_that_SUCCEEDED_is_not_a_lesson(db, transcripts):
+    """THE cut. `124 passed` is what is supposed to happen, and a corpus of things going to
+    plan teaches nothing."""
+    _write(transcripts, "s.jsonl", [_ok_result()])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 0
+
+
+def test_a_command_that_FAILED_is_a_lesson(db, transcripts):
+    """The other half, and the half PRD-16 calls first-class. Without this the filter above
+    would be indistinguishable from switching ingest off."""
+    _write(transcripts, "s.jsonl", [_failed_result(
+        "Exit code 23\nrsync: [generator] failed to set times on /srv/app: "
+        "Operation not permitted (1)")])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 1
+    row = db.query(MemoryShard).filter(MemoryShard.source.like("transcript:%")).first()
+    assert "Operation not permitted" in row.text
+
+
+def test_a_tool_result_is_never_mistaken_for_a_person_talking(db, transcripts):
+    """Claude Code delivers EVERY tool result as a user-role record. Left alone they inherit
+    the standing of a human turn, so any result the harness did not flag sails past the prose
+    bar — which is how "Async agent launched successfully" became a lesson 600 times over."""
+    long_output = "Async agent launched successfully. " * 40
+    _write(transcripts, "s.jsonl", [json.dumps({
+        "sessionId": "s", "type": "user", "timestamp": "t",
+        "message": {"content": [{"type": "tool_result", "content": long_output}]},
+    }) + "\n"])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 0
+
+
+@pytest.mark.parametrize("text", [
+    "<task-notification><task-id>abc</task-id><output>" + "x" * 500 + "</output>",
+    "<system-reminder>" + "y" * 500 + "</system-reminder>",
+    "<bash-stdout>" + "z" * 500 + "</bash-stdout>",
+    "This session is being continued from a previous conversation. " + "w" * 500,
+    "Base directory for this skill: /skills/use-railway\n" + "v" * 500,
+])
+def test_the_harness_writing_in_the_user_slot_is_not_the_user(db, transcripts, text):
+    """All of these arrive as `type: "user"` and all are long enough to clear the bar. On the
+    real corpus they were HALF of every surviving message — 19 of them context-compaction
+    summaries of 11k–19k characters, written by the assistant about the session itself."""
+    _write(transcripts, "s.jsonl", [_line(text)])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 0
+
+
+def test_assistant_narration_is_not_a_lesson(db, transcripts):
+    """It is work in progress, and it is where a confident wrong explanation looks exactly
+    like a right one. The durable form of anything worth keeping is what the human then
+    confirmed or corrected."""
+    _write(transcripts, "s.jsonl", [_line(LESSON, type="assistant")])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 0
+
+
+def test_a_persons_own_words_are_a_lesson(db, transcripts):
+    """The one place in a transcript where somebody says what they actually wanted. If this
+    fails the filter has eaten the signal along with the noise."""
+    _write(transcripts, "s.jsonl", [_line(LESSON)])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 1
+
+
+@pytest.mark.parametrize("chatter", [
+    "merged, deploy it",
+    "yes do that",
+    "run the ingest",
+    # **Pins the bar itself.** Everything above is under 40 characters and so would be
+    # dropped by the OLD threshold too — a test that cannot tell 40 from 400 does not
+    # defend the value it was written for. This one sits between the two, and sabotage
+    # found it: reverting MIN_PROSE_CHARS to 40 passed all 53 tests without it.
+    "merged, deploy it and run the audit on prd-12 when the pipeline goes green, then move "
+    "the two finished items over and start on the next one in the list please",
+])
+def test_workflow_chatter_is_below_the_prose_bar(db, transcripts, chatter):
+    """The median user message in the real corpus is 16 characters, and p75 is 49 — a bar of
+    40 waved most of a session's traffic through as lessons."""
+    _write(transcripts, "s.jsonl", [_line(chatter)])
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 0
+
+
+def test_an_enormous_record_is_truncated_rather_than_dropped(db, transcripts):
+    """The corpus contains a single 804,441-character record. Past a few thousand characters
+    a shard is a transcript rather than a lesson — the embedder cannot represent it and the
+    ladder cannot compare it — but the opening is usually still the point."""
+    from app.services.ingest.runner import MAX_EVIDENCE_CHARS
+
+    _write(transcripts, "s.jsonl", [_line(LESSON + " " + "padding " * 200_000)])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 1
+    row = db.query(MemoryShard).filter(MemoryShard.source.like("transcript:%")).first()
+    assert len(row.text) <= MAX_EVIDENCE_CHARS
+    assert "migration guard" in row.text
+
+
+def test_a_realistic_session_yields_a_handful_of_lessons_not_hundreds(db, transcripts):
+    """**The measurement that matters**, and the one no unit test caught before the ingest
+    was run for real. A session is overwhelmingly successful tool calls; a handful of things
+    actually went wrong or were actually decided.
+
+    Asserted as a RATIO of what was seen, so the test cannot pass by the parser silently
+    reading nothing — which is how the original 1,088-shard run looked healthy."""
+    lines = [_ok_result() for _ in range(200)]
+    lines += [_line("<system-reminder>" + "x" * 500 + "</system-reminder>") for _ in range(20)]
+    lines += [_line("merged") for _ in range(20)]
+    lines += [_line(LESSON, sessionId="s")]
+    lines += [_failed_result("Exit code 1\nFrontend tests + typecheck + build  fail  5s")]
+    _write(transcripts, "s.jsonl", lines)
+
+    stats = ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    assert stats["events"] > 200, "the parser must actually be reading the transcript"
+    assert stats["recorded"] == 2, f"expected the 1 decision + 1 failure, got {stats}"
