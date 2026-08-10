@@ -148,7 +148,7 @@ class ClaudeCodeAdapter:
         if kind == "user":
             if isinstance(result, dict) or _has_tool_result(row):
                 kind = TOOL_RESULT_KIND
-            elif _is_injected(text):
+            elif _is_injected(row, text):
                 kind = HARNESS_KIND
 
         return Event(
@@ -204,8 +204,32 @@ def _blocks(row: dict) -> list:
     return blocks if isinstance(blocks, list) else []
 
 
-def _is_injected(text: str) -> bool:
-    """Did the harness write this into the user's slot, rather than a person typing it?"""
+# What the harness records about a message it wrote itself (GRPH-347). A POSITIVE signal,
+# which is what makes it worth having: the text heuristics below are a denylist, so every new
+# skill or slash command is a new opening line nobody has added yet, and the gap only shows
+# up as junk in the corpus weeks later.
+#
+#   isMeta                     — injected content (skill bodies, system-prompt sections)
+#   isCompactSummary           — a context-compaction summary, written ABOUT the session
+#   isVisibleInTranscriptOnly  — shown to the reader, never part of the conversation
+#   promptSource == "system"   — the turn was generated, not typed
+#
+# A genuine turn carries `userType: "external"` and none of these.
+_HARNESS_FLAGS = ("isMeta", "isCompactSummary", "isVisibleInTranscriptOnly")
+
+
+def _is_injected(row: dict, text: str) -> bool:
+    """Did the harness write this into the user's slot, rather than a person typing it?
+
+    Structural flags first, because they are the harness stating what it did rather than us
+    inferring it from wording. The text patterns stay as a FALLBACK — a transcript written
+    by an older Claude Code carries none of these fields, and treating their absence as
+    "a person typed this" would be the same mistake as reading an absence as a clean result.
+    """
+    if any(row.get(f) is True for f in _HARNESS_FLAGS):
+        return True
+    if str(row.get("promptSource") or "") == "system":
+        return True
     if _INJECTED.match(text):
         return True
     head = text.lstrip()[:80].lower()
