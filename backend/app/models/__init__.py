@@ -629,6 +629,12 @@ class Verdict(Base):
     # second door. Flagged rather than refused: on a solo project it is unavoidable and
     # refusing would just stop anyone signing off, but it must never be invisible.
     self_signed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # WHY `self_signed` says what it says (GRPH-327): `self-signed` (overlap found),
+    # `independent` (someone else's fingerprints are on the work), or `unverifiable`
+    # (nothing records who built it). `self_signed: false` alone conflated the last two,
+    # so a verdict on work with no recorded author read as an independent review.
+    separation: Mapped[str] = mapped_column(String, default="", nullable=False,
+                                            server_default="")
     # The item keys that triggered the flag, so "self-signed" is checkable rather than an
     # accusation with nothing behind it.
     self_signed_items: Mapped[list] = mapped_column(JSON, default=list)

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from collections import Counter
 
 from app.models import (
-    CodeNode, GrillDimension, GrillTurn, Item, Prd, PrdVersion, Verdict,
+    CodeNode, Event, GrillDimension, GrillTurn, Item, Prd, PrdVersion, Verdict,
     WorkClassification, utcnow,
 )
 from app.services import items as items_svc
@@ -1569,7 +1569,8 @@ def audit_brief(db: Session, prd: Prd) -> dict:
     verdicts_by_section: dict[str, list] = {}
     for v in verdicts(db, prd):
         verdicts_by_section.setdefault(v.section or "", []).append(
-            {"outcome": v.outcome, "signed_by": v.signed_by, "self_signed": v.self_signed})
+            {"outcome": v.outcome, "signed_by": v.signed_by,
+             "self_signed": v.self_signed, "separation": v.separation})
 
     sections = []
     for s in done["sections"]:
@@ -1753,24 +1754,74 @@ class MalformedVerdict(ValueError):
     """A verdict that cites nothing, or cites something that does not resolve."""
 
 
-def self_signed_against(db: Session, prd: Prd, signer: str) -> list[str]:
-    """Work under audit that this signer also held a claim on (GRPH-253).
+SELF_SIGNED, INDEPENDENT, UNVERIFIABLE = "self-signed", "independent", "unverifiable"
+
+
+def separation_of_duties(db: Session, prd: Prd, *, signer: str,
+                         api_key_id: str | None = None) -> dict:
+    """Whether the signer also built the work under audit (GRPH-253 / GRPH-327).
 
     PRD-12: *"the signer must not be the implementer"* — otherwise sign-off is the worker
     grading their own exam through a second door.
 
-    Compared against `claimed_by`, which is what the PRD names and what survives on a
-    completed item. Known limit, stated rather than hidden: a lease that was released and
-    re-taken leaves only the LAST holder, so an implementer who handed the item on before
-    signing will not be flagged. Closing that needs the event log, and a partial check that
-    is honest about its edge is worth more than a total one that quietly is not.
+    **Three answers, not two.** The original returned a bare "did the signer claim any of
+    this", and on a PRD where nobody claimed anything that reported False — which reads as
+    "someone else built it" when it means "nobody recorded who did". Those are opposite
+    claims and the quiet one is the reassuring one. It failed exactly that way on PRD-12's
+    own audit: 0 of 27 items carried a claimant, so 14 verdicts signed by the author of the
+    work came back clean.
+
+    Two signals, strongest first:
+
+    - **`claimed_by`**, which the PRD names. Precise while a lease is held, but optional,
+      and it keeps only the LAST holder.
+    - **The event log**, which records an actor on every accepted mutation and cannot be
+      skipped by working without a lease. Matched on `actor_id` against the signing key,
+      because two agents can share a display name and a key id cannot be borrowed by
+      accident.
+
+    `unverifiable` only when NEITHER knows anything — and it must never render as a pass.
     """
-    if not (signer or "").strip():
-        return []
-    return sorted(
-        it.key for it in items_svc.list_items(db, project_id=prd.project_id)
-        if it.prd_id == prd.id and it.claimed_by == signer
-    )
+    signer = (signer or "").strip()
+    mine = [it for it in items_svc.list_items(db, project_id=prd.project_id)
+            if it.prd_id == prd.id]
+    ids = {it.id for it in mine} | {it.key for it in mine}
+    by_id = {it.id: it.key for it in mine}
+    by_id.update({it.key: it.key for it in mine})
+
+    claimed = {it.key for it in mine if it.claimed_by}
+    overlap = {it.key for it in mine if signer and it.claimed_by == signer}
+    basis = "claim" if overlap else ""
+
+    # The event log catches an implementer who never took a lease, which is the ordinary
+    # path for a single agent and was the entire population on PRD-12.
+    rows = db.scalars(select(Event).where(
+        Event.target_type == "item", Event.target_id.in_(ids))).all() if ids else []
+    touched_by_someone = {e.target_id for e in rows}
+    if not overlap and (signer or api_key_id):
+        label = signer.removeprefix("agent:")
+        from_events = {
+            by_id.get(e.target_id, e.target_id) for e in rows
+            if (api_key_id and e.actor_id == api_key_id)
+            or (label and e.actor_label in (label, signer))
+        }
+        if from_events:
+            overlap, basis = from_events, "event-log"
+
+    if overlap:
+        status = SELF_SIGNED
+    elif claimed or touched_by_someone:
+        # Somebody's fingerprints are on this work and they are not the signer's.
+        status, basis = INDEPENDENT, basis or ("claim" if claimed else "event-log")
+    else:
+        status, basis = UNVERIFIABLE, "none"
+    return {"status": status, "items": sorted(overlap), "basis": basis}
+
+
+def self_signed_against(db: Session, prd: Prd, signer: str) -> list[str]:
+    """Back-compat shim: the items a signer also worked on, or empty."""
+    out = separation_of_duties(db, prd, signer=signer)
+    return out["items"] if out["status"] == SELF_SIGNED else []
 
 
 def record_verdict(
@@ -1814,7 +1865,8 @@ def record_verdict(
             # the same way a citation to nothing is: there is no intent to check it against.
             raise MalformedVerdict(f"no such section in the baseline: {section}")
 
-    overlap = self_signed_against(db, prd, signed_by)
+    sep = separation_of_duties(db, prd, signer=signed_by, api_key_id=api_key_id)
+    overlap = sep["items"]
     base = baseline_of(db, prd.id)
     row = Verdict(
         prd_id=prd.id,
@@ -1825,8 +1877,9 @@ def record_verdict(
         citations=list(citations),
         signed_by=signed_by,
         api_key_id=api_key_id,
-        self_signed=bool(overlap),
+        self_signed=sep["status"] == SELF_SIGNED,
         self_signed_items=overlap,
+        separation=sep["status"],
     )
     db.add(row)
     db.commit()

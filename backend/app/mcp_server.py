@@ -684,6 +684,7 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {"id": {"type": "integer"}, "outcome": {"type": "string"},
                            "self_signed": {"type": "boolean"},
+                           "separation": {"type": "string"},
                            "baseline_version": {"type": "string"}},
         },
         "annotations": {"readOnlyHint": False, "destructiveHint": False,
@@ -1179,7 +1180,7 @@ def _verdict_dicts(rows) -> list[dict]:
         {"id": v.id, "outcome": v.outcome, "reasoning": v.reasoning,
          "citations": v.citations or [], "signed_by": v.signed_by,
          "baseline_version": v.baseline_version, "self_signed": v.self_signed,
-         "self_signed_items": v.self_signed_items or []}
+         "separation": v.separation, "self_signed_items": v.self_signed_items or []}
         for v in rows
     ]
 
@@ -1718,7 +1719,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             # payload fails identically. The message names which citation did not resolve.
             raise errors.Validation(str(e))
         return {"id": v.id, "outcome": v.outcome, "self_signed": v.self_signed,
-                "self_signed_items": v.self_signed_items or [],
+                "separation": v.separation, "self_signed_items": v.self_signed_items or [],
                 "baseline_version": v.baseline_version}
     if name == "close_prd":
         prd = _writable_prd(db, args["prd_id"], allowed)
