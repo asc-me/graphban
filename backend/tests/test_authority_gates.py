@@ -126,6 +126,14 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # section dispositioned), it grants no permission and crosses no tenant boundary,
         # and it is scope-gated like every other write.
         "prd_acceptance", "request_rebaseline", "submit_verdict", "close_prd",
+        # PRD-16's learning loop (GRPH-310). Both QUALITY. `learning_loop` is read-only.
+        # `review_recommendation` is the interesting one: it is the human boundary itself,
+        # and an agent reaching it looks like self-approval until you notice that approving
+        # WRITES NOTHING — a shared_surgery artifact is only ever proposed, and the file
+        # additive class installs into directories the machine already owns. It decides
+        # "is this worth keeping", never "am I allowed", and it is scope-gated like every
+        # other write. If that ever stops being true this entry should be revisited first.
+        "learning_loop", "review_recommendation",
     }, "the agent-reachable surface changed — is the new tool a quality gate or an authority one?"
 
 

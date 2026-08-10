@@ -12,6 +12,7 @@ from app.db import SessionLocal, init_db
 from app.version import __version__
 from app.mcp_server import router as mcp_router
 from app.routers import (
+    artifacts,
     admin,
     agent,
     analytics,
@@ -103,6 +104,7 @@ app.include_router(projects.router, prefix=API)
 app.include_router(items.router, prefix=API)
 app.include_router(requests.router, prefix=API)
 app.include_router(memory.router, prefix=API)
+app.include_router(artifacts.router, prefix=API)
 app.include_router(apikeys.router, prefix=API)
 app.include_router(agent.router, prefix=API)
 app.include_router(assistant.router, prefix=API)
