@@ -35,6 +35,16 @@ until both database engines pass — SQLite and Postgres have separate vector-se
 implementations (`services/memory.py`, `services/code_graph.py`) and only the
 Postgres run executes the real `<=>` SQL and migrations.
 
+**Then run it against real data before calling it done.** Not a bonus pass — the
+highest-yield check available, and the one a green suite cannot substitute for. On
+2026-08-08/09 it found four defects in a row that every test missed: a completeness
+pass reporting `## Decisions from grilling` as a missing feature, a close report
+telling a PM that "Problem" and "Goals" were never delivered, a classifications view
+returning an empty list where the truth was "ten items nobody looked at", and a
+separation-of-duties check reporting a clean pass because nothing recorded who did
+the work. Each looked correct in tests and was obviously wrong in the first real
+output. Deploy, then read what it actually says about a real PRD.
+
 ## Invariants (violating these is the review comment you'll get)
 
 - **One service layer.** MCP tools, REST routers, and anything new call the same
@@ -69,6 +79,16 @@ Postgres run executes the real `<=>` SQL and migrations.
   types before concluding it can't do the thing. Reimplementing is allowed, but
   the reason goes in a comment (see `_validate_args` in `mcp_server.py`, which
   says why it hand-rolls schema checking).
+- **An absence must not read as a clean result.** When you report nothing — an empty
+  list, a `false`, a zero, a null — ask whether it can also mean "nobody looked". If
+  it can, it needs a third answer, because the quiet reading is always the
+  reassuring one. `baseline_drift` returns `governed: False` rather than 0 for a PRD
+  with no baseline; `completeness` separates `absent` from `undelivered`;
+  `evidence_rollup` reports `unknown` for an item that claimed no touchpoints;
+  `separation` distinguishes `independent` from `unverifiable`. That distinction was
+  named once and then applied correctly four times unprompted — and every place it
+  was NOT named grew the same defect independently, five times in one PRD. Naming it
+  is what makes it travel; judgement alone did not.
 - **Break it on purpose before you believe the tests.** For each load-bearing
   claim, revert that one behaviour and re-run: if the suite still passes, the
   test asserts something weaker than it reads. Then restore and note in the PR
