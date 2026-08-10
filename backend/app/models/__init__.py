@@ -377,6 +377,17 @@ class ArtifactRecommendation(Base):
     status: Mapped[str] = mapped_column(String, default="queued", index=True)
     supersedes_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     graded_by: Mapped[str] = mapped_column(String, default="", nullable=False)
+    # ---- drafting (GRPH-308) ------------------------------------------------------------
+    # The artifact ITSELF — the thing someone could install today, not a summary of one.
+    draft: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    draft_path: Mapped[str] = mapped_column(String, default="", nullable=False)
+    # `file_additive` may install on approval; `shared_surgery` never writes. A property of
+    # the TARGET, not of the artifact's quality — a perfect edit to AGENTS.md is still an
+    # edit to a file other things live in.
+    install_class: Mapped[str] = mapped_column(String, default="", nullable=False)
+    # sha256 of (statement + evidence): an unchanged lesson set costs zero model calls
+    # across runs, which is what makes a scheduled pass affordable to leave switched on.
+    draft_hash: Mapped[str] = mapped_column(String, default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
