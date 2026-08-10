@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ChevronDown, Eye, History, Link2, ListChecks, MessageCircleQuestion, Save, Sparkles } from "lucide-react";
+import { ArrowLeft, ChevronDown, Eye, History, Link2, ListChecks, MessageCircleQuestion, Save, ShieldQuestion, Sparkles } from "lucide-react";
 import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -23,6 +23,7 @@ import { AssistantPanel } from "@/features/assistant/AssistantPanel";
 import { GrillPanel } from "./GrillPanel";
 import { PRD_SETTABLE_STATUSES, PRD_STATUS_META } from "./meta";
 import { ApprovedIsEarned, GrillProgress } from "./GrillProgress";
+import { AcceptancePanel } from "./AcceptancePanel";
 import { IntentDiff } from "./IntentDiff";
 
 const AI_COMMANDS = [
@@ -42,7 +43,7 @@ export function PrdEditorView() {
 
   const [title, setTitle] = React.useState("");
   const [body, setBody] = React.useState("");
-  const [rightTab, setRightTab] = React.useState<"preview" | "history" | "coverage" | "grill" | "assistant">("preview");
+  const [rightTab, setRightTab] = React.useState<"preview" | "history" | "coverage" | "grill" | "assistant" | "acceptance">("preview");
   const [diffVersion, setDiffVersion] = React.useState<PrdVersion | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [aiBusy, setAiBusy] = React.useState<string | null>(null);
@@ -156,6 +157,7 @@ export function PrdEditorView() {
             <TabBtn active={rightTab === "assistant"} onClick={() => setRightTab("assistant")} icon={<Sparkles size={12} />} label="Assistant" />
             <TabBtn active={rightTab === "grill"} onClick={() => setRightTab("grill")} icon={<MessageCircleQuestion size={12} />} label="Grill" />
             <TabBtn active={rightTab === "coverage"} onClick={() => setRightTab("coverage")} icon={<ListChecks size={12} />} label="Coverage" />
+            <TabBtn active={rightTab === "acceptance"} onClick={() => setRightTab("acceptance")} icon={<ShieldQuestion size={12} />} label="Acceptance" />
             <TabBtn active={rightTab === "history"} onClick={() => setRightTab("history")} icon={<History size={12} />} label="History" />
           </div>
         </div>
@@ -186,6 +188,8 @@ export function PrdEditorView() {
             </div>
           ) : rightTab === "coverage" ? (
             <CoveragePanel prdId={id} onDecomposed={refresh} />
+          ) : rightTab === "acceptance" ? (
+            <AcceptancePanel prdId={id} />
           ) : (
             <VersionHistory
               versions={versions}

@@ -662,3 +662,60 @@ export interface PublicSubmitResponse {
   request: RequestItem;
   duplicates: DuplicateHit[];
 }
+
+// ---- Delivery acceptance (PRD-12) ------------------------------------------------------
+// Shapes are mirrored from the service, not re-derived: `close_report` is the one surface
+// that reads the ORIGINAL baseline rather than the governing one, which is what lets a
+// reviewer see intent that a rebaseline removed.
+export interface CloseReportSection {
+  section: string;
+  current_title: string;
+  introduced_at: string;
+  dropped_at: string | null;
+  framing: boolean;
+  fate: "delivered" | "undelivered" | "dropped" | "framing";
+  delivered_items: string[];
+  planned_items: string[];
+  history: { version: string; change: string; from?: string; to?: string }[];
+  disposition: { section: string; disposition: string; target: string | null; reason: string } | null;
+}
+
+export interface CloseReport {
+  governed: boolean;
+  original_version: string | null;
+  governing_version?: string;
+  chain?: { version: string; reason_type: string; reason: string }[];
+  sections: CloseReportSection[];
+  dropped: string[];
+  never_delivered?: string[];
+  expanded_scope: string[];
+  added_after_approval: { id: string; status: string; section: string; inferred: boolean }[];
+  drift?: { accumulated: number; current: number; total: number };
+  closed: {
+    closed_at: string; closed_by: string; mode: string; baseline_version: string;
+    verdict: string; disclosure: string | null;
+    dispositions: { section: string; disposition: string; target: string | null; reason: string }[];
+  } | null;
+}
+
+export interface EvidenceRollup {
+  governed: boolean;
+  baseline_version: string | null;
+  sections: {
+    section: string;
+    delivered_items: string[];
+    receipts: Record<string, number>;
+    falsifiable: number;
+    unfalsifiable: number;
+    corroboration: "corroborated" | "partial" | "unknown";
+  }[];
+  unsupported: string[];
+  uncorroborated: string[];
+}
+
+export interface AuditCoverage {
+  governed: boolean;
+  covered: string[];
+  uncovered: string[];
+  complete?: boolean;
+}
