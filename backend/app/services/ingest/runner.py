@@ -25,6 +25,18 @@ logger = logging.getLogger(__name__)
 # setting: we do not know the right value yet, and a slider is how you avoid finding out.
 MIN_EVIDENCE_CHARS = 40
 
+# Prose has to clear a far higher bar than a failure does, and the asymmetry is the point.
+# A two-line stderr is a complete lesson; two lines of prose is "on it" or "let me check
+# that". 400 is the observed floor for a message that states a decision rather than
+# narrating one — measured against the real corpus, not chosen for roundness.
+MIN_PROSE_CHARS = 400
+
+# And an upper bound, because the corpus contains a single 804,441-character record. Past a
+# few thousand characters a shard is a transcript rather than a lesson: the embedder cannot
+# represent it, and the ladder cannot compare it to anything. Truncated rather than dropped
+# — the opening of a long message is usually the point of it.
+MAX_EVIDENCE_CHARS = 4000
+
 
 def ingest(db: Session, adapter: IngestAdapter, *, project_id: str = "core",
            limit_sources: int | None = None) -> dict:
@@ -69,6 +81,46 @@ def ingest(db: Session, adapter: IngestAdapter, *, project_id: str = "core",
     return stats
 
 
+def is_evidence(ev: Event) -> bool:
+    """Does this event carry something worth learning from (GRPH-345)?
+
+    **The filter exists because the first real run recorded 1,088 shards from ONE
+    transcript** — pytest summaries, branch deletions, assertion fragments. PRD-16 says the
+    loop exists so the corpus "does not become landfill", and at that rate it WAS the
+    landfill. GRPH-342 was the immediate cause: teaching the adapter to read tool results
+    recovered the entire failure signal, but it piped every SUCCESSFUL command's stdout in
+    alongside it.
+
+    Three rules, and each is a claim about where lessons actually come from:
+
+    - **A tool result is evidence when it FAILED.** Successful stdout is the normal state of
+      work — `124 passed` is what is supposed to happen, and a corpus of things going to plan
+      teaches nothing. This is the cut that does the heavy lifting.
+    - **A user message is evidence** once it is long enough to state something. A transcript's
+      corrections, constraints and rejected approaches all arrive here; it is the one place
+      somebody says what they actually wanted.
+    - **Assistant prose is not evidence.** It is narration of work in progress, and it is
+      also where a confident wrong explanation looks exactly like a right one. The durable
+      form of anything worth keeping is what the human then confirmed or corrected — which
+      the rule above already captures.
+
+    Deliberately generic, driven by fields every adapter fills. Putting it here rather than
+    in `claude_code.py` keeps ONE seam to test and stops a second harness quietly inventing
+    a different answer to the same question.
+    """
+    text = (ev.text or "").strip()
+    outcome = (ev.metadata or {}).get("outcome", "unknown")
+
+    if outcome == "failed":
+        return len(text) >= MIN_EVIDENCE_CHARS
+    if outcome == "ok":
+        return False
+    # No tool result at all: prose, and only a person's counts.
+    if ev.kind == "user":
+        return len(text) >= MIN_PROSE_CHARS
+    return False
+
+
 def _record(db: Session, mem_svc, ev: Event, project_id: str) -> bool:
     """One event to a candidate shard, or nothing.
 
@@ -80,8 +132,8 @@ def _record(db: Session, mem_svc, ev: Event, project_id: str) -> bool:
     Text is NOT scrubbed here — `add_memory` does it on the write path, so every producer
     inherits it rather than each remembering to ask (GRPH-305).
     """
-    text = (ev.text or "").strip()
-    if len(text) < MIN_EVIDENCE_CHARS:
+    text = (ev.text or "").strip()[:MAX_EVIDENCE_CHARS]
+    if not is_evidence(ev):
         return False
     try:
         mem_svc.add_memory(
