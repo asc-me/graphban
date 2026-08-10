@@ -266,18 +266,96 @@ def test_the_source_names_the_session_it_came_from(db, transcripts):
     assert row.source == "transcript:claude-code:sess-abc"
 
 
-def test_a_tool_call_with_an_exit_code_is_parsed(db, transcripts):
-    """A lesson about a command that FAILED is worth more than one about a command that
-    ran, so the exit code is a first-class field rather than buried in text."""
+def _tool_call(result, name="Bash"):
+    """A record in the shape a REAL Claude Code transcript uses. The first version of these
+    tests invented `{"toolUseResult": {"exitCode": 1}}`, which no harness produces — so it
+    passed while the parser extracted nothing from 18,167 real tool calls (GRPH-342)."""
+    return json.dumps({
+        "sessionId": "s", "type": "assistant", "timestamp": "t",
+        "message": {"content": [{"type": "tool_use", "name": name}]},
+        "toolUseResult": result,
+    }) + "\n"
+
+
+def test_a_tool_call_is_parsed(db, transcripts):
+    adapter = ClaudeCodeAdapter(root=str(transcripts))
+    path = _write(transcripts, "s.jsonl", [_tool_call({"stdout": "done", "stderr": ""})])
+
+    events, _ = adapter.parse(path, None)
+    assert events[0].tool_name == "Bash"
+
+
+@pytest.mark.parametrize("result,outcome", [
+    ({"stdout": "ok", "stderr": ""}, "ok"),
+    ({"stdout": "", "stderr": "command not found"}, "failed"),
+    ({"stdout": "", "stderr": "", "interrupted": True}, "failed"),
+    # The gloss is present ONLY when the command returned non-zero, so it IS the signal.
+    ({"stdout": "", "stderr": "", "returnCodeInterpretation": "No matches found"}, "failed"),
+    ({}, "unknown"),
+])
+def test_the_outcome_is_derived_from_what_the_harness_actually_records(db, transcripts,
+                                                                       result, outcome):
+    """PRD-16 makes the failure signal first-class — "a lesson about a command that FAILED
+    is worth more than one about a command that ran". Claude Code emits no numeric exit
+    code, so `exit_code` alone left every real tool call reading as untroubled."""
+    adapter = ClaudeCodeAdapter(root=str(transcripts))
+    path = _write(transcripts, "s.jsonl", [_tool_call(result)])
+
+    events, _ = adapter.parse(path, None)
+    assert events[0].metadata["outcome"] == outcome
+
+
+def test_a_tool_result_record_is_not_dropped(db, transcripts):
+    """The deeper half of GRPH-342, and invisible without real data. A tool CALL and its
+    RESULT are separate records — 910 results against 18,173 calls in the real corpus — and
+    a result carries neither text nor a tool name. Requiring one dropped every result
+    record, and with it the entire failure signal.
+
+    On 74 real transcripts this recovered ~15,700 events and surfaced 507 failed commands
+    where the count had been zero."""
     adapter = ClaudeCodeAdapter(root=str(transcripts))
     path = _write(transcripts, "s.jsonl", [json.dumps({
-        "sessionId": "s", "type": "assistant", "timestamp": "t",
-        "message": {"content": [{"type": "tool_use", "name": "Bash"}]},
-        "toolUseResult": {"exitCode": 1},
+        "sessionId": "s", "type": "user", "timestamp": "t",
+        "toolUseResult": {"stdout": "", "stderr": "fatal: not a git repository"},
     }) + "\n"])
 
     events, _ = adapter.parse(path, None)
-    assert events[0].tool_name == "Bash" and events[0].exit_code == 1
+    assert len(events) == 1
+    assert events[0].metadata["outcome"] == "failed"
+    assert "not a git repository" in events[0].text
+
+
+def test_stderr_leads_the_result_text(db, transcripts):
+    """A command that failed is the higher-value signal, and burying it under kilobytes of
+    successful stdout is how it gets lost."""
+    adapter = ClaudeCodeAdapter(root=str(transcripts))
+    path = _write(transcripts, "s.jsonl", [json.dumps({
+        "sessionId": "s", "type": "user", "timestamp": "t",
+        "toolUseResult": {"stdout": "x" * 900, "stderr": "permission denied"},
+    }) + "\n"])
+
+    events, _ = adapter.parse(path, None)
+    assert events[0].text.startswith("stderr: permission denied")
+
+
+def test_a_missing_result_is_unknown_not_success(db, transcripts):
+    """The sixth instance of the class the AGENTS.md default names: `None` cannot mean both
+    "it succeeded" and "nothing recorded whether it did"."""
+    adapter = ClaudeCodeAdapter(root=str(transcripts))
+    path = _write(transcripts, "s.jsonl", [_line(LESSON)])
+
+    events, _ = adapter.parse(path, None)
+    assert events[0].metadata["outcome"] == "unknown"
+    assert events[0].exit_code is None
+
+
+def test_a_numeric_exit_code_is_still_read_when_a_harness_emits_one(db, transcripts):
+    """The field stays because the Event shape is shared and other harnesses do provide it."""
+    adapter = ClaudeCodeAdapter(root=str(transcripts))
+    path = _write(transcripts, "s.jsonl", [_tool_call({"exitCode": 1, "stderr": "boom"})])
+
+    events, _ = adapter.parse(path, None)
+    assert events[0].exit_code == 1 and events[0].metadata["outcome"] == "failed"
 
 
 def test_kind_is_a_plain_string_so_a_new_harness_needs_no_core_change(db, transcripts):
