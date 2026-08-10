@@ -394,6 +394,51 @@ class ArtifactRecommendation(Base):
     )
 
 
+class ArtifactUsage(Base):
+    """That a generated artifact was used, and when (GRPH-309 / PRD-16).
+
+    Only ever written by something that OBSERVED a use — a skill invoked by name, an agent
+    spawned, a generated hook reporting its own firing. Never inferred from silence.
+
+    That constraint is the whole design. PRD-16: *"A fabricated signal here deletes working
+    hooks."* An artifact that works produces no evidence it works — a rule everyone follows
+    is mentioned least of all — so absence of a row here means "not observed", never "not
+    used", and the staleness sweep must only ever run against artifacts whose absence of use
+    is genuinely observable.
+    """
+
+    __tablename__ = "artifact_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    recommendation_id: Mapped[int] = mapped_column(Integer, index=True)
+    # skill invocation | agent spawn | hook self-report. Named so a later reader can tell
+    # a first-party signal from a self-reported one without guessing.
+    signal: Mapped[str] = mapped_column(String, default="")
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class ArtifactTombstone(Base):
+    """A retired artifact, and everything needed to bring it back (GRPH-309 / PRD-16).
+
+    *"Retirement archives with a tombstone recording original path, use count, and a
+    one-command restore. Never an unrecoverable delete."*
+
+    The contents are kept in full. A retirement that discarded them would make the decision
+    irreversible on the strength of a usage count — and a usage count is exactly the kind of
+    evidence that turns out to have been measuring the wrong thing.
+    """
+
+    __tablename__ = "artifact_tombstones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    recommendation_id: Mapped[int] = mapped_column(Integer, index=True)
+    path: Mapped[str] = mapped_column(String, default="")
+    contents: Mapped[str] = mapped_column(Text, default="")
+    use_count: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str] = mapped_column(Text, default="")
+    retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class IngestWatermark(Base):
     """How far ingest got in one source (GRPH-304 / PRD-16).
 
