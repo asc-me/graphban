@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -29,9 +30,42 @@ def _includes_global(db: Session, project_id: str) -> bool:
     return bool(project and project.share_global_memory)
 
 
+def age_state(shard: MemoryShard, *, now: datetime | None = None) -> str:
+    """`fresh` | `expired` | `stale` — the decay clock (GRPH-306 / PRD-16).
+
+    Computed from `created_at` rather than stored, so it cannot drift out of step with the
+    row and there is no sweep to forget to run.
+
+    Two different fates, because they mean different things:
+
+    - a CANDIDATE nothing has repeated in `CANDIDATE_EXPIRY_DAYS` has gone cold — it was
+      never corroborated and is dropped from retrieval;
+    - a PUBLISHED shard with no fresh support in `PUBLISHED_STALE_DAYS` is `stale`-FLAGGED,
+      never hidden. Something a human stood behind does not stop being true because nobody
+      restated it lately, and silently retiring it would delete the corpus's oldest and
+      most-settled knowledge first.
+    """
+    created = shard.created_at
+    if created is None:
+        return "fresh"
+    now = now or datetime.now(timezone.utc)
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    days = (now - created).days
+    if shard.status == "candidate" and days >= CANDIDATE_EXPIRY_DAYS:
+        return "expired"
+    if shard.status == "published" and days >= PUBLISHED_STALE_DAYS:
+        return "stale"
+    return "fresh"
+
+
 def list_shards(
-    db: Session, project_id: str | None = None, status: str | None = None
+    db: Session, project_id: str | None = None, status: str | None = None,
+    include_expired: bool = False,
 ) -> list[MemoryShard]:
+    """`include_expired` exists for the review UI and for tests, so an expired candidate is
+    still REACHABLE — PRD-16 asks that it stop appearing in retrieval "without being
+    hard-deleted", and a row nothing can fetch is deleted in every way that matters."""
     stmt = select(MemoryShard)
     if project_id:
         if _includes_global(db, project_id):
@@ -43,7 +77,10 @@ def list_shards(
     if status is not None:
         stmt = stmt.where(MemoryShard.status == status)
     stmt = stmt.order_by(MemoryShard.created_at.desc())
-    return list(db.scalars(stmt).all())
+    rows = list(db.scalars(stmt).all())
+    if include_expired:
+        return rows
+    return [r for r in rows if age_state(r) != "expired"]
 
 
 def add_memory(
@@ -164,6 +201,58 @@ def _best_match(vec: list[float], pool: list[tuple[MemoryShard, list[float]]]) -
     return best, score
 
 
+# The promotion ladder (GRPH-306 / PRD-16). Named constants, deliberately, and NOT project
+# settings: we do not know the right values yet, and a slider is how you avoid finding out.
+# Pick one number; if it is wrong somebody hits it and we learn something real.
+MIN_DISTINCT_SOURCES = 3        # independent sessions before recurrence counts as evidence
+MIN_DISTINCT_SOURCES_CORRECTION = 2  # corrections earn trust faster — they are self-punishing
+CANDIDATE_EXPIRY_DAYS = 45      # a candidate nothing has repeated has gone cold
+PUBLISHED_STALE_DAYS = 120      # a published shard nothing corroborates any more
+
+
+# Sources that identify a genuine ORIGIN rather than a category. `source` doubles as both:
+# an ingested event carries `transcript:<harness>:<session>`, while an ordinary write
+# carries `global` or `from <item>` — a bucket every producer shares.
+_ORIGIN_PREFIXES = ("transcript:",)
+
+
+def _origin_of(shard: MemoryShard) -> str | None:
+    """The session this shard came from, or None when nothing records one.
+
+    None matters more than it looks. Counting `global` as an origin would collapse every
+    agent write in a project into one apparent session, and the ladder would then refuse to
+    promote anything an agent learned — a shared PLACEHOLDER is not evidence of a shared
+    source, and reading it as one is the same mistake as reading an absence as a clean
+    result.
+    """
+    src = shard.source or ""
+    return src if any(src.startswith(p) for p in _ORIGIN_PREFIXES) else None
+
+
+def _distinct_origins(group) -> int | None:
+    """Distinct sessions across a cluster, or None when the signal is not available.
+
+    All-or-nothing on purpose: if any member's origin is unknown, the count is a lower
+    bound rather than a fact, and vetoing on a lower bound holds back lessons that may well
+    be independent."""
+    origins = [_origin_of(g) for g in group]
+    if not origins or any(o is None for o in origins):
+        return None
+    return len(set(origins))
+
+
+def _is_correction(shard: MemoryShard) -> bool:
+    """Correction-class lessons earn trust faster (PRD-16).
+
+    A lesson learned from something GOING WRONG carries its own evidence: the failure
+    happened, and nobody writes down a correction they did not need. That is a different
+    epistemic footing from a general observation, which is why the gate relaxes rather
+    than being uniformly lowered."""
+    text = f"{shard.source} {shard.origin} {shard.text}".lower()
+    return any(w in text for w in ("fix", "bug", "broke", "regression", "failed",
+                                   "corrected", "mistake", "wrong"))
+
+
 def _score_shard(
     cv: list[float],
     published: list[tuple[MemoryShard, list[float]]],
@@ -171,6 +260,8 @@ def _score_shard(
     support: int,
     human_derived: bool,
     corroborating: list[tuple[MemoryShard, list[float]]] | None = None,
+    distinct_sources: int | None = None,
+    correction: bool = False,
 ) -> tuple[str, float, list[str], str | None]:
     """Score one candidate embedding into (suggestion, confidence, reasons, duplicate_of).
 
@@ -213,6 +304,22 @@ def _score_shard(
         suggestion, confidence = "review", 0.3
         reasons.append("novel — no strong signal either way")
 
+    # Distinct-source recurrence (GRPH-306). A VETO on an accept, never a new accept path —
+    # PRD-16's success metric requires the scorer's verdicts to be unchanged for inputs that
+    # lack the new signal, and a veto is the only shape that guarantees that.
+    #
+    # The failure it closes: `support` counts corroborating candidates, and one long session
+    # restating itself produces as many as three independent ones. Recurrence within a single
+    # source is repetition, not evidence, and promoting on it would let a lesson that happened
+    # once look like a pattern.
+    if suggestion == "accept" and distinct_sources is not None and support >= 2:
+        need = MIN_DISTINCT_SOURCES_CORRECTION if correction else MIN_DISTINCT_SOURCES
+        if distinct_sources < need:
+            suggestion, confidence = "review", min(confidence, 0.45)
+            reasons.append(
+                f"recurs {support}× but across only {distinct_sources} source(s) — "
+                f"repetition within one session is not independent evidence")
+
     return suggestion, round(confidence, 3), reasons, duplicate_of
 
 
@@ -234,16 +341,20 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
 
     # Recurrence: how many candidates each one clusters with (reuse AL-50 clustering).
     cluster_size: dict[str, int] = {}
+    cluster_sources: dict[str, int] = {}
     for group in cluster_candidates(db, project_id=project_id):
+        distinct = _distinct_origins(group)
         for s in group:
             cluster_size[s.id] = len(group)
+            cluster_sources[s.id] = distinct
 
     out: list[dict] = []
     for c in cands:
         support = cluster_size.get(c.id, 1)
         human_derived = c.origin.startswith("user:") or "grill" in c.origin
         suggestion, confidence, reasons, duplicate_of = _score_shard(
-            list(c.embedding), published, rejected, support, human_derived, corroborating
+            list(c.embedding), published, rejected, support, human_derived, corroborating,
+            distinct_sources=cluster_sources.get(c.id), correction=_is_correction(c),
         )
         out.append({
             "shard": c,
@@ -369,15 +480,17 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
     published = [(s, list(s.embedding)) for s in list_shards(db, project_id=shard.project_id, status="published") if s.embedding is not None]
     rejected = [(s, list(s.embedding)) for s in list_shards(db, project_id=shard.project_id, status="rejected") if s.embedding is not None]
     # Recurrence: the size of the candidate cluster this shard belongs to (AL-50).
-    support = 1
+    support, distinct_sources = 1, None
     for group in cluster_candidates(db, project_id=shard.project_id):
         if any(s.id == shard.id for s in group):
             support = len(group)
+            distinct_sources = _distinct_origins(group)
             break
     human_derived = shard.origin.startswith("user:") or "grill" in shard.origin
     suggestion, confidence, reasons, duplicate_of = _score_shard(
         list(shard.embedding), published, rejected, support, human_derived,
         _corroboration_pool(db, shard.project_id),
+        distinct_sources=distinct_sources, correction=_is_correction(shard),
     )
     source = "similarity"
 
