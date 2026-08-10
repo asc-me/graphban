@@ -94,6 +94,11 @@ def _record(db: Session, mem_svc, ev: Event, project_id: str) -> bool:
         )
         return True
     except Exception:  # noqa: BLE001 — one bad row must not end the run
+        # THE rollback, and it is the whole of "must not end the run". Without it a failed
+        # write leaves the session in a poisoned state and EVERY later event dies with
+        # PendingRollbackError — so a single bad row still ends the run, just noisily
+        # instead of cleanly, and the stats report zero while looking like they tried.
+        db.rollback()
         logger.warning("ingest: could not record an event from %s", ev.session_id,
                        exc_info=True)
         return False

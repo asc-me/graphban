@@ -198,6 +198,38 @@ def test_a_corrupted_record_is_skipped_and_the_run_completes(db, transcripts):
     assert stats["recorded"] == 2, "the good records on both sides must survive"
 
 
+def test_one_failed_WRITE_does_not_kill_the_rest_of_the_run(db, transcripts, monkeypatch):
+    """The parse-failure case above covers a malformed record. This covers a failed WRITE,
+    which is a different animal: a rejected insert leaves the session poisoned, so without
+    a rollback every later event dies with PendingRollbackError and the run ends anyway —
+    noisily rather than cleanly, reporting zero while looking like it tried.
+
+    Found on the first real ingest attempt: one row was rejected and all 40k events behind
+    it failed in cascade."""
+    from app.services import memory as mem_svc
+
+    calls = {"n": 0}
+    real = mem_svc.add_memory
+    db.add(MemoryShard(id="m_taken", text="already here", project_id="core"))
+    db.commit()
+
+    def flaky(db_, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # A failed FLUSH, which is what actually happens: a rejected INSERT leaves the
+            # session unusable. A failed SELECT does not, which is why the first version of
+            # this test passed with the rollback removed.
+            db_.add(MemoryShard(id="m_taken", text="duplicate", project_id="core"))
+            db_.commit()
+        return real(db_, **kw)
+
+    monkeypatch.setattr(mem_svc, "add_memory", flaky)
+    _write(transcripts, "s.jsonl", [_line(LESSON + f" Number {i}.") for i in range(4)])
+
+    stats = ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+    assert stats["recorded"] == 3, "the three good rows after the failure must survive"
+
+
 def test_a_vanished_root_is_an_empty_run_not_a_crash(db, tmp_path):
     """The common case on a server is that nobody has ever run the harness there, and that
     is not an error condition.
