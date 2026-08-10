@@ -89,7 +89,13 @@ class ClaudeCodeAdapter:
 
         text = _text_of(row.get("message") or row)
         tool = _tool_of(row)
-        if not text and not tool:
+        result = row.get("toolUseResult")
+        # A tool RESULT is its own record, separate from the call that produced it — 910
+        # results against 18,173 calls in the real corpus. Requiring text or a tool name
+        # dropped every one of them, and with them the entire failure signal (GRPH-342).
+        if isinstance(result, dict) and not text:
+            text = _result_text(result)
+        if not text and not tool and not isinstance(result, dict):
             return None
         return Event(
             session_id=str(row.get("sessionId") or Path(source).stem),
@@ -102,7 +108,7 @@ class ClaudeCodeAdapter:
             text=text,
             tool_name=tool,
             exit_code=_exit_of(row),
-            metadata={"source": source},
+            metadata={"source": source, "outcome": _outcome_of(row)},
         )
 
 
@@ -122,6 +128,20 @@ def _text_of(message) -> str:
     return ""
 
 
+def _result_text(result: dict) -> str:
+    """What a tool result contributes to a lesson.
+
+    `stderr` first and deliberately: a command that FAILED is the higher-value signal, and
+    burying it under kilobytes of successful stdout is how it gets lost. Both are capped —
+    a full build log is not a lesson, and the promotion ladder scores text it can compare.
+    """
+    err = str(result.get("stderr") or "").strip()
+    if err:
+        return f"stderr: {err[:600]}"
+    out = str(result.get("stdout") or "").strip()
+    return f"stdout: {out[:600]}" if out else ""
+
+
 def _tool_of(row: dict) -> str:
     msg = row.get("message")
     blocks = msg.get("content") if isinstance(msg, dict) else None
@@ -133,11 +153,44 @@ def _tool_of(row: dict) -> str:
 
 
 def _exit_of(row: dict) -> int | None:
-    """Exit codes are a first-class signal — a lesson about a command that FAILED is worth
-    more than one about a command that ran."""
+    """A numeric exit code, when the harness records one.
+
+    Claude Code does NOT — verified against 74 real transcripts: 18,167 tool calls and
+    zero numeric codes. The field stays because the `Event` shape is shared and other
+    harnesses do emit one; read `metadata["outcome"]` for the signal that is actually
+    available here.
+    """
     result = row.get("toolUseResult")
     if isinstance(result, dict):
         for key in ("exitCode", "exit_code", "returncode"):
             if isinstance(result.get(key), int):
                 return result[key]
     return None
+
+
+def _outcome_of(row: dict) -> str:
+    """`ok` | `failed` | `unknown` — did this tool call work (GRPH-342).
+
+    PRD-16 makes the failure signal first-class because "a lesson about a command that
+    FAILED is worth more than one about a command that ran". `exit_code` cannot carry it
+    for this harness, and leaving it at None meant every one of 18,167 real tool calls read
+    as untroubled — `None` conflating "succeeded" with "not recorded".
+
+    So the outcome is derived from what Claude Code actually writes: `stderr`, `interrupted`
+    and `returnCodeInterpretation` (a human-readable gloss on a non-zero code). `unknown`
+    when the record carries no result at all, which is most non-tool events and is not a
+    claim that anything went well.
+    """
+    result = row.get("toolUseResult")
+    if not isinstance(result, dict):
+        return "unknown"
+    if result.get("interrupted") is True:
+        return "failed"
+    if str(result.get("stderr") or "").strip():
+        return "failed"
+    # Present only when the command returned non-zero — the gloss IS the signal.
+    if str(result.get("returnCodeInterpretation") or "").strip():
+        return "failed"
+    if "stdout" in result or "filePath" in result or "type" in result:
+        return "ok"
+    return "unknown"
