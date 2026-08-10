@@ -167,3 +167,127 @@ def test_the_thresholds_are_constants_not_settings(db):
     for name in ("CANDIDATE_EXPIRY_DAYS", "PUBLISHED_STALE_DAYS",
                  "MIN_DISTINCT_SOURCES", "MIN_DISTINCT_SOURCES_CORRECTION"):
         assert isinstance(getattr(mem_svc, name), int)
+
+
+# ---- one lesson promotes once (GRPH-346) ----------------------------------------------------
+# Found by running the first promotion pass over a real ingested corpus: 568 candidates
+# produced 96 accepts, and those 96 were 19 DISTINCT texts — one string appeared 32 times.
+#
+# `_score_shard` dedups a candidate against PUBLISHED shards, but nothing compared a
+# candidate to its fellow candidates, so every member of a cluster scored `accept` on the
+# strength of the other members. Publishing that set would have put 32 copies into the
+# corroboration pool, where they read as 32 independent pieces of evidence for whatever was
+# scored next — the ingest runner closes this exact hole one layer down, and the ladder had
+# it open.
+def _candidate(db, text, session, sid=None):
+    return mem_svc.add_memory(
+        db, text_body=text, project_id="core", status="candidate",
+        source=f"transcript:claude-code:{session}", origin="ingest:claude-code",
+        auto_triage=False,
+    )
+
+
+REPEATED = ("The deployment needs the migration range bumped in AGENTS.md before it will "
+            "pass, and the guard only reports it after the build has already started.")
+
+
+def _pass(db):
+    rows = mem_svc.score_candidates(db, project_id="core")
+    return ([r for r in rows if r["suggestion"] == "accept"],
+            [r for r in rows if r["duplicate_of"]], rows)
+
+
+def test_a_recurring_lesson_is_offered_for_promotion_once(db):
+    """THE acceptance criterion. Four occurrences across three sessions are ONE lesson with
+    four pieces of evidence, not four lessons."""
+    for i in range(4):
+        _candidate(db, REPEATED, f"sess-{i % 3}")
+
+    accepts, dupes, _ = _pass(db)
+    assert len(accepts) == 1, f"one lesson, one promotion — got {len(accepts)}"
+    assert len(dupes) == 3
+
+
+def test_the_duplicates_point_at_the_shard_that_replaces_them(db):
+    """A merge instruction, not a bare rejection — the reviewer has to know what survives."""
+    for i in range(4):
+        _candidate(db, REPEATED, f"sess-{i % 3}")
+
+    accepts, dupes, _ = _pass(db)
+    winner = accepts[0]["shard"].id
+    assert {d["duplicate_of"] for d in dupes} == {winner}
+    assert all("merge this into it" in d["reasons"][0] for d in dupes)
+
+
+def test_the_duplicates_are_surfaced_rather_than_dropped(db):
+    """Filtering them out of the queue would be cheaper and would misreport the corpus: a
+    reviewer would see one row and no sign that thirty-one others exist."""
+    for i in range(4):
+        _candidate(db, REPEATED, f"sess-{i % 3}")
+
+    _, dupes, rows = _pass(db)
+    assert len(rows) == 4, "every candidate still accounted for"
+    assert all("4 occurrences" in d["reasons"][0] for d in dupes), \
+        "each duplicate must say how large the cluster it belongs to is"
+
+
+def test_the_survivor_still_carries_the_recurrence_as_its_evidence(db):
+    """Collapsing must not cost the cluster its support — the recurrence is precisely what
+    earns the promotion."""
+    for i in range(4):
+        _candidate(db, REPEATED, f"sess-{i % 3}")
+
+    accepts, _, _ = _pass(db)
+    assert any("recurs across 4" in r for r in accepts[0]["reasons"])
+
+
+def test_a_lone_candidate_is_scored_exactly_as_before(db):
+    """PRD-16's success metric: verdicts are unchanged for inputs that lack the new signal.
+    A shard in no cluster must not acquire a duplicate verdict it never had."""
+    _candidate(db, "A one-off observation nothing else in the corpus resembles at all.", "s1")
+
+    _, dupes, rows = _pass(db)
+    assert dupes == []
+    assert rows[0]["suggestion"] == "review"
+
+
+def test_the_same_corpus_picks_the_same_survivor_twice(db):
+    """A representative that moved between runs would republish the lesson under a new id
+    every pass."""
+    for i in range(4):
+        _candidate(db, REPEATED, f"sess-{i % 3}")
+
+    first = _pass(db)[0][0]["shard"].id
+    assert _pass(db)[0][0]["shard"].id == first
+
+
+def test_the_representative_is_the_one_the_others_agree_with(db):
+    """The medoid, not the first written or the longest. `Failed to get project`, `Failed to
+    list projects` and `Failed to create project` are three spellings of "re-auth to
+    Railway", and the survivor should be the phrasing nearest all of them.
+
+    Asserted on hand-built vectors because it is a claim about geometry, not about text: B
+    sits between A and C, so B speaks for the group however the embedder happens to render
+    any particular wording."""
+    a = MemoryShard(id="m_a", text="get", project_id="core", embedding=[1.0, 0.0, 0.0])
+    b = MemoryShard(id="m_b", text="list", project_id="core", embedding=[0.7, 0.7, 0.0])
+    c = MemoryShard(id="m_c", text="create", project_id="core", embedding=[0.0, 1.0, 0.0])
+
+    assert mem_svc._cluster_representative([a, b, c]).id == "m_b"
+    assert mem_svc._cluster_representative([c, b, a]).id == "m_b", "order must not matter"
+
+
+def test_a_tie_prefers_the_fuller_text(db):
+    """With nothing to choose geometrically, keep the version that says more — the shorter
+    one is usually a truncation of the same lesson.
+
+    The ids are chosen so the FINAL tie-break (lowest id, there only for determinism) would
+    pick the wrong one. Sabotage caught the first version of this test: with `m_f`/`m_s` the
+    id rule happened to agree with the length rule, so removing the length rule changed
+    nothing and the test passed either way."""
+    short = MemoryShard(id="m_a", text="bump the range", project_id="core",
+                        embedding=[1.0, 0.0])
+    full = MemoryShard(id="m_z", text="bump the migration range in AGENTS.md first",
+                       project_id="core", embedding=[1.0, 0.0])
+
+    assert mem_svc._cluster_representative([short, full]).id == "m_z"

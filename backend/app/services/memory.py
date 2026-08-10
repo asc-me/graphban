@@ -241,6 +241,31 @@ def _distinct_origins(group) -> int | None:
     return len(set(origins))
 
 
+def _cluster_representative(group: list[MemoryShard]) -> MemoryShard:
+    """The one member that speaks for a cluster (GRPH-346).
+
+    A cluster IS one recurring lesson — that is exactly what makes its size count as
+    evidence — so promoting it must publish one shard, not one per occurrence.
+
+    The medoid, not the first or the longest: the member with the highest total similarity
+    to the rest is the one whose wording the others agree on. `Failed to get project`,
+    `Failed to list projects` and `Failed to create project` are three spellings of "re-auth
+    to Railway", and the medoid picks the phrasing nearest all three rather than whichever
+    happened to be written first. Ties fall to the longer text (more of the lesson survives)
+    and then to the id, so the choice is stable across runs.
+    """
+    pairs = [(s, list(s.embedding)) for s in group if s.embedding is not None]
+    if not pairs:
+        return group[0]
+    centrality = {
+        s.id: sum(cosine_similarity(v, other) for t, other in pairs if t.id != s.id)
+        for s, v in pairs
+    }
+    return sorted(
+        pairs, key=lambda it: (-centrality[it[0].id], -len(it[0].text or ""), str(it[0].id))
+    )[0][0]
+
+
 def _is_correction(shard: MemoryShard) -> bool:
     """Correction-class lessons earn trust faster (PRD-16).
 
@@ -332,6 +357,10 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
     mutates and never auto-publishes — the AL-49 human boundary holds. Sorted most
     actionable first (highest confidence), so obvious accepts/dupes rise to the top.
 
+    A cluster is collapsed to one representative first (GRPH-346), so a recurring lesson
+    is offered for promotion ONCE with its recurrence as the evidence, and its other
+    occurrences are offered as merges into it.
+
     Similarity-only, so it degrades to noise (not an error) when embeddings are the
     offline stub — it needs no chat provider."""
     cands = [s for s in list_shards(db, project_id=project_id, status="candidate") if s.embedding is not None]
@@ -342,14 +371,42 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
     # Recurrence: how many candidates each one clusters with (reuse AL-50 clustering).
     cluster_size: dict[str, int] = {}
     cluster_sources: dict[str, int] = {}
+    # Every member EXCEPT the one that speaks for the cluster, mapped to it (GRPH-346).
+    speaks_for: dict[str, tuple[MemoryShard, list[float]]] = {}
     for group in cluster_candidates(db, project_id=project_id):
         distinct = _distinct_origins(group)
+        rep = _cluster_representative(group)
+        rep_vec = list(rep.embedding) if rep.embedding is not None else None
         for s in group:
             cluster_size[s.id] = len(group)
             cluster_sources[s.id] = distinct
+            if s.id != rep.id and rep_vec is not None:
+                speaks_for[s.id] = (rep, rep_vec)
 
     out: list[dict] = []
     for c in cands:
+        # A cluster is ONE lesson. Scoring every member on the cluster's own size made 96
+        # accepts out of 19 distinct texts, 32 of them the same string — and publishing that
+        # set would have put 32 copies into the corroboration pool, where they would read as
+        # 32 independent pieces of evidence for whatever was scored next. The ingest runner
+        # closes this exact hole one layer down; the ladder had it open (GRPH-346).
+        #
+        # Surfaced as a duplicate rather than dropped: a queue that silently shed 77 rows
+        # would look like a corpus that never had them.
+        rep_pair = speaks_for.get(c.id)
+        if rep_pair is not None:
+            rep, rep_vec = rep_pair
+            sim = cosine_similarity(list(c.embedding), rep_vec)
+            out.append({
+                "shard": c,
+                "suggestion": "reject",
+                "confidence": round(sim, 3),
+                "reasons": [f"same lesson as candidate {rep.id} ({sim:.0%}) — "
+                            f"one of {cluster_size.get(c.id, 1)} occurrences; "
+                            f"promote {rep.id} and merge this into it"],
+                "duplicate_of": rep.id,
+            })
+            continue
         support = cluster_size.get(c.id, 1)
         human_derived = c.origin.startswith("user:") or "grill" in c.origin
         suggestion, confidence, reasons, duplicate_of = _score_shard(
@@ -467,6 +524,17 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
     back what it just wrote. The structural vetoes still run first: `auto_reject`
     is orthogonal to the mode, and trusted-without-dedup would fill the store with
     restatements of one fact.
+
+    **Deliberately does NOT collapse clusters the way `score_candidates` does (GRPH-346).**
+    On the write path duplicates are the point: `support` counts sibling candidates, so a
+    lesson only becomes evidence by recurring, and rejecting the second occurrence on
+    arrival would mean no cluster ever reached two and nothing ever promoted on recurrence
+    at all. Collapsing belongs at PROMOTION, where the question is "how many shards should
+    this publish", not at arrival, where it is "has this happened before".
+
+    It self-limits without needing the rule: once one member of a cluster publishes, the
+    next arrival is a near-duplicate of a PUBLISHED shard and the existing dedup veto
+    catches it.
 
     A no-op returning the shard unchanged when it isn't a candidate, has no embedding,
     or nothing is switched on — so the AL-49 human boundary holds by default for
