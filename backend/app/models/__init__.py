@@ -342,6 +342,47 @@ class Item(Base):
         return _key_of(self, self.prd_id, "prd")
 
 
+class ArtifactRecommendation(Base):
+    """What a promoted lesson should BECOME (GRPH-307 / PRD-16).
+
+    One row per (tier, scope) rather than per lesson. PRD-16's acceptance is explicit: two
+    lessons landing on the same tier and scope produce ONE recommendation, the second
+    superseding the first — not two competing creates that a reviewer has to reconcile by
+    hand and that would install two files doing the same job.
+
+    `supersedes_id` keeps the earlier one rather than overwriting it, so "this grew from
+    three lessons over two weeks" stays readable. Same append-only reasoning as the
+    baseline chain: the record of how a decision was reached is the part you cannot
+    reconstruct later.
+    """
+
+    __tablename__ = "artifact_recommendations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    # fact | rule | hook | skill | agent | allowlist | update | delete
+    tier: Mapped[str] = mapped_column(String)
+    # What this artifact would OWN — the keyword scope a later lesson matches against to
+    # become an `update` rather than a duplicate `create`.
+    scope: Mapped[str] = mapped_column(String, default="")
+    title: Mapped[str] = mapped_column(String, default="")
+    reasoning: Mapped[str] = mapped_column(Text, default="")
+    # The shard ids this recommendation rests on. Evidence, not decoration: the drafting
+    # step re-renders from the current lesson set and needs to know what that set is.
+    lesson_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # An `update` verdict names the artifact it would amend. NULL on a create.
+    target: Mapped[str | None] = mapped_column(String, nullable=True)
+    # queued | approved | rejected | superseded. A reviewed row is never flipped back to
+    # queued by a later run — that is why classification skips lessons already carrying one.
+    status: Mapped[str] = mapped_column(String, default="queued", index=True)
+    supersedes_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    graded_by: Mapped[str] = mapped_column(String, default="", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class IngestWatermark(Base):
     """How far ingest got in one source (GRPH-304 / PRD-16).
 
