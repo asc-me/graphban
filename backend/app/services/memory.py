@@ -59,9 +59,18 @@ def add_memory(
     origin: str = "",
     auto_triage: bool = True,
 ) -> MemoryShard:
+    # Redact BEFORE the row exists (GRPH-305). Scrubbing at publish time is too late: a
+    # candidate is already persisted and already searchable, so the leak has happened.
+    # Here, every producer inherits it — ingest, extract_lessons, the grill, agent writes.
+    from app.services.scrub import scrub
+
+    text_body, _redacted = scrub(text_body)
     shard = MemoryShard(
         id="m_" + uuid.uuid4().hex[:10],
         text=text_body,
+        # Records that the redactor RAN, not that it found something. A False here means
+        # "written before this existed", which is a different claim from "clean".
+        scrubbed=True,
         scope=scope,
         source=source or ("global" if scope == "global" else (f"from {item_id}" if item_id else "")),
         item_id=item_id,
