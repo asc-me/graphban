@@ -190,3 +190,72 @@ def test_an_unclaimed_item_cannot_make_a_verdict_self_signed(db, approved):
     v = prd_svc.record_verdict(db, approved, outcome="pass", citations=CITE,
                                signed_by="")
     assert v.self_signed is False
+
+
+# ---- why it is or is not self-signed (GRPH-327) -------------------------------------------
+def test_a_prd_nobody_claimed_reports_unverifiable_not_independent(db, approved):
+    """THE finding, from auditing PRD-12 through its own surface: 0 of 27 items carried a
+    claimant, so the check compared against an empty set and returned False for 14 verdicts
+    signed by the author of the work.
+
+    It did not fail. It had nothing to check, and reported that as a pass. "Nobody recorded
+    who built this" and "someone else built this" are opposite claims."""
+    items_svc.create_item(db, title="Nobody claimed me", project_id="core",
+                          prd_id=approved.id, prd_section="Judging")
+
+    v = prd_svc.record_verdict(db, approved, outcome="pass", citations=CITE,
+                               signed_by="agent:auditor")
+
+    assert v.separation == prd_svc.UNVERIFIABLE
+    assert v.self_signed is False, "unverifiable is not an accusation either"
+
+
+def test_a_claim_by_someone_else_reports_independent(db, approved):
+    _claimed_item(db, approved, "agent:builder")
+
+    v = prd_svc.record_verdict(db, approved, outcome="pass", citations=CITE,
+                               signed_by="agent:auditor")
+    assert v.separation == prd_svc.INDEPENDENT
+
+
+def test_signing_your_own_claim_reports_self_signed(db, approved):
+    _claimed_item(db, approved, "agent:builder")
+
+    v = prd_svc.record_verdict(db, approved, outcome="pass", citations=CITE,
+                               signed_by="agent:builder")
+    assert v.separation == prd_svc.SELF_SIGNED and v.self_signed is True
+
+
+def test_the_event_log_catches_an_implementer_who_never_claimed(db, approved):
+    """The signal `claimed_by` cannot give. Working without a lease is the ORDINARY path
+    for a single agent — it was the entire population on PRD-12 — so a check that only
+    reads claims is blind exactly where it is most needed."""
+    from app.services import events as events_svc
+
+    item = items_svc.create_item(db, title="Built without a lease", project_id="core",
+                                 prd_id=approved.id, prd_section="Judging")
+    events_svc.record(db, actor_type="apikey", actor_id="key_abc", actor_label="builder",
+                      surface="mcp", action="update_item", target_type="item",
+                      target_id=item.id, project_id="core")
+
+    v = prd_svc.record_verdict(db, approved, outcome="pass", citations=CITE,
+                               signed_by="agent:builder", api_key_id="key_abc")
+
+    assert v.separation == prd_svc.SELF_SIGNED
+    assert v.self_signed_items == [item.key]
+
+
+def test_the_key_id_is_what_matches_not_the_display_name(db, approved):
+    """Two agents can share a display name; a key id cannot be borrowed by accident, so it
+    is the identity that survives a dispute."""
+    from app.services import events as events_svc
+
+    item = items_svc.create_item(db, title="Someone else's work", project_id="core",
+                                 prd_id=approved.id, prd_section="Judging")
+    events_svc.record(db, actor_type="apikey", actor_id="key_other", actor_label="someone",
+                      surface="mcp", action="update_item", target_type="item",
+                      target_id=item.id, project_id="core")
+
+    v = prd_svc.record_verdict(db, approved, outcome="pass", citations=CITE,
+                               signed_by="agent:auditor", api_key_id="key_mine")
+    assert v.separation == prd_svc.INDEPENDENT

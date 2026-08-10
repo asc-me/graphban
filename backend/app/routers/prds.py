@@ -253,6 +253,7 @@ def prd_verdicts(prd_id: str, db: Session = Depends(get_db), user: User = Depend
         {"id": v.id, "outcome": v.outcome, "reasoning": v.reasoning,
          "citations": v.citations or [], "signed_by": v.signed_by,
          "baseline_version": v.baseline_version, "self_signed": v.self_signed,
+         "separation": v.separation,
          "self_signed_items": v.self_signed_items or []}
         for v in prd_svc.verdicts(db, prd)
     ]
