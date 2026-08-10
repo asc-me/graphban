@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from app import errors
 from app.config import settings
 from app.db import get_db
-from app.models import ApiKey, Item, Link, MemoryShard, Project
+from app.models import ApiKey, ArtifactRecommendation, Item, Link, MemoryShard, Project
 from app.security import authz
 from app.security.deps import get_agent_key
 from app.services import clustering as cluster_svc
@@ -40,6 +40,7 @@ from app.services import mcp_stats
 from app.services import memory as mem_svc
 from app.services import setup as setup_svc
 from app.services import quotas
+from app.services import artifacts as art_svc
 from app.services import prds as prd_svc
 from app.services import projects as projects_svc
 from app.services import prioritization as prio_svc
@@ -731,6 +732,52 @@ TOOLS: list[dict[str, Any]] = [
         "annotations": {"readOnlyHint": False, "destructiveHint": False,
                         "idempotentHint": False, "openWorldHint": False},
     },
+    # The learning loop (PRD-16 / GRPH-310). Two tools, same footprint discipline as the
+    # acceptance surface: every read is one question asked of a different surface, so they
+    # share a `view` instead of claiming four names.
+    {
+        "name": "learning_loop",
+        "description": (
+            "Read the learning loop. `view`: recommendations (pending proposals), artifact "
+            "(one, with its draft and whether it may install), usage (uses is null for a "
+            "tier whose use cannot be OBSERVED, never 0), stale (only observable tiers — "
+            "zero uses elsewhere is not evidence of disuse)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "view": {"type": "string",
+                         "enum": ["recommendations", "artifact", "usage", "stale"]},
+                "id": {"type": "integer"},
+                "project_id": {"type": "string"},
+            },
+            "required": ["view"],
+        },
+        "outputSchema": {"type": "object", "properties": {"view": {"type": "string"},
+                                                          "result": {"type": "object"}}},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False,
+                        "idempotentHint": True, "openWorldHint": False},
+    },
+    {
+        "name": "review_recommendation",
+        "description": (
+            "Approve or reject a proposed artifact — the human boundary. Approving writes "
+            "nothing: a `shared_surgery` artifact (an edit inside a file others live in) is "
+            "only ever proposed, with its contents returned for a human to apply."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "integer"},
+                           "decision": {"type": "string", "enum": ["approve", "reject"]}},
+            "required": ["id", "decision"],
+        },
+        "outputSchema": {"type": "object",
+                         "properties": {"id": {"type": "integer"},
+                                        "status": {"type": "string"},
+                                        "install_class": {"type": "string"}}},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False,
+                        "idempotentHint": True, "openWorldHint": False},
+    },
     {
         "name": "report_graphban_issue",
         "description": (
@@ -773,7 +820,7 @@ _READ_ONLY = {
     "get_context", "list_projects", "setup_project", "search_items", "search_memory",
     "get_backlog", "get_item_details", "suggest_next", "generate_digest", "related_work",
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
-    "prd_acceptance",
+    "prd_acceptance", "learning_loop",
 }
 
 _PAGE_META = {  # shared output shape for paged reads (#9)
@@ -1731,6 +1778,40 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             # Conflict, not validation: the request is well-formed and permitted — the PRD
             # simply is not accounted for yet, and the message says what is outstanding.
             raise errors.Conflict(str(e), hint="disposition the outstanding sections first")
+    if name == "learning_loop":
+        from app.routers.artifacts import _rec_dict
+
+        view, pid_ = args["view"], args.get("project_id") or pid
+        if view == "artifact":
+            rec = db.get(ArtifactRecommendation, args.get("id") or 0)
+            if rec is None:
+                raise errors.NotFound(f"no such artifact: {args.get('id')}")
+            if rec.project_id not in readable and rec.project_id is not None:
+                raise authz.Forbidden("that artifact is outside this key's project scope")
+            try:
+                plan = art_svc.install_plan(db, rec)
+            except art_svc.InstallRefused as e:
+                plan = {"allowed": False, "reason": str(e), "contents": "", "path": ""}
+            result = _rec_dict(rec) | {"draft": rec.draft, "install": plan}
+        elif view == "usage":
+            result = art_svc.usage_report(db, pid_)
+        elif view == "stale":
+            result = {"stale": [_rec_dict(r) for r in art_svc.stale_artifacts(db, pid_)]}
+        else:
+            result = {"recommendations": [_rec_dict(r) for r in art_svc.pending(db, pid_)]}
+        return {"view": view, "result": result}
+    if name == "review_recommendation":
+        from app.routers.artifacts import _rec_dict
+
+        rec = db.get(ArtifactRecommendation, args["id"])
+        if rec is None:
+            raise errors.NotFound(f"no such recommendation: {args['id']}")
+        if rec.project_id not in allowed and rec.project_id is not None:
+            raise authz.Forbidden("that recommendation is outside this key's write scope")
+        rec.status = "approved" if args["decision"] == "approve" else "rejected"
+        db.commit()
+        db.refresh(rec)
+        return _rec_dict(rec)
     if name == "describe_code":
         return code_svc.describe_code(
             db, project_id=pid,

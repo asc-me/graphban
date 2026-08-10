@@ -76,7 +76,7 @@ mcp_servers:
 Every client authenticates the same way: the key in an `X-API-Key` header (or
 `Authorization: Bearer`), against a URL reachable **from where the agent runs**.
 
-## The 40 tools
+## The 42 tools
 
 | Tool | Params | Does |
 | --- | --- | --- |
@@ -119,6 +119,8 @@ Every client authenticates the same way: the key in an `X-API-Key` header (or
 | `request_rebaseline` | `prd_id`, `reason_type`, `reason` | **Ask for new frozen intent** in your own words. Does NOT approve — it re-opens the grill, and the existing baseline keeps governing until a new one is earned. Cannot add sections (that is a sub-PRD); refused on a closed PRD |
 | `submit_verdict` | `prd_id`, `section`, `outcome`, `citations`, `reasoning` | **Record a sign-off claim with provenance.** Citing nothing, or citing something that does not resolve, is rejected as malformed. Citations are `{kind, ref}` — `code`, `intent` (what an ABSENCE finding cites), or `evidence`. Signing your own claimed work is flagged, not refused |
 | `close_prd` | `prd_id`, `dispositions`, `verdict` | **Close a PRD** — terminal, irreversible. Gates on **disposition**, never on delivery: every section with nothing delivered must be promoted or deferred with a reason. Post-close work becomes a new PRD |
+| `learning_loop` | `view`, `id`, `project_id` | **The learning loop, read-only** — `recommendations` (pending artifact proposals), `artifact` (one, with its draft and install plan), `usage` (population + uses; **null**, never 0, for a tier whose use cannot be observed), `stale` (only observable tiers — zero uses elsewhere is not evidence of disuse) |
+| `review_recommendation` | `id`, `decision` | **Approve or reject a proposed artifact** — the human boundary. Approving writes nothing: a `shared_surgery` artifact is only ever proposed, with its contents returned for a human to apply |
 | `report_graphban_issue` | `type`, `title`, `detail` | Report a bug/idea about **Graphban itself** (not your project) upstream; deduped on arrival. The retired name `report_agentledger_issue` still dispatches but is not advertised |
 
 Arguments are validated against each tool's `inputSchema` **before dispatch**, so a
