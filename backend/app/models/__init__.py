@@ -342,6 +342,32 @@ class Item(Base):
         return _key_of(self, self.prd_id, "prd")
 
 
+class IngestWatermark(Base):
+    """How far ingest got in one source (GRPH-304 / PRD-16).
+
+    The watermark is OPAQUE to everything but the adapter that wrote it: a line count here,
+    a byte offset or a row cursor elsewhere. A core that knows which is a core that has to
+    learn every harness, and that is exactly the coupling the adapter interface exists to
+    avoid.
+
+    Keyed by (adapter, source) so two harnesses reading the same path — an archive replayed
+    through a second parser, say — do not overwrite each other's progress.
+    """
+
+    __tablename__ = "ingest_watermarks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    adapter: Mapped[str] = mapped_column(String)
+    source: Mapped[str] = mapped_column(String)
+    watermark: Mapped[str] = mapped_column(String, default="")
+    events_seen: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (UniqueConstraint("adapter", "source", name="uq_ingest_source"),)
+
+
 class MemoryShard(Base):
     __tablename__ = "memory_shards"
 
@@ -364,6 +390,11 @@ class MemoryShard(Base):
     # acted on. Powers the "recent auto-actions" lane and keeps every auto-action undoable.
     scoring_source: Mapped[str] = mapped_column(String, default="", server_default="", nullable=False)
     auto_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Whether this row went through the redactor (GRPH-305). False on anything written
+    # before it existed — which is NOT the same as clean, and the whole reason this is
+    # recorded rather than inferred from the text looking fine.
+    scrubbed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                           nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     @property
