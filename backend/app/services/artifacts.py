@@ -20,11 +20,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import ArtifactRecommendation, MemoryShard
+from app.models import (
+    ArtifactRecommendation, ArtifactTombstone, ArtifactUsage, MemoryShard,
+)
 from app.services import platform as platform_svc
 
 logger = logging.getLogger(__name__)
@@ -332,6 +335,11 @@ def draft(db: Session, rec: ArtifactRecommendation) -> ArtifactRecommendation:
         return rec
 
     rec.draft = body + _provenance(rec, lessons)
+    if rec.tier == "hook":
+        # Instrumented AT GENERATION (GRPH-309). We render the script, so it can report its
+        # own firing — the artifact saying what it did, rather than us inferring use from
+        # transcript silence. That is what makes hooks measurable when rules cannot be.
+        rec.draft += HOOK_TELEMETRY.format(rec_id=rec.id)
     rec.draft_path = path_tpl.format(slug=_slug(rec.title or rec.scope)) if path_tpl else ""
     rec.install_class = install_class
     rec.draft_hash = fingerprint
@@ -379,3 +387,153 @@ def install_plan(db: Session, rec: ArtifactRecommendation) -> dict:
         "contents": rec.draft,
         "reason": "",
     }
+
+
+# ---- usage telemetry and retirement (GRPH-309 / PRD-16) ----------------------------------
+# Which tiers can be observed being used, and which cannot. Settled per-tier on 2026-08-10
+# rather than uniformly, because the two halves fail differently: a stale RULE is clutter,
+# while a stale HOOK still runs, still costs time, and may still block something.
+#
+#   skill / agent — first-party signal. Graphban already meters MCP calls by name.
+#   hook          — instrumented AT GENERATION. We render the script, so it reports its own
+#                   firing: the artifact saying what it did, not us inferring from silence.
+#   rule          — UNMEASURABLE, accepted. A rule that works is one an agent silently
+#                   complied with, and compliance leaves no trace by construction.
+#
+# Anything not measurable is excluded from staleness entirely. Reporting it at zero use
+# would read as "unused" when it means "unobservable", and that reading deletes working
+# artifacts — PRD-16 says so in as many words.
+MEASURABLE_TIERS = ("skill", "agent", "hook")
+UNMEASURABLE_TIERS = ("rule", "allowlist", "fact", "update", "delete")
+
+# How long an artifact must go unused before retirement is even proposed. A named constant,
+# not a setting; 30 days matches PRD-16's survival metric so the two cannot disagree.
+STALE_AFTER_DAYS = 30
+
+# Appended to every generated hook so it reports its own firing. One line, no dependencies,
+# and it fails silently — a hook that breaks the workflow because telemetry is unreachable
+# is a hook that gets deleted by hand, which is the outcome this whole feature exists to
+# make deliberate rather than accidental.
+HOOK_TELEMETRY = (
+    '\n# --- graphban usage telemetry (GRPH-309): reports THIS hook fired. Never fails the\n'
+    '# --- hook: a telemetry outage must not break the workflow it is measuring.\n'
+    'curl -fsS -m 2 -X POST "$GRAPHBAN_URL/api/artifacts/{rec_id}/used" \\\n'
+    '  -H "X-API-Key: $GRAPHBAN_KEY" >/dev/null 2>&1 || true\n'
+)
+
+
+def record_use(db: Session, recommendation_id: int, signal: str) -> ArtifactUsage:
+    """Record an OBSERVED use. Never called on inference."""
+    row = ArtifactUsage(recommendation_id=recommendation_id, signal=signal)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def measurable(rec: ArtifactRecommendation) -> bool:
+    return rec.tier in MEASURABLE_TIERS
+
+
+def usage_report(db: Session, project_id: str | None = None) -> dict:
+    """Population and usage, with the unmeasurable half named rather than hidden.
+
+    PRD-16 asks that unmeasurable artifacts still appear in POPULATION counts — they exist,
+    they cost context, and a report that omitted them would understate the corpus. What they
+    must never appear in is a staleness figure, because "no uses recorded" and "uses cannot
+    be recorded" are opposite claims and only one of them is a reason to delete something.
+    """
+    rows = [r for r in db.scalars(select(ArtifactRecommendation).where(
+        ArtifactRecommendation.status == "approved")).all()
+        if project_id is None or r.project_id in (project_id, None)]
+    counts: dict[int, int] = {}
+    for u in db.scalars(select(ArtifactUsage)).all():
+        counts[u.recommendation_id] = counts.get(u.recommendation_id, 0) + 1
+
+    out = []
+    for r in rows:
+        out.append({
+            "id": r.id, "tier": r.tier, "title": r.title, "path": r.draft_path,
+            "measurable": measurable(r),
+            # None, not 0. A zero would be a measurement nobody took.
+            "uses": counts.get(r.id, 0) if measurable(r) else None,
+            "reason": "" if measurable(r) else
+                      "usage cannot be observed for this tier — compliance leaves no trace",
+        })
+    return {
+        "artifacts": out,
+        "population": len(out),
+        "measurable": sum(1 for r in out if r["measurable"]),
+        # Named explicitly so a reader can see what the numbers below do NOT cover.
+        "unmeasurable": [r["title"] or r["path"] for r in out if not r["measurable"]],
+    }
+
+
+def stale_artifacts(db: Session, project_id: str | None = None,
+                    now: datetime | None = None) -> list[ArtifactRecommendation]:
+    """Approved, measurable artifacts with zero observed uses across the window.
+
+    Unmeasurable tiers are excluded before anything is counted, not filtered out afterwards
+    — the difference matters, because a later refactor that drops the filter would otherwise
+    start proposing deletions for rules on the strength of a count that was never taken.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=STALE_AFTER_DAYS)
+    used = {u.recommendation_id for u in db.scalars(select(ArtifactUsage)).all()}
+    out = []
+    for r in db.scalars(select(ArtifactRecommendation).where(
+            ArtifactRecommendation.status == "approved")).all():
+        if project_id is not None and r.project_id not in (project_id, None):
+            continue
+        if not measurable(r):
+            continue
+        created = r.created_at
+        if created is None:
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        # An artifact installed yesterday has not had a chance to be used. Proposing its
+        # retirement would train a reviewer to dismiss the whole queue.
+        if created <= cutoff and r.id not in used:
+            out.append(r)
+    return out
+
+
+def retire(db: Session, rec: ArtifactRecommendation, *, reason: str = "") -> ArtifactTombstone:
+    """Archive an artifact with everything needed to bring it back.
+
+    Never an unrecoverable delete. The full contents are kept, because a retirement that
+    discarded them would make the decision irreversible on the strength of a usage count —
+    and a usage count is exactly the kind of evidence that turns out to have been measuring
+    the wrong thing.
+
+    Refuses outright for an unmeasurable tier. Not a filter that happens to exclude them: a
+    hard refusal, so no future caller can retire a rule by passing it in directly.
+    """
+    if not measurable(rec):
+        raise InstallRefused(
+            f"{rec.tier} usage cannot be observed, so zero uses is not evidence of disuse")
+    uses = len([u for u in db.scalars(select(ArtifactUsage)).all()
+                if u.recommendation_id == rec.id])
+    stone = ArtifactTombstone(
+        recommendation_id=rec.id,
+        path=rec.draft_path,
+        contents=rec.draft,
+        use_count=uses,
+        reason=reason or f"no observed use in {STALE_AFTER_DAYS} days",
+    )
+    rec.status = "retired"
+    db.add(stone)
+    db.commit()
+    db.refresh(stone)
+    return stone
+
+
+def restore(db: Session, stone: ArtifactTombstone) -> dict:
+    """The one-command restore PRD-16 asks for: path and contents, ready to write back."""
+    rec = db.get(ArtifactRecommendation, stone.recommendation_id)
+    if rec is not None:
+        rec.status = "approved"
+        db.commit()
+    return {"path": stone.path, "contents": stone.contents,
+            "recommendation_id": stone.recommendation_id}
