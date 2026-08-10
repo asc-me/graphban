@@ -589,3 +589,71 @@ def test_a_realistic_session_yields_a_handful_of_lessons_not_hundreds(db, transc
 
     assert stats["events"] > 200, "the parser must actually be reading the transcript"
     assert stats["recorded"] == 2, f"expected the 1 decision + 1 failure, got {stats}"
+
+
+# ---- the harness says so itself (GRPH-347) --------------------------------------------------
+# The filter above started as a denylist of opening lines, which meant every new skill or
+# slash command was a shape nobody had added yet — and the gap only surfaced as junk in the
+# corpus weeks later. Claude Code records what it wrote itself; reading that is a positive
+# signal rather than a guess about wording.
+# Comfortably over MIN_PROSE_CHARS on purpose. The first version was ~320 characters, so
+# every flag test below passed because the message was too SHORT to be evidence — the flags
+# were never exercised at all. Asserted by test_the_fixture_is_long_enough_to_be_evidence.
+HUMAN = ("i see it in the tracker so it is working. the whole point of this tool is to create "
+         "a join between the spec and the work, and right now the two drift apart the moment "
+         "anybody edits either one of them without telling the other. please make the link "
+         "survive a rename, because that is the case that keeps biting us in practice. we "
+         "have hit it three times now and each time somebody noticed by accident rather than "
+         "because anything told them, which is the part i actually want fixed here.")
+
+
+def test_the_fixture_is_long_enough_to_be_evidence(db, transcripts):
+    """Guards every flag test below. If HUMAN drops under the prose bar they all pass
+    vacuously — the message would be filtered for its length and the flag never consulted."""
+    from app.services.ingest.runner import MIN_PROSE_CHARS
+
+    assert len(HUMAN) > MIN_PROSE_CHARS
+    _write(transcripts, "s.jsonl", [_line(HUMAN)])
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 1
+
+
+@pytest.mark.parametrize("flag", [
+    {"isMeta": True},                     # skill bodies, system-prompt sections
+    {"isCompactSummary": True},           # a summary written ABOUT the session
+    {"isVisibleInTranscriptOnly": True},  # shown to the reader, never part of the talk
+    {"promptSource": "system"},           # generated, not typed
+])
+def test_a_record_the_harness_flags_as_its_own_is_not_a_lesson(db, transcripts, flag):
+    """Structural, so a brand-new skill needs no change here. The text of these is
+    indistinguishable from a person writing at length — an 8,835-character design brief and
+    a 27,808-character skill body both read as prose."""
+    _write(transcripts, "s.jsonl", [_line(HUMAN, **flag)])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 0
+
+
+def test_the_flag_beats_the_wording(db, transcripts):
+    """The text here is a real human message copied verbatim. Only the flag distinguishes
+    it, which is the whole point of preferring the flag."""
+    _write(transcripts, "s.jsonl", [_line(HUMAN), _line(HUMAN, isMeta=True)])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 1
+
+
+def test_an_ordinary_turn_carries_none_of_them_and_is_kept(db, transcripts):
+    """The other half. A filter that dropped everything would pass every test above."""
+    _write(transcripts, "s.jsonl", [_line(HUMAN, userType="external")])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 1
+
+
+def test_an_older_transcript_without_the_flags_still_gets_filtered(db, transcripts):
+    """The fallback, and why it stays. A transcript written by an older Claude Code carries
+    none of these fields, and treating their absence as "a person typed this" would be the
+    same mistake as reading an absence as a clean result."""
+    _write(transcripts, "s.jsonl", [
+        _line("Base directory for this skill: /skills/x\n" + "v" * 500),
+        _line("<task-notification>" + "y" * 500 + "</task-notification>"),
+    ])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 0
