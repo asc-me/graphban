@@ -170,14 +170,27 @@ def _proj(client, auth, name):
 
 
 def test_scored_recurring_candidate_suggests_accept(client, auth):
+    """Recurrence earns ONE promotion, not one per occurrence (GRPH-346).
+
+    This test previously asserted that all three suggested `accept`, which was the bug in
+    miniature: three identical shards, three accepts, and publishing them would have put
+    three copies of one lesson into the corroboration pool to be counted as three
+    independent pieces of evidence for whatever was scored next.
+
+    The recurrence signal itself is unchanged — the survivor still cites all three.
+    """
     pid = _proj(client, auth, "ScoreCluster")
     key = _key(client, auth, project_id=pid)
     for _ in range(3):
         _mcp(client, key, "add_memory", {"text": "always set a timeout on outbound http"})
     scored = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth).json()
-    assert len(scored) == 3
-    assert all(s["suggestion"] == "accept" for s in scored)
-    assert any("recurs across 3" in r for s in scored for r in s["reasons"])
+
+    assert len(scored) == 3, "all three stay visible in the queue"
+    accepts = [s for s in scored if s["suggestion"] == "accept"]
+    assert len(accepts) == 1
+    assert any("recurs across 3" in r for r in accepts[0]["reasons"])
+    assert all(s["duplicate_of"] == accepts[0]["shard"]["id"]
+               for s in scored if s["suggestion"] != "accept")
 
 
 def test_scored_duplicate_of_published_suggests_reject(client, auth):
