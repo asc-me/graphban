@@ -28,6 +28,60 @@ import os
 os.environ.setdefault("DATABASE_URL", "sqlite:///./.pytest.db")
 os.environ["SEED_ON_START"] = "true"
 
+
+def _database_per_worker() -> None:
+    """Give each xdist worker its own database (GRPH-353).
+
+    Not optional under `-n`. The suite empties every table between tests, so workers
+    sharing one database would truncate each other's rows mid-test — and the failures would
+    land on whichever test happened to be reading at the time, nowhere near the cause.
+
+    A no-op without xdist, so a serial run is byte-for-byte what it was.
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER")  # "gw0", "gw1", … ; unset when serial
+    if not worker:
+        return
+
+    from tests.dbnames import worker_url
+
+    url = os.environ["DATABASE_URL"]
+    # Idempotent. This module rewrites the environment at IMPORT time, and pytest can load
+    # it more than once — it happened, and produced `graphban_test_gw0_gw0` plus eighteen
+    # stray databases without a single test failing, because the engine was already bound
+    # to the first name. Cheap to make re-entrant; expensive to notice when it is not.
+    if url.endswith(f"_{worker}") or url.endswith(f"_{worker}.db"):
+        return
+
+    os.environ["DATABASE_URL"] = worker_url(url, worker)
+    if not url.startswith("sqlite"):
+        base, _, _ = url.rpartition("/")
+        _, _, name = worker_url(url, worker).rpartition("/")
+        _create_database(f"{base}/postgres", name)
+
+
+def _create_database(admin_url: str, name: str) -> None:
+    """`CREATE DATABASE` on the same server, ignoring "already exists".
+
+    Talks to `postgres` rather than the target, because you cannot create a database from
+    inside the one you are creating. Autocommit because CREATE DATABASE cannot run in a
+    transaction.
+    """
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            exists = conn.execute(
+                text("select 1 from pg_database where datname = :n"), {"n": name}
+            ).first()
+            if not exists:
+                conn.execute(text(f'CREATE DATABASE "{name}"'))
+    finally:
+        engine.dispose()
+
+
+_database_per_worker()
+
 import pytest
 from fastapi.testclient import TestClient
 

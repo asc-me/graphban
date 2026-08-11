@@ -48,7 +48,9 @@ jobs:
           cache-dependency-glob: backend/pyproject.toml
       - run: uv venv --python 3.12 .venv
       - run: uv pip install -e ".[dev]"
-      - run: .venv/bin/python -m pytest -q
+      # -n auto: one worker per core, each with its own database (see tests/conftest.py).
+      # The suite is serial otherwise and the runner has cores going spare.
+      - run: .venv/bin/python -m pytest -q -n auto
 
   backend-postgres:
     # Proves what SQLite cannot: the full Alembic chain from empty, and the real
@@ -84,7 +86,9 @@ jobs:
           cache-dependency-glob: backend/pyproject.toml
       - run: uv venv --python 3.12 .venv
       - run: uv pip install -e ".[dev]"
-      - run: .venv/bin/python -m pytest -q
+      # -n auto: one worker per core, each with its own database (see tests/conftest.py).
+      # The suite is serial otherwise and the runner has cores going spare.
+      - run: .venv/bin/python -m pytest -q -n auto
 
   frontend:
     name: Frontend tests + typecheck + build

@@ -35,6 +35,10 @@ cloud = [
 ]
 dev = [
     "pytest>=8.3",
+    # Parallel test execution. Each worker gets its OWN database — see tests/conftest.py —
+    # because the suite resets data between tests and workers sharing one would wipe each
+    # other's rows mid-run.
+    "pytest-xdist>=3.6",
 ]
 
 [build-system]
