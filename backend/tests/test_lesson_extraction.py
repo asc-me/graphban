@@ -230,3 +230,57 @@ def test_extraction_uses_the_outcome_document(client, auth, db, monkeypatch):
     doc = seen["description"]
     assert "what actually shipped" in doc
     assert doc.index("what actually shipped") < doc.index("The plan as filed.")
+
+
+def test_closing_an_item_uses_the_outcome_document(client, auth, db, monkeypatch):
+    """The path that ACTUALLY fires, and the one the first version of this fix missed.
+
+    There were two extraction paths: the explicit `extract_lessons` MCP tool, and
+    `items._auto_extract_lessons` on the done transition. The second is what runs when a
+    human closes an item — so it is the one that produced the wrong GRPH-354 lesson. The
+    original fix only changed the tool, and the test above called that tool directly, so it
+    passed while this path still distilled the raw description.
+
+    Driving it through the STATUS TRANSITION rather than by calling the function is the
+    whole point: it is the only way to catch a caller that quietly does its own thing.
+    """
+    from app.services import platform as platform_svc
+
+    seen = {}
+
+    class Extractor:
+        def extract(self, *, title, description):
+            seen["description"] = description
+            return ["a lesson from the close path"]
+
+    monkeypatch.setattr(platform_svc, "extractor_for", lambda db, pid: Extractor())
+    pid = _proj(client, auth, "ClosePath")
+    item = client.post("/api/items", json={
+        "title": "An item", "description": "The plan as filed.", "project_id": pid,
+    }, headers=auth).json()
+
+    client.patch(f"/api/items/{item['id']}", headers=auth, json={
+        "status": "done",
+        "evidence": [{"kind": "test", "detail": "what actually shipped"}],
+    })
+
+    assert "description" in seen, "closing the item must extract at all"
+    doc = seen["description"]
+    assert "what actually shipped" in doc, "the close path must read the outcome too"
+    assert doc.index("what actually shipped") < doc.index("The plan as filed.")
+
+
+def test_a_lesson_from_closing_an_item_is_not_published(client, auth):
+    """End to end on the real path: close an item, and whatever it distilled is waiting in
+    the queue rather than sitting in the trusted retrieval path."""
+    pid = _proj(client, auth, "ClosePathStatus")
+    client.patch(f"/api/projects/{pid}", json={"memory_write_mode": "auto"}, headers=auth)
+    item = client.post("/api/items", json={
+        "title": "An item", "description": "Some plan.", "project_id": pid,
+    }, headers=auth).json()
+
+    client.patch(f"/api/items/{item['id']}", headers=auth, json={"status": "done"})
+
+    shards = client.get(f"/api/memory/shards?project_id={pid}", headers=auth).json()
+    lessons = [s for s in shards if s["source"] == f"lesson from {item['id']}"]
+    assert all(s["status"] != "published" for s in lessons)
