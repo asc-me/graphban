@@ -650,6 +650,40 @@ def _llm_judge(db: Session, shard: MemoryShard) -> dict | None:
     return judge_verdict(db, shard)[0]
 
 
+# Origins whose shards may be auto-REJECTED but never auto-PUBLISHED (GRPH-358).
+#
+# `agent:auto-extract` is a distillation of an item's own text, produced when the item
+# closes. An item's DESCRIPTION is written before the work — it holds the proposal, the
+# options weighed, and framing the build then revised — so an extracted lesson can state,
+# fluently and specifically, something the shipped code contradicts. That is not
+# hypothetical: closing GRPH-354 published *"discovered artifacts inherit the existing
+# MEASURABLE_TIERS logic"* on the same day the opposite shipped and was pinned by a test.
+#
+# The reason this is a hard veto rather than a higher threshold: **no signal the scorer
+# reads can detect this class.** The shard is fluent, specific, novel, and perfectly
+# consistent with the item it came from — similarity says "not a duplicate", recurrence says
+# nothing either way, and an LLM judge asked "is this a good lesson?" says yes, because it
+# reads like one. Every input agrees while the claim is false. Raising `_AUTO_ACCEPT_MIN`
+# would not have caught it at any value.
+#
+# Shaped as a VETO deliberately, the same as the distinct-source signal above: it can only
+# withhold an accept, never create one, so every other verdict is provably unchanged.
+# Auto-REJECT still applies — near-duplicate cleanup is safe here and keeps the queue
+# readable, and holding back a publish is not a reason to also stop discarding restatements.
+_UNPUBLISHABLE_ORIGINS = ("agent:auto-extract",)
+
+
+def may_auto_publish(shard: MemoryShard) -> bool:
+    """Whether anything may publish this shard without a human (GRPH-358).
+
+    Covers `trusted` mode too, and that is the deliberate part. `trusted` (AL-280) exists so
+    an agent can read back what it just wrote inside the same task — an extracted lesson has
+    no such consumer, nobody is waiting on it, and it is the one write on that path whose
+    source text is known to go stale.
+    """
+    return not (shard.origin or "").startswith(_UNPUBLISHABLE_ORIGINS)
+
+
 def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
     """Synchronously score a freshly-written candidate and act on it if the project
     opts in (AL-227): auto-reject near-dups / resembles-rejected, or auto-publish a
@@ -724,6 +758,8 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
     # Vetoes win over every accept path, in every mode.
     if suggestion == "reject" and auto_reject:
         action, new_status = "auto_reject_shard", "rejected"
+    elif not may_auto_publish(shard):
+        return shard  # GRPH-358 — see below; reject above still applies
     elif mode == "trusted":
         # Provenance, not a score: `trusted` marks the shard as published without
         # anyone — human or judge — having assessed it, so a human arriving later

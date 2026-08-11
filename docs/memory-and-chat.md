@@ -37,6 +37,24 @@ decision you made becomes a `candidate` shard (`origin: agent:grill`, sourced to
 PRD) — so grilling decisions land in Memory review for approval instead of
 evaporating when the context is cleared.
 
+**An item-close lesson always waits for a human (GRPH-358).** Auto-triage may auto-*reject* a
+shard with `origin: agent:auto-extract` — near-duplicate cleanup keeps the queue readable —
+but nothing auto-*publishes* one, in any `memory_write_mode`, including `trusted`.
+
+The reason is worth knowing, because it is not a confidence problem. Extraction distils an
+item's own text, and an item's **description is written before the work**: it holds the
+proposal and the framing the build then revised. So an extracted lesson can be fluent,
+specific, novel, and flatly contradicted by the code that shipped — which is exactly what
+happened when GRPH-354 closed. No signal the scorer reads can catch that: similarity says
+"not a duplicate", recurrence says nothing, and an LLM judge asked "is this a good lesson?"
+says yes, because it reads like one. Every input agrees while the claim is false, so a higher
+threshold would not have helped at any value.
+
+Extraction now also reads the item's **evidence, PR link and final status first**, with the
+description supplied after and labelled as possibly stale. That improves the input; it does
+not guarantee the output, which is why the human boundary above is a hard rule rather than a
+tuned one.
+
 ### Semantic search
 
 The Memory tab's search box runs a **semantic** search (not keyword): the query is embedded
