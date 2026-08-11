@@ -6,8 +6,36 @@ on:
   pull_request:
 
 jobs:
+  # What actually changed. Every other job gates on this, so a web-only PR does not pay
+  # for two backend suites and a backend-only PR does not pay for a frontend build.
+  #
+  # Deliberately coarse. A finer split (per-service, per-module) would need a dependency
+  # map that nothing keeps honest, and a filter that silently under-runs is worse than one
+  # that over-runs — a green tick has to mean the thing was tested.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # On push to main the base is the previous commit; on a PR it is the merge base.
+          filters: |
+            backend:
+              - 'backend/**'
+              - '.github/workflows/ci.yml'
+            frontend:
+              - 'web/**'
+              - '.github/workflows/ci.yml'
+
   backend-sqlite:
     name: Backend tests (SQLite)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -15,6 +43,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/pyproject.toml
       - run: uv venv --python 3.12 .venv
       - run: uv pip install -e ".[dev]"
       - run: .venv/bin/python -m pytest -q
@@ -23,6 +54,8 @@ jobs:
     # Proves what SQLite cannot: the full Alembic chain from empty, and the real
     # pgvector `<=>` search path (see AL-57 — ivfflat recall bug this job caught).
     name: Backend tests (Postgres + pgvector)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -46,12 +79,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/pyproject.toml
       - run: uv venv --python 3.12 .venv
       - run: uv pip install -e ".[dev]"
       - run: .venv/bin/python -m pytest -q
 
   frontend:
     name: Frontend tests + typecheck + build
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -74,3 +112,30 @@ jobs:
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm build
+
+  # A single required check, so branch protection has one name to point at whatever the
+  # filters decided to run. Without it a skipped job reads as "pending" forever on a
+  # protected branch — the filter would look like it had wedged CI rather than saved time.
+  ci:
+    name: CI
+    # `changes` is in here deliberately. Without it, a failure in the filter job skips all
+    # three suites, the gate sees nothing but skips, and CI reports GREEN having run no
+    # tests at all — the filter breaking would look exactly like a PR that needed no work.
+    needs: [changes, backend-sqlite, backend-postgres, frontend]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if anything that ran did not pass
+        # `skipped` is a pass here and `failure`/`cancelled` are not. Checking the results
+        # explicitly rather than trusting `needs.*.result == 'success'`, because a skipped
+        # job is not a success and would fail the gate for the exact PRs the filters exist
+        # to speed up.
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "job results: $results"
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "a required job reported '$r'"; exit 1 ;;
+            esac
+          done
