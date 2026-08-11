@@ -16,6 +16,7 @@ from app.db import get_db
 from app.models import ApiKey, ArtifactRecommendation, User
 from app.security import authz
 from app.security.deps import get_agent_key, get_current_user
+from app.services import artifact_inventory as inv_svc
 from app.services import artifacts as art_svc
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
@@ -98,6 +99,57 @@ def stale(project_id: str | None = None, db: Session = Depends(get_db),
     usage cannot be observed, because zero uses there is not evidence of disuse."""
     authz.require_readable(db, user.id, project_id)
     return [_rec_dict(r) for r in art_svc.stale_artifacts(db, project_id)]
+
+
+class InventoryItemIn(BaseModel):
+    path: str
+    tier: str = ""
+    content_hash: str = ""
+    size: int = 0
+
+
+class InventoryIn(BaseModel):
+    root: str
+    items: list[InventoryItemIn]
+    project_id: str | None = None
+
+
+@router.post("/inventory")
+def post_inventory(body: InventoryIn, db: Session = Depends(get_db),
+                   key: ApiKey = Depends(get_agent_key)):
+    """A client reporting what is actually installed on its machine (GRPH-354).
+
+    **API key, and a client-side scan, because the server cannot see the files.** Under
+    `hosted_mode` it has no access to anyone's `.claude/` directory, and inside the
+    docker-compose container it has no access to the host's either — a server-side walk would
+    report a population of zero without erroring, which is exactly the failure this endpoint
+    exists to close.
+
+    Read-only in both directions: the server records what it is told and never writes,
+    moves, or deletes anything on the reporting machine.
+
+    Orphaning is scoped to the `root` given. A scan of `~/.claude` says nothing about what
+    lives under `~/work/.cursor`, and marking those missing because this pass did not look
+    there would be an absence read as a finding.
+    """
+    project_id = body.project_id or key.project_id or "core"
+    authz.require_writable(db, key.user_id, project_id)
+    if not body.root:
+        raise HTTPException(422, "root is required — it scopes which rows may be orphaned")
+    return inv_svc.record_scan(db, project_id=project_id, root=body.root,
+                               items=[i.model_dump() for i in body.items])
+
+
+@router.get("/inventory")
+def get_inventory(project_id: str | None = None, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """What is installed, generated and hand-written alike, with `forked` and `orphaned`
+    named rather than inferred."""
+    authz.require_readable(db, user.id, project_id)
+    return [{"id": r.id, "path": r.path, "tier": r.tier, "root": r.root,
+             "state": r.state, "recommendation_id": r.recommendation_id,
+             "size": r.size, "last_seen": r.last_seen}
+            for r in inv_svc.inventory(db, project_id)]
 
 
 @router.post("/{rec_id}/used")

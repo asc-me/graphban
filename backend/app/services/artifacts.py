@@ -399,8 +399,24 @@ def install_plan(db: Session, rec: ArtifactRecommendation) -> dict:
     patch — patching accumulates sediment, and an artifact nobody can read is one nobody
     trusts enough to keep.
     """
+    from app.services import artifact_inventory as inv_svc
+
     if not rec.draft:
         raise InstallRefused("nothing drafted yet")
+    # A human has edited this artifact since we rendered it (GRPH-354). Updates are FULL
+    # re-renders, so writing here would discard their edit and report success — the precise
+    # trust failure the propose-only boundary exists to prevent. The contents still come
+    # back, because a refusal that withheld them would just mean the work was never done.
+    forked = inv_svc.fork_of(db, rec)
+    if forked is not None:
+        return {
+            "allowed": False,
+            "install_class": rec.install_class or "file_additive",
+            "path": forked.path or rec.draft_path or "",
+            "contents": rec.draft,
+            "reason": ("this artifact has been edited by hand since it was generated, and an "
+                       "update would re-render it in full — reconcile the two by hand"),
+        }
     if rec.install_class != "file_additive":
         return {
             "allowed": False,
@@ -473,6 +489,8 @@ def usage_report(db: Session, project_id: str | None = None) -> dict:
     must never appear in is a staleness figure, because "no uses recorded" and "uses cannot
     be recorded" are opposite claims and only one of them is a reason to delete something.
     """
+    from app.services import artifact_inventory as inv_svc
+
     rows = [r for r in db.scalars(select(ArtifactRecommendation).where(
         ArtifactRecommendation.status == "approved")).all()
         if project_id is None or r.project_id in (project_id, None)]
@@ -489,10 +507,44 @@ def usage_report(db: Session, project_id: str | None = None) -> dict:
             "uses": counts.get(r.id, 0) if measurable(r) else None,
             "reason": "" if measurable(r) else
                       "usage cannot be observed for this tier — compliance leaves no trace",
+            "origin": "generated",
         })
+
+    # Everything on disk this pipeline did NOT write (GRPH-354). Without these the report
+    # measured its own footprint: a fresh install showed a population of zero while the
+    # operator's `.claude/` directory held dozens of artifacts, and those are the ones
+    # actually spending context on every turn.
+    #
+    # Discovered artifacts are NEVER measurable, whatever their tier. A generated skill is
+    # measurable because Graphban meters its own MCP calls by name and instruments the hooks
+    # it renders; a hand-written one has no such instrumentation, so `uses: 0` there would be
+    # a measurement nobody took — and zero uses on a measurable tier is what queues a delete.
+    found = inv_svc.inventory(db, project_id, include_orphaned=True)
+    for row in found:
+        if row.recommendation_id is not None:
+            continue  # already counted above as the generated artifact it is
+        out.append({
+            "id": None, "inventory_id": row.id, "tier": row.tier,
+            "title": row.path.rsplit("/", 1)[-1], "path": row.path,
+            "measurable": False,
+            "uses": None,
+            "reason": ("discovered on disk rather than generated — Graphban has no "
+                       "instrumentation in it, so its use cannot be observed"),
+            "origin": "discovered",
+            "state": row.state,
+        })
+
     return {
         "artifacts": out,
         "population": len(out),
+        "generated": sum(1 for r in out if r["origin"] == "generated"),
+        "discovered": sum(1 for r in out if r["origin"] == "discovered"),
+        # Counted from the INVENTORY, not from `out`. A forked row always carries a
+        # `recommendation_id` and so is skipped by the loop above — counting these off `out`
+        # gave a `forked` figure that could never be anything but zero, which is the same
+        # "absence reads as a clean result" this whole feature exists to close.
+        "orphaned": sum(1 for r in found if r.state == "orphaned"),
+        "forked": sum(1 for r in found if r.state == "forked"),
         "measurable": sum(1 for r in out if r["measurable"]),
         # Named explicitly so a reader can see what the numbers below do NOT cover.
         "unmeasurable": [r["title"] or r["path"] for r in out if not r["measurable"]],
