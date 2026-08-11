@@ -288,6 +288,33 @@ def cmd_import(args) -> int:
     return 0
 
 
+def cmd_learn(args) -> int:
+    """Run the learning loop against this instance's database (GRPH-353 / PRD-16).
+
+    The CLI half of the driver. It exists alongside `POST /api/learning/run` because they
+    suit different deployments and both are real: a self-host operator following the
+    README's local-Docker-first path schedules
+
+        docker compose exec api graphban learn run --stage ingest
+
+    from cron and needs no network or credential, while a hosted instance points its
+    scheduler at the route. Both call `learning.run`, so there is one implementation of what
+    a run actually does.
+    """
+    from app.services import learning as learning_svc
+
+    db = _session()
+    try:
+        result = learning_svc.run(db, stage=args.stage, project_id=args.project or "core",
+                                  limit_sources=args.limit_sources)
+    except learning_svc.UnknownStage as e:
+        sys.exit(f"graphban learn: {e}")
+    finally:
+        db.close()
+    print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="graphban", description="Local code-graph sync for a Graphban self-host (AL-134).")
@@ -331,6 +358,23 @@ def build_parser() -> argparse.ArgumentParser:
     im.add_argument("--project")
     im.add_argument("--prune", action="store_true", help="mark paths absent from the bundle stale")
     im.set_defaults(func=cmd_import)
+
+    ln = sub.add_parser("learn", help="run the learning loop (transcript ingest → artifacts)")
+    lnsub = ln.add_subparsers(dest="learn_command", required=True)
+    lr = lnsub.add_parser("run", help="ingest transcripts and/or draft artifacts")
+    # Spelled out rather than imported from `learning.STAGES`: building the parser happens
+    # on every invocation including `--help`, and importing the service layer there drags in
+    # SQLAlchemy and the whole app to print a usage string. `test_cli_learn_stages_match`
+    # pins these against STAGES so the duplication cannot drift.
+    lr.add_argument("--stage", default="all", choices=["ingest", "artifacts", "all"],
+                    help="`ingest` mines transcripts into candidates; `artifacts` turns "
+                         "PUBLISHED lessons into recommendations. They sit either side of "
+                         "human triage, so the two run on the same schedule and the second "
+                         "picks up whatever was approved since the last pass.")
+    lr.add_argument("--project", help="project to attribute mined evidence to (default core)")
+    lr.add_argument("--limit-sources", type=int, default=None, dest="limit_sources",
+                    help="stop after N transcripts — for a first look at a large archive")
+    lr.set_defaults(func=cmd_learn)
 
     return p
 

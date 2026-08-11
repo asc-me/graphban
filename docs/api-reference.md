@@ -83,6 +83,35 @@ connected LLM can answer "what depends on X" from real edges — never from a ch
 doesn't have. Returns `{reply, nodes:[{node, score}]}`; the `/stream` variant emits a `nodes`
 SSE event, then `delta`s, then `done`. Body is `{message, project_id?}`.
 
+## Learning loop (PRD-16)
+
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| POST | `/api/learning/run` | **API key** | Drive the loop. `{stage, project_id?, limit_sources?}` (GRPH-353) |
+| GET | `/api/artifacts/recommendations` | JWT | The review queue — superseded rows excluded |
+| GET | `/api/artifacts/recommendations/{id}` | JWT | One recommendation, its draft, and its install plan |
+| POST | `/api/artifacts/recommendations/{id}/review` | JWT | `{decision: approve\|reject}` — the human boundary |
+| GET | `/api/artifacts/usage` | JWT | Population + uses; `uses` is `null`, never `0`, for an unmeasurable tier |
+| GET | `/api/artifacts/stale` | JWT | Measurable artifacts with no observed use in 30 days |
+| POST | `/api/artifacts/{id}/used` | **API key** | A generated hook reporting that it fired |
+
+`stage` is `ingest`, `artifacts`, or `all`. The two stages sit either side of **human
+triage** and that is the design, not a limitation: ingest writes `candidate` shards,
+classification reads `published` ones. So a single pass on a fresh install does nothing
+downstream, and the artifact stage picks up whatever was approved since the last run —
+however long ago that was. An unknown stage is a 422 rather than a silent run of everything.
+
+Both run stages are safe to re-run and cheap when nothing changed: the ingest watermark only
+advances after events are written, classification skips lessons already classified, and
+drafting is keyed on a hash of the lesson text. A second pass over unchanged input makes
+**zero** provider calls.
+
+The two API-key routes are the odd ones out and for the same reason: their callers are cron
+and a generated hook running on somebody's machine, neither of which can hold a session.
+The equivalent of the run endpoint for a local Docker install is
+`docker compose exec api graphban learn run --stage ingest`, which calls the same service
+function.
+
 ## PRDs
 
 | Method | Path | Auth | Notes |
