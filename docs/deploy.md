@@ -205,6 +205,32 @@ account-touching step (the remaining `railway` items). What the code already han
 | `CORS_ORIGINS` | The web service's public origin(s). |
 | `TRUSTED_PROXY=true` | Behind Railway's edge, so `X-Forwarded-For` is trustworthy. |
 
+### The first operator (hosted)
+
+A fresh hosted instance cannot be logged into, and the cycle is airtight:
+`SIGNUP_MODE=invite_only` refuses registration without a token, issuing a platform invite
+requires a platform-admin JWT, and a JWT requires an account. `graphban init` deliberately
+refuses hosted mode — it mints an API key without authenticating anyone, which is a hole on
+a multi-tenant deployment.
+
+Break the cycle from inside the deployment, where having shell access *is* the authority
+proof:
+
+```bash
+railway ssh --service backend \
+  'graphban admin bootstrap-hosted --email you@example.com --org-name your-org'
+```
+
+It creates the operator and their org, prints a generated password **once**, and mints no
+API key and no project — everything past the first login goes through the product. It
+refuses on a second run, so it cannot create a rival operator.
+
+**The email must already be in `PLATFORM_ADMIN_EMAILS`**, or the command refuses. Platform
+admin is an env allowlist, not a flag on the row, so an account created with any other
+address signs in perfectly and can never open the operator console — which looks like a
+product bug rather than a configuration one. Note that Railway *stages* variable edits:
+until you apply them they are absent from the running service while appearing saved.
+
 ### `/data/sync`
 
 Drive/filesystem sync is a self-host convenience. On Railway either leave it
