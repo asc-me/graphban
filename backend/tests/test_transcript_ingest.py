@@ -725,9 +725,11 @@ def test_an_identical_retry_is_transient_not_a_lesson(db, transcripts):
     ])
     ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
 
+    from app.services.ingest.claude_code import TRANSIENT_PREFIX
+
     row = _episode_shard(db)
     assert row.origin.endswith(":transient")
-    assert "TRANSIENT" in row.text and "Resolved by" not in row.text
+    assert row.text.startswith(TRANSIENT_PREFIX) and "Resolved by" not in row.text
 
 
 def test_a_failure_nothing_fixed_is_marked_unresolved(db, transcripts):
@@ -737,9 +739,11 @@ def test_a_failure_nothing_fixed_is_marked_unresolved(db, transcripts):
         _call("t1", command=CMD_BAD), _result("t1", is_error=True, content=BROKE)])
     ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
 
+    from app.services.ingest.claude_code import UNRESOLVED_PREFIX
+
     row = _episode_shard(db)
     assert row.origin.endswith(":unresolved")
-    assert row.text.startswith("UNRESOLVED")
+    assert row.text.startswith(UNRESOLVED_PREFIX)
 
 
 def test_a_different_tool_succeeding_is_not_a_fix(db, transcripts):
@@ -850,3 +854,95 @@ def test_the_same_target_under_a_different_tool_is_not_a_fix(db, transcripts):
     ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
 
     assert _episode_shard(db).origin.endswith(":unresolved")
+
+
+# ---- the ladder must compare content, not format (GRPH-350) ---------------------------------
+# The first promotion pass over the episode corpus returned 18 accepts split EXACTLY 6
+# resolved / 6 transient / 6 unresolved. That evenness was the tell: every shard in a class
+# opened with the same ~70-character sentence naming its state, and `bge-m3` embeds the whole
+# string, so unrelated episodes scored as near-duplicates on their preamble. Cluster size is
+# what the ladder promotes on, so the FORMAT was manufacturing corroboration.
+def test_the_state_is_a_short_tag_not_a_sentence(db, transcripts):
+    """The state's real home is `origin`. What is left in the text is for a human reading
+    the shard, and it has to be small enough not to swamp the content beside it."""
+    from app.services.ingest.claude_code import TRANSIENT_PREFIX, UNRESOLVED_PREFIX
+
+    assert len(UNRESOLVED_PREFIX) <= 16 and len(TRANSIENT_PREFIX) <= 16
+
+
+def test_an_episode_is_embedded_on_its_content_alone(db, transcripts):
+    """THE fix. The stored shard keeps its labels so a reviewer can see which half is which;
+    the vector is built from the tool, the attempt, the error and the fix — nothing that is
+    identical in every episode ever written."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", command=CMD_BAD), _result("t1", is_error=True, content=BROKE),
+        _call("t2", command=CMD_FIX), _result("t2"),
+    ])
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    row = _episode_shard(db)
+    assert "Attempted:" in row.text and "Resolved by:" in row.text, "readable when stored"
+
+    from app.services.ingest.claude_code import _episode_content
+    content = _episode_content("Bash", CMD_BAD, BROKE, CMD_FIX)
+    for label in ("Tool:", "Attempted:", "Failed:", "Resolved by:"):
+        assert label not in content, f"{label} is in every episode and must not be embedded"
+    assert "rsync" in content and "--exclude sync" in content, "the content survives"
+
+
+def test_the_state_never_reaches_the_vector(db, transcripts):
+    """The sharpest form of it. Two episodes with identical content but different states
+    must embed identically — otherwise the state is a feature the ladder can cluster on,
+    which is exactly what produced 18 accepts split evenly 6/6/6 across the three states."""
+    from app.services.ingest.claude_code import _episode_content, _episode_text
+
+    unresolved = _episode_text("Bash", CMD_BAD, BROKE, None)
+    transient = _episode_text("Bash", CMD_BAD, BROKE, CMD_BAD)
+
+    assert unresolved != transient, "the STORED shards differ, so a reader can tell them apart"
+    assert (_episode_content("Bash", CMD_BAD, BROKE, None)
+            == _episode_content("Bash", CMD_BAD, BROKE, CMD_BAD)), \
+        "but what is embedded is the same content, carrying no state to cluster on"
+
+
+def test_a_shard_is_embedded_on_what_it_is_given_not_what_it_stores(db):
+    """The seam itself (`add_memory(embed_text=...)`). Everything else embeds exactly what
+    it stores, which is right until a producer writes structure."""
+    from app.embeddings import cosine_similarity
+    from app.services import memory as mem_svc
+
+    plain = mem_svc.add_memory(db, text_body="rsync needs --exclude sync", project_id="core")
+    structured = mem_svc.add_memory(
+        db, text_body="[unresolved]\nTool: Bash\nFailed: totally different words here",
+        embed_text="rsync needs --exclude sync", project_id="core")
+
+    assert structured.text.startswith("[unresolved]"), "stored as given"
+    assert cosine_similarity(list(plain.embedding), list(structured.embedding)) == 1.0, \
+        "embedded on embed_text, so it matches the plain shard exactly"
+
+
+def test_the_runner_actually_wires_the_content_through_to_the_vector(db, transcripts):
+    """The SEAM, not the two ends. Both halves can be right while nothing connects them —
+    `_episode_content` computing the right string and `add_memory` honouring `embed_text`
+    prove nothing if the runner never passes one to the other. Sabotage caught exactly that:
+    deleting the runner's `embed_text=` argument broke no test."""
+    from app.embeddings import cosine_similarity, get_embedder
+    from app.services.ingest.claude_code import _episode_content
+
+    _write(transcripts, "s.jsonl", [
+        _call("t1", command=CMD_BAD), _result("t1", is_error=True, content=BROKE),
+        _call("t2", command=CMD_FIX), _result("t2"),
+    ])
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    row = _episode_shard(db)
+    embed = get_embedder().embed
+    content = _episode_content("Bash", CMD_BAD, BROKE, CMD_FIX)
+
+    # A tolerance, not equality: pgvector stores float4, so a vector that went through
+    # Postgres comes back single-precision and never compares exactly to one that did not.
+    # The SQLite run passed on `== 1.0` and hid this.
+    assert cosine_similarity(list(row.embedding), embed(content)) > 0.999, \
+        "the stored vector is the CONTENT's"
+    assert cosine_similarity(list(row.embedding), embed(row.text)) < 0.999, \
+        "and not the formatted shard's"

@@ -291,3 +291,62 @@ def test_a_tie_prefers_the_fuller_text(db):
                        project_id="core", embedding=[1.0, 0.0])
 
     assert mem_svc._cluster_representative([short, full]).id == "m_z"
+
+
+# ---- a failure that records no change must not promote (GRPH-350) ---------------------------
+# Classification already refused these; the promotion path refused neither, so "the identical
+# call succeeded on retry" could be published into trusted memory as something learned.
+def _episode(db, state, session, text="Tool: Bash\nAttempted: x y z\nFailed: broke here"):
+    """Distinct sessions on purpose: with one source the GRPH-306 veto fires first and the
+    test would pass without the new rule ever being consulted."""
+    return mem_svc.add_memory(db, text_body=text, project_id="core", status="candidate",
+                              source=f"transcript:claude-code:{session}", auto_triage=False,
+                              origin=f"ingest:claude-code:{state}")
+
+
+@pytest.mark.parametrize("state", ["unresolved", "transient"])
+def test_a_failure_recording_no_change_is_held_at_review(db, state):
+    """Recurrence cannot rescue it. Ten identical unresolved failures are ten pieces of
+    evidence that something is painful and zero evidence of what to do instead."""
+    for i in range(4):
+        _episode(db, state, f"s{i}")
+
+    accepts = [r for r in mem_svc.score_candidates(db, project_id="core")
+               if r["suggestion"] == "accept"]
+    assert accepts == []
+
+
+def test_a_resolved_episode_still_promotes(db):
+    """The other half. A veto that held everything back would pass the test above and make
+    the whole loop inert."""
+    for i in range(4):
+        _episode(db, "resolved", f"s{i}",
+                 text=("Tool: Bash\nAttempted: sleep 30; tail log\nFailed: blocked\n"
+                       "Resolved by: use Monitor with an until-loop"))
+
+    accepts = [r for r in mem_svc.score_candidates(db, project_id="core")
+               if r["suggestion"] == "accept"]
+    assert len(accepts) == 1, "one lesson, one promotion (GRPH-346)"
+
+
+def test_the_veto_says_why_it_was_held(db):
+    """A reviewer seeing `review` with no reason cannot tell it from anything else novel."""
+    for i in range(4):
+        _episode(db, "unresolved", f"s{i}")
+
+    rows = [r for r in mem_svc.score_candidates(db, project_id="core")
+            if r["suggestion"] == "review"]
+    assert any("records nothing that was done differently" in r
+               for row in rows for r in row["reasons"])
+
+
+def test_an_ordinary_candidate_is_untouched_by_the_veto(db):
+    """PRD-16's success metric: verdicts are unchanged for inputs that lack the new signal."""
+    for i in range(4):
+        mem_svc.add_memory(db, text_body="always set a timeout on outbound http calls",
+                           project_id="core", status="candidate", auto_triage=False,
+                           source=f"transcript:claude-code:s{i}", origin="ingest:claude-code")
+
+    accepts = [r for r in mem_svc.score_candidates(db, project_id="core")
+               if r["suggestion"] == "accept"]
+    assert len(accepts) == 1

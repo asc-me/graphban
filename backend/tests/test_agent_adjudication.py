@@ -60,10 +60,17 @@ def _allow(client, auth, pid, **extra):
 
 
 def _judge(monkeypatch, keep: bool, quality: float, reason: str = "because"):
-    """Stand in for a configured chat model. `_llm_judge` returns None without one, which
-    is the degrade path — so a test that wants a verdict must supply one."""
-    monkeypatch.setattr(mem_svc, "_llm_judge",
-                        lambda db, shard: {"keep": keep, "quality": quality, "reason": reason})
+    """Stand in for a configured chat model. Without one there is no verdict, which is the
+    degrade path — so a test that wants a verdict must supply one.
+
+    Patches `judge_verdict`, which is what `agent_publish` calls since GRPH-351: it returns
+    `(verdict, cause)` so a caller can report WHICH failure occurred instead of blaming a
+    missing model for all of them. `_llm_judge` is now a thin view over it, and patching
+    that one no longer reaches the publish path.
+    """
+    monkeypatch.setattr(
+        mem_svc, "judge_verdict",
+        lambda db, shard: ({"keep": keep, "quality": quality, "reason": reason}, "ok"))
 
 
 # ---- the asymmetry ------------------------------------------------------------------

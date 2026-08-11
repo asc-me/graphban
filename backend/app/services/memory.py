@@ -95,13 +95,30 @@ def add_memory(
     status: str = "published",
     origin: str = "",
     auto_triage: bool = True,
+    embed_text: str | None = None,
 ) -> MemoryShard:
+    """`embed_text` lets a producer store a READABLE shard while the ladder compares only
+    its content (GRPH-350).
+
+    Everything else embeds exactly what it stores, which is right until a producer writes
+    structure. Episodes do: every one carries `Tool:` / `Attempted:` / `Failed:` and, until
+    this existed, a ~70-character sentence naming its state. `bge-m3` embeds all of it, so
+    two episodes about unrelated tools scored as near-duplicates on their preamble — and
+    cluster size is what the ladder promotes on, so the FORMAT was manufacturing the
+    corroboration. The first promotion pass over the episode corpus returned 18 accepts
+    split exactly 6/6/6 across the three states, which is what that looks like.
+
+    Optional and defaulting to the stored text, so no existing producer changes behaviour.
+    """
     # Redact BEFORE the row exists (GRPH-305). Scrubbing at publish time is too late: a
     # candidate is already persisted and already searchable, so the leak has happened.
     # Here, every producer inherits it — ingest, extract_lessons, the grill, agent writes.
     from app.services.scrub import scrub
 
     text_body, _redacted = scrub(text_body)
+    # Scrubbed too: it never reaches a row, but a producer should not have to know that in
+    # order to reason about where a secret can end up.
+    vector_source = scrub(embed_text)[0] if embed_text else text_body
     shard = MemoryShard(
         id="m_" + uuid.uuid4().hex[:10],
         text=text_body,
@@ -113,7 +130,7 @@ def add_memory(
         item_id=item_id,
         project_id=project_id,
         # Never lose the write to a down embedder — backfill fills a NULL vector later.
-        embedding=safe_embed(text_body),
+        embedding=safe_embed(vector_source),
         fresh=fresh,
         status=status,
         origin=origin,
@@ -266,6 +283,22 @@ def _cluster_representative(group: list[MemoryShard]) -> MemoryShard:
     )[0][0]
 
 
+# Ingested episodes that record no CHANGE, and so cannot be a lesson however often they
+# recur. Named for the state rather than listed as "not resolved", so a fourth state added
+# later has to be classified deliberately instead of defaulting to promotable (GRPH-350).
+_UNPROMOTABLE_STATES = ("unresolved", "transient")
+
+
+def _unpromotable_state(shard: MemoryShard) -> str | None:
+    """`unresolved` | `transient` | None — why this shard must not promote, if it must not.
+
+    Reads `origin`, which is where the ingest runner records the episode's state, and where
+    `artifacts._is_unresolved` already reads it for the classification side.
+    """
+    state = (shard.origin or "").rsplit(":", 1)[-1]
+    return state if state in _UNPROMOTABLE_STATES else None
+
+
 def _is_correction(shard: MemoryShard) -> bool:
     """Correction-class lessons earn trust faster (PRD-16).
 
@@ -413,6 +446,19 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
             list(c.embedding), published, rejected, support, human_derived, corroborating,
             distinct_sources=cluster_sources.get(c.id), correction=_is_correction(c),
         )
+        # An ingested failure nothing ever fixed, or one that succeeded on an IDENTICAL
+        # retry, is evidence — not a lesson. Classification already refuses both; the
+        # promotion path refused neither, so "the identical call succeeded on retry" could
+        # be published into trusted memory as something learned (GRPH-350).
+        #
+        # A VETO, never a new accept path — it can only hold something back, so every
+        # verdict that does not involve one of these is unchanged. Same shape as the
+        # distinct-source rule, and for the same reason.
+        if suggestion == "accept" and _unpromotable_state(c):
+            suggestion, confidence = "review", min(confidence, 0.45)
+            reasons.append(
+                f"an {_unpromotable_state(c)} failure — evidence that something is "
+                f"repeatedly painful, but it records nothing that was done differently")
         out.append({
             "shard": c,
             "suggestion": suggestion,
@@ -527,23 +573,32 @@ def _parse_judge(raw: str) -> dict | None:
     }
 
 
-def _llm_judge(db: Session, shard: MemoryShard) -> dict | None:
-    """Ask the project's chat model to assess a candidate memory (AL-227 / GRPH-348).
+# Why the judge produced no verdict (GRPH-351). `None` used to have exactly one cause, and
+# the message a caller showed said so. GRPH-348 gave it three more and left the message
+# alone, so an operator was told "no chat model is configured" about a model that had just
+# judged five other shards in the same run.
+#
+# `split` and `no_input` are properties of the CANDIDATE — this shard is contested, or is
+# shaped so the judge cannot read it. `no_provider` and `error` are properties of the
+# INSTALLATION. Only the second pair is something an operator can go and fix.
+JUDGE_CAUSES = {
+    "no_provider": "no independent chat model is configured for this project",
+    "split": "the judge did not agree with itself across samples, so this candidate has no "
+             "adjudication rather than a negative one",
+    "no_input": "the judge replied that it received no content to rate, so its answer is "
+                "not a verdict about this candidate",
+    "unparseable": "the judge did not answer in the required form",
+    "error": "the judge could not be reached",
+}
 
-    Returns {keep, quality, reason}, or None when no real model is configured (the offline
-    stub), the call/parse fails, or **the judge disagrees with itself** — so the judge
-    degrades to the similarity signal rather than erroring or guessing.
 
-    Asked `JUDGE_SAMPLES` times and required to agree. `temperature=0` was assumed to make
-    that unnecessary; measured against ollama it does not — one stored shard judged five
-    times came back `keep=False` four times and `keep=True` once. Stops at the first
-    disagreement, so the extra cost is paid only where the answer was stable anyway.
+def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
+    """`(verdict, cause)` — the judge's answer and, when there is none, WHY (GRPH-351).
 
-    The text is whitespace-normalised for the JUDGE ONLY, never for storage: a stored
-    `'Exit code 1\\n(eval):cd:1: …'` made the model reply as though the prompt were empty,
-    while the same characters with a space instead returned a real verdict. That is a
-    mitigation and not the fix — `_parse_judge` refuses the no-input answer outright,
-    because the input's SHAPE must not decide whether the judge answers at all.
+    `_llm_judge` keeps returning a bare `dict | None` for callers that only act on a
+    verdict; anything that reports a failure to a human should come through here, because
+    "the model is missing" and "the model cannot decide about this shard" send a reader to
+    completely different places.
     """
     from app.services import platform as platform_svc  # lazy: avoid import cycle
 
@@ -551,9 +606,9 @@ def _llm_judge(db: Session, shard: MemoryShard) -> dict | None:
         provider, model = platform_svc.resolve_chat(db, shard.project_id or "core")
     except Exception:  # noqa: BLE001 — never let provider resolution break a write
         logger.exception("llm judge: provider resolution failed")
-        return None
+        return None, "error"
     if provider == "stub":
-        return None  # the offline stub can't judge — fall back to similarity
+        return None, "no_provider"
 
     text = " ".join((shard.text or "").split())
     verdicts: list[dict] = []
@@ -563,14 +618,17 @@ def _llm_judge(db: Session, shard: MemoryShard) -> dict | None:
                              question=_JUDGE_QUESTION, temperature=0)
         except Exception:  # noqa: BLE001 — a model outage must not fail the memory write
             logger.exception("llm judge: chat call failed")
-            return None
+            return None, "error"
         verdict = _parse_judge(raw)
         if verdict is None:
-            return None
+            # Two different failures, and collapsing them would be the very conflation this
+            # function exists to undo: the judge SAYING it saw nothing is a fact about this
+            # candidate, while an unparseable reply is a fact about the model.
+            return None, ("no_input" if _NO_INPUT_RE.search(raw or "") else "unparseable")
         if verdicts and verdict["keep"] != verdicts[0]["keep"]:
             logger.info("llm judge: split verdict on shard %s after %d samples; "
                         "no adjudication", shard.id, len(verdicts) + 1)
-            return None
+            return None, "split"
         verdicts.append(verdict)
 
     # Agreed. Average the quality so one outlier rating cannot carry a publish on its own,
@@ -579,7 +637,17 @@ def _llm_judge(db: Session, shard: MemoryShard) -> dict | None:
         "keep": verdicts[0]["keep"],
         "quality": round(sum(v["quality"] for v in verdicts) / len(verdicts), 3),
         "reason": verdicts[0]["reason"],
-    }
+    }, "ok"
+
+
+def _llm_judge(db: Session, shard: MemoryShard) -> dict | None:
+    """The judge's verdict, or None however it failed (AL-227 / GRPH-348).
+
+    A thin view over `judge_verdict` for callers that only act on a verdict and never
+    report why there wasn't one. Anything that shows a human a reason must call
+    `judge_verdict` instead — see JUDGE_CAUSES for why the distinction matters.
+    """
+    return judge_verdict(db, shard)[0]
 
 
 def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
@@ -758,11 +826,16 @@ def agent_publish(db: Session, shard: MemoryShard, *, origin: str) -> tuple[Memo
 
     Raises AdjudicationUnavailable when no real chat model is configured, so an offline
     instance degrades to the human boundary instead of rubber-stamping."""
-    verdict = _llm_judge(db, shard)
+    verdict, cause = judge_verdict(db, shard)
     if verdict is None:
+        # Say WHICH failure (GRPH-351). This read "no independent chat model is configured"
+        # for every cause, and reported exactly that about a model that had just judged five
+        # other shards in the same run — sending a reader to look for a provider that was
+        # present and working, while the real finding (this shard is one the judge cannot
+        # decide) stayed invisible.
         raise AdjudicationUnavailable(
-            "no independent chat model is configured for this project, so a candidate "
-            "cannot be adjudicated; a human publishes it from Memory review"
+            f"{JUDGE_CAUSES.get(cause, cause)}, so this candidate cannot be adjudicated; "
+            f"a human publishes it from Memory review"
         )
     keep = verdict["keep"] and verdict["quality"] >= _JUDGE_PUBLISH_MIN
     shard.status = "published" if keep else "rejected"
