@@ -233,8 +233,20 @@ def _record_superseded_intent(db: Session, item: Item, hold: dict | None) -> Non
 
 
 def _auto_extract_lessons(db: Session, item: Item) -> None:
-    """On completion, distill lessons into memory shards (respects project.auto_extract)."""
+    """On completion, distill lessons into memory shards (respects project.auto_extract).
+
+    **Delegates to `insights.extract_lessons` rather than reimplementing it (GRPH-358).**
+    There were two extraction paths — the explicit MCP tool and this one — and they drifted:
+    GRPH-358 taught the tool to read an item's OUTCOME before its description, and this path,
+    which is the one that actually fires on completion and the one that produced the wrong
+    lesson in the first place, kept distilling the raw description. Worse, the fix's test
+    called the tool directly, so it passed while this stayed broken.
+
+    One implementation, so the next change to what a lesson is made of cannot miss a caller.
+    Imported inside the function because `insights` imports this module.
+    """
     from app.models import Project
+    from app.services import insights as insights_svc
     from app.services import memory as memory_svc
 
     project = db.get(Project, item.project_id)
@@ -245,19 +257,10 @@ def _auto_extract_lessons(db: Session, item: Item) -> None:
                 if s.source == f"lesson from {item.id}"]
     if existing:
         return
-    from app.services import platform as platform_svc
-
     try:
-        lessons = platform_svc.extractor_for(db, item.project_id).extract(title=item.title, description=item.description)
-    except Exception:
-        return  # never let extraction failure block a status change
-    for text in lessons:
-        # Candidates for human review, not auto-trusted memory (AL-49).
-        memory_svc.add_memory(
-            db, text_body=text, scope="item", source=f"lesson from {item.id}",
-            item_id=item.id, project_id=item.project_id, fresh=True,
-            status="candidate", origin="agent:auto-extract",
-        )
+        insights_svc.extract_lessons(db, item.id)
+    except Exception:  # noqa: BLE001 — extraction must never block a status change
+        return
 
 
 def reorder_items(db: Session, ordered_ids: list[str]) -> list[Item]:
