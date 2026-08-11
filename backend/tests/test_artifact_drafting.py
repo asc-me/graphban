@@ -225,3 +225,33 @@ def test_an_empty_reply_is_not_stored_as_an_artifact(db, proj, model):
     rec = art_svc.draft(db, _rec(db, proj))
 
     assert rec.draft == ""
+
+
+# ---- only a resolved episode is a lesson (GRPH-349) ------------------------------------------
+def _ingested(db, proj, origin, text="Tool: Bash\nAttempted: x\nFailed: y\nResolved by: z"):
+    return mem_svc.add_memory(db, text_body=text, project_id=proj, status="published",
+                              origin=origin, source="transcript:claude-code:s1")
+
+
+@pytest.mark.parametrize("origin", ["ingest:claude-code:unresolved",
+                                    "ingest:claude-code:transient"])
+def test_a_failure_with_no_fix_is_never_classified(db, proj, origin):
+    """A rule can only be drafted from what was done DIFFERENTLY, and neither of these
+    records one. Asked to generalise from a bare failure the drafter invents a cause:
+    `cd:1: no such file or directory` became "ensure the directory exists", rendered as a
+    shell guard, for a directory that exists."""
+    _ingested(db, proj, origin)
+    assert art_svc.unclassified(db, proj) == []
+
+
+def test_a_resolved_episode_is_classified(db, proj):
+    """The other half — a filter that excluded everything would pass the test above."""
+    rec = _ingested(db, proj, "ingest:claude-code:resolved")
+    assert [s.id for s in art_svc.unclassified(db, proj)] == [rec.id]
+
+
+def test_an_ordinary_lesson_is_unaffected(db, proj):
+    """Nothing about hand-written or grill-derived memory changes."""
+    rec = mem_svc.add_memory(db, text_body="Always bump the migration range.",
+                             project_id=proj, status="published", origin="user:alex")
+    assert rec.id in [s.id for s in art_svc.unclassified(db, proj)]

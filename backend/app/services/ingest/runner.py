@@ -81,6 +81,23 @@ def ingest(db: Session, adapter: IngestAdapter, *, project_id: str = "core",
     return stats
 
 
+def _origin_of(ev: Event) -> str:
+    """Where a shard came from, and — for an episode — whether it was ever RESOLVED
+    (GRPH-349).
+
+    Carried on `origin` so the distinction survives into the store. A resolved episode
+    shows what was done differently and is a lesson; an unresolved failure is evidence
+    that something is repeatedly painful and is not. Filing them under one origin would
+    let the second read as the first, which is the defect class this whole PRD keeps
+    turning up.
+    """
+    base = f"ingest:{ev.harness}"
+    if ev.kind != "episode":
+        return base
+    # `resolved` | `unresolved` | `transient` — three different claims about one failure.
+    return f"{base}:{(ev.metadata or {}).get('episode', 'unresolved')}"
+
+
 def is_evidence(ev: Event) -> bool:
     """Does this event carry something worth learning from (GRPH-345)?
 
@@ -139,7 +156,7 @@ def _record(db: Session, mem_svc, ev: Event, project_id: str) -> bool:
         mem_svc.add_memory(
             db, text_body=text, scope="global", project_id=project_id,
             source=f"transcript:{ev.harness}:{ev.session_id}",
-            status="candidate", origin=f"ingest:{ev.harness}",
+            status="candidate", origin=_origin_of(ev),
             # The ladder scores it later; scoring every line at write time would spend the
             # provider budget on material most of which is never promoted.
             auto_triage=False,

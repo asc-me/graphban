@@ -92,7 +92,20 @@ def unclassified(db: Session, project_id: str | None = None) -> list[MemoryShard
     for r in db.scalars(select(ArtifactRecommendation)).all():
         seen.update(r.lesson_ids or [])
     return [s for s in mem_svc.list_shards(db, project_id=project_id, status="published")
-            if s.id not in seen]
+            if s.id not in seen and not _is_unresolved(s)]
+
+
+def _is_unresolved(shard) -> bool:
+    """An ingested failure that nothing ever fixed (GRPH-349).
+
+    Kept out of classification because a rule can only be drafted from what was done
+    DIFFERENTLY, and an unresolved failure records no such thing. Asked to generalise from
+    one anyway, the drafter invents a plausible cause — `cd:1: no such file or directory`
+    became "ensure the directory exists", drafted as a shell guard, for a directory that
+    exists.
+    """
+    origin = shard.origin or ""
+    return origin.endswith(":unresolved") or origin.endswith(":transient")
 
 
 def _existing_index(db: Session, project_id: str | None) -> list[dict]:
