@@ -457,6 +457,42 @@ _JUDGE_SYSTEM = (
 _JUDGE_QUESTION = "Rate this candidate memory. Return only the JSON object."
 _JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
 
+# How many times the judge is asked before its answer is trusted (GRPH-348).
+#
+# `temperature=0` was assumed to make this unnecessary. It does not: judging one stored
+# shard five times through ollama returned `keep=False q=0.1` four times and
+# `keep=True q=0.8` once. A single sample from a judge that disagrees with itself is not an
+# adjudication, and `agent_publish` promises "the JUDGE decides" — which is only worth
+# something if it decides the same thing twice.
+#
+# Unanimity on `keep`, not a majority: a split means the judge has no answer, and inventing
+# one from 2-of-3 would report a coin flip as a verdict. Disagreement returns None, which
+# every caller already handles as "degrade to similarity" / "a human decides".
+JUDGE_SAMPLES = 3
+
+# The bar a judge's own quality score must clear to publish. Its own constant, because this
+# previously borrowed `_SIM_STRONG` (0.88) — a COSINE SIMILARITY threshold. A model's
+# self-reported rating and a vector distance are not the same scale and nothing says they
+# should share a number; the coincidence rejected two shards the judge had described as
+# "Specific actionable instruction to read a file before writing" (0.80) and "Specific
+# actionable advice for a common unauthorized error" (0.70).
+#
+# 0.75 sits above the observed junk (0.0-0.2 for vague error text) and below the observed
+# clear positives (0.8-0.9). A number to move on evidence, which is the point of naming it.
+_JUDGE_PUBLISH_MIN = 0.75
+
+# The judge answering that it received NOTHING. Not a quality verdict — a report that the
+# prompt was empty — and `_parse_judge` was accepting it as quality 0.0, which reads as
+# "worthless" when it means "unread". Three shards were rejected on exactly this.
+#
+# A heuristic over model prose, and deliberately biased safe: a false positive degrades to
+# the similarity signal, which is the behaviour when no model is configured at all.
+_NO_INPUT_RE = re.compile(
+    r"\bno\s+(?:memory\s+)?(?:note|content|text|input|candidate)\b[^.]*\b"
+    r"(?:provided|supplied|given|found|present)\b"
+    r"|\b(?:nothing|no\s+data)\s+(?:was\s+)?(?:provided|supplied|given)\b"
+    r"|\bempty\s+(?:input|prompt|note|content)\b", re.I)
+
 
 def _parse_judge(raw: str) -> dict | None:
     """Parse the judge's reply into {keep, quality, reason}, defensively. Returns None
@@ -472,6 +508,14 @@ def _parse_judge(raw: str) -> dict | None:
         return None
     if not isinstance(data, dict) or "keep" not in data:
         return None
+    reason = str(data.get("reason", "")).strip()
+    # A judge that says it saw no input has not judged (GRPH-348). Treating that as
+    # quality 0.0 makes "I could not read this" indistinguishable from "this is worthless",
+    # and only one of those is a reason to reject something.
+    if _NO_INPUT_RE.search(reason):
+        logger.warning("llm judge: reply claims no input was given (%r); "
+                       "treating as no verdict", reason[:120])
+        return None
     try:
         quality = float(data.get("quality", 0.0))
     except (ValueError, TypeError):
@@ -479,15 +523,28 @@ def _parse_judge(raw: str) -> dict | None:
     return {
         "keep": bool(data["keep"]),
         "quality": max(0.0, min(1.0, quality)),
-        "reason": str(data.get("reason", "")).strip(),
+        "reason": reason,
     }
 
 
 def _llm_judge(db: Session, shard: MemoryShard) -> dict | None:
-    """Ask the project's chat model to assess a candidate memory (AL-227). Returns
-    {keep, quality, reason}, or None when no real model is configured (the offline
-    stub) or the call/parse fails — so the judge degrades to the similarity signal
-    rather than erroring."""
+    """Ask the project's chat model to assess a candidate memory (AL-227 / GRPH-348).
+
+    Returns {keep, quality, reason}, or None when no real model is configured (the offline
+    stub), the call/parse fails, or **the judge disagrees with itself** — so the judge
+    degrades to the similarity signal rather than erroring or guessing.
+
+    Asked `JUDGE_SAMPLES` times and required to agree. `temperature=0` was assumed to make
+    that unnecessary; measured against ollama it does not — one stored shard judged five
+    times came back `keep=False` four times and `keep=True` once. Stops at the first
+    disagreement, so the extra cost is paid only where the answer was stable anyway.
+
+    The text is whitespace-normalised for the JUDGE ONLY, never for storage: a stored
+    `'Exit code 1\\n(eval):cd:1: …'` made the model reply as though the prompt were empty,
+    while the same characters with a space instead returned a real verdict. That is a
+    mitigation and not the fix — `_parse_judge` refuses the no-input answer outright,
+    because the input's SHAPE must not decide whether the judge answers at all.
+    """
     from app.services import platform as platform_svc  # lazy: avoid import cycle
 
     try:
@@ -497,15 +554,32 @@ def _llm_judge(db: Session, shard: MemoryShard) -> dict | None:
         return None
     if provider == "stub":
         return None  # the offline stub can't judge — fall back to similarity
-    try:
-        # Same reason as the grill classifier: a judge that answers differently for
-        # identical input turns "is this memory worth keeping" into a coin flip.
-        raw = model.chat(system=_JUDGE_SYSTEM, context=shard.text, question=_JUDGE_QUESTION,
-                         temperature=0)
-    except Exception:  # noqa: BLE001 — a model outage must not fail the memory write
-        logger.exception("llm judge: chat call failed")
-        return None
-    return _parse_judge(raw)
+
+    text = " ".join((shard.text or "").split())
+    verdicts: list[dict] = []
+    for _ in range(JUDGE_SAMPLES):
+        try:
+            raw = model.chat(system=_JUDGE_SYSTEM, context=text,
+                             question=_JUDGE_QUESTION, temperature=0)
+        except Exception:  # noqa: BLE001 — a model outage must not fail the memory write
+            logger.exception("llm judge: chat call failed")
+            return None
+        verdict = _parse_judge(raw)
+        if verdict is None:
+            return None
+        if verdicts and verdict["keep"] != verdicts[0]["keep"]:
+            logger.info("llm judge: split verdict on shard %s after %d samples; "
+                        "no adjudication", shard.id, len(verdicts) + 1)
+            return None
+        verdicts.append(verdict)
+
+    # Agreed. Average the quality so one outlier rating cannot carry a publish on its own,
+    # and keep the first reason — they concur on the verdict, so any of them explains it.
+    return {
+        "keep": verdicts[0]["keep"],
+        "quality": round(sum(v["quality"] for v in verdicts) / len(verdicts), 3),
+        "reason": verdicts[0]["reason"],
+    }
 
 
 def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
@@ -570,7 +644,8 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
             source = "llm"
             reason = verdict["reason"]
             if verdict["keep"]:
-                suggestion = "accept" if verdict["quality"] >= _SIM_STRONG else "review"
+                suggestion = ("accept" if verdict["quality"] >= _JUDGE_PUBLISH_MIN
+                              else "review")
                 confidence = verdict["quality"]
                 reasons = [f"LLM judge: {reason}"] if reason else ["LLM judge rated it publish-worthy"]
             else:
@@ -689,7 +764,7 @@ def agent_publish(db: Session, shard: MemoryShard, *, origin: str) -> tuple[Memo
             "no independent chat model is configured for this project, so a candidate "
             "cannot be adjudicated; a human publishes it from Memory review"
         )
-    keep = verdict["keep"] and verdict["quality"] >= _SIM_STRONG
+    keep = verdict["keep"] and verdict["quality"] >= _JUDGE_PUBLISH_MIN
     shard.status = "published" if keep else "rejected"
     shard.scoring_source = "agent"
     shard.auto_confidence = verdict["quality"]
