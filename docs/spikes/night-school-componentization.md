@@ -142,6 +142,37 @@ Known limitation carried into the PRD: two teammates following the same house co
 weakness applies to projects sharing a template. Accepted at the org rung, where a human still
 approves; flagged as open for the universal rung.
 
+**DE-SCOPED 2026-08-11 (GRPH-306 → GRPH-356). The org rung is not built, and this records why
+rather than leaving the design reading as though it shipped.** The other two rungs of the
+ladder are real and verified in code — distinct-source recurrence (`memory.py:224`, applied as
+a veto on an accept rather than a new accept path) and the decay clock (`age_state`,
+`memory.py:33`). The scope rung is not, and the decision was to defer it rather than build it
+now, because **both of its inputs are missing**:
+
+- `distinct_users` — nothing records a user on a shard at all. An ingested shard's `origin` is
+  `ingest:<harness>:<state>` and its `source` is `transcript:<harness>:<session>`; there is no
+  user dimension to count. It is precisely the multi-user deployments where that half would
+  carry the weight, and on a solo install it is permanently 1 by definition — so it cannot be
+  validated on the deployment that exists today either.
+- `distinct_projects` — `ingest()` writes everything to a single `project_id` (`"core"` by
+  default) and clustering runs per project, so the count is permanently 1.
+
+Building the formula on top of that ships a gate that **cannot fire**, which is worse than not
+building it: a promotion path nothing can reach reads, from the outside, exactly like one
+nothing has yet earned. That is the recurring defect class in this codebase, not a fix for it.
+
+Note also that `MemoryShard.scope` is already taken — it means `global|item`, not a ladder
+rung — so this needs its own column plus a migration, and retrieval widening in both
+`list_shards` and the raw-SQL path in `search_memory`. `_includes_global` already models a
+similar "should this project see shards it did not create" question and is the place to look
+first.
+
+The grilled design above is unchanged and stays the plan. What it waits on is tracked as
+**GRPH-356**: per-project transcript attribution (the Claude Code adapter can already see
+which repo each transcript directory belongs to, since transcripts live one directory per repo
+path) and a user dimension on mined evidence. The universal rung remains deferred to the
+cloud-tenant design either way.
+
 **Authority.** Night School's install path refuses to write to human-owned artifacts
 (propose-only, `core/artifact_adapter.py:135-149`), refuses any target inside its own package
 (`_refuses_self_target`), and gates real-harness writes behind an explicit
