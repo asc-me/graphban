@@ -93,6 +93,8 @@ SSE event, then `delta`s, then `done`. Body is `{message, project_id?}`.
 | POST | `/api/artifacts/recommendations/{id}/review` | JWT | `{decision: approve\|reject}` — the human boundary |
 | GET | `/api/artifacts/usage` | JWT | Population + uses; `uses` is `null`, never `0`, for an unmeasurable tier |
 | GET | `/api/artifacts/stale` | JWT | Measurable artifacts with no observed use in 30 days |
+| POST | `/api/artifacts/inventory` | **API key** | A client reporting what is installed on its machine (GRPH-354) |
+| GET | `/api/artifacts/inventory` | JWT | What is installed, with `forked` and `orphaned` named |
 | POST | `/api/artifacts/{id}/used` | **API key** | A generated hook reporting that it fired |
 
 `stage` is `ingest`, `artifacts`, or `all`. The two stages sit either side of **human
@@ -106,11 +108,37 @@ advances after events are written, classification skips lessons already classifi
 drafting is keyed on a hash of the lesson text. A second pass over unchanged input makes
 **zero** provider calls.
 
-The two API-key routes are the odd ones out and for the same reason: their callers are cron
-and a generated hook running on somebody's machine, neither of which can hold a session.
+The API-key routes are the odd ones out and for the same reason: their callers are cron, a
+generated hook, or a scanner running on somebody's machine, none of which can hold a session.
 The equivalent of the run endpoint for a local Docker install is
 `docker compose exec api graphban learn run --stage ingest`, which calls the same service
 function.
+
+### The inventory is a client-side scan
+
+`usage_report` used to read only `artifact_recommendations` — artifacts *this pipeline
+generated* — so every skill, hook, agent and rule a human wrote by hand was invisible, and a
+fresh install reported a population of zero while the operator's `.claude/` directory held
+dozens. The scan therefore runs where the files are and posts its findings up:
+
+    graphban learn inventory --root ~/.claude --api-url https://cloud.example --api-key gb_sk_…
+
+A *server-side* walk would find nothing under `hosted_mode` and nothing inside the compose
+container either — and would report zero without erroring. Three properties are load-bearing:
+
+- **Read-only.** Nothing on the scanned machine is written, moved or deleted, under any input.
+- **A discovered artifact is never measurable**, whatever its tier. Graphban meters its own
+  MCP calls and instruments the hooks it renders; it has no instrumentation inside a
+  hand-written skill, so `uses` stays `null`. Discovered artifacts never become stale and can
+  never be retired.
+- **Orphaning is scoped to the `root` posted.** A scan of `~/.claude` says nothing about
+  `~/work/.cursor`; an artifact missing from a scan that never looked for it is flagged
+  `orphaned`, never deleted.
+
+`forked` is the state that matters most: a *generated* artifact whose contents on disk no
+longer match what was rendered has been edited by a human, and `install_plan` refuses it.
+Updates are full re-renders, so writing would silently discard that edit — the exact trust
+failure the propose-only boundary exists to prevent.
 
 ## PRDs
 

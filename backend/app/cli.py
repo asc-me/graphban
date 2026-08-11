@@ -315,6 +315,60 @@ def cmd_learn(args) -> int:
     return 0
 
 
+def cmd_learn_inventory(args) -> int:
+    """Inventory the artifacts installed on THIS machine (GRPH-354 / PRD-16).
+
+    The scan has to run where the files are. A server-side walk would find nothing under
+    `hosted_mode` and nothing inside the compose container either — and it would report a
+    population of zero without erroring, which is the exact failure the inventory exists to
+    close.
+
+    Two ways to deliver the findings, because two deployments need different things:
+
+      --api-url    POST them to an instance (the hosted path, and the right one when this
+                   runs on a laptop that has no database credentials).
+      otherwise    write straight to the database this process can already see.
+
+    Reads only. Nothing on disk is written, moved or deleted by this command under any input.
+    """
+    from app.services import artifact_inventory as inv_svc
+
+    roots = args.root or ["~/.claude"]
+    out = {"roots": {}}
+    for raw in roots:
+        found, stats = inv_svc.scan([raw])
+        items = [d.as_dict() for d in found]
+        if args.api_url:
+            result = _post_inventory(args, raw, items)
+        else:
+            db = _session()
+            try:
+                result = inv_svc.record_scan(
+                    db, project_id=args.project or "core", root=raw, items=items)
+            finally:
+                db.close()
+        out["roots"][raw] = {"scan": stats, "recorded": result}
+    print(json.dumps(out, indent=2, default=str))
+    return 0
+
+
+def _post_inventory(args, root: str, items: list[dict]) -> dict:
+    import httpx
+
+    cfg = load_config()
+    key = args.api_key or cfg.get("api_key", "")
+    if not key:
+        sys.exit("graphban learn inventory: --api-url needs --api-key (or a linked config)")
+    url = args.api_url.rstrip("/") + "/api/artifacts/inventory"
+    body = {"root": root, "items": items, "project_id": args.project}
+    try:
+        r = httpx.post(url, json=body, headers={"X-API-Key": key}, timeout=30)
+        r.raise_for_status()
+    except Exception as e:  # noqa: BLE001 — a failed post must say so, not report success
+        sys.exit(f"graphban learn inventory: could not post to {url} ({e})")
+    return r.json()
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="graphban", description="Local code-graph sync for a Graphban self-host (AL-134).")
@@ -375,6 +429,18 @@ def build_parser() -> argparse.ArgumentParser:
     lr.add_argument("--limit-sources", type=int, default=None, dest="limit_sources",
                     help="stop after N transcripts — for a first look at a large archive")
     lr.set_defaults(func=cmd_learn)
+
+    li = lnsub.add_parser("inventory",
+                          help="record which artifacts are installed on this machine")
+    li.add_argument("--root", action="append",
+                    help="directory to scan; repeatable (default ~/.claude). Orphaning is "
+                         "scoped per root, so scanning one never marks another's missing.")
+    li.add_argument("--project", help="project to attribute the inventory to (default core)")
+    li.add_argument("--api-url", help="post findings to this instance instead of writing "
+                                      "to the local database (the hosted path)")
+    li.add_argument("--api-key", help="credential for --api-url; falls back to the linked "
+                                      "config")
+    li.set_defaults(func=cmd_learn_inventory)
 
     return p
 

@@ -439,6 +439,50 @@ class ArtifactTombstone(Base):
     retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ArtifactInventoryItem(Base):
+    """An artifact that EXISTS on disk, whoever wrote it (GRPH-354 / PRD-16).
+
+    `ArtifactRecommendation` holds only what this pipeline generated, so usage telemetry was
+    blind to every skill, hook, agent and rule a human wrote by hand — reporting a population
+    of zero on an install whose `.claude/` directory was full of them. Those are the artifacts
+    actually spending context on every turn.
+
+    Read-only by construction. A row here means "this was seen"; it never authorises writing,
+    moving or deleting the file it describes.
+
+    `state` carries the three findings that matter, and they are genuinely different claims:
+
+      present  — the file is there. If it is machine-owned, it still matches what we rendered.
+      forked   — machine-owned, and a human has since EDITED it. `install_plan` must refuse to
+                 re-render this: updates are full re-renders, so re-rendering silently
+                 discards their edit — the exact trust failure propose-only exists to prevent.
+      orphaned — inventoried before, absent from the latest scan of the same root. Flagged,
+                 never retired: a file missing from one scan may be an unmounted volume, and
+                 retiring on that reading deletes working artifacts.
+    """
+
+    __tablename__ = "artifact_inventory"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
+    # The root this file was found under. Kept so a scan of one root can only ever orphan
+    # rows from THAT root — scanning `~/.claude` must not mark a `~/work/.cursor` artifact
+    # missing merely because this pass never looked there.
+    root: Mapped[str] = mapped_column(String, default="", index=True)
+    path: Mapped[str] = mapped_column(String, index=True)
+    # skill | agent | hook | rule — the same vocabulary artifacts.py classifies into, so a
+    # discovered rule is unmeasurable for exactly the reason a generated one is.
+    tier: Mapped[str] = mapped_column(String, default="")
+    content_hash: Mapped[str] = mapped_column(String, default="")
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    # Set when this file matches a generated artifact's `draft_path`. NULL = human-authored,
+    # which is the majority and the whole point of the table.
+    recommendation_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    state: Mapped[str] = mapped_column(String, default="present", index=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class IngestWatermark(Base):
     """How far ingest got in one source (GRPH-304 / PRD-16).
 
