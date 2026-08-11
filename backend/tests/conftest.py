@@ -106,12 +106,28 @@ def _schema():
     _drop_schema()
 
 
+@pytest.fixture(autouse=True)
+def _clean_database(_schema):
+    """Every test starts against an empty database — not only the ones asking for `client`.
+
+    Autouse because the alternative is an invariant held by convention. Before the schema
+    was hoisted, a test that reached the database WITHOUT `client` found no tables at all
+    and failed loudly; now it would quietly read whatever the previous test left, which is
+    the kind of thing that surfaces as an unexplained flake months later. Nothing in the
+    suite does that today — it costs ~97 ms x the 109 tests that do not use `client`, about
+    11 seconds on Postgres, to make sure nothing ever can.
+    """
+    _build_schema()  # no-op at head; repairs after a test that downgraded
+    _reset_data()
+    yield
+
+
 @pytest.fixture()
-def client():
+def client(_clean_database):
+    """Depends on the reset EXPLICITLY rather than trusting autouse ordering — the app's
+    lifespan seeds on startup, and a reset that ran afterwards would wipe the seed."""
     from app.main import app
 
-    _build_schema()  # no-op at head; repairs after a test that downgraded
-    _reset_data()  # start clean — the lifespan re-seeds into the empty tables
     with TestClient(app) as c:
         yield c
 
