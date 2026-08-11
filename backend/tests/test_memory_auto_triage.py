@@ -3,6 +3,9 @@ auto-rejecting near-dups / resembles-rejected (on by default) and auto-publishin
 strongly-corroborated lessons (off by default) — behind per-project toggles, with
 every auto-action audited and undoable. Fresh projects give empty, deterministic
 pools; the stub embedder yields identical vectors for identical text."""
+import pytest
+
+from app.services import memory as mem_svc
 
 
 def _mcp(client, key, tool, args):
@@ -259,3 +262,150 @@ def test_human_shard_not_triaged(client, auth):
                           headers=auth).json()
     assert created["status"] == "published"
     assert created["scoring_source"] == ""
+
+
+# ---- the judge has to agree with itself (GRPH-348) -------------------------------------------
+# `temperature=0` was assumed to make one sample enough. Measured against ollama it does not:
+# one stored shard judged five times returned keep=False four times and keep=True once. A
+# single sample from a judge that disagrees with itself is not an adjudication, and
+# `agent_publish` promises "the JUDGE decides" — worth something only if it decides twice.
+class _SeqChat:
+    """Returns a different reply per call, and counts how many it was asked for."""
+
+    def __init__(self, *replies: str):
+        self._replies, self.calls = list(replies), 0
+
+    def chat(self, *, system, context, question, temperature=None) -> str:
+        self.calls += 1
+        self.seen = context
+        return self._replies[min(self.calls - 1, len(self._replies) - 1)]
+
+
+def _patch_seq(monkeypatch, chat):
+    from app.services import platform as platform_svc
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("anthropic", chat))
+    return chat
+
+
+KEEP = '{"keep": true, "quality": 0.9, "reason": "durable and specific"}'
+DROP = '{"keep": false, "quality": 0.1, "reason": "too vague to act on"}'
+
+
+def test_a_split_verdict_is_no_verdict(client, auth, monkeypatch):
+    """THE acceptance criterion. Disagreement means the judge has no answer — reporting a
+    coin flip as a verdict is what let one sample decide a shard's fate."""
+    pid = _proj(client, auth, "JudgeSplit")
+    client.patch(f"/api/projects/{pid}",
+                 json={"memory_llm_judge": True, "memory_write_mode": "auto"}, headers=auth)
+    key = _key(client, auth, project_id=pid)
+    _patch_seq(monkeypatch, _SeqChat(KEEP, DROP, KEEP))
+
+    s = _mcp(client, key, "add_memory", {"text": "always pin the pgvector image in CI"})
+    assert s["status"] == "candidate", "no adjudication, so it falls back to a human"
+    assert s["scoring_source"] != "llm"
+
+
+def test_the_judge_is_asked_more_than_once(client, auth, monkeypatch):
+    """Pins the sampling itself. With one sample the test above passes by accident — the
+    first reply would simply be taken as the answer."""
+    pid = _proj(client, auth, "JudgeSamples")
+    client.patch(f"/api/projects/{pid}", json={"memory_llm_judge": True}, headers=auth)
+    key = _key(client, auth, project_id=pid)
+    chat = _patch_seq(monkeypatch, _SeqChat(KEEP))
+
+    _mcp(client, key, "add_memory", {"text": "always pin the pgvector image in CI"})
+    assert chat.calls == mem_svc.JUDGE_SAMPLES
+
+
+def test_disagreement_stops_early_rather_than_finishing_the_samples(client, auth, monkeypatch):
+    """The extra cost is paid only where the answer was stable anyway."""
+    pid = _proj(client, auth, "JudgeEarly")
+    client.patch(f"/api/projects/{pid}", json={"memory_llm_judge": True}, headers=auth)
+    key = _key(client, auth, project_id=pid)
+    chat = _patch_seq(monkeypatch, _SeqChat(KEEP, DROP, KEEP))
+
+    _mcp(client, key, "add_memory", {"text": "always pin the pgvector image in CI"})
+    assert chat.calls == 2, "stopped at the first disagreement"
+
+
+def test_an_agreeing_judge_still_decides(client, auth, monkeypatch):
+    """The other half — a filter that refused everything would pass every test above."""
+    pid = _proj(client, auth, "JudgeAgree")
+    client.patch(f"/api/projects/{pid}",
+                 json={"memory_llm_judge": True, "memory_write_mode": "auto"}, headers=auth)
+    key = _key(client, auth, project_id=pid)
+    _patch_seq(monkeypatch, _SeqChat(KEEP, KEEP, KEEP))
+
+    s = _mcp(client, key, "add_memory", {"text": "always pin the pgvector image in CI"})
+    assert s["status"] == "published" and s["scoring_source"] == "llm"
+
+
+# ---- "I saw nothing" is not a quality score --------------------------------------------------
+@pytest.mark.parametrize("reason", [
+    "No memory note was provided",
+    "No memory content was provided for evaluation",
+    "Nothing was provided to review",
+    "Empty input, cannot rate",
+])
+def test_a_judge_reporting_an_empty_prompt_has_not_judged(client, auth, monkeypatch, reason):
+    """Three real shards were rejected at quality 0.00 on replies like these. The prompt was
+    NOT empty — `'Exit code 1\\n(eval):cd:1: …'`. "I could not read this" and "this is
+    worthless" are opposite claims, and only one is a reason to reject something."""
+    pid = _proj(client, auth, "JudgeBlind")
+    client.patch(f"/api/projects/{pid}", json={"memory_llm_judge": True}, headers=auth)
+    key = _key(client, auth, project_id=pid)
+    _patch_seq(monkeypatch, _SeqChat('{"keep": false, "quality": 0.0, "reason": "%s"}' % reason))
+
+    s = _mcp(client, key, "add_memory", {"text": "the deploy step needs an absolute path"})
+    assert s["status"] == "candidate", "must not be rejected on a non-verdict"
+
+
+def test_an_ordinary_low_score_still_rejects(client, auth, monkeypatch):
+    """The no-input guard must not swallow a real negative — "no actionable detail
+    provided" is a judgement about the CONTENT and has to keep working."""
+    pid = _proj(client, auth, "JudgeLow")
+    client.patch(f"/api/projects/{pid}", json={"memory_llm_judge": True}, headers=auth)
+    key = _key(client, auth, project_id=pid)
+    _patch_seq(monkeypatch, _SeqChat(
+        '{"keep": false, "quality": 0.2, "reason": "vague error message, no actionable detail"}'))
+
+    s = _mcp(client, key, "add_memory", {"text": "the build felt slow today"})
+    assert s["status"] == "rejected"
+
+
+def test_the_judge_is_shown_text_the_shape_does_not_break(client, auth, monkeypatch):
+    """A mitigation, not the fix: the stored `'Exit code 1\\n(eval):…'` made the model reply
+    as though the prompt were empty, while the same characters with a space returned a real
+    verdict. Storage keeps its newlines; only the judge's copy is normalised."""
+    pid = _proj(client, auth, "JudgeWs")
+    client.patch(f"/api/projects/{pid}", json={"memory_llm_judge": True}, headers=auth)
+    key = _key(client, auth, project_id=pid)
+    chat = _patch_seq(monkeypatch, _SeqChat(KEEP))
+
+    s = _mcp(client, key, "add_memory", {"text": "Exit code 1\nthe deploy needs an absolute path"})
+    assert "\n" not in chat.seen, "the judge sees it flattened"
+    assert "\n" in s["text"], "the stored row keeps its shape"
+
+
+# ---- the publish bar is its own number -------------------------------------------------------
+def test_the_quality_bar_is_not_a_similarity_threshold(client, auth, monkeypatch):
+    """It borrowed `_SIM_STRONG` (0.88), a COSINE SIMILARITY threshold, which rejected two
+    shards the judge had itself called "specific" and "actionable" at 0.80 and 0.70. A
+    model's self-rating and a vector distance are not the same scale."""
+    assert mem_svc._JUDGE_PUBLISH_MIN != mem_svc._SIM_STRONG
+
+    from app.db import SessionLocal
+
+    _patch_seq(monkeypatch, _SeqChat(
+        '{"keep": true, "quality": 0.8, "reason": "specific actionable instruction"}'))
+    db = SessionLocal()
+    try:
+        shard = mem_svc.add_memory(db, text_body="read a file before writing to it",
+                                   project_id="core", status="candidate", auto_triage=False)
+        published, verdict = mem_svc.agent_publish(db, shard, origin="agent:test")
+
+        assert verdict["keep"] is True and verdict["quality"] == 0.8
+        assert published.status == "published", \
+            "0.80 clears the judge's own bar; it did not clear the borrowed 0.88"
+    finally:
+        db.close()
