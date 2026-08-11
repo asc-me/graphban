@@ -174,6 +174,21 @@ export const api = {
     accessToken = null;
     setRefreshToken(null);
   },
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    // The server revokes EVERY session on a password change, including this one, so it
+    // hands back a fresh pair. Storing it is what stops a successful change reading as an
+    // instant logout — without this the next request 401s and the user is bounced to the
+    // login page wondering whether the change even took.
+    const data = await request<{ access_token: string; refresh_token: string }>(
+      "/auth/me/password",
+      {
+        method: "POST",
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      },
+    );
+    accessToken = data.access_token;
+    setRefreshToken(data.refresh_token);
+  },
   me: () => request<User>("/auth/me"),
   myMemberships: () =>
     request<{ project_id: string; project_name: string; accent: string; role: string; access: string }[]>(

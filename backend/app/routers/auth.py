@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import Membership, Project, User
-from app.schemas import LoginIn, RefreshIn, RegisterIn, TokenOut, UserOut
+from app.schemas import (LoginIn, PasswordChangeIn, RefreshIn, RegisterIn, TokenOut,
+                         UserOut)
 from app.security.deps import get_current_user
 from app.security.jwt import create_access_token, create_refresh_token, decode_token
 from app.security.net import client_ip
@@ -116,6 +117,43 @@ def logout(user: User = Depends(get_current_user), db: Session = Depends(get_db)
     refresh token issued so far — on any device — stops validating immediately."""
     user.token_version += 1
     db.commit()
+
+
+@router.post("/me/password", response_model=TokenOut)
+def change_password(
+    body: PasswordChangeIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Change your own password (GRPH-219 follow-up).
+
+    **There was no way to do this at all.** `password_hash` was written at account creation
+    — `register`, `seed`, `bootstrap` — and never again, in the API or the UI. So an
+    operator provisioned by `bootstrap-hosted` was handed a generated password they could
+    never rotate, and anyone who forgot theirs was locked out permanently. Found the moment
+    the first hosted operator was told to change the password we had just printed for them.
+
+    **Every existing session dies, including the one that made this call.** Bumping
+    `token_version` is the AL-59 revocation machinery, and it is the point rather than a
+    side effect: the reason to change a password is usually that the old one is not private
+    any more, and leaving previously-issued tokens valid would keep whoever has it signed
+    in. A fresh pair comes back so the caller stays logged in without re-entering anything.
+
+    Not rate-limited, deliberately: it already requires a valid access token, so anyone in
+    a position to brute-force the current password is someone who has already authenticated
+    as this user. Sharing the login bucket would be actively harmful — a few fumbled
+    attempts here would lock the account out of `login`, which is the one door still open.
+    """
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "current password is incorrect")
+    user.password_hash = hash_password(body.new_password)
+    user.token_version += 1
+    db.commit()
+    db.refresh(user)
+    return TokenOut(
+        access_token=create_access_token(user.id, user.token_version),
+        refresh_token=create_refresh_token(user.id, user.token_version),
+    )
 
 
 @router.get("/me", response_model=UserOut)

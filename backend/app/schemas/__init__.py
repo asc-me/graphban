@@ -25,6 +25,14 @@ class LoginIn(BaseModel):
     password: str
 
 
+class PasswordChangeIn(BaseModel):
+    current_password: str
+    # Same floor as RegisterIn, spelled the same way rather than read from
+    # `settings.min_password_length` — that setting is currently unused, and having one
+    # path honour it while the other hardcodes 8 is how the two quietly diverge.
+    new_password: str = Field(min_length=8, max_length=200)
+
+
 class RegisterIn(BaseModel):
     name: str
     email: EmailStr
