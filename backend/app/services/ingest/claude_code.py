@@ -233,8 +233,12 @@ _RESOLVE_MIN_OVERLAP = 0.6
 # which makes them `transient` by definition, never `resolved`.
 _MIN_TOKENS_FOR_PARTIAL = 4
 
-UNRESOLVED_PREFIX = "UNRESOLVED — no successful retry followed."
-TRANSIENT_PREFIX = "TRANSIENT — the identical call succeeded on retry, nothing was changed."
+# Short TAGS, not sentences (GRPH-350). These began as a line of explanation each, which put
+# ~70 identical characters at the head of every shard in their class and made unrelated
+# episodes cluster on their preamble. The state's real home is `origin`; this is only so a
+# human reading the shard can see it, and `_episode_content` keeps it out of the vector.
+UNRESOLVED_PREFIX = "[unresolved]"
+TRANSIENT_PREFIX = "[transient]"
 
 
 def _call_index(rows: list[tuple[int, dict]]) -> dict[str, tuple[str, dict]]:
@@ -325,6 +329,23 @@ def _episode_text(tool: str, failed: str, error: str, fixed: str | None) -> str:
     return "\n".join(body + [f"Resolved by: {fixed[:400]}"])
 
 
+def _episode_content(tool: str, failed: str, error: str, fixed: str | None) -> str:
+    """The same episode with every constant character removed — what gets EMBEDDED.
+
+    No state tag, no `Tool:`/`Attempted:`/`Failed:`/`Resolved by:` labels: those are
+    identical in every episode ever written, so a vector built over them measures how the
+    shard is FORMATTED rather than what happened. Cluster size is what the ladder promotes
+    on, which turned the format into a source of corroboration (GRPH-350).
+
+    The stored shard keeps its labels — a reviewer needs to see which half is which.
+    """
+    # A byte-identical retry adds no content — repeating the attempt would just weight those
+    # tokens twice and make a transient episode embed differently from the unresolved one it
+    # is otherwise identical to.
+    new_information = "" if (fixed is None or _same_call(failed, fixed)) else fixed[:400]
+    return " ".join(p for p in (tool, failed[:400], error[:600], new_information) if p)
+
+
 def _episodes(source: str, rows: list[tuple[int, dict]], start: int,
               harness: str) -> list[Event]:
     """Failure/resolution pairs for every failed call after `start`.
@@ -391,7 +412,9 @@ def _episodes(source: str, rows: list[tuple[int, dict]], start: int,
             tool_name=tool,
             metadata={"source": source, "outcome": "failed", "resolved": resolved,
                       "episode": ("resolved" if resolved
-                                  else "transient" if fix is not None else "unresolved")},
+                                  else "transient" if fix is not None else "unresolved"),
+                      # Content only — see `_episode_content` (GRPH-350).
+                      "embed_text": _episode_content(tool, attempted, error, fix)},
         ))
     return events
 

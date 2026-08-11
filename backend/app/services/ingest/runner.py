@@ -157,6 +157,9 @@ def _record(db: Session, mem_svc, ev: Event, project_id: str) -> bool:
             db, text_body=text, scope="global", project_id=project_id,
             source=f"transcript:{ev.harness}:{ev.session_id}",
             status="candidate", origin=_origin_of(ev),
+            # A structured shard must be COMPARED on its content, or the ladder clusters
+            # on the format every episode shares (GRPH-350).
+            embed_text=(ev.metadata or {}).get("embed_text"),
             # The ladder scores it later; scoring every line at write time would spend the
             # provider budget on material most of which is never promoted.
             auto_triage=False,

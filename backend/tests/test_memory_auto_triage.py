@@ -409,3 +409,84 @@ def test_the_quality_bar_is_not_a_similarity_threshold(client, auth, monkeypatch
             "0.80 clears the judge's own bar; it did not clear the borrowed 0.88"
     finally:
         db.close()
+
+
+# ---- say WHICH failure (GRPH-351) ------------------------------------------------------------
+# `AdjudicationUnavailable` read "no independent chat model is configured" whatever went
+# wrong. Running the first real adjudication, it said exactly that about a model that had
+# just judged five other shards in the same run — sending a reader to look for a provider
+# that was present and working. GRPH-348 fixed the judge's verdicts and left its own failure
+# reporting conflating four causes under the most reassuring one.
+def _adjudicate(db, monkeypatch, *replies, text="read a file before writing to it"):
+    from app.db import SessionLocal
+
+    if replies:
+        _patch_seq(monkeypatch, _SeqChat(*replies))
+    shard = mem_svc.add_memory(db, text_body=text, project_id="core",
+                               status="candidate", auto_triage=False)
+    try:
+        mem_svc.agent_publish(db, shard, origin="agent:test")
+        return None
+    except mem_svc.AdjudicationUnavailable as e:
+        return str(e)
+
+
+@pytest.fixture()
+def sdb():
+    from app.db import SessionLocal
+
+    s = SessionLocal()
+    try:
+        yield s
+    finally:
+        s.close()
+
+
+def test_a_split_verdict_does_not_report_a_missing_model(client, sdb, monkeypatch):
+    """THE case that surfaced it. The model is present and answering; it simply cannot
+    decide about this candidate, which is a fact about the SHARD."""
+    msg = _adjudicate(sdb, monkeypatch, KEEP, DROP, KEEP)
+
+    assert msg is not None
+    assert "did not agree with itself" in msg
+    assert "no independent chat model" not in msg, "the model is configured and working"
+
+
+def test_a_missing_model_still_says_so(client, sdb, monkeypatch):
+    """The original cause has to keep reporting accurately — that one IS something an
+    operator can go and fix."""
+    from app.services import platform as platform_svc
+
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("stub", None))
+    msg = _adjudicate(sdb, monkeypatch)
+
+    assert msg is not None and "no independent chat model is configured" in msg
+
+
+def test_a_judge_that_saw_nothing_is_distinguished_from_one_that_is_absent(client, sdb,
+                                                                          monkeypatch):
+    msg = _adjudicate(sdb, monkeypatch,
+                      '{"keep": false, "quality": 0.0, "reason": "No memory note was provided"}')
+
+    assert msg is not None and "received no content to rate" in msg
+
+
+def test_an_unparseable_reply_is_not_reported_as_an_empty_prompt(client, sdb, monkeypatch):
+    """A model answering in the wrong FORM is a fact about the model; a model saying it got
+    nothing is a fact about the candidate. Collapsing them is the conflation being fixed."""
+    msg = _adjudicate(sdb, monkeypatch, "I'm afraid I can't help with that.")
+
+    assert msg is not None
+    assert "did not answer in the required form" in msg
+    assert "received no content" not in msg
+
+
+@pytest.mark.parametrize("cause", ["no_provider", "split", "no_input", "unparseable", "error"])
+def test_every_cause_has_wording_of_its_own(cause):
+    """A cause added later without a sentence would fall back to printing its own key."""
+    assert cause in mem_svc.JUDGE_CAUSES and len(mem_svc.JUDGE_CAUSES[cause]) > 20
+
+
+def test_the_causes_are_distinguishable_to_a_reader(client, sdb, monkeypatch):
+    """Five different wordings, not five labels on one sentence."""
+    assert len(set(mem_svc.JUDGE_CAUSES.values())) == len(mem_svc.JUDGE_CAUSES)
