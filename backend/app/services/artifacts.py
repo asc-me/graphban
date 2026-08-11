@@ -362,8 +362,25 @@ def draft(db: Session, rec: ArtifactRecommendation) -> ArtifactRecommendation:
 
 
 def draft_pending(db: Session, project_id: str | None = None) -> list[ArtifactRecommendation]:
-    """Draft everything queued. One call each, and none for anything already current."""
-    return [draft(db, r) for r in pending(db, project_id)]
+    """Draft everything queued. One call each, and none for anything already current.
+
+    A recommendation that fails to draft is skipped rather than ending the pass (GRPH-353).
+    `draft` already swallows a failed MODEL call, which was enough while the only caller was
+    a test; under a scheduled driver the rest matters too — a lesson row that vanished, a
+    commit that lost a race — and one of those must not cost the other twenty-nine drafts
+    their run. The rollback is the load-bearing half: without it a failed write leaves the
+    session poisoned and every later `draft` dies with PendingRollbackError, so a single bad
+    row still ends the pass, just noisily rather than cleanly.
+    """
+    out = []
+    for rec in pending(db, project_id):
+        try:
+            out.append(draft(db, rec))
+        except Exception:  # noqa: BLE001 — one bad recommendation must not end the run
+            db.rollback()
+            logger.warning("artifact drafting: skipping recommendation %s", rec.id,
+                           exc_info=True)
+    return out
 
 
 class InstallRefused(RuntimeError):

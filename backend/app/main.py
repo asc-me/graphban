@@ -20,6 +20,7 @@ from app.routers import (
     assistant,
     auth,
     items,
+    learning,
     memory,
     orgs,
     platform,
@@ -105,6 +106,7 @@ app.include_router(items.router, prefix=API)
 app.include_router(requests.router, prefix=API)
 app.include_router(memory.router, prefix=API)
 app.include_router(artifacts.router, prefix=API)
+app.include_router(learning.router, prefix=API)
 app.include_router(apikeys.router, prefix=API)
 app.include_router(agent.router, prefix=API)
 app.include_router(assistant.router, prefix=API)
