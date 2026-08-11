@@ -657,3 +657,196 @@ def test_an_older_transcript_without_the_flags_still_gets_filtered(db, transcrip
     ])
 
     assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 0
+
+
+# ---- episodes: the failure AND what fixed it (GRPH-349) --------------------------------------
+# A failure on its own is a symptom. Measured: feeding bare failures to the classifier drafted
+# confidently wrong rules — `cd:1: no such file or directory: backend` (x10) became "Ensure
+# 'backend' directory exists before running commands", rendered as a shell guard, for a
+# directory that exists. The shell does not persist a working directory between calls, and
+# nothing in the failure text says so. What disambiguates it is what was done DIFFERENTLY next.
+def _call(tool_use_id, name="Bash", **inp):
+    return json.dumps({
+        "sessionId": "s", "type": "assistant", "timestamp": "t",
+        "message": {"content": [{"type": "tool_use", "id": tool_use_id,
+                                 "name": name, "input": inp}]},
+    }) + "\n"
+
+
+def _result(tool_use_id, is_error=False, content="ok"):
+    return json.dumps({
+        "sessionId": "s", "type": "user", "timestamp": "t",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": tool_use_id,
+                                 "is_error": is_error, "content": content}]},
+    }) + "\n"
+
+
+BROKE = "Exit code 23\nrsync: failed to set times on /srv/sync: Operation not permitted"
+CMD_BAD = "rsync -az --delete --exclude .git --exclude .env ./ srv:~/app/"
+CMD_FIX = "rsync -az --delete --exclude .git --exclude .env --exclude sync ./ srv:~/app/"
+
+
+def _episode_shard(db):
+    return db.query(MemoryShard).filter(MemoryShard.source.like("transcript:%")).first()
+
+
+def test_a_failure_and_its_fix_become_one_lesson(db, transcripts):
+    """THE acceptance criterion. Both halves in one shard, so the DIFFERENCE — here
+    `--exclude sync` — is visible to whatever has to state the rule."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", command=CMD_BAD), _result("t1", is_error=True, content=BROKE),
+        _call("t2", command=CMD_FIX), _result("t2"),
+    ])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 1
+    row = _episode_shard(db)
+    assert "Operation not permitted" in row.text, "the failure"
+    assert "--exclude sync" in row.text, "and what fixed it"
+    assert row.origin.endswith(":resolved")
+
+
+def test_the_failure_is_not_also_filed_on_its_own(db, transcripts):
+    """It would be the symptom sitting beside the lesson, and the two would cluster and
+    corroborate each other — a pair manufacturing its own evidence."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", command=CMD_BAD), _result("t1", is_error=True, content=BROKE),
+        _call("t2", command=CMD_FIX), _result("t2"),
+    ])
+
+    assert ingest(db, ClaudeCodeAdapter(root=str(transcripts)))["recorded"] == 1
+
+
+def test_an_identical_retry_is_transient_not_a_lesson(db, transcripts):
+    """Nothing was changed, so nothing was learned. It says the tool is flaky, which is a
+    different claim from "here is what to do instead"."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", command=CMD_BAD), _result("t1", is_error=True, content=BROKE),
+        _call("t2", command=CMD_BAD), _result("t2"),
+    ])
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    row = _episode_shard(db)
+    assert row.origin.endswith(":transient")
+    assert "TRANSIENT" in row.text and "Resolved by" not in row.text
+
+
+def test_a_failure_nothing_fixed_is_marked_unresolved(db, transcripts):
+    """Recorded, because repeated friction is worth knowing about. Marked, because an
+    unresolved failure must not read as a lesson."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", command=CMD_BAD), _result("t1", is_error=True, content=BROKE)])
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    row = _episode_shard(db)
+    assert row.origin.endswith(":unresolved")
+    assert row.text.startswith("UNRESOLVED")
+
+
+def test_a_different_tool_succeeding_is_not_a_fix(db, transcripts):
+    """`Read` working afterwards says nothing about why `Bash` failed."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", command=CMD_BAD), _result("t1", is_error=True, content=BROKE),
+        _call("t2", name="Read", file_path="/x/y.py"), _result("t2"),
+    ])
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    assert _episode_shard(db).origin.endswith(":unresolved")
+
+
+def test_an_unrelated_command_succeeding_is_not_a_fix(db, transcripts):
+    """Same tool, different work. Bash runs constantly, so "the next Bash that worked"
+    would pair nearly every failure with something irrelevant."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", command=CMD_BAD), _result("t1", is_error=True, content=BROKE),
+        _call("t2", command="git log --oneline -5"), _result("t2"),
+    ])
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    assert _episode_shard(db).origin.endswith(":unresolved")
+
+
+def test_prose_arguments_do_not_make_a_rerun_look_like_a_fix(db, transcripts):
+    """A Bash `description` is commentary ABOUT the call. Comparing it made an identical
+    rerun ("Show final CI results" vs "Show CI results after rerun") read as a change."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", command="gh pr checks 7", description="Show final CI results"),
+        _result("t1", is_error=True, content="Exit code 1\nfrontend tests fail"),
+        _call("t2", command="gh pr checks 7", description="Show CI results after rerun"),
+        _result("t2"),
+    ])
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    assert _episode_shard(db).origin.endswith(":transient")
+
+
+def test_two_different_targets_are_not_a_fix_for_each_other(db, transcripts):
+    """`update_item AL-41` failing and `update_item AL-40` succeeding is two items, not a
+    lesson. Real data paired them: they share the word "done", two tokens out of three."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", name="update_item", id="AL-41", status="done"),
+        _result("t1", is_error=True, content="internal_error executing 'update_item' retry"),
+        _call("t2", name="update_item", id="AL-40", status="done"), _result("t2"),
+    ])
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    assert _episode_shard(db).origin.endswith(":unresolved")
+
+
+def test_a_fix_far_beyond_the_window_is_not_credited(db, transcripts):
+    """Bounded on purpose: the further away a success is, the less it has to do with the
+    failure, and an unbounded search would always find something."""
+    from app.services.ingest.claude_code import EPISODE_LOOKAHEAD
+
+    lines = [_call("t1", command=CMD_BAD), _result("t1", is_error=True, content=BROKE)]
+    for i in range(EPISODE_LOOKAHEAD + 2):
+        lines += [_call(f"n{i}", command=f"echo filler {i}"), _result(f"n{i}")]
+    lines += [_call("t2", command=CMD_FIX), _result("t2")]
+    _write(transcripts, "s.jsonl", lines)
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    assert _episode_shard(db).origin.endswith(":unresolved")
+
+
+# Each of these pins ONE rule, with a case where that rule is the only thing standing
+# between a false pairing and an invented lesson. Sabotage caught all three: the tests above
+# passed with the rule removed, because some other guard happened to catch their fixtures.
+def test_identity_arguments_are_what_is_compared(db, transcripts):
+    """Not "every field that isn't prose". Two items differing only in id share `status` and
+    `project_id`, which is 3 tokens of 4 in common — enough to pair them on a whole-input
+    comparison and credit one item's success as the other's fix."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", name="update_item", id="AL-41", status="done", project_id="agentledger"),
+        _result("t1", is_error=True, content="internal_error executing 'update_item' retry"),
+        _call("t2", name="update_item", id="AL-40", status="done", project_id="agentledger"),
+        _result("t2"),
+    ])
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    assert _episode_shard(db).origin.endswith(":unresolved")
+
+
+def test_two_short_identities_must_match_exactly(db, transcripts):
+    """`/a/b.py` and `/a/c.py` share two tokens of three — 0.67, over the bar — so a partial
+    match on a short identity would call reading one file the fix for failing on another."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", name="Read", file_path="/a/b.py"),
+        _result("t1", is_error=True, content="Exit code 1\nfile not found: /a/b.py"),
+        _call("t2", name="Read", file_path="/a/c.py"), _result("t2"),
+    ])
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    assert _episode_shard(db).origin.endswith(":unresolved")
+
+
+def test_the_same_target_under_a_different_tool_is_not_a_fix(db, transcripts):
+    """Reading the test file after the test run failed is the single most common thing that
+    happens next, and it fixes nothing. The arguments overlap completely — only the tool
+    name distinguishes them."""
+    _write(transcripts, "s.jsonl", [
+        _call("t1", command="pytest tests/test_foo.py -q"),
+        _result("t1", is_error=True, content="Exit code 1\n3 failed in tests/test_foo.py"),
+        _call("t2", name="Read", file_path="tests/test_foo.py"), _result("t2"),
+    ])
+    ingest(db, ClaudeCodeAdapter(root=str(transcripts)))
+
+    assert _episode_shard(db).origin.endswith(":unresolved")

@@ -81,25 +81,33 @@ class ClaudeCodeAdapter:
         something.
         """
         start = int(watermark or 0)
-        events: list[Event] = []
+        rows: list[tuple[int, dict]] = []
         seen = 0
         try:
             with open(source, encoding="utf-8", errors="replace") as fh:
                 for seen, line in enumerate(fh, start=1):
-                    if seen <= start:
-                        continue
-                    ev = self._event(source, line)
-                    if ev is not None:
-                        events.append(ev)
+                    row = self._row(source, line)
+                    if row is not None:
+                        rows.append((seen, row))
         except OSError as e:
             # Locked, deleted mid-run, or permission-denied. The run continues with the
             # watermark unmoved, so nothing is lost and the next run picks it up.
             logger.warning("ingest skipped %s: %s", source, e)
             return [], watermark
+
+        # The WHOLE file is read even on an incremental run, because a result after the
+        # watermark routinely refers to a call before it — the id map has to span the join
+        # or every resumed run loses the tool name for its first few results.
+        events = _episodes(source, rows, start, self.name)
+        for line_no, row in rows:
+            if line_no > start:
+                ev = self._event(source, row)
+                if ev is not None:
+                    events.append(ev)
         return events, str(max(seen, start))
 
-    def _event(self, source: str, line: str) -> Event | None:
-        """One JSONL line to an Event, or None if it carries nothing to learn from.
+    def _row(self, source: str, line: str) -> dict | None:
+        """One JSONL line to a dict, or None.
 
         A malformed record is a WARN and a skip, never an exception — a single truncated
         line at the end of a live transcript is the NORMAL state of a session in progress,
@@ -116,7 +124,10 @@ class ClaudeCodeAdapter:
         if not isinstance(row, dict):
             logger.warning("ingest skipped a non-object record in %s", source)
             return None
+        return row
 
+    def _event(self, source: str, row: dict) -> Event | None:
+        """One record to an Event, or None if it carries nothing to learn from."""
         text = _text_of(row.get("message") or row)
         tool = _tool_of(row)
         result = row.get("toolUseResult")
@@ -134,6 +145,11 @@ class ClaudeCodeAdapter:
         if not text:
             text = _tool_result_text(row)
         if not text and not tool and not isinstance(result, dict):
+            return None
+        # A FAILED result belongs to its episode, which carries the same error text plus
+        # what was done differently next. Emitting it here too would file the symptom
+        # alongside the lesson and let the pair corroborate itself (GRPH-349).
+        if _is_error_of(row) is True:
             return None
 
         # A record the harness wrote in the user's slot is not the user talking. Relabelled
@@ -194,6 +210,190 @@ def _result_text(result: dict) -> str:
         return f"stderr: {err[:600]}"
     out = str(result.get("stdout") or "").strip()
     return f"stdout: {out[:600]}" if out else ""
+
+
+# --- episodes (GRPH-349) -----------------------------------------------------------------
+# A failure on its own is a SYMPTOM, not a lesson. Measured: feeding the classifier bare
+# failures produced confidently wrong rules — `cd:1: no such file or directory: backend`
+# (x10) became "Ensure 'backend' directory exists before running commands", drafted as a
+# shell guard. The directory exists. The shell does not persist a working directory between
+# calls, so a relative path resolves from somewhere else — and nothing in the failure text
+# says so. The model had to guess, and guessed plausibly.
+#
+# What disambiguates it is what was done DIFFERENTLY next. That difference is the lesson,
+# and it is the one thing no model can reconstruct from the failure alone.
+EPISODE_LOOKAHEAD = 40      # results, not lines — how far a fix may be from its failure
+# CONTAINMENT, not Jaccard: a fix usually adds detail rather than replacing it, so
+# `cd backend && pytest` -> `cd /abs/path/backend && pytest` should still read as the same
+# attempt even though the longer form drags the union up and Jaccard down.
+_RESOLVE_MIN_OVERLAP = 0.6
+# Below this many tokens, containment cannot tell a fix from a different call: `AL-41 done`
+# and `AL-40 done` share two words of three and score 0.67, which paired one item's failure
+# with another item's success and invented a resolution. Short calls must match exactly —
+# which makes them `transient` by definition, never `resolved`.
+_MIN_TOKENS_FOR_PARTIAL = 4
+
+UNRESOLVED_PREFIX = "UNRESOLVED — no successful retry followed."
+TRANSIENT_PREFIX = "TRANSIENT — the identical call succeeded on retry, nothing was changed."
+
+
+def _call_index(rows: list[tuple[int, dict]]) -> dict[str, tuple[str, dict]]:
+    """`tool_use_id` -> (tool name, input). Verified complete on a real transcript: all
+    1,295 results resolved to their call."""
+    calls: dict[str, tuple[str, dict]] = {}
+    for _, row in rows:
+        for b in _blocks(row):
+            if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("id"):
+                calls[str(b["id"])] = (str(b.get("name") or ""), b.get("input") or {})
+    return calls
+
+
+# What a call was aiming AT, in preference order, versus prose written about it. Comparing
+# whole inputs measured writing style instead of target: two `update_item` calls carrying
+# long "done, PR merged, deployed, verified" notes overlap heavily on boilerplate, which
+# paired AL-57's failure with AL-40's success. And a Bash `description` differing ("Show
+# final CI results" vs "Show CI results after rerun") made an identical rerun look like a
+# fix.
+_IDENTITY_KEYS = ("command", "file_path", "path", "notebook_path", "url", "pattern",
+                  "query", "id", "item_id", "name")
+_PROSE_KEYS = ("description", "explanation", "reason", "comment", "body", "evidence",
+               "notes", "text", "content", "message")
+
+
+def _call_text(inp) -> str:
+    """What the call was aiming at, flattened.
+
+    Identity arguments when the call has any — they say WHICH thing was acted on, which is
+    what "the same attempt again" has to mean. Otherwise every scalar except the prose
+    fields, so a tool nobody anticipated still compares on something.
+    """
+    if not isinstance(inp, dict):
+        return str(inp or "")
+    identity = [str(inp[k]) for k in _IDENTITY_KEYS
+                if isinstance(inp.get(k), (str, int, float))]
+    if identity:
+        return " ".join(identity)
+    return " ".join(str(v) for k, v in inp.items()
+                    if isinstance(v, (str, int, float)) and k not in _PROSE_KEYS)
+
+
+def _overlap(a: str, b: str) -> float:
+    """Token containment: how much of the SMALLER call the two share.
+
+    Deliberately crude and dependency-free — it only has to tell "the same command again,
+    adjusted" from "some unrelated command". Containment rather than Jaccard because a fix
+    typically ADDS detail, and Jaccard punishes the longer corrected form for being longer.
+    """
+    ta = {t for t in re.split(r"\W+", a.lower()) if t}
+    tb = {t for t in re.split(r"\W+", b.lower()) if t}
+    if not ta or not tb:
+        return 0.0
+    score = len(ta & tb) / min(len(ta), len(tb))
+    # Too few tokens for a partial match to mean anything — demand an exact one.
+    if min(len(ta), len(tb)) < _MIN_TOKENS_FOR_PARTIAL and score < 1.0:
+        return 0.0
+    return score
+
+
+def _same_call(a: str, b: str) -> bool:
+    """Was the retry the SAME call, character for character (bar whitespace)?"""
+    return " ".join(a.lower().split()) == " ".join(b.lower().split())
+
+
+def _episode_text(tool: str, failed: str, error: str, fixed: str | None) -> str:
+    """The pair, written so the DIFFERENCE is the visible part.
+
+    The resolution goes last and is labelled, because that is the half the classifier has
+    never had and the half a reader needs in order to state the rule.
+
+    Three shapes, and keeping them apart is the point:
+
+    - **resolved** — something was done differently and it worked. The only shape that is
+      a lesson, and the only one classification ever sees.
+    - **unresolved** — nothing fixed it. Evidence that something is repeatedly painful.
+    - **transient** — the identical call succeeded on retry. Nothing was learned, because
+      nothing was changed; it says the tool is flaky, which is a different claim.
+
+    Filing all three as "a failure that was followed by a success" would make the last two
+    read as the first — which is how a retry loop becomes a rule about what to do.
+    """
+    body = [f"Tool: {tool}", f"Attempted: {failed[:400]}", f"Failed: {error[:600]}"]
+    if fixed is None:
+        return UNRESOLVED_PREFIX + "\n" + "\n".join(body)
+    if _same_call(failed, fixed):
+        return TRANSIENT_PREFIX + "\n" + "\n".join(body)
+    return "\n".join(body + [f"Resolved by: {fixed[:400]}"])
+
+
+def _episodes(source: str, rows: list[tuple[int, dict]], start: int,
+              harness: str) -> list[Event]:
+    """Failure/resolution pairs for every failed call after `start`.
+
+    A failure is paired with the next SUCCESSFUL result from the same tool whose arguments
+    still overlap it — "the same thing, attempted differently". Unpaired failures are still
+    emitted, marked `UNRESOLVED`, because a failure nobody fixed is evidence of friction
+    even though it is not a lesson; the marker is what keeps the two from reading alike.
+
+    **Known boundary limitation.** On an incremental run a failure near the tail may have
+    its fix in lines not yet written, so it is recorded unresolved and the later fix is
+    missed. Deliberate: the alternative is holding the watermark back, which re-emits events
+    and manufactures duplicate corroboration. Missing a lesson is the safe direction;
+    inventing one is not.
+    """
+    calls = _call_index(rows)
+    results: list[tuple[int, dict, str, bool]] = []
+    for line_no, row in rows:
+        for b in _blocks(row):
+            if isinstance(b, dict) and b.get("type") == "tool_result":
+                tuid = str(b.get("tool_use_id") or "")
+                results.append((line_no, row, tuid, b.get("is_error") is True))
+                break
+
+    events: list[Event] = []
+    for i, (line_no, row, tuid, failed) in enumerate(results):
+        if not failed or line_no <= start:
+            continue
+        tool, inp = calls.get(tuid, ("", {}))
+        attempted = _call_text(inp)
+        error = _tool_result_text(row)
+        if not error:
+            continue
+
+        # BEST match in the window, not the first. Real data: `update_item AL-41` was paired
+        # with `update_item AL-40` because they share the word "done" and it came first,
+        # inventing a resolution from a different item entirely. Scoring the whole window
+        # lets the actual retry win when one exists.
+        fix, best = None, 0.0
+        for _, _later_row, later_id, later_failed in results[i + 1:i + 1 + EPISODE_LOOKAHEAD]:
+            if later_failed:
+                continue
+            later_tool, later_inp = calls.get(later_id, ("", {}))
+            if not later_tool or later_tool != tool:
+                continue
+            later_text = _call_text(later_inp)
+            score = _overlap(attempted, later_text)
+            if score >= _RESOLVE_MIN_OVERLAP and score > best:
+                fix, best = later_text, score
+                if score >= 1.0:  # nothing can beat it; stop paying for the rest
+                    break
+
+        text = _episode_text(tool, attempted, error, fix)
+        # Only a genuine CHANGE is a lesson. An identical retry that worked says the tool is
+        # flaky, which is worth recording and is not a rule.
+        resolved = fix is not None and not _same_call(attempted, fix)
+        events.append(Event(
+            session_id=str(row.get("sessionId") or Path(source).stem),
+            harness=harness,
+            project=str(row.get("cwd") or ""),
+            ts=str(row.get("timestamp") or ""),
+            kind="episode",
+            text=text,
+            tool_name=tool,
+            metadata={"source": source, "outcome": "failed", "resolved": resolved,
+                      "episode": ("resolved" if resolved
+                                  else "transient" if fix is not None else "unresolved")},
+        ))
+    return events
 
 
 def _blocks(row: dict) -> list:
