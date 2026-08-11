@@ -288,6 +288,37 @@ def cmd_import(args) -> int:
     return 0
 
 
+def cmd_admin_bootstrap_hosted(args) -> int:
+    """Create the first operator and org on a HOSTED instance (GRPH-219).
+
+    Run it inside the deployed service — `railway ssh --service backend graphban admin
+    bootstrap-hosted …` — because having shell access there IS the authority proof. It
+    mints no API key and creates no project: everything past the first login goes through
+    the product.
+    """
+    from app import bootstrap
+
+    db = _session()
+    try:
+        result = bootstrap.provision_hosted(
+            db, email=args.email, org_name=args.org_name, name=args.operator_name)
+    except bootstrap.BootstrapRefused as e:
+        sys.exit(f"graphban admin bootstrap-hosted: {e}")
+    finally:
+        db.close()
+
+    if args.json:
+        print(json.dumps(result))
+        return 0
+    if not result["provisioned"]:
+        print(f"Nothing to do — {result['reason']}.")
+        return 0
+    print(f"Created org {result['org_name']} ({result['org_id']}).")
+    print(f"Sign in as {result['email']} / {result['password']}")
+    print("Change that password after signing in — it is shown here once and never again.")
+    return 0
+
+
 def cmd_learn(args) -> int:
     """Run the learning loop against this instance's database (GRPH-353 / PRD-16).
 
@@ -412,6 +443,19 @@ def build_parser() -> argparse.ArgumentParser:
     im.add_argument("--project")
     im.add_argument("--prune", action="store_true", help="mark paths absent from the bundle stale")
     im.set_defaults(func=cmd_import)
+
+    ad = sub.add_parser("admin", help="operator actions that cannot go through the product")
+    adsub = ad.add_subparsers(dest="admin_command", required=True)
+    bh = adsub.add_parser(
+        "bootstrap-hosted",
+        help="create the first operator + org on a hosted instance (no API key minted)")
+    bh.add_argument("--email", required=True,
+                    help="operator sign-in address; must be in PLATFORM_ADMIN_EMAILS or the "
+                         "account cannot reach the operator console")
+    bh.add_argument("--org-name", required=True, dest="org_name")
+    bh.add_argument("--operator-name", default="Operator")
+    bh.add_argument("--json", action="store_true")
+    bh.set_defaults(func=cmd_admin_bootstrap_hosted)
 
     ln = sub.add_parser("learn", help="run the learning loop (transcript ingest → artifacts)")
     lnsub = ln.add_subparsers(dest="learn_command", required=True)
