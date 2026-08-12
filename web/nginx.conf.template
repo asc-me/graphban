@@ -40,8 +40,31 @@ server {
         proxy_set_header Host ${API_UPSTREAM};
     }
 
-    # SPA fallback.
+    # Vite content-hashes everything under /assets/ — the filename changes whenever the bytes
+    # do — so these are safe to cache indefinitely.
+    #
+    # NOTE: `add_header` in a location REPLACES the inherited set rather than adding to it, so
+    # the four security headers above are repeated in every block below that sets one. A test
+    # asserts that, because dropping them here would be invisible.
+    location /assets/ {
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Content-Security-Policy "frame-ancestors 'self' https:" always;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        try_files $uri =404;
+    }
+
+    # SPA fallback. index.html is the one UNHASHED file and it names the hashed bundle, so a
+    # cached copy pins the browser to the previous deploy's JS indefinitely: the server has
+    # moved on, the tab has not, and nothing tells either of them they disagree. version.txt
+    # is the release identity and a stale one actively lies about what is running.
     location / {
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Content-Security-Policy "frame-ancestors 'self' https:" always;
+        add_header Cache-Control "no-cache" always;
         try_files $uri $uri/ /index.html;
     }
 }
