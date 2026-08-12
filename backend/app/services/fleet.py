@@ -223,8 +223,13 @@ def list_agents(db: Session, project_id: str | None = None, *,
     # "End wave" never has to backdate `last_seen_at` into a time we know to be false.
     from app.models import ApiKey
 
-    dead_keys = {k.id for k in db.scalars(
-        select(ApiKey).where(ApiKey.revoked.is_(True))).all()}
+    # The whole key table, not just the revoked ones: the roster also reports WHICH credential
+    # each agent authenticated with. A stale key in a client config is otherwise invisible from
+    # the UI — the agent, its role and its state all look correct, and the one fact that
+    # explains a surprising role is the one thing not shown (found on the D-h walk, where a
+    # fresh all-in-one credential was minted and the client kept presenting the previous one).
+    keys = {k.id: k for k in db.scalars(select(ApiKey)).all()}
+    dead_keys = {kid for kid, k in keys.items() if k.revoked}
     held: dict[str, list[Item]] = {}
     if agents:
         ids = [a.id for a in agents]
@@ -240,6 +245,13 @@ def list_agents(db: Session, project_id: str | None = None, *,
             "state": ("offline" if a.api_key_id in dead_keys
                       else presence_state(a, lease_seconds=lease_seconds, now=now)),
             "capabilities": a.capabilities or {},
+            # The DISPLAY PREFIX only — `gb_sk_ab12`. Never the plaintext, which is not stored
+            # and could not be emitted even deliberately, and never the row id, which says
+            # nothing a human can match against a client config.
+            "credential": getattr(keys.get(a.api_key_id), "prefix", None),
+            # Why an all-in-one credential produces an all-in-one agent, shown next to it.
+            # `single` means a role hint cannot narrow this key; NULL means it can (GRPH-362).
+            "credential_posture": getattr(keys.get(a.api_key_id), "posture", None),
             "worktree": a.worktree,
             "branch": a.branch,
             "branch_orphaned": a.branch_orphaned,

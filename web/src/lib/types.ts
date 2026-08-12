@@ -729,6 +729,11 @@ export interface FleetAgent {
   active_role: string;
   state: string;
   capabilities: Record<string, unknown>;
+  /** Display prefix of the credential this agent authenticated with (`gb_sk_ab12`) — never
+   *  the plaintext, which is not stored. Null when the key row is gone. */
+  credential: string | null;
+  /** `single` when the credential was minted all-in-one and a role hint cannot narrow it. */
+  credential_posture: string | null;
   worktree: string;
   branch: string;
   branch_orphaned: boolean;

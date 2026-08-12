@@ -198,3 +198,56 @@ def test_posture_can_never_widen_a_narrowed_ceiling(client, auth, proj, db):
     agent = fleet.register_agent(db, project_id=proj, api_key=row, label="sneaky")
 
     assert agent.active_role == "worker", "a narrowed key cannot become all-in-one"
+
+
+# ---- the roster names the credential (GRPH-363) ----------------------------------------------
+
+def test_the_roster_says_which_credential_an_agent_used(client, auth, proj, db):
+    """The fix above was reported as not working, and it WAS working — the client was still
+    presenting the previous key. Nothing in the roster could say so: the agent, its role and
+    its state all read correctly, and the one fact that explained the surprise was the one
+    thing not shown. A wrong role is a question about the credential, so the row names it."""
+    raw = _fleet_key(client, auth, proj, "all-in-one")
+    me = _ok(client, raw, "register_agent", {"label": "grok", "role_hint": "worker"})
+
+    row = next(a for a in fleet.list_agents(db, proj) if a["id"] == me["agent_id"])
+
+    assert row["credential"] and raw.startswith(row["credential"])
+    assert row["credential_posture"] == fleet.POSTURE_SINGLE
+
+
+def test_the_roster_never_emits_more_than_the_display_prefix(client, auth, proj, db):
+    """THE property that makes showing it safe. A roster leaking a usable credential would be
+    far worse than the confusion it resolves — and this endpoint is read by every agent on the
+    project, not only by the human who minted the key."""
+    raw = _fleet_key(client, auth, proj, "worker")
+    me = _ok(client, raw, "register_agent", {"label": "w"})
+
+    row = next(a for a in fleet.list_agents(db, proj) if a["id"] == me["agent_id"])
+
+    assert raw not in str(row), "the plaintext key reached the roster"
+    assert len(row["credential"]) < len(raw), "only the display fragment belongs here"
+
+
+def test_an_old_credential_is_distinguishable_from_a_new_one_in_the_roster(client, auth, proj, db):
+    """The exact confusion this exists to end: two agents, same client, same prompt, different
+    keys, different roles. Side by side the reason is visible instead of looking like a gate
+    that works intermittently."""
+    from app.models import ApiKey
+
+    fresh = _fleet_key(client, auth, proj, "all-in-one")
+    stale_id = client.post("/api/fleet/keys",
+                           json={"project_id": proj, "role": "all-in-one", "wave": "w1"},
+                           headers=auth).json()["id"]
+    row = db.get(ApiKey, stale_id)
+    row.posture = None                      # a key minted before GRPH-362
+    db.commit()
+
+    new_agent = _ok(client, fresh, "register_agent", {"label": "new", "role_hint": "worker"})
+    old_agent = fleet.register_agent(db, project_id=proj, api_key=row, label="old",
+                                     role_hint="worker")
+
+    roster = {a["id"]: a for a in fleet.list_agents(db, proj)}
+    assert roster[new_agent["agent_id"]]["active_role"] == fleet.ALL_IN_ONE
+    assert roster[old_agent.id]["active_role"] == "worker"
+    assert roster[new_agent["agent_id"]]["credential"] != roster[old_agent.id]["credential"]
