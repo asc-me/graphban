@@ -1,3 +1,4 @@
+import type { FleetOverview } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -189,6 +190,19 @@ export const api = {
     accessToken = data.access_token;
     setRefreshToken(data.refresh_token);
   },
+  // Fleet (PRD-17 D5). One read for the whole view: a roster that arrives before the review
+  // queue would show an idle reviewer beside work it could already be taking.
+  fleet: (projectId?: string) =>
+    request<FleetOverview>(`/fleet${projectId ? `?project_id=${projectId}` : ""}`),
+  mintFleetKey: (body: { project_id: string; role: string; wave: string; label?: string }) =>
+    request<{ id: string; plaintext: string; role: string; wave: string; prefix: string }>(
+      "/fleet/keys", { method: "POST", body: JSON.stringify(body) }),
+  endWavePreview: (projectId: string, wave: string) =>
+    request<{ keys: number; agents: number; leases: number; reservations: number }>(
+      `/fleet/end-wave?project_id=${projectId}&wave=${wave}`),
+  endWave: (projectId: string, wave: string) =>
+    request<{ keys_revoked: number; leases_released: number; reservations_released: number }>(
+      "/fleet/end-wave", { method: "POST", body: JSON.stringify({ project_id: projectId, wave }) }),
   me: () => request<User>("/auth/me"),
   myMemberships: () =>
     request<{ project_id: string; project_name: string; accent: string; role: string; access: string }[]>(

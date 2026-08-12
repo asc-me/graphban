@@ -719,3 +719,36 @@ export interface AuditCoverage {
   uncovered: string[];
   complete?: boolean;
 }
+
+
+/** PRD-17 D5. `state` is DERIVED server-side — an agent that died never reported it. */
+export interface FleetAgent {
+  id: string;
+  key: string;
+  label: string;
+  active_role: string;
+  state: string;
+  capabilities: Record<string, unknown>;
+  worktree: string;
+  branch: string;
+  branch_orphaned: boolean;
+  last_seen_at: string | null;
+  holdings: { id: string; title: string; status: string }[];
+}
+
+export interface FleetOverview {
+  agents: FleetAgent[];
+  online: number;
+  total: number;
+  roles: string[];
+  presence_ttl_seconds: number;
+  heartbeat_interval_seconds: number;
+  review_queue: {
+    id: string; key: string; title: string; branch: string;
+    built_by: string | null; built_by_label: string | null; reviewed_by: string | null;
+  }[];
+  clusters: {
+    items: string[]; areas: string[]; predicted: boolean;
+    held_by: string | null; blocked_on: string | null;
+  }[];
+}

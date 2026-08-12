@@ -1,0 +1,101 @@
+"""The Fleet view's server half (GRPH-336 / PRD-17 D5).
+
+One read that answers the view's whole question — who is out there, what is waiting for a
+second pair of eyes, and which clusters are held back and why — plus the two writes that make
+a wave: mint a role-narrowed credential, and end the wave.
+
+Session-authenticated, unlike the MCP surface beside it. The caller here is a human deciding
+how to spend a fleet, not an agent working inside one.
+"""
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.db import get_db
+from app.models import User
+from app.security import authz
+from app.security.deps import get_current_user
+from app.services import events as events_svc
+from app.services import fleet as fleet_svc
+
+router = APIRouter(prefix="/fleet", tags=["fleet"])
+
+
+@router.get("")
+def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Roster, review queue, and the cluster board in one call.
+
+    One request rather than three because the view renders them together and a partial fleet
+    picture is worse than a slow one — a roster that arrives before the review queue shows an
+    idle reviewer next to work it could already be taking.
+    """
+    authz.require_readable(db, user.id, project_id)
+    status = fleet_svc.fleet_status(db, project_id)
+    return {
+        **status,
+        "review_queue": fleet_svc.review_queue(db, project_id),
+        "clusters": fleet_svc.cluster_board(db, project_id),
+    }
+
+
+class FleetKeyIn(BaseModel):
+    project_id: str
+    role: str
+    wave: str = "wave-1"
+    label: str = ""
+
+
+@router.post("/keys", status_code=201)
+def mint_fleet_key(body: FleetKeyIn, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """A credential narrowed to one role and tagged to this wave.
+
+    Plaintext is returned ONCE, as everywhere else — keys are stored hashed and cannot be
+    recovered, which is a property rather than an oversight.
+    """
+    authz.require_writable(db, user.id, body.project_id)
+    try:
+        row, plaintext = fleet_svc.mint_fleet_key(
+            db, user_id=user.id, project_id=body.project_id, role=body.role,
+            wave=body.wave, label=body.label)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    events_svc.record_user(db, user, action="mint_fleet_key", target_type="apikey",
+                           target_id=row.id, project_id=body.project_id,
+                           meta={"role": body.role, "wave": body.wave})
+    return {"id": row.id, "plaintext": plaintext, "role": body.role, "wave": body.wave,
+            "expires_at": row.expires_at, "prefix": row.prefix}
+
+
+@router.get("/end-wave")
+def preview_end_wave(project_id: str | None = None, wave: str | None = None,
+                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """What ending the wave would destroy, so the confirm can name it.
+
+    A confirm reading "are you sure?" teaches people to click through it. One reading "revoke
+    4 keys, release 3 leases?" is a decision.
+    """
+    authz.require_readable(db, user.id, project_id)
+    return fleet_svc.end_wave_preview(db, project_id=project_id, wave=wave)
+
+
+class EndWaveIn(BaseModel):
+    project_id: str | None = None
+    wave: str | None = None
+
+
+@router.post("/end-wave")
+def end_wave(body: EndWaveIn, db: Session = Depends(get_db),
+             user: User = Depends(get_current_user)):
+    """Revoke this wave's keys and release everything they hold. A hard stop.
+
+    Only keys carrying a `fleet_wave` tag are touched — a hand-minted credential is somebody's
+    long-lived key and revoking it would be a surprise this button never promised.
+    """
+    authz.require_writable(db, user.id, body.project_id)
+    out = fleet_svc.end_wave(db, project_id=body.project_id, wave=body.wave)
+    events_svc.record_user(db, user, action="end_fleet_wave", target_type="project",
+                           target_id=body.project_id or "", project_id=body.project_id,
+                           meta=out)
+    return out

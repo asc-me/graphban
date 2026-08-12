@@ -170,6 +170,13 @@ def list_agents(db: Session, project_id: str | None = None, *,
     if project_id:
         stmt = stmt.where(Agent.project_id == project_id)
     agents = list(db.scalars(stmt.order_by(Agent.project_id, Agent.number)).all())
+    # A revoked credential means the agent cannot act, whatever its last heartbeat said. Read
+    # as offline IMMEDIATELY rather than waiting out the TTL — and derived, not written, so
+    # "End wave" never has to backdate `last_seen_at` into a time we know to be false.
+    from app.models import ApiKey
+
+    dead_keys = {k.id for k in db.scalars(
+        select(ApiKey).where(ApiKey.revoked.is_(True))).all()}
     held: dict[str, list[Item]] = {}
     if agents:
         ids = [a.id for a in agents]
@@ -182,7 +189,8 @@ def list_agents(db: Session, project_id: str | None = None, *,
             "key": a.key,    # rendered from the project's CURRENT tag (PRD-13)
             "label": a.label,
             "active_role": a.active_role,
-            "state": presence_state(a, lease_seconds=lease_seconds, now=now),
+            "state": ("offline" if a.api_key_id in dead_keys
+                      else presence_state(a, lease_seconds=lease_seconds, now=now)),
             "capabilities": a.capabilities or {},
             "worktree": a.worktree,
             "branch": a.branch,
@@ -649,3 +657,154 @@ def release_reservations(db: Session, *, item_id: str | None = None,
         db.delete(row)
     db.commit()
     return len(rows)
+
+
+# ---- D5: the Fleet view's server half ------------------------------------------------------
+
+# Fleet keys expire in a day by default. Ephemeral BECAUSE they are handed out by a UI and
+# pasted into terminals: a credential that outlives the wave it was minted for is one nobody
+# remembers issuing, and "End wave" is a hard stop rather than the only cleanup.
+FLEET_KEY_DAYS = 1
+
+
+def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
+                   wave: str, label: str = "") -> tuple:
+    """A credential narrowed to ONE role and tagged to this wave.
+
+    `roles=[role]` is the ceiling from D2, so an agent on this key cannot register into a
+    different role however its client is configured. The wave tag is what lets "End wave"
+    revoke exactly the keys this view issued and never one a human minted by hand.
+    """
+    from app.security.apikey import generate_api_key
+
+    if role not in ROLES:
+        raise ValueError(f"unknown role: {role!r}")
+    row, plaintext = generate_api_key(
+        db, user_id, label or f"fleet {role}", ["read", "write"], project_id, FLEET_KEY_DAYS)
+    row.roles = [role]
+    row.fleet_wave = wave
+    db.commit()
+    db.refresh(row)
+    return row, plaintext
+
+
+def end_wave(db: Session, *, project_id: str | None, wave: str | None = None) -> dict:
+    """Revoke a wave's keys, release every lease and reservation it holds. A hard stop.
+
+    **All of it, at once.** A half-ended wave — keys revoked but leases still held — is the
+    genuinely confusing state: work that no living agent can finish, held by credentials that
+    no longer authenticate, and nothing in the roster explaining why the queue is stuck.
+
+    Only keys carrying a `fleet_wave` tag are touched. A hand-minted key is somebody's
+    long-lived credential and revoking it would be a surprise this button never promised.
+    """
+    from app.models import ApiKey
+
+    stmt = select(ApiKey).where(ApiKey.fleet_wave.isnot(None), ApiKey.revoked.is_(False))
+    if wave:
+        stmt = stmt.where(ApiKey.fleet_wave == wave)
+    if project_id:
+        stmt = stmt.where(ApiKey.project_id == project_id)
+    keys = list(db.scalars(stmt).all())
+
+    agents = []
+    for k in keys:
+        agents.extend(db.scalars(select(Agent).where(Agent.api_key_id == k.id)).all())
+
+    released, reservations = [], 0
+    for a in agents:
+        for it in db.scalars(select(Item).where(Item.claimed_by == a.id)).all():
+            it.claimed_by = None
+            it.claimed_at = None
+            it.assignee = ""
+            if it.status == "in_progress":
+                it.status = "next"
+            released.append(it.id)
+        reservations += len(db.scalars(
+            select(AreaReservation).where(AreaReservation.agent_id == a.id)).all())
+        for row in db.scalars(
+                select(AreaReservation).where(AreaReservation.agent_id == a.id)).all():
+            db.delete(row)
+        # An un-acked directive is simply dropped. Nothing ever assumed it delivered — the
+        # `assigned > acked` comparison IS the outbox — so there is nothing to reconcile.
+        a.role_acked_at = a.role_assigned_at
+    for k in keys:
+        k.revoked = True
+    db.commit()
+    return {"keys_revoked": len(keys), "agents": len(agents),
+            "leases_released": len(released), "reservations_released": reservations}
+
+
+def end_wave_preview(db: Session, *, project_id: str | None, wave: str | None = None) -> dict:
+    """What `end_wave` would destroy, so the confirm can name it before acting.
+
+    A confirm that says "are you sure?" teaches people to click through it; one that says
+    "revoke 4 keys, release 3 leases?" is a decision.
+    """
+    from app.models import ApiKey
+
+    stmt = select(ApiKey).where(ApiKey.fleet_wave.isnot(None), ApiKey.revoked.is_(False))
+    if wave:
+        stmt = stmt.where(ApiKey.fleet_wave == wave)
+    if project_id:
+        stmt = stmt.where(ApiKey.project_id == project_id)
+    keys = list(db.scalars(stmt).all())
+    agent_ids = [a.id for k in keys
+                 for a in db.scalars(select(Agent).where(Agent.api_key_id == k.id)).all()]
+    leases = len(db.scalars(select(Item).where(Item.claimed_by.in_(agent_ids))).all()) \
+        if agent_ids else 0
+    reservations = len(db.scalars(
+        select(AreaReservation).where(AreaReservation.agent_id.in_(agent_ids))).all()) \
+        if agent_ids else 0
+    return {"keys": len(keys), "agents": len(agent_ids), "leases": leases,
+            "reservations": reservations}
+
+
+def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
+    """Items awaiting review, each carrying WHO BUILT IT.
+
+    The ban is rendered as a negative on the item — "AGT-4 built it" — rather than as a list
+    of who is eligible. The refusal belongs to the item, and stating it that way is what makes
+    the invariant legible at a glance instead of something a reader has to reconstruct.
+    """
+    stmt = select(Item).where(Item.status == "review")
+    if project_id:
+        stmt = stmt.where(Item.project_id == project_id)
+    rows = list(db.scalars(stmt.order_by(Item.sort_order, Item.number)).all())
+    labels = {a.id: (a.label or a.id) for a in db.scalars(select(Agent)).all()}
+    return [{
+        "id": it.id, "key": it.key, "title": it.title, "branch": it.branch,
+        "built_by": it.claimed_by,
+        "built_by_label": labels.get(it.claimed_by) if it.claimed_by else None,
+        "reviewed_by": it.reviewed_by,
+    } for it in rows]
+
+
+def cluster_board(db: Session, project_id: str | None = None) -> list[dict]:
+    """Clusters with who holds them and — for a held-back one — WHY.
+
+    "Collides with `backend/app/models/`, queued until AGT-2 releases" is the difference
+    between a human trusting the divvy and overriding it. Without the reason a queued cluster
+    looks like the fleet being stuck.
+    """
+    from app.services import collision as collision_svc
+
+    taken = active_reservations(db, project_id)
+    holders: dict[str, str] = {}
+    for r in taken:
+        holders.setdefault(_normalise_area(r.area), r.agent_id)
+
+    out = []
+    for c in collision_svc.clusters_for_project(db, project_id):
+        areas = c.get("areas") or []
+        blocking = [(a, holders[k]) for a in areas
+                    if (k := _normalise_area(a)) in holders]
+        rows = [db.get(Item, i) for i in (c.get("items") or [])]
+        out.append({
+            "items": [r.key for r in rows if r is not None],
+            "areas": areas,
+            "predicted": bool(c.get("predicted")),
+            "held_by": blocking[0][1] if blocking else None,
+            "blocked_on": blocking[0][0] if blocking else None,
+        })
+    return out
