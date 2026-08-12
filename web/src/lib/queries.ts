@@ -400,6 +400,16 @@ export function useLinkRequest() {
   });
 }
 
+export function useFleet(projectId?: string) {
+  // Polled: presence is derived from last contact, so the roster only changes when time
+  // passes. Without a refetch an agent that died stays green until somebody navigates away.
+  return useQuery({
+    queryKey: ["fleet", projectId],
+    queryFn: () => api.fleet(projectId),
+    refetchInterval: 15000,
+  });
+}
+
 export function useApiKeys() {
   return useQuery({ queryKey: keys.apiKeys, queryFn: () => api.apiKeys() });
 }

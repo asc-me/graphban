@@ -10,6 +10,7 @@ import { DashboardView } from "@/features/dashboard/DashboardView";
 import { EmbedFeedbackPage } from "@/features/feedback/EmbedFeedbackPage";
 import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
 import { LinksGraphView } from "@/features/links/LinksGraphView";
+import { FleetView } from "@/features/fleet/FleetView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
 import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
@@ -59,6 +60,7 @@ function AuthedApp() {
         <Route path="/code" element={<CodeGraphView />} />
         <Route path="/roadmap" element={<RoadmapView />} />
         <Route path="/mcp-tools" element={<McpToolsView />} />
+        <Route path="/fleet" element={<FleetView />} />
         <Route path="/activity" element={<ActivityView />} />
         <Route path="/memory-review" element={<MemoryReviewView />} />
         <Route path="/prds" element={<PrdListView />} />

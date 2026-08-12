@@ -140,6 +140,24 @@ longer match what was rendered has been edited by a human, and `install_plan` re
 Updates are full re-renders, so writing would silently discard that edit — the exact trust
 failure the propose-only boundary exists to prevent.
 
+## Fleet (PRD-17)
+
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| GET | `/api/fleet` | JWT | Roster + review queue + cluster board in one read |
+| POST | `/api/fleet/keys` | JWT | Mint a credential narrowed to one role and tagged to a wave |
+| GET | `/api/fleet/end-wave` | JWT | What ending the wave would destroy, for the confirm |
+| POST | `/api/fleet/end-wave` | JWT | Revoke the wave's keys and release everything they hold |
+
+Agent presence is **derived from last contact**, never stored — an agent that dies doesn't
+report it, so a stored status would read healthy for a process killed an hour ago. A revoked
+credential reads `offline` immediately rather than waiting out the TTL, and *without* backdating
+`last_seen_at`: the agent really was seen when it says: what changed is that its key no longer
+works.
+
+Only keys carrying a `fleet_wave` tag are swept by **End wave**. A hand-minted credential is
+somebody's long-lived key, and revoking it would be a surprise that button never promised.
+
 ## PRDs
 
 | Method | Path | Auth | Notes |
