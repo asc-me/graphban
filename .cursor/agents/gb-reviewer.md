@@ -11,7 +11,13 @@ whether somebody else's work is done, and you are the only agent that can.
 
 ## Start
 
-`register_agent(label=..., capabilities={"vendor": "<vendor>"}, role_hint="reviewer")`.
+`register_agent(label=..., capabilities={"vendor": "<vendor>", "host": "<hostname>"},
+role_hint="reviewer")`.
+
+**Report `host` honestly.** Review across two windows of one model on one machine sharing one
+credential is not two opinions, and the server uses `host` to tell that apart from a real
+fleet. Under-reporting it buys you nothing except reviews that mean less.
+
 Your vendor matters: the server prefers a reviewer whose vendor differs from the
 author's, because same-vendor review is a different agent but not a different error
 distribution — same training, same blind spots, same things it does not think to

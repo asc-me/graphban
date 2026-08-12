@@ -548,11 +548,23 @@ not reviewer-eligible. D8 (§7) already emits `.cursor/agents/`; emitting a per-
 `mcpServers` block with the right key is a small extension with a disproportionate effect, and
 it is the concrete form G2 takes on this client.
 
-**One invariant falls out for free.** D3's self-review ban is keyed on *agent id*, and a
-subagent shares its parent's identity — so an in-session verifier subagent structurally cannot
-satisfy the reviewer gate. The two kinds of review can never be mistaken for one another, by
-construction rather than by discipline. The verifier stays what it is (a convergent self-check
-inside one author's turn); our reviewer stays adversarial and cross-agent.
+**One invariant needed work, and the draft was wrong about it (GRPH-361).** This section
+originally claimed the separation fell out for free: *"a subagent shares its parent's identity,
+so an in-session verifier subagent structurally cannot satisfy the reviewer gate."* It does
+not. `register_agent` mints a row per call — correctly, since "two terminals on one key are two
+agents" is the bug D1 exists to fix — so a subagent that registers becomes a **sibling** with
+its own id, and it reviewed and signed its parent's work in a reproduction.
+
+Identity was the wrong lever: collapsing parent and child onto `(api_key_id, host)` would undo
+D1 and leave the server unable to arbitrate between two legitimate terminals. So independence
+is now asked as a **separate question from identity**, only at review — a declared
+`parent_agent_id` in either direction, or the same credential AND the same host. The second
+also catches something this draft missed entirely: two windows of one model on one machine
+sharing one key are two agents by D1's definition and are not two opinions.
+
+With that, the claim holds as written: the verifier stays a convergent self-check inside one
+author's turn, our reviewer stays adversarial and cross-agent, and the two cannot be mistaken
+for one another. It is enforced rather than assumed.
 
 ### What we supply that they lack
 

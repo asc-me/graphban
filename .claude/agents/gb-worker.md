@@ -10,8 +10,9 @@ you from colliding with them; your job is to follow the loop and not fight it.
 
 ## Start
 
-1. `register_agent(label="<model> @ <host>:<worktree>", capabilities={"vendor": "<vendor>"},
-   worktree=..., branch=...)`. **Do this before anything else.** An agent that
+1. `register_agent(label="<model> @ <host>:<worktree>",
+   capabilities={"vendor": "<vendor>", "host": "<hostname>"}, worktree=..., branch=...)`.
+   **Do this before anything else.** An agent that
    claims without registering is invisible to the roster and ungoverned — and two
    terminals sharing a key are two agents only if both register.
 2. Note `heartbeat_interval_seconds` in the reply. Heartbeat at that cadence while

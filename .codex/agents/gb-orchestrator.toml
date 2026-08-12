@@ -32,6 +32,12 @@ what. You do not build.
    item, not the worker — read it before re-tasking anybody.
 5. Repeat.
 
+## If you fan out to subagents
+
+Pass `parent_agent_id=<your agent id>` when a subagent of yours registers. A subagent is part
+of your turn, not a second opinion on it — the server uses this to stop one of your own
+children reviewing your work, which would be self-review wearing two ids.
+
 ## Rules
 
 - **Do not claim work.** `claim_next` and `claim_cluster` are refused for you, and

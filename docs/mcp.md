@@ -107,10 +107,10 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `assign_role` | `agent_id`, `role`, `reason` | Commit a role change; it reaches the agent on its next poll as a `directive`, with no reconnect |
 | `collision_clusters` | `project_id`, `status` | Partition ready work into clusters that provably share no touch-areas; `predicted` marks lower-confidence grouping |
 | `claim_cluster` | `agent_id`, `max_items`, `lease_seconds`, `wait_seconds` | Claim a whole non-colliding cluster and reserve its areas, checked against in-flight work |
-| `claim_review` | `agent_id`, `project_id`, `wait_seconds` | Lease an item in review you did **not** build. `claimed: false` when the only work in review is your own |
+| `claim_review` | `agent_id`, `project_id`, `wait_seconds` | Lease an item in review you did **not** build, and are independent of — not your own call tree, and not the same credential on the same host |
 | `sign_off` | `id`, `agent_id`, `evidence` | Take a reviewed item to `done`. Refused if you built it — and, above effort 3, refused without a `sabotage` receipt |
 | `bounce` | `id`, `agent_id`, `reason` | Send it back to `next` with a reason, reserved for its author for one lease period |
-| `register_agent` | `label`, `capabilities`, `worktree`, `branch`, `role_hint` | Register THIS process as an agent and learn its role. Two terminals on one key become two agents. Returns `{agent_id, key, active_role, heartbeat_interval_seconds}` |
+| `register_agent` | `label`, `capabilities`, `worktree`, `branch`, `role_hint`, `parent_agent_id` | Register THIS process as an agent and learn its role. Two terminals on one key become two agents. Returns `{agent_id, key, active_role, heartbeat_interval_seconds}` |
 | `fleet_status` | `project_id` | Who else is working this project: agents, roles, derived presence, and what each holds |
 | `heartbeat` | `id`, `agent_id` | Extend the lease on an item you hold **and** your agent presence (so neither is reclaimed while you work) |
 | `release_item` | `id`, `agent_id`, `to_status` | Return a claimed item to the queue |
