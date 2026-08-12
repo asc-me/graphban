@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { McpInstall } from "@/features/settings/McpInstall";
+import { CLIENTS, McpInstall } from "@/features/settings/McpInstall";
 
 /**
  * The connect snippets are copied verbatim into a config file or a terminal, so a wrong one
@@ -18,8 +18,12 @@ import { McpInstall } from "@/features/settings/McpInstall";
  * exclusively. None of the three can add a remote server with a header from a terminal, so
  * handing them one produces a command that does not exist — which is exactly the bug the
  * Fleet view shipped when it reused a single `claude mcp add` stub for every client.
+ *
+ * Note that *having* an `mcp add` is not the same as being able to declare this server with
+ * it: Codex's takes stdio only, and `hermes mcp add` installs catalog entries. Both read like
+ * a command exists until you try the one case we need.
  */
-const CONFIG_ONLY = ["Cursor", "Codex", "opencode"];
+const CONFIG_ONLY = ["Cursor", "Codex", "opencode", "Hermes"];
 
 async function open(client: string, form?: "Command" | "Config file") {
   const user = userEvent.setup();
@@ -68,6 +72,22 @@ describe("MCP install snippets", () => {
     const cursor = await open("Cursor");
     expect(screen.getByText(/no MCP CLI/)).toBeInTheDocument();
     cursor.unmount();
+
+    const hermes = await open("Hermes");
+    expect(screen.getByText(/catalog entries/)).toBeInTheDocument();
+    hermes.unmount();
+  });
+
+  it("no client can be config-only without saying why", () => {
+    // The invariant over the data, not over the clients that happen to exist today. Hermes
+    // shipped for three weeks with a missing Command tab and no explanation, and the
+    // per-client test above would not have caught the next one either.
+    for (const c of CLIENTS) {
+      expect(c.command ?? c.config, `${c.label} offers no way to connect at all`).toBeTruthy();
+      if (!c.command) {
+        expect(c.noCommand, `${c.label} has no command form and does not explain why`).toBeTruthy();
+      }
+    }
   });
 
   it("offers the config stanza as the other option where both exist", async () => {

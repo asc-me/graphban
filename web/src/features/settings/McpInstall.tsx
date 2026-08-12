@@ -30,11 +30,13 @@ type Client = {
 const OPENCLAW_JSON = (u: string, k: string) =>
   JSON.stringify({ url: u, transport: "streamable-http", headers: { "X-API-Key": k } });
 
-// Formats verified against each tool's official MCP docs. Command availability is NOT uniform:
-// Cursor ships no MCP CLI, opencode's `mcp` subcommands cover auth/list/logout only, and
-// `codex mcp add` takes stdio servers exclusively — none of the three can add a remote server
-// with a header from a terminal, so for them the config file is the whole story.
-const CLIENTS: Client[] = [
+// Formats verified against each tool's official MCP docs. Command availability is NOT uniform,
+// and having a `mcp add` is not the same as being able to declare THIS server with it: Cursor
+// ships no MCP CLI at all; opencode's `mcp` subcommands cover auth/list/logout; `codex mcp add`
+// takes stdio servers exclusively; `hermes mcp add` installs catalog entries. None of the four
+// can add a remote server with a header from a terminal, so for them the config file is the
+// whole story — and each says so, since a missing Command tab otherwise reads as our omission.
+export const CLIENTS: Client[] = [
   {
     id: "claude",
     label: "Claude Code",
@@ -87,6 +89,11 @@ const CLIENTS: Client[] = [
   {
     id: "hermes",
     label: "Hermes",
+    // `url` and `command` are mutually exclusive transport discriminators in hermes_cli's
+    // mcp_config, and `headers` is HTTP-only — so this remote shape is the right one. There IS
+    // a `hermes mcp add`, but it is documented for installing catalog entries rather than for
+    // declaring an arbitrary remote server with a header, so it does not earn a Command form.
+    noCommand: "`hermes mcp add` installs catalog entries; a remote server with a header is declared in the config.",
     config: {
       file: "~/.hermes/config.yaml",
       note: "Run /reload-mcp in Hermes after editing the config.",
