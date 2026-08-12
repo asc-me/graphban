@@ -22,12 +22,17 @@ TAG_RE = re.compile(rf"^[A-Z][A-Z0-9]{{{TAG_MIN - 1},{TAG_MAX - 1}}}$")
 
 # Kind -> the letter that follows the tag. Items render bare so the overwhelmingly
 # common case stays shortest; requests and PRDs take a single discriminating letter.
-KIND_LETTER = {"item": "", "request": "R", "prd": "P"}
+# `A` is agents (PRD-17). Agents are runtime entities rather than tracked work, but they
+# are named in a Fleet view — "GRPH-A3 is stuck" — so they need a key, and a key rendered
+# from the project tag is retag-safe for free. PRD-17's data model says "AGT-n"; that shape
+# is the PRE-tag, product-wide prefix PRD-13 exists to replace (it is what LEGACY_KEY_RE
+# still resolves), so the convention the same sentence cites wins over the literal example.
+KIND_LETTER = {"item": "", "request": "R", "prd": "P", "agent": "A"}
 _LETTER_KIND = {v: k for k, v in KIND_LETTER.items()}
 
 # A rendered key. The first hyphen delimits the tag, so this stays unambiguous even
 # for a tag that contains digits (`A1-R12` is request 12 of the project tagged A1).
-KEY_RE = re.compile(rf"^([A-Za-z][A-Za-z0-9]{{{TAG_MIN - 1},{TAG_MAX - 1}}})-([RrPp]?)(\d+)$")
+KEY_RE = re.compile(rf"^([A-Za-z][A-Za-z0-9]{{{TAG_MIN - 1},{TAG_MAX - 1}}})-([RrPpAa]?)(\d+)$")
 
 
 # A pre-tag id: `AL-12`, `AL-01`, `R-33`, `PRD-4`. The prefix was a product-wide
@@ -114,7 +119,7 @@ def variants(base: str):
 
 
 def render(tag: str, kind: str, number: int) -> str:
-    """The user-visible key: ``GRPH-12``, ``GRPH-R33``, ``GRPH-P4``.
+    """The user-visible key: ``GRPH-12``, ``GRPH-R33``, ``GRPH-P4``, ``GRPH-A7``.
 
     Always uses the project's *current* tag. There is no as-of variant: stored prose
     (PRD bodies, version snapshots, shard text) keeps whatever string was typed and is

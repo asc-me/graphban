@@ -299,6 +299,22 @@ class Item(Base):
     assignee: Mapped[str] = mapped_column(String, default="")  # durable owner (human or agent)
     claimed_by: Mapped[str | None] = mapped_column(String, nullable=True)  # agent holding the lease
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # --- the review handoff (PRD-17 D3) ---
+    # Where the work landed. Travels to the reviewer, who otherwise cannot see the diff:
+    # each worker edits in its own worktree, so "look at the branch" is the only handoff
+    # that works across processes on different machines.
+    branch: Mapped[str] = mapped_column(String, default="")
+    # The agent that signed off. THE load-bearing invariant of PRD-17 is that this is never
+    # equal to `claimed_by` — an agent cannot pass its own work. Kept as data rather than
+    # inferred from the event log so the assertion at sign-off is a column comparison.
+    reviewed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    # A bounced item goes back to its AUTHOR first (PRD-17 D-f): the agent that wrote it has
+    # the context, and letting the fleet re-divvy it immediately would hand a stranger a
+    # half-finished change plus a review comment about code they have never seen.
+    bounce_pinned_to: Mapped[str | None] = mapped_column(String, nullable=True)
+    # When the pin lapses. A pin without an expiry is a permanent assignment to an agent
+    # that may already be dead, which is the queue silently losing an item.
+    bounce_pinned_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Spec traceability (feature D): the PRD + section this item implements.
     prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
     prd_section: Mapped[str] = mapped_column(String, default="")
@@ -481,6 +497,100 @@ class ArtifactInventoryItem(Base):
     state: Mapped[str] = mapped_column(String, default="present", index=True)
     first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Agent(Base):
+    """A process that connects to this instance and does work (PRD-17 D1).
+
+    **Nothing counted agents before.** `agent_id` was a self-declared string defaulting to
+    the API key's name (`mcp_server.py`), so three terminals sharing a key were one agent to
+    the server — nothing could assign roles between them, nothing could stop one reviewing
+    its own work, and the roster's basic question (who is out there) had no answer.
+
+    `state` is `idle|working|reviewing|offline`, and **`offline` is derived from
+    `last_seen_at`, never stored as a transition.** An agent that dies does not say so, and
+    a stored status would read healthy for a process killed an hour ago.
+
+    Agent death needs no new mechanism: past its presence TTL the item leases lapse into the
+    existing stale-reclaim path (`items._is_claimable`) and reservations expire. The lease
+    timeout that already ships IS the death detector.
+
+    **An agent's PRESENCE is ephemeral; its ROW is not. Never delete one.** Durable work
+    references these ids — `Item.claimed_by` and `Item.reviewed_by` hold them as plain
+    strings, not foreign keys — so reaping an offline agent dangles those references with no
+    error, and the review record ends up pointing at nothing. Worse, `keys.mint` allocates
+    `max(number) + 1`, so a deleted row frees its number: `GRPH-A3` would then name two
+    different agents at different times and the audit trail could no longer distinguish them.
+    Neither failure raises. Offline agents are hidden from the roster, the same way a rejected
+    shard is kept for provenance and never surfaced.
+    """
+
+    __tablename__ = "agents"
+
+    # Frozen at issue time and rendered as `<TAG>-A<n>` (PRD-13). A per-project sequence
+    # rather than a uuid because agents are NAMED in the Fleet view — "GRPH-A3 is stuck" —
+    # and because simultaneous registrations on one key then get distinct ids by
+    # construction, which is the property PRD-17 asks for.
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    number: Mapped[int] = mapped_column(Integer)
+    # The credential this agent authenticated with — hence the roles it is ELIGIBLE for.
+    api_key_id: Mapped[str | None] = mapped_column(ForeignKey("api_keys.id"), nullable=True)
+    # "claude-opus-5 @ macbook:wt-2". Duplicates are ALLOWED and that is deliberate: two
+    # identical windows on one machine is a legitimate fleet shape, and de-duplicating by
+    # label would merge two real agents into one — the exact bug this table exists to fix.
+    label: Mapped[str] = mapped_column(String, default="")
+    active_role: Mapped[str] = mapped_column(String, default="worker")
+    role_assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when a poll response actually DELIVERED the directive. `assigned > acked` means
+    # the next response must carry it — the comparison IS the outbox, so there is no queue
+    # table to drift out of step with the roster.
+    role_acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # {vendor, model, tier, readonly, host}. `vendor` is load-bearing: a Claude reviewer
+    # approving Claude work is a different agent but not a different error distribution.
+    capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
+    worktree: Mapped[str] = mapped_column(String, default="")
+    branch: Mapped[str] = mapped_column(String, default="")
+    # Presence lapsed while a branch was unmerged. The fleet releases the ITEM by itself;
+    # the BRANCH is state only a human can resolve, so it is surfaced on the roster rather
+    # than left as a footnote in a log nobody reads.
+    branch_orphaned: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                                  nullable=False)
+    state: Mapped[str] = mapped_column(String, default="idle", index=True)
+    registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    project: Mapped[Project] = relationship()
+
+    @property
+    def key(self) -> str:
+        """The user-visible key, rendered from the project's CURRENT tag (PRD-13)."""
+        return tagging.render(self.project.tag, "agent", self.number)
+
+
+class AreaReservation(Base):
+    """A touch-area an agent holds while work is in flight (PRD-17 D-d).
+
+    Collision clustering already partitions the backlog into sets that provably do not share
+    files, but a partition is computed once and the fleet moves afterwards. A reservation is
+    the running claim on top of it, so a second agent asking for work is not handed something
+    that overlaps an edit already underway.
+
+    `expires_at` rather than an explicit release: the agent holding it may die, and a
+    reservation nothing can expire is a file nobody may touch again. It shares the lease
+    clock, so one number governs claims, reservations, the bounce pin, and presence together.
+    """
+
+    __tablename__ = "area_reservations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"), index=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), index=True)
+    # A path, glob or module — the same vocabulary as `Item.touchpoints`, so the reservation
+    # and the collision map are comparable without a translation step.
+    area: Mapped[str] = mapped_column(String, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class IngestWatermark(Base):
@@ -1090,6 +1200,14 @@ class ApiKey(Base):
     prefix: Mapped[str] = mapped_column(String)  # e.g. al_sk_ab12 for display
     hashed_key: Mapped[str] = mapped_column(String)
     scopes: Mapped[list] = mapped_column(JSON, default=list)
+    # Which roles an agent authenticating with this key may hold (PRD-17 D2). The CEILING,
+    # not the assignment: `assign_role` may move an agent within this list and never past it,
+    # so a compromised or over-eager client cannot promote itself into `reviewer`.
+    # Existing keys are backfilled to all three, so nothing in flight breaks.
+    roles: Mapped[list] = mapped_column(JSON, default=list)
+    # Tags keys the Fleet view minted for one wave, so "End wave" revokes exactly those and
+    # never a key a human made by hand (PRD-17 D-g). NULL = hand-minted, never swept.
+    fleet_wave: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     last_used: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # Lifecycle (AL-72): NULL expires_at = non-expiring; revoked is a soft kill switch.

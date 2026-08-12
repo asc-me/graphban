@@ -33,11 +33,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import tagging
-from app.models import Item, LegacyEntityKey, Prd, Project, ProjectTagHistory, Request
+from app.models import Agent, Item, LegacyEntityKey, Prd, Project, ProjectTagHistory, Request
 
 # kind -> model. The keys match tagging.KIND_LETTER so the grammar and the lookup
 # can never disagree about what kinds exist.
-MODELS = {"item": Item, "request": Request, "prd": Prd}
+MODELS = {"item": Item, "request": Request, "prd": Prd, "agent": Agent}
 
 
 def resolve(db: Session, key: str, kind: str) -> str | None:
