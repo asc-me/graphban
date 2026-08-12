@@ -11,8 +11,8 @@ agent's writes are identical to a user's and appear instantly in the UI.
   SSE) keep it `curl`-friendly while remaining MCP Streamable-HTTP compatible for simple
   calls. The server advertises MCP protocol **2025-11-25** and negotiates down to a
   client's requested version when it's one it supports.
-- **Auth** — a scoped **API key** via `X-API-Key: al_sk_…` or `Authorization: Bearer
-  al_sk_…`. Create one in [Settings → API Keys](settings.md#api-keys-tab). Unauthenticated
+- **Auth** — a scoped **API key** via `X-API-Key: gb_sk_…` or `Authorization: Bearer
+  gb_sk_…`. Create one in [Settings → API Keys](settings.md#api-keys-tab). Unauthenticated
   calls return `401`.
 - **Project scope** — each key targets one **project** by default (the active project when
   you create it), so an agent's writes land in the right workspace. Tick *global* at creation
@@ -52,7 +52,7 @@ mcp_servers:
   graphban:
     url: "https://<your-host>/api/mcp"
     headers:
-      X-API-Key: "al_sk_…"
+      X-API-Key: "gb_sk_…"
     enabled: true
 ```
 
@@ -66,7 +66,7 @@ mcp_servers:
       "graphban": {
         "url": "https://<your-host>/api/mcp",
         "transport": "streamable-http",
-        "headers": { "X-API-Key": "al_sk_…" }
+        "headers": { "X-API-Key": "gb_sk_…" }
       }
     }
   }
@@ -268,7 +268,7 @@ matching the "MCP · N TOOLS LIVE" chip in the top bar (N is dynamic — the liv
 `tools/list`:
 
 ```bash
-curl -s http://localhost:8000/api/mcp -H "X-API-Key: al_sk_..." \
+curl -s http://localhost:8000/api/mcp -H "X-API-Key: gb_sk_..." \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
@@ -276,7 +276,7 @@ curl -s http://localhost:8000/api/mcp -H "X-API-Key: al_sk_..." \
 `tools/call` — create an item (appears immediately in the Tracker):
 
 ```bash
-curl -s http://localhost:8000/api/mcp -H "X-API-Key: al_sk_..." \
+curl -s http://localhost:8000/api/mcp -H "X-API-Key: gb_sk_..." \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
        "params":{"name":"create_item","arguments":{"title":"From an agent","effort":2}}}'

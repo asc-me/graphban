@@ -98,8 +98,8 @@ dev) uses `create_all`. Migrations to date:
 - **JWT** — `POST /auth/login` issues access + refresh tokens. The SPA keeps the access
   token in memory and the refresh token in localStorage; a 401 triggers one silent refresh
   + retry. Passwords are bcrypt-hashed.
-- **API keys** — `al_sk_…`, shown once, stored SHA-256-hashed, scoped. They authenticate
-  the MCP endpoint (`X-API-Key` or `Authorization: Bearer al_sk_…`).
+- **API keys** — `gb_sk_…`, shown once, stored SHA-256-hashed, scoped. They authenticate
+  the MCP endpoint (`X-API-Key` or `Authorization: Bearer gb_sk_…`).
 - Users have **memberships** (owner/admin/member + per-project access), surfaced in
   Settings → Members and Profile.
 

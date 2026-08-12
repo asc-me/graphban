@@ -4,7 +4,7 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 Interactive OpenAPI docs are at **`/docs`**.
 
 **Auth legend:** **JWT** = `Authorization: Bearer <access-jwt>` · **MCP** = API key via
-`X-API-Key` / `Authorization: Bearer al_sk_…` · **public** = no auth (rate-limited).
+`X-API-Key` / `Authorization: Bearer gb_sk_…` · **public** = no auth (rate-limited).
 
 ## Health
 

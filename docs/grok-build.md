@@ -23,7 +23,7 @@ Then, using the documented `grok mcp add`:
 
 ```bash
 grok mcp add --transport http graphban https://<your-host>/api/mcp \
-  --header "X-API-Key: al_sk_…"
+  --header "X-API-Key: gb_sk_…"
 ```
 
 Self-host on your own machine: use `http://localhost:8000/api/mcp` (the default compose port;
@@ -40,7 +40,7 @@ repo. Never commit a real key — ship a `.mcp.json.example`:
     "graphban": {
       "url": "https://<your-host>/api/mcp",
       "transport": "streamable-http",
-      "headers": { "X-API-Key": "al_sk_…" }
+      "headers": { "X-API-Key": "gb_sk_…" }
     }
   }
 }

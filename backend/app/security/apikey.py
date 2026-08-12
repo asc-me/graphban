@@ -67,7 +67,7 @@ def generate_api_key(
         user_id=user_id,
         project_id=project_id,
         name=name,
-        prefix=raw[: len(MINT_PREFIX) + 4],  # display fragment, e.g. al_sk_ab12
+        prefix=raw[: len(MINT_PREFIX) + 4],  # display fragment, e.g. gb_sk_ab12
         hashed_key=_hash_key(raw),
         scopes=scopes or ["read", "write"],
         expires_at=utcnow() + timedelta(days=expires_in_days) if expires_in_days else None,

@@ -83,7 +83,7 @@ endpoint over JSON-RPC 2.0:
 
 ```bash
 curl -s http://localhost:8000/api/mcp \
-  -H "X-API-Key: al_sk_..." -H "Content-Type: application/json" \
+  -H "X-API-Key: gb_sk_..." -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
        "params":{"name":"create_item","arguments":{"title":"From an agent","effort":2}}}'
 ```

@@ -14,7 +14,7 @@ def _mcp(client, key, tool, args=None):
         "params": {"name": tool, "arguments": args or {}}}, headers={"X-API-Key": key}).json()
 
 
-def _link(monkeypatch, url="https://cloud", key="al_sk_link"):
+def _link(monkeypatch, url="https://cloud", key="gb_sk_link"):
     monkeypatch.setattr(mcp_proxy.settings, "sync_cloud_url", url)
     monkeypatch.setattr(mcp_proxy.settings, "sync_api_key", key)
 
@@ -54,7 +54,7 @@ def test_non_graph_tool_forwards_to_cloud(client, auth, monkeypatch):
 
     r = _mcp(client, _key(client, auth), "get_backlog")
     # forwarded to the cloud MCP, authed with the org-minted link credential
-    assert sent["url"] == "https://cloud/api/mcp" and sent["key"] == "al_sk_link"
+    assert sent["url"] == "https://cloud/api/mcp" and sent["key"] == "gb_sk_link"
     assert sent["body"]["params"]["name"] == "get_backlog"
     # the cloud's result is returned verbatim
     assert r["result"]["structuredContent"]["from"] == "cloud"

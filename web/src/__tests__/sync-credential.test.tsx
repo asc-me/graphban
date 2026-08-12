@@ -40,28 +40,28 @@ function renderSettings() {
 
 describe("SyncCredentialInstall", () => {
   it("builds the graphban link command with the pinned project", () => {
-    const { container } = render(<SyncCredentialInstall apiKey="al_sk_secret" projectId="core" />);
+    const { container } = render(<SyncCredentialInstall apiKey="gb_sk_secret" projectId="core" />);
     // The <pre> is the copy target; prose elsewhere also mentions the command.
     const pre = container.querySelector("pre");
     // The exact flags matter — this is copy-pasted verbatim into a terminal.
     expect(pre?.textContent).toContain("graphban link");
-    expect(pre?.textContent).toContain("--api-key al_sk_secret");
+    expect(pre?.textContent).toContain("--api-key gb_sk_secret");
     expect(pre?.textContent).toContain("--project core");
     expect(pre?.textContent).toContain("--cloud-url");
   });
 
   it("offers the local Settings → Sync/Link values as the other hand-off", async () => {
     const user = userEvent.setup();
-    render(<SyncCredentialInstall apiKey="al_sk_secret" projectId="core" />);
+    render(<SyncCredentialInstall apiKey="gb_sk_secret" projectId="core" />);
     await user.click(screen.getByRole("button", { name: /Local Settings/ }));
-    expect(screen.getByText(/Sync API key\s+al_sk_secret/)).toBeInTheDocument();
+    expect(screen.getByText(/Sync API key\s+gb_sk_secret/)).toBeInTheDocument();
   });
 });
 
 describe("minting a sync credential", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    api.createApiKey.mockResolvedValue({ plaintext: "al_sk_minted", project_id: "core" });
+    api.createApiKey.mockResolvedValue({ plaintext: "gb_sk_minted", project_id: "core" });
   });
 
   it("mints with the sync scope pinned to a project, not the default read/write", async () => {
