@@ -170,8 +170,14 @@ describe("Fleet view", () => {
     await waitFor(() => expect(api.mintFleetKey).toHaveBeenCalledWith(
       expect.objectContaining({ role: "reviewer", project_id: "core" })));
     expect(await screen.findByText(/1. Key/)).toBeInTheDocument();
-    expect(screen.getByText(/2. Connect/)).toBeInTheDocument();
     expect(screen.getByText(/3. Prime/)).toBeInTheDocument();
+    // The Connect step is the SHARED generator from Settings, not a local stub. The first
+    // version here handed the `claude mcp add` command to Codex, Grok and opencode alike —
+    // so this asserts the real per-client picker is present rather than any snippet at all.
+    expect(screen.getByText(/Connect an agent · MCP/)).toBeInTheDocument();
+    for (const client of ["Claude Code", "Codex", "Cursor", "opencode", "Grok CLI"]) {
+      expect(screen.getByRole("button", { name: client })).toBeInTheDocument();
+    }
   });
 
   it("names the damage before ending a wave, and only acts on confirm", async () => {
@@ -190,6 +196,31 @@ describe("Fleet view", () => {
 
     await user.click(screen.getByRole("button", { name: "End the wave" }));
     await waitFor(() => expect(api.endWave).toHaveBeenCalledWith("core", "wave-1"));
+  });
+
+  it("gives each client its own connect snippet, not one command for all", async () => {
+    // THE bug from the first real walk: a two-branch stub handed `claude mcp add` to Codex,
+    // Grok and opencode alike, so three of five clients were told to run a command that does
+    // not exist for them. An acceptance criterion of D5 is "no hand-edited config".
+    api.mintFleetKey.mockResolvedValue({
+      id: "k1", plaintext: "gb_sk_secret", role: "worker", wave: "wave-1", prefix: "gb_sk_ab",
+    });
+    const user = userEvent.setup();
+    const { container } = renderView();
+    await user.click(screen.getByRole("button", { name: /Mint a worker credential/ }));
+    await screen.findByText(/Connect an agent · MCP/);
+
+    const seen = new Set<string>();
+    for (const client of ["Claude Code", "Codex", "Cursor", "opencode"]) {
+      await user.click(screen.getByRole("button", { name: client }));
+      // McpInstall's own <pre>, not the Key or Prime blocks beside it — those correctly do
+      // not vary by client, and reading one of them made this assert nothing.
+      const el = container.querySelector("pre.max-h-56");
+      seen.add(el?.textContent ?? "");
+    }
+
+    expect(seen.size).toBe(4);
+    expect([...seen].filter((s) => s.includes("claude mcp add"))).toHaveLength(1);
   });
 
   it("cancelling the confirm destroys nothing", async () => {
