@@ -25,7 +25,7 @@ def test_link_then_status_reflects_it_without_leaking_the_key(client, auth):
     r = client.post("/api/sync/link",
                     # Deliberately the OLD hostname: both hosts serve the same instance, and
                     # this pins that an operator who linked before the rename still works.
-                    json={"cloud_url": "cloud.agentldgr.dev", "api_key": "al_sk_secret", "org": "acme"},
+                    json={"cloud_url": "cloud.agentldgr.dev", "api_key": "gb_sk_secret", "org": "acme"},
                     headers=auth)
     assert r.status_code == 200
     s = r.json()
@@ -34,12 +34,12 @@ def test_link_then_status_reflects_it_without_leaking_the_key(client, auth):
     assert s["org"] == "acme" and s["credential_set"] is True
     assert s["linked_at"]
     # the raw key must never appear in any status field
-    assert "al_sk_secret" not in r.text
+    assert "gb_sk_secret" not in r.text
     assert _status(client, auth)["linked"] is True
 
 
 def test_relink_with_blank_key_keeps_the_stored_credential(client, auth):
-    client.post("/api/sync/link", json={"cloud_url": "cloud.a.dev", "api_key": "al_sk_one"}, headers=auth)
+    client.post("/api/sync/link", json={"cloud_url": "cloud.a.dev", "api_key": "gb_sk_one"}, headers=auth)
     # re-link to a new URL without resending the key — the write-only round-trip keeps it
     r = client.post("/api/sync/link", json={"cloud_url": "cloud.b.dev", "api_key": ""}, headers=auth)
     assert r.status_code == 200 and r.json()["credential_set"] is True
@@ -52,7 +52,7 @@ def test_first_link_requires_a_key(client, auth):
 
 
 def test_unlink_clears_the_link(client, auth):
-    client.post("/api/sync/link", json={"cloud_url": "cloud.a.dev", "api_key": "al_sk_x"}, headers=auth)
+    client.post("/api/sync/link", json={"cloud_url": "cloud.a.dev", "api_key": "gb_sk_x"}, headers=auth)
     r = client.delete("/api/sync/link", headers=auth)
     assert r.status_code == 200 and r.json()["linked"] is False and r.json()["credential_set"] is False
 
@@ -68,11 +68,11 @@ def test_web_link_drives_push_resolution_over_env(client, auth):
     from app.db import SessionLocal
     from app.services import code_sync
 
-    client.post("/api/sync/link", json={"cloud_url": "cloud.a.dev", "api_key": "al_sk_key"}, headers=auth)
+    client.post("/api/sync/link", json={"cloud_url": "cloud.a.dev", "api_key": "gb_sk_key"}, headers=auth)
     db = SessionLocal()
     try:
         url, key = code_sync._target(db, "", "")  # no explicit creds → resolves the web link
-        assert url == "https://cloud.a.dev" and key == "al_sk_key"
+        assert url == "https://cloud.a.dev" and key == "gb_sk_key"
     finally:
         db.close()
 
@@ -91,13 +91,13 @@ def test_key_is_encrypted_at_rest_when_a_key_is_configured(client, auth, monkeyp
 
     monkeypatch.setattr(settings, "secret_encryption_key", "unit-test-secret")
     secrets._fernet.cache_clear()
-    client.post("/api/sync/link", json={"cloud_url": "cloud.a.dev", "api_key": "al_sk_plain"}, headers=auth)
+    client.post("/api/sync/link", json={"cloud_url": "cloud.a.dev", "api_key": "gb_sk_plain"}, headers=auth)
     db = SessionLocal()
     try:
         link = db.get(SyncLink, "instance")
         assert link.api_key_enc.startswith("enc::")           # stored ciphertext, not plaintext
-        assert "al_sk_plain" not in link.api_key_enc
-        assert secrets.decrypt(link.api_key_enc) == "al_sk_plain"  # round-trips for push
+        assert "gb_sk_plain" not in link.api_key_enc
+        assert secrets.decrypt(link.api_key_enc) == "gb_sk_plain"  # round-trips for push
     finally:
         db.close()
         secrets._fernet.cache_clear()

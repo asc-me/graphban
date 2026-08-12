@@ -258,7 +258,7 @@ instance — inside the backend container is simplest:
 # run this where DATABASE_URL points at the instance, or the command exits non-zero
 # rather than reporting a link the server can't see.
 docker compose exec backend graphban link \
-  --cloud-url https://cloud.example/ --api-key al_sk_… --project core
+  --cloud-url https://cloud.example/ --api-key gb_sk_… --project core
 
 docker compose exec backend graphban status   # link + last-synced state
 docker compose exec backend graphban sync      # incremental push (only changed paths ship)

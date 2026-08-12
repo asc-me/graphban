@@ -66,12 +66,12 @@ describe("SyncLinkPanel", () => {
     await screen.findByText("not linked");
 
     await user.type(screen.getByPlaceholderText("cloud.graphban.dev"), "cloud.agentldgr.dev");
-    await user.type(screen.getByPlaceholderText("paste key…"), "al_sk_secret");
+    await user.type(screen.getByPlaceholderText("paste key…"), "gb_sk_secret");
     await user.type(screen.getByPlaceholderText("acme"), "acme");
     await user.click(screen.getByRole("button", { name: "Link instance" }));
 
     await waitFor(() =>
-      expect(api.syncLink).toHaveBeenCalledWith("cloud.agentldgr.dev", "al_sk_secret", "acme"),
+      expect(api.syncLink).toHaveBeenCalledWith("cloud.agentldgr.dev", "gb_sk_secret", "acme"),
     );
   });
 

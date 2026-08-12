@@ -153,7 +153,7 @@ Each prompt assumes the Part 1 preamble is already pasted above it.
 > **Screen: Linked instances.** The cloud-side view of who pushes into this tenant — the counterpart
 > to a local deployment's Sync/Link page. Header explains: "Local deployments push their code graph
 > here using a sync credential." A table of **linked deployments**: a label/hostname, the project it
-> targets, the **sync key** used (masked, `al_sk_…`), last push (relative), pushed node count, a
+> targets, the **sync key** used (masked, `gb_sk_…`), last push (relative), pushed node count, a
 > freshness pill (IN SYNC / STALE / NEVER), and an action to **revoke** the key (danger). A secondary
 > section **Sync credentials**: keys minted for inbound sync with scope `sync`, project pin, created/
 > last-used, and a **Mint sync key** button (→ screen 8). Include a privacy line: "Summaries and
@@ -165,7 +165,7 @@ Each prompt assumes the Part 1 preamble is already pasted above it.
 > org key a local deployment authenticates with. Fields: key name (e.g. "laptop — acme-core"), target
 > **project** (select — a sync key pins to one cloud project), optional expiry. A callout that the key
 > is **shown once**. On create: a success panel with the key in a mono code box + copy button, and a
-> ready-to-paste **`graphban link`** command (`graphban link --cloud-url … --api-key al_sk_… --project …`).
+> ready-to-paste **`graphban link`** command (`graphban link --cloud-url … --api-key gb_sk_… --project …`).
 > Emphasize least-privilege: this key can only push a code graph to its one project, nothing else.
 
 ### 9 · Backlog with claims & leases  *(P0)*

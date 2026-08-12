@@ -64,12 +64,12 @@ def test_first_push_sends_all_then_nothing(db, monkeypatch):
     _describe(db, "x.py", "y.py")
     calls = _capture(monkeypatch)
 
-    r = code_sync.push(db, project_id="core", cloud_url="https://cloud", api_key="al_sk_x")
+    r = code_sync.push(db, project_id="core", cloud_url="https://cloud", api_key="gb_sk_x")
     assert r["pushed"] == 2 and _paths_sent(calls) == ["x.py", "y.py"]
     assert set(db.get(CodeSyncState, "core").manifest) == {"x.py", "y.py"}
 
     calls2 = _capture(monkeypatch)  # nothing changed
-    r2 = code_sync.push(db, project_id="core", cloud_url="https://cloud", api_key="al_sk_x")
+    r2 = code_sync.push(db, project_id="core", cloud_url="https://cloud", api_key="gb_sk_x")
     assert r2["pushed"] == 0 and not any("nodes" in c for c in calls2)
 
 
@@ -119,7 +119,7 @@ def test_push_without_a_link_raises_notlinked(db):
 
 
 # ---- trigger endpoint ----
-def _link(monkeypatch, url="https://cloud", key="al_sk_x"):
+def _link(monkeypatch, url="https://cloud", key="gb_sk_x"):
     monkeypatch.setattr(code_sync.settings, "sync_cloud_url", url)
     monkeypatch.setattr(code_sync.settings, "sync_api_key", key)
 

@@ -40,9 +40,9 @@ def cfg_path(tmp_path, monkeypatch):
 
 
 def test_link_persists_target_chmod_600(cfg_path):
-    assert cli.main(["link", "--cloud-url", "https://c.example/", "--api-key", "al_sk_x", "--project", "core"]) == 0
+    assert cli.main(["link", "--cloud-url", "https://c.example/", "--api-key", "gb_sk_x", "--project", "core"]) == 0
     saved = json.loads(cfg_path.read_text())
-    assert saved == {"cloud_url": "https://c.example", "api_key": "al_sk_x", "project": "core"}  # slash trimmed
+    assert saved == {"cloud_url": "https://c.example", "api_key": "gb_sk_x", "project": "core"}  # slash trimmed
     assert oct(cfg_path.stat().st_mode)[-3:] == "600"  # credential file is not world-readable
 
 
@@ -57,7 +57,7 @@ def test_status_reports_not_linked(cfg_path, capsys):
 
 
 def test_status_linked_shows_never_synced(cfg_path, capsys):
-    cli.main(["link", "--cloud-url", "https://c.example", "--api-key", "al_sk_x"])
+    cli.main(["link", "--cloud-url", "https://c.example", "--api-key", "gb_sk_x"])
     capsys.readouterr()
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
@@ -65,7 +65,7 @@ def test_status_linked_shows_never_synced(cfg_path, capsys):
 
 
 def test_sync_passes_the_stored_link_to_push(cfg_path, monkeypatch):
-    cli.main(["link", "--cloud-url", "https://c.example", "--api-key", "al_sk_x"])
+    cli.main(["link", "--cloud-url", "https://c.example", "--api-key", "gb_sk_x"])
     seen = {}
 
     def fake_push(db, *, project_id, cloud_url, api_key, **kw):
@@ -75,7 +75,7 @@ def test_sync_passes_the_stored_link_to_push(cfg_path, monkeypatch):
     from app.services import code_sync
     monkeypatch.setattr(code_sync, "push", fake_push)
     assert cli.main(["sync"]) == 0
-    assert seen == {"project_id": "core", "cloud_url": "https://c.example", "api_key": "al_sk_x"}
+    assert seen == {"project_id": "core", "cloud_url": "https://c.example", "api_key": "gb_sk_x"}
 
 
 def test_sync_reports_not_linked_cleanly(cfg_path, monkeypatch):
@@ -90,7 +90,7 @@ def test_sync_reports_not_linked_cleanly(cfg_path, monkeypatch):
 
 
 def test_purge_requires_confirmation(cfg_path):
-    cli.main(["link", "--cloud-url", "https://c.example", "--api-key", "al_sk_x"])
+    cli.main(["link", "--cloud-url", "https://c.example", "--api-key", "gb_sk_x"])
     with pytest.raises(SystemExit):
         cli.main(["purge"])  # no --yes
 

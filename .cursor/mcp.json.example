@@ -2,7 +2,7 @@
   "mcpServers": {
     "graphban": {
       "url": "http://localhost:8000/api/mcp",
-      "headers": { "X-API-Key": "al_sk_REPLACE_ME" }
+      "headers": { "X-API-Key": "gb_sk_REPLACE_ME" }
     }
   }
 }

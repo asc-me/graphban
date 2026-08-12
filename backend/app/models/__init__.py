@@ -1202,7 +1202,7 @@ class ApiKey(Base):
     # must pass project_id per call, or it falls back to the default project).
     project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
     name: Mapped[str] = mapped_column(String, default="agent key")
-    prefix: Mapped[str] = mapped_column(String)  # e.g. al_sk_ab12 for display
+    prefix: Mapped[str] = mapped_column(String)  # e.g. gb_sk_ab12 for display
     hashed_key: Mapped[str] = mapped_column(String)
     scopes: Mapped[list] = mapped_column(JSON, default=list)
     # Which roles an agent authenticating with this key may hold (PRD-17 D2). The CEILING,

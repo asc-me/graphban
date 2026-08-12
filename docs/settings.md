@@ -86,9 +86,12 @@ Lists the project's members with their **role** (owner/admin/member) and **acces
 
 Manage scoped keys used to authenticate agents to the [MCP endpoint](mcp.md):
 
-- **Create** a key — the plaintext (`al_sk_…`) is shown **once**; copy it immediately. Only a
+- **Create** a key — the plaintext (`gb_sk_…`) is shown **once**; copy it immediately. Only a
   SHA-256 hash is stored.
 - **Revoke** a key with the trash icon.
+
+Keys minted before the Graphban rename start `al_sk_` and keep authenticating — the accepted
+prefixes only ever grow, so nothing needs re-issuing ([configuration](configuration.md)).
 
 ## Profile (`/profile`)
 

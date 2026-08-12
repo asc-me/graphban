@@ -31,7 +31,7 @@ Cursor reads two config files; pick by who the config is for:
   "mcpServers": {
     "graphban": {
       "url": "https://<your-host>/api/mcp",
-      "headers": { "X-API-Key": "al_sk_…" }
+      "headers": { "X-API-Key": "gb_sk_…" }
     }
   }
 }
