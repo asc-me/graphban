@@ -12,8 +12,7 @@ type Client = {
   build: (url: string, key: string) => string;
 };
 
-// Formats verified against each tool's official MCP docs (Grok is a best-effort stdio bridge —
-// its remote-HTTP schema isn't officially documented).
+// Formats verified against each tool's official MCP docs.
 const CLIENTS: Client[] = [
   {
     id: "claude",
@@ -69,14 +68,13 @@ const CLIENTS: Client[] = [
   {
     id: "grok",
     label: "Grok CLI",
-    file: ".grok/settings.json",
-    note: "Grok's remote-MCP format isn't officially documented; this stdio bridge (mcp-remote) works reliably.",
-    build: (u, k) =>
-      JSON.stringify(
-        { mcpServers: { graphban: { command: "npx", args: ["-y", "mcp-remote", u, "--header", `X-API-Key: ${k}`] } } },
-        null,
-        2,
-      ),
+    file: "~/.grok/config.toml",
+    // Was a `mcp-remote` stdio bridge into a JSON file at `.grok/settings.json`, written when
+    // the remote-HTTP schema was undocumented. docs.x.ai now specifies it: TOML at
+    // `~/.grok/config.toml`, native remote HTTP, `headers` as inline key-value pairs. The
+    // bridge worked but shipped an extra `npx` process and a wrong path.
+    note: "Or run: grok mcp add --transport http graphban <url> --header \"X-API-Key: <key>\"",
+    build: (u, k) => `[mcp_servers.graphban]\nurl = "${u}"\nheaders = { "X-API-Key" = "${k}" }`,
   },
 ];
 
