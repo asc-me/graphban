@@ -740,6 +740,10 @@ export interface FleetOverview {
   agents: FleetAgent[];
   online: number;
   total: number;
+  /** Live agents per role, plus `all-in-one` — the unspecialised single-dev posture. */
+  by_role: Record<string, number>;
+  /** `single-agent` when nobody has specialised; `fleet` once any role is held. */
+  posture: string;
   roles: string[];
   presence_ttl_seconds: number;
   heartbeat_interval_seconds: number;

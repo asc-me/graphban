@@ -36,6 +36,7 @@ const AGENT = {
 
 const BASE = {
   agents: [], online: 0, total: 0, roles: ["planner", "worker", "reviewer"],
+  by_role: {}, posture: "single-agent",
   presence_ttl_seconds: 150, heartbeat_interval_seconds: 50,
   review_queue: [], clusters: [],
 };
@@ -58,6 +59,38 @@ describe("Fleet view", () => {
     // An empty roster is the state a first-time user is in, and "no agents" alone leaves them
     // nowhere. The instruction is the content.
     expect(screen.getByText(/Mint a credential below/)).toBeInTheDocument();
+  });
+
+  it("breaks the count down by role rather than totalling it", () => {
+    // "4 agents online" is the same number for a balanced fleet and for four workers with
+    // nobody to review them — and those need opposite actions.
+    fleet.data = { ...BASE, total: 4, online: 4, posture: "fleet",
+                   by_role: { planner: 1, worker: 2, reviewer: 1, "all-in-one": 0 },
+                   agents: [AGENT] };
+    renderView();
+    expect(screen.getByText("2 worker")).toBeInTheDocument();
+    expect(screen.getByText("1 reviewer")).toBeInTheDocument();
+    expect(screen.getByText(/the fleet reviews itself/)).toBeInTheDocument();
+  });
+
+  it("names the single-agent posture rather than showing it as a role", () => {
+    // The DEFAULT deployment. Showing it as a worker would misdescribe the commonest case —
+    // and imply a server-side review gate that deliberately does not apply here.
+    fleet.data = { ...BASE, total: 1, online: 1, posture: "single-agent",
+                   by_role: { planner: 0, worker: 0, reviewer: 0, "all-in-one": 1 },
+                   agents: [{ ...AGENT, active_role: "all-in-one" }] };
+    renderView();
+    expect(screen.getByText("1 all-in-one")).toBeInTheDocument();
+    expect(screen.getByText(/you are the reviewer/)).toBeInTheDocument();
+    expect(screen.queryByText(/1 worker/)).not.toBeInTheDocument();
+  });
+
+  it("omits roles nobody holds", () => {
+    fleet.data = { ...BASE, total: 1, online: 1, posture: "fleet",
+                   by_role: { planner: 0, worker: 1, reviewer: 0 }, agents: [AGENT] };
+    renderView();
+    expect(screen.getByText("1 worker")).toBeInTheDocument();
+    expect(screen.queryByText("0 planner")).not.toBeInTheDocument();
   });
 
   it("shows an orphaned branch on the agent's row", () => {

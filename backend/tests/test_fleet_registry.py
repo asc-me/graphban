@@ -230,7 +230,11 @@ def test_register_and_status_over_mcp(client, auth):
     status = _mcp(client, raw, "fleet_status")
 
     assert first["agent_id"] != second["agent_id"], "one key, two terminals, two agents"
-    assert first["active_role"] in fleet.ROLES
+    # `all-in-one`, not `worker`: the key is unnarrowed and no role was asked for, so this is
+    # the single-dev posture. Labelling it `worker` would then have the D2 ceiling refuse it
+    # `status: done` — registering would have COST it capability, which is what made skipping
+    # registration the rational move.
+    assert first["active_role"] == fleet.ALL_IN_ONE
     # The cadence travels with the identity — an agent that must read a constant out of the
     # docs to stay alive is one that eventually does not.
     assert first["heartbeat_interval_seconds"] * 3 == first["presence_ttl_seconds"]
@@ -270,3 +274,79 @@ def test_the_roster_shows_what_an_agent_is_holding(client, auth):
 
     mine = next(a for a in status["agents"] if a["id"] == me["agent_id"])
     assert [h["id"] for h in mine["holdings"]] == [claimed["item"]["id"]]
+
+
+# ---- the two postures ---------------------------------------------------------------------
+
+def test_an_unnarrowed_key_registers_as_all_in_one(db, proj, key):
+    """The DEFAULT deployment: one dev, one agent, no orchestrator. It is not a worker — it
+    does everything, and the human is the reviewer."""
+    a = fleet.register_agent(db, project_id=proj, api_key=key)
+
+    assert a.active_role == fleet.ALL_IN_ONE
+
+
+def test_registering_never_costs_an_agent_capability(db, proj, key, client):
+    """THE incentive bug this fixes. An all-in-one agent labelled `worker` would then be
+    refused `status: done` by the D2 ceiling — so the rational move for a solo agent was to
+    skip `register_agent`, which is also the move that hides it from the roster. The
+    enforcement pointed exactly the wrong way."""
+    a = fleet.register_agent(db, project_id=proj, api_key=key)
+
+    role, resolved = fleet.role_for_call(db, api_key=key, agent_id=a.id)
+
+    assert role == "*", "unrestricted, exactly as it was before registering"
+    assert resolved == a.id, "and still identified on the roster"
+
+
+def test_a_narrowed_key_still_specialises(db, proj, key):
+    """All-in-one is for an UNNARROWED credential. A fleet key names one role and must still
+    produce that role — otherwise every fleet member would register unrestricted and the
+    ceiling would mean nothing."""
+    key.roles = ["reviewer"]
+    db.commit()
+
+    a = fleet.register_agent(db, project_id=proj, api_key=key)
+
+    assert a.active_role == "reviewer"
+
+
+def test_asking_for_a_role_still_gets_it(db, proj, key):
+    """A dev who wants to run a fleet on one unnarrowed key can still say so per agent."""
+    a = fleet.register_agent(db, project_id=proj, api_key=key, role_hint="planner")
+
+    assert a.active_role == "planner"
+
+
+def test_the_roster_counts_by_role_and_names_the_posture(db, proj, key):
+    """A bare total cannot distinguish a balanced fleet from four workers with nobody to
+    review them, and those need opposite actions."""
+    fleet.register_agent(db, project_id=proj, api_key=key)                      # all-in-one
+    fleet.register_agent(db, project_id=proj, api_key=key, role_hint="worker")
+    fleet.register_agent(db, project_id=proj, api_key=key, role_hint="reviewer")
+
+    out = fleet.fleet_status(db, proj)
+
+    assert out["by_role"] == {"planner": 0, "worker": 1, "reviewer": 1, "all-in-one": 1}
+    assert out["posture"] == "fleet", "somebody has specialised"
+
+
+def test_a_lone_all_in_one_agent_reads_as_single_agent(db, proj, key):
+    """Not a fleet that has gone wrong — the default posture, stated as such."""
+    fleet.register_agent(db, project_id=proj, api_key=key)
+
+    out = fleet.fleet_status(db, proj)
+
+    assert out["posture"] == "single-agent"
+    assert out["by_role"]["all-in-one"] == 1
+
+
+def test_an_all_in_one_agent_can_be_specialised_later(db, proj, key):
+    """The upgrade path between the two postures: a solo dev who decides to run a fleet
+    assigns roles rather than re-registering anybody."""
+    a = fleet.register_agent(db, project_id=proj, api_key=key)
+
+    fleet.assign_role(db, agent_id=a.id, role="reviewer", reason="fleet time")
+
+    assert a.active_role == "reviewer"
+    assert fleet.role_for_call(db, api_key=key, agent_id=a.id)[0] == "reviewer", "now bound"
