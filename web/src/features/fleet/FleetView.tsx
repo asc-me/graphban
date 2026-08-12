@@ -122,6 +122,19 @@ function AgentRow({ a }: { a: FleetAgent }) {
           <span className="truncate text-[13px] text-fg-2">{a.label || "unnamed agent"}</span>
         </div>
         <div className="mt-0.5 font-mono text-[10.5px] text-faint">
+          {/* WHICH credential this agent authenticated with. A stale key in a client config is
+              otherwise invisible here: the agent, its role and its state all look right, and
+              the fact that explains a surprising role is the one thing not shown. `single`
+              marks a credential a role hint cannot narrow — so an all-in-one key that still
+              produces a worker is legible as the OLD key rather than a broken gate. */}
+          {a.credential && (
+            <span className="mr-2 text-muted-2">
+              {a.credential}
+              {a.credential_posture === "single" && (
+                <span className="ml-1 text-faint">· single</span>
+              )}
+            </span>
+          )}
           {a.worktree || "no worktree"}
           {a.branch ? ` · ${a.branch}` : ""}
           {/* The fleet released the ITEM by itself. The BRANCH is state only a human can
