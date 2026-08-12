@@ -86,3 +86,63 @@ def test_org_rate_cap_off_self_host(client, monkeypatch):
     key = client.post("/api/api-keys", json={"name": "agent"}, headers=auth).json()["plaintext"]
     for _ in range(3):
         assert "error" not in _mcp(client, key, "get_backlog")["result"].get("structuredContent", {})
+
+
+# ---- the nginx template (GRPH-340) --------------------------------------------
+#
+# This file's docstring said nginx plumbing is "verified at deploy time", which in practice
+# meant not verified: nothing read the template, so a wrong directive shipped and was found by
+# a human noticing stale behaviour in a browser. These two rules are the ones whose breakage
+# is silent — a served page looks completely normal whether or not it carries them.
+import re
+from pathlib import Path
+
+_TEMPLATE = (Path(__file__).resolve().parents[2] / "web" / "nginx.conf.template").read_text()
+
+_SECURITY_HEADERS = (
+    "X-Content-Type-Options",
+    "Referrer-Policy",
+    "Strict-Transport-Security",
+    "Content-Security-Policy",
+)
+
+
+def _location_blocks(text):
+    """(match, body) for each `location … { … }`."""
+    blocks = []
+    for m in re.finditer(r"^\s*location\s+([^{]+)\{", text, re.M):
+        start = text.index("{", m.start())
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    blocks.append((m.group(1).strip(), text[start:i]))
+                    break
+    return blocks
+
+
+def test_index_html_revalidates_while_hashed_assets_are_cached_hard():
+    """The failure this prevents is the one that wastes a debugging session rather than
+    breaking a page: index.html is the only unhashed file and it NAMES the hashed bundle, so a
+    cached copy pins a browser to the previous deploy's JS. The server reports the new version,
+    the tab runs the old one, and every test run against it is quietly measuring stale code."""
+    by_match = dict(_location_blocks(_TEMPLATE))
+
+    assert "no-cache" in by_match["/"], "index.html must revalidate on every load"
+    assert "immutable" in by_match["/assets/"], "content-hashed assets should cache hard"
+    assert "no-cache" not in by_match["/assets/"], "hashed assets need no revalidation"
+
+
+@pytest.mark.parametrize("header", _SECURITY_HEADERS)
+def test_no_location_drops_a_security_header_by_setting_one_of_its_own(header):
+    """nginx's `add_header` REPLACES the inherited set instead of appending to it. So the
+    moment a location adds a Cache-Control, it silently loses nosniff, HSTS, Referrer-Policy
+    and the CSP — and the response looks entirely fine. This is the whole reason the cache
+    blocks above repeat all four."""
+    for match, body in _location_blocks(_TEMPLATE):
+        if "add_header" not in body:
+            continue
+        assert header in body, f"location {match} sets headers of its own and drops {header}"
