@@ -237,6 +237,12 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "release_item": ("worker",),
     "heartbeat": ("worker",),
     # PRD authorship is the planner's.
+    # Review belongs to the reviewer, and `claim_next` to the worker — the two halves of the
+    # ban. A reviewer that could claim fresh work would drift into being a worker holding
+    # review authority, which is self-review with extra steps.
+    "claim_review": ("reviewer",),
+    "sign_off": ("reviewer",),
+    "bounce": ("reviewer",),
     "create_prd": ("planner",),
     "update_prd": ("planner",),
     "decompose_prd": ("planner",),
@@ -395,3 +401,126 @@ def quarantine(db: Session, agent_id: str) -> dict:
     return {"quarantined": True, "released_items": released,
             "released_reservations": len(reservations),
             "branch_orphaned": agent.branch_orphaned}
+
+
+# ---- D3: review, sign-off, and the self-review ban -----------------------------------------
+
+class SelfReview(Exception):
+    """An agent tried to pass its own work. Raised rather than returned, because every call
+    site must handle it — a caller that ignores a `False` return would sign the item off."""
+
+
+def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
+                 lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
+    """Lease an item awaiting review that this agent did NOT build.
+
+    **`WHERE claimed_by != caller` is the entire invariant.** With one agent in the fleet this
+    correctly returns nothing: self-review stops being a procedural discipline somebody
+    remembers and becomes a clause the database enforces.
+
+    Prefers a reviewer of a DIFFERENT VENDOR where the fleet has one. A Claude reviewer
+    approving Claude work is a different agent but not a different error distribution — same
+    training, same blind spots, same things it does not think to check. That upgrades the
+    invariant from preventing self-review to preventing monoculture review, and it is the
+    concrete payoff for running four heterogeneous windows rather than four identical ones.
+    Preference, not requirement: a same-vendor review is far better than none.
+    """
+    me = db.get(Agent, agent_id)
+    stmt = select(Item).where(Item.status == "review")
+    if project_id:
+        stmt = stmt.where(Item.project_id == project_id)
+    candidates = [
+        it for it in db.scalars(stmt.order_by(Item.sort_order, Item.number)).all()
+        # The ban, keyed on AUTHORSHIP rather than on role. The obvious attack on a dynamic
+        # role system is to promote a worker to reviewer while it holds its own item; it does
+        # not work, because an agent's id does not change when its role does.
+        if it.claimed_by != agent_id
+        # Already being reviewed by somebody else.
+        and not (it.reviewed_by and it.reviewed_by != agent_id)
+    ]
+    if not candidates:
+        return None
+
+    my_vendor = ((me.capabilities or {}).get("vendor") if me else None)
+    if my_vendor:
+        authors = {a.id: (a.capabilities or {}).get("vendor")
+                   for a in db.scalars(select(Agent)).all()}
+        cross = [it for it in candidates if authors.get(it.claimed_by) != my_vendor]
+        candidates = cross or candidates
+
+    item = candidates[0]
+    item.reviewed_by = agent_id
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None = None) -> Item:
+    """Take a reviewed item to `done`.
+
+    The second of two independent gates on the invariant. `claim_review` already filters by
+    authorship, so this assertion is redundant on the happy path — deliberately. A single gate
+    keyed on a QUERY is one refactor away from being keyed on the caller's current role
+    instead of on authorship, and the failure would be silent: work signing itself off while
+    every test about roles still passed.
+    """
+    item = db.get(Item, item_id)
+    if item is None:
+        raise ValueError(f"item not found: {item_id}")
+    if item.claimed_by and item.claimed_by == agent_id:
+        raise SelfReview(
+            f"{agent_id} built {item.key} and cannot sign it off; "
+            "another agent has to take it"
+        )
+    item.reviewed_by = agent_id
+    item.status = "done"
+    if evidence:
+        item.evidence = list(item.evidence or []) + list(evidence)
+    item.claimed_by = None
+    item.claimed_at = None
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
+           lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item:
+    """Send an item back to `next`, pinned to its AUTHOR for one lease period (D-f).
+
+    The author still has the worktree, the branch and the context; handing half-finished work
+    to a cold agent throws away exactly what cluster assignment exists to preserve.
+
+    **The pin lapses.** A hard author-only pin is the tempting version and it is wrong: it
+    strands the item when the author never comes back, which is the common case rather than
+    the exotic one — they were re-tasked, or they died.
+    """
+    item = db.get(Item, item_id)
+    if item is None:
+        raise ValueError(f"item not found: {item_id}")
+    if not (reason or "").strip():
+        # A bounce without a reason is a rejection the author cannot act on, and it costs
+        # them a full cycle to discover that.
+        raise ValueError("bounce requires a reason")
+    author = item.claimed_by
+    item.status = "next"
+    item.claimed_by = None
+    item.claimed_at = None
+    item.assignee = ""
+    item.reviewed_by = None
+    item.bounce_pinned_to = author
+    item.bounce_pinned_until = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+                                if author else None)
+    item.blocker = ""
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+def bounce_pin_holder(item: Item, *, now: datetime | None = None) -> str | None:
+    """Who this item is currently reserved for, or None once the pin has lapsed."""
+    if not item.bounce_pinned_to or not item.bounce_pinned_until:
+        return None
+    until = item.bounce_pinned_until
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    return item.bounce_pinned_to if until > (now or datetime.now(timezone.utc)) else None
