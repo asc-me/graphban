@@ -469,6 +469,22 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
     return item
 
 
+# Below this effort, agent-distinct review is sufficient on its own (PRD-17 D9). An
+# adversarial pass on a one-line fix is pure tax, and a gate that fires on trivia is a gate
+# people route around — which is the AL-96 trust failure that kept GRPH-321 parked for months.
+# The threshold is what answers that objection directly: the cheapest way to satisfy this gate
+# is never to avoid it.
+ADVERSARIAL_EFFORT_THRESHOLD = 3
+
+
+class MissingAdversarialEvidence(Exception):
+    """Above-threshold work signed off with nothing that tried to break it."""
+
+
+def needs_adversarial_evidence(item: Item) -> bool:
+    return (item.effort or 0) >= ADVERSARIAL_EFFORT_THRESHOLD
+
+
 def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None = None) -> Item:
     """Take a reviewed item to `done`.
 
@@ -486,11 +502,36 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             f"{agent_id} built {item.key} and cannot sign it off; "
             "another agent has to take it"
         )
+    # The adversarial gate (PRD-17 D9). Reviewer and adversary are different jobs and must not
+    # become one habit: a reviewer CONVERGES — the queue is three deep and an agent that blocks
+    # everything is a bad reviewer — while an adversary DIVERGES, where finding nothing is
+    # failure. Merge them and the convergent incentive wins under queue pressure.
+    #
+    # So this is a PRECONDITION, not a practice. The reviewer satisfies it however it likes —
+    # subagents with opposing lenses, or its own passes — and Graphban checks only that a
+    # receipt exists. Convert a hoped-for behaviour into something the server checks.
+    #
+    # Counted across the item's WHOLE evidence set: the author's own sabotage receipts are
+    # adversarial evidence, and making the reviewer re-run what is already recorded would be
+    # tax rather than rigour.
+    fresh = items_svc.normalize_evidence(evidence or [])
+    merged = list(item.evidence or []) + fresh
+    if needs_adversarial_evidence(item) and not items_svc.has_effective_sabotage(merged):
+        vacuous = items_svc.vacuous_sabotages(merged)
+        raise MissingAdversarialEvidence(
+            f"{item.key} is effort {item.effort} and needs adversarial evidence: a `sabotage` "
+            "receipt naming the claim, the mutation, and how many tests_failed"
+            + (f" — {len(vacuous)} recorded sabotage(s) broke NOTHING, which means the test "
+               "cannot fail rather than that the claim is guarded" if vacuous else "")
+        )
+
     release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
     item.status = "done"
-    if evidence:
-        item.evidence = list(item.evidence or []) + list(evidence)
+    if fresh:
+        # Normalised on the way in, so a sabotage receipt is validated here exactly as it is
+        # on `update_item` — one definition of what a receipt is.
+        item.evidence = merged
     item.claimed_by = None
     item.claimed_at = None
     db.commit()
