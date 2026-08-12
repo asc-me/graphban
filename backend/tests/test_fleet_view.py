@@ -226,3 +226,46 @@ def test_the_view_needs_a_session(client, proj):
     """The caller is a human deciding how to spend a fleet, not an agent working inside one."""
     assert client.get(f"/api/fleet?project_id={proj}").status_code == 401
     assert client.post("/api/fleet/end-wave", json={"project_id": proj}).status_code == 401
+
+
+def test_an_all_in_one_credential_is_unnarrowed(client, auth, proj, db):
+    """The roster REPORTS `all-in-one`, so the Fleet view must be able to mint one — a page
+    that counts a posture it cannot create names a category the reader has no way to produce.
+
+    It mints an UNNARROWED credential (all three roles), which is exactly what makes an agent
+    registering on it unrestricted.
+    """
+    made = client.post("/api/fleet/keys",
+                       json={"project_id": proj, "role": "all-in-one", "wave": "w1"},
+                       headers=auth)
+
+    assert made.status_code == 201, made.text
+    row = db.get(ApiKey, made.json()["id"])
+    assert set(row.roles) == set(fleet.ROLES), "unnarrowed — no ceiling"
+    assert row.fleet_wave == "w1", "still swept by End wave; the posture differs, not the lifecycle"
+
+
+def test_an_agent_on_that_credential_registers_all_in_one(client, auth, proj):
+    """End to end: the option produces the posture it names."""
+    raw = client.post("/api/fleet/keys",
+                      json={"project_id": proj, "role": "all-in-one", "wave": "w1"},
+                      headers=auth).json()["plaintext"]
+
+    me = _mcp(client, raw, "register_agent", {"label": "solo"})
+
+    assert me["active_role"] == fleet.ALL_IN_ONE
+    view = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()
+    assert view["by_role"]["all-in-one"] == 1
+    assert view["posture"] == "single-agent"
+
+
+def test_an_all_in_one_credential_is_still_ended_by_end_wave(client, auth, proj, db):
+    """It is a fleet-issued key like any other. Exempting it would leave a live write-scoped
+    credential behind that the button appeared to have cleaned up."""
+    made = client.post("/api/fleet/keys",
+                       json={"project_id": proj, "role": "all-in-one", "wave": "w1"},
+                       headers=auth).json()
+
+    client.post("/api/fleet/end-wave", json={"project_id": proj, "wave": "w1"}, headers=auth)
+
+    assert db.get(ApiKey, made["id"]).revoked is True

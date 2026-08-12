@@ -37,11 +37,15 @@ what you have; note which you ran with.
 
 ## Three things that will look like bugs and are not
 
-**1. A hand-minted key produces an `all-in-one` agent, not a worker.** An unnarrowed
-credential means the single-agent posture, where you are the reviewer and no gate applies. So
-**step 3 will not refuse anything if you use your normal key** — you must mint from the Fleet
-view, which narrows `roles` to one. If a worker is not being refused `done`, check its
-credential before assuming the gate is broken.
+**1. An unnarrowed key produces an `all-in-one` agent, not a worker.** That is the
+single-agent posture, where you are the reviewer and no gate applies. So **step 3 will not
+refuse anything unless the agent holds a role-narrowed credential** — pick `worker` in the
+Fleet view, not `all-in-one` and not your normal Settings key. If a worker is not being
+refused `done`, check its credential before assuming the gate is broken.
+
+The Fleet view offers `all-in-one` alongside the three roles; it mints an unnarrowed
+credential and is the right choice for testing the default posture (step 15 below), not for
+steps 3–11.
 
 **2. `claimed: false` is usually the correct answer.** From `claim_review` it means nothing is
 waiting *that you may take*; from `claim_cluster` it means every ready cluster collides with
@@ -79,6 +83,7 @@ wedged.
 | 12 | Have an orchestrator spawn a subagent that registers with `parent_agent_id` | The subagent cannot `claim_review` or `sign_off` its parent's work | |
 | 13 | Two terminals on **one** key, same machine, both reporting `host` | Neither can review the other; the reason says to mint a per-role credential | |
 | 14 | A worker calls `claim_cluster(wait_seconds=60)` on an empty backlog | Parks; returns within the window when work appears; **one** tool call, not twelve | |
+| 15 | Mint an **all-in-one** credential and register on it | Roster shows it as `all-in-one`, posture reads `single-agent — you are the reviewer`, and it can take an item to `done` itself | |
 
 ---
 

@@ -131,6 +131,32 @@ describe("Fleet view", () => {
     expect(screen.getByText(/queued until GB-A1 releases/)).toBeInTheDocument();
   });
 
+  it("offers all-in-one beside the three roles", async () => {
+    // The roster REPORTS all-in-one, so the page must be able to create one — otherwise it
+    // names a posture the reader has no way to produce.
+    renderView();
+    for (const r of ["planner", "worker", "reviewer", "all-in-one"]) {
+      expect(screen.getByRole("button", { name: r })).toBeInTheDocument();
+    }
+  });
+
+  it("mints an unnarrowed credential for all-in-one, and primes it as the solo posture", async () => {
+    api.mintFleetKey.mockResolvedValue({
+      id: "k1", plaintext: "gb_sk_secret", role: "all-in-one", wave: "wave-1", prefix: "gb_sk_ab",
+    });
+    const user = userEvent.setup();
+    renderView();
+
+    await user.click(screen.getByRole("button", { name: "all-in-one" }));
+    await user.click(screen.getByRole("button", { name: /Mint an all-in-one credential/ }));
+
+    await waitFor(() => expect(api.mintFleetKey).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "all-in-one" })));
+    // Primed as the DEFAULT posture: no reviewer agent, the human reviews. Priming it like a
+    // worker would imply a gate that deliberately does not apply here.
+    expect(await screen.findByText(/the human reviews your work/)).toBeInTheDocument();
+  });
+
   it("mints a role-narrowed credential and shows all three pastes", async () => {
     api.mintFleetKey.mockResolvedValue({
       id: "k1", plaintext: "gb_sk_secret", role: "reviewer", wave: "wave-1", prefix: "gb_sk_ab",
