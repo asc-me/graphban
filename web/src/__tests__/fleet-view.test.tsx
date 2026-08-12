@@ -140,6 +140,33 @@ describe("Fleet view", () => {
     }
   });
 
+  it("shows which role is selected — including all-in-one", async () => {
+    // The bug: the selected style came from ROLE_TONE, and all-in-one's tone was
+    // `text-muted border-line-2` — the SAME classes as unselected. Choosing it looked
+    // identical to not choosing it, and three credentials were minted all-in-one before
+    // anyone noticed. Asserted via aria-pressed so it cannot regress into a colour question.
+    const user = userEvent.setup();
+    renderView();
+
+    for (const r of ["planner", "worker", "reviewer", "all-in-one"]) {
+      await user.click(screen.getByRole("button", { name: r }));
+      const chosen = screen.getByRole("button", { name: r });
+      expect(chosen).toHaveAttribute("aria-pressed", "true");
+      for (const other of ["planner", "worker", "reviewer", "all-in-one"].filter((x) => x !== r)) {
+        const notChosen = screen.getByRole("button", { name: other });
+        expect(notChosen).toHaveAttribute("aria-pressed", "false");
+        // And it must LOOK different. `aria-pressed` alone would not have caught the original
+        // defect, which was a pure class collision — selected all-in-one rendered
+        // `text-muted border-line-2`, unselected rendered `border-line-2 text-muted`.
+        // Compared as SETS so class order never makes this pass by accident.
+        const classes = (el: Element) => new Set((el.className || "").split(/\s+/).filter(Boolean));
+        const a = classes(chosen);
+        const b = classes(notChosen);
+        expect([...a].some((c) => !b.has(c)) || [...b].some((c) => !a.has(c))).toBe(true);
+      }
+    }
+  });
+
   it("mints an unnarrowed credential for all-in-one, and primes it as the solo posture", async () => {
     api.mintFleetKey.mockResolvedValue({
       id: "k1", plaintext: "gb_sk_secret", role: "all-in-one", wave: "wave-1", prefix: "gb_sk_ab",

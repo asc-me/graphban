@@ -256,9 +256,17 @@ export function FleetView() {
                 way to produce. It mints an unnarrowed credential, which is what makes the
                 agent unrestricted. */}
             {[...(data?.roles ?? ["planner", "worker", "reviewer"]), ALL_IN_ONE].map((r) => (
-              <button key={r} onClick={() => setRole(r)}
-                className={cn("rounded-[9px] border px-3 py-1.5 text-[12px]",
-                              role === r ? ROLE_TONE[r] ?? "border-line-2 text-fg" : "border-line-2 text-muted")}>
+              // Selection is signalled by BACKGROUND and border, never by the role tone.
+              // Tinting the selected item with `ROLE_TONE` put `all-in-one` in `text-muted
+              // border-line-2` — byte-identical to the unselected style — so choosing it
+              // looked exactly like not choosing it. Found on the first walk, after three
+              // credentials came out all-in-one. The roster badges keep the colours; a
+              // picker's job is "which one is selected".
+              <button key={r} onClick={() => setRole(r)} aria-pressed={role === r}
+                className={cn("rounded-[9px] border px-3 py-1.5 text-[12px] transition-colors",
+                              role === r
+                                ? "border-accent/50 bg-surface-3 text-fg"
+                                : "border-line-2 text-muted hover:text-fg-2")}>
                 {r}
               </button>
             ))}
