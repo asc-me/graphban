@@ -30,6 +30,7 @@ from app.security.deps import get_agent_key
 from app.services import clustering as cluster_svc
 from app.services import code_graph as code_svc
 from app.services import events as events_svc
+from app.services import fleet as fleet_svc
 from app.services import idempotency as idem_svc
 from app.services import insights as insights_svc
 from app.services import items as items_svc
@@ -455,6 +456,34 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "register_agent",
+        "description": (
+            "Register THIS process as an agent at startup, before claiming work. Two terminals on "
+            "one key become two agents. `role_hint` is clamped to what your credential permits — "
+            "read `active_role` back. Heartbeat at the returned interval or you go offline and "
+            "your items requeue."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "description": "e.g. 'opus-5 @ macbook:wt-2'. Duplicates allowed."},
+                "capabilities": {"type": "object", "description": "{vendor, model, tier, readonly, host}; vendor drives review diversity."},
+                "worktree": {"type": "string"},
+                "branch": {"type": "string"},
+                "role_hint": {"type": "string", "enum": list(fleet_svc.ROLES)},
+            },
+        },
+    },
+    {
+        "name": "fleet_status",
+        "description": (
+            "Who else is working this project: agents, roles, presence, and what each holds. "
+            "Presence is derived from last contact, so a dead agent reads `offline` with nothing "
+            "having reported it."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "heartbeat",
         "description": "Extend the lease on an item you've claimed so it isn't reclaimed while you work.",
         "inputSchema": {
@@ -820,7 +849,7 @@ _READ_ONLY = {
     "get_context", "list_projects", "setup_project", "search_items", "search_memory",
     "get_backlog", "get_item_details", "suggest_next", "generate_digest", "related_work",
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
-    "prd_acceptance", "learning_loop",
+    "prd_acceptance", "learning_loop", "fleet_status",
 }
 
 _PAGE_META = {  # shared output shape for paged reads (#9)
@@ -979,6 +1008,24 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "claim_next": {
         "type": "object",
         "properties": {"claimed": {"type": "boolean"}, "item": {"type": ["object", "null"]}},
+    },
+    "register_agent": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string"}, "key": {"type": "string"},
+            "active_role": {"type": "string"}, "eligible_roles": {"type": "array"},
+            "heartbeat_interval_seconds": {"type": "integer"},
+            "presence_ttl_seconds": {"type": "integer"},
+        },
+    },
+    "fleet_status": {
+        "type": "object",
+        "properties": {
+            "agents": {"type": "array"}, "online": {"type": "integer"},
+            "total": {"type": "integer"}, "roles": {"type": "array"},
+            "presence_ttl_seconds": {"type": "integer"},
+            "heartbeat_interval_seconds": {"type": "integer"},
+        },
     },
     "heartbeat": _ITEM_SCHEMA,
     "release_item": _ITEM_SCHEMA,
@@ -1622,9 +1669,29 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS),
         )
         return {"claimed": item is not None, "item": _item_dict(item) if item else None}
+    if name == "register_agent":
+        agent = fleet_svc.register_agent(
+            db, project_id=pid, api_key=key, label=args.get("label", ""),
+            capabilities=args.get("capabilities") or {}, worktree=args.get("worktree", ""),
+            branch=args.get("branch", ""), role_hint=args.get("role_hint"),
+        )
+        return {
+            "agent_id": agent.id, "key": agent.key, "active_role": agent.active_role,
+            "eligible_roles": list(fleet_svc.eligible_roles(key)),
+            # The cadence travels with the identity: an agent that has to read a constant out
+            # of documentation to stay alive is one that eventually does not.
+            "heartbeat_interval_seconds": fleet_svc.heartbeat_interval_seconds(),
+            "presence_ttl_seconds": fleet_svc.presence_ttl_seconds(),
+        }
+    if name == "fleet_status":
+        return fleet_svc.fleet_status(db, pid)
     if name == "heartbeat":
         _scoped_item(db, args["id"], allowed)  # raises the precise error first
         agent = args.get("agent_id") or key.name or key.id
+        # One call keeps BOTH alive (PRD-17 D1). An agent that heartbeats its item lease but
+        # not its presence would be declared dead while visibly working — and the roster
+        # would then be reporting the opposite of what is happening.
+        fleet_svc.touch(db, agent, state="working")
         item = items_svc.heartbeat(db, args["id"], agent)
         if item is None:
             raise errors.Conflict(

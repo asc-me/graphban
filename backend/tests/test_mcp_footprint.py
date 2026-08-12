@@ -140,9 +140,21 @@ def test_manifest_stays_within_token_budget():
 
     ~1.0k chars came out of those four descriptions before the ceiling moved. The new
     headroom (~476 tokens) is the same slack the 9500 ceiling had before this change, so
-    the guard stays as tight as it was rather than being loosened."""
+    the guard stays as tight as it was rather than being loosened.
+
+    Raised 10500 -> 11500 in GRPH-332, by the same procedure. PRD-17 D1 adds two tools
+    (register_agent, fleet_status); subtract them and the manifest measures ~10474 tokens.
+    Prose came out first and the numbers say it worked: the two started at 1240 chars each
+    against a 995 average and were cut to 891, so they are now LEANER than the mean and the
+    growth is tool COUNT, which this guard permits, rather than the verbosity it exists to
+    catch.
+
+    Worth recording what the measurement also showed: at the 10500 ceiling the surface had
+    only ~26 tokens of headroom left, so tools had been added since GRPH-254 without anyone
+    re-running this arithmetic. The new ~579 tokens restores roughly the slack the previous
+    two bumps left, rather than buying room for another unchecked run of growth."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 10500, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 11500, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
