@@ -73,8 +73,9 @@ you from colliding with them; your job is to follow the loop and not fight it.
 
 ## Start
 
-1. `register_agent(label="<model> @ <host>:<worktree>", capabilities={"vendor": "<vendor>"},
-   worktree=..., branch=...)`. **Do this before anything else.** An agent that
+1. `register_agent(label="<model> @ <host>:<worktree>",
+   capabilities={"vendor": "<vendor>", "host": "<hostname>"}, worktree=..., branch=...)`.
+   **Do this before anything else.** An agent that
    claims without registering is invisible to the roster and ungoverned — and two
    terminals sharing a key are two agents only if both register.
 2. Note `heartbeat_interval_seconds` in the reply. Heartbeat at that cadence while
@@ -128,7 +129,13 @@ whether somebody else's work is done, and you are the only agent that can.
 
 ## Start
 
-`register_agent(label=..., capabilities={"vendor": "<vendor>"}, role_hint="reviewer")`.
+`register_agent(label=..., capabilities={"vendor": "<vendor>", "host": "<hostname>"},
+role_hint="reviewer")`.
+
+**Report `host` honestly.** Review across two windows of one model on one machine sharing one
+credential is not two opinions, and the server uses `host` to tell that apart from a real
+fleet. Under-reporting it buys you nothing except reviews that mean less.
+
 Your vendor matters: the server prefers a reviewer whose vendor differs from the
 author's, because same-vendor review is a different agent but not a different error
 distribution — same training, same blind spots, same things it does not think to
@@ -199,6 +206,12 @@ what. You do not build.
    opens to the fleet. If the same item bounces twice, the problem is usually the
    item, not the worker — read it before re-tasking anybody.
 5. Repeat.
+
+## If you fan out to subagents
+
+Pass `parent_agent_id=<your agent id>` when a subagent of yours registers. A subagent is part
+of your turn, not a second opinion on it — the server uses this to stop one of your own
+children reviewing your work, which would be self-review wearing two ids.
 
 ## Rules
 

@@ -116,7 +116,8 @@ def eligible_roles(api_key) -> tuple[str, ...]:
 
 def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
                    capabilities: dict | None = None, worktree: str = "",
-                   branch: str = "", role_hint: str | None = None) -> Agent:
+                   branch: str = "", role_hint: str | None = None,
+                   parent_agent_id: str | None = None) -> Agent:
     """Register a connected process as an agent, and tell it what role it holds.
 
     **Always creates a row. Never reuses one by label.** Two identical Claude Code windows on
@@ -146,6 +147,7 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
         id=stored_id, number=number, project_id=project_id,
         api_key_id=getattr(api_key, "id", None),
         label=label or "", capabilities=capabilities or {},
+        parent_agent_id=parent_agent_id or None,
         worktree=worktree or "", branch=branch or "",
         active_role=role, role_assigned_at=now, role_acked_at=now,
         state="idle", registered_at=now, last_seen_at=now,
@@ -458,6 +460,73 @@ class SelfReview(Exception):
     site must handle it — a caller that ignores a `False` return would sign the item off."""
 
 
+def independent(reviewer: Agent, author: Agent | None) -> bool:
+    """Whether these two are separate enough that one reviewing the other means anything.
+
+    **The self-review ban was keyed on agent id alone, and a call tree walks straight through
+    it** (GRPH-361). `register_agent` mints a row per call — correctly, since "two terminals on
+    one key are two agents" is the bug D1 exists to fix — so a verifier subagent that registers
+    becomes a sibling with a distinct id and can sign off its parent's work. Reproduced: SA-A1
+    built it, SA-A2 signed it.
+
+    The tempting fix was to collapse identity on `(api_key_id, host)` so parent and child
+    resolve to one agent. **That undoes D1**: two legitimate terminals would collapse too, and
+    the server would again be unable to arbitrate between them. Identity is not the lever.
+
+    So independence is a separate question from identity, asked only where it matters:
+
+    - **A declared parent, either direction.** Cheap and honest, and it covers a subagent that
+      reports a different host.
+    - **Same credential AND same host.** The undeclared case, which is the common one — a
+      subagent inherits its parent's key and runs in its process. It also catches something
+      the original ban missed entirely: two windows of one model on one machine sharing one
+      key are two agents by D1's definition and are not two opinions.
+
+    Same key on DIFFERENT hosts stays independent — those are genuinely separate machines, and
+    refusing there would block a legitimate fleet for no gain. The Fleet view already mints a
+    credential per role, so the intended path is unaffected; a hand-rolled one-key fleet is
+    told what to change rather than silently accepted.
+    """
+    if author is None:
+        return True                      # human-authored, or an author nothing recorded
+    if reviewer.id == author.id:
+        return False                     # the original ban
+    if reviewer.parent_agent_id == author.id or author.parent_agent_id == reviewer.id:
+        return False
+    if reviewer.parent_agent_id and reviewer.parent_agent_id == author.parent_agent_id:
+        return False                     # siblings under one parent are one call tree
+    same_key = bool(reviewer.api_key_id) and reviewer.api_key_id == author.api_key_id
+    host_a = (reviewer.capabilities or {}).get("host")
+    host_b = (author.capabilities or {}).get("host")
+    same_host = host_a is not None and host_a == host_b
+    return not (same_key and same_host)
+
+
+NOT_INDEPENDENT = ("the only work in review was built by an agent sharing your credential and "
+                   "host — mint a per-role credential in the Fleet view so review means "
+                   "something")
+
+
+def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = None) -> str:
+    """Why `claim_review` found nothing, when the answer is more useful than "nothing".
+
+    Distinguishing "no work is waiting" from "work is waiting but you are not independent of
+    it" is the difference between a reviewer waiting patiently and an operator learning to
+    mint a second credential.
+    """
+    me = db.get(Agent, agent_id)
+    stmt = select(Item).where(Item.status == "review")
+    if project_id:
+        stmt = stmt.where(Item.project_id == project_id)
+    for it in db.scalars(stmt).all():
+        if it.claimed_by == agent_id:
+            continue
+        author = db.get(Agent, it.claimed_by) if it.claimed_by else None
+        if me is not None and not independent(me, author):
+            return NOT_INDEPENDENT
+    return "no item awaiting a second pair of eyes"
+
+
 def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
                  lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
     """Lease an item awaiting review that this agent did NOT build.
@@ -485,6 +554,8 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         if it.claimed_by != agent_id
         # Already being reviewed by somebody else.
         and not (it.reviewed_by and it.reviewed_by != agent_id)
+        # And separate enough for the review to mean anything (GRPH-361).
+        and (me is None or independent(me, db.get(Agent, it.claimed_by) if it.claimed_by else None))
     ]
     if not candidates:
         return None
@@ -535,6 +606,18 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
         raise SelfReview(
             f"{agent_id} built {item.key} and cannot sign it off; "
             "another agent has to take it"
+        )
+    # The SECOND gate checks independence too, not just identity. `claim_review` already
+    # filters on it, so this is redundant on the happy path — same reasoning as the identity
+    # check above: a single gate keyed on a query is one refactor away from being keyed on
+    # something weaker, and the failure would be silent.
+    me, author = db.get(Agent, agent_id), (db.get(Agent, item.claimed_by)
+                                           if item.claimed_by else None)
+    if me is not None and not independent(me, author):
+        raise SelfReview(
+            f"{agent_id} is not independent of {item.claimed_by} — same call tree or same "
+            f"credential and host — so signing off {item.key} would be self-review with "
+            "extra steps"
         )
     # The adversarial gate (PRD-17 D9). Reviewer and adversary are different jobs and must not
     # become one habit: a reviewer CONVERGES — the queue is three deep and an agent that blocks

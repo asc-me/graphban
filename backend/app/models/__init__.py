@@ -556,6 +556,11 @@ class Agent(Base):
     # than left as a footnote in a log nobody reads.
     branch_orphaned: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
                                                   nullable=False)
+    # The agent that spawned this one, when it declares itself a subagent (GRPH-361). NULL for
+    # a top-level process, which is almost all of them. Self-reported like `worktree` and
+    # `vendor` — the server cannot see inside a call tree — but a declared parent is checked
+    # where it matters, and the undeclared case is caught by the credential+host rule instead.
+    parent_agent_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     state: Mapped[str] = mapped_column(String, default="idle", index=True)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

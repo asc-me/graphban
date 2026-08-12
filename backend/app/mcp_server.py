@@ -584,6 +584,7 @@ TOOLS: list[dict[str, Any]] = [
                 "worktree": {"type": "string"},
                 "branch": {"type": "string"},
                 "role_hint": {"type": "string", "enum": list(fleet_svc.ROLES)},
+                "parent_agent_id": {"type": "string", "description": "Set if you are a SUBAGENT: who spawned you. Stops a call tree reviewing itself."},
             },
         },
     },
@@ -1922,8 +1923,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
         if item is None:
             # Not an error. With one agent in the fleet this is the CORRECT answer, and
             # phrasing it as a failure would send a solo agent hunting for a bug.
+            # The reason matters more than the refusal: "nothing waiting" and "waiting, but
+            # you are not independent of it" send an operator to opposite places.
             return {"claimed": False, "item": None, "branch": "", "worker_agent": None,
-                    "reason": "no item awaiting a second pair of eyes"}
+                    "reason": fleet_svc.review_block_reason(
+                        db, agent_id=args.get("agent_id") or agent, project_id=pid)}
         return {"claimed": True, "item": _item_dict(item), "branch": item.branch or "",
                 "worker_agent": item.claimed_by, "reason": ""}
     if name == "sign_off":
@@ -1966,6 +1970,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             db, project_id=pid, api_key=key, label=args.get("label", ""),
             capabilities=args.get("capabilities") or {}, worktree=args.get("worktree", ""),
             branch=args.get("branch", ""), role_hint=args.get("role_hint"),
+            parent_agent_id=args.get("parent_agent_id"),
         )
         return {
             "agent_id": agent.id, "key": agent.key, "active_role": agent.active_role,
