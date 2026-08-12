@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Agent, AreaReservation, Item
+from app.services import items as items_svc
 from app.services import keys as keys_svc
 from app.services.items import DEFAULT_LEASE_SECONDS
 
@@ -234,6 +235,7 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # The orchestrator plans; it does not quietly do the work.
     "claim_next": ("worker",),
     "next_cluster": ("worker",),
+    "claim_cluster": ("worker",),
     "release_item": ("worker",),
     "heartbeat": ("worker",),
     # PRD authorship is the planner's.
@@ -472,6 +474,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             f"{agent_id} built {item.key} and cannot sign it off; "
             "another agent has to take it"
         )
+    release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
     item.status = "done"
     if evidence:
@@ -501,6 +504,7 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
         # A bounce without a reason is a rejection the author cannot act on, and it costs
         # them a full cycle to discover that.
         raise ValueError("bounce requires a reason")
+    release_reservations(db, item_id=item.id)
     author = item.claimed_by
     item.status = "next"
     item.claimed_by = None
@@ -524,3 +528,124 @@ def bounce_pin_holder(item: Item, *, now: datetime | None = None) -> str | None:
     if until.tzinfo is None:
         until = until.replace(tzinfo=timezone.utc)
     return item.bounce_pinned_to if until > (now or datetime.now(timezone.utc)) else None
+
+
+# ---- D4: the divvy, and reservations over a moving partition -------------------------------
+
+def active_reservations(db: Session, project_id: str | None = None, *,
+                        now: datetime | None = None) -> list[AreaReservation]:
+    """Reservations that have not expired.
+
+    Filtered lazily at READ time rather than swept by a job, the same way `_is_claimable`
+    already handles stale leases. A sweeper would add a failure mode lazy evaluation cannot
+    have: a stopped sweeper silently freezing the divvy, with every cluster looking permanently
+    taken and no error anywhere to explain it.
+    """
+    now = now or datetime.now(timezone.utc)
+    rows = db.scalars(select(AreaReservation)).all()
+    out = []
+    for r in rows:
+        expires = r.expires_at
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires is None or expires > now:
+            out.append(r)
+    if project_id:
+        item_ids = {i.id for i in db.scalars(
+            select(Item).where(Item.project_id == project_id)).all()}
+        out = [r for r in out if r.item_id in item_ids]
+    return out
+
+
+def _normalise_area(area: str) -> str:
+    return (area or "").strip().rstrip("/").lower()
+
+
+def areas_collide(a: list[str], b: list[str]) -> list[str]:
+    """The overlapping areas between two sets, by prefix containment.
+
+    Prefix rather than equality: `backend/app/services/` and
+    `backend/app/services/fleet.py` are the same touch-area for the purpose of two agents
+    editing at once, and comparing them as distinct strings would hand both out and call it
+    non-colliding.
+    """
+    out = []
+    for x in a:
+        nx = _normalise_area(x)
+        if not nx:
+            continue
+        for y in b:
+            ny = _normalise_area(y)
+            if ny and (nx == ny or nx.startswith(ny + "/") or ny.startswith(nx + "/")):
+                out.append(x)
+                break
+    return out
+
+
+def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
+                  max_items: int = 3,
+                  lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
+    """Lease a whole non-colliding cluster and reserve its touch-areas.
+
+    **Checked against IN-FLIGHT reservations, not only the static partition.**
+    `collision_clusters` partitions a snapshot; as work lands, actual touchpoints replace
+    predicted ones and the partition moves under the fleet's feet. Handing clusters out from a
+    stale snapshot re-introduces exactly the collisions the divvy exists to prevent.
+
+    Reservations are written in the SAME transaction as the claims that justify them, so there
+    is no window in which items are claimed but their areas unreserved — a window a second
+    agent would claim straight through.
+    """
+    from app.services import collision as collision_svc
+
+    now = datetime.now(timezone.utc)
+    taken = active_reservations(db, project_id, now=now)
+    # Somebody else's areas. An agent's own reservations do not block it: a worker asking for
+    # more work should not be refused because of the cluster it is already holding.
+    blocked = [r.area for r in taken if r.agent_id != agent_id]
+
+    for cluster in collision_svc.clusters_for_project(db, project_id):
+        overlap = areas_collide(cluster.get("areas") or [], blocked)
+        if overlap:
+            continue
+        ids = (cluster.get("items") or [])[:max_items]
+        claimed = [it for it in (items_svc.claim_item(db, i, agent_id, lease_seconds=lease_seconds)
+                                 for i in ids) if it is not None]
+        if not claimed:
+            # Lost the race for every item in this cluster — the optimistic guard in
+            # `_try_claim` resolved it against us. Try the next cluster rather than failing:
+            # a loser that gives up entirely turns a race into an idle agent.
+            continue
+        expires = now + timedelta(seconds=lease_seconds)
+        for area in (cluster.get("areas") or []):
+            db.add(AreaReservation(agent_id=agent_id, item_id=claimed[0].id,
+                                   area=area, expires_at=expires))
+        db.commit()
+        return {"claimed": True,
+                "items": [{"id": it.key, "stored_id": it.id, "title": it.title} for it in claimed],
+                "areas": cluster.get("areas") or [],
+                "predicted": bool(cluster.get("predicted")),
+                "reason": ""}
+
+    return {"claimed": False, "items": [], "areas": [], "predicted": False,
+            "reason": "all ready clusters collide with in-flight work"}
+
+
+def release_reservations(db: Session, *, item_id: str | None = None,
+                         agent_id: str | None = None) -> int:
+    """Drop reservations when work ends. Called on sign_off / release / bounce.
+
+    Explicit release matters even though rows expire lazily: an area held for the rest of a
+    lease that nobody is editing any more is a cluster the divvy will not hand out, so the
+    fleet idles for up to ten minutes on work that finished.
+    """
+    stmt = select(AreaReservation)
+    if item_id:
+        stmt = stmt.where(AreaReservation.item_id == item_id)
+    if agent_id:
+        stmt = stmt.where(AreaReservation.agent_id == agent_id)
+    rows = db.scalars(stmt).all()
+    for row in rows:
+        db.delete(row)
+    db.commit()
+    return len(rows)

@@ -112,6 +112,9 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # item to `done`, but ONLY for an agent that did not build it, and the ban is keyed on
         # authorship rather than role so a promotion cannot launder it.
         "claim_review", "sign_off", "bounce",
+        # D4. Both quality: a read of the partition, and a claim bounded by the same role
+        # gate and lease machinery as `claim_next`.
+        "collision_clusters", "claim_cluster",
         # Quality gates, added deliberately by AL-282. `publish_memory` SUBMITS for
         # independent adjudication rather than publishing, so it is not self-approval.
         "publish_memory", "reject_memory",

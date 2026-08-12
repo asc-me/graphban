@@ -488,10 +488,18 @@ def heartbeat(db: Session, item_id: str, agent_id: str) -> Item | None:
 
 
 def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "next") -> Item | None:
-    """Give a claimed item back to the queue. Returns the item, or None if not the holder."""
+    """Give a claimed item back to the queue. Returns the item, or None if not the holder.
+
+    Also drops the item's area reservations (PRD-17 D-d). They expire lazily anyway, but an
+    area held for the rest of a lease that nobody is editing is a cluster the divvy will not
+    hand out — so the fleet would idle for up to ten minutes on work that had already stopped.
+    """
+    from app.services import fleet as fleet_svc
+
     item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if item is None or item.claimed_by != agent_id:
         return None
+    fleet_svc.release_reservations(db, item_id=item.id)
     item.claimed_by = None
     item.claimed_at = None
     item.assignee = ""

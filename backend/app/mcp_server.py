@@ -456,6 +456,36 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "collision_clusters",
+        "description": (
+            "Partition ready work into clusters that provably do not share touch-areas — the "
+            "divvy a planner allocates from. `predicted: true` means the grouping leaned on "
+            "inferred areas rather than declared ones, so treat it as lower confidence."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"project_id": {"type": "string"}, "status": {"type": "string"}},
+        },
+    },
+    {
+        "name": "claim_cluster",
+        "description": (
+            "Claim a whole non-colliding cluster and reserve its touch-areas for the lease. "
+            "Checked against work already in flight, not just a snapshot. `claimed: false` "
+            "with a reason when every ready cluster overlaps someone else — that is a real "
+            "answer, not a failure. Write actual `touchpoints` back via update_item when you "
+            "finish: it replaces the prediction and sharpens the next round."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "max_items": {"type": "integer"},
+                "lease_seconds": {"type": "integer"},
+            },
+        },
+    },
+    {
         "name": "claim_review",
         "description": (
             "Lease an item in review that you did NOT build. `claimed` is false when nothing "
@@ -1053,6 +1083,18 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "claim_next": {
         "type": "object",
         "properties": {"claimed": {"type": "boolean"}, "item": {"type": ["object", "null"]}},
+    },
+    "collision_clusters": {
+        "type": "object",
+        "properties": {"clusters": {"type": "array"}, "total": {"type": "integer"}},
+    },
+    "claim_cluster": {
+        "type": "object",
+        "properties": {
+            "claimed": {"type": "boolean"}, "items": {"type": "array"},
+            "areas": {"type": "array"}, "predicted": {"type": "boolean"},
+            "reason": {"type": "string"},
+        },
     },
     "claim_review": {
         "type": "object",
@@ -1750,6 +1792,24 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS),
         )
         return {"claimed": item is not None, "item": _item_dict(item) if item else None}
+    if name == "collision_clusters":
+        from app.services import collision as collision_svc
+
+        clusters = collision_svc.clusters_for_project(db, pid, args.get("status"))
+        # Rendered keys, not stored ids — an agent quotes these back and `services/keys`
+        # resolves them (PRD-13). The service layer works in stored ids because that is what
+        # is frozen; the boundary is where they become the tag-rendered form.
+        out = []
+        for c in clusters:
+            rows = [db.get(Item, i) for i in c.get("items") or []]
+            out.append({**c, "items": [r.key for r in rows if r is not None]})
+        return {"clusters": out, "total": len(out)}
+    if name == "claim_cluster":
+        agent = args.get("agent_id") or key.name or key.id
+        return fleet_svc.claim_cluster(
+            db, agent_id=agent, project_id=pid,
+            max_items=args.get("max_items", 3),
+            lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS))
     if name == "claim_review":
         agent = args.get("agent_id") or key.name or key.id
         item = fleet_svc.claim_review(db, agent_id=agent, project_id=pid)
