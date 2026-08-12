@@ -456,6 +456,36 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "propose_allocation",
+        "description": (
+            "What the fleet should look like given who is online and what is ready: how many "
+            "workers and reviewers, and which cluster each worker takes. A PROPOSAL — nothing "
+            "is assigned until a planner calls assign_role. Agents beyond the free clusters "
+            "are proposed as reviewers, because a worker with no non-colliding cluster is an "
+            "agent the divvy refuses every time it asks."
+        ),
+        "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
+    },
+    {
+        "name": "assign_role",
+        "description": (
+            "Commit a role change for ANOTHER agent. It reaches them on their next poll as a "
+            "`directive` — no reconnect, no re-prime. Refused if their credential is not "
+            "eligible for that role. `agent_id` is you, the caller; `target_agent_id` is who "
+            "you are re-tasking."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_agent_id": {"type": "string"},
+                "role": {"type": "string", "enum": list(fleet_svc.ROLES)},
+                "reason": {"type": "string"},
+                "agent_id": {"type": "string"},
+            },
+            "required": ["target_agent_id", "role"],
+        },
+    },
+    {
         "name": "collision_clusters",
         "description": (
             "Partition ready work into clusters that provably do not share touch-areas — the "
@@ -1083,6 +1113,20 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     "claim_next": {
         "type": "object",
         "properties": {"claimed": {"type": "boolean"}, "item": {"type": ["object", "null"]}},
+    },
+    "propose_allocation": {
+        "type": "object",
+        "properties": {
+            "workers": {"type": "integer"}, "reviewers": {"type": "integer"},
+            "mapping": {"type": "array"}, "rationale": {"type": "string"},
+        },
+    },
+    "assign_role": {
+        "type": "object",
+        "properties": {
+            "agent_id": {"type": "string"}, "active_role": {"type": "string"},
+            "pending": {"type": "boolean"},
+        },
     },
     "collision_clusters": {
         "type": "object",
@@ -1792,6 +1836,22 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS),
         )
         return {"claimed": item is not None, "item": _item_dict(item) if item else None}
+    if name == "propose_allocation":
+        return fleet_svc.propose_allocation(db, pid)
+    if name == "assign_role":
+        try:
+            # `agent_id` is the CALLER everywhere on this surface — the role gate reads it to
+            # decide what the caller may do. Naming the target with the same key would have a
+            # planner judged by the role of the agent it is re-tasking, and refused for it.
+            agent = fleet_svc.assign_role(
+                db, agent_id=args["target_agent_id"], role=args["role"],
+                reason=args.get("reason", ""))
+        except ValueError as e:
+            raise errors.Validation(str(e))
+        return {"agent_id": agent.id, "active_role": agent.active_role,
+                # Issued, not yet collected. The Fleet view renders that distinction, and an
+                # agent that never polls again should look pending rather than done.
+                "pending": fleet_svc.pending_directive(agent) is not None}
     if name == "collision_clusters":
         from app.services import collision as collision_svc
 
@@ -2131,6 +2191,23 @@ def _audit_tool(db: Session, key: ApiKey, name: str, result: Any) -> None:
     )
 
 
+def _attach_directive(db: Session, result: Any, args: dict) -> Any:
+    """Ride the agent's outstanding directive back on this response, and ack it.
+
+    Acked on DELIVERY rather than on the agent's next call: a second round trip to confirm is
+    a round trip that can be lost, and a directive redelivered forever is worse than one
+    delivered once — the agent would keep re-adopting a role it already holds.
+
+    Only ever added to a dict result, and never overwrites a key a tool already returned.
+    """
+    if not isinstance(result, dict) or "directive" in result:
+        return result
+    directive = fleet_svc.collect_directive(db, args.get("agent_id"))
+    if directive is not None:
+        result = {**result, "directive": directive}
+    return result
+
+
 def _rpc_result(id_: Any, result: Any) -> dict:
     return {"jsonrpc": "2.0", "id": id_, "result": result}
 
@@ -2226,6 +2303,15 @@ async def mcp_endpoint(
             # the event loop, so a slow/hanging tool never blocks the async server — and a
             # same-host upstream loop-back can still be served concurrently.
             result = await run_in_threadpool(_call_tool, db, name, args, key)
+            # The DOWNLINK (PRD-17 D-e). MCP is client→server: the server cannot wake an idle
+            # terminal, so the orchestrator's intent rides back on whatever the agent polls
+            # next. A role change is not an error and does not arrive as one — the agent's
+            # loop prompt says "if a response carries a directive, adopt it and continue", so
+            # reassignment lands with no reconnect, no re-prime, and no new transport.
+            #
+            # Collected here rather than inside each handler: every fleet tool would otherwise
+            # need to remember, and the one that forgot would strand a directive silently.
+            result = await run_in_threadpool(_attach_directive, db, result, args)
         except authz.Forbidden as e:
             # Authenticated but out of scope: distinct code so agents can branch
             # (retry won't help — a different key or membership grant will).

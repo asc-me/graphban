@@ -253,6 +253,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "claim_review": ("reviewer",),
     "sign_off": ("reviewer",),
     "bounce": ("reviewer",),
+    # Allocation is the planner's whole job. `propose_allocation` is a read and ungated so a
+    # worker can see the shape of the fleet; committing it is not.
+    "assign_role": ("planner",),
     "create_prd": ("planner",),
     "update_prd": ("planner",),
     "decompose_prd": ("planner",),
@@ -570,13 +573,27 @@ def _normalise_area(area: str) -> str:
 
 
 def areas_collide(a: list[str], b: list[str]) -> list[str]:
-    """The overlapping areas between two sets, by prefix containment.
+    """The overlapping areas between two sets — the UNION of two rules, deliberately.
 
-    Prefix rather than equality: `backend/app/services/` and
-    `backend/app/services/fleet.py` are the same touch-area for the purpose of two agents
-    editing at once, and comparing them as distinct strings would hand both out and call it
-    non-colliding.
+    The reservation check and the partition must never disagree about what "collides" means,
+    and measured against each other they did, in **both** directions:
+
+        backend/app/services/fleet.py  vs  backend/app/services
+            partition: no    (`_match` compares parent directories, and these differ)
+            prefix:    yes
+
+        area/0                         vs  area/1
+            partition: yes   (siblings sharing a parent)
+            prefix:    no
+
+    So each caught a case the other missed. Taking the union makes the reservation at least
+    as strict as the partition it guards — the asymmetry that matters, because a reservation
+    LAXER than the partition hands out work the partition had already judged colliding, which
+    is precisely the failure the reservation exists to prevent. Being stricter only costs a
+    little parallelism, and it costs it visibly, as a queued cluster with a stated reason.
     """
+    from app.services.clustering import _match
+
     out = []
     for x in a:
         nx = _normalise_area(x)
@@ -584,7 +601,10 @@ def areas_collide(a: list[str], b: list[str]) -> list[str]:
             continue
         for y in b:
             ny = _normalise_area(y)
-            if ny and (nx == ny or nx.startswith(ny + "/") or ny.startswith(nx + "/")):
+            if not ny:
+                continue
+            prefix = nx == ny or nx.startswith(ny + "/") or ny.startswith(nx + "/")
+            if prefix or _match(x, y):
                 out.append(x)
                 break
     return out
@@ -808,3 +828,157 @@ def cluster_board(db: Session, project_id: str | None = None) -> list[dict]:
             "blocked_on": blocking[0][0] if blocking else None,
         })
     return out
+
+
+# ---- D6: allocation, and the directive downlink ---------------------------------------------
+
+def propose_allocation(db: Session, project_id: str | None = None, *,
+                       lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
+    """What the fleet SHOULD look like, given who is here and what is ready.
+
+    **The server proposes; the planner commits.** Nothing here writes a role — whether the
+    planner is a human clicking Apply or an orchestrator agent calling `assign_role`, both go
+    through the same commit path. A proposal that assigned itself would make the Fleet view's
+    diff a formality and take the decision away from the only actor positioned to weigh it.
+
+    The shape of the answer, and the reasoning that fixes it:
+
+    - **One worker per free cluster, never more.** A fourth worker with no non-colliding
+      cluster is not a worker — it is an agent that will be refused by the divvy every time it
+      asks. Proposing it as a REVIEWER puts it where the fleet is actually short, and the
+      review queue is the thing that backs up when workers outnumber the work.
+    - **At least one reviewer as soon as there are two agents.** With one agent there is
+      nobody to review anything, so a reviewer proposal would idle the only worker.
+    - Offline and quarantined agents are not allocated. They cannot act, and counting them
+      produces a plan whose arithmetic is right and whose fleet does not exist.
+    """
+    from app.services import collision as collision_svc
+
+    roster = [a for a in list_agents(db, project_id, lease_seconds=lease_seconds)
+              if a["state"] not in ("offline", "quarantined")]
+    reserved = {_normalise_area(r.area) for r in active_reservations(db, project_id)}
+    free_clusters = [
+        c for c in collision_svc.clusters_for_project(db, project_id)
+        if not any(_normalise_area(a) in reserved for a in (c.get("areas") or []))
+    ]
+
+    n = len(roster)
+    if n == 0:
+        return {"workers": 0, "reviewers": 0, "mapping": [], "rationale":
+                "no agents online — nothing to allocate"}
+    if n == 1:
+        # One agent reviews nothing, so make it a worker and say why rather than proposing a
+        # reviewer that would idle the only pair of hands in the room.
+        return {"workers": 1, "reviewers": 0,
+                "mapping": [{"agent": roster[0]["id"], "role": "worker",
+                             "cluster": (free_clusters[0]["items"] if free_clusters else [])}],
+                "rationale": "one agent: nobody to review for, so it works"}
+
+    want_workers = min(len(free_clusters), n - 1) if free_clusters else 0
+    mapping = []
+    for i, agent in enumerate(roster):
+        if i < want_workers:
+            mapping.append({"agent": agent["id"], "role": "worker",
+                            "cluster": free_clusters[i]["items"]})
+        else:
+            mapping.append({"agent": agent["id"], "role": "reviewer", "cluster": []})
+    reviewers = n - want_workers
+    return {
+        "workers": want_workers,
+        "reviewers": reviewers,
+        "mapping": mapping,
+        "rationale": (
+            f"{len(free_clusters)} free cluster(s) for {n} agent(s): "
+            f"{want_workers} worker(s), {reviewers} reviewer(s). "
+            "Agents beyond the free clusters review rather than queue for work that collides."
+        ),
+    }
+
+
+def assign_role(db: Session, *, agent_id: str, role: str, reason: str = "") -> Agent:
+    """Commit a role change. It takes effect on the agent's NEXT POLL, not on a reconnect.
+
+    `role_assigned_at > role_acked_at` is the whole mechanism — no queue table, because the
+    comparison IS the outbox and a table would be a second place for the same fact to live.
+
+    **At most one outstanding directive per agent, ever.** Re-assigning before the first was
+    collected simply overwrites it: the agent needs to know what its role is NOW, and
+    delivering a superseded instruction first would have it adopt a role the planner has
+    already changed its mind about.
+    """
+    from app.models import ApiKey
+    from app.security import authz
+
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        raise ValueError(f"unknown agent: {agent_id}")
+    if role not in ROLES:
+        raise ValueError(f"unknown role: {role!r}")
+    key = db.get(ApiKey, agent.api_key_id) if agent.api_key_id else None
+    if key is not None and role not in eligible_roles(key):
+        # The credential is the ceiling and a directive cannot climb past it. Otherwise the
+        # planner could issue a role the agent will be refused for on every call — a fleet
+        # arguing with itself while both halves believe they are right.
+        raise authz.Forbidden(
+            f"{agent_id} authenticates with a key eligible for "
+            f"{', '.join(eligible_roles(key))}; {role!r} is not among them",
+            hint="mint a credential for that role in the Fleet view")
+    agent.active_role = role
+    agent.role_assigned_at = datetime.now(timezone.utc)
+    caps = dict(agent.capabilities or {})
+    caps["directive_reason"] = reason
+    agent.capabilities = caps
+    db.commit()
+    db.refresh(agent)
+    return agent
+
+
+def pending_directive(agent: Agent) -> dict | None:
+    """The directive an agent has not yet collected, or None.
+
+    Derived from the two timestamps rather than stored as a flag, so there is no state to
+    leave set after delivery — and no way for the roster and the outbox to disagree.
+    """
+    if agent is None or agent.role_assigned_at is None:
+        return None
+    assigned, acked = agent.role_assigned_at, agent.role_acked_at
+    if assigned.tzinfo is None:
+        assigned = assigned.replace(tzinfo=timezone.utc)
+    if acked is not None and acked.tzinfo is None:
+        acked = acked.replace(tzinfo=timezone.utc)
+    if acked is not None and acked >= assigned:
+        return None
+    reason = (agent.capabilities or {}).get("directive_reason") or ""
+    return {
+        "type": "role_change",
+        "role": agent.active_role,
+        "reason": reason,
+        # The machine-readable next step, so an agent adopts the role without parsing prose.
+        "next": _directive_next(agent.active_role),
+    }
+
+
+def _directive_next(role: str) -> str:
+    if role == "reviewer":
+        return "call claim_review — your worker tools now return unauthorized"
+    if role == "planner":
+        return "call propose_allocation — you no longer claim work yourself"
+    return "call claim_cluster — you are working again"
+
+
+def collect_directive(db: Session, agent_id: str | None) -> dict | None:
+    """Take the outstanding directive and ACK it in the same breath.
+
+    Acked on delivery rather than on the agent's next call, because a second round trip to
+    confirm is a round trip that can be lost — and a directive redelivered forever is worse
+    than one delivered once, since the agent would keep re-adopting a role it already holds.
+    """
+    if not agent_id:
+        return None
+    agent = db.get(Agent, agent_id)
+    directive = pending_directive(agent)
+    if directive is None:
+        return None
+    agent.role_acked_at = datetime.now(timezone.utc)
+    db.commit()
+    return directive

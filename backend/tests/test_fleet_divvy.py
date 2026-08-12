@@ -76,7 +76,10 @@ def _worker(client, key, label):
 
 def test_a_directory_and_a_file_inside_it_are_the_same_touch_area():
     """Compared as distinct strings, `services/` and `services/fleet.py` look non-colliding —
-    so both get handed out and two agents edit the same file."""
+    so both get handed out and two agents edit the same file.
+
+    The PARTITION misses this one: `_match` compares parent directories, which differ here.
+    That is why `areas_collide` is the union of both rules rather than either alone."""
     assert fleet.areas_collide(["backend/app/services/fleet.py"], ["backend/app/services"])
     assert fleet.areas_collide(["backend/app/services"], ["backend/app/services/fleet.py"])
     assert not fleet.areas_collide(["backend/app/services"], ["web/src/lib"])
@@ -84,6 +87,16 @@ def test_a_directory_and_a_file_inside_it_are_the_same_touch_area():
 
 def test_area_comparison_ignores_case_and_trailing_slashes():
     assert fleet.areas_collide(["Backend/App/"], ["backend/app"])
+
+
+def test_the_reservation_is_never_laxer_than_the_partition():
+    """Siblings sharing a parent are one cluster to the partition. If the reservation
+    disagreed, it would hand out work the partition had already judged colliding — the exact
+    failure reservations exist to prevent."""
+    from app.services.clustering import _match
+
+    assert _match("area/0", "area/1"), "the partition relates these"
+    assert fleet.areas_collide(["area/0"], ["area/1"]), "so the reservation must too"
 
 
 # ---- the divvy -------------------------------------------------------------------------------
