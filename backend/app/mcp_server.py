@@ -456,6 +456,51 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "claim_review",
+        "description": (
+            "Lease an item in review that you did NOT build. `claimed` is false when nothing "
+            "qualifies — including when the only work in review is your own. `branch` is where "
+            "the diff is."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"agent_id": {"type": "string"}},
+        },
+    },
+    {
+        "name": "sign_off",
+        "description": (
+            "Take a reviewed item to `done` with evidence. Refused if you built it, whatever "
+            "role you now hold."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "evidence": {"type": "array"},
+            },
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "bounce",
+        "description": (
+            "Send a reviewed item back to `next` with a required reason. Reserved for its "
+            "author for one lease period — they still hold the worktree — then opens to the "
+            "fleet."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+            "required": ["id", "reason"],
+        },
+    },
+    {
         "name": "register_agent",
         "description": (
             "Register THIS process as an agent at startup, before claiming work. Two terminals on "
@@ -1009,6 +1054,16 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {"claimed": {"type": "boolean"}, "item": {"type": ["object", "null"]}},
     },
+    "claim_review": {
+        "type": "object",
+        "properties": {
+            "claimed": {"type": "boolean"}, "item": {"type": ["object", "null"]},
+            "branch": {"type": "string"}, "worker_agent": {"type": ["string", "null"]},
+            "reason": {"type": "string"},
+        },
+    },
+    "sign_off": _ITEM_SCHEMA,
+    "bounce": _ITEM_SCHEMA,
     "register_agent": {
         "type": "object",
         "properties": {
@@ -1695,6 +1750,37 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS),
         )
         return {"claimed": item is not None, "item": _item_dict(item) if item else None}
+    if name == "claim_review":
+        agent = args.get("agent_id") or key.name or key.id
+        item = fleet_svc.claim_review(db, agent_id=agent, project_id=pid)
+        if item is None:
+            # Not an error. With one agent in the fleet this is the CORRECT answer, and
+            # phrasing it as a failure would send a solo agent hunting for a bug.
+            return {"claimed": False, "item": None, "branch": "", "worker_agent": None,
+                    "reason": "no item awaiting a second pair of eyes"}
+        return {"claimed": True, "item": _item_dict(item), "branch": item.branch or "",
+                "worker_agent": item.claimed_by, "reason": ""}
+    if name == "sign_off":
+        _scoped_item(db, args["id"], allowed)
+        agent = args.get("agent_id") or key.name or key.id
+        try:
+            item = fleet_svc.sign_off(
+                db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
+                agent_id=agent, evidence=args.get("evidence"))
+        except fleet_svc.SelfReview as e:
+            raise authz.Forbidden(
+                str(e), hint="another agent takes it from review; call fleet_status to see who")
+        return _item_dict(item)
+    if name == "bounce":
+        _scoped_item(db, args["id"], allowed)
+        agent = args.get("agent_id") or key.name or key.id
+        try:
+            item = fleet_svc.bounce(
+                db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
+                agent_id=agent, reason=args["reason"])
+        except ValueError as e:
+            raise errors.Validation(str(e))
+        return _item_dict(item)
     if name == "register_agent":
         agent = fleet_svc.register_agent(
             db, project_id=pid, api_key=key, label=args.get("label", ""),

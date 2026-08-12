@@ -407,8 +407,19 @@ def claim_next(
 
     Concurrency-safe: the UPDATE guard means only one caller wins a given row, so two agents
     never claim the same item. Returns the claimed item, or None if nothing is ready.
+
+    Skips an item bounced back to somebody else while its pin holds (PRD-17 D-f). The author
+    still has the worktree, the branch and the review comment in context; handing that to a
+    cold agent throws away precisely what cluster assignment exists to preserve. The pin
+    LAPSES rather than binding forever — an author who never comes back is the common case,
+    and a hard pin would strand the item.
     """
+    from app.services import fleet as fleet_svc
+
     for cand in _ready_candidates(db, project_id, lease_seconds):
+        pinned_to = fleet_svc.bounce_pin_holder(cand)
+        if pinned_to is not None and pinned_to != agent_id:
+            continue
         claimed = _try_claim(db, cand, agent_id)
         if claimed is not None:
             return claimed

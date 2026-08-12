@@ -76,7 +76,7 @@ mcp_servers:
 Every client authenticates the same way: the key in an `X-API-Key` header (or
 `Authorization: Bearer`), against a URL reachable **from where the agent runs**.
 
-## The 44 tools
+## The 47 tools
 
 | Tool | Params | Does |
 | --- | --- | --- |
@@ -87,6 +87,9 @@ Every client authenticates the same way: the key in an `X-API-Key` header (or
 | `next_cluster` | `agent_id`, `max_items`, `project_id` | **Claim a code-neighborhood at once** — the best ready item plus its related ready items, all assigned to you. |
 | `related_work` | `id` | Items related to a task by shared touchpoints + typed links, best-first (read-only) |
 | `claim_next` | `agent_id`, `lease_seconds`, `project_id` | **Atomically** claim the best ready item, assign it to you, move it to in_progress. Returns `{claimed, item}`. |
+| `claim_review` | `agent_id`, `project_id` | Lease an item in review you did **not** build. `claimed: false` when the only work in review is your own |
+| `sign_off` | `id`, `agent_id`, `evidence` | Take a reviewed item to `done`. Refused if you built it, whatever role you hold |
+| `bounce` | `id`, `agent_id`, `reason` | Send it back to `next` with a reason, reserved for its author for one lease period |
 | `register_agent` | `label`, `capabilities`, `worktree`, `branch`, `role_hint` | Register THIS process as an agent and learn its role. Two terminals on one key become two agents. Returns `{agent_id, key, active_role, heartbeat_interval_seconds}` |
 | `fleet_status` | `project_id` | Who else is working this project: agents, roles, derived presence, and what each holds |
 | `heartbeat` | `id`, `agent_id` | Extend the lease on an item you hold **and** your agent presence (so neither is reclaimed while you work) |

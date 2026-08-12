@@ -152,9 +152,25 @@ def test_manifest_stays_within_token_budget():
     Worth recording what the measurement also showed: at the 10500 ceiling the surface had
     only ~26 tokens of headroom left, so tools had been added since GRPH-254 without anyone
     re-running this arithmetic. The new ~579 tokens restores roughly the slack the previous
-    two bumps left, rather than buying room for another unchecked run of growth."""
+    two bumps left, rather than buying room for another unchecked run of growth.
+
+    Raised 11500 -> 12500 in GRPH-334, same procedure: D3 adds three tools (claim_review,
+    sign_off, bounce); without them the manifest measures ~10921 tokens. Prose came out first
+    and they now average 965 chars against 990 for the existing 44, so once again the growth
+    is COUNT.
+
+    **But this is the second raise for one PRD, and that is the interesting number.** PRD-17
+    adds five tools in total and has moved this ceiling twice. The guard is doing its job by
+    making that visible: the manifest is approaching the size where trimming it per ACTIVE
+    ROLE stops being the "later nicety" PRD-17 D-b calls it. A worker never needs the three
+    reviewer tools in its manifest, and a reviewer never needs `claim_next` — that is roughly
+    a third of the fleet surface each agent is paying for and cannot use.
+
+    So if this fires a third time, the answer is probably not a fourth raise. It is the
+    role-gated manifest, which needs SSE on /api/mcp first (PRD-17 lists that as a non-goal
+    precisely because it is a transport change, not a tweak)."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 11500, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 12500, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
