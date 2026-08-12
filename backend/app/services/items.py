@@ -102,14 +102,29 @@ def create_item(
     return item
 
 
-_EVIDENCE_KINDS = {"test", "url", "screenshot", "health", "note"}
+_EVIDENCE_KINDS = {"test", "url", "screenshot", "health", "note", "sabotage"}
+
+# What a `sabotage` receipt must carry to be one (GRPH-321). Without these it is a `note`
+# wearing a stronger name, and a gate that counted it would be satisfied by prose.
+_SABOTAGE_FIELDS = ("claim", "mutation", "tests_failed")
 
 
 def normalize_evidence(raw) -> list[dict]:
     """Coerce evidence receipts to {kind, detail, url}; drop empties (AL-53).
 
-    `kind` is advisory (test | url | screenshot | health | note) and falls back to
-    `note`; a receipt with neither detail nor url is dropped."""
+    `kind` is advisory (test | url | screenshot | health | note) and falls back to `note`; a
+    receipt with neither detail nor url is dropped.
+
+    **`sabotage` is the one kind that is not advisory (GRPH-321).** It carries the claim under
+    test, the mutation applied, and how many tests failed — and a receipt claiming to be one
+    without that structure is demoted to `note` rather than accepted. A structured kind that
+    accepts unstructured input is the free-text field with a new name, and anything gating on
+    it would be checking a label rather than a fact.
+
+    Graphban owns the RECEIPT, not the run. It cannot verify the mutation happened; what it
+    can do is make the claim falsifiable and queryable, which is the same trade PRD-12 already
+    accepts for citations.
+    """
     out: list[dict] = []
     for e in raw or []:
         if not isinstance(e, dict):
@@ -119,10 +134,63 @@ def normalize_evidence(raw) -> list[dict]:
             kind = "note"
         detail = str(e.get("detail") or "").strip()
         url = str(e.get("url") or "").strip()
-        if not detail and not url:
+        row = {"kind": kind, "detail": detail, "url": url}
+        if kind == "sabotage":
+            claim = str(e.get("claim") or "").strip()
+            mutation = str(e.get("mutation") or "").strip()
+            failed = e.get("tests_failed")
+            if claim and mutation and isinstance(failed, int) and not isinstance(failed, bool) \
+                    and failed >= 0:
+                row.update({"claim": claim, "mutation": mutation, "tests_failed": failed})
+                # A summary so the receipt reads as prose too — the ledger and the item view
+                # render `detail`, and a sabotage that showed there as an empty string would
+                # be invisible to every human surface.
+                if not detail:
+                    row["detail"] = (f"broke {claim!r} via {mutation!r} — {failed} test(s) failed"
+                                     if failed else
+                                     f"broke {claim!r} via {mutation!r} — NOTHING failed")
+            else:
+                # Demoted, but never DISAPPEARED. An incomplete receipt with no `detail` would
+                # otherwise hit the empty-receipt drop below and vanish — the agent recorded a
+                # finding, the server silently discarded it, and nothing anywhere says so.
+                # Whatever it did manage to say is preserved as prose.
+                row["kind"] = "note"
+                if not row["detail"]:
+                    said = [f"{k}={e.get(k)!r}" for k in _SABOTAGE_FIELDS if e.get(k) is not None]
+                    row["detail"] = ("incomplete sabotage receipt (" + ", ".join(said) + ")"
+                                     if said else "")
+        if not row["detail"] and not row["url"]:
             continue
-        out.append({"kind": kind, "detail": detail, "url": url})
+        out.append(row)
     return out
+
+
+def sabotage_receipts(evidence) -> list[dict]:
+    """Every well-formed sabotage receipt on an item."""
+    return [e for e in (evidence or [])
+            if isinstance(e, dict) and e.get("kind") == "sabotage"]
+
+
+def vacuous_sabotages(evidence) -> list[dict]:
+    """Sabotages where the mutation broke NOTHING.
+
+    **These are findings, not failures to record.** A mutation that removes the behaviour and
+    leaves every test green has proved the test cannot fail — which is more valuable than a
+    passing sabotage and must never be mistaken for one. It happened twice in the session that
+    motivated this item: once because the mutation string did not match the real source, and
+    once because the test was pointed at a seam adjacent to the claim it named.
+    """
+    return [e for e in sabotage_receipts(evidence) if not e.get("tests_failed")]
+
+
+def has_effective_sabotage(evidence) -> bool:
+    """Whether any claim on this item was broken on purpose and something failed.
+
+    The question a gate asks. `tests_failed >= 1` is the whole of it: a sabotage nothing
+    failed under is evidence the guard is absent, so counting it would let exactly the
+    condition it detects satisfy the check that exists to detect it.
+    """
+    return any(e.get("tests_failed") for e in sabotage_receipts(evidence))
 
 
 def update_item(db: Session, item_id: str, **fields) -> Item | None:

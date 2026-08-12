@@ -150,13 +150,16 @@ TOOLS: list[dict[str, Any]] = [
                 "evidence": {
                     "type": "array",
                     "description": "Proof-on-done receipts, matched to the completion claim: a "
-                                   "test-run summary, URL, screenshot ref, or health check.",
+                                   "test run, URL, screenshot, health check, or `sabotage`.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "kind": {"type": "string", "enum": ["test", "url", "screenshot", "health", "note"]},
-                            "detail": {"type": "string", "description": "Short human-readable summary of the proof."},
-                            "url": {"type": "string", "description": "Optional link to the artifact (CI run, PR, deploy)."},
+                            "kind": {"type": "string", "enum": ["test", "url", "screenshot", "health", "note", "sabotage"]},
+                            "detail": {"type": "string", "description": "One-line summary."},
+                            "url": {"type": "string", "description": "Link to the artifact."},
+                            "claim": {"type": "string", "description": "sabotage: what you broke."},
+                            "mutation": {"type": "string", "description": "sabotage: how."},
+                            "tests_failed": {"type": "integer", "description": "sabotage: how many failed. ZERO means the test cannot fail — a finding."},
                         },
                     },
                 },
@@ -535,7 +538,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "sign_off",
         "description": (
             "Take a reviewed item to `done` with evidence. Refused if you built it, whatever "
-            "role you now hold."
+            "role you hold — and, above an effort threshold, refused without a `sabotage` "
+            "receipt showing something was broken on purpose and a test caught it."
         ),
         "inputSchema": {
             "type": "object",
@@ -1263,7 +1267,7 @@ for _t in TOOLS:
     if _name in _PROJECT_SCOPED:
         props["project_id"] = {
             "type": "string",
-            "description": "Override the key's project. Defaults to the API key's project.",
+            "description": "Overrides the key's default project.",
         }
     if _name in _IDEMPOTENT_CREATES:
         props["idempotency_key"] = {
@@ -1932,6 +1936,20 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
         except fleet_svc.SelfReview as e:
             raise authz.Forbidden(
                 str(e), hint="another agent takes it from review; call fleet_status to see who")
+        except fleet_svc.MissingAdversarialEvidence as e:
+            # Audited on the REFUSAL path, because the dispatcher only audits successes — and a
+            # gate whose refusals leave no trace cannot be examined for whether it is being
+            # routed around, which is the exact failure that kept GRPH-321 parked.
+            events_svc.record_key(
+                db, key, action="sign_off_refused", target_type="item",
+                target_id=args.get("id", ""), project_id=pid,
+                meta={"reason": str(e), "agent_id": args.get("agent_id")})
+            # Conflict, not unauthorized: the caller IS permitted to sign this off — the work
+            # simply is not accounted for yet. `unauthorized` would send a reviewer hunting a
+            # permissions problem it does not have.
+            raise errors.Conflict(str(e), hint=(
+                "dispatch two opposing-lens critics, or run the passes yourself, and record "
+                "each as evidence {kind: sabotage, claim, mutation, tests_failed}"))
         return _item_dict(item)
     if name == "bounce":
         _scoped_item(db, args["id"], allowed)
