@@ -168,7 +168,19 @@ def test_manifest_stays_within_token_budget():
 
     So if this fires a third time, the answer is probably not a fourth raise. It is the
     role-gated manifest, which needs SSE on /api/mcp first (PRD-17 lists that as a non-goal
-    precisely because it is a transport change, not a tweak)."""
+    precisely because it is a transport change, not a tweak).
+
+    **Built in GRPH-337 follow-up, and the SSE caveat turned out to be half right.** Trimming
+    per ACTIVE role does need a push channel — a role changes under a live connection and
+    `tools/list` was fetched once at connect. But trimming per the KEY's eligible roles is
+    static: a credential's ceiling is fixed at mint, so the manifest it is shipped can never
+    go stale. That is also what D-b literally prescribes. A single-role fleet key now sees
+    16-19% fewer tokens (see `test_mcp_role_manifest.py`), which is the whole fleet case since
+    every key the Fleet view mints is single-role.
+
+    This ceiling is unchanged and still measures the FULL manifest, deliberately: it is the
+    worst case an unrestricted key pays, and role gating must not become an excuse to let that
+    grow unwatched."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
     assert full_chars // 4 < 12500, f"full manifest ~{full_chars // 4} tokens — trim descriptions"

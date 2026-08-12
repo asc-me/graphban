@@ -11,6 +11,7 @@ top of it.
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -982,3 +983,54 @@ def collect_directive(db: Session, agent_id: str | None) -> dict | None:
     agent.role_acked_at = datetime.now(timezone.utc)
     db.commit()
     return directive
+
+
+# ---- D7: the long-poll ------------------------------------------------------------------------
+
+# The ceiling on a park. Bounded because an unbounded block is a connection an operator cannot
+# reason about and a client cannot distinguish from a hang. 60s is also roughly where an edge
+# proxy starts closing idle requests, so a longer park would be severed rather than answered.
+MAX_WAIT_SECONDS = 60
+POLL_INTERVAL_SECONDS = 1.0
+
+
+def park(db: Session, attempt, *, agent_id: str | None = None,
+         wait_seconds: int | None = None, sleep=None):
+    """Retry `attempt(db)` until it yields something, a directive arrives, or time runs out.
+
+    Returns whatever `attempt` returned, or None on timeout. The whole value is in what it
+    replaces: a worker spinning `claim_next` every five seconds costs twelve tool calls a
+    minute and twelve manifests' worth of attention to notice nothing changed.
+
+    **No transaction is held while parked.** `db.rollback()` before each sleep returns the
+    connection to the pool, so a fleet of parked agents does not consume the pool by sitting
+    still — which is the failure that would make this feature worse than the spinning it
+    replaces, and it would only show up under load.
+
+    **An outstanding directive wakes the park early.** A re-tasked agent that stayed parked
+    for its full minute would keep working the old role for that minute, and the whole promise
+    of D6 is that reassignment lands on the next poll. The directive is DETECTED here and
+    collected by the response envelope, so it is still acked exactly once.
+    """
+    sleep = sleep or time.sleep
+    wait = max(0, min(int(wait_seconds or 0), MAX_WAIT_SECONDS))
+    deadline = time.monotonic() + wait
+    slept = 0.0
+    while True:
+        result = attempt(db)
+        if result is not None:
+            return result
+        if agent_id and pending_directive(db.get(Agent, agent_id)) is not None:
+            return None
+        # Bounded by BOTH the wall clock and the time actually slept. Wall alone is correct in
+        # production and a trap under test: an injected no-op `sleep` never advances it, so the
+        # loop spins hot for the full minute — which is how this arrived, as an 84-second test
+        # run. Counting the sleeps means the bound holds whether or not they really happen.
+        remaining = min(deadline - time.monotonic(), wait - slept)
+        if remaining <= 0:
+            return None
+        # Release the connection BEFORE sleeping, not after waking.
+        db.rollback()
+        interval = min(POLL_INTERVAL_SECONDS, remaining)
+        slept += interval
+        sleep(interval)
