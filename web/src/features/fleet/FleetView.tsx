@@ -74,6 +74,17 @@ function primeSnippet(role: string) {
   // The role prompt, rendered short enough to paste. `register_agent` first is the load-bearing
   // line: an agent that claims before registering is invisible to the roster and ungoverned by
   // the role gate.
+  if (role === ALL_IN_ONE) {
+    // The DEFAULT posture, and its prompt says so plainly: no fleet, no server-side review
+    // gate, and the human is the reviewer. Priming it like a worker would imply a reviewer
+    // that is not there and a gate that does not apply.
+    return [
+      "You are the only agent on this Graphban project. You do everything: plan, build, and",
+      "record evidence. There is no reviewer agent — the human reviews your work.",
+      "Call register_agent first, then heartbeat on the interval it returns, so you appear",
+      "on the roster. claim_next for work; move items to done yourself when they are done.",
+    ].join("\n");
+  }
   const duty =
     role === "planner" ? "Read collision_clusters and allocate. Do not claim work yourself."
     : role === "reviewer" ? "Take work with claim_review — never your own — then sign_off or bounce with a reason."
@@ -252,7 +263,11 @@ export function FleetView() {
 
         <Section title="Onboard an agent" desc="Pick a role and a client; paste the two snippets. That is the whole of it.">
           <div className="mb-3 flex flex-wrap gap-2">
-            {(data?.roles ?? ["planner", "worker", "reviewer"]).map((r) => (
+            {/* `all-in-one` is offered beside the three because the roster REPORTS it — a
+                page that counts a posture it cannot create names a category the reader has no
+                way to produce. It mints an unnarrowed credential, which is what makes the
+                agent unrestricted. */}
+            {[...(data?.roles ?? ["planner", "worker", "reviewer"]), ALL_IN_ONE].map((r) => (
               <button key={r} onClick={() => setRole(r)}
                 className={cn("rounded-[9px] border px-3 py-1.5 text-[12px]",
                               role === r ? ROLE_TONE[r] ?? "border-line-2 text-fg" : "border-line-2 text-muted")}>
@@ -268,7 +283,9 @@ export function FleetView() {
               </button>
             ))}
           </div>
-          <Button onClick={mint}>Mint a {role} credential</Button>
+          <Button onClick={mint}>
+            Mint {role === ALL_IN_ONE ? "an" : "a"} {role} credential
+          </Button>
           {minted && (
             <div className="mt-3 space-y-2">
               {/* Shown once — keys are stored hashed and cannot be recovered. */}

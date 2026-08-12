@@ -856,11 +856,14 @@ def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
     """
     from app.security.apikey import generate_api_key
 
-    if role not in ROLES:
+    if role not in ROLES + (ALL_IN_ONE,):
         raise ValueError(f"unknown role: {role!r}")
     row, plaintext = generate_api_key(
         db, user_id, label or f"fleet {role}", ["read", "write"], project_id, FLEET_KEY_DAYS)
-    row.roles = [role]
+    # `all-in-one` mints an UNNARROWED credential — all three roles — which is what makes an
+    # agent registering on it unrestricted. It is still wave-tagged, so "End wave" sweeps it
+    # like any other: the posture differs, the lifecycle does not.
+    row.roles = list(ROLES) if role == ALL_IN_ONE else [role]
     row.fleet_wave = wave
     db.commit()
     db.refresh(row)
