@@ -40,6 +40,11 @@ DEFAULT_ROLE = "worker"
 # also the move that hides it from the roster. The incentive pointed exactly the wrong way.
 ALL_IN_ONE = "all-in-one"
 
+# Recorded on a credential when all-in-one was CHOSEN, as opposed to a key that simply never
+# set roles. Both resolve to all three, so without this the two are indistinguishable and a
+# client-supplied `role_hint` can silently narrow a posture a human picked in the UI.
+POSTURE_SINGLE = "single"
+
 # States an agent can be in. `offline` is DERIVED (see `presence_state`) and never written as
 # a transition — an agent that dies does not get to tell us. `quarantined` is the opposite: it
 # IS stored, because it describes an agent that is demonstrably alive and still being refused.
@@ -97,6 +102,16 @@ def presence_state(agent: Agent, *, lease_seconds: int = DEFAULT_LEASE_SECONDS,
     return agent.state if agent.state in STATES else "idle"
 
 
+def is_single_posture(api_key) -> bool:
+    """Was all-in-one CHOSEN for this credential, as opposed to merely unspecified?
+
+    Only a deliberate `all-in-one` mint sets this. A legacy key and a key a fleet shares both
+    read NULL and keep honouring `role_hint` — which is what a fleet running off one credential
+    depends on, and why this is a separate field rather than an inference from `roles`.
+    """
+    return getattr(api_key, "posture", None) == POSTURE_SINGLE
+
+
 def eligible_roles(api_key) -> tuple[str, ...]:
     """The roles a credential permits — the CEILING, not the assignment.
 
@@ -127,13 +142,23 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
     by construction, so two windows racing on one key cannot collide.
 
     `role_hint` is a request, not an instruction: it is honoured when the credential permits
-    that role and silently clamped to the default otherwise. Silently, because the hint comes
-    from a client config file — refusing the registration would strand an agent over a
+    that role, IGNORED outright on a credential minted as all-in-one, and silently clamped to
+    the default otherwise. Silently, because the hint comes from a client config file — refusing the registration would strand an agent over a
     preference, and the authoritative answer is returned in `active_role` either way.
     """
     stored_id, number = keys_svc.mint(db, project_id, "agent")
     allowed = eligible_roles(api_key)
-    if role_hint in allowed:
+    if is_single_posture(api_key) and set(allowed) >= set(ROLES):
+        # All-in-one was chosen for this credential, so a hint cannot narrow it. The ceiling is
+        # re-checked rather than trusted: posture may only decline to NARROW, never WIDEN, or a
+        # `single` marker on a role-restricted key would resolve to all-in-one — which
+        # `role_for_call` treats as unrestricted, turning a label into an escalation. The hint is a
+        # string from a client config; this is a posture a human selected in the UI. Honouring
+        # the hint here would cost the agent `done` and `sign_off` — which is exactly the
+        # "registering must never cost capability" clause below, applied to the hinted branch
+        # too rather than only when no hint is given.
+        role = ALL_IN_ONE
+    elif role_hint in allowed:
         role = role_hint
     elif set(allowed) >= set(ROLES):
         # An unnarrowed credential and no preference stated: this is the single-dev posture,
@@ -864,6 +889,10 @@ def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
     # agent registering on it unrestricted. It is still wave-tagged, so "End wave" sweeps it
     # like any other: the posture differs, the lifecycle does not.
     row.roles = list(ROLES) if role == ALL_IN_ONE else [role]
+    # …and records that all-in-one was CHOSEN. `roles` alone cannot say so — all three is also
+    # what a key with nothing set resolves to — and without the distinction a `role_hint` from
+    # a client config silently narrows the posture picked in the UI.
+    row.posture = POSTURE_SINGLE if role == ALL_IN_ONE else None
     row.fleet_wave = wave
     db.commit()
     db.refresh(row)
@@ -1077,6 +1106,14 @@ def assign_role(db: Session, *, agent_id: str, role: str, reason: str = "") -> A
     if role not in ROLES + (ALL_IN_ONE,):
         raise ValueError(f"unknown role: {role!r}")
     key = db.get(ApiKey, agent.api_key_id) if agent.api_key_id else None
+    if key is not None and role != ALL_IN_ONE and is_single_posture(key):
+        # The same narrowing that `register_agent` refuses, arriving through the other door.
+        # Fixing only the registration path would leave a planner able to demote a deliberately
+        # single-agent credential into a role that cannot finish its own work.
+        raise authz.Forbidden(
+            f"{agent_id} authenticates with an all-in-one credential, which is a posture "
+            f"rather than a role ceiling; it cannot be re-tasked to {role!r}",
+            hint="mint a role-narrowed credential in the Fleet view for a fleet agent")
     if key is not None and role != ALL_IN_ONE and role not in eligible_roles(key):
         # The credential is the ceiling and a directive cannot climb past it. Otherwise the
         # planner could issue a role the agent will be refused for on every call — a fleet

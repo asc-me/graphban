@@ -1213,6 +1213,14 @@ class ApiKey(Base):
     # Tags keys the Fleet view minted for one wave, so "End wave" revokes exactly those and
     # never a key a human made by hand (PRD-17 D-g). NULL = hand-minted, never swept.
     fleet_wave: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # The POSTURE this credential was minted for (PRD-17). `single` means all-in-one was
+    # chosen deliberately; NULL means unspecified — a legacy key, or one a fleet shares.
+    #
+    # Without this the two are indistinguishable: an all-in-one mint writes all three roles,
+    # which is byte-identical to a key that never set any. So a `role_hint` from a client
+    # config file could silently narrow a posture the human picked in the UI, costing that
+    # agent `done` and `sign_off` with nothing to indicate the choice had been overridden.
+    posture: Mapped[str | None] = mapped_column(String, nullable=True)
     last_used: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # Lifecycle (AL-72): NULL expires_at = non-expiring; revoked is a soft kill switch.
