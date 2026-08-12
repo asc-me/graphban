@@ -27,6 +27,19 @@ from app.services.items import DEFAULT_LEASE_SECONDS
 ROLES = ("planner", "worker", "reviewer")
 DEFAULT_ROLE = "worker"
 
+# The fourth posture, and NOT a role: an agent doing everything, because nobody else is here.
+#
+# Graphban has two deployments and they are both first-class. The DEFAULT is a single dev with
+# one agent — this session's shape — where the human is the reviewer and no server-side gate
+# applies. The POWER-USER posture is a fleet, where roles are specialised and the server
+# arbitrates between them. One substrate, two ways to hold it.
+#
+# Before this existed, registering made you strictly WORSE off: an all-in-one agent that called
+# `register_agent` was labelled `worker` by default and the D2 ceiling then refused it
+# `status: done` — so the correct move for a solo agent was to skip registration, which is
+# also the move that hides it from the roster. The incentive pointed exactly the wrong way.
+ALL_IN_ONE = "all-in-one"
+
 # States an agent can be in. `offline` is DERIVED (see `presence_state`) and never written as
 # a transition — an agent that dies does not get to tell us. `quarantined` is the opposite: it
 # IS stored, because it describes an agent that is demonstrably alive and still being refused.
@@ -119,8 +132,15 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
     """
     stored_id, number = keys_svc.mint(db, project_id, "agent")
     allowed = eligible_roles(api_key)
-    role = role_hint if role_hint in allowed else (DEFAULT_ROLE if DEFAULT_ROLE in allowed
-                                                   else allowed[0])
+    if role_hint in allowed:
+        role = role_hint
+    elif set(allowed) >= set(ROLES):
+        # An unnarrowed credential and no preference stated: this is the single-dev posture,
+        # so say so rather than guessing `worker`. Registering must never cost an agent
+        # capability it already had — that is what made skipping registration rational.
+        role = ALL_IN_ONE
+    else:
+        role = DEFAULT_ROLE if DEFAULT_ROLE in allowed else allowed[0]
     now = datetime.now(timezone.utc)
     agent = Agent(
         id=stored_id, number=number, project_id=project_id,
@@ -221,10 +241,20 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     is how a fleet ends up with members that disagree about what alive means.
     """
     agents = list_agents(db, project_id, lease_seconds=lease_seconds)
+    live = [a for a in agents if a["state"] != "offline"]
+    # Counted BY ROLE, not just totalled. "4 agents online" is the same number whether it is a
+    # balanced fleet or four workers with nobody to review them, and those need opposite
+    # actions — the second is a review queue about to back up. `all-in-one` is reported beside
+    # the roles rather than folded into one of them, because an unspecialised agent is the
+    # DEFAULT posture and showing it as a worker would misdescribe the commonest deployment.
+    by_role = {r: sum(1 for a in live if a["active_role"] == r) for r in ROLES}
+    by_role[ALL_IN_ONE] = sum(1 for a in live if a["active_role"] == ALL_IN_ONE)
     return {
         "agents": agents,
-        "online": sum(1 for a in agents if a["state"] != "offline"),
+        "online": len(live),
         "total": len(agents),
+        "by_role": by_role,
+        "posture": "fleet" if any(by_role[r] for r in ROLES) else "single-agent",
         "roles": list(ROLES),
         "presence_ttl_seconds": presence_ttl_seconds(lease_seconds),
         "heartbeat_interval_seconds": heartbeat_interval_seconds(lease_seconds),
@@ -281,6 +311,10 @@ def role_for_call(db: Session, *, api_key, agent_id: str | None) -> tuple[str, s
     if agent_id:
         agent = db.get(Agent, agent_id)
         if agent is not None:
+            # An all-in-one agent is unrestricted, exactly as it was before it registered.
+            # Its ceiling is still the credential's, so a narrowed key cannot reach this.
+            if agent.active_role == ALL_IN_ONE:
+                return "*", agent.id
             return agent.active_role, agent.id
     allowed = eligible_roles(api_key)
     # A key that permits everything carries no restriction; one pinned to a single role
@@ -954,10 +988,10 @@ def assign_role(db: Session, *, agent_id: str, role: str, reason: str = "") -> A
     agent = db.get(Agent, agent_id)
     if agent is None:
         raise ValueError(f"unknown agent: {agent_id}")
-    if role not in ROLES:
+    if role not in ROLES + (ALL_IN_ONE,):
         raise ValueError(f"unknown role: {role!r}")
     key = db.get(ApiKey, agent.api_key_id) if agent.api_key_id else None
-    if key is not None and role not in eligible_roles(key):
+    if key is not None and role != ALL_IN_ONE and role not in eligible_roles(key):
         # The credential is the ceiling and a directive cannot climb past it. Otherwise the
         # planner could issue a role the agent will be refused for on every call — a fleet
         # arguing with itself while both halves believe they are right.

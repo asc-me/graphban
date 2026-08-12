@@ -28,7 +28,36 @@ const ROLE_TONE: Record<string, string> = {
   planner: "text-[#b794f6] border-[#b794f6]/40",
   worker: "text-[color:var(--color-st-in_progress)] border-[color:var(--color-st-in_progress)]/40",
   reviewer: "text-[color:var(--color-st-review)] border-[color:var(--color-st-review)]/40",
+  // Deliberately NOT one of the three colours. An all-in-one agent is not a worker that
+  // happens to also review — it is the other posture, where the human is the reviewer and no
+  // server-side gate applies. Tinting it as a role would say the opposite.
+  "all-in-one": "text-muted border-line-2",
 };
+
+const ALL_IN_ONE = "all-in-one";
+
+/**
+ * Counts BY ROLE, never a bare total.
+ *
+ * "4 agents online" is the same number for a balanced fleet and for four workers with nobody
+ * to review them — and those need opposite actions, the second being a review queue about to
+ * back up. The breakdown is the whole information.
+ */
+function RoleCounts({ byRole, roles }: { byRole: Record<string, number>; roles: string[] }) {
+  const shown = [...roles, ALL_IN_ONE].filter((r) => byRole[r]);
+  if (shown.length === 0) return null;
+  return (
+    <span className="flex items-center gap-1.5">
+      {shown.map((r) => (
+        <span key={r}
+          className={cn("rounded-md border px-1.5 py-0.5 font-mono text-[10px]",
+                        ROLE_TONE[r] ?? "text-muted border-line-2")}>
+          {byRole[r]} {r}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 const CLIENTS = ["Claude Code", "Codex", "Cursor", "Grok Build", "opencode"] as const;
 
@@ -170,9 +199,23 @@ export function FleetView() {
         <div>
           <h1 className="text-[18px] font-semibold tracking-tight">Fleet</h1>
           <p className="mt-0.5 text-[12.5px] text-muted">
-            {data ? `${data.online} of ${data.total} agents online · heartbeat every ${data.heartbeat_interval_seconds}s`
-                  : "Agents working this project, and what they hold."}
+            {data
+              ? `${data.online} of ${data.total} online · heartbeat every ${data.heartbeat_interval_seconds}s`
+              : "Agents working this project, and what they hold."}
           </p>
+          {data && data.online > 0 && (
+            <div className="mt-1.5 flex items-center gap-2">
+              <RoleCounts byRole={data.by_role ?? {}} roles={data.roles ?? []} />
+              {/* The posture is NAMED, because both are first-class and a reader should know
+                  which they are looking at. A single-agent deployment is not a fleet that has
+                  gone wrong — it is the default, where the human is the reviewer. */}
+              <span className="text-[11px] text-faint">
+                {data.posture === "fleet"
+                  ? "specialised roles — the fleet reviews itself"
+                  : "single-agent — you are the reviewer"}
+              </span>
+            </div>
+          )}
         </div>
         {(data?.total ?? 0) > 0 && (
           <Button onClick={askEndWave}>End wave</Button>
