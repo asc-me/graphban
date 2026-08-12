@@ -28,7 +28,18 @@ from app.models import ApiKey, Membership, OrgMembership, Project
 
 
 class Forbidden(Exception):
-    """Authenticated but not authorized for the attempted operation."""
+    """Authenticated but not authorized for the attempted operation.
+
+    `hint` is the machine-readable next step (AL-47), so a refused agent can branch without
+    parsing prose — "your work moves to review; a reviewer takes it from there" is actionable
+    in a way that a message alone is not. Optional, so every existing `raise Forbidden(msg)`
+    is unchanged; PRD-17 D2 asked for the hint without a new error class or a new code, and
+    this is the whole of that.
+    """
+
+    def __init__(self, message: str, *, hint: str | None = None):
+        super().__init__(message)
+        self.hint = hint
 
 
 # ---- Organization authority (hosted-only, AL-74b) ------------------------------

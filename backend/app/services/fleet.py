@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Agent, Item
+from app.models import Agent, AreaReservation, Item
 from app.services import keys as keys_svc
 from app.services.items import DEFAULT_LEASE_SECONDS
 
@@ -26,8 +26,14 @@ ROLES = ("planner", "worker", "reviewer")
 DEFAULT_ROLE = "worker"
 
 # States an agent can be in. `offline` is DERIVED (see `presence_state`) and never written as
-# a transition — an agent that dies does not get to tell us.
-STATES = ("idle", "working", "reviewing", "offline")
+# a transition — an agent that dies does not get to tell us. `quarantined` is the opposite: it
+# IS stored, because it describes an agent that is demonstrably alive and still being refused.
+STATES = ("idle", "working", "reviewing", "offline", "quarantined")
+
+# Neither may be set by the agent itself. `offline` is a contradiction from something that is
+# calling us; `quarantined` is a verdict about the caller, and a caller does not get to
+# withdraw it by asserting a different state.
+_NOT_SELF_ASSERTABLE = ("offline", "quarantined")
 
 
 def presence_ttl_seconds(lease_seconds: int = DEFAULT_LEASE_SECONDS) -> int:
@@ -62,6 +68,10 @@ def presence_state(agent: Agent, *, lease_seconds: int = DEFAULT_LEASE_SECONDS,
     stopped an hour ago.
     """
     now = now or datetime.now(timezone.utc)
+    # Checked BEFORE the clock. A quarantined agent may still be heartbeating — that is what
+    # got it quarantined — so deriving from `last_seen_at` would report it healthy.
+    if agent.state == "quarantined":
+        return "quarantined"
     seen = agent.last_seen_at
     if seen is None:
         return "offline"
@@ -135,9 +145,11 @@ def touch(db: Session, agent_id: str, *, state: str | None = None) -> Agent | No
     if agent is None:
         return None
     agent.last_seen_at = datetime.now(timezone.utc)
-    if state in STATES and state != "offline":
+    if state in STATES and state not in _NOT_SELF_ASSERTABLE and agent.state != "quarantined":
         # `offline` is derived, never asserted — an agent claiming to be offline while it is
-        # calling us is a contradiction, and storing it would survive the next heartbeat.
+        # calling us is a contradiction. And a QUARANTINED agent cannot heartbeat its way back
+        # to `working`: the recovery path is to register again, which is a new row, so the
+        # verdict stays attached to the process that earned it.
         agent.state = state
     db.commit()
     db.refresh(agent)
@@ -207,3 +219,179 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         "presence_ttl_seconds": presence_ttl_seconds(lease_seconds),
         "heartbeat_interval_seconds": heartbeat_interval_seconds(lease_seconds),
     }
+
+
+# ---- D2: the call gate ---------------------------------------------------------------------
+#
+# Which role a tool requires. Absent from this map = no role requirement, which is the correct
+# default for reads and for the tools every role shares (`get_context`, `search_items`, …).
+#
+# **Enforced at CALL time, not by trimming the manifest** (PRD-17 D-b). `tools/list` is fetched
+# once at client connect, BEFORE `register_agent` has run, and this endpoint returns single
+# JSON with no SSE — so there is no channel to push `notifications/tools/list_changed` when a
+# role is later assigned. A manifest can only fail to mention a tool; the gate refuses it.
+TOOL_ROLES: dict[str, tuple[str, ...]] = {
+    # The orchestrator plans; it does not quietly do the work.
+    "claim_next": ("worker",),
+    "next_cluster": ("worker",),
+    "release_item": ("worker",),
+    "heartbeat": ("worker",),
+    # PRD authorship is the planner's.
+    "create_prd": ("planner",),
+    "update_prd": ("planner",),
+    "decompose_prd": ("planner",),
+    "grill_prd": ("planner",),
+}
+
+# `update_item` is special: the tool is a worker's, but ONE argument on it is not. A worker
+# moves work as far as `review` and no further — `done` is the reviewer's word, and letting a
+# worker write it would make the self-review ban decorative while leaving every test green.
+WORKER_STATUS_CEILING = "review"
+_BEYOND_WORKER = ("done",)
+
+
+def role_for_call(db: Session, *, api_key, agent_id: str | None) -> tuple[str, str | None]:
+    """The role this call carries, and the agent it belongs to (or None).
+
+    Falls back to the KEY's ceiling when no registered agent is named. That keeps every
+    existing single-agent setup working — a key eligible for all three roles is refused
+    nothing, which is exactly the pre-PRD-17 behaviour — while still binding a RESTRICTED key,
+    so `roles: ["worker"]` cannot be escaped by simply never calling `register_agent`.
+    """
+    if agent_id:
+        agent = db.get(Agent, agent_id)
+        if agent is not None:
+            return agent.active_role, agent.id
+    allowed = eligible_roles(api_key)
+    # A key that permits everything carries no restriction; one pinned to a single role
+    # carries that role.
+    return (allowed[0] if len(allowed) == 1 else "*"), None
+
+
+def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
+                    args: dict | None = None) -> None:
+    """Raise `authz.Forbidden` when this caller's role may not make this call.
+
+    Deliberately raises the EXISTING error rather than a new class: the dispatcher already
+    maps `Forbidden` to a JSON-RPC tool error with the stable `unauthorized` code, so an agent
+    that already handles refusals needs no new branch. The `hint` is the machine-readable
+    next step (AL-47), so a refused agent can act without parsing prose.
+    """
+    from app.security import authz
+
+    role, resolved = role_for_call(db, api_key=api_key, agent_id=agent_id)
+    if role == "*":
+        return
+    who = resolved or f"key {getattr(api_key, 'name', '') or getattr(api_key, 'id', '?')}"
+
+    required = TOOL_ROLES.get(tool)
+    if required and role not in required:
+        raise authz.Forbidden(
+            f"{tool} requires role {' or '.join(repr(r) for r in required)}; "
+            f"{who} is registered as {role!r}",
+            hint=_hint_for(tool, role),
+        )
+
+    # The argument-level ceiling. A worker may call `update_item`; it may not write `done`.
+    if tool == "update_item" and role == "worker":
+        status = (args or {}).get("status")
+        if status in _BEYOND_WORKER:
+            raise authz.Forbidden(
+                f"update_item(status={status!r}) requires role 'reviewer'; "
+                f"{who} is registered as 'worker'",
+                hint="move it to 'review'; a reviewer takes it from there",
+            )
+
+
+def _hint_for(tool: str, role: str) -> str:
+    if role == "worker":
+        return "your work moves to review; a reviewer takes it from there"
+    if role == "planner":
+        return "planners allocate rather than claim; use propose_allocation"
+    if role == "reviewer":
+        return "reviewers take work through claim_review, not claim_next"
+    return "call fleet_status to see the roles this project has available"
+
+
+# How many refusals in a row before an agent is quarantined. A drifting agent that holds a
+# cluster while producing nothing is strictly worse than no agent — it blocks the divvy. Not a
+# setting: pick one number and let somebody hit it.
+QUARANTINE_AFTER_REFUSALS = 3
+
+
+def record_refusal(db: Session, *, agent_id: str | None) -> int:
+    """Count a refusal against an agent and return the running total.
+
+    Counted on the AGENT, not the key: a key may carry several terminals, and quarantining
+    all of them because one drifted would take down the healthy ones with it.
+    """
+    if not agent_id:
+        return 0
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        return 0
+    caps = dict(agent.capabilities or {})
+    count = int(caps.get("refusals", 0)) + 1
+    caps["refusals"] = count
+    agent.capabilities = caps
+    db.commit()
+    return count
+
+
+def clear_refusals(db: Session, agent_id: str | None) -> None:
+    """A successful call means the agent is complying again. Consecutive is the property that
+    matters — three refusals spread across a productive hour is a client with one stale code
+    path, not an agent that has stopped listening."""
+    if not agent_id:
+        return
+    agent = db.get(Agent, agent_id)
+    if agent is None or not (agent.capabilities or {}).get("refusals"):
+        return
+    caps = dict(agent.capabilities or {})
+    caps.pop("refusals", None)
+    agent.capabilities = caps
+    db.commit()
+
+
+def quarantine(db: Session, agent_id: str) -> dict:
+    """Stop an agent that has stopped listening: release its work and take it off the fleet.
+
+    Called after `QUARANTINE_AFTER_REFUSALS` consecutive refusals — an agent that keeps
+    calling its old role's tools after a directive is a drifting agent, and one holding a
+    cluster while producing nothing is strictly worse than no agent at all, because it blocks
+    the divvy for everyone else.
+
+    **Only ever reached by an agent that is demonstrably alive.** Refusal and network silence
+    are indistinguishable to a server, so silence is left entirely to the presence clock; this
+    path requires the agent to be actively calling tools and being told no.
+
+    Recorded as `quarantined` rather than backdating `last_seen_at` into the past. Backdating
+    would make the roster claim we had not seen an agent that had just called us — falsifying
+    the one field the server actually knows to be true.
+    """
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        return {"quarantined": False}
+
+    released = []
+    for it in db.scalars(select(Item).where(Item.claimed_by == agent.id)).all():
+        it.claimed_by = None
+        it.claimed_at = None
+        it.assignee = ""
+        if it.status == "in_progress":
+            it.status = "next"
+        released.append(it.id)
+    reservations = db.scalars(
+        select(AreaReservation).where(AreaReservation.agent_id == agent.id)).all()
+    for row in reservations:
+        db.delete(row)
+
+    agent.state = "quarantined"
+    # A branch left behind is state only a human can resolve — the fleet can release the ITEM
+    # but it cannot merge or discard someone's edits.
+    if agent.branch and released:
+        agent.branch_orphaned = True
+    db.commit()
+    return {"quarantined": True, "released_items": released,
+            "released_reservations": len(reservations),
+            "branch_orphaned": agent.branch_orphaned}
