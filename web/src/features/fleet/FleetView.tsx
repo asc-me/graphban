@@ -2,6 +2,7 @@ import { Check, Copy, Users } from "lucide-react";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
+import { McpInstall } from "@/features/settings/McpInstall";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
@@ -57,17 +58,6 @@ function RoleCounts({ byRole, roles }: { byRole: Record<string, number>; roles: 
       ))}
     </span>
   );
-}
-
-const CLIENTS = ["Claude Code", "Codex", "Cursor", "Grok Build", "opencode"] as const;
-
-function connectSnippet(client: string, key: string, url: string) {
-  if (client === "Cursor") {
-    return JSON.stringify(
-      { mcpServers: { graphban: { url: `${url}/api/mcp`, headers: { "X-API-Key": key } } } },
-      null, 2);
-  }
-  return `claude mcp add --transport http graphban ${url}/api/mcp --header "X-API-Key: ${key}"`;
 }
 
 function primeSnippet(role: string) {
@@ -161,14 +151,12 @@ export function FleetView() {
   const { activeId } = useProjectCtx();
   const { data, refetch } = useFleet(activeId);
   const [role, setRole] = React.useState("worker");
-  const [clientName, setClientName] = React.useState<string>(CLIENTS[0]);
   const [minted, setMinted] = React.useState<{ plaintext: string; role: string } | null>(null);
   const [error, setError] = React.useState("");
   const [confirming, setConfirming] = React.useState<null | {
     keys: number; agents: number; leases: number; reservations: number;
   }>(null);
   const wave = "wave-1";
-  const origin = typeof window === "undefined" ? "" : window.location.origin;
 
   async function mint() {
     setError("");
@@ -274,14 +262,6 @@ export function FleetView() {
                 {r}
               </button>
             ))}
-            <span className="mx-1 self-center text-faint">·</span>
-            {CLIENTS.map((c) => (
-              <button key={c} onClick={() => setClientName(c)}
-                className={cn("rounded-[9px] border px-3 py-1.5 text-[12px]",
-                              clientName === c ? "border-line-2 text-fg" : "border-line-2 text-muted")}>
-                {c}
-              </button>
-            ))}
           </div>
           <Button onClick={mint}>
             Mint {role === ALL_IN_ONE ? "an" : "a"} {role} credential
@@ -290,7 +270,12 @@ export function FleetView() {
             <div className="mt-3 space-y-2">
               {/* Shown once — keys are stored hashed and cannot be recovered. */}
               <CopyRow label="1. Key (shown once)" value={minted.plaintext} />
-              <CopyRow label="2. Connect" value={connectSnippet(clientName, minted.plaintext, origin)} />
+              {/* The REAL generator, shared with Settings → API Keys (AL-78): per-client
+                  formats verified against each tool's docs, correct config filenames, and the
+                  note that Grok needs an mcp-remote stdio bridge. This view first shipped a
+                  two-branch stub of its own that handed the `claude mcp add` command to
+                  Codex, Grok and opencode alike — found on the first real walk. */}
+              <McpInstall apiKey={minted.plaintext} />
               <CopyRow label="3. Prime" value={primeSnippet(minted.role)} />
             </div>
           )}
