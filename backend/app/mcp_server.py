@@ -452,6 +452,7 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "agent_id": {"type": "string", "description": "Who is claiming; defaults to this API key's name."},
                 "lease_seconds": {"type": "integer", "description": "Lease length; a claim with no heartbeat within this window is reclaimable (default 600)."},
+                "wait_seconds": {"type": "integer", "description": "Block up to N seconds (max 60) instead of returning empty. A directive wakes it early."},
             },
         },
     },
@@ -512,6 +513,7 @@ TOOLS: list[dict[str, Any]] = [
                 "agent_id": {"type": "string"},
                 "max_items": {"type": "integer"},
                 "lease_seconds": {"type": "integer"},
+                "wait_seconds": {"type": "integer", "description": "Block up to N seconds (max 60) instead of returning empty. A directive wakes it early."},
             },
         },
     },
@@ -524,7 +526,9 @@ TOOLS: list[dict[str, Any]] = [
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"agent_id": {"type": "string"}},
+            "properties": {"agent_id": {"type": "string"},
+                "wait_seconds": {"type": "integer", "description": "Block up to N seconds (max 60) instead of returning empty. A directive wakes it early."},
+            },
         },
     },
     {
@@ -613,11 +617,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "describe_code",
         "description": (
-            "Upsert the codebase's structure as a queryable graph: `nodes` (module/file/symbol, "
-            "each with a one-paragraph summary) and `edges` (imports/calls/owns/tested_by/"
-            "references between paths). You have the repo in context, so you are the source of "
-            "truth. Idempotent per path — re-describe a changed file with its new `content_hash`. "
-            "Pass `prune=true` after describing a whole subtree to mark unseen nodes stale."
+            "Upsert the codebase's structure as a queryable graph of `nodes` and `edges`. You "
+            "have the repo in context, so you are the source of truth. Idempotent per path — "
+            "re-describe a changed file with its new `content_hash`. `prune=true` after a whole "
+            "subtree marks unseen nodes stale."
         ),
         "inputSchema": {
             "type": "object",
@@ -628,12 +631,12 @@ TOOLS: list[dict[str, Any]] = [
                     "items": {
                         "type": "object",
                         "properties": {
-                            "path": {"type": "string", "description": "Repo-relative, e.g. app/services/items.py or app/services/items.py::create_item"},
-                            "kind": {"type": "string", "enum": code_svc.NODE_KINDS, "description": "module | file | symbol (default file)."},
-                            "name": {"type": "string", "description": "Short label, e.g. the module or symbol name."},
+                            "path": {"type": "string", "description": "Repo-relative; `path.py::symbol` for a symbol."},
+                            "kind": {"type": "string", "enum": code_svc.NODE_KINDS, "description": "Default file."},
+                            "name": {"type": "string", "description": "Short label."},
                             "lang": {"type": "string", "description": "python | ts | ... (optional)."},
-                            "summary": {"type": "string", "description": "One paragraph: what it is, does, and owns."},
-                            "content_hash": {"type": "string", "description": "Hash of the source (e.g. git blob sha) — powers staleness."},
+                            "summary": {"type": "string", "description": "One paragraph: what it is and owns."},
+                            "content_hash": {"type": "string", "description": "Source hash (e.g. git blob sha) — powers staleness."},
                         },
                         "required": ["path"],
                     },
@@ -1294,14 +1297,39 @@ _SCHEMA_BY_NAME: dict[str, dict] = {t["name"]: t["inputSchema"] for t in TOOLS}
 
 
 def _visible_tools(key: ApiKey) -> list[dict]:
-    """The manifest a given key should see. A key without the `write` scope gets a
-    `Forbidden` on every mutating tool, so shipping it the 16 write-tool schemas is
-    pure token cost — and misleading. Scope-gating the manifest roughly halves it
-    for a read-only key and keeps tools/list honest: you only see what you can call
-    (AL-78)."""
-    if "write" in (key.scopes or []):
-        return TOOLS
-    return [t for t in TOOLS if t["name"] in _READ_ONLY]
+    """The manifest a given key should see, gated by SCOPE and then by ROLE.
+
+    Scope (AL-78): a key without `write` gets a `Forbidden` on every mutating tool, so
+    shipping it those schemas is pure token cost — and misleading. That roughly halves the
+    manifest for a read-only key and keeps `tools/list` honest: you only see what you can
+    call.
+
+    Role (PRD-17 D-b): a key whose `roles` name a single role never gets to call the other
+    roles' tools either, so those are dead weight in exactly the same way. A reviewer
+    credential carries no `claim_next`; a worker credential carries no `sign_off`.
+
+    **This gates on the KEY's ceiling, not on the agent's ACTIVE role, and the distinction is
+    the whole reason it is safe without SSE.** PRD-17 rules out trimming per active role, and
+    correctly: `tools/list` is fetched once at client connect, before `register_agent` has
+    run, and this endpoint has no channel to push `notifications/tools/list_changed` when a
+    role is later assigned. But a key's eligible roles are fixed at mint and cannot change
+    under a live connection — so gating on them is static, needs no push, and is what D-b
+    actually prescribes ("the manifest advertises the union of the key's eligible roles").
+
+    The call gate stays the enforcement point regardless. A manifest can only fail to mention
+    a tool; the gate refuses it. This is a token optimisation, never a security boundary —
+    which is why an unregistered agent on a full-ceiling key still sees, and may call,
+    everything.
+    """
+    from app.services import fleet as fleet_svc
+
+    tools = TOOLS if "write" in (key.scopes or []) else [
+        t for t in TOOLS if t["name"] in _READ_ONLY]
+    allowed = set(fleet_svc.eligible_roles(key))
+    if allowed >= set(fleet_svc.ROLES):
+        return tools           # unrestricted credential — the pre-PRD-17 manifest, unchanged
+    return [t for t in tools
+            if not (req := fleet_svc.TOOL_ROLES.get(t["name"])) or allowed.intersection(req)]
 
 # JSON-schema primitive -> (python type, label). bool is excluded from int on purpose.
 _JSON_TYPES: dict[str, tuple[type | tuple[type, ...], str]] = {
@@ -1831,9 +1859,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
         return {"removed": removed}
     if name == "claim_next":
         agent = args.get("agent_id") or key.name or key.id
-        item = items_svc.claim_next(
-            db, agent, project_id=pid,
-            lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS),
+        item = fleet_svc.park(
+            db,
+            lambda s: items_svc.claim_next(
+                s, agent, project_id=pid,
+                lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS)),
+            agent_id=args.get("agent_id"), wait_seconds=args.get("wait_seconds"),
         )
         return {"claimed": item is not None, "item": _item_dict(item) if item else None}
     if name == "propose_allocation":
@@ -1866,13 +1897,24 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
         return {"clusters": out, "total": len(out)}
     if name == "claim_cluster":
         agent = args.get("agent_id") or key.name or key.id
-        return fleet_svc.claim_cluster(
-            db, agent_id=agent, project_id=pid,
-            max_items=args.get("max_items", 3),
-            lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS))
+        got = fleet_svc.park(
+            db,
+            # `claim_cluster` reports a miss as `claimed: False` rather than None, so the park
+            # needs the falsy answer translated — otherwise it would return "nothing available"
+            # instantly and never wait at all.
+            lambda s: (out if (out := fleet_svc.claim_cluster(
+                s, agent_id=agent, project_id=pid, max_items=args.get("max_items", 3),
+                lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS),
+            ))["claimed"] else None),
+            agent_id=args.get("agent_id"), wait_seconds=args.get("wait_seconds"),
+        )
+        return got or {"claimed": False, "items": [], "areas": [], "predicted": False,
+                       "reason": "all ready clusters collide with in-flight work"}
     if name == "claim_review":
         agent = args.get("agent_id") or key.name or key.id
-        item = fleet_svc.claim_review(db, agent_id=agent, project_id=pid)
+        item = fleet_svc.park(
+            db, lambda s: fleet_svc.claim_review(s, agent_id=agent, project_id=pid),
+            agent_id=args.get("agent_id"), wait_seconds=args.get("wait_seconds"))
         if item is None:
             # Not an error. With one agent in the fleet this is the CORRECT answer, and
             # phrasing it as a failure would send a solo agent hunting for a bug.

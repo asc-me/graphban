@@ -78,6 +78,22 @@ Every client authenticates the same way: the key in an `X-API-Key` header (or
 
 ## The 51 tools
 
+The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
+shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
+`roles` name a single role is not shipped the other roles' tools — a reviewer credential
+carries no `claim_next`, a worker credential no `sign_off`. A single-role fleet key sees
+roughly 16–19% fewer tokens.
+
+`wait_seconds` (max 60) parks a claim instead of returning empty — one tool call a minute
+rather than twelve. The park holds no database transaction while idle, and an outstanding
+`directive` wakes it early, so a re-tasked agent adopts its new role in seconds rather than at
+timeout.
+
+Gating reads the KEY's eligible roles, not the agent's *active* role. A ceiling is fixed at
+mint, so the manifest cannot go stale; an active role changes under a live connection, and
+this endpoint has no channel to push a replacement. Either way the **call gate** is the
+enforcement point — a manifest can only fail to mention a tool, while the gate refuses it.
+
 | Tool | Params | Does |
 | --- | --- | --- |
 | `get_context` | — | Orient: the key's project, scopes, project/tool counts. Call this first. |
@@ -86,12 +102,12 @@ Every client authenticates the same way: the key in an `X-API-Key` header (or
 | `setup_project` | `project_id` | **First-run bootstrap** — an ordered, resumable checklist (confirm project → build graph → load memories → propose items). Read-only; call it when `get_context` reports an empty project |
 | `next_cluster` | `agent_id`, `max_items`, `project_id` | **Claim a code-neighborhood at once** — the best ready item plus its related ready items, all assigned to you. |
 | `related_work` | `id` | Items related to a task by shared touchpoints + typed links, best-first (read-only) |
-| `claim_next` | `agent_id`, `lease_seconds`, `project_id` | **Atomically** claim the best ready item, assign it to you, move it to in_progress. Returns `{claimed, item}`. |
+| `claim_next` | `agent_id`, `lease_seconds`, `wait_seconds`, `project_id` | **Atomically** claim the best ready item, assign it to you, move it to in_progress. Returns `{claimed, item}`. |
 | `propose_allocation` | `project_id` | What the fleet should look like given who is online and what is ready. A proposal — nothing is assigned until `assign_role` |
 | `assign_role` | `agent_id`, `role`, `reason` | Commit a role change; it reaches the agent on its next poll as a `directive`, with no reconnect |
 | `collision_clusters` | `project_id`, `status` | Partition ready work into clusters that provably share no touch-areas; `predicted` marks lower-confidence grouping |
-| `claim_cluster` | `agent_id`, `max_items`, `lease_seconds` | Claim a whole non-colliding cluster and reserve its areas, checked against in-flight work |
-| `claim_review` | `agent_id`, `project_id` | Lease an item in review you did **not** build. `claimed: false` when the only work in review is your own |
+| `claim_cluster` | `agent_id`, `max_items`, `lease_seconds`, `wait_seconds` | Claim a whole non-colliding cluster and reserve its areas, checked against in-flight work |
+| `claim_review` | `agent_id`, `project_id`, `wait_seconds` | Lease an item in review you did **not** build. `claimed: false` when the only work in review is your own |
 | `sign_off` | `id`, `agent_id`, `evidence` | Take a reviewed item to `done`. Refused if you built it, whatever role you hold |
 | `bounce` | `id`, `agent_id`, `reason` | Send it back to `next` with a reason, reserved for its author for one lease period |
 | `register_agent` | `label`, `capabilities`, `worktree`, `branch`, `role_hint` | Register THIS process as an agent and learn its role. Two terminals on one key become two agents. Returns `{agent_id, key, active_role, heartbeat_interval_seconds}` |
