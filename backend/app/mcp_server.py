@@ -1403,6 +1403,32 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
         or (key.project_id if key.project_id in allowed else None)
         or (allowed[0] if allowed else None)
     )
+
+    # Role gate (PRD-17 D2). AFTER scope, because "this key cannot reach that project" is a
+    # more fundamental refusal than "this role cannot make that call", and reporting the role
+    # first would tell an off-scope caller which tools exist inside a project it cannot see.
+    #
+    # Enforced here rather than by trimming the manifest: `tools/list` is fetched once at
+    # client connect, before `register_agent` has run, and this endpoint has no SSE channel to
+    # push a changed manifest when a role is later assigned.
+    _agent_id = args.get("agent_id") or None
+    try:
+        fleet_svc.check_tool_role(db, tool=name, api_key=key, agent_id=_agent_id, args=args)
+    except authz.Forbidden as refusal:
+        # Refusals are audited with the agent AND the human principal behind the key, both
+        # stamped server-side — a compromised client still produces a correctly attributed
+        # trail, because none of it comes from anything the client sent.
+        count = fleet_svc.record_refusal(db, agent_id=_agent_id)
+        meta = {"tool": name, "reason": str(refusal), "agent_id": _agent_id,
+                "consecutive_refusals": count}
+        if _agent_id and count >= fleet_svc.QUARANTINE_AFTER_REFUSALS:
+            meta["quarantine"] = fleet_svc.quarantine(db, _agent_id)
+        events_svc.record_key(db, key, action="role_refused", target_type="agent",
+                              target_id=_agent_id or "", project_id=pid, meta=meta)
+        raise
+    # Consecutive is the property that matters: three refusals spread across a productive hour
+    # is one stale code path, not an agent that has stopped listening.
+    fleet_svc.clear_refusals(db, _agent_id)
     if pid is None and name in _PROJECT_SCOPED:
         raise authz.Forbidden(
             f"no project in scope for {name!r}: the key's owner has no "
@@ -2057,7 +2083,7 @@ async def mcp_endpoint(
         except authz.Forbidden as e:
             # Authenticated but out of scope: distinct code so agents can branch
             # (retry won't help — a different key or membership grant will).
-            return _tool_error(id_, "unauthorized", str(e))
+            return _tool_error(id_, "unauthorized", str(e), getattr(e, "hint", None))
         except errors.AppError as e:
             # Expected, agent-correctable failure: not_found | validation | conflict.
             return _tool_error(id_, e.code, str(e), e.hint)
