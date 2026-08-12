@@ -115,6 +115,10 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # D4. Both quality: a read of the partition, and a claim bounded by the same role
         # gate and lease machinery as `claim_next`.
         "collision_clusters", "claim_cluster",
+        # D6. `assign_role` looks like an authority gate and is bounded by one: it cannot
+        # grant a role the agent's CREDENTIAL is not eligible for, and credentials are minted
+        # by a human. A planner reshuffles within the ceiling; it cannot raise it.
+        "propose_allocation", "assign_role",
         # Quality gates, added deliberately by AL-282. `publish_memory` SUBMITS for
         # independent adjudication rather than publishing, so it is not self-approval.
         "publish_memory", "reject_memory",

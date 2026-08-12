@@ -76,7 +76,7 @@ mcp_servers:
 Every client authenticates the same way: the key in an `X-API-Key` header (or
 `Authorization: Bearer`), against a URL reachable **from where the agent runs**.
 
-## The 49 tools
+## The 51 tools
 
 | Tool | Params | Does |
 | --- | --- | --- |
@@ -87,6 +87,8 @@ Every client authenticates the same way: the key in an `X-API-Key` header (or
 | `next_cluster` | `agent_id`, `max_items`, `project_id` | **Claim a code-neighborhood at once** — the best ready item plus its related ready items, all assigned to you. |
 | `related_work` | `id` | Items related to a task by shared touchpoints + typed links, best-first (read-only) |
 | `claim_next` | `agent_id`, `lease_seconds`, `project_id` | **Atomically** claim the best ready item, assign it to you, move it to in_progress. Returns `{claimed, item}`. |
+| `propose_allocation` | `project_id` | What the fleet should look like given who is online and what is ready. A proposal — nothing is assigned until `assign_role` |
+| `assign_role` | `agent_id`, `role`, `reason` | Commit a role change; it reaches the agent on its next poll as a `directive`, with no reconnect |
 | `collision_clusters` | `project_id`, `status` | Partition ready work into clusters that provably share no touch-areas; `predicted` marks lower-confidence grouping |
 | `claim_cluster` | `agent_id`, `max_items`, `lease_seconds` | Claim a whole non-colliding cluster and reserve its areas, checked against in-flight work |
 | `claim_review` | `agent_id`, `project_id` | Lease an item in review you did **not** build. `claimed: false` when the only work in review is your own |
