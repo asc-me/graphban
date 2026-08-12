@@ -514,6 +514,15 @@ class Agent(Base):
     Agent death needs no new mechanism: past its presence TTL the item leases lapse into the
     existing stale-reclaim path (`items._is_claimable`) and reservations expire. The lease
     timeout that already ships IS the death detector.
+
+    **An agent's PRESENCE is ephemeral; its ROW is not. Never delete one.** Durable work
+    references these ids — `Item.claimed_by` and `Item.reviewed_by` hold them as plain
+    strings, not foreign keys — so reaping an offline agent dangles those references with no
+    error, and the review record ends up pointing at nothing. Worse, `keys.mint` allocates
+    `max(number) + 1`, so a deleted row frees its number: `GRPH-A3` would then name two
+    different agents at different times and the audit trail could no longer distinguish them.
+    Neither failure raises. Offline agents are hidden from the roster, the same way a rejected
+    shard is kept for provenance and never surfaced.
     """
 
     __tablename__ = "agents"
