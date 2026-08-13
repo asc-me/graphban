@@ -499,6 +499,56 @@ class ArtifactInventoryItem(Base):
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class Enrolment(Base):
+    """A SEAT: one role, one project, one session, redeemable once (PRD-19 E1).
+
+    The credential says who you are and what you may never exceed; this says what you ARE, for
+    this run. Splitting them is the whole PRD: an MCP client sends one static header, so
+    welding the role into it forced a credential per role — and a client that stores one
+    config for every agent (Cursor) then cannot run a fleet at all.
+
+    **A seat, not a role.** Two workers need two enrolments. That is not a preference: if
+    independence derives from the enrolment, two agents redeeming one code share a session and
+    cannot review each other — a wave that looked correctly provisioned would have review
+    silently disabled inside it.
+
+    **Single use, and there is deliberately no `max_uses`.** It reads as a harmless
+    convenience for restarts and is the same independence bug wearing different clothes. A
+    crashed agent is recovered by REISSUE, which mints a fresh seat pointing back at the dead
+    one — so the recovery leaves a record instead of erasing the evidence.
+
+    **Not a credential.** It grants a role inside an already-authenticated call and expires in
+    half an hour, which is what makes it safe to paste into a prompt — the thing humans were
+    going to do with the API key otherwise.
+    """
+
+    __tablename__ = "enrolments"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    # Stored hashed, shown once, exactly like an API key — a seat is short-lived but it is
+    # still a bearer token for the minutes it lives.
+    code_hash: Mapped[str] = mapped_column(String, index=True)
+    # The display fragment, so the Fleet view can name a seat it can no longer show.
+    code_prefix: Mapped[str] = mapped_column(String, default="")
+    role: Mapped[str] = mapped_column(String)
+    wave: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # Who issued it. Exactly one of these is set: a human from the Fleet view, or a PLANNER
+    # via `mint_enrolment` (E7). Planner-only is the containment — a worker that could mint
+    # would build an item, mint itself a reviewer seat, register fresh, and sign its own work
+    # past an authorship ban keyed on agent id.
+    issued_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    minted_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The seat this one replaces, when a dead one was reissued. The chain IS the audit trail.
+    reissued_from: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                          nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Agent(Base):
     """A process that connects to this instance and does work (PRD-17 D1).
 
@@ -561,6 +611,12 @@ class Agent(Base):
     # `vendor` — the server cannot see inside a call tree — but a declared parent is checked
     # where it matters, and the undeclared case is caught by the credential+host rule instead.
     parent_agent_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # The enrolment this agent consumed at registration (PRD-19 E2). NULL is the DEFAULT and
+    # means un-enrolled: the single-agent posture, `all-in-one`, no role gate. Two agents that
+    # consumed DIFFERENT enrolments are independent by construction, which is what lets a
+    # client storing one credential for everything still run a fleet.
+    enrolment_id: Mapped[str | None] = mapped_column(ForeignKey("enrolments.id"), nullable=True,
+                                                     index=True)
     state: Mapped[str] = mapped_column(String, default="idle", index=True)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

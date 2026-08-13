@@ -269,6 +269,18 @@ roster must show `enrolled: no` prominently rather than just a role badge.
 
 **O4 — Autonomous fleets.** *Resolved: yes, planners may mint — see D-g for the two traps.*
 
+**O6 — Enrolment defeats the role-gated manifest.** *Found while building E2, not predicted
+here.* The manifest is trimmed per the KEY's eligible roles, which works because the Fleet
+view mints single-role credentials. Under enrolment the recommended setup is ONE UNRESTRICTED
+credential — so the ceiling is all three roles, nothing trims, and every agent pays the full
+manifest again. A single-role key currently saves 16-19%.
+
+Trimming per ENROLMENT would restore it, and cannot be done on this transport: the enrolment
+is unknown until `register_agent` has run, while `tools/list` is fetched once at connect. That
+is the SSE change PRD-17 D-b ruled a non-goal. Not a blocker for E1-E8 — it is a token cost,
+not a correctness one — but it should be decided before the manifest is trimmed further on the
+assumption that role gating still pays.
+
 **O5 — Does this supersede the wave config?** *Resolved: delete what enrolment makes dead,
 in E8, and not before.* Named explicitly there so the removal is a reviewable act rather than
 code that quietly stops being reachable. The probe result and the independence-polarity fix
