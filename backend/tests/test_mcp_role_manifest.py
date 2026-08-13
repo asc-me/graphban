@@ -68,8 +68,13 @@ def test_a_reviewer_key_is_not_shipped_the_worker_tools(client, auth, proj):
     names = _list(client, _fleet_key(client, auth, proj, "reviewer"))
 
     assert "claim_review" in names and "sign_off" in names
-    for worker_only in ("claim_next", "claim_cluster", "release_item", "heartbeat"):
+    for worker_only in ("claim_next", "claim_cluster", "release_item"):
         assert worker_only not in names
+    # `heartbeat` was in that list, and that is precisely how the bug shipped: it reads as a
+    # worker tool because it extends an item lease, but it ALSO extends agent PRESENCE, which
+    # every role needs. A reviewer was refused the only call keeping it on the roster and
+    # vanished 150s after registering. Found on the PRD-17 walk.
+    assert "heartbeat" in names, "presence is not a worker's privilege"
 
 
 def test_a_worker_key_is_not_shipped_the_reviewer_tools(client, auth, proj):
@@ -89,10 +94,15 @@ def test_a_planner_key_carries_allocation_but_not_the_work(client, auth, proj):
 
 def test_every_credential_keeps_the_shared_reads(client, auth, proj):
     """A role gate that dropped `get_context` or `search_items` would leave an agent unable to
-    orient. Tools with no role requirement belong to everybody."""
+    orient. Tools with no role requirement belong to everybody.
+
+    `heartbeat` is in this list now, and it is the one that was learned the hard way: staying
+    alive is not a role-specific act. An agent that cannot heartbeat is an agent that leaves
+    the roster while still working."""
     for role in fleet.ROLES:
         names = _list(client, _fleet_key(client, auth, proj, role))
-        for shared in ("get_context", "search_items", "fleet_status", "get_item_details"):
+        for shared in ("get_context", "search_items", "fleet_status", "get_item_details",
+                       "heartbeat"):
             assert shared in names, f"{role} lost {shared}"
 
 

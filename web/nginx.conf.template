@@ -27,6 +27,14 @@ server {
     location /api/ {
         proxy_pass ${API_SCHEME}://${API_UPSTREAM};
         proxy_http_version 1.1;
+        # MUST exceed fleet.MAX_WAIT_SECONDS (60). `claim_cluster(wait_seconds=60)` parks for
+        # up to a minute by design, and nginx's DEFAULT proxy_read_timeout is also 60s — so a
+        # full-length park and the proxy's cutoff were the same number, and the agent got a
+        # 504 instead of its answer. Found on the PRD-17 walk by a real Cursor client, having
+        # been predicted and never tested: every park until then ran against an injected clock.
+        # The margin is deliberate; equal values are a coin flip, not a bound.
+        proxy_read_timeout 90s;
+        proxy_send_timeout 90s;
         proxy_ssl_server_name on;
         proxy_set_header Host ${API_UPSTREAM};
         proxy_set_header X-Real-IP $remote_addr;

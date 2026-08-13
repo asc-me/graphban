@@ -134,6 +134,8 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                # ADVERTISED, and it was not — so the role gate on `status: done` was unreachable through the published schema. A worker wrote `done` on the acceptance walk by simply not sending what it had no way to know it should.
+                "agent_id": {"type": "string", "description": "You. Required to move an item past `review` when a fleet is running on this credential."},
                 "id": {"type": "string"},
                 "status": {"type": "string", "enum": _STATUS_ENUM},
                 "title": {"type": "string"},
@@ -620,8 +622,15 @@ TOOLS: list[dict[str, Any]] = [
         "description": "Extend the lease on an item you've claimed so it isn't reclaimed while you work.",
         "inputSchema": {
             "type": "object",
-            "properties": {"id": {"type": "string"}, "agent_id": {"type": "string"}},
-            "required": ["id"],
+            "properties": {
+                # OPTIONAL. Heartbeat does two jobs — extend an item LEASE and extend agent
+                # PRESENCE — and only the first needs an item. A planner never holds one, and
+                # a reviewer between reviews or a worker between claims holds none either, so
+                # requiring it meant presence was maintainable only while mid-work. Found on
+                # the PRD-17 walk, alongside the role gate that refused non-workers outright.
+                "id": {"type": "string", "description": "Item whose lease to extend. Omit to report presence only."},
+                "agent_id": {"type": "string"},
+            },
         },
     },
     {
@@ -2029,8 +2038,19 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
     if name == "fleet_status":
         return fleet_svc.fleet_status(db, pid)
     if name == "heartbeat":
-        _scoped_item(db, args["id"], allowed)  # raises the precise error first
         agent = args.get("agent_id") or key.name or key.id
+        if not args.get("id"):
+            # Presence only. The roster's question is "who is out there", and an agent between
+            # tasks is still out there — it just has no lease to extend.
+            live = fleet_svc.touch(db, agent, state="idle")
+            if live is None:
+                raise errors.Validation(
+                    f"no registered agent {agent!r}",
+                    hint="call register_agent first; heartbeat keeps an existing one alive")
+            return {"agent_id": live.id, "state": live.state,
+                    "heartbeat_interval_seconds": fleet_svc.heartbeat_interval_seconds(),
+                    "presence_ttl_seconds": fleet_svc.presence_ttl_seconds()}
+        _scoped_item(db, args["id"], allowed)  # raises the precise error first
         # One call keeps BOTH alive (PRD-17 D1). An agent that heartbeats its item lease but
         # not its presence would be declared dead while visibly working — and the roster
         # would then be reporting the opposite of what is happening.

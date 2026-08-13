@@ -644,3 +644,79 @@ def test_a_planner_cannot_mint_past_its_own_credential(client, auth, proj, db):
 
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
     assert "reviewer" in res["structuredContent"]["error"]["message"]
+
+
+# ---- found on the PRD-17 acceptance walk, 2026-08-13 -------------------------------------------
+
+def test_update_item_advertises_agent_id(client):
+    """THE bug, and the reason a green suite meant nothing: `update_item` did not advertise
+    `agent_id`, so `check_tool_role` always saw None, fell back to the KEY's ceiling, and an
+    unrestricted credential resolved to "no restriction". A real worker wrote `done` on the
+    walk — correctly, given what the server was told.
+
+    Every test that "proved" the ceiling passed `agent_id` by hand, which is a parameter the
+    published schema forbade. They exercised a path no client could reach."""
+    from app.mcp_server import TOOLS
+
+    props = next(t for t in TOOLS if t["name"] == "update_item")["inputSchema"]["properties"]
+    assert "agent_id" in props
+
+
+def test_a_worker_cannot_write_done_by_omitting_its_own_id(client, key, proj, db):
+    """The bypass itself. Identifying yourself must not be optional when it is the only thing
+    standing between a worker and `done` — absence has to read as "unknown", never as
+    "unrestricted"."""
+    _, wcode = _seat(db, proj, "worker")
+    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": wcode})
+    _ok(client, key, "create_item", {"title": "x", "status": "next"})
+    got = _ok(client, key, "claim_next", {"agent_id": w["agent_id"]})
+
+    res = _rpc(client, key, "update_item", {"id": got["item"]["id"], "status": "done"})
+
+    assert res.get("isError") is True, "an anonymous call must not inherit the key's ceiling"
+    assert res["structuredContent"]["error"]["code"] == "unauthorized"
+    from app.models import Item
+    assert db.get(Item, got["item"]["id"]).status != "done"
+
+
+def test_a_lone_unregistered_agent_still_works(client, auth, proj):
+    """The other half, and the reason this is not simply "always require agent_id". A single
+    developer with one agent and no registration is the DEFAULT posture — refusing it would
+    break every setup predating PRD-17 to fix a fleet problem."""
+    raw = client.post("/api/api-keys", json={"name": "solo", "project_id": proj},
+                      headers=auth).json()["plaintext"]
+    _ok(client, raw, "create_item", {"title": "mine", "status": "next"})
+    got = _ok(client, raw, "claim_next", {})
+
+    out = _ok(client, raw, "update_item", {"id": got["item"]["id"], "status": "done"})
+
+    assert out["status"] == "done"
+
+
+def test_every_role_can_keep_itself_alive(client, key, proj, db):
+    """`heartbeat` was gated to ("worker",), so a reviewer or planner was refused the only call
+    that keeps it on the roster. Both registered fine and vanished 150s later with their
+    terminals open — observed on the walk as `role_refused ... heartbeat` for each."""
+    for role in ("planner", "reviewer"):
+        _, code = _seat(db, proj, role)
+        me = _ok(client, key, "register_agent", {"label": role, "enrolment_code": code})
+
+        out = _ok(client, key, "heartbeat", {"agent_id": me["agent_id"]})
+
+        assert out["agent_id"] == me["agent_id"]
+
+
+def test_heartbeat_needs_no_item(client, key, proj, db):
+    """It required one, so presence was maintainable only while mid-work. A planner never holds
+    an item at all; a reviewer between reviews and a worker between claims hold none either —
+    the exact agents the roster is asked about."""
+    from app.mcp_server import TOOLS
+
+    schema = next(t for t in TOOLS if t["name"] == "heartbeat")["inputSchema"]
+    assert "id" not in schema.get("required", [])
+    _, code = _seat(db, proj, "planner")
+    me = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": code})
+
+    out = _ok(client, key, "heartbeat", {"agent_id": me["agent_id"]})
+
+    assert out["presence_ttl_seconds"] > 0
