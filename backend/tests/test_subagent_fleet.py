@@ -91,3 +91,71 @@ def test_readme_invariants_are_verbatim_from_agents_md():
     assert invariants, "could not extract Invariants from AGENTS.md"
     readme = (REPO / ".cursor" / "agents" / "README.md").read_text()
     assert invariants in readme, "fleet README invariants drifted from AGENTS.md"
+
+
+# ---- the Cursor plugin (GRPH-364) -------------------------------------------------------
+
+def _plugin(name):
+    gen = _load_generator()
+    return gen.render_files()[f"{gen.PLUGIN_DIR}/{name}"]
+
+
+def test_the_plugin_declares_one_server_per_role_each_with_its_own_key():
+    """The whole point. One server with one key is what Cursor already does, and it is what
+    makes every review non-independent — author and reviewer sharing a credential and a host
+    are not two opinions."""
+    import json
+
+    gen = _load_generator()
+    servers = json.loads(_plugin("mcp.json"))["mcpServers"]
+
+    assert set(servers) == {f"graphban-{r}" for r in gen.WAVE_ROLES}
+    keys = [s["headers"]["X-API-Key"] for s in servers.values()]
+    assert len(set(keys)) == len(keys), "two roles pointing at one credential defeats this"
+
+
+def test_the_plugin_never_carries_a_credential():
+    """It is committed, and it is meant to be shared. Every key is an env reference, which is
+    also what makes the config write-once: only the values rotate per wave."""
+    import json
+
+    servers = json.loads(_plugin("mcp.json"))["mcpServers"]
+
+    for name, s in servers.items():
+        val = s["headers"]["X-API-Key"]
+        assert val.startswith("${env:"), f"{name} inlines a key instead of referencing one"
+        assert "gb_sk_" not in val and "al_sk_" not in val
+
+
+def test_the_plugin_env_names_match_the_fleet_view():
+    """THE drift that would waste an afternoon. The Fleet view emits the export block and this
+    file consumes it; if a name changes on one side the credential is simply never read, and
+    the failure presents as `unauthorized` — which reads as a bad key rather than a bad name.
+    Two languages, no shared module, so the agreement is asserted rather than assumed."""
+    gen = _load_generator()
+    wave_ts = (REPO / "web" / "src" / "features" / "fleet" / "wave.ts").read_text()
+
+    for role, env_name in gen.ROLE_ENV.items():
+        assert env_name in wave_ts, f"{role}: {env_name} is not the name the Fleet view exports"
+        assert f'"{env_name}"' in wave_ts or f"{env_name}" in wave_ts
+
+
+def test_the_plugin_ships_the_fleet_agents_so_installing_it_installs_the_fleet():
+    """A plugin that configured credentials but shipped no agents would leave the user to find
+    the role prompts separately — which is most of the setup cost this exists to remove."""
+    gen = _load_generator()
+    files = gen.render_files()
+
+    for role in gen.FLEET_ROSTER:
+        assert f"{gen.PLUGIN_DIR}/agents/{role['name']}.md" in files
+
+
+def test_the_plugin_readme_states_what_it_does_not_guarantee():
+    """Cursor cannot scope a server to one agent, so an agent that switches servers can still
+    sign its own work. Shipping the config without saying so would sell a boundary that is
+    really a default — and this repo's recurring defect is exactly a claim stronger than what
+    is enforced."""
+    readme = _plugin("README.md")
+
+    assert "cannot scope" in readme
+    assert "not as an adversarial boundary" in readme

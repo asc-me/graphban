@@ -9,6 +9,7 @@ import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useFleet } from "@/lib/queries";
+import { cursorWaveConfig, envBlock, WAVE_ROLES, type WaveRole } from "./wave";
 import type { FleetAgent } from "@/lib/types";
 
 /**
@@ -165,6 +166,10 @@ export function FleetView() {
   const { data, refetch } = useFleet(activeId);
   const [role, setRole] = React.useState("worker");
   const [minted, setMinted] = React.useState<{ plaintext: string; role: string } | null>(null);
+  // Held in component state ONLY, and never written anywhere: these are plaintext credentials,
+  // shown once, exactly like the single-role mint above.
+  const [waveKeys, setWaveKeys] = React.useState<Partial<Record<WaveRole, string>> | null>(null);
+  const [minting, setMinting] = React.useState(false);
   const [error, setError] = React.useState("");
   const [confirming, setConfirming] = React.useState<null | {
     keys: number; agents: number; leases: number; reservations: number;
@@ -178,6 +183,26 @@ export function FleetView() {
       setMinted({ plaintext: out.plaintext, role: out.role });
     } catch (e) {
       setError(errorDetail(e, "could not mint a fleet credential"));
+    }
+  }
+
+  async function mintWave() {
+    setError("");
+    setMinting(true);
+    try {
+      // Sequential rather than parallel: each mint allocates from the project's key sequence,
+      // and a failure half-way should leave the roles already issued visible rather than
+      // discarding credentials that now exist server-side and cannot be re-shown.
+      const out: Partial<Record<WaveRole, string>> = {};
+      for (const r of WAVE_ROLES) {
+        const k = await api.mintFleetKey({ project_id: activeId, role: r, wave });
+        out[r] = k.plaintext;
+        setWaveKeys({ ...out });
+      }
+    } catch (e) {
+      setError(errorDetail(e, "could not mint the wave"));
+    } finally {
+      setMinting(false);
     }
   }
 
@@ -197,6 +222,7 @@ export function FleetView() {
       await api.endWave(activeId, wave);
       setConfirming(null);
       setMinted(null);
+      setWaveKeys(null);
       await refetch();
     } catch (e) {
       setError(errorDetail(e, "could not end the wave"));
@@ -298,6 +324,37 @@ export function FleetView() {
                   Codex, Grok and opencode alike — found on the first real walk. */}
               <McpInstall apiKey={minted.plaintext} />
               <CopyRow label="3. Prime" value={primeSnippet(minted.role)} />
+            </div>
+          )}
+        </Section>
+
+        <Section
+          title="Provision a whole wave"
+          desc="For a client that stores ONE MCP config and reuses it — Cursor, notably. Three servers, three keys, one config that is written once."
+        >
+          {/* The problem this exists for: Cursor has no per-agent MCP scoping, so every agent
+              shares one credential — and `independent()` then refuses every review, because
+              author and reviewer match on both key and host. Per-worktree config files would
+              fix it and cost four setups per wave, which nobody will do twice. Interpolating
+              env vars into the header moves the per-wave part OUT of the file: the config is
+              written once and only the three values rotate. */}
+          <Button onClick={mintWave} disabled={minting}>
+            {minting ? "Minting…" : "Mint a wave — planner, worker, reviewer"}
+          </Button>
+          {waveKeys && (
+            <div className="mt-3 space-y-2">
+              <CopyRow label="1. Per wave — export these (shown once)" value={envBlock(waveKeys)} />
+              <CopyRow
+                label="2. Once ever — ~/.cursor/mcp.json (or a plugin's mcp.json)"
+                value={cursorWaveConfig(`${window.location.origin}/api/mcp`)}
+              />
+              <p className="px-1 text-[11px] text-faint">
+                Each server carries a role-narrowed key, so a worker reaching for{" "}
+                <span className="font-mono">sign_off</span> is refused and a reviewer signing a
+                worker&apos;s item is independent. Cursor cannot scope a server to one agent, so an
+                agent that deliberately switches servers can still sign its own work — the
+                default is safe, the ceiling is not absolute.
+              </p>
             </div>
           )}
         </Section>
