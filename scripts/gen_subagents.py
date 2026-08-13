@@ -688,50 +688,78 @@ def render_plugin_readme() -> str:
 
 {GENERATED_NOTE}
 
-Cursor stores **one** MCP config and reuses it across every agent, so a per-role credential has
-nowhere to live: one key for everybody, and the server then refuses every review — a reviewer
-sharing its author's credential is not a second opinion.
+Cursor stores **one** MCP config and reuses it across every agent. That used to make a fleet
+impossible here: a role lived in the credential, so every agent shared one role.
 
-Cursor *does* hold several server entries with different keys. So the fleet works there, with
-one config naming three role-narrowed credentials.
+**Enrolment seats split those apart.** The credential says who you are; a SEAT says what role
+you hold for this run. So the config is written once and never again, and the fleet is
+provisioned by pasting codes into prompts.
 
 ## Install
 
     ln -s "$(pwd)/{PLUGIN_DIR}" ~/.cursor/plugins/local/graphban
 
-Then restart Cursor. This ships the role **agents**; the MCP config comes from the Fleet view.
+Then restart Cursor. This ships the role **agents**.
 
-## Each wave
+## Once, ever — the credential
 
-**Fleet view -> Provision a whole wave.** It mints planner, worker and reviewer credentials and
-emits the whole `~/.cursor/mcp.json` with the keys in it. Paste, restart Cursor.
+Settings -> API Keys -> create one, and put it in `~/.cursor/mcp.json`:
 
-There is no environment-variable form. Cursor does not interpolate `${{env:VAR}}`, `${{VAR}}` or
-`$VAR` in `mcp.json` — probed against 3.16.2 with the variables present in the process
-environment, and the entry is silently **dropped** rather than sent as a literal. A config that
-looks right and connects nothing is worse than one you regenerate each wave.
+    {{
+      "mcpServers": {{
+        "graphban": {{
+          "url": "{PLUGIN_URL_PLACEHOLDER}",
+          "headers": {{ "X-API-Key": "<your key>" }}
+        }}
+      }}
+    }}
 
-Wave credentials expire, and **End wave** revokes them — which is what makes keys in a config
-file an acceptable trade here.
+One server, one key. You do not rewrite this per wave, and **End wave never touches it** — it
+expires the seats and leaves the credential authenticating.
 
-## If you must share one credential
+There is no environment-variable form: Cursor does not interpolate `${{env:VAR}}`, `${{VAR}}` or
+`$VAR` here. Probed against 3.16.2 with the variables present in the process, and the entry is
+silently **dropped** rather than sent as a literal — a config that looks right and connects
+nothing.
 
-Then roles are advisory, and every agent has to declare who it is:
+## Each wave — the seats
+
+**Fleet view -> Provision a whole wave.** Add one seat per agent (two workers means two seats)
+and issue them. Each row copies a filled prompt with the code already in it; paste one per
+agent.
+
+A seat is not a credential. It grants one role on one project for one session and expires in
+half an hour, which is what makes it safe to paste into a prompt.
+
+**Two workers need two seats.** Agents that redeem the same code share a session, and the
+server treats a shared session as one opinion — so they could not review each other.
+
+If an agent dies, **Reissue** that seat. Codes are single-use by design: reusing one would
+silently disable review between the agents that shared it.
+
+## Without seats
+
+An agent that registers with no code gets `all-in-one`: unrestricted, no role gate, you are the
+reviewer. That is the correct default for one developer and one agent, and it costs nothing.
+
+For a fleet on one credential with no seats issued, each agent must declare who it is:
 
     register_agent(label=..., capabilities={{"instance": "<unique per agent>"}}, role_hint=...)
 
-On one credential an agent that declares nothing that differs is refused review. That is
-deliberate: absence is not a difference, or omitting a field would launder a self-review.
+On one credential an agent that declares nothing that differs is refused review — absence is
+not a difference, or omitting a field would launder a self-review.
 
 ## What this does and does not guarantee
 
-With a wave, each server carries a genuinely role-narrowed credential, so a worker reaching for
-`sign_off` is refused and a reviewer signing a worker's item is independent.
+**Roles are enforced.** The server issued the seat, so a worker reaching for `sign_off` is
+refused — it cannot promote itself, because it has nothing to promote itself with.
 
-**Cursor cannot scope an MCP server to one agent.** Every agent sees all three, so one that
-deliberately switches servers can still sign off its own work. What changes is the default:
-sharing one unrestricted key refuses nothing, and here the wrong call fails unless somebody
-goes out of their way. Treat it as coordination, not as an adversarial boundary.
+**Independence is decided by the server**, not declared by the agent: two agents that redeemed
+different seats are two sessions, so a reviewer signing a worker's item means something.
+
+It is **not an adversarial boundary**. An agent handed two codes can use either. Enrolment
+makes the ACCIDENT impossible — which is the failure that actually happens — and does not
+defeat intent.
 """
 
 
