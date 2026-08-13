@@ -111,7 +111,10 @@ def test_an_undeclared_subagent_is_caught_by_credential_and_host(client, key, db
     got = _ok(client, key, "claim_review", {"agent_id": child["agent_id"]})
 
     assert got["claimed"] is False
-    assert "credential and host" in got["reason"], "and it says how to fix it"
+    # Names BOTH remedies. A refusal that explains itself but offers no way out is where an
+    # operator stops — and one of the two must be reachable from whatever client they are on.
+    assert "instance" in got["reason"] and "per-role credential" in got["reason"], \
+        "the refusal has to say how to fix it"
 
 
 def test_two_windows_of_one_model_on_one_machine_are_not_two_opinions(client, key, db):
@@ -175,10 +178,14 @@ def test_one_key_across_two_machines_stays_independent(client, key, db):
     assert _ok(client, key, "claim_review", {"agent_id": b["agent_id"]})["claimed"] is True
 
 
-def test_an_unreported_host_is_not_a_matching_host(client, key, db):
-    """Absence must not read as a match. Treating two unknown hosts as the same one would
-    refuse review across a legitimate fleet whose clients simply do not report it — the
-    recurring defect in this codebase, arriving in a comparison."""
+def test_a_declared_difference_other_than_host_still_earns_independence(client, key, db):
+    """One credential, no host reported, but DIFFERENT VENDORS — two different programs, which
+    is a real difference and enough. The rule is "show me something that differs", and host is
+    only one of the things that can.
+
+    This test previously passed for the opposite reason: absence was read as a difference, so
+    two agents declaring nothing at all could review each other. That made the honest agent
+    the restricted one, since declaring a matching host was the only way to be refused."""
     a = _ok(client, key, "register_agent", {"label": "a", "capabilities": {"vendor": "x"}})
     b = _ok(client, key, "register_agent",
             {"label": "b", "role_hint": "reviewer", "capabilities": {"vendor": "y"}})
@@ -204,3 +211,86 @@ def test_the_predicate_reads_as_the_rule(db):
     assert fleet.independent(
         agent(id="A", api_key_id="k1", capabilities={"host": "h"}),
         agent(id="B", api_key_id="k2", capabilities={"host": "h"})) is True, "different keys"
+
+
+def test_two_agents_that_declare_nothing_cannot_review_each_other(client, key, db):
+    """The polarity that was backwards. On ONE credential, an agent that declares nothing is
+    indistinguishable from the subagent case this gate exists for — so silence must not buy
+    permission. Otherwise laundering a self-review costs exactly nothing: omit the field.
+
+    The remedy has to be reachable, which is why the refusal names it. `instance` exists for
+    clients that cannot hold two credentials at once (Cursor stores one MCP config and reuses
+    it), so "declare who you are" is something an agent can always do."""
+    a = _ok(client, key, "register_agent", {"label": "a"})
+    b = _ok(client, key, "register_agent", {"label": "b", "role_hint": "reviewer"})
+    _built_by(client, key, a)
+
+    out = _ok(client, key, "claim_review", {"agent_id": b["agent_id"]})
+
+    assert out["claimed"] is False
+
+
+def test_an_instance_tag_is_enough_to_separate_two_agents_on_one_credential(client, key, db):
+    """THE Cursor case. One config, one key, several agents — the fleet posture is unavailable
+    there unless an agent can say which one it is. Self-reported, and worth being plain about:
+    it buys coordination, not an adversarial boundary. An agent that wants to review its own
+    work can claim a different instance; what this stops is the accident."""
+    a = _ok(client, key, "register_agent",
+            {"label": "a", "capabilities": {"instance": "cursor-worker-1"}})
+    b = _ok(client, key, "register_agent",
+            {"label": "b", "role_hint": "reviewer",
+             "capabilities": {"instance": "cursor-reviewer-1"}})
+    _built_by(client, key, a)
+
+    assert _ok(client, key, "claim_review", {"agent_id": b["agent_id"]})["claimed"] is True
+
+
+def test_the_same_instance_tag_is_not_two_opinions(client, key, db):
+    """A tag that never varies is a tag that means nothing — and copy-pasting one prompt into
+    four Cursor chats is the likeliest way to end up here."""
+    a = _ok(client, key, "register_agent",
+            {"label": "a", "capabilities": {"instance": "cursor"}})
+    b = _ok(client, key, "register_agent",
+            {"label": "b", "role_hint": "reviewer", "capabilities": {"instance": "cursor"}})
+    _built_by(client, key, a)
+
+    assert _ok(client, key, "claim_review", {"agent_id": b["agent_id"]})["claimed"] is False
+
+
+def test_declaring_nothing_does_not_make_you_different_from_someone_who_did(client, key, db):
+    """The ASYMMETRIC case, and the sharp edge of the original loophole. One agent honestly
+    reports its host; the other reports nothing. If absence counted as "different" the silent
+    agent would be the one permitted to review — the honest declaration is what would have
+    refused it.
+
+    Missing this left a sabotage undetected: flipping the comparison to a bare `a != b` keeps
+    both-absent behaving correctly (None != None is false) and only breaks THIS case, so the
+    two-agents-declare-nothing test alone cannot see it."""
+    a = _ok(client, key, "register_agent",
+            {"label": "honest", "capabilities": {"host": "macbook"}})
+    b = _ok(client, key, "register_agent",
+            {"label": "silent", "role_hint": "reviewer", "capabilities": {}})
+    _built_by(client, key, a)
+
+    assert _ok(client, key, "claim_review", {"agent_id": b["agent_id"]})["claimed"] is False
+
+
+def test_the_predicate_never_treats_absence_as_a_difference(db):
+    """Unit-level and exhaustive over the shapes, because the loop reads as if it compares
+    values when what it really encodes is "a difference must be DECLARED on both sides"."""
+    def agent(**kw):
+        base = {"id": "A", "api_key_id": "k1", "capabilities": {}, "parent_agent_id": None}
+        base.update(kw)
+        return Agent(**base)
+
+    both_absent = (agent(id="A"), agent(id="B"))
+    one_absent = (agent(id="A", capabilities={"host": "h"}), agent(id="B"))
+    absent_other_way = (agent(id="A"), agent(id="B", capabilities={"host": "h"}))
+    both_same = (agent(id="A", capabilities={"host": "h"}),
+                 agent(id="B", capabilities={"host": "h"}))
+    genuinely_different = (agent(id="A", capabilities={"host": "h1"}),
+                           agent(id="B", capabilities={"host": "h2"}))
+
+    for pair in (both_absent, one_absent, absent_other_way, both_same):
+        assert fleet.independent(*pair) is False, f"absence or a match is not independence: {pair}"
+    assert fleet.independent(*genuinely_different) is True

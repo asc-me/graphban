@@ -69,7 +69,10 @@ def _item(client, key, title, areas):
 
 
 def _worker(client, key, label):
-    return _ok(client, key, "register_agent", {"label": label, "role_hint": "worker"})
+    # These share one credential, so each declares a distinct `instance` — on a shared key an
+    # agent must show something that differs to count as independent.
+    return _ok(client, key, "register_agent",
+               {"label": label, "role_hint": "worker", "capabilities": {"instance": label}})
 
 
 # ---- areas overlap by prefix, not by string equality ---------------------------------------
@@ -232,7 +235,8 @@ def test_signing_off_frees_the_areas(client, key, db):
     got = _ok(client, key, "claim_cluster", {"agent_id": w1["agent_id"]})
     _ok(client, key, "update_item",
         {"id": got["items"][0]["id"], "status": "review", "agent_id": w1["agent_id"]})
-    rev = _ok(client, key, "register_agent", {"label": "r", "role_hint": "reviewer"})
+    rev = _ok(client, key, "register_agent",
+               {"label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
 
     _ok(client, key, "sign_off", {"id": got["items"][0]["id"], "agent_id": rev["agent_id"]})
 

@@ -11,7 +11,11 @@ you from colliding with them; your job is to follow the loop and not fight it.
 ## Start
 
 1. `register_agent(label="<model> @ <host>:<worktree>",
-   capabilities={"vendor": "<vendor>", "host": "<hostname>"}, worktree=..., branch=...)`.
+   capabilities={"vendor": "<vendor>", "host": "<hostname>", "instance": "<unique per agent>"},
+   worktree=..., branch=...)`. **`instance` must differ for every agent sharing a credential**
+   — on one key an agent that declares nothing that differs is refused review, because absence
+   is not a difference. In a client that stores one MCP config for everything (Cursor), this
+   tag is the only thing that tells you apart.
    **Do this before anything else.** An agent that
    claims without registering is invisible to the roster and ungoverned — and two
    terminals sharing a key are two agents only if both register.

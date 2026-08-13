@@ -497,6 +497,18 @@ class SelfReview(Exception):
     site must handle it — a caller that ignores a `False` return would sign the item off."""
 
 
+# What an agent may declare to distinguish itself from another on the SAME credential, in the
+# order a human would read them. `instance` exists for clients that cannot hold more than one
+# credential at a time — Cursor stores one MCP config and reuses it across every agent, so
+# without a tag its whole fleet is one indistinguishable blob and no review is ever independent.
+#
+# Self-reported, like `host` and `worktree`, and deliberately so: the alternative for those
+# clients is no fleet at all. It buys COORDINATION, not an adversarial boundary — an agent that
+# wants to review its own work can simply claim a different instance. What it prevents is the
+# accident, which is the failure that actually happens.
+_DISCRIMINATORS = ("instance", "worktree", "host", "vendor")
+
+
 def independent(reviewer: Agent, author: Agent | None) -> bool:
     """Whether these two are separate enough that one reviewing the other means anything.
 
@@ -514,15 +526,23 @@ def independent(reviewer: Agent, author: Agent | None) -> bool:
 
     - **A declared parent, either direction.** Cheap and honest, and it covers a subagent that
       reports a different host.
-    - **Same credential AND same host.** The undeclared case, which is the common one — a
-      subagent inherits its parent's key and runs in its process. It also catches something
-      the original ban missed entirely: two windows of one model on one machine sharing one
-      key are two agents by D1's definition and are not two opinions.
+    - **Different credentials.** The intended path: the Fleet view mints one per role, so two
+      agents holding different keys are separate by construction.
+    - **One credential, and nothing declared that differs.** Not independent. On a shared key an
+      agent must SHOW a difference — `instance`, `worktree`, `host` or `vendor` — and absence
+      is not a difference.
 
-    Same key on DIFFERENT hosts stays independent — those are genuinely separate machines, and
-    refusing there would block a legitimate fleet for no gain. The Fleet view already mints a
-    credential per role, so the intended path is unaffected; a hand-rolled one-key fleet is
-    told what to change rather than silently accepted.
+    **That last polarity used to be backwards and it mattered.** An unreported host counted as
+    "different", so two agents declaring nothing could review each other while an agent that
+    honestly reported a matching host was refused: the missing datum granted the permission,
+    and laundering a self-review cost nothing but omitting a field.
+
+    `instance` is what makes this reachable for a client that cannot hold two credentials at
+    once — Cursor stores one MCP config and reuses it across every agent, so without a tag its
+    whole fleet is one blob and no review is ever independent. Self-reported, like everything
+    else here: it buys COORDINATION, not an adversarial boundary. An agent determined to review
+    its own work can claim a different instance. What this prevents is the accident, which is
+    the failure that actually occurs.
     """
     if author is None:
         return True                      # human-authored, or an author nothing recorded
@@ -532,16 +552,25 @@ def independent(reviewer: Agent, author: Agent | None) -> bool:
         return False
     if reviewer.parent_agent_id and reviewer.parent_agent_id == author.parent_agent_id:
         return False                     # siblings under one parent are one call tree
-    same_key = bool(reviewer.api_key_id) and reviewer.api_key_id == author.api_key_id
-    host_a = (reviewer.capabilities or {}).get("host")
-    host_b = (author.capabilities or {}).get("host")
-    same_host = host_a is not None and host_a == host_b
-    return not (same_key and same_host)
+    if not (bool(reviewer.api_key_id) and reviewer.api_key_id == author.api_key_id):
+        return True                      # genuinely separate credentials
+    # ONE credential. Independence must now be EARNED by declaring something that differs, and
+    # **absence is restrictive** — the polarity matters and used to be backwards. Treating an
+    # undeclared host as "different" meant an agent that honestly reported its host disabled
+    # its own reviewing while one that omitted it was permitted: the missing datum granted the
+    # permission, which is this repo's defect class pointed at its own gate.
+    for field in _DISCRIMINATORS:
+        a = (reviewer.capabilities or {}).get(field)
+        b = (author.capabilities or {}).get(field)
+        if a is not None and b is not None and a != b:
+            return True
+    return False
 
 
-NOT_INDEPENDENT = ("the only work in review was built by an agent sharing your credential and "
-                   "host — mint a per-role credential in the Fleet view so review means "
-                   "something")
+NOT_INDEPENDENT = ("the only work in review was built by an agent you are not distinguishable "
+                   "from — same credential, and nothing declared that differs. Either declare "
+                   "capabilities.instance (a different value per agent) when you register, or "
+                   "mint a per-role credential in the Fleet view, so review means something")
 
 
 def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = None) -> str:
@@ -652,9 +681,10 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                                            if item.claimed_by else None)
     if me is not None and not independent(me, author):
         raise SelfReview(
-            f"{agent_id} is not independent of {item.claimed_by} — same call tree or same "
-            f"credential and host — so signing off {item.key} would be self-review with "
-            "extra steps"
+            f"{agent_id} is not independent of {item.claimed_by} — same call tree, or one "
+            f"credential with nothing declared that tells you apart — so signing off "
+            f"{item.key} would be self-review with extra steps. Declare a distinct "
+            "capabilities.instance at registration, or use a per-role credential"
         )
     # The adversarial gate (PRD-17 D9). Reviewer and adversary are different jobs and must not
     # become one habit: a reviewer CONVERGES — the queue is three deep and an agent that blocks

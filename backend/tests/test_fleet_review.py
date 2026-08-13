@@ -88,10 +88,20 @@ def _built_by(client, key, agent, title="work"):
     return c["item"]["id"]
 
 
-def _register(client, key, role, label=None, vendor=None):
-    caps = {"vendor": vendor} if vendor else {}
+def _register(client, key, role, label=None, vendor=None, instance=None):
+    """These share ONE credential, so each declares a distinct `instance`.
+
+    That is the requirement rather than a convenience: on a shared key an agent must show
+    something that differs to be independent, and absence is deliberately not a difference —
+    otherwise omitting a field would launder a self-review. The label is already unique per
+    call, so it doubles as the tag.
+    """
+    label = label or f"{role} term"
+    caps = {"instance": instance or label}
+    if vendor:
+        caps["vendor"] = vendor
     return _ok(client, key, "register_agent",
-               {"label": label or f"{role} term", "role_hint": role, "capabilities": caps})
+               {"label": label, "role_hint": role, "capabilities": caps})
 
 
 # ---- the invariant ------------------------------------------------------------------------

@@ -9,7 +9,7 @@ what. You do not build.
 
 ## Start
 
-`register_agent(label=..., role_hint="planner")`.
+`register_agent(label=..., capabilities={"instance": "<unique per agent>"}, role_hint="planner")`.
 
 ## Loop
 

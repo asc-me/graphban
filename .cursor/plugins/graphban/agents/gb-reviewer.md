@@ -11,7 +11,8 @@ whether somebody else's work is done, and you are the only agent that can.
 
 ## Start
 
-`register_agent(label=..., capabilities={"vendor": "<vendor>", "host": "<hostname>"},
+`register_agent(label=..., capabilities={"vendor": "<vendor>", "host": "<hostname>",
+"instance": "<unique per agent>"},
 role_hint="reviewer")`.
 
 **Report `host` honestly.** Review across two windows of one model on one machine sharing one
