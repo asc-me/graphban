@@ -180,9 +180,27 @@ def test_manifest_stays_within_token_budget():
 
     This ceiling is unchanged and still measures the FULL manifest, deliberately: it is the
     worst case an unrestricted key pays, and role gating must not become an excuse to let that
-    grow unwatched."""
+    grow unwatched.
+
+    Raised 12500 -> 12600 in GRPH-369, by the same procedure and for a smaller reason than any
+    previous bump: PRD-19 adds NO tool, only `enrolment_code` on `register_agent` — 137 chars,
+    which is ~34 tokens and exactly the overshoot. Prose was trimmed twice first (the tool
+    description and the parameter text) before the ceiling moved, and the remainder cannot come
+    out without losing what an agent needs to know. Minimal on purpose: E7 adds
+    `mint_enrolment` and should have to justify its own raise rather than spend headroom voted
+    for something else.
+
+    **PRD-19 undermines the optimisation this guard was pointing at, and that is worth stating
+    here rather than discovering later.** The role-gated manifest trims per the KEY's eligible
+    roles — which works because the Fleet view mints single-role credentials. Under enrolment
+    the recommended setup is ONE UNRESTRICTED credential for every agent, with the role granted
+    per session; so the key's ceiling is `all three`, nothing trims, and every agent pays this
+    full manifest again. Trimming per enrolment would work but the enrolment is not known until
+    `register_agent` has run, which is the SSE problem D-b called a non-goal. So the next time
+    this fires, the honest options are a real prose pass or that transport change — not another
+    raise."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 12500, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 12600, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55

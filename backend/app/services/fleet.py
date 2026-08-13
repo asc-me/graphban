@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Agent, AreaReservation, Item
+from app.models import Agent, AreaReservation, Enrolment, Item
 from app.services import items as items_svc
 from app.services import keys as keys_svc
 from app.services.items import DEFAULT_LEASE_SECONDS
@@ -44,6 +44,16 @@ ALL_IN_ONE = "all-in-one"
 # set roles. Both resolve to all three, so without this the two are indistinguishable and a
 # client-supplied `role_hint` can silently narrow a posture a human picked in the UI.
 POSTURE_SINGLE = "single"
+
+# How long a seat is redeemable. Thirty minutes is long enough to paste a prompt into four
+# terminals and short enough that a code in a transcript is worth little by the time anyone
+# reads it. Deliberately NOT bound to a credential or an IP as well: single-use already binds
+# a seat to exactly one redemption, so binding would only break a seat whose agent moved
+# machines — two mechanisms enforcing one fact.
+ENROLMENT_TTL_MINUTES = 30
+
+# Unambiguous under a human reading a code off a screen: no O/0, no I/1/L.
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 # States an agent can be in. `offline` is DERIVED (see `presence_state`) and never written as
 # a transition — an agent that dies does not get to tell us. `quarantined` is the opposite: it
@@ -132,7 +142,8 @@ def eligible_roles(api_key) -> tuple[str, ...]:
 def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
                    capabilities: dict | None = None, worktree: str = "",
                    branch: str = "", role_hint: str | None = None,
-                   parent_agent_id: str | None = None) -> Agent:
+                   parent_agent_id: str | None = None,
+                   enrolment_code: str | None = None) -> Agent:
     """Register a connected process as an agent, and tell it what role it holds.
 
     **Always creates a row. Never reuses one by label.** Two identical Claude Code windows on
@@ -146,9 +157,20 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
     the default otherwise. Silently, because the hint comes from a client config file — refusing the registration would strand an agent over a
     preference, and the authoritative answer is returned in `active_role` either way.
     """
+    # Redeemed FIRST, and it raises before anything is written: a seat the credential may not
+    # honour must not burn, and a registration that is going to be refused must not mint an
+    # agent id. `consume_enrolment` only reads.
+    seat = None
+    if enrolment_code:
+        seat = consume_enrolment(db, code=enrolment_code, project_id=project_id,
+                                 api_key=api_key)
     stored_id, number = keys_svc.mint(db, project_id, "agent")
     allowed = eligible_roles(api_key)
-    if is_single_posture(api_key) and set(allowed) >= set(ROLES):
+    if seat is not None:
+        # The seat IS the grant. A hint alongside it is ignored rather than merged — two
+        # sources for one fact is how the role ended up self-declared in the first place.
+        role = seat.role
+    elif is_single_posture(api_key) and set(allowed) >= set(ROLES):
         # All-in-one was chosen for this credential, so a hint cannot narrow it. The ceiling is
         # re-checked rather than trusted: posture may only decline to NARROW, never WIDEN, or a
         # `single` marker on a role-restricted key would resolve to all-in-one — which
@@ -174,10 +196,17 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
         label=label or "", capabilities=capabilities or {},
         parent_agent_id=parent_agent_id or None,
         worktree=worktree or "", branch=branch or "",
+        enrolment_id=seat.id if seat is not None else None,
         active_role=role, role_assigned_at=now, role_acked_at=now,
         state="idle", registered_at=now, last_seen_at=now,
     )
     db.add(agent)
+    if seat is not None:
+        # Consumed in the SAME transaction as the agent row. Marking it first would spend a
+        # seat on a registration that then failed; marking it after would let two agents race
+        # onto one seat, and two agents sharing an enrolment cannot review each other.
+        seat.consumed_at = now
+        seat.consumed_by = agent.id
     db.commit()
     db.refresh(agent)
     return agent
@@ -939,6 +968,105 @@ def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
     db.commit()
     db.refresh(row)
     return row, plaintext
+
+
+class EnrolmentError(ValueError):
+    """A seat that cannot be redeemed, with a reason a human can act on."""
+
+
+def _hash_code(code: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(code.strip().upper().encode()).hexdigest()
+
+
+def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None = None,
+                    issued_by: str | None = None, minted_by: str | None = None,
+                    reissued_from: str | None = None) -> tuple[Enrolment, str]:
+    """Mint one SEAT and return (row, plaintext). The code is shown once.
+
+    One seat per agent, never one per role: two agents redeeming the same code would share an
+    enrolment and therefore fail `independent`, so a wave that looked correctly provisioned
+    would have review silently disabled inside it.
+    """
+    import secrets
+    import uuid
+
+    if role not in ROLES + (ALL_IN_ONE,):
+        raise ValueError(f"unknown role: {role!r}")
+    body = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(6))
+    code = f"{role.upper().replace('-', '')}-{body}"
+    row = Enrolment(
+        id=str(uuid.uuid4()), project_id=project_id, code_hash=_hash_code(code),
+        code_prefix=code.split("-")[-1][:2], role=role, wave=wave,
+        issued_by=issued_by, minted_by=minted_by, reissued_from=reissued_from,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=ENROLMENT_TTL_MINUTES),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row, code
+
+
+def reissue_enrolment(db: Session, *, enrolment_id: str) -> tuple[Enrolment, str]:
+    """Replace a dead seat, pointing back at it.
+
+    The recovery path for a crashed agent, and the reason a seat needs no `max_uses`: the
+    replacement leaves a record rather than erasing the evidence that something died.
+    """
+    old = db.get(Enrolment, enrolment_id)
+    if old is None:
+        raise EnrolmentError("no such seat")
+    return issue_enrolment(db, project_id=old.project_id, role=old.role, wave=old.wave,
+                           issued_by=old.issued_by, minted_by=old.minted_by,
+                           reissued_from=old.id)
+
+
+def enrolment_state(row: Enrolment, *, now: datetime | None = None) -> str:
+    """`unused` | `consumed` | `expired` | `revoked` — DERIVED, never swept.
+
+    Same shape as presence: there is no job to forget to run, and no window where a seat reads
+    redeemable minutes after it stopped being so.
+    """
+    now = now or datetime.now(timezone.utc)
+    if row.revoked:
+        return "revoked"
+    if row.consumed_at is not None:
+        return "consumed"
+    exp = row.expires_at
+    if exp is not None and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return "expired" if exp is not None and exp <= now else "unused"
+
+
+def consume_enrolment(db: Session, *, code: str, project_id: str, api_key) -> Enrolment:
+    """Redeem a seat, or refuse with a reason. **Nothing is written on a refusal.**
+
+    The ceiling is checked BEFORE consumption, so a code the credential may not honour does
+    not burn the seat — an operator who mints the wrong pairing gets to fix it and retry with
+    the code they already handed out.
+
+    A ceiling conflict is REFUSED rather than narrowed. Clamping a reviewer seat to `worker`
+    would leave the roster showing a worker where a reviewer was deliberately issued, which is
+    the one state an operator cannot debug from the UI.
+    """
+    row = db.scalar(select(Enrolment).where(Enrolment.code_hash == _hash_code(code)))
+    if row is None:
+        raise EnrolmentError("no such enrolment code")
+    if row.project_id != project_id:
+        # Named without echoing which project, since the caller may not be entitled to it.
+        raise EnrolmentError("that seat belongs to a different project")
+    state = enrolment_state(row)
+    if state != "unused":
+        raise EnrolmentError(f"that seat is already {state}"
+                             + (" — reissue it from the Fleet view" if state == "consumed" else ""))
+    allowed = eligible_roles(api_key)
+    if row.role != ALL_IN_ONE and row.role not in allowed:
+        raise EnrolmentError(
+            f"this credential is eligible for {', '.join(allowed)}; the seat grants "
+            f"{row.role!r}. Mint a credential for that role, or issue a "
+            f"{allowed[0]!r} seat")
+    return row
 
 
 def end_wave(db: Session, *, project_id: str | None, wave: str | None = None) -> dict:

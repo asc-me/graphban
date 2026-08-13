@@ -572,9 +572,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "register_agent",
         "description": (
             "Register THIS process as an agent at startup, before claiming work. Two terminals on "
-            "one key become two agents. `role_hint` is clamped to what your credential permits — "
-            "read `active_role` back. Heartbeat at the returned interval or you go offline and "
-            "your items requeue."
+            "one key become two agents. Pass `enrolment_code` if you were given a seat; without "
+            "one you are `all-in-one`. Read `active_role` back. Heartbeat at the returned "
+            "interval or you go offline and your items requeue."
         ),
         "inputSchema": {
             "type": "object",
@@ -584,6 +584,7 @@ TOOLS: list[dict[str, Any]] = [
                 "worktree": {"type": "string"},
                 "branch": {"type": "string"},
                 "role_hint": {"type": "string", "enum": list(fleet_svc.ROLES)},
+                "enrolment_code": {"type": "string", "description": "Your seat, e.g. 'WORKER-7F3K'. Grants your role and beats role_hint. Single-use."},
                 "parent_agent_id": {"type": "string", "description": "Set if you are a SUBAGENT: who spawned you. Stops a call tree reviewing itself."},
             },
         },
@@ -1966,15 +1967,26 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             raise errors.Validation(str(e))
         return _item_dict(item)
     if name == "register_agent":
-        agent = fleet_svc.register_agent(
-            db, project_id=pid, api_key=key, label=args.get("label", ""),
-            capabilities=args.get("capabilities") or {}, worktree=args.get("worktree", ""),
-            branch=args.get("branch", ""), role_hint=args.get("role_hint"),
-            parent_agent_id=args.get("parent_agent_id"),
-        )
+        try:
+            agent = fleet_svc.register_agent(
+                db, project_id=pid, api_key=key, label=args.get("label", ""),
+                capabilities=args.get("capabilities") or {}, worktree=args.get("worktree", ""),
+                branch=args.get("branch", ""), role_hint=args.get("role_hint"),
+                parent_agent_id=args.get("parent_agent_id"),
+                enrolment_code=args.get("enrolment_code"),
+            )
+        except fleet_svc.EnrolmentError as e:
+            # `unauthorized`, not `validation`: the code was understood and refused. An agent
+            # that already branches on refusals needs no new case.
+            raise authz.Forbidden(str(e), hint="ask for a seat in the Fleet view, or register "
+                                               "without one to work as all-in-one")
         return {
             "agent_id": agent.id, "key": agent.key, "active_role": agent.active_role,
             "eligible_roles": list(fleet_svc.eligible_roles(key)),
+            # Stated rather than inferred from `active_role`: `all-in-one` is BOTH the granted
+            # seat role and what an un-enrolled agent gets, so a client cannot tell the
+            # deliberate case from the forgotten one without being told (PRD-19 A2).
+            "enrolled": agent.enrolment_id is not None,
             # The cadence travels with the identity: an agent that has to read a constant out
             # of documentation to stay alive is one that eventually does not.
             "heartbeat_interval_seconds": fleet_svc.heartbeat_interval_seconds(),
