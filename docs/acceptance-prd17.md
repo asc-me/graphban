@@ -10,52 +10,56 @@ So run it looking for the things a test structurally cannot see, not to tick box
 
 ---
 
-## Setup
+## Setup — enrolment, not per-role keys
 
-Use an **isolated compose project**, same reason as the PRD-14/15 walks: the compose project
-name is pinned to `agentledger`, so on a machine with development history `start.sh` would
-attach to the real `agentledger_agentledger_pgdata` volume and the walk would run against
-live data.
+**This changed under the walk.** PRD-19 shipped between step 1 and step 2, so the provisioning
+half is different from what steps 1 and 15 were run against. The mechanics steps 2–14 test are
+unchanged; how you stand the fleet up is not.
 
-```bash
-COMPOSE="docker compose -p gb-fleet" \
-  DB_PORT=5456 API_PORT=8012 WEB_PORT=8092 \
-  PROJECT_NAME="Fleet Acceptance" ./start.sh
+Run it on **`ubuntu-srv`** — `http://192.168.50.81:8080/fleet` — which is on the current
+revision with a real 431-item backlog. A populated backlog makes steps 4 and 14 mean something
+that a scratch stack cannot: real touchpoint overlap to arbitrate.
+
+**Once, ever — the credential.** Settings → API Keys → create one, and put it in your client
+config as a single server:
+
+```json
+{ "mcpServers": { "graphban": {
+    "url": "http://ubuntu-srv:8080/api/mcp",
+    "headers": { "X-API-Key": "<your key>" } } } }
 ```
 
-Note the printed operator password and API key — shown once. Fleet view: `http://localhost:8092/fleet`.
+You do not rewrite this per wave, and **End wave never touches it**.
 
-> `ubuntu-srv` is also on this revision (`561d99e`, alembic `0064`) if you would rather use
-> the LAN box: `http://192.168.50.81:8080/fleet`. It has real project data, so prefer the
-> isolated stack unless you want the walk to exercise a populated backlog.
+**Per wave — the seats.** Fleet view → *Provision a whole wave* → add one seat per agent
+(**two workers means two `+ worker` clicks**) → *Issue the seats*. Each row copies a filled
+prompt with the code already in it. Paste one per terminal.
 
-You need **four terminals**, ideally different vendors — the point of step 6 is cross-vendor
-review, and an all-Claude fleet cannot demonstrate it. Two is enough for steps 1–9 if that is
-what you have; note which you ran with.
+You need **four terminals**, ideally different vendors — step 6 is cross-vendor review and an
+all-Claude fleet cannot demonstrate it. Two is enough for steps 1–9 if that is what you have;
+note which you ran with.
 
 ---
 
-## Three things that will look like bugs and are not
+## Four things that will look like bugs and are not
 
-**1. An unnarrowed key produces an `all-in-one` agent, not a worker.** That is the
-single-agent posture, where you are the reviewer and no gate applies. So **step 3 will not
-refuse anything unless the agent holds a role-narrowed credential** — pick `worker` in the
-Fleet view, not `all-in-one` and not your normal Settings key. If a worker is not being
-refused `done`, check its credential before assuming the gate is broken.
+**1. An agent with no seat is `all-in-one`, not a worker.** That is the single-agent posture:
+you are the reviewer and no gate applies. So **step 3 refuses nothing unless the agent redeemed
+a seat**. The roster flags this — a row reading `not enrolled` in red is an agent that never
+got its code. Check that before concluding the gate is broken.
 
-The Fleet view offers `all-in-one` alongside the three roles; it mints an unnarrowed
-credential and is the right choice for testing the default posture (step 15 below), not for
-steps 3–11.
+**2. Two agents on ONE seat cannot review each other, by design.** A seat is a session. If you
+paste the same code into two terminals the second is refused outright; if you somehow got two
+agents onto one seat they would read as one opinion. Two workers need two seats.
 
-**2. `claimed: false` is usually the correct answer.** From `claim_review` it means nothing is
+**3. `claimed: false` is usually the correct answer.** From `claim_review` it means nothing is
 waiting *that you may take*; from `claim_cluster` it means every ready cluster collides with
 work in flight. Both carry a `reason` — read it. Neither is an error.
 
-**3. Presence and item-reclaim run on different clocks.** An agent reads `offline` after
-`lease_seconds / 4` (150s at the default), but its item stays held until the full lease
-(600s). Step 10 needs ~2.5 min for the first and ~10 for the second. That gap is deliberate:
-show the death at once, keep the half-finished work reserved in case the process is merely
-wedged.
+**4. Presence and item-reclaim run on different clocks.** An agent reads `offline` after
+`lease_seconds / 4` (150s at the default), but its item stays held until the full lease (600s).
+Step 10 needs ~2.5 min for the first and ~10 for the second. That gap is deliberate: show the
+death at once, keep the half-finished work reserved in case the process is merely wedged.
 
 ---
 
@@ -63,7 +67,7 @@ wedged.
 
 | # | Step | Expected | Result |
 | --- | --- | --- | --- |
-| 1 | Onboard 4 agents from the Fleet view | 4 keys, each single-role, 24h expiry, wave-tagged | |
+| 1 | Issue a wave of 4 seats | 4 seats, one per agent, 30-min expiry, each `unused` | ✅ (as keys, pre-PRD-19) |
 | 2 | Each terminal registers | Roster shows 4 distinct ids, correct roles, counts broken out by role | |
 | 3 | A worker calls `update_item(status="done")` | `unauthorized` naming `reviewer`; item stays `review`; refusal in Activity with the human principal | |
 | 4 | Two workers `claim_cluster` concurrently | Zero shared touch-areas between the held clusters | |
@@ -74,7 +78,7 @@ wedged.
 | 8 | Re-task a live worker → reviewer | Takes effect on its **next poll**; no reconnect; Fleet view shows the directive pending, then acked | |
 | 9 | Reviewer bounces an item | Returns to `next`, invisible to other workers until the pin lapses (one lease), then claimable by any | |
 | 10 | Kill a worker mid-lease | `offline` within ~150s; item back to `next` at ~600s; reservation expired; orphaned branch flagged in its row | |
-| 11 | **End wave** | This wave's keys revoked; leases and reservations released; **a hand-minted key untouched** | |
+| 11 | **End wave** | This wave's SEATS revoked; leases and reservations released; **your credential still authenticates** and the config is untouched; live agents get a `session_expired` directive on their next poll | |
 
 **New since the PRD was written — worth checking too:**
 
@@ -83,7 +87,7 @@ wedged.
 | 12 | Have an orchestrator spawn a subagent that registers with `parent_agent_id` | The subagent cannot `claim_review` or `sign_off` its parent's work | |
 | 13 | Two terminals on **one** key, same machine, both reporting `host` | Neither can review the other; the reason says to mint a per-role credential | |
 | 14 | A worker calls `claim_cluster(wait_seconds=60)` on an empty backlog | Parks; returns within the window when work appears; **one** tool call, not twelve | |
-| 15 | Mint an **all-in-one** credential and register on it | Roster shows it as `all-in-one`, posture reads `single-agent — you are the reviewer`, and it can take an item to `done` itself | |
+| 15 | Register with **no seat at all** | Roster shows `all-in-one` and `not enrolled`, posture reads `single-agent — you are the reviewer`, and it can take an item to `done` itself | ✅ (as an all-in-one key) |
 
 ---
 
@@ -97,19 +101,22 @@ client reports — if it reports anything — is unknown. If step 6 shows a same
 where a cross-vendor one was available, the cause is almost certainly the *string*, not the
 preference logic.
 
-**`host` is self-reported and nothing has ever reported it.** The independence rule in steps
-12–13 depends on it, and D8's prompts ask for it — but a human pasting a prompt may not
-substitute the placeholder. If step 13 permits a review it should refuse, check whether both
-agents actually sent a `host`. An absent host deliberately does **not** count as a match.
+**`host` was predicted to be the weak point — and it half resolved itself.** A real Grok
+client DID report one (`vicious-apogee`), so the prediction that nothing would was wrong. Two
+things then changed underneath it: GRPH-365 reversed the polarity, so an **absent** host is now
+restrictive rather than permissive (the old note here said the opposite, and that note was the
+bug), and PRD-19 made independence derive from the SEAT. With seats, `host` is only consulted
+for un-enrolled agents — so step 13 now tests a narrower thing than it was written for.
 
 **`wait_seconds` has never parked against a real network.** Only an injected clock. A proxy or
 client timeout shorter than 60s would sever the request, and the agent would see a transport
 error rather than an empty answer.
 
-**The directive downlink has never reached a real client.** Step 8 assumes an agent notices a
-`directive` field on a response it was making anyway. Whether a real client's loop *acts* on
-it depends on the prompt being followed, which is exactly the kind of thing that works in
-principle and not in a terminal.
+**The directive downlink has never reached a real client, and now carries two message
+types.** Step 8's `role_change` and step 11's `session_expired` are equally unproven: both
+assume an agent notices a `directive` field on a response it was making anyway, and acts on it.
+Whether a real client's loop does depends on the prompt being followed — exactly the kind of
+thing that works in principle and not in a terminal. This is still the one I would bet against.
 
 ---
 
