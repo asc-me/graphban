@@ -29,6 +29,33 @@ REPO = Path(__file__).resolve().parents[1]
 AGENTS_MD = REPO / "AGENTS.md"
 TOOLCHAINS = ("cursor", "claude", "codex")
 
+# ---- the Cursor plugin (GRPH-364) -------------------------------------------------------
+#
+# Cursor stores ONE MCP config and reuses it across every agent, so the per-role credential the
+# fleet posture depends on has nowhere to live: one key for everybody, and `independent()` then
+# refuses every review because author and reviewer match on credential AND host.
+#
+# Per-worktree config files would fix it and cost four setups per wave, which nobody does
+# twice. Cursor interpolates env vars into header values, so instead ONE config names three
+# servers and only the three values rotate per wave.
+#
+# Emitted as a plugin because a plugin bundles the MCP servers AND the role agents, so the
+# whole fleet installs once by symlinking into ~/.cursor/plugins/local/. The same `mcp.json` is
+# valid as `.cursor/mcp.json`, deliberately: the plugin docs do not separately specify a schema
+# for remote servers, so if plugin loading does not pick it up the fallback is a copy rather
+# than a rewrite.
+PLUGIN_DIR = ".cursor/plugins/graphban"
+WAVE_ROLES = ("planner", "worker", "reviewer")
+# MUST match web/src/features/fleet/wave.ts. A rename on one side makes the Fleet view's
+# pasted block stop matching this config, which reads as "the key is wrong" rather than "the
+# name is" — a test asserts the two agree.
+ROLE_ENV = {
+    "planner": "GRAPHBAN_PLANNER_KEY",
+    "worker": "GRAPHBAN_WORKER_KEY",
+    "reviewer": "GRAPHBAN_REVIEWER_KEY",
+}
+PLUGIN_URL_PLACEHOLDER = "http://localhost:8000/api/mcp"
+
 # The roster carries a portable `tier` ("frontier" | "cheap"); each toolchain
 # emitter maps it to that tool's own native model knob. Repin here — the prompt
 # bodies never change.
@@ -614,6 +641,85 @@ overlap.
 """
 
 
+def render_plugin_files() -> dict[str, str]:
+    """The Cursor plugin: manifest, the three-server MCP config, and the fleet role agents."""
+    import json
+
+    manifest = {
+        "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+        "name": "graphban",
+        "version": "1.0.0",
+        "description": (
+            "Graphban fleet: three role-narrowed MCP credentials and the agents that use "
+            "them, so one Cursor install can run a planner, a worker and a reviewer."
+        ),
+        "author": {"name": "Graphban"},
+        "keywords": ["graphban", "fleet", "mcp"],
+    }
+    servers = {
+        f"graphban-{role}": {
+            "url": PLUGIN_URL_PLACEHOLDER,
+            "headers": {"X-API-Key": "${env:%s}" % ROLE_ENV[role]},
+        }
+        for role in WAVE_ROLES
+    }
+    files = {
+        f"{PLUGIN_DIR}/plugin.json": json.dumps(manifest, indent=2) + "\n",
+        f"{PLUGIN_DIR}/mcp.json": json.dumps({"mcpServers": servers}, indent=2) + "\n",
+        f"{PLUGIN_DIR}/README.md": render_plugin_readme(),
+    }
+    # The role agents ride along, so installing the plugin installs the fleet. Same bodies as
+    # `.cursor/agents/` — one roster, rendered once.
+    ext, render = RENDERERS["cursor"]
+    for role in FLEET_ROSTER:
+        files[f"{PLUGIN_DIR}/agents/{role['name']}{ext}"] = render(role)
+    return files
+
+
+def render_plugin_readme() -> str:
+    exports = "\n".join(f"export {ROLE_ENV[r]}=<{r} key from the Fleet view>" for r in WAVE_ROLES)
+    return f"""# Graphban for Cursor (generated)
+
+{GENERATED_NOTE}
+
+Cursor stores **one** MCP config and reuses it across every agent, so a per-role credential
+has nowhere to live: one key for everybody, and the server then refuses every review, because
+a reviewer that shares its author's credential *and* host is not a second opinion.
+
+This plugin names **three** servers whose keys come from the environment. The config is
+written once; only the three values rotate per wave.
+
+## Install
+
+    ln -s "$(pwd)/{PLUGIN_DIR}" ~/.cursor/plugins/local/graphban
+
+Then restart Cursor.
+
+## Each wave
+
+Mint the wave in the Fleet view — it emits exactly this block — and export it before starting
+Cursor, so the values are in the environment Cursor inherits:
+
+    {exports.replace(chr(10), chr(10) + "    ")}
+
+Edit `mcp.json` once if your server is not at `{PLUGIN_URL_PLACEHOLDER}`.
+
+## What this does and does not guarantee
+
+Each server carries a genuinely role-narrowed credential, so a worker that reaches for
+`sign_off` is refused, and a reviewer signing a worker's item counts as independent because
+the credentials differ.
+
+**Cursor cannot scope an MCP server to one agent.** Every agent sees all three, so an agent
+that deliberately switches servers can still sign off its own work. What this changes is the
+default: sharing one unrestricted key refuses nothing, and here the wrong call fails unless
+somebody goes out of their way. Treat it as coordination, not as an adversarial boundary.
+
+If Cursor does not load `mcp.json` from the plugin, copy it to `~/.cursor/mcp.json` — it is
+the same file and valid in both places.
+"""
+
+
 def render_files() -> dict[str, str]:
     """Return {relative_path: content} for every generated file, all toolchains."""
     agents_md = AGENTS_MD.read_text()
@@ -636,6 +742,7 @@ def render_files() -> dict[str, str]:
         # staleness gate. PRD-17 §9: the client half gets EXTENDED, not replaced.
         for role in ROSTER + FLEET_ROSTER:
             files[f".{tool}/agents/{role['name']}{ext}"] = render(role)
+    files.update(render_plugin_files())
     return files
 
 
