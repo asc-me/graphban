@@ -310,7 +310,15 @@ export function FleetView() {
           )}
         </Section>
 
-        <Section title="Onboard an agent" desc="Pick a role and a client; paste the two snippets. That is the whole of it.">
+        <Section
+          title="Onboard one agent with its own credential"
+          desc="The older route: a credential narrowed to one role. Seats above are the recommended path — this stays because a role-narrowed key still works and some setups are built on one."
+        >
+          {/* NOT deleted with the rest of PRD-19 E8, deliberately. G6 says nothing that works
+              today stops working, and a role-narrowed credential still does — the API is
+              unchanged and this repo's own tests use one. What was wrong was having two routes
+              with nothing saying which to reach for, so the ambiguity is resolved by NAMING
+              the order rather than by removing the option out from under anyone. */}
           <div className="mb-3 flex flex-wrap gap-2">
             {/* `all-in-one` is offered beside the three because the roster REPORTS it — a
                 page that counts a posture it cannot create names a category the reader has no
