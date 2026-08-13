@@ -9,7 +9,7 @@ import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useFleet } from "@/lib/queries";
-import { cursorWaveConfig, envBlock, WAVE_ROLES, type WaveRole } from "./wave";
+import { cursorWaveConfig, WAVE_ROLES, type WaveRole } from "./wave";
 import type { FleetAgent } from "@/lib/types";
 
 /**
@@ -330,7 +330,7 @@ export function FleetView() {
 
         <Section
           title="Provision a whole wave"
-          desc="For a client that stores ONE MCP config and reuses it — Cursor, notably. Three servers, three keys, one config that is written once."
+          desc="For a client that stores ONE MCP config and reuses it — Cursor, notably. Three servers, three role-narrowed keys, one file."
         >
           {/* The problem this exists for: Cursor has no per-agent MCP scoping, so every agent
               shares one credential — and `independent()` then refuses every review, because
@@ -343,17 +343,21 @@ export function FleetView() {
           </Button>
           {waveKeys && (
             <div className="mt-3 space-y-2">
-              <CopyRow label="1. Per wave — export these (shown once)" value={envBlock(waveKeys)} />
               <CopyRow
-                label="2. Once ever — ~/.cursor/mcp.json (or a plugin's mcp.json)"
-                value={cursorWaveConfig(`${window.location.origin}/api/mcp`)}
+                label="~/.cursor/mcp.json — replaces the file, keys included (shown once)"
+                value={cursorWaveConfig(`${window.location.origin}/api/mcp`, waveKeys)}
               />
               <p className="px-1 text-[11px] text-faint">
                 Each server carries a role-narrowed key, so a worker reaching for{" "}
-                <span className="font-mono">sign_off</span> is refused and a reviewer signing a
-                worker&apos;s item is independent. Cursor cannot scope a server to one agent, so an
-                agent that deliberately switches servers can still sign its own work — the
-                default is safe, the ceiling is not absolute.
+                <span className="font-mono">sign_off</span> is refused, and a reviewer signing a
+                worker&apos;s item is independent because the credentials differ. Cursor cannot
+                scope a server to one agent, so an agent that deliberately switches servers can
+                still sign its own work — the default is safe, the ceiling is not absolute.
+              </p>
+              <p className="px-1 text-[11px] text-faint">
+                The keys are literal because Cursor does not interpolate environment variables
+                here — probed, with the variables present: the entry is silently dropped rather
+                than sent. So this file is regenerated each wave rather than written once.
               </p>
             </div>
           )}

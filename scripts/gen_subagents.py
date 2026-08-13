@@ -33,17 +33,17 @@ TOOLCHAINS = ("cursor", "claude", "codex")
 #
 # Cursor stores ONE MCP config and reuses it across every agent, so the per-role credential the
 # fleet posture depends on has nowhere to live: one key for everybody, and `independent()` then
-# refuses every review because author and reviewer match on credential AND host.
+# refuses every review.
 #
-# Per-worktree config files would fix it and cost four setups per wave, which nobody does
-# twice. Cursor interpolates env vars into header values, so instead ONE config names three
-# servers and only the three values rotate per wave.
+# This shipped once assuming `${env:VAR}` interpolation, and that was wrong. Probed against
+# Cursor 3.16.2 with the variables provably in the process environment: `${env:VAR}`, `${VAR}`
+# and `$VAR` were all ignored in `url` and `headers` alike, and the entry was silently DROPPED
+# rather than sent as a literal — no request, no 401, nothing to debug. So a plugin cannot ship
+# a working `mcp.json`: the credentials are per-install and there is no way to reference them.
 #
-# Emitted as a plugin because a plugin bundles the MCP servers AND the role agents, so the
-# whole fleet installs once by symlinking into ~/.cursor/plugins/local/. The same `mcp.json` is
-# valid as `.cursor/mcp.json`, deliberately: the plugin docs do not separately specify a schema
-# for remote servers, so if plugin loading does not pick it up the fallback is a copy rather
-# than a rewrite.
+# The plugin therefore ships the AGENTS, which is the half that is the same for everybody, and
+# the Fleet view emits the config with the keys in it. Cursor holds several server entries with
+# different literal headers perfectly well, so roles stay ENFORCED rather than advisory.
 PLUGIN_DIR = ".cursor/plugins/graphban"
 WAVE_ROLES = ("planner", "worker", "reviewer")
 # MUST match web/src/features/fleet/wave.ts. A rename on one side makes the Fleet view's
@@ -101,7 +101,11 @@ you from colliding with them; your job is to follow the loop and not fight it.
 ## Start
 
 1. `register_agent(label="<model> @ <host>:<worktree>",
-   capabilities={"vendor": "<vendor>", "host": "<hostname>"}, worktree=..., branch=...)`.
+   capabilities={"vendor": "<vendor>", "host": "<hostname>", "instance": "<unique per agent>"},
+   worktree=..., branch=...)`. **`instance` must differ for every agent sharing a credential**
+   — on one key an agent that declares nothing that differs is refused review, because absence
+   is not a difference. In a client that stores one MCP config for everything (Cursor), this
+   tag is the only thing that tells you apart.
    **Do this before anything else.** An agent that
    claims without registering is invisible to the roster and ungoverned — and two
    terminals sharing a key are two agents only if both register.
@@ -156,7 +160,8 @@ whether somebody else's work is done, and you are the only agent that can.
 
 ## Start
 
-`register_agent(label=..., capabilities={"vendor": "<vendor>", "host": "<hostname>"},
+`register_agent(label=..., capabilities={"vendor": "<vendor>", "host": "<hostname>",
+"instance": "<unique per agent>"},
 role_hint="reviewer")`.
 
 **Report `host` honestly.** Review across two windows of one model on one machine sharing one
@@ -211,7 +216,7 @@ what. You do not build.
 
 ## Start
 
-`register_agent(label=..., role_hint="planner")`.
+`register_agent(label=..., capabilities={"instance": "<unique per agent>"}, role_hint="planner")`.
 
 ## Loop
 
@@ -642,7 +647,13 @@ overlap.
 
 
 def render_plugin_files() -> dict[str, str]:
-    """The Cursor plugin: manifest, the three-server MCP config, and the fleet role agents."""
+    """The Cursor plugin: manifest, README, and the fleet role agents.
+
+    Deliberately NO `mcp.json`. Credentials are per-install, Cursor does not interpolate them
+    from the environment, and a committed file cannot carry them — so the config comes from the
+    Fleet view, which has the keys at mint time. Shipping a placeholder `mcp.json` here would
+    be a generated file every user has to hand-edit, which is what `--check` exists to prevent.
+    """
     import json
 
     manifest = {
@@ -650,26 +661,16 @@ def render_plugin_files() -> dict[str, str]:
         "name": "graphban",
         "version": "1.0.0",
         "description": (
-            "Graphban fleet: three role-narrowed MCP credentials and the agents that use "
-            "them, so one Cursor install can run a planner, a worker and a reviewer."
+            "Graphban fleet roles for Cursor. Mint a wave in the Fleet view for the MCP "
+            "config; this ships the agents that use it."
         ),
         "author": {"name": "Graphban"},
         "keywords": ["graphban", "fleet", "mcp"],
     }
-    servers = {
-        f"graphban-{role}": {
-            "url": PLUGIN_URL_PLACEHOLDER,
-            "headers": {"X-API-Key": "${env:%s}" % ROLE_ENV[role]},
-        }
-        for role in WAVE_ROLES
-    }
     files = {
         f"{PLUGIN_DIR}/plugin.json": json.dumps(manifest, indent=2) + "\n",
-        f"{PLUGIN_DIR}/mcp.json": json.dumps({"mcpServers": servers}, indent=2) + "\n",
         f"{PLUGIN_DIR}/README.md": render_plugin_readme(),
     }
-    # The role agents ride along, so installing the plugin installs the fleet. Same bodies as
-    # `.cursor/agents/` — one roster, rendered once.
     ext, render = RENDERERS["cursor"]
     for role in FLEET_ROSTER:
         files[f"{PLUGIN_DIR}/agents/{role['name']}{ext}"] = render(role)
@@ -677,46 +678,54 @@ def render_plugin_files() -> dict[str, str]:
 
 
 def render_plugin_readme() -> str:
-    exports = "\n".join(f"export {ROLE_ENV[r]}=<{r} key from the Fleet view>" for r in WAVE_ROLES)
     return f"""# Graphban for Cursor (generated)
 
 {GENERATED_NOTE}
 
-Cursor stores **one** MCP config and reuses it across every agent, so a per-role credential
-has nowhere to live: one key for everybody, and the server then refuses every review, because
-a reviewer that shares its author's credential *and* host is not a second opinion.
+Cursor stores **one** MCP config and reuses it across every agent, so a per-role credential has
+nowhere to live: one key for everybody, and the server then refuses every review — a reviewer
+sharing its author's credential is not a second opinion.
 
-This plugin names **three** servers whose keys come from the environment. The config is
-written once; only the three values rotate per wave.
+Cursor *does* hold several server entries with different keys. So the fleet works there, with
+one config naming three role-narrowed credentials.
 
 ## Install
 
     ln -s "$(pwd)/{PLUGIN_DIR}" ~/.cursor/plugins/local/graphban
 
-Then restart Cursor.
+Then restart Cursor. This ships the role **agents**; the MCP config comes from the Fleet view.
 
 ## Each wave
 
-Mint the wave in the Fleet view — it emits exactly this block — and export it before starting
-Cursor, so the values are in the environment Cursor inherits:
+**Fleet view -> Provision a whole wave.** It mints planner, worker and reviewer credentials and
+emits the whole `~/.cursor/mcp.json` with the keys in it. Paste, restart Cursor.
 
-    {exports.replace(chr(10), chr(10) + "    ")}
+There is no environment-variable form. Cursor does not interpolate `${{env:VAR}}`, `${{VAR}}` or
+`$VAR` in `mcp.json` — probed against 3.16.2 with the variables present in the process
+environment, and the entry is silently **dropped** rather than sent as a literal. A config that
+looks right and connects nothing is worse than one you regenerate each wave.
 
-Edit `mcp.json` once if your server is not at `{PLUGIN_URL_PLACEHOLDER}`.
+Wave credentials expire, and **End wave** revokes them — which is what makes keys in a config
+file an acceptable trade here.
+
+## If you must share one credential
+
+Then roles are advisory, and every agent has to declare who it is:
+
+    register_agent(label=..., capabilities={{"instance": "<unique per agent>"}}, role_hint=...)
+
+On one credential an agent that declares nothing that differs is refused review. That is
+deliberate: absence is not a difference, or omitting a field would launder a self-review.
 
 ## What this does and does not guarantee
 
-Each server carries a genuinely role-narrowed credential, so a worker that reaches for
-`sign_off` is refused, and a reviewer signing a worker's item counts as independent because
-the credentials differ.
+With a wave, each server carries a genuinely role-narrowed credential, so a worker reaching for
+`sign_off` is refused and a reviewer signing a worker's item is independent.
 
-**Cursor cannot scope an MCP server to one agent.** Every agent sees all three, so an agent
-that deliberately switches servers can still sign off its own work. What this changes is the
-default: sharing one unrestricted key refuses nothing, and here the wrong call fails unless
-somebody goes out of their way. Treat it as coordination, not as an adversarial boundary.
-
-If Cursor does not load `mcp.json` from the plugin, copy it to `~/.cursor/mcp.json` — it is
-the same file and valid in both places.
+**Cursor cannot scope an MCP server to one agent.** Every agent sees all three, so one that
+deliberately switches servers can still sign off its own work. What changes is the default:
+sharing one unrestricted key refuses nothing, and here the wrong call fails unless somebody
+goes out of their way. Treat it as coordination, not as an adversarial boundary.
 """
 
 

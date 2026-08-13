@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "graphban",
   "version": "1.0.0",
-  "description": "Graphban fleet: three role-narrowed MCP credentials and the agents that use them, so one Cursor install can run a planner, a worker and a reviewer.",
+  "description": "Graphban fleet roles for Cursor. Mint a wave in the Fleet view for the MCP config; this ships the agents that use it.",
   "author": {
     "name": "Graphban"
   },

@@ -65,13 +65,15 @@ SABOTAGE = {"kind": "sabotage", "claim": "the veto holds back an accept",
 
 def _ready_for_review(client, key, effort):
     """An item built by one agent and waiting for another — the state a reviewer acts on."""
-    worker = _ok(client, key, "register_agent", {"label": "w"})
+    worker = _ok(client, key, "register_agent",
+                 {"label": "w", "capabilities": {"instance": "w"}})
     made = _ok(client, key, "create_item",
                {"title": "some work", "status": "next", "effort": effort})
     c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
     _ok(client, key, "update_item",
         {"id": c["item"]["id"], "status": "review", "agent_id": worker["agent_id"]})
-    reviewer = _ok(client, key, "register_agent", {"label": "r", "role_hint": "reviewer"})
+    reviewer = _ok(client, key, "register_agent",
+                   {"label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
     return c["item"]["id"], reviewer
 
 

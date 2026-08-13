@@ -5,40 +5,47 @@
 > Emitted **natively** per toolchain — Cursor & Claude Code get Markdown + their
 > own frontmatter; Codex gets a TOML role file. One source, native output per tool.
 
-Cursor stores **one** MCP config and reuses it across every agent, so a per-role credential
-has nowhere to live: one key for everybody, and the server then refuses every review, because
-a reviewer that shares its author's credential *and* host is not a second opinion.
+Cursor stores **one** MCP config and reuses it across every agent, so a per-role credential has
+nowhere to live: one key for everybody, and the server then refuses every review — a reviewer
+sharing its author's credential is not a second opinion.
 
-This plugin names **three** servers whose keys come from the environment. The config is
-written once; only the three values rotate per wave.
+Cursor *does* hold several server entries with different keys. So the fleet works there, with
+one config naming three role-narrowed credentials.
 
 ## Install
 
     ln -s "$(pwd)/.cursor/plugins/graphban" ~/.cursor/plugins/local/graphban
 
-Then restart Cursor.
+Then restart Cursor. This ships the role **agents**; the MCP config comes from the Fleet view.
 
 ## Each wave
 
-Mint the wave in the Fleet view — it emits exactly this block — and export it before starting
-Cursor, so the values are in the environment Cursor inherits:
+**Fleet view -> Provision a whole wave.** It mints planner, worker and reviewer credentials and
+emits the whole `~/.cursor/mcp.json` with the keys in it. Paste, restart Cursor.
 
-    export GRAPHBAN_PLANNER_KEY=<planner key from the Fleet view>
-    export GRAPHBAN_WORKER_KEY=<worker key from the Fleet view>
-    export GRAPHBAN_REVIEWER_KEY=<reviewer key from the Fleet view>
+There is no environment-variable form. Cursor does not interpolate `${env:VAR}`, `${VAR}` or
+`$VAR` in `mcp.json` — probed against 3.16.2 with the variables present in the process
+environment, and the entry is silently **dropped** rather than sent as a literal. A config that
+looks right and connects nothing is worse than one you regenerate each wave.
 
-Edit `mcp.json` once if your server is not at `http://localhost:8000/api/mcp`.
+Wave credentials expire, and **End wave** revokes them — which is what makes keys in a config
+file an acceptable trade here.
+
+## If you must share one credential
+
+Then roles are advisory, and every agent has to declare who it is:
+
+    register_agent(label=..., capabilities={"instance": "<unique per agent>"}, role_hint=...)
+
+On one credential an agent that declares nothing that differs is refused review. That is
+deliberate: absence is not a difference, or omitting a field would launder a self-review.
 
 ## What this does and does not guarantee
 
-Each server carries a genuinely role-narrowed credential, so a worker that reaches for
-`sign_off` is refused, and a reviewer signing a worker's item counts as independent because
-the credentials differ.
+With a wave, each server carries a genuinely role-narrowed credential, so a worker reaching for
+`sign_off` is refused and a reviewer signing a worker's item is independent.
 
-**Cursor cannot scope an MCP server to one agent.** Every agent sees all three, so an agent
-that deliberately switches servers can still sign off its own work. What this changes is the
-default: sharing one unrestricted key refuses nothing, and here the wrong call fails unless
-somebody goes out of their way. Treat it as coordination, not as an adversarial boundary.
-
-If Cursor does not load `mcp.json` from the plugin, copy it to `~/.cursor/mcp.json` — it is
-the same file and valid in both places.
+**Cursor cannot scope an MCP server to one agent.** Every agent sees all three, so one that
+deliberately switches servers can still sign off its own work. What changes is the default:
+sharing one unrestricted key refuses nothing, and here the wrong call fails unless somebody
+goes out of their way. Treat it as coordination, not as an adversarial boundary.

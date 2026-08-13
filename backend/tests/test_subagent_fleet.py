@@ -100,44 +100,30 @@ def _plugin(name):
     return gen.render_files()[f"{gen.PLUGIN_DIR}/{name}"]
 
 
-def test_the_plugin_declares_one_server_per_role_each_with_its_own_key():
-    """The whole point. One server with one key is what Cursor already does, and it is what
-    makes every review non-independent — author and reviewer sharing a credential and a host
-    are not two opinions."""
-    import json
+def test_the_plugin_ships_no_mcp_config_at_all():
+    """It cannot. Credentials are per-install, and Cursor does not interpolate them from the
+    environment — probed against 3.16.2 with the variables present: `${env:VAR}`, `${VAR}` and
+    `$VAR` are all ignored and the entry is silently DROPPED rather than sent as a literal.
 
+    So a committed `mcp.json` here could only be a placeholder every user hand-edits — a
+    generated file that must be modified, which is precisely what `--check` exists to prevent.
+    The Fleet view emits the config instead, because it has the keys at mint time."""
     gen = _load_generator()
-    servers = json.loads(_plugin("mcp.json"))["mcpServers"]
+    files = gen.render_files()
 
-    assert set(servers) == {f"graphban-{r}" for r in gen.WAVE_ROLES}
-    keys = [s["headers"]["X-API-Key"] for s in servers.values()]
-    assert len(set(keys)) == len(keys), "two roles pointing at one credential defeats this"
-
-
-def test_the_plugin_never_carries_a_credential():
-    """It is committed, and it is meant to be shared. Every key is an env reference, which is
-    also what makes the config write-once: only the values rotate per wave."""
-    import json
-
-    servers = json.loads(_plugin("mcp.json"))["mcpServers"]
-
-    for name, s in servers.items():
-        val = s["headers"]["X-API-Key"]
-        assert val.startswith("${env:"), f"{name} inlines a key instead of referencing one"
-        assert "gb_sk_" not in val and "al_sk_" not in val
+    assert not any(f.endswith("mcp.json") for f in files), \
+        "a shipped mcp.json is either credential-bearing or broken"
 
 
-def test_the_plugin_env_names_match_the_fleet_view():
-    """THE drift that would waste an afternoon. The Fleet view emits the export block and this
-    file consumes it; if a name changes on one side the credential is simply never read, and
-    the failure presents as `unauthorized` — which reads as a bad key rather than a bad name.
-    Two languages, no shared module, so the agreement is asserted rather than assumed."""
+def test_no_orphan_survives_in_the_plugin_directory():
+    """`--check` verifies that every generated file is current; nothing noticed a file that
+    STOPPED being generated. The broken `mcp.json` sat here after being dropped from the
+    generator, and a stale config is worse than a missing one — it silently connects nothing."""
     gen = _load_generator()
-    wave_ts = (REPO / "web" / "src" / "features" / "fleet" / "wave.ts").read_text()
+    expected = {f.split("/")[-1] for f in gen.render_files() if f.startswith(gen.PLUGIN_DIR)}
+    on_disk = {p.name for p in (REPO / gen.PLUGIN_DIR).iterdir() if p.is_file()}
 
-    for role, env_name in gen.ROLE_ENV.items():
-        assert env_name in wave_ts, f"{role}: {env_name} is not the name the Fleet view exports"
-        assert f'"{env_name}"' in wave_ts or f"{env_name}" in wave_ts
+    assert on_disk <= expected, f"orphaned generated file(s): {sorted(on_disk - expected)}"
 
 
 def test_the_plugin_ships_the_fleet_agents_so_installing_it_installs_the_fleet():
