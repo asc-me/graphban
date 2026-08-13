@@ -2663,10 +2663,26 @@ _PROSE_SECTIONS = {
 }
 
 
+# A leading section NUMBER, which carries no meaning for classification. Requires a real
+# separator (`1. ` / `2.1) `) so a heading that genuinely starts with digits — "2xx responses" —
+# keeps them.
+_SECTION_NUMBER = re.compile(r"^\s*\d+(?:\.\d+)*[.)]\s+")
+
+
 def _section_key(title: str) -> str:
-    """Normalize a heading for classification: drop parentheticals, then keep only
-    alphanumerics — so "Non-goals (v1)", "Non Goals", and "nongoals" all agree."""
-    return re.sub(r"[^a-z0-9]+", "", re.sub(r"\(.*?\)", " ", title or "").lower())
+    """Normalize a heading for classification: drop a leading section number and any
+    parentheticals, then keep only alphanumerics — so "Non-goals (v1)", "Non Goals",
+    "7. Non-goals" and "nongoals" all agree.
+
+    **The number used to survive**, and it silently defeated the whole classification: every
+    PRD in this repo numbers its headings, so "1. Overview" keyed as `1overview`, missed
+    `_PROSE_SECTIONS`, and was treated as buildable. That put framing prose into
+    `decompose_prd`'s proposals AND — worse, because it is a number somebody reads — counted
+    Overview, Goals and Non-goals as sections owing delivery in the PRD-12 completeness
+    rollups. An unnumbered PRD classified correctly, so nothing looked wrong.
+    """
+    cleaned = _SECTION_NUMBER.sub("", title or "")
+    return re.sub(r"[^a-z0-9]+", "", re.sub(r"\(.*?\)", " ", cleaned).lower())
 
 
 def is_implementable_section(title: str) -> bool:

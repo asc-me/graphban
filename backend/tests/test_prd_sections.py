@@ -57,6 +57,42 @@ def test_buildable_sections_are_implementable(title):
     assert is_implementable_section(title) is True
 
 
+@pytest.mark.parametrize("title", [
+    "1. Overview", "2. Goals", "7. Non-goals", "8. Risks and open questions",
+    "1.2) Background", "10. Open questions", "3. Success criteria",
+])
+def test_a_numbered_framing_section_is_still_framing(title):
+    """The number carries no meaning and used to survive normalisation, which silently
+    defeated the whole classification: EVERY PRD in this repo numbers its headings, so
+    "1. Overview" keyed as `1overview`, missed the prose set, and read as buildable.
+
+    Two consequences, and the second is the expensive one. `decompose_prd` proposed
+    "Implement: 1. Overview" — visible noise a human would catch. But the same predicate feeds
+    PRD-12's completeness rollups, so Overview, Goals and Non-goals were counted as sections
+    OWING DELIVERY, understating completeness with a number nobody could see was wrong. An
+    unnumbered PRD classified correctly, so nothing ever looked broken."""
+    assert is_implementable_section(title) is False
+
+
+@pytest.mark.parametrize("title,key", [
+    ("2xx responses", "2xxresponses"),
+    ("3D export", "3dexport"),
+    ("0-downtime migration", "0downtimemigration"),
+])
+def test_a_heading_that_genuinely_starts_with_digits_keeps_them(title, key):
+    """The strip requires a real separator (`1. ` / `2.1) `), so a section actually named
+    after a number is untouched.
+
+    Asserted on the KEY, not on implementability — which is the version that works. An
+    over-eager strip renames "2xx responses" to "xx responses", and BOTH are implementable, so
+    a check on the classification passes while the section quietly changes what it is about.
+    That first draft passed against exactly this sabotage."""
+    from app.services.prds import _section_key
+
+    assert _section_key(title) == key
+    assert is_implementable_section(title) is True
+
+
 def _make_prd(client, auth):
     r = client.post("/api/prds", json={"title": "Widget PRD", "body": BODY, "project_id": "core"},
                     headers=auth)
