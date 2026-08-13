@@ -162,7 +162,10 @@ def test_the_confirm_can_name_the_damage_before_acting(client, auth, proj):
 
     preview = client.get(f"/api/fleet/end-wave?project_id={proj}&wave=w1", headers=auth).json()
 
-    assert preview == {"keys": 1, "agents": 1, "leases": 1, "reservations": 0}
+    # Exact equality on purpose: a confirm that silently gains a field is a confirm naming
+    # damage nobody reviewed. `seats` arrived with PRD-19 — this wave is a legacy key-based
+    # one, so it owns none.
+    assert preview == {"keys": 1, "seats": 0, "agents": 1, "leases": 1, "reservations": 0}
 
 
 def test_ending_one_wave_does_not_end_another(client, auth, proj, db):

@@ -422,3 +422,125 @@ def test_issuing_no_roles_is_refused(client, auth, proj):
     r = client.post("/api/fleet/seats", json={"project_id": proj, "roles": []}, headers=auth)
 
     assert r.status_code == 422
+
+
+# ---- E5: End wave expires sessions, not credentials -------------------------------------------
+
+def _end_wave(client, auth, proj, wave="w1"):
+    return client.post("/api/fleet/end-wave",
+                       json={"project_id": proj, "wave": wave}, headers=auth).json()
+
+
+def test_ending_a_wave_leaves_the_credential_authenticating(client, auth, proj, key, db):
+    """THE property that lets a credential stop being per-wave, and the whole reason PRD-19
+    is worth building. Before this, ending a wave revoked keys — so the config in every client
+    had to be rewritten next time. Now the config is untouched and only the grant goes away."""
+    seats = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
+                        headers=auth).json()["seats"]
+    _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+
+    _end_wave(client, auth, proj)
+
+    # The same credential still works — it can still register, on a fresh seat.
+    fresh = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w2", "roles": ["worker"]},
+                        headers=auth).json()["seats"][0]
+    me = _ok(client, key, "register_agent", {"label": "w2", "enrolment_code": fresh["code"]})
+    assert me["active_role"] == "worker"
+
+
+def test_an_expired_session_loses_its_role_without_losing_its_identity(client, auth, proj, key, db):
+    """The seat is the grant, so revoking it removes the role — but `active_role` still records
+    what the agent held, and the agent row stays. Rewriting the role would destroy the only
+    account of what the fleet was doing when it was stopped."""
+    from app.models import Agent
+
+    seats = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
+                        headers=auth).json()["seats"]
+    me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    _ok(client, key, "create_item", {"title": "x", "status": "next"})
+
+    _end_wave(client, auth, proj)
+
+    res = _rpc(client, key, "claim_next", {"agent_id": me["agent_id"]})
+    assert res["structuredContent"]["error"]["code"] == "unauthorized"
+    assert "enrolment" in res["structuredContent"]["error"]["message"]
+    assert db.get(Agent, me["agent_id"]).active_role == "worker", "the record survives"
+
+
+def test_the_agent_hears_about_it_on_its_next_poll(client, auth, proj, key, db):
+    """Over the EXISTING downlink — no push, no SSE, no new transport. D6's whole claim was
+    that intent travels on whatever the agent polls next, and this is the second use of it."""
+    seats = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
+                        headers=auth).json()["seats"]
+    me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+
+    _end_wave(client, auth, proj)
+
+    polled = _ok(client, key, "fleet_status", {"agent_id": me["agent_id"]})
+    assert polled["directive"]["type"] == "session_expired"
+    assert "register_agent" in polled["directive"]["next"]
+
+
+def test_the_expiry_directive_repeats_because_it_is_a_state(client, auth, proj, key, db):
+    """A role change is an EVENT and is delivered once — redelivering would have an agent
+    re-adopt a role it already holds. An expired session is a STATE that stays true until the
+    agent re-enrols, so every poll must keep saying so. Acking it once would leave a stuck
+    agent hearing nothing while every call it makes is refused."""
+    seats = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
+                        headers=auth).json()["seats"]
+    me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    _end_wave(client, auth, proj)
+
+    first = _ok(client, key, "fleet_status", {"agent_id": me["agent_id"]})
+    second = _ok(client, key, "fleet_status", {"agent_id": me["agent_id"]})
+
+    assert first["directive"]["type"] == "session_expired"
+    assert second["directive"]["type"] == "session_expired", "still true, still said"
+
+
+def test_ending_a_wave_releases_what_the_seats_held(client, auth, proj, key, db):
+    """All of it at once. A half-ended wave — grants revoked but leases still held — is the
+    genuinely confusing state: work no living agent can finish, and nothing explaining why."""
+    seats = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
+                        headers=auth).json()["seats"]
+    me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    _ok(client, key, "create_item", {"title": "held", "status": "next"})
+    got = _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
+
+    out = _end_wave(client, auth, proj)
+
+    assert out["seats_revoked"] == 1 and out["leases_released"] == 1
+    from app.models import Item
+    assert db.get(Item, got["item"]["id"]).claimed_by is None
+
+
+def test_the_preview_names_the_seats_it_will_revoke(client, auth, proj, key, db):
+    """A confirm that says "are you sure?" teaches people to click through it. The preview and
+    the act share ONE selector, so the number named is the number delivered."""
+    client.post("/api/fleet/seats",
+                json={"project_id": proj, "wave": "w1", "roles": ["worker", "reviewer"]},
+                headers=auth)
+
+    preview = client.get(f"/api/fleet/end-wave?project_id={proj}&wave=w1", headers=auth).json()
+    acted = _end_wave(client, auth, proj)
+
+    assert preview["seats"] == 2
+    assert acted["seats_revoked"] == preview["seats"]
+
+
+def test_an_unenrolled_agent_is_untouched_by_ending_a_wave(client, auth, proj, key, db):
+    """The single-agent posture is not part of any wave. Stopping it would make End wave a
+    button that halts the developer's own agent, which it never promised."""
+    me = _ok(client, key, "register_agent", {"label": "solo"})
+    _ok(client, key, "create_item", {"title": "mine", "status": "next"})
+
+    _end_wave(client, auth, proj)
+
+    out = _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
+    assert out["claimed"] is True

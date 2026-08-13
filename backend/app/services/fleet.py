@@ -368,6 +368,24 @@ WORKER_STATUS_CEILING = "review"
 _BEYOND_WORKER = ("done",)
 
 
+def seat_of(db: Session, agent: Agent | None):
+    """The enrolment an agent holds, or None."""
+    if agent is None or not agent.enrolment_id:
+        return None
+    return db.get(Enrolment, agent.enrolment_id)
+
+
+def session_expired(db: Session, agent: Agent | None) -> bool:
+    """Did this agent's SEAT stop being valid under it?
+
+    Ending a wave revokes seats rather than credentials (PRD-19 D-e), which is the whole
+    reason a credential no longer has to be per-wave: the config keeps authenticating and only
+    the grant goes away.
+    """
+    seat = seat_of(db, agent)
+    return seat is not None and enrolment_state(seat) != "consumed"
+
+
 def role_for_call(db: Session, *, api_key, agent_id: str | None) -> tuple[str, str | None]:
     """The role this call carries, and the agent it belongs to (or None).
 
@@ -379,6 +397,12 @@ def role_for_call(db: Session, *, api_key, agent_id: str | None) -> tuple[str, s
     if agent_id:
         agent = db.get(Agent, agent_id)
         if agent is not None:
+            # THE SEAT IS THE GRANT, so losing it loses the role — not by rewriting
+            # `active_role`, which stays as the record of what this agent held, but by
+            # resolving to a role no tool requires. Ending a wave therefore stops an agent
+            # working without touching the credential it authenticates with.
+            if session_expired(db, agent):
+                return "expired", agent.id
             # An all-in-one agent is unrestricted, exactly as it was before it registered.
             # Its ceiling is still the credential's, so a narrowed key cannot reach this.
             if agent.active_role == ALL_IN_ONE:
@@ -404,9 +428,20 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
     role, resolved = role_for_call(db, api_key=api_key, agent_id=agent_id)
     if role == "*":
         return
+
     who = resolved or f"key {getattr(api_key, 'name', '') or getattr(api_key, 'id', '?')}"
 
     required = TOOL_ROLES.get(tool)
+    if required and role == "expired":
+        # An expired session grants NO role, so every role-gated tool refuses — but only
+        # those. The shared reads stay open deliberately: `fleet_status` is how the agent
+        # collects the `session_expired` directive telling it to re-enrol, and refusing that
+        # too would make the remedy unreachable from inside the agent. Found by the test for
+        # the directive, which could not receive one.
+        raise authz.Forbidden(
+            f"{who}'s enrolment is no longer valid — the wave ended, or the seat was revoked "
+            f"— so {tool} has no role behind it",
+            hint="register again with a fresh enrolment code from the Fleet view")
     if required and role not in required:
         raise authz.Forbidden(
             f"{tool} requires role {' or '.join(repr(r) for r in required)}; "
@@ -1047,6 +1082,9 @@ def enrolment_state(row: Enrolment, *, now: datetime | None = None) -> str:
     if row.revoked:
         return "revoked"
     if row.consumed_at is not None:
+        # Consumed OUTRANKS expiry: the TTL bounds how long a code may be REDEEMED, not how
+        # long the session it granted may run. A worker mid-build does not lose its role
+        # thirty minutes in — ending the wave is what takes it.
         return "consumed"
     exp = row.expires_at
     if exp is not None and exp.tzinfo is None:
@@ -1122,6 +1160,17 @@ def issue_wave(db: Session, *, project_id: str, roles: list[str], wave: str,
             for r in roles]
 
 
+def _wave_seats(project_id: str | None, wave: str | None):
+    """The seats a wave owns. ONE selector, used by both the preview and the act — two would
+    let the confirm name a number the button then does not deliver."""
+    stmt = select(Enrolment).where(Enrolment.revoked.is_(False))
+    if wave:
+        stmt = stmt.where(Enrolment.wave == wave)
+    if project_id:
+        stmt = stmt.where(Enrolment.project_id == project_id)
+    return stmt
+
+
 def end_wave(db: Session, *, project_id: str | None, wave: str | None = None) -> dict:
     """Revoke a wave's keys, release every lease and reservation it holds. A hard stop.
 
@@ -1141,9 +1190,18 @@ def end_wave(db: Session, *, project_id: str | None, wave: str | None = None) ->
         stmt = stmt.where(ApiKey.project_id == project_id)
     keys = list(db.scalars(stmt).all())
 
+    # The wave's SEATS (PRD-19 D-e). This is what makes a credential no longer need to be
+    # per-wave: revoking the grant stops the agent, and the config keeps authenticating.
+    seats = list(db.scalars(_wave_seats(project_id, wave)).all())
+
     agents = []
     for k in keys:
         agents.extend(db.scalars(select(Agent).where(Agent.api_key_id == k.id)).all())
+    seat_ids = [s.id for s in seats]
+    if seat_ids:
+        for a in db.scalars(select(Agent).where(Agent.enrolment_id.in_(seat_ids))).all():
+            if a not in agents:
+                agents.append(a)
 
     released, reservations = [], 0
     for a in agents:
@@ -1159,13 +1217,16 @@ def end_wave(db: Session, *, project_id: str | None, wave: str | None = None) ->
         for row in db.scalars(
                 select(AreaReservation).where(AreaReservation.agent_id == a.id)).all():
             db.delete(row)
-        # An un-acked directive is simply dropped. Nothing ever assumed it delivered — the
-        # `assigned > acked` comparison IS the outbox — so there is nothing to reconcile.
+        # An un-acked ROLE directive is simply dropped: nothing assumed it delivered, and the
+        # role it named is moot now. The session_expired directive needs no seeding here — it
+        # is derived from the seat, so revoking the seat below IS the notification.
         a.role_acked_at = a.role_assigned_at
     for k in keys:
         k.revoked = True
+    for s in seats:
+        s.revoked = True
     db.commit()
-    return {"keys_revoked": len(keys), "agents": len(agents),
+    return {"keys_revoked": len(keys), "seats_revoked": len(seats), "agents": len(agents),
             "leases_released": len(released), "reservations_released": reservations}
 
 
@@ -1190,8 +1251,8 @@ def end_wave_preview(db: Session, *, project_id: str | None, wave: str | None = 
     reservations = len(db.scalars(
         select(AreaReservation).where(AreaReservation.agent_id.in_(agent_ids))).all()) \
         if agent_ids else 0
-    return {"keys": len(keys), "agents": len(agent_ids), "leases": leases,
-            "reservations": reservations}
+    return {"keys": len(keys), "seats": len(list(db.scalars(_wave_seats(project_id, wave)).all())),
+            "agents": len(agent_ids), "leases": leases, "reservations": reservations}
 
 
 def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
@@ -1355,13 +1416,31 @@ def assign_role(db: Session, *, agent_id: str, role: str, reason: str = "") -> A
     return agent
 
 
-def pending_directive(agent: Agent) -> dict | None:
+def pending_directive(agent: Agent, *, expired: bool = False) -> dict | None:
     """The directive an agent has not yet collected, or None.
 
     Derived from the two timestamps rather than stored as a flag, so there is no state to
     leave set after delivery — and no way for the roster and the outbox to disagree.
     """
-    if agent is None or agent.role_assigned_at is None:
+    if agent is None:
+        return None
+    if expired:
+        # Checked FIRST: an agent whose seat is gone does not care what role it was last
+        # assigned. Rides the existing outbox rather than a new channel — the whole point of
+        # D6 was that intent travels on whatever the agent polls next.
+        #
+        # **And unlike a role change, this one REPEATS, deliberately.** A role change is an
+        # EVENT and redelivering it would have an agent re-adopt a role it already holds. An
+        # expired session is a STATE: it stays true until the agent re-enrols, so every poll
+        # should keep saying so. Acking it would leave a stuck agent hearing nothing while
+        # every role-gated call it makes is refused.
+        return {
+            "type": "session_expired",
+            "role": None,
+            "reason": "the wave ended, or your seat was revoked",
+            "next": "call register_agent with a fresh enrolment_code from the Fleet view",
+        }
+    if agent.role_assigned_at is None:
         return None
     assigned, acked = agent.role_assigned_at, agent.role_acked_at
     if assigned.tzinfo is None:
@@ -1398,7 +1477,8 @@ def collect_directive(db: Session, agent_id: str | None) -> dict | None:
     if not agent_id:
         return None
     agent = db.get(Agent, agent_id)
-    directive = pending_directive(agent)
+    expired = session_expired(db, agent)
+    directive = pending_directive(agent, expired=expired)
     if directive is None:
         return None
     agent.role_acked_at = datetime.now(timezone.utc)
