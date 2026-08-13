@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import User
+from app.models import Enrolment, User
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import events as events_svc
@@ -36,6 +36,10 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
         **status,
         "review_queue": fleet_svc.review_queue(db, project_id),
         "clusters": fleet_svc.cluster_board(db, project_id),
+        # Seats ride with the roster because they are read together: "three agents online,
+        # one seat still unused" is one question, and two calls would let the page render a
+        # half-answer.
+        "seats": fleet_svc.list_enrolments(db, project_id),
     }
 
 
@@ -66,6 +70,49 @@ def mint_fleet_key(body: FleetKeyIn, db: Session = Depends(get_db),
                            meta={"role": body.role, "wave": body.wave})
     return {"id": row.id, "plaintext": plaintext, "role": body.role, "wave": body.wave,
             "expires_at": row.expires_at, "prefix": row.prefix}
+
+
+class SeatsIn(BaseModel):
+    project_id: str
+    # ONE ENTRY PER AGENT, repeats included: ["planner", "worker", "worker", "reviewer"].
+    # Two agents on one seat share a session and cannot review each other.
+    roles: list[str]
+    wave: str = "wave-1"
+
+
+@router.post("/seats", status_code=201)
+def issue_seats(body: SeatsIn, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    """Issue a wave of seats. Each code is returned ONCE."""
+    authz.require_writable(db, user.id, body.project_id)
+    if not body.roles:
+        raise HTTPException(422, "name at least one role")
+    try:
+        issued = fleet_svc.issue_wave(db, project_id=body.project_id, roles=body.roles,
+                                      wave=body.wave, issued_by=user.id)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    events_svc.record_user(db, user, action="issue_seats", target_type="project",
+                           target_id=body.project_id, project_id=body.project_id,
+                           meta={"roles": body.roles, "wave": body.wave})
+    return {"seats": [{"id": row.id, "role": row.role, "code": code,
+                       "expires_at": row.expires_at} for row, code in issued]}
+
+
+@router.post("/seats/{seat_id}/reissue", status_code=201)
+def reissue_seat(seat_id: str, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """Replace a spent seat. The dead one stays as the record that something died."""
+    row = db.get(Enrolment, seat_id)
+    if row is None:
+        raise HTTPException(404, "no such seat")
+    authz.require_writable(db, user.id, row.project_id)
+    fresh, code = fleet_svc.reissue_enrolment(db, enrolment_id=seat_id)
+    events_svc.record_user(db, user, action="reissue_seat", target_type="project",
+                           target_id=row.project_id, project_id=row.project_id,
+                           meta={"replaces": seat_id, "role": fresh.role})
+    return {"id": fresh.id, "role": fresh.role, "code": code, "expires_at": fresh.expires_at,
+            "reissued_from": seat_id}
 
 
 @router.get("/end-wave")

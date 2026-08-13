@@ -9,7 +9,7 @@ import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useFleet } from "@/lib/queries";
-import { cursorWaveConfig, WAVE_ROLES, type WaveRole } from "./wave";
+import { WAVE_ROLES } from "./wave";
 import type { FleetAgent } from "@/lib/types";
 
 /**
@@ -136,6 +136,12 @@ function AgentRow({ a }: { a: FleetAgent }) {
               )}
             </span>
           )}
+          {/* O3: a forgotten code makes an agent silently all-in-one — safe, but not a
+              fleet. The server can only report the fact; making it impossible to miss is
+              this row's job. */}
+          {!a.enrolment_id && (
+            <span className="mr-2 text-[color:var(--color-st-blocked)]">not enrolled</span>
+          )}
           {a.worktree || "no worktree"}
           {a.branch ? ` · ${a.branch}` : ""}
           {/* The fleet released the ITEM by itself. The BRANCH is state only a human can
@@ -168,8 +174,10 @@ export function FleetView() {
   const [minted, setMinted] = React.useState<{ plaintext: string; role: string } | null>(null);
   // Held in component state ONLY, and never written anywhere: these are plaintext credentials,
   // shown once, exactly like the single-role mint above.
-  const [waveKeys, setWaveKeys] = React.useState<Partial<Record<WaveRole, string>> | null>(null);
   const [minting, setMinting] = React.useState(false);
+  // Seats are plaintext, shown once, and held in component state ONLY — never persisted.
+  const [seatPlan, setSeatPlan] = React.useState<Record<string, number>>({});
+  const [issued, setIssued] = React.useState<{ id: string; role: string; code: string }[]>([]);
   const [error, setError] = React.useState("");
   const [confirming, setConfirming] = React.useState<null | {
     keys: number; agents: number; leases: number; reservations: number;
@@ -186,23 +194,32 @@ export function FleetView() {
     }
   }
 
-  async function mintWave() {
+  async function issueSeats() {
     setError("");
     setMinting(true);
     try {
-      // Sequential rather than parallel: each mint allocates from the project's key sequence,
-      // and a failure half-way should leave the roles already issued visible rather than
-      // discarding credentials that now exist server-side and cannot be re-shown.
-      const out: Partial<Record<WaveRole, string>> = {};
-      for (const r of WAVE_ROLES) {
-        const k = await api.mintFleetKey({ project_id: activeId, role: r, wave });
-        out[r] = k.plaintext;
-        setWaveKeys({ ...out });
-      }
+      const roles = WAVE_ROLES.flatMap((r) => Array(seatPlan[r] ?? 0).fill(r));
+      const out = await api.issueSeats({ project_id: activeId, roles, wave });
+      setIssued(out.seats);
+      setSeatPlan({});
+      await refetch();
     } catch (e) {
-      setError(errorDetail(e, "could not mint the wave"));
+      setError(errorDetail(e, "could not issue the seats"));
     } finally {
       setMinting(false);
+    }
+  }
+
+  async function reissue(seatId: string) {
+    setError("");
+    try {
+      const out = await api.reissueSeat(seatId);
+      // Appended rather than replacing: the operator may be part-way through pasting the
+      // others, and dropping those would cost codes that cannot be shown again.
+      setIssued((prev) => [...prev, { id: out.id, role: out.role, code: out.code }]);
+      await refetch();
+    } catch (e) {
+      setError(errorDetail(e, "could not reissue that seat"));
     }
   }
 
@@ -222,7 +239,7 @@ export function FleetView() {
       await api.endWave(activeId, wave);
       setConfirming(null);
       setMinted(null);
-      setWaveKeys(null);
+      setIssued([]);
       await refetch();
     } catch (e) {
       setError(errorDetail(e, "could not end the wave"));
@@ -330,35 +347,69 @@ export function FleetView() {
 
         <Section
           title="Provision a whole wave"
-          desc="For a client that stores ONE MCP config and reuses it — Cursor, notably. Three servers, three role-narrowed keys, one file."
+          desc="One seat per agent. A seat grants a role for one session and expires — paste it into the prompt, not the config."
         >
-          {/* The problem this exists for: Cursor has no per-agent MCP scoping, so every agent
-              shares one credential — and `independent()` then refuses every review, because
-              author and reviewer match on both key and host. Per-worktree config files would
-              fix it and cost four setups per wave, which nobody will do twice. Interpolating
-              env vars into the header moves the per-wave part OUT of the file: the config is
-              written once and only the three values rotate. */}
-          <Button onClick={mintWave} disabled={minting}>
-            {minting ? "Minting…" : "Mint a wave — planner, worker, reviewer"}
+          {/* Seats, not credentials. The credential goes into the client config ONCE and
+              stays; a seat is what makes an agent a worker or a reviewer for this run. That
+              split is what lets a client storing one MCP config for every agent — Cursor —
+              run a fleet at all. */}
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            {WAVE_ROLES.map((r) => (
+              <button
+                key={r}
+                onClick={() => setSeatPlan({ ...seatPlan, [r]: (seatPlan[r] ?? 0) + 1 })}
+                className="rounded-[9px] border border-line-2 px-3 py-1.5 text-[12px] text-muted transition-colors hover:text-fg-2"
+              >
+                + {r}
+              </button>
+            ))}
+            <span className="font-mono text-[11px] text-faint">
+              {WAVE_ROLES.filter((r) => seatPlan[r]).map((r) => `${seatPlan[r]}x ${r}`).join(" · ") || "no seats yet"}
+            </span>
+            {Object.values(seatPlan).some(Boolean) && (
+              <button onClick={() => setSeatPlan({})} className="text-[11px] text-faint hover:text-fg-2">
+                clear
+              </button>
+            )}
+          </div>
+          <Button onClick={issueSeats} disabled={!Object.values(seatPlan).some(Boolean) || minting}>
+            {minting ? "Issuing…" : "Issue the seats"}
           </Button>
-          {waveKeys && (
+          {issued.length > 0 && (
             <div className="mt-3 space-y-2">
-              <CopyRow
-                label="~/.cursor/mcp.json — replaces the file, keys included (shown once)"
-                value={cursorWaveConfig(`${window.location.origin}/api/mcp`, waveKeys)}
-              />
+              {issued.map((s) => (
+                <CopyRow key={s.id} label={`${s.role} — shown once`} value={s.code} />
+              ))}
               <p className="px-1 text-[11px] text-faint">
-                Each server carries a role-narrowed key, so a worker reaching for{" "}
-                <span className="font-mono">sign_off</span> is refused, and a reviewer signing a
-                worker&apos;s item is independent because the credentials differ. Cursor cannot
-                scope a server to one agent, so an agent that deliberately switches servers can
-                still sign its own work — the default is safe, the ceiling is not absolute.
+                Paste each into that agent&apos;s prompt as{" "}
+                <span className="font-mono">register_agent(enrolment_code=&quot;…&quot;)</span>. Two
+                workers need two seats: agents sharing a seat share a session and cannot review
+                each other.
               </p>
-              <p className="px-1 text-[11px] text-faint">
-                The keys are literal because Cursor does not interpolate environment variables
-                here — probed, with the variables present: the entry is silently dropped rather
-                than sent. So this file is regenerated each wave rather than written once.
-              </p>
+            </div>
+          )}
+          {(data?.seats ?? []).length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              {data!.seats.map((s) => (
+                <div key={s.id} className="flex items-center gap-3 rounded-[9px] border border-line-2 bg-surface-2 px-3 py-1.5">
+                  <span className={cn("rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase",
+                                      ROLE_TONE[s.role] ?? "text-muted border-line-2")}>
+                    {s.role}
+                  </span>
+                  <span className="font-mono text-[11px] text-faint">{s.wave}</span>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
+                    {s.state === "consumed" ? `taken by ${s.consumed_by}` : s.state}
+                    {s.reissued_from && " · reissued"}
+                  </span>
+                  {/* A spent seat is not deleted — it is the record that something died, and
+                      Reissue is the recovery path a single-use code needs. */}
+                  {s.state !== "unused" && (
+                    <button onClick={() => reissue(s.id)} className="text-[11px] text-muted hover:text-fg">
+                      Reissue
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </Section>

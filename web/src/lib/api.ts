@@ -197,6 +197,12 @@ export const api = {
   mintFleetKey: (body: { project_id: string; role: string; wave: string; label?: string }) =>
     request<{ id: string; plaintext: string; role: string; wave: string; prefix: string }>(
       "/fleet/keys", { method: "POST", body: JSON.stringify(body) }),
+  issueSeats: (body: { project_id: string; roles: string[]; wave?: string }) =>
+    request<{ seats: { id: string; role: string; code: string; expires_at: string }[] }>(
+      "/fleet/seats", { method: "POST", body: JSON.stringify(body) }),
+  reissueSeat: (seatId: string) =>
+    request<{ id: string; role: string; code: string; reissued_from: string }>(
+      `/fleet/seats/${seatId}/reissue`, { method: "POST" }),
   endWavePreview: (projectId: string, wave: string) =>
     request<{ keys: number; agents: number; leases: number; reservations: number }>(
       `/fleet/end-wave?project_id=${projectId}&wave=${wave}`),

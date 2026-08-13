@@ -557,21 +557,23 @@ def independent(reviewer: Agent, author: Agent | None) -> bool:
       reports a different host.
     - **Different credentials.** The intended path: the Fleet view mints one per role, so two
       agents holding different keys are separate by construction.
-    - **One credential, and nothing declared that differs.** Not independent. On a shared key an
-      agent must SHOW a difference — `instance`, `worktree`, `host` or `vendor` — and absence
-      is not a difference.
+    - **One credential, two SEATS.** Independent, and this is the path PRD-19 exists to make
+      the normal one: the human issued two enrolments and each agent redeemed one, single-use,
+      so the server decided it rather than an agent declaring it. Requires BOTH to be enrolled
+      — an enrolled agent beside an un-enrolled one tells us nothing about the second.
+    - **One credential, neither enrolled, and nothing declared that differs.** Not independent.
+      An agent must SHOW a difference — `instance`, `worktree`, `host` or `vendor` — and
+      absence is not a difference.
 
     **That last polarity used to be backwards and it mattered.** An unreported host counted as
     "different", so two agents declaring nothing could review each other while an agent that
     honestly reported a matching host was refused: the missing datum granted the permission,
     and laundering a self-review cost nothing but omitting a field.
 
-    `instance` is what makes this reachable for a client that cannot hold two credentials at
-    once — Cursor stores one MCP config and reuses it across every agent, so without a tag its
-    whole fleet is one blob and no review is ever independent. Self-reported, like everything
-    else here: it buys COORDINATION, not an adversarial boundary. An agent determined to review
-    its own work can claim a different instance. What this prevents is the accident, which is
-    the failure that actually occurs.
+    `instance` remains the fallback for an un-enrolled fleet sharing a credential. It is
+    self-reported, so it buys coordination rather than an adversarial boundary — an agent
+    determined to review its own work can claim a different instance. **An enrolment cannot be
+    self-asserted**, which is why enrolling is the recommended path and this is the weaker one.
     """
     if author is None:
         return True                      # human-authored, or an author nothing recorded
@@ -583,7 +585,19 @@ def independent(reviewer: Agent, author: Agent | None) -> bool:
         return False                     # siblings under one parent are one call tree
     if not (bool(reviewer.api_key_id) and reviewer.api_key_id == author.api_key_id):
         return True                      # genuinely separate credentials
-    # ONE credential. Independence must now be EARNED by declaring something that differs, and
+    # ONE credential — so the question is whether these are two SESSIONS.
+    #
+    # Different seats are different sessions, and that is decided by the SERVER: the human
+    # issued two enrolments and each agent redeemed one, single-use. Everything below this line
+    # is self-reported and can only approximate it. This is the whole point of PRD-19 — a
+    # client that stores one credential for every agent (Cursor) can still run a fleet, because
+    # independence stops depending on an agent remembering to declare a tag.
+    #
+    # BOTH must be enrolled. An enrolled agent and an un-enrolled one on one credential tell us
+    # nothing: the un-enrolled one could be any process at all, including the same one twice.
+    if reviewer.enrolment_id and author.enrolment_id:
+        return reviewer.enrolment_id != author.enrolment_id
+    # Otherwise: independence must be EARNED by declaring something that differs, and
     # **absence is restrictive** — the polarity matters and used to be backwards. Treating an
     # undeclared host as "different" meant an agent that honestly reported its host disabled
     # its own reviewing while one that omitted it was permitted: the missing datum granted the
@@ -597,9 +611,10 @@ def independent(reviewer: Agent, author: Agent | None) -> bool:
 
 
 NOT_INDEPENDENT = ("the only work in review was built by an agent you are not distinguishable "
-                   "from — same credential, and nothing declared that differs. Either declare "
-                   "capabilities.instance (a different value per agent) when you register, or "
-                   "mint a per-role credential in the Fleet view, so review means something")
+                   "from — same credential, same session. Redeem an enrolment seat at "
+                   "register_agent (the Fleet view issues one per agent), or failing that "
+                   "declare a distinct capabilities.instance, or use a per-role credential — "
+                   "so review means something")
 
 
 def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = None) -> str:
@@ -711,9 +726,9 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     if me is not None and not independent(me, author):
         raise SelfReview(
             f"{agent_id} is not independent of {item.claimed_by} — same call tree, or one "
-            f"credential with nothing declared that tells you apart — so signing off "
-            f"{item.key} would be self-review with extra steps. Declare a distinct "
-            "capabilities.instance at registration, or use a per-role credential"
+            f"credential and one session — so signing off {item.key} would be self-review "
+            "with extra steps. Redeem your own enrolment seat at register_agent, or declare "
+            "a distinct capabilities.instance, or use a per-role credential"
         )
     # The adversarial gate (PRD-17 D9). Reviewer and adversary are different jobs and must not
     # become one habit: a reviewer CONVERGES — the queue is three deep and an agent that blocks
@@ -1067,6 +1082,44 @@ def consume_enrolment(db: Session, *, code: str, project_id: str, api_key) -> En
             f"{row.role!r}. Mint a credential for that role, or issue a "
             f"{allowed[0]!r} seat")
     return row
+
+
+def list_enrolments(db: Session, project_id: str | None = None,
+                    wave: str | None = None) -> list[dict]:
+    """Every seat with its DERIVED state, newest first.
+
+    **No part of the code comes back, not even a display fragment.** An API key shows a prefix
+    because it is long-lived and a human needs to match it against a config; a seat lives for
+    thirty minutes and is identified by its role and wave. Returning two characters of a
+    six-character code would cut the search space from ~887M to ~923k for no benefit anyone
+    asked for — small surface, but surface bought with nothing.
+    """
+    stmt = select(Enrolment)
+    if project_id:
+        stmt = stmt.where(Enrolment.project_id == project_id)
+    if wave:
+        stmt = stmt.where(Enrolment.wave == wave)
+    rows = list(db.scalars(stmt.order_by(Enrolment.created_at.desc())).all())
+    return [{
+        "id": r.id,
+        "role": r.role,
+        "wave": r.wave,
+        "state": enrolment_state(r),
+        "consumed_by": r.consumed_by,
+        "reissued_from": r.reissued_from,
+        "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+    } for r in rows]
+
+
+def issue_wave(db: Session, *, project_id: str, roles: list[str], wave: str,
+               issued_by: str | None = None) -> list[tuple[Enrolment, str]]:
+    """One seat per entry, so `["worker", "worker"]` issues TWO.
+
+    Repeats are the point rather than a quirk of the API: two agents sharing a seat share a
+    session and cannot review each other, so a wave of two workers needs two codes.
+    """
+    return [issue_enrolment(db, project_id=project_id, role=r, wave=wave, issued_by=issued_by)
+            for r in roles]
 
 
 def end_wave(db: Session, *, project_id: str | None, wave: str | None = None) -> dict:

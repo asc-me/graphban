@@ -250,3 +250,175 @@ def test_the_agent_records_which_seat_it_consumed(client, key, proj, db):
     assert db.get(Agent, me["agent_id"]).enrolment_id == row.id
     assert row.consumed_by == me["agent_id"]
     assert fleet.enrolment_state(row) == "consumed"
+
+
+# ---- E3: independence derives from the session ----------------------------------------------
+
+def _built_by(client, key, agent_id, title="work"):
+    """An item in `review`, built by this agent — the state a reviewer acts on."""
+    _ok(client, key, "create_item", {"title": title, "status": "next"})
+    got = _ok(client, key, "claim_next", {"agent_id": agent_id})
+    _ok(client, key, "update_item",
+        {"id": got["item"]["id"], "status": "review", "agent_id": agent_id})
+    return got["item"]["id"]
+
+
+def test_two_seats_on_one_credential_can_review_each_other(client, key, proj, db):
+    """THE acceptance criterion, and the reason PRD-19 exists.
+
+    One credential, no `instance` declared anywhere, no per-worktree config, no per-role key —
+    the setup a client that stores a single MCP config is stuck with. Two seats make them two
+    sessions, and the SERVER decided that rather than an agent claiming it."""
+    _, wcode = _seat(db, proj, "worker")
+    _, rcode = _seat(db, proj, "reviewer")
+    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": wcode})
+    r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": rcode})
+    _built_by(client, key, w["agent_id"])
+
+    out = _ok(client, key, "claim_review", {"agent_id": r["agent_id"]})
+
+    assert out["claimed"] is True
+
+
+def test_the_same_seat_twice_is_not_two_opinions(client, key, proj, db):
+    """Defensive, and the reason single-use is a correctness property rather than caution: two
+    agents on one enrolment are one session however they got there."""
+    from app.models import Agent
+
+    _, code = _seat(db, proj, "worker")
+    a = _ok(client, key, "register_agent", {"label": "a", "enrolment_code": code})
+    b = _ok(client, key, "register_agent", {"label": "b", "role_hint": "reviewer"})
+    row = db.get(Agent, b["agent_id"])
+    row.enrolment_id = db.get(Agent, a["agent_id"]).enrolment_id
+    db.commit()
+
+    assert fleet.independent(db.get(Agent, b["agent_id"]),
+                             db.get(Agent, a["agent_id"])) is False
+
+
+def test_an_enrolled_agent_beside_an_unenrolled_one_falls_back(client, key, proj, db):
+    """An enrolment on one side proves nothing about the other — the un-enrolled process could
+    be anything, including the same one twice. So the rule falls through to the declared
+    discriminators, exactly as strict as before: neither declared anything, so no."""
+    _, code = _seat(db, proj, "reviewer")
+    w = _ok(client, key, "register_agent", {"label": "w"})
+    r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": code})
+    _built_by(client, key, w["agent_id"])
+
+    out = _ok(client, key, "claim_review", {"agent_id": r["agent_id"]})
+
+    assert out["claimed"] is False
+
+
+def test_the_fallback_still_works_when_only_one_is_enrolled(client, key, proj, db):
+    """...and it is the SAME fallback, not a weaker one. A declared difference still earns
+    independence when one side happens to hold a seat."""
+    _, code = _seat(db, proj, "reviewer")
+    w = _ok(client, key, "register_agent",
+            {"label": "w", "capabilities": {"instance": "solo-1"}})
+    r = _ok(client, key, "register_agent",
+            {"label": "r", "enrolment_code": code, "capabilities": {"instance": "solo-2"}})
+    _built_by(client, key, w["agent_id"])
+
+    assert _ok(client, key, "claim_review", {"agent_id": r["agent_id"]})["claimed"] is True
+
+
+def test_a_seat_does_not_launder_a_call_tree(client, key, proj, db):
+    """Parentage is checked BEFORE the session and must stay that way. A subagent holding its
+    own seat is still inside its parent's call tree — and D-g trap 2 keeps a planner from
+    setting itself as parent on seats it mints, which would collapse the opposite way."""
+    _, pcode = _seat(db, proj, "worker")
+    _, ccode = _seat(db, proj, "reviewer")
+    parent = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": pcode})
+    child = _ok(client, key, "register_agent",
+                {"label": "c", "enrolment_code": ccode,
+                 "parent_agent_id": parent["agent_id"]})
+    _built_by(client, key, parent["agent_id"])
+
+    out = _ok(client, key, "claim_review", {"agent_id": child["agent_id"]})
+
+    assert out["claimed"] is False, "a declared parent outranks two seats"
+
+
+# ---- E4: issuing and tracking seats ----------------------------------------------------------
+
+def test_a_wave_issues_one_seat_per_agent_including_repeats(client, auth, proj):
+    """`["worker", "worker"]` is TWO seats, and the repeat is the point rather than a quirk of
+    the API: two agents sharing a seat share a session and cannot review each other. An API
+    that deduplicated roles would quietly provision a wave that cannot review itself."""
+    out = client.post("/api/fleet/seats",
+                      json={"project_id": proj, "wave": "w1",
+                            "roles": ["planner", "worker", "worker", "reviewer"]},
+                      headers=auth).json()["seats"]
+
+    assert [s["role"] for s in out] == ["planner", "worker", "worker", "reviewer"]
+    assert len({s["code"] for s in out}) == 4, "four seats, four codes"
+    assert len({s["id"] for s in out}) == 4
+
+
+def test_the_roster_call_reports_seat_state(client, auth, proj, key, db):
+    """Read together with the roster because it is one question — "three agents online, one
+    seat still unused" — and two calls would let the page render half of it."""
+    codes = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w1", "roles": ["worker", "reviewer"]},
+                        headers=auth).json()["seats"]
+    _ok(client, key, "register_agent", {"label": "w", "enrolment_code": codes[0]["code"]})
+
+    seats = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["seats"]
+
+    by_role = {s["role"]: s for s in seats}
+    assert by_role["worker"]["state"] == "consumed"
+    assert by_role["reviewer"]["state"] == "unused"
+
+
+def test_the_roster_never_hands_a_code_back(client, auth, proj):
+    """Shown once, like a key. A seat is short-lived and still a bearer token while it lives,
+    and this endpoint is read by every agent on the project — not only by whoever issued it."""
+    issued = client.post("/api/fleet/seats",
+                         json={"project_id": proj, "wave": "w1", "roles": ["reviewer"]},
+                         headers=auth).json()["seats"][0]
+
+    body = client.get(f"/api/fleet?project_id={proj}", headers=auth).text
+
+    assert issued["code"] not in body
+    # Not even a fragment. An API key returns a prefix because it is long-lived and must be
+    # matched against a config; a seat lives thirty minutes and is named by role and wave, so
+    # two characters of a six-character code would shrink the search space for nothing.
+    assert issued["code"].split("-")[1][:2] not in body
+
+
+def test_reissue_gives_a_fresh_code_and_keeps_the_dead_seat(client, auth, proj, key, db):
+    """The recovery path for a crashed agent. The spent seat is NOT deleted — it is the record
+    that something died, and the chain is how an operator sees it happened twice."""
+    first = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
+                        headers=auth).json()["seats"][0]
+    _ok(client, key, "register_agent", {"label": "w", "enrolment_code": first["code"]})
+
+    fresh = client.post(f"/api/fleet/seats/{first['id']}/reissue", headers=auth).json()
+
+    assert fresh["code"] != first["code"] and fresh["reissued_from"] == first["id"]
+    seats = {s["id"]: s for s in client.get(f"/api/fleet?project_id={proj}",
+                                            headers=auth).json()["seats"]}
+    assert seats[first["id"]]["state"] == "consumed", "the dead seat survives"
+    assert seats[fresh["id"]]["state"] == "unused"
+
+
+def test_a_reissued_seat_actually_works(client, auth, proj, key, db):
+    """Asserting only on `state` would pass against a row that reads unused and is refused for
+    some other reason — the same vacuity that let a sabotage through earlier in this PRD."""
+    first = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w1", "roles": ["reviewer"]},
+                        headers=auth).json()["seats"][0]
+    fresh = client.post(f"/api/fleet/seats/{first['id']}/reissue", headers=auth).json()
+
+    me = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": fresh["code"]})
+
+    assert me["active_role"] == "reviewer" and me["enrolled"] is True
+
+
+def test_issuing_no_roles_is_refused(client, auth, proj):
+    """An empty wave is a mistake, not a wave of nothing."""
+    r = client.post("/api/fleet/seats", json={"project_id": proj, "roles": []}, headers=auth)
+
+    assert r.status_code == 422
