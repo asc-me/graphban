@@ -344,7 +344,13 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "next_cluster": ("worker",),
     "claim_cluster": ("worker",),
     "release_item": ("worker",),
-    "heartbeat": ("worker",),
+    # `heartbeat` is NOT here, and was, which is the bug. It does two jobs: extend an item
+    # LEASE and extend agent PRESENCE. Grouping it with the claiming tools gated both — so a
+    # reviewer or planner was refused the only call that keeps it on the roster, registered
+    # fine, and vanished 150s later while its terminal sat open and healthy. Found on the
+    # PRD-17 walk: `role_refused ... heartbeat` for the reviewer AND the planner, minutes
+    # apart. The lease half needs no role gate because it is already bounded by ownership —
+    # `items.heartbeat` only extends a lease the caller holds.
     # PRD authorship is the planner's.
     # Review belongs to the reviewer, and `claim_next` to the worker — the two halves of the
     # ban. A reviewer that could claim fresh work would drift into being a worker holding
@@ -416,9 +422,34 @@ def role_for_call(db: Session, *, api_key, agent_id: str | None) -> tuple[str, s
                 return "*", agent.id
             return agent.active_role, agent.id
     allowed = eligible_roles(api_key)
-    # A key that permits everything carries no restriction; one pinned to a single role
-    # carries that role.
-    return (allowed[0] if len(allowed) == 1 else "*"), None
+    if len(allowed) == 1:
+        return allowed[0], None
+    # An unrestricted credential with NO live specialised agents is the single-agent posture:
+    # unrestricted, exactly as before PRD-17. But if this credential is running a fleet, an
+    # anonymous call cannot be assumed to be the unrestricted one — that assumption is how a
+    # worker wrote `done` on the acceptance walk. `update_item` did not even ADVERTISE
+    # `agent_id`, so the gate was unreachable through the published schema and every test that
+    # "proved" it passed the parameter by hand.
+    if _has_specialised_agents(db, api_key):
+        return "unidentified", None
+    return "*", None
+
+
+def _has_specialised_agents(db: Session, api_key) -> bool:
+    """Does this credential have a LIVE agent holding a narrowed role?
+
+    Live matters: yesterday's dead fleet must not lock out today's single agent. Cheap — one
+    indexed lookup on a column already loaded for the roster.
+    """
+    key_id = getattr(api_key, "id", None)
+    if not key_id:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=presence_ttl_seconds())
+    return db.scalar(
+        select(Agent.id)
+        .where(Agent.api_key_id == key_id, Agent.active_role.in_(ROLES),
+               Agent.last_seen_at >= cutoff)
+        .limit(1)) is not None
 
 
 def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
@@ -439,6 +470,12 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
     who = resolved or f"key {getattr(api_key, 'name', '') or getattr(api_key, 'id', '?')}"
 
     required = TOOL_ROLES.get(tool)
+    if role == "unidentified" and (required or (tool == "update_item"
+                                                and (args or {}).get("status") in _BEYOND_WORKER)):
+        raise authz.Forbidden(
+            f"{tool} needs to know which agent is calling: this credential is running a fleet, "
+            "so an unidentified caller cannot be assumed to be unrestricted",
+            hint="pass agent_id — the value register_agent returned")
     if required and role == "expired":
         # An expired session grants NO role, so every role-gated tool refuses — but only
         # those. The shared reads stay open deliberately: `fleet_status` is how the agent

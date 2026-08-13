@@ -146,3 +146,23 @@ def test_no_location_drops_a_security_header_by_setting_one_of_its_own(header):
         if "add_header" not in body:
             continue
         assert header in body, f"location {match} sets headers of its own and drops {header}"
+
+
+def test_the_proxy_outlives_a_full_length_park():
+    """A parked agent must get its answer, not a 504.
+
+    `claim_cluster(wait_seconds=60)` blocks for up to `MAX_WAIT_SECONDS` by design, and nginx's
+    DEFAULT `proxy_read_timeout` is also 60s — so a full-length park raced the proxy's cutoff
+    and lost about half the time. A real Cursor client hit it on the PRD-17 acceptance walk:
+    `upstream timed out ... POST /api/mcp`, 504. Every park before that ran against an injected
+    clock, which is why nothing caught it.
+
+    Asserted as a RELATION, not a literal: raising MAX_WAIT_SECONDS without raising the proxy
+    would silently reintroduce it, and the number that matters is the gap between them."""
+    from app.services.fleet import MAX_WAIT_SECONDS
+
+    m = re.search(r"proxy_read_timeout\s+(\d+)s", _TEMPLATE)
+    assert m, "no proxy_read_timeout — nginx defaults to 60s and would sever a full park"
+    assert int(m.group(1)) > MAX_WAIT_SECONDS, (
+        f"proxy_read_timeout {m.group(1)}s must exceed MAX_WAIT_SECONDS {MAX_WAIT_SECONDS}s; "
+        "equal values are a coin flip, not a bound")
