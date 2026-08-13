@@ -76,7 +76,7 @@ mcp_servers:
 Every client authenticates the same way: the key in an `X-API-Key` header (or
 `Authorization: Bearer`), against a URL reachable **from where the agent runs**.
 
-## The 51 tools
+## The 52 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -105,6 +105,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `claim_next` | `agent_id`, `lease_seconds`, `wait_seconds`, `project_id` | **Atomically** claim the best ready item, assign it to you, move it to in_progress. Returns `{claimed, item}`. |
 | `propose_allocation` | `project_id` | What the fleet should look like given who is online and what is ready. A proposal — nothing is assigned until `assign_role` |
 | `assign_role` | `agent_id`, `role`, `reason` | Commit a role change; it reaches the agent on its next poll as a `directive`, with no reconnect |
+| `mint_enrolment` | `agent_id`, `role`, `wave` | PLANNER ONLY. Mint a seat for an agent you are spawning, bounded by your credential — the code is returned once and grants that role for one session |
 | `collision_clusters` | `project_id`, `status` | Partition ready work into clusters that provably share no touch-areas; `predicted` marks lower-confidence grouping |
 | `claim_cluster` | `agent_id`, `max_items`, `lease_seconds`, `wait_seconds` | Claim a whole non-colliding cluster and reserve its areas, checked against in-flight work |
 | `claim_review` | `agent_id`, `project_id`, `wait_seconds` | Lease an item in review you did **not** build, and are independent of — not your own call tree, and not the same credential on the same host |

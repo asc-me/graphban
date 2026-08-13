@@ -552,3 +552,95 @@ def test_an_unenrolled_agent_is_untouched_by_ending_a_wave(client, auth, proj, k
 
     out = _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
     assert out["claimed"] is True
+
+
+# ---- E7: a planner may mint seats -------------------------------------------------------------
+
+def test_a_planner_can_mint_a_seat_for_an_agent_it_spawns(client, key, proj, db):
+    """An orchestrator cannot paste a code out of a UI, so without this an autonomous fleet is
+    impossible — every seat would need a human at the Fleet view."""
+    _, pcode = _seat(db, proj, "planner")
+    boss = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": pcode})
+
+    out = _ok(client, key, "mint_enrolment",
+              {"agent_id": boss["agent_id"], "role": "worker"})
+
+    assert out["role"] == "worker" and out["enrolment_code"].startswith("WORKER-")
+    hand = _ok(client, key, "register_agent",
+               {"label": "w", "enrolment_code": out["enrolment_code"]})
+    assert hand["active_role"] == "worker" and hand["enrolled"] is True
+
+
+def test_a_worker_cannot_mint(client, key, proj, db):
+    """THE containment, and it is structural rather than a check beside the capability. A
+    worker that could mint would build an item, mint itself a reviewer seat, register as a
+    fresh agent — new id, new enrolment, therefore independent — and sign off its own work,
+    invisibly to an authorship ban keyed on agent id."""
+    _, wcode = _seat(db, proj, "worker")
+    me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": wcode})
+
+    res = _rpc(client, key, "mint_enrolment", {"agent_id": me["agent_id"], "role": "reviewer"})
+
+    assert res["structuredContent"]["error"]["code"] == "unauthorized"
+
+
+def test_minting_stays_planner_only(client, key, proj, db):
+    """Asserted on the ROLE MAP, not just by exercising a worker. The safety argument is
+    "planners cannot build, so they have nothing to launder" — adding a second role to this
+    entry would evaporate that argument silently, and the tool would keep working."""
+    assert fleet.TOOL_ROLES["mint_enrolment"] == ("planner",)
+    # And the half the argument rests on: a planner genuinely cannot claim work.
+    assert "worker" in fleet.TOOL_ROLES["claim_next"]
+    assert "planner" not in fleet.TOOL_ROLES["claim_next"]
+
+
+def test_a_minted_seat_records_its_minter_and_sets_no_parentage(client, key, proj, db):
+    """D-g trap 2, and it would break the feature outright rather than subtly. Recording the
+    minter as the parent is the intuitive move — and `independent` treats siblings under one
+    parent as one call tree, so every seat a planner issued would be mutually non-independent
+    and no agent in an autonomous fleet could review any other."""
+    from app.models import Agent, Enrolment as E
+
+    _, pcode = _seat(db, proj, "planner")
+    boss = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": pcode})
+    out = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
+
+    seat = db.get(E, out["seat_id"])
+    assert seat.minted_by == boss["agent_id"]
+    hand = _ok(client, key, "register_agent",
+               {"label": "w", "enrolment_code": out["enrolment_code"]})
+    assert db.get(Agent, hand["agent_id"]).parent_agent_id is None
+
+
+def test_two_agents_a_planner_seated_can_review_each_other(client, key, proj, db):
+    """The acceptance criterion for autonomous provisioning (PRD-19 §9.8). If parentage were
+    recorded on minted seats, this is the test that would fail — and the fleet would be unable
+    to review anything it built."""
+    _, pcode = _seat(db, proj, "planner")
+    boss = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": pcode})
+    w = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
+    r = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "reviewer"})
+
+    worker = _ok(client, key, "register_agent",
+                 {"label": "w", "enrolment_code": w["enrolment_code"]})
+    reviewer = _ok(client, key, "register_agent",
+                   {"label": "r", "enrolment_code": r["enrolment_code"]})
+    _built_by(client, key, worker["agent_id"])
+
+    assert _ok(client, key, "claim_review",
+               {"agent_id": reviewer["agent_id"]})["claimed"] is True
+
+
+def test_a_planner_cannot_mint_past_its_own_credential(client, auth, proj, db):
+    """The credential is still the ceiling. A planner reshuffles within what it holds; it does
+    not manufacture authority its own key was never granted."""
+    narrow = client.post("/api/fleet/keys",
+                         json={"project_id": proj, "role": "planner", "wave": "w1"},
+                         headers=auth).json()["plaintext"]
+    me = _ok(client, narrow, "register_agent", {"label": "p", "role_hint": "planner"})
+
+    res = _rpc(client, narrow, "mint_enrolment",
+               {"agent_id": me["agent_id"], "role": "reviewer"})
+
+    assert res["structuredContent"]["error"]["code"] == "unauthorized"
+    assert "reviewer" in res["structuredContent"]["error"]["message"]

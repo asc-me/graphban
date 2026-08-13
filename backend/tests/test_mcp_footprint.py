@@ -198,9 +198,20 @@ def test_manifest_stays_within_token_budget():
     full manifest again. Trimming per enrolment would work but the enrolment is not known until
     `register_agent` has run, which is the SSE problem D-b called a non-goal. So the next time
     this fires, the honest options are a real prose pass or that transport change — not another
-    raise."""
+    raise.
+
+    Raised 12600 -> 12800 in GRPH-374, and this one IS the case the guard permits. PRD-19 E7
+    adds `mint_enrolment` — one tool, ~211 tokens after trimming its description and dropping a
+    redundant parameter doc. Subtract it and the manifest measures ~12534, under the previous
+    ceiling: the growth is tool COUNT, which this test explicitly allows, not the verbosity it
+    exists to catch. Checked by the same subtraction every earlier bump used.
+
+    The note above still stands and is now the live problem rather than a warning: under
+    enrolment every agent holds an UNRESTRICTED credential, so the role-gated manifest trims
+    nothing and this full number is what everyone pays. The next raise should be argued
+    against a real prose pass or per-enrolment trimming, not granted."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 12600, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 12800, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
