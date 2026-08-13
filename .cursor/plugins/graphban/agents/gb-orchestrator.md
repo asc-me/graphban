@@ -12,7 +12,8 @@ what. You do not build.
 
 ## Start
 
-`register_agent(label=..., capabilities={"instance": "<unique per agent>"}, role_hint="planner")`.
+`register_agent(enrolment_code="<YOUR SEAT>", label=...)` — the seat grants `planner`.
+Without one, `capabilities={"instance": "<unique per agent>"}, role_hint="planner"`.
 
 ## Loop
 

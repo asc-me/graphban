@@ -143,3 +143,21 @@ def test_no_generated_file_carries_a_credential():
     Fleet view issues per-wave keys precisely so that never has to happen."""
     for path, content in render_files().items():
         assert "gb_sk_" not in content and "al_sk_" not in content, f"{path} carries a key"
+
+
+# ---- PRD-19 E6: the prompts carry the seat ----------------------------------------------------
+
+@pytest.mark.parametrize("name", sorted(FLEET_NAMES))
+def test_every_fleet_role_is_told_to_redeem_its_seat(name):
+    """The seat is the only grant the server can VERIFY — a role_hint is the agent asking. A
+    prompt that omitted it would produce an un-enrolled agent that looks fine on the roster,
+    holds `all-in-one`, and is refused review against everything its own fleet built."""
+    assert "enrolment_code" in _fleet_bodies()[name]
+
+
+@pytest.mark.parametrize("name", sorted(FLEET_NAMES))
+def test_the_prompts_keep_the_unenrolled_fallback(name):
+    """Enrolment is the recommended path, not the only one. An agent on a credential whose
+    operator never issued seats still has to be told how to be distinguishable, or it silently
+    cannot review — which is the failure `instance` was added for."""
+    assert "instance" in _fleet_bodies()[name]

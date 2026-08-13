@@ -378,13 +378,21 @@ def test_the_roster_never_hands_a_code_back(client, auth, proj):
                          json={"project_id": proj, "wave": "w1", "roles": ["reviewer"]},
                          headers=auth).json()["seats"][0]
 
-    body = client.get(f"/api/fleet?project_id={proj}", headers=auth).text
+    out = client.get(f"/api/fleet?project_id={proj}", headers=auth)
 
-    assert issued["code"] not in body
-    # Not even a fragment. An API key returns a prefix because it is long-lived and must be
-    # matched against a config; a seat lives thirty minutes and is named by role and wave, so
-    # two characters of a six-character code would shrink the search space for nothing.
-    assert issued["code"].split("-")[1][:2] not in body
+    assert issued["code"] not in out.text
+    # Not even a fragment — asserted on the FIELDS rather than by substring. An API key returns
+    # a prefix because it is long-lived and must be matched against a config; a seat lives
+    # thirty minutes and is named by role and wave, so exposing two characters of a six-
+    # character code would shrink the search space for nothing.
+    #
+    # The substring version of this was FLAKY and CI caught it: two characters out of a
+    # 31-symbol alphabet turn up inside UUIDs and timestamps by chance ("96", in a run where a
+    # seat id contained `e03-9c06-79674138ea36`). A probabilistic assertion about a security
+    # property is worse than none — it fails at random and gets weakened to make CI quiet.
+    for seat in out.json()["seats"]:
+        leaky = {k for k in seat if "code" in k or k == "fragment"}
+        assert not leaky, f"the roster exposes {sorted(leaky)}"
 
 
 def test_reissue_gives_a_fresh_code_and_keeps_the_dead_seat(client, auth, proj, key, db):
