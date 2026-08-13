@@ -43,9 +43,9 @@ so it is advisory rather than enforced. Enrolment codes close exactly that gap.
   single-dev posture, which is what most installs are.
 - **G6** — Nothing that works today stops working. Role-narrowed credentials remain valid.
 
-## 3. What is actually wrong today — measured, not asserted
+## 3. Problem
 
-Every item here was observed during the PRD-17 acceptance walk, 2026-08-12/13.
+**Measured, not asserted.** Every item here was observed during the PRD-17 acceptance walk, 2026-08-12/13.
 
 **A per-role credential has nowhere to live in Cursor.** Cursor stores one `mcp.json` and
 reuses it across every agent. There is no per-agent scoping — confirmed in its docs.
@@ -175,23 +175,67 @@ other. Single-use is a correctness property here, not a security preference.
 
 No change to `api_keys` beyond what GRPH-362 added.
 
-## 6. Slices
+## 6. Rollout
 
-- **E1** — `enrolments` table + issue/consume service; TTL and single-use enforced, with
-  **Reissue** minting a replacement seat that links back to the consumed one.
-- **E2** — `register_agent(enrolment_code=…)` consumes it; role comes from the enrolment. A
-  code the credential's ceiling forbids is **refused, not clamped** (see A8). No code →
-  `all-in-one`.
-- **E3** — Independence reads the session first, falls back to D-d's discriminators.
-- **E4** — Fleet view issues a wave of codes and shows which are unused / consumed / expired.
-- **E5** — End wave expires sessions and releases leases; credentials untouched.
-- **E6** — Role prompts carry a code placeholder; the generated agents explain enrolment.
-- **E7** — `mint_enrolment` as a planner-only tool (D-g), bounded by the credential ceiling.
-- **E8** — **Delete what enrolment makes dead**, last and deliberately: the Fleet view's wave
-  config emission and `web/src/features/fleet/wave.ts`, the per-wave key minting path, and the
-  plugin README's wave instructions. `instance` and the GRPH-365 discriminators STAY — they are
-  the fallback for un-enrolled agents on one credential (D-d). Sequenced last so nothing is
-  removed before its replacement is live.
+Each slice below is its own `##` section, because that is the atom `decompose_prd` tracks — a
+single "Slices" heading collapses eight pieces of work into one item that can never be
+partially done. They are ordered; E8 deletes and must run last.
+
+## E1 — The enrolments table and the issue/consume service
+
+`enrolments` per §5, with TTL and **single use** enforced in the service rather than by
+convention. **Reissue** mints a replacement seat carrying `reissued_from`, so a crashed agent
+is recovered by issuing a new seat and the dead one survives as the audit record (O1/A4).
+No `max_uses`: two sessions on one enrolment cannot review each other.
+
+## E2 — register_agent consumes an enrolment code
+
+`register_agent(enrolment_code=…)` looks the code up, checks it against the credential's
+ceiling **before consuming it** — so a refusal does not burn the seat — and grants the role.
+A ceiling conflict is refused with `unauthorized` naming both sides, never clamped (D-f/A8).
+No code at all yields `all-in-one` with `enrolled: false` in the response (D-c/A2).
+
+## E3 — Independence derives from the session
+
+If both agents carry an `enrolment_id` and the ids differ, they are independent. Otherwise
+fall through to the GRPH-365 discriminators, unchanged and exactly as strict — absence is
+still not a difference (D-d/A6). A minted enrolment must NOT set `parent_agent_id`: the
+sibling rule would otherwise collapse an autonomously provisioned fleet into one call tree
+(D-g, trap 2).
+
+## E4 — The Fleet view issues and tracks seats
+
+Issue a wave of seats — one per agent, not one per role — and show each as unused, consumed or
+expired, with **Reissue** on a dead one. The roster renders `all-in-one · not enrolled` rather
+than a bare role badge, so a forgotten code is visible rather than a silent downgrade (O3/A2).
+
+## E5 — End wave expires sessions, not credentials
+
+Expire the wave's sessions and release every lease and reservation they hold. The credential is
+untouched, so the client config keeps authenticating and the next wave is a new set of seats
+(D-e). Expiry reaches a live agent as a `session_expired` directive on its next poll, over the
+EXISTING downlink — no new transport (A3).
+
+## E6 — Role prompts carry the seat
+
+The generated fleet prompts instruct `register_agent(enrolment_code=…)` first, and the Fleet
+view's copy button substitutes the seat's code so a human pastes a filled prompt rather than
+editing one (A5). Covered by the existing prompt-vs-manifest tests.
+
+## E7 — mint_enrolment, planner-only
+
+A planner may mint seats for agents it spawns, bounded by its own credential's ceiling, with
+`minted_by` recorded. **Planner-only is the containment, not an extra check**: a worker that
+could mint would build an item, mint itself a reviewer seat, register as a new agent, and sign
+off its own work past an authorship ban keyed on agent id. Planners are already refused
+`claim_next`, so they have no authored work to launder (D-g, trap 1).
+
+## E8 — Delete what enrolment makes dead
+
+Last, and deliberately, so nothing is removed before its replacement is live: the Fleet view's
+wave config emission, `web/src/features/fleet/wave.ts`, the per-wave key minting path, and the
+plugin README's wave instructions. **`instance` and the GRPH-365 discriminators stay** — they
+are the fallback for un-enrolled agents sharing one credential (D-d).
 
 ## 7. Non-goals
 
@@ -230,7 +274,7 @@ in E8, and not before.* Named explicitly there so the removal is a reviewable ac
 code that quietly stops being reachable. The probe result and the independence-polarity fix
 from GRPH-365 are NOT dead and stay.
 
-## 9. Acceptance
+## 9. Success criteria
 
 1. One credential in `~/.cursor/mcp.json`, never rewritten, and three Cursor agents hold three
    different roles — verified by the roster, not by their prompts.
@@ -248,9 +292,9 @@ from GRPH-365 are NOT dead and stay.
 9. A worker cannot call `mint_enrolment` at all (D-g, trap 1).
 
 
-## 10. Grill — round 1
+## 10. Appendix
 
-Answers to the questions `grill_prd` raised. Three of them found real errors, which are folded
+**Grill, round 1.** Answers to the questions `grill_prd` raised. Three of them found real errors, which are folded
 into §4 and §6 above rather than left here.
 
 **A1 — How the granted role reaches the agent.** `register_agent` already returns
