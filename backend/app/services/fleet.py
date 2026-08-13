@@ -355,6 +355,13 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # Allocation is the planner's whole job. `propose_allocation` is a read and ungated so a
     # worker can see the shape of the fleet; committing it is not.
     "assign_role": ("planner",),
+    # PLANNER-ONLY, and that restriction IS the safety argument rather than a check bolted
+    # beside it. A worker that could mint would build an item, mint itself a reviewer seat,
+    # register as a fresh agent — new id, new enrolment, therefore independent — and sign off
+    # its own work, invisibly to an authorship ban keyed on agent id. Planners are refused
+    # `claim_next` two entries up, so a planner has NO AUTHORED WORK TO LAUNDER. If this ever
+    # gains a second role, that argument evaporates silently; a test asserts it does not.
+    "mint_enrolment": ("planner",),
     "create_prd": ("planner",),
     "update_prd": ("planner",),
     "decompose_prd": ("planner",),
@@ -1056,6 +1063,37 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
     db.commit()
     db.refresh(row)
     return row, code
+
+
+def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str,
+                      api_key, wave: str | None = None) -> tuple[Enrolment, str]:
+    """A planner mints a seat for an agent it is about to spawn (PRD-19 E7 / D-g).
+
+    An orchestrator cannot paste a code out of a UI, so the capability has to exist for an
+    autonomous fleet to be possible at all. Two things keep it from becoming a self-review
+    vector, and both are structural rather than extra checks:
+
+    **The role gate makes this planner-only**, and a planner is already refused `claim_next` —
+    so it has no authored work a laundered reviewer seat could sign off. The containment is
+    that the role holding the capability cannot build.
+
+    **The minted seat records `minted_by` and does NOT set parentage.** Recording the minter as
+    the parent is the intuitive move and would break the feature outright: `independent` treats
+    siblings under one parent as one call tree, so every seat a planner issued would be
+    mutually non-independent and no agent in an autonomously provisioned fleet could review any
+    other. Parentage keeps meaning what it means — a subagent declaring it runs inside another
+    agent's process — and `minted_by` carries the audit trail instead.
+    """
+    from app.security import authz
+
+    allowed = eligible_roles(api_key)
+    if role != ALL_IN_ONE and role not in allowed:
+        # The credential is still the ceiling. A planner reshuffles within what it holds; it
+        # does not manufacture authority its own key was never granted.
+        raise authz.Forbidden(
+            f"this credential is eligible for {', '.join(allowed)}; cannot mint a {role!r} seat",
+            hint="mint a credential for that role in the Fleet view first")
+    return issue_enrolment(db, project_id=project_id, role=role, wave=wave, minted_by=minter_id)
 
 
 def reissue_enrolment(db: Session, *, enrolment_id: str) -> tuple[Enrolment, str]:

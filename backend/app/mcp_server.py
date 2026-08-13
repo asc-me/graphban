@@ -590,6 +590,23 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "mint_enrolment",
+        "description": (
+            "PLANNER ONLY. Mint a seat for an agent you are spawning, bounded by your "
+            "credential. Returned once — pass it as `enrolment_code`. One seat per agent: "
+            "two on one seat cannot review each other."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "role": {"type": "string", "enum": list(fleet_svc.ROLES) + [fleet_svc.ALL_IN_ONE]},
+                "wave": {"type": "string"},
+            },
+            "required": ["agent_id", "role"],
+        },
+    },
+    {
         "name": "fleet_status",
         "description": (
             "Who else is working this project: agents, roles, presence, and what each holds. "
@@ -1159,6 +1176,13 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
     "sign_off": _ITEM_SCHEMA,
     "bounce": _ITEM_SCHEMA,
+    "mint_enrolment": {
+        "type": "object",
+        "properties": {
+            "enrolment_code": {"type": "string"}, "role": {"type": "string"},
+            "seat_id": {"type": "string"}, "expires_at": {"type": "string"},
+        },
+    },
     "register_agent": {
         "type": "object",
         "properties": {
@@ -1992,6 +2016,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             "heartbeat_interval_seconds": fleet_svc.heartbeat_interval_seconds(),
             "presence_ttl_seconds": fleet_svc.presence_ttl_seconds(),
         }
+    if name == "mint_enrolment":
+        try:
+            row, code = fleet_svc.mint_enrolment_as(
+                db, minter_id=args["agent_id"], project_id=pid, role=args["role"],
+                api_key=key, wave=args.get("wave"))
+        except ValueError as e:
+            raise errors.Validation(str(e))
+        # Returned ONCE, like every other credential-shaped thing here.
+        return {"enrolment_code": code, "role": row.role, "seat_id": row.id,
+                "expires_at": row.expires_at.isoformat() if row.expires_at else None}
     if name == "fleet_status":
         return fleet_svc.fleet_status(db, pid)
     if name == "heartbeat":

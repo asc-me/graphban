@@ -119,6 +119,10 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # grant a role the agent's CREDENTIAL is not eligible for, and credentials are minted
         # by a human. A planner reshuffles within the ceiling; it cannot raise it.
         "propose_allocation", "assign_role",
+        # E7. An AUTHORITY gate, and bounded twice: planner-only, so the role holding it
+        # cannot build and has nothing to launder; and clamped by the minting credential's
+        # own ceiling, so it reshuffles authority rather than manufacturing it.
+        "mint_enrolment",
         # Quality gates, added deliberately by AL-282. `publish_memory` SUBMITS for
         # independent adjudication rather than publishing, so it is not self-approval.
         "publish_memory", "reject_memory",
