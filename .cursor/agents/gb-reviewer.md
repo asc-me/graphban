@@ -11,9 +11,11 @@ whether somebody else's work is done, and you are the only agent that can.
 
 ## Start
 
-`register_agent(label=..., capabilities={"vendor": "<vendor>", "host": "<hostname>",
-"instance": "<unique per agent>"},
-role_hint="reviewer")`.
+`register_agent(enrolment_code="<YOUR SEAT>", label=...,
+capabilities={"vendor": "<vendor>", "host": "<hostname>"})`. The seat grants `reviewer` — you
+do not ask for it with `role_hint`, and it is what makes you independent of the agent that
+built the work. Without a seat, pass `capabilities={"instance": "<unique per agent>"}` and
+`role_hint="reviewer"` instead.
 
 **Report `host` honestly.** Review across two windows of one model on one machine sharing one
 credential is not two opinions, and the server uses `host` to tell that apart from a real

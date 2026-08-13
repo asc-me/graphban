@@ -61,7 +61,7 @@ function RoleCounts({ byRole, roles }: { byRole: Record<string, number>; roles: 
   );
 }
 
-function primeSnippet(role: string) {
+function primeSnippet(role: string, seat?: string) {
   // The role prompt, rendered short enough to paste. `register_agent` first is the load-bearing
   // line: an agent that claims before registering is invisible to the roster and ungoverned by
   // the role gate.
@@ -80,7 +80,12 @@ function primeSnippet(role: string) {
     role === "planner" ? "Read collision_clusters and allocate. Do not claim work yourself."
     : role === "reviewer" ? "Take work with claim_review — never your own — then sign_off or bounce with a reason."
     : "claim_cluster, work it, write actual touchpoints back with update_item, then move it to review.";
-  return `You are a ${role} in a Graphban fleet.\nCall register_agent first, then heartbeat on the interval it returns.\n${duty}`;
+  // The seat is substituted, so a human pastes a FILLED prompt rather than editing one —
+  // that edit is the step where a code gets mangled or lands in the terminal next door.
+  const call = seat
+    ? `register_agent(enrolment_code="${seat}", label="<model> @ <host>")`
+    : "register_agent";
+  return `You are a ${role} in a Graphban fleet.\nCall ${call} first, then heartbeat on the interval it returns.\n${duty}`;
 }
 
 function CopyRow({ label, value }: { label: string; value: string }) {
@@ -378,7 +383,8 @@ export function FleetView() {
           {issued.length > 0 && (
             <div className="mt-3 space-y-2">
               {issued.map((s) => (
-                <CopyRow key={s.id} label={`${s.role} — shown once`} value={s.code} />
+                <CopyRow key={s.id} label={`${s.role} — prompt + seat, shown once`}
+                         value={primeSnippet(s.role, s.code)} />
               ))}
               <p className="px-1 text-[11px] text-faint">
                 Paste each into that agent&apos;s prompt as{" "}
