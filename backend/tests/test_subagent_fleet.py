@@ -137,11 +137,19 @@ def test_the_plugin_ships_the_fleet_agents_so_installing_it_installs_the_fleet()
 
 
 def test_the_plugin_readme_states_what_it_does_not_guarantee():
-    """Cursor cannot scope a server to one agent, so an agent that switches servers can still
-    sign its own work. Shipping the config without saying so would sell a boundary that is
-    really a default — and this repo's recurring defect is exactly a claim stronger than what
-    is enforced."""
+    """The guarantee got STRONGER with enrolment, and the caveat had to move rather than go.
+
+    Before seats, the config named three servers with three keys, and the honest caveat was
+    that Cursor cannot scope a server to one agent — so an agent could switch servers and sign
+    its own work. There is now ONE server and one credential, so that risk does not exist: the
+    role comes from a seat the SERVER issued, and a worker cannot promote itself because it has
+    nothing to promote itself with.
+
+    What remains is smaller and still real: an agent handed two codes can use either. Saying so
+    is the point — this repo's recurring defect is a claim stronger than what is enforced, and
+    a README that stopped naming any limit would be exactly that."""
     readme = _plugin("README.md")
 
-    assert "cannot scope" in readme
-    assert "not as an adversarial boundary" in readme
+    assert "not an adversarial boundary" in readme
+    assert "two codes" in readme, "name the residual risk, not a retired one"
+    assert "cannot scope" not in readme, "that caveat described the three-server config"

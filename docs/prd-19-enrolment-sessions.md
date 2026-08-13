@@ -232,10 +232,25 @@ off its own work past an authorship ban keyed on agent id. Planners are already 
 
 ## E8 — Delete what enrolment makes dead
 
-Last, and deliberately, so nothing is removed before its replacement is live: the Fleet view's
-wave config emission, `web/src/features/fleet/wave.ts`, the per-wave key minting path, and the
-plugin README's wave instructions. **`instance` and the GRPH-365 discriminators stay** — they
-are the fallback for un-enrolled agents sharing one credential (D-d).
+**Almost nothing turned out to be dead, and the honest work was correcting what had become
+false.** Stated plainly rather than manufacturing deletions to match the slice title.
+
+Already deleted, in E4, once its replacement was live: the Fleet view's wave config emission
+and `cursorWaveConfig`.
+
+Corrected here: the plugin README described a flow that no longer exists — it told the reader
+to get a whole `~/.cursor/mcp.json` from the Fleet view, which now emits none. Stale
+instructions are worse than missing ones, because they are followed.
+
+**Kept, against the original plan:**
+
+- The **per-wave key minting UI**, demoted rather than removed. G6 says nothing that works
+  today stops working, and a role-narrowed credential still does — the API is unchanged and
+  this repo's own tests use one. What was actually wrong was two routes with nothing saying
+  which to reach for, so the ambiguity is resolved by naming the order.
+- **`instance` and the GRPH-365 discriminators**, the fallback for un-enrolled agents sharing
+  one credential (D-d).
+- **`/api/fleet/keys`**, unchanged.
 
 ## 7. Non-goals
 
