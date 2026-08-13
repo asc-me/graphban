@@ -250,3 +250,91 @@ def test_the_agent_records_which_seat_it_consumed(client, key, proj, db):
     assert db.get(Agent, me["agent_id"]).enrolment_id == row.id
     assert row.consumed_by == me["agent_id"]
     assert fleet.enrolment_state(row) == "consumed"
+
+
+# ---- E3: independence derives from the session ----------------------------------------------
+
+def _built_by(client, key, agent_id, title="work"):
+    """An item in `review`, built by this agent — the state a reviewer acts on."""
+    _ok(client, key, "create_item", {"title": title, "status": "next"})
+    got = _ok(client, key, "claim_next", {"agent_id": agent_id})
+    _ok(client, key, "update_item",
+        {"id": got["item"]["id"], "status": "review", "agent_id": agent_id})
+    return got["item"]["id"]
+
+
+def test_two_seats_on_one_credential_can_review_each_other(client, key, proj, db):
+    """THE acceptance criterion, and the reason PRD-19 exists.
+
+    One credential, no `instance` declared anywhere, no per-worktree config, no per-role key —
+    the setup a client that stores a single MCP config is stuck with. Two seats make them two
+    sessions, and the SERVER decided that rather than an agent claiming it."""
+    _, wcode = _seat(db, proj, "worker")
+    _, rcode = _seat(db, proj, "reviewer")
+    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": wcode})
+    r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": rcode})
+    _built_by(client, key, w["agent_id"])
+
+    out = _ok(client, key, "claim_review", {"agent_id": r["agent_id"]})
+
+    assert out["claimed"] is True
+
+
+def test_the_same_seat_twice_is_not_two_opinions(client, key, proj, db):
+    """Defensive, and the reason single-use is a correctness property rather than caution: two
+    agents on one enrolment are one session however they got there."""
+    from app.models import Agent
+
+    _, code = _seat(db, proj, "worker")
+    a = _ok(client, key, "register_agent", {"label": "a", "enrolment_code": code})
+    b = _ok(client, key, "register_agent", {"label": "b", "role_hint": "reviewer"})
+    row = db.get(Agent, b["agent_id"])
+    row.enrolment_id = db.get(Agent, a["agent_id"]).enrolment_id
+    db.commit()
+
+    assert fleet.independent(db.get(Agent, b["agent_id"]),
+                             db.get(Agent, a["agent_id"])) is False
+
+
+def test_an_enrolled_agent_beside_an_unenrolled_one_falls_back(client, key, proj, db):
+    """An enrolment on one side proves nothing about the other — the un-enrolled process could
+    be anything, including the same one twice. So the rule falls through to the declared
+    discriminators, exactly as strict as before: neither declared anything, so no."""
+    _, code = _seat(db, proj, "reviewer")
+    w = _ok(client, key, "register_agent", {"label": "w"})
+    r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": code})
+    _built_by(client, key, w["agent_id"])
+
+    out = _ok(client, key, "claim_review", {"agent_id": r["agent_id"]})
+
+    assert out["claimed"] is False
+
+
+def test_the_fallback_still_works_when_only_one_is_enrolled(client, key, proj, db):
+    """...and it is the SAME fallback, not a weaker one. A declared difference still earns
+    independence when one side happens to hold a seat."""
+    _, code = _seat(db, proj, "reviewer")
+    w = _ok(client, key, "register_agent",
+            {"label": "w", "capabilities": {"instance": "solo-1"}})
+    r = _ok(client, key, "register_agent",
+            {"label": "r", "enrolment_code": code, "capabilities": {"instance": "solo-2"}})
+    _built_by(client, key, w["agent_id"])
+
+    assert _ok(client, key, "claim_review", {"agent_id": r["agent_id"]})["claimed"] is True
+
+
+def test_a_seat_does_not_launder_a_call_tree(client, key, proj, db):
+    """Parentage is checked BEFORE the session and must stay that way. A subagent holding its
+    own seat is still inside its parent's call tree — and D-g trap 2 keeps a planner from
+    setting itself as parent on seats it mints, which would collapse the opposite way."""
+    _, pcode = _seat(db, proj, "worker")
+    _, ccode = _seat(db, proj, "reviewer")
+    parent = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": pcode})
+    child = _ok(client, key, "register_agent",
+                {"label": "c", "enrolment_code": ccode,
+                 "parent_agent_id": parent["agent_id"]})
+    _built_by(client, key, parent["agent_id"])
+
+    out = _ok(client, key, "claim_review", {"agent_id": child["agent_id"]})
+
+    assert out["claimed"] is False, "a declared parent outranks two seats"
