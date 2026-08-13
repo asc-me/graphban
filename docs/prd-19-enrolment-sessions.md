@@ -116,6 +116,12 @@ independent, with nothing self-declared involved. The GRPH-365 discriminators
 (`instance`/`worktree`/`host`/`vendor`) remain as the fallback for un-enrolled agents sharing a
 credential, and stay exactly as strict — absence is still not a difference.
 
+### D-e. End wave revokes sessions, not credentials
+
+Today End wave revokes the wave's keys, which is why keys have to be per-wave. With enrolment,
+it expires the wave's **sessions** and releases what they hold. The long-lived credential is
+untouched, so the client config keeps working and the next wave is a new set of codes.
+
 ### D-f. A ceiling conflict is refused, never quietly narrowed
 
 If a `reviewer` code is presented on a credential eligible only for `worker`, registration
@@ -123,11 +129,24 @@ fails with `unauthorized` naming both sides. Clamping to `worker` would leave th
 showing a worker where the human deliberately issued a reviewer — the silent-downgrade shape
 this repo keeps producing, and the one thing an operator cannot debug from the UI.
 
-### D-e. End wave revokes sessions, not credentials
+### D-g. A planner may mint enrolments — with two traps that are easy to walk into
 
-Today End wave revokes the wave's keys, which is why keys have to be per-wave. With enrolment,
-it expires the wave's **sessions** and releases what they hold. The long-lived credential is
-untouched, so the client config keeps working and the next wave is a new set of codes.
+An orchestrator that spawns its own agents cannot paste a code from a UI, so `mint_enrolment`
+is a tool, bounded by the minting credential's ceiling.
+
+**Trap 1: it must be planner-only, and that is what contains the laundering vector.** If a
+worker could mint, it could build an item, mint itself a reviewer seat, register as a new agent
+— new id, new enrolment, therefore independent — and sign off its own work. The authorship ban
+is keyed on agent id and would not see it. Planners are already refused `claim_next` by the D2
+role gate, so a planner has **no authored work to launder**. The capability is safe precisely
+because the role that holds it cannot build.
+
+**Trap 2: a minted enrolment must NOT set `parent_agent_id`.** The intuitive move is to record
+the minter as the parent, and it would break the whole feature: `independent()` already treats
+*siblings under one parent* as one call tree, so every seat a planner issued would be mutually
+non-independent and no agent in an autonomously provisioned fleet could review any other. The
+enrolment records `minted_by` for audit; parentage stays for what it means — a subagent
+declaring it runs inside another agent's process.
 
 ## 5. Data model
 
@@ -137,6 +156,7 @@ enrolments
   project_id         fk
   code_hash          sha-256; the plaintext is shown once, like a key
   role               planner | worker | reviewer | all-in-one
+  minted_by          agent id, null when a human issued it (D-g audit trail)
   wave               text, for End wave
   issued_by          user id
   expires_at         default now + 30 min
@@ -166,7 +186,12 @@ No change to `api_keys` beyond what GRPH-362 added.
 - **E4** — Fleet view issues a wave of codes and shows which are unused / consumed / expired.
 - **E5** — End wave expires sessions and releases leases; credentials untouched.
 - **E6** — Role prompts carry a code placeholder; the generated agents explain enrolment.
-- **E7** — Deprecate per-wave key minting in the Fleet view (keep the endpoint).
+- **E7** — `mint_enrolment` as a planner-only tool (D-g), bounded by the credential ceiling.
+- **E8** — **Delete what enrolment makes dead**, last and deliberately: the Fleet view's wave
+  config emission and `web/src/features/fleet/wave.ts`, the per-wave key minting path, and the
+  plugin README's wave instructions. `instance` and the GRPH-365 discriminators STAY — they are
+  the fallback for un-enrolled agents on one credential (D-d). Sequenced last so nothing is
+  removed before its replacement is live.
 
 ## 7. Non-goals
 
@@ -185,21 +210,25 @@ independent, so a reused code silently disables review between them. Binding reu
 code stays single-use, and the remedy is **reissue**: one click per dead seat, which is also
 the only action that leaves an audit trail of what happened.
 
-**O2 — Codes in transcripts.** A code pasted into a prompt lands in logs and history. TTL plus
-single-use bounds the damage to a role on one project for minutes, and the credential's ceiling
-still applies. Is 30 minutes right? Should consumption be IP- or credential-bound?
+**O2 — Codes in transcripts.** *Resolved: 30 minutes, and no binding.* A code pasted into a
+prompt lands in logs and history; TTL plus single-use bounds the damage to one role on one
+project for half an hour, and the credential's ceiling still applies on every call after that.
+
+Binding redemption to a credential or an IP was considered and rejected: single-use ALREADY
+bounds a code to exactly one redemption, so binding adds friction — the seat stops working if
+the agent connects from a second machine — without adding a property. Two mechanisms enforcing
+one fact is the shape A7 rejected for ceilings, and it is the same answer here.
 
 **O3 — Silent downgrade.** If a human forgets to paste a code, the agent silently becomes
 `all-in-one` — safe, but not what they intended, and the fleet quietly stops being a fleet. The
 roster must show `enrolled: no` prominently rather than just a role badge.
 
-**O4 — Autonomous fleets.** An orchestrator that spawns its own subagents cannot paste a code
-from a UI. Should a planner be able to *mint* enrolments for its children, bounded by its own
-credential? That is a real capability and also a self-promotion vector.
+**O4 — Autonomous fleets.** *Resolved: yes, planners may mint — see D-g for the two traps.*
 
-**O5 — Does this supersede the wave config?** Most of GRPH-364/365's Fleet view work becomes
-unnecessary: one server entry, one long-lived key, no regeneration. Deleting it is the honest
-outcome if this ships, and that should be decided deliberately rather than left as drift.
+**O5 — Does this supersede the wave config?** *Resolved: delete what enrolment makes dead,
+in E8, and not before.* Named explicitly there so the removal is a reviewable act rather than
+code that quietly stops being reachable. The probe result and the independence-polarity fix
+from GRPH-365 are NOT dead and stay.
 
 ## 9. Acceptance
 
@@ -211,7 +240,12 @@ outcome if this ships, and that should be decided deliberately rather than left 
 4. An agent registering with no code is `all-in-one` and can take an item to `done` itself.
 5. A code consumed twice is refused the second time; an expired code is refused.
 6. End wave: sessions expire, leases release, and the client config still authenticates.
-7. A code cannot grant a role the credential's ceiling forbids.
+7. A code cannot grant a role the credential's ceiling forbids, and the refusal does NOT
+   consume the seat.
+8. A planner mints a seat, a subagent consumes it, and that subagent can review work built by
+   another of the planner's seats — the sibling rule must not collapse an autonomously
+   provisioned fleet into one call tree (D-g, trap 2).
+9. A worker cannot call `mint_enrolment` at all (D-g, trap 1).
 
 
 ## 10. Grill — round 1
