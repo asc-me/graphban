@@ -1084,6 +1084,44 @@ def consume_enrolment(db: Session, *, code: str, project_id: str, api_key) -> En
     return row
 
 
+def list_enrolments(db: Session, project_id: str | None = None,
+                    wave: str | None = None) -> list[dict]:
+    """Every seat with its DERIVED state, newest first.
+
+    **No part of the code comes back, not even a display fragment.** An API key shows a prefix
+    because it is long-lived and a human needs to match it against a config; a seat lives for
+    thirty minutes and is identified by its role and wave. Returning two characters of a
+    six-character code would cut the search space from ~887M to ~923k for no benefit anyone
+    asked for — small surface, but surface bought with nothing.
+    """
+    stmt = select(Enrolment)
+    if project_id:
+        stmt = stmt.where(Enrolment.project_id == project_id)
+    if wave:
+        stmt = stmt.where(Enrolment.wave == wave)
+    rows = list(db.scalars(stmt.order_by(Enrolment.created_at.desc())).all())
+    return [{
+        "id": r.id,
+        "role": r.role,
+        "wave": r.wave,
+        "state": enrolment_state(r),
+        "consumed_by": r.consumed_by,
+        "reissued_from": r.reissued_from,
+        "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+    } for r in rows]
+
+
+def issue_wave(db: Session, *, project_id: str, roles: list[str], wave: str,
+               issued_by: str | None = None) -> list[tuple[Enrolment, str]]:
+    """One seat per entry, so `["worker", "worker"]` issues TWO.
+
+    Repeats are the point rather than a quirk of the API: two agents sharing a seat share a
+    session and cannot review each other, so a wave of two workers needs two codes.
+    """
+    return [issue_enrolment(db, project_id=project_id, role=r, wave=wave, issued_by=issued_by)
+            for r in roles]
+
+
 def end_wave(db: Session, *, project_id: str | None, wave: str | None = None) -> dict:
     """Revoke a wave's keys, release every lease and reservation it holds. A hard stop.
 

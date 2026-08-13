@@ -338,3 +338,87 @@ def test_a_seat_does_not_launder_a_call_tree(client, key, proj, db):
     out = _ok(client, key, "claim_review", {"agent_id": child["agent_id"]})
 
     assert out["claimed"] is False, "a declared parent outranks two seats"
+
+
+# ---- E4: issuing and tracking seats ----------------------------------------------------------
+
+def test_a_wave_issues_one_seat_per_agent_including_repeats(client, auth, proj):
+    """`["worker", "worker"]` is TWO seats, and the repeat is the point rather than a quirk of
+    the API: two agents sharing a seat share a session and cannot review each other. An API
+    that deduplicated roles would quietly provision a wave that cannot review itself."""
+    out = client.post("/api/fleet/seats",
+                      json={"project_id": proj, "wave": "w1",
+                            "roles": ["planner", "worker", "worker", "reviewer"]},
+                      headers=auth).json()["seats"]
+
+    assert [s["role"] for s in out] == ["planner", "worker", "worker", "reviewer"]
+    assert len({s["code"] for s in out}) == 4, "four seats, four codes"
+    assert len({s["id"] for s in out}) == 4
+
+
+def test_the_roster_call_reports_seat_state(client, auth, proj, key, db):
+    """Read together with the roster because it is one question — "three agents online, one
+    seat still unused" — and two calls would let the page render half of it."""
+    codes = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w1", "roles": ["worker", "reviewer"]},
+                        headers=auth).json()["seats"]
+    _ok(client, key, "register_agent", {"label": "w", "enrolment_code": codes[0]["code"]})
+
+    seats = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["seats"]
+
+    by_role = {s["role"]: s for s in seats}
+    assert by_role["worker"]["state"] == "consumed"
+    assert by_role["reviewer"]["state"] == "unused"
+
+
+def test_the_roster_never_hands_a_code_back(client, auth, proj):
+    """Shown once, like a key. A seat is short-lived and still a bearer token while it lives,
+    and this endpoint is read by every agent on the project — not only by whoever issued it."""
+    issued = client.post("/api/fleet/seats",
+                         json={"project_id": proj, "wave": "w1", "roles": ["reviewer"]},
+                         headers=auth).json()["seats"][0]
+
+    body = client.get(f"/api/fleet?project_id={proj}", headers=auth).text
+
+    assert issued["code"] not in body
+    # Not even a fragment. An API key returns a prefix because it is long-lived and must be
+    # matched against a config; a seat lives thirty minutes and is named by role and wave, so
+    # two characters of a six-character code would shrink the search space for nothing.
+    assert issued["code"].split("-")[1][:2] not in body
+
+
+def test_reissue_gives_a_fresh_code_and_keeps_the_dead_seat(client, auth, proj, key, db):
+    """The recovery path for a crashed agent. The spent seat is NOT deleted — it is the record
+    that something died, and the chain is how an operator sees it happened twice."""
+    first = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
+                        headers=auth).json()["seats"][0]
+    _ok(client, key, "register_agent", {"label": "w", "enrolment_code": first["code"]})
+
+    fresh = client.post(f"/api/fleet/seats/{first['id']}/reissue", headers=auth).json()
+
+    assert fresh["code"] != first["code"] and fresh["reissued_from"] == first["id"]
+    seats = {s["id"]: s for s in client.get(f"/api/fleet?project_id={proj}",
+                                            headers=auth).json()["seats"]}
+    assert seats[first["id"]]["state"] == "consumed", "the dead seat survives"
+    assert seats[fresh["id"]]["state"] == "unused"
+
+
+def test_a_reissued_seat_actually_works(client, auth, proj, key, db):
+    """Asserting only on `state` would pass against a row that reads unused and is refused for
+    some other reason — the same vacuity that let a sabotage through earlier in this PRD."""
+    first = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "wave": "w1", "roles": ["reviewer"]},
+                        headers=auth).json()["seats"][0]
+    fresh = client.post(f"/api/fleet/seats/{first['id']}/reissue", headers=auth).json()
+
+    me = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": fresh["code"]})
+
+    assert me["active_role"] == "reviewer" and me["enrolled"] is True
+
+
+def test_issuing_no_roles_is_refused(client, auth, proj):
+    """An empty wave is a mistake, not a wave of nothing."""
+    r = client.post("/api/fleet/seats", json={"project_id": proj, "roles": []}, headers=auth)
+
+    assert r.status_code == 422

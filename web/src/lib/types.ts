@@ -734,6 +734,10 @@ export interface FleetAgent {
   credential: string | null;
   /** `single` when the credential was minted all-in-one and a role hint cannot narrow it. */
   credential_posture: string | null;
+  /** The seat this agent redeemed at registration. Null means un-enrolled — the single-agent
+   *  posture, which is safe but is NOT a fleet, and a forgotten code looks identical to a
+   *  deliberate one unless the roster says so. */
+  enrolment_id: string | null;
   worktree: string;
   branch: string;
   branch_orphaned: boolean;
@@ -760,4 +764,18 @@ export interface FleetOverview {
     items: string[]; areas: string[]; predicted: boolean;
     held_by: string | null; blocked_on: string | null;
   }[];
+  /** Seats for this project. No part of the code ever comes back — a seat is named by role
+   *  and wave, and lives thirty minutes. */
+  seats: FleetSeat[];
+}
+
+export interface FleetSeat {
+  id: string;
+  role: string;
+  wave: string | null;
+  /** Derived on read, never swept: `unused` | `consumed` | `expired` | `revoked`. */
+  state: string;
+  consumed_by: string | null;
+  reissued_from: string | null;
+  expires_at: string | null;
 }
