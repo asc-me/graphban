@@ -2,8 +2,9 @@ import * as React from "react";
 
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
+import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useLinks } from "@/lib/queries";
-import type { GraphLink, LinkType } from "@/lib/types";
+import type { LinkType } from "@/lib/types";
 
 const LINK_META: Record<LinkType, { label: string; color: string }> = {
   dependency: { label: "Dependency", color: "#c6f24e" },
@@ -16,71 +17,6 @@ const LINK_TYPES = Object.keys(LINK_META) as LinkType[];
 const W = 900;
 const H = 560;
 
-interface Pos {
-  x: number;
-  y: number;
-}
-
-/** Deterministic force-directed layout (no randomness — stable across renders). */
-function computeLayout(ids: string[], edges: GraphLink[]): Record<string, Pos> {
-  const n = ids.length;
-  const cx = W / 2;
-  const cy = H / 2;
-  const r = Math.min(W, H) / 2.6;
-  const pos: Record<string, Pos> = {};
-  ids.forEach((id, i) => {
-    const a = (2 * Math.PI * i) / Math.max(1, n);
-    pos[id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
-  });
-
-  const REST = 150;
-  for (let iter = 0; iter < 300; iter++) {
-    const disp: Record<string, Pos> = {};
-    ids.forEach((id) => (disp[id] = { x: 0, y: 0 }));
-    // Repulsion between all pairs.
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const u = ids[i];
-        const v = ids[j];
-        let dx = pos[u].x - pos[v].x;
-        let dy = pos[u].y - pos[v].y;
-        let d2 = dx * dx + dy * dy || 0.01;
-        const f = 26000 / d2;
-        const d = Math.sqrt(d2);
-        dx /= d;
-        dy /= d;
-        disp[u].x += dx * f;
-        disp[u].y += dy * f;
-        disp[v].x -= dx * f;
-        disp[v].y -= dy * f;
-      }
-    }
-    // Springs along edges.
-    for (const e of edges) {
-      if (!pos[e.a] || !pos[e.b]) continue;
-      let dx = pos[e.b].x - pos[e.a].x;
-      let dy = pos[e.b].y - pos[e.a].y;
-      const d = Math.hypot(dx, dy) || 0.01;
-      const f = (d - REST) * 0.06;
-      dx = (dx / d) * f;
-      dy = (dy / d) * f;
-      disp[e.a].x += dx;
-      disp[e.a].y += dy;
-      disp[e.b].x -= dx;
-      disp[e.b].y -= dy;
-    }
-    // Center pull + integrate (capped step).
-    for (const id of ids) {
-      disp[id].x += (cx - pos[id].x) * 0.02;
-      disp[id].y += (cy - pos[id].y) * 0.02;
-      const step = 0.6;
-      pos[id].x += Math.max(-14, Math.min(14, disp[id].x * step));
-      pos[id].y += Math.max(-14, Math.min(14, disp[id].y * step));
-    }
-  }
-  return pos;
-}
-
 export function LinksGraphView() {
   const { activeId } = useProjectCtx();
   const { data: links = [], isLoading } = useLinks(activeId);
@@ -89,7 +25,10 @@ export function LinksGraphView() {
   });
   const [sel, setSel] = React.useState<{ kind: "node"; id: string } | { kind: "link"; id: number } | null>(null);
 
+  // `links` is the unfiltered set and drives layout; `shown` only decides what is drawn, so a
+  // type chip redraws the same map with fewer lines instead of rearranging it (AC-3).
   const shown = links.filter((l) => enabled[l.type]);
+  const isFiltered = LINK_TYPES.some((t) => !enabled[t]);
 
   const ids = React.useMemo(() => {
     const s = new Set<string>();
@@ -100,7 +39,8 @@ export function LinksGraphView() {
     return [...s].sort();
   }, [links]);
 
-  const pos = React.useMemo(() => computeLayout(ids, links), [ids, links]);
+  const layoutEdges = React.useMemo(() => links.map((l) => ({ a: l.a, b: l.b })), [links]);
+  const { pos, pending, relayout } = useGraphLayout(ids, layoutEdges, { width: W, height: H });
 
   const nodeKind = (id: string) => (id.startsWith("R-") ? "request" : "item");
 
@@ -141,7 +81,19 @@ export function LinksGraphView() {
             Typed relationships between items and requests. Click a node or edge to inspect.
           </p>
         </div>
-        <div className="ml-auto flex flex-wrap gap-1.5">
+        <div className="ml-auto flex flex-wrap items-center gap-1.5">
+          {isFiltered && (
+            // Only offered under a filter: with every type on, the layout already reflects
+            // exactly what is drawn and re-laying out would move nodes for no reason.
+            <button
+              onClick={() => relayout(shown.map((l) => ({ a: l.a, b: l.b })))}
+              disabled={pending}
+              title="Recompute positions from the visible links only"
+              className="mr-1 inline-flex items-center gap-1.5 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg disabled:opacity-50"
+            >
+              {pending ? "Laying out…" : "Re-layout to visible"}
+            </button>
+          )}
           {LINK_TYPES.map((t) => (
             <button
               key={t}

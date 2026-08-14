@@ -3,8 +3,9 @@ import * as React from "react";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useCodeMap } from "@/lib/queries";
-import type { CodeEdge, CodeEdgeType, CodeNeighbors } from "@/lib/types";
+import type { CodeEdgeType, CodeNeighbors } from "@/lib/types";
 
 import { CodeChat } from "./CodeChat";
 
@@ -28,73 +29,11 @@ const W = 900;
 const H = 560;
 const R = 7;
 
-interface Pos {
-  x: number;
-  y: number;
-}
-
 /** Short label for a node: its name, else the last path segment (after `/` or `::`). */
 function label(path: string, name: string): string {
   if (name) return name;
   const seg = path.split("::").pop() ?? path;
   return seg.split("/").pop() ?? seg;
-}
-
-/** Deterministic force-directed layout (no randomness — stable across renders). */
-function computeLayout(ids: string[], edges: CodeEdge[]): Record<string, Pos> {
-  const n = ids.length;
-  const cx = W / 2;
-  const cy = H / 2;
-  const r = Math.min(W, H) / 2.6;
-  const pos: Record<string, Pos> = {};
-  ids.forEach((id, i) => {
-    const a = (2 * Math.PI * i) / Math.max(1, n);
-    pos[id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
-  });
-
-  const REST = 150;
-  for (let iter = 0; iter < 300; iter++) {
-    const disp: Record<string, Pos> = {};
-    ids.forEach((id) => (disp[id] = { x: 0, y: 0 }));
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const u = ids[i];
-        const v = ids[j];
-        let dx = pos[u].x - pos[v].x;
-        let dy = pos[u].y - pos[v].y;
-        const d2 = dx * dx + dy * dy || 0.01;
-        const f = 26000 / d2;
-        const d = Math.sqrt(d2);
-        dx /= d;
-        dy /= d;
-        disp[u].x += dx * f;
-        disp[u].y += dy * f;
-        disp[v].x -= dx * f;
-        disp[v].y -= dy * f;
-      }
-    }
-    for (const e of edges) {
-      if (!pos[e.src] || !pos[e.dst]) continue;
-      let dx = pos[e.dst].x - pos[e.src].x;
-      let dy = pos[e.dst].y - pos[e.src].y;
-      const d = Math.hypot(dx, dy) || 0.01;
-      const f = (d - REST) * 0.06;
-      dx = (dx / d) * f;
-      dy = (dy / d) * f;
-      disp[e.src].x += dx;
-      disp[e.src].y += dy;
-      disp[e.dst].x -= dx;
-      disp[e.dst].y -= dy;
-    }
-    for (const id of ids) {
-      disp[id].x += (cx - pos[id].x) * 0.02;
-      disp[id].y += (cy - pos[id].y) * 0.02;
-      const step = 0.6;
-      pos[id].x += Math.max(-14, Math.min(14, disp[id].x * step));
-      pos[id].y += Math.max(-14, Math.min(14, disp[id].y * step));
-    }
-  }
-  return pos;
 }
 
 export function CodeGraphView() {
@@ -107,18 +46,22 @@ export function CodeGraphView() {
   const [nb, setNb] = React.useState<CodeNeighbors | null>(null);
 
   const nodes = map?.nodes ?? [];
-  const edges = React.useMemo(() => (map?.edges ?? []).filter((e) => enabled[e.type]), [map, enabled]);
+  // The UNFILTERED set drives layout; the filtered one only decides what is drawn. That split
+  // is what makes a chip toggle redraw instead of rearranging the map under the user (AC-3).
+  const allEdges = React.useMemo(() => map?.edges ?? [], [map]);
+  const edges = React.useMemo(() => allEdges.filter((e) => enabled[e.type]), [allEdges, enabled]);
+  const isFiltered = EDGE_TYPES.some((t) => !enabled[t]);
 
   // Node ids are paths; include edge endpoints even if a node wasn't described (dangling).
   const ids = React.useMemo(() => {
     const s = new Set<string>();
     nodes.forEach((nd) => s.add(nd.path));
-    (map?.edges ?? []).forEach((e) => {
+    allEdges.forEach((e) => {
       s.add(e.src);
       s.add(e.dst);
     });
     return [...s].sort();
-  }, [nodes, map]);
+  }, [nodes, allEdges]);
 
   const nodeByPath = React.useMemo(() => {
     const m: Record<string, (typeof nodes)[number]> = {};
@@ -126,7 +69,11 @@ export function CodeGraphView() {
     return m;
   }, [nodes]);
 
-  const pos = React.useMemo(() => computeLayout(ids, edges), [ids, edges]);
+  const layoutEdges = React.useMemo(
+    () => allEdges.map((e) => ({ a: e.src, b: e.dst })),
+    [allEdges],
+  );
+  const { pos, pending, relayout } = useGraphLayout(ids, layoutEdges, { width: W, height: H });
 
   // Fetch the rich neighborhood for the selected node (edges + touching items).
   React.useEffect(() => {
@@ -173,7 +120,19 @@ export function CodeGraphView() {
               relations. {map ? `${map.node_count} nodes · ${map.edge_count} edges.` : ""}
             </p>
           </div>
-          <div className="ml-auto flex flex-wrap gap-1.5">
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            {isFiltered && (
+              // Only offered under a filter: with every type on, the layout already reflects
+              // exactly what is drawn and re-laying out would move nodes for no reason.
+              <button
+                onClick={() => relayout(edges.map((e) => ({ a: e.src, b: e.dst })))}
+                disabled={pending}
+                title="Recompute positions from the visible edges only"
+                className="mr-1 inline-flex items-center gap-1.5 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg disabled:opacity-50"
+              >
+                {pending ? "Laying out…" : "Re-layout to visible"}
+              </button>
+            )}
             {EDGE_TYPES.map((t) => (
               <button
                 key={t}
