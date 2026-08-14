@@ -1088,3 +1088,34 @@ def test_the_roster_reports_enrolment_and_dismissal(client, auth, proj, key, db)
     assert rows[seated["agent_id"]]["enrolled"] is True
     assert rows[solo["agent_id"]]["enrolled"] is False
     assert all(a["dismissed"] is False for a in rows.values())
+
+
+def test_a_dismissed_agent_that_takes_work_comes_back(client, auth, proj, key, db):
+    """Dismissal is a claim about a DEAD agent, and work is the proof it was wrong.
+
+    Found on the real roster rather than in a test: of 24 rows, 8 were heartbeating within
+    seconds. `dismissed` and `alive` overlap, so the 409 at dismiss time only guards work held
+    at that INSTANT — an agent dismissed while idle can claim a minute later and hold a lease
+    nothing on the roster shows. That is the same invariant the refusal encodes, arriving late.
+
+    PRESENCE IS NOT ENOUGH TO COME BACK. A heartbeat is how an abandoned process behaves too,
+    and restoring on one would make a chatty idle agent impossible to dismiss. Taking work is
+    the act that has to be visible."""
+    from app.models import Agent
+
+    me = _ok(client, key, "register_agent", {"label": "idle-then-busy"})
+    client.post(f"/api/fleet/agents/{me['agent_id']}/dismiss", json={}, headers=auth)
+    assert db.get(Agent, me["agent_id"]).dismissed_at is not None
+
+    _ok(client, key, "create_item", {"title": "arrived later", "status": "next"})
+    _ok(client, key, "heartbeat", {"agent_id": me["agent_id"]})
+    assert db.get(Agent, me["agent_id"]).dismissed_at is not None, \
+        "a heartbeat alone must NOT restore — that is how an abandoned process behaves"
+
+    _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
+
+    db.expire_all()
+    assert db.get(Agent, me["agent_id"]).dismissed_at is None, \
+        "it holds a lease now — the roster cannot be hiding it"
+    rows = {a["id"]: a for a in fleet.list_agents(db, proj)}
+    assert rows[me["agent_id"]]["dismissed"] is False
