@@ -3,8 +3,9 @@ import * as React from "react";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { topByDegree } from "@/lib/graph/metrics";
+import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
 import { useGraphFind } from "@/lib/graph/useGraphFind";
+import { useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
 import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
@@ -50,6 +51,10 @@ export function CodeGraphView() {
   });
   const [selPath, setSelPath] = React.useState<string | null>(null);
   const [nb, setNb] = React.useState<CodeNeighbors | null>(null);
+  const [hoverId, setHoverId] = React.useState<string | null>(null);
+  // How many rings the selection lights. Shift-click (or Shift+Enter) widens it; a fresh
+  // selection resets it, so depth never quietly persists into the next thing you click.
+  const [depth, setDepth] = React.useState(1);
 
   const nodes = map?.nodes ?? [];
   // The UNFILTERED set drives layout; the filtered one only decides what is drawn. That split
@@ -119,27 +124,55 @@ export function CodeGraphView() {
     };
   }, [selPath, activeId]);
 
-  // Highlight set: the selected node, its edges, and their other endpoints.
+  // Highlight set: everything within `depth` rings of the selection. A BFS rather than the
+  // one-hop scan this replaced, so "expand by one ring" keeps working at ring two and three.
+  const drawnEdges = React.useMemo(
+    () => edges.map((e) => ({ a: e.src, b: e.dst })),
+    [edges],
+  );
   const hl = React.useMemo(() => {
     if (!selPath) return null;
-    const hlNodes = new Set<string>([selPath]);
+    const hlNodes = withinHops(ids, drawnEdges, selPath, depth);
     const hlEdges = new Set<string>();
     edges.forEach((e, i) => {
-      if (e.src === selPath || e.dst === selPath) {
-        hlEdges.add(String(i));
-        hlNodes.add(e.src);
-        hlNodes.add(e.dst);
-      }
+      // An edge lights only when BOTH ends are in the reach set — otherwise the outermost
+      // ring would trail half-edges into nodes that are themselves dimmed.
+      if (hlNodes.has(e.src) && hlNodes.has(e.dst)) hlEdges.add(String(i));
     });
     return { hlNodes, hlEdges };
-  }, [selPath, edges]);
+  }, [selPath, depth, ids, drawnEdges, edges]);
+
+  // Hover previews the 1-hop neighbourhood without committing a selection — read-before-click,
+  // which is what makes a dense graph explorable.
+  const hovered = React.useMemo(
+    () => (hoverId ? withinHops(ids, drawnEdges, hoverId, 1) : null),
+    [hoverId, ids, drawnEdges],
+  );
+
+  const degree = React.useMemo(() => degrees(ids, layoutEdges), [ids, layoutEdges]);
+  const tabOrder = React.useMemo(
+    () => [...ids].sort((a, b) => degree[b] - degree[a] || (a < b ? -1 : a > b ? 1 : 0)),
+    [ids, degree],
+  );
+  const selectNode = React.useCallback((id: string) => {
+    setSelPath(id);
+    setDepth(1);
+  }, []);
+  const kb = useGraphKeyboard({
+    order: tabOrder,
+    onSelect: selectNode,
+    onClear: () => setSelPath(null),
+    onExpand: () => setDepth((d) => Math.min(4, d + 1)),
+    setViewport: view.setViewport,
+  });
 
   // Find is highlight-by-another-name: it feeds the same dim path as selection rather than
   // introducing a second visual language for "these are the interesting ones".
   const lit = React.useMemo(() => {
     if (find.active) return find.matches;
+    if (hovered) return hovered;
     return hl?.hlNodes ?? null;
-  }, [find.active, find.matches, hl]);
+  }, [find.active, find.matches, hovered, hl]);
 
   // Ease the viewport onto the hits, once per query — not on every keystroke's re-render.
   const fitRef = React.useRef(view.fitTo);
@@ -249,7 +282,18 @@ export function CodeGraphView() {
             <svg
               ref={view.svgRef}
               viewBox={`0 0 ${W} ${H}`}
-              className={cn("h-full w-full touch-none", view.panning ? "cursor-grabbing" : "cursor-grab")}
+              className={cn(
+                "h-full w-full touch-none focus:outline-none",
+                view.panning ? "cursor-grabbing" : "cursor-grab",
+              )}
+              role="application"
+              tabIndex={0}
+              aria-label={
+                `Code graph: ${ids.length} nodes, ${edges.length} of ${allEdges.length} edges shown. ` +
+                `Arrow keys move between nodes, Enter selects, Shift+Enter widens by one ring, ` +
+                `Shift+arrows pan, Escape clears.`
+              }
+              onKeyDown={kb.onKeyDown}
               onClick={() => setSelPath(null)}
               {...view.svgHandlers}
             >
@@ -309,30 +353,50 @@ export function CodeGraphView() {
                 const described = !!node;
                 const stale = described && !node.fresh;
                 const pinned = pinsApi.isPinned(id);
+                const focused = kb.focusId === id;
+                const isHover = hoverId === id;
                 // Level of detail: zoomed out, only the names worth the ink survive — the
                 // selection, the search hits, and the hubs. Zoom past LABEL_ZOOM and the rest
                 // arrive. Past ~40 nodes the labels were previously the densest ink on screen.
                 const showLabel =
                   view.viewport.k > LABEL_ZOOM ||
                   selPath === id ||
+                  focused ||
+                  isHover ||
                   find.matches.has(id) ||
                   hubs.has(id);
                 return (
                   <g
                     key={id}
                     transform={`translate(${p.x},${p.y})`}
-                    className={pinned ? "cursor-grab" : "cursor-pointer"}
+                    className={cn(
+                      "focus:outline-none",
+                      pinned ? "cursor-grab" : "cursor-pointer",
+                    )}
                     opacity={active ? 1 : 0.22}
+                    role="button"
+                    tabIndex={kb.tabIndexFor(id)}
+                    aria-label={
+                      `${meta.label} ${id}, ${degree[id] ?? 0} connections` +
+                      (described ? (stale ? ", stale" : "") : ", not described") +
+                      (pinned ? ", pinned" : "")
+                    }
+                    aria-pressed={selPath === id}
+                    onFocus={() => kb.setFocusId(id)}
+                    onMouseEnter={() => setHoverId(id)}
+                    onMouseLeave={() => setHoverId((h) => (h === id ? null : h))}
                     {...pinsApi.nodeHandlers(id)}
                     onClick={(ev) => {
                       ev.stopPropagation();
                       // A drag ends with a click on the same node; do not also select it.
                       if (pinsApi.consumedDrag()) return;
-                      setSelPath(id);
+                      // Shift-click widens the reach by a ring instead of starting over.
+                      if (ev.shiftKey && selPath === id) setDepth((d) => Math.min(4, d + 1));
+                      else selectNode(id);
                     }}
                   >
                     <circle
-                      r={R}
+                      r={isHover ? R + 2 : R}
                       fill={described ? meta.color : "#0d1114"}
                       stroke={described ? "#0a0c0e" : meta.color}
                       strokeWidth={2}
@@ -342,8 +406,15 @@ export function CodeGraphView() {
                     {pinned && (
                       <circle r={R + 3} fill="none" stroke="#8b949e" strokeWidth={1} opacity={0.55} />
                     )}
-                    {selPath === id && (
-                      <circle r={R + 4} fill="none" stroke={meta.color} strokeWidth={1.5} opacity={0.5} />
+                    {/* One focus vocabulary: keyboard focus and selection wear the same ring. */}
+                    {(selPath === id || focused) && (
+                      <circle
+                        r={R + 4}
+                        fill="none"
+                        stroke={meta.color}
+                        strokeWidth={1.5}
+                        opacity={focused ? 0.9 : 0.5}
+                      />
                     )}
                     {showLabel && (
                       <text
@@ -366,7 +437,16 @@ export function CodeGraphView() {
             </svg>
           )}
 
-          {selPath && <NodeInspector path={selPath} nb={nb} onClose={() => setSelPath(null)} />}
+          {selPath && (
+            <NodeInspector
+              path={selPath}
+              nb={nb}
+              depth={depth}
+              reach={hl?.hlNodes.size ?? 1}
+              onExpand={() => setDepth((d) => Math.min(4, d + 1))}
+              onClose={() => setSelPath(null)}
+            />
+          )}
         </div>
       </div>
 
@@ -380,10 +460,16 @@ export function CodeGraphView() {
 function NodeInspector({
   path,
   nb,
+  depth,
+  reach,
+  onExpand,
   onClose,
 }: {
   path: string;
   nb: CodeNeighbors | null;
+  depth: number;
+  reach: number;
+  onExpand: () => void;
   onClose: () => void;
 }) {
   const node = nb?.node ?? null;
@@ -411,6 +497,20 @@ function NodeInspector({
         </button>
       </div>
       <div className="mb-2 break-all font-mono text-[11.5px] text-fg-2">{path}</div>
+      <div className="mb-2 flex items-center gap-2">
+        <span className="font-mono text-[10px] uppercase tracking-wide text-faint">
+          {depth} {depth === 1 ? "hop" : "hops"} · {reach} node{reach === 1 ? "" : "s"}
+        </span>
+        {depth < 4 && (
+          <button
+            onClick={onExpand}
+            title="Widen the highlight by one ring (or Shift-click the node)"
+            className="rounded border border-line-2 px-1.5 py-px font-mono text-[10px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+          >
+            expand +1
+          </button>
+        )}
+      </div>
       {node?.summary && <p className="mb-3 text-[12.5px] leading-relaxed text-muted">{node.summary}</p>}
 
       {!nb ? (

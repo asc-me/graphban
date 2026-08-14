@@ -2,8 +2,9 @@ import * as React from "react";
 
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
-import { topByDegree } from "@/lib/graph/metrics";
+import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
 import { useGraphFind } from "@/lib/graph/useGraphFind";
+import { useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
 import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
@@ -30,6 +31,8 @@ export function LinksGraphView() {
     dependency: true, code: true, semantic: true, tag: true,
   });
   const [sel, setSel] = React.useState<{ kind: "node"; id: string } | { kind: "link"; id: number } | null>(null);
+  const [hoverId, setHoverId] = React.useState<string | null>(null);
+  const [depth, setDepth] = React.useState(1);
 
   // `links` is the unfiltered set and drives layout; `shown` only decides what is drawn, so a
   // type chip redraws the same map with fewer lines instead of rearranging it (AC-3).
@@ -62,19 +65,18 @@ export function LinksGraphView() {
 
   const nodeKind = (id: string) => (id.startsWith("R-") ? "request" : "item");
 
-  // Highlight set for the current selection.
+  // Highlight set: everything within `depth` rings of the selection (BFS, so expand keeps
+  // working past ring one). Selecting a LINK still lights just its two endpoints.
+  const drawnEdges = React.useMemo(() => shown.map((l) => ({ a: l.a, b: l.b })), [shown]);
   const hl = React.useMemo(() => {
     if (!sel) return null;
     const nodes = new Set<string>();
     const edgeIds = new Set<number>();
     if (sel.kind === "node") {
-      nodes.add(sel.id);
+      withinHops(ids, drawnEdges, sel.id, depth).forEach((id) => nodes.add(id));
       shown.forEach((l) => {
-        if (l.a === sel.id || l.b === sel.id) {
-          edgeIds.add(l.id);
-          nodes.add(l.a);
-          nodes.add(l.b);
-        }
+        // Both ends must be in reach, or the outer ring trails half-edges into dimmed nodes.
+        if (nodes.has(l.a) && nodes.has(l.b)) edgeIds.add(l.id);
       });
     } else {
       const l = links.find((x) => x.id === sel.id);
@@ -85,12 +87,34 @@ export function LinksGraphView() {
       }
     }
     return { nodes, edgeIds };
-  }, [sel, shown, links]);
+  }, [sel, depth, ids, drawnEdges, shown, links]);
+
+  const hovered = React.useMemo(
+    () => (hoverId ? withinHops(ids, drawnEdges, hoverId, 1) : null),
+    [hoverId, ids, drawnEdges],
+  );
+
+  const degree = React.useMemo(() => degrees(ids, layoutEdges), [ids, layoutEdges]);
+  const tabOrder = React.useMemo(
+    () => [...ids].sort((a, b) => degree[b] - degree[a] || (a < b ? -1 : a > b ? 1 : 0)),
+    [ids, degree],
+  );
+  const selectNode = React.useCallback((id: string) => {
+    setSel({ kind: "node", id });
+    setDepth(1);
+  }, []);
+  const kb = useGraphKeyboard({
+    order: tabOrder,
+    onSelect: selectNode,
+    onClear: () => setSel(null),
+    onExpand: () => setDepth((d) => Math.min(4, d + 1)),
+    setViewport: view.setViewport,
+  });
 
   // Find feeds the same dim path as selection rather than adding a second visual language.
   const lit = React.useMemo(
-    () => (find.active ? find.matches : (hl?.nodes ?? null)),
-    [find.active, find.matches, hl],
+    () => (find.active ? find.matches : (hovered ?? hl?.nodes ?? null)),
+    [find.active, find.matches, hovered, hl],
   );
 
   // Ease onto the hits once per query, not on every keystroke's re-render.
@@ -187,7 +211,18 @@ export function LinksGraphView() {
           <svg
             ref={view.svgRef}
             viewBox={`0 0 ${W} ${H}`}
-            className={cn("h-full w-full touch-none", view.panning ? "cursor-grabbing" : "cursor-grab")}
+            className={cn(
+              "h-full w-full touch-none focus:outline-none",
+              view.panning ? "cursor-grabbing" : "cursor-grab",
+            )}
+            role="application"
+            tabIndex={0}
+            aria-label={
+              `Links graph: ${ids.length} nodes, ${shown.length} of ${links.length} links shown. ` +
+              `Arrow keys move between nodes, Enter selects, Shift+Enter widens by one ring, ` +
+              `Shift+arrows pan, Escape clears.`
+            }
+            onKeyDown={kb.onKeyDown}
             onClick={() => setSel(null)}
             {...view.svgHandlers}
           >
@@ -222,28 +257,53 @@ export function LinksGraphView() {
               const kind = nodeKind(id);
               const color = kind === "request" ? "#4fd6c4" : "#c6f24e";
               const pinned = pinsApi.isPinned(id);
+              const focused = kb.focusId === id;
+              const isHover = hoverId === id;
+              const selectedHere = sel?.kind === "node" && sel.id === id;
               const showLabel =
                 view.viewport.k > LABEL_ZOOM ||
-                (sel?.kind === "node" && sel.id === id) ||
+                selectedHere ||
+                focused ||
+                isHover ||
                 find.matches.has(id) ||
                 hubs.has(id);
               return (
                 <g
                   key={id}
                   transform={`translate(${p.x},${p.y})`}
-                  className={pinned ? "cursor-grab" : "cursor-pointer"}
+                  className={cn("focus:outline-none", pinned ? "cursor-grab" : "cursor-pointer")}
                   opacity={active ? 1 : 0.25}
+                  role="button"
+                  tabIndex={kb.tabIndexFor(id)}
+                  aria-label={
+                    `${kind} ${id}, ${degree[id] ?? 0} connections` + (pinned ? ", pinned" : "")
+                  }
+                  aria-pressed={selectedHere}
+                  onFocus={() => kb.setFocusId(id)}
+                  onMouseEnter={() => setHoverId(id)}
+                  onMouseLeave={() => setHoverId((h) => (h === id ? null : h))}
                   {...pinsApi.nodeHandlers(id)}
                   onClick={(e) => {
                     e.stopPropagation();
                     // A drag ends with a click on the same node; do not also select it.
                     if (pinsApi.consumedDrag()) return;
-                    setSel({ kind: "node", id });
+                    if (e.shiftKey && selectedHere) setDepth((d) => Math.min(4, d + 1));
+                    else selectNode(id);
                   }}
                 >
-                  <circle r={8} fill={color} stroke="#0a0c0e" strokeWidth={2} />
+                  <circle r={isHover ? 10 : 8} fill={color} stroke="#0a0c0e" strokeWidth={2} />
                   {pinned && (
                     <circle r={11} fill="none" stroke="#8b949e" strokeWidth={1} opacity={0.55} />
+                  )}
+                  {/* One focus vocabulary: keyboard focus and selection wear the same ring. */}
+                  {(selectedHere || focused) && (
+                    <circle
+                      r={12}
+                      fill="none"
+                      stroke={color}
+                      strokeWidth={1.5}
+                      opacity={focused ? 0.9 : 0.5}
+                    />
                   )}
                   {showLabel && (
                     <text

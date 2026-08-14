@@ -90,6 +90,8 @@ export interface GraphViewport {
   /** Ease the view to frame these points — used by find (D2) to fit the matches. */
   fitTo: (points: Pos[]) => void;
   reset: () => void;
+  /** Exposed so keyboard panning (D3) moves the same state the pointer does. */
+  setViewport: React.Dispatch<React.SetStateAction<Viewport>>;
   /** Screen -> world, for turning a pointer event into a node position while dragging. */
   toWorld: (clientX: number, clientY: number) => Pos;
   svgRef: React.RefObject<SVGSVGElement | null>;
@@ -180,6 +182,7 @@ export function useGraphViewport(width: number, height: number): GraphViewport {
     svgHandlers: { onWheel, onPointerDown, onPointerMove, onPointerUp, onDoubleClick },
     fitTo,
     reset,
+    setViewport,
     toWorld,
     svgRef,
   };
