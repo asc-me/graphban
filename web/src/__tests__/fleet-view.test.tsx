@@ -116,9 +116,18 @@ describe("Fleet view", () => {
     expect(screen.getByText("branch orphaned")).toBeInTheDocument();
   });
 
-  it("keeps offline agents on the roster rather than hiding them", () => {
+  it("keeps an offline agent reachable rather than dropping it", async () => {
+    // The rule TIGHTENED here, and the distinction is holding rather than presence. An offline
+    // agent that holds nothing is history — two thirds of a real roster was that, so the tab
+    // answering "who is here now" was mostly answering "who was ever here". It is collapsed
+    // behind a toggle, never dropped: the row is still the record that the agent existed.
     fleet.data = { ...BASE, total: 1, agents: [{ ...AGENT, state: "offline" }] };
+    const user = userEvent.setup();
     renderView();
+
+    expect(screen.queryByText("opus @ macbook:wt-2")).not.toBeInTheDocument();
+
+    await user.click(screen.getByText(/Show 1 gone/));
     expect(screen.getByText("opus @ macbook:wt-2")).toBeInTheDocument();
     expect(screen.getByText("offline")).toBeInTheDocument();
   });
@@ -438,5 +447,36 @@ describe("Fleet view", () => {
     renderView();
 
     expect(screen.getByRole("button", { name: "End wave" })).toBeInTheDocument();
+  });
+
+  it("collapses agents that are gone, but never one that still holds something", async () => {
+    // Two thirds of the roster was dead agents holding nothing — the tab answering "who is
+    // here now" was mostly answering "who was ever here".
+    //
+    // The line is HOLDING, not presence. "Offline agents fade rather than vanish" was written
+    // for the agent that died mid-work: a lease nobody can finish, or a branch only a human
+    // can resolve. Hiding THAT would be the bug this collapse must not introduce.
+    const agent = (id: string, state: string, extra = {}) => ({
+      ...AGENT, id, key: id, state, holdings: [], branch_orphaned: false, ...extra,
+    });
+    fleet.data = {
+      ...BASE,
+      agents: [
+        agent("GB-A1", "working"),
+        agent("GB-A2", "offline"),
+        agent("GB-A3", "offline", { holdings: [{ id: "GB-7", title: "x", status: "in_progress" }] }),
+        agent("GB-A4", "offline", { branch_orphaned: true }),
+      ],
+    };
+    const user = userEvent.setup();
+    renderView();
+
+    expect(screen.getByText("GB-A1")).toBeInTheDocument();            // live
+    expect(screen.getByText("GB-A3")).toBeInTheDocument();            // dead, holding an item
+    expect(screen.getByText("GB-A4")).toBeInTheDocument();            // dead, orphaned branch
+    expect(screen.queryByText("GB-A2")).not.toBeInTheDocument();      // dead, holding nothing
+
+    await user.click(screen.getByText(/Show 1 gone/));
+    expect(screen.getByText("GB-A2")).toBeInTheDocument();
   });
 });

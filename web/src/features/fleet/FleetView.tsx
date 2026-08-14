@@ -197,6 +197,7 @@ export function FleetView() {
   // confusing precisely because the tabs exist to keep those questions apart.
   const [showSpentSeats, setShowSpentSeats] = React.useState(false);
   const [showDeadCreds, setShowDeadCreds] = React.useState(false);
+  const [showGone, setShowGone] = React.useState(false);
   // The wave label comes BACK from the server now. It used to be hardcoded `wave-1` here, so
   // every wave for weeks landed in one bucket and End wave always ended everything.
   const [wave, setWave] = React.useState<string | null>(null);
@@ -333,6 +334,18 @@ export function FleetView() {
   const spentSeats = (data?.seats ?? []).filter((s) => s.state === "revoked" || s.state === "expired");
   const liveCreds = (data?.credentials ?? []).filter((c) => !c.revoked);
   const deadCreds = (data?.credentials ?? []).filter((c) => c.revoked);
+
+  // An offline agent that still HOLDS something is unfinished business — a lease nobody can
+  // finish, or a branch only a human can resolve. That is what "offline agents fade rather
+  // than vanish" was written for, and it is kept in full view.
+  //
+  // An offline agent holding nothing is history, exactly like a revoked seat. Two thirds of
+  // this roster was that: 16 of 24 rows, so the tab answering "who is here now" was mostly
+  // answering "who was ever here".
+  const shownAgents = agents.filter(
+    (a) => a.state !== "offline" || a.holdings.length > 0 || a.branch_orphaned);
+  const goneAgents = agents.filter(
+    (a) => a.state === "offline" && a.holdings.length === 0 && !a.branch_orphaned);
   // Already dead, so revoking only tidies the list. Deliberately NOT "never used" — see
   // clearExpiredCredentials.
   const expiredCreds = liveCreds.filter(
@@ -460,7 +473,16 @@ export function FleetView() {
           {agents.length === 0 ? (
             <Empty>No agents yet. Mint a credential below and paste it into a terminal.</Empty>
           ) : (
-            <div className="space-y-2">{agents.map((a) => <AgentRow key={a.id} a={a} />)}</div>
+            <div className="space-y-2">
+              {shownAgents.map((a) => <AgentRow key={a.id} a={a} />)}
+              {goneAgents.length > 0 && (
+                <button onClick={() => setShowGone((v) => !v)}
+                        className="w-full pt-1 text-left text-[11px] text-faint hover:text-fg-2">
+                  {showGone ? "Hide" : "Show"} {goneAgents.length} gone
+                </button>
+              )}
+              {showGone && goneAgents.map((a) => <AgentRow key={a.id} a={a} />)}
+            </div>
           )}
         </Section>
 
