@@ -255,7 +255,11 @@ def test_quarantine_flags_an_orphaned_branch(client, agent_key, db):
     db.commit()
     _ok(client, agent_key, "claim_next", {"agent_id": me["agent_id"]})
 
-    fleet.quarantine(db, me["agent_id"])
+    out = fleet.quarantine(db, me["agent_id"])
 
-    db.refresh(agent)
-    assert agent.branch_orphaned is True
+    # Asserted on the FACT, not on a column: `branch_orphaned` is derived now (GRPH-396),
+    # because as a column it was written only here — so it fired for the drifting agent and
+    # never for the dead one, which is the case it exists for.
+    assert out["branch_orphaned"] is True
+    rows = {a["id"]: a for a in fleet.list_agents(db)}
+    assert rows[me["agent_id"]]["branch_orphaned"] is True

@@ -273,13 +273,14 @@ def list_agents(db: Session, project_id: str | None = None, *,
             held.setdefault(it.claimed_by, []).append(it)
     out = []
     for a in agents:
+        state = ("offline" if a.api_key_id in dead_keys
+                 else presence_state(a, lease_seconds=lease_seconds, now=now))
         out.append({
             "id": a.id,      # frozen, internal — what `claimed_by` and `reviewed_by` store
             "key": a.key,    # rendered from the project's CURRENT tag (PRD-13)
             "label": a.label,
             "active_role": a.active_role,
-            "state": ("offline" if a.api_key_id in dead_keys
-                      else presence_state(a, lease_seconds=lease_seconds, now=now)),
+            "state": state,
             "capabilities": a.capabilities or {},
             # The DISPLAY PREFIX only — `gb_sk_ab12`. Never the plaintext, which is not stored
             # and could not be emitted even deliberately, and never the row id, which says
@@ -294,7 +295,7 @@ def list_agents(db: Session, project_id: str | None = None, *,
             "dismissed": a.dismissed_at is not None,
             "worktree": a.worktree,
             "branch": a.branch,
-            "branch_orphaned": a.branch_orphaned,
+            "branch_orphaned": has_orphaned_branch(a, state),
             # ISO string, not a datetime: this dict crosses the MCP boundary as JSON, and a
             # raw datetime raises there rather than at the call site that built it.
             "last_seen_at": a.last_seen_at.isoformat() if a.last_seen_at else None,
@@ -323,7 +324,10 @@ def dismiss_agent(db: Session, *, agent_id: str, undo: bool = False) -> Agent:
         raise ValueError(f"unknown agent: {agent_id}")
     if not undo:
         held = db.scalars(select(Item).where(Item.claimed_by == agent_id)).all()
-        if held or agent.branch_orphaned:
+        # The derived definition, so this guard covers the DEAD agent too (GRPH-396). While
+        # the flag was a column written only by `quarantine()`, Dismiss went straight through
+        # on a crashed agent that had left a branch — exactly the row an operator dismisses.
+        if held or has_orphaned_branch(agent, presence_state(agent)):
             raise ValueError(
                 f"{agent_id} still holds "
                 + (f"{len(held)} item(s)" if held else "an unmerged branch")
@@ -641,14 +645,12 @@ def quarantine(db: Session, agent_id: str) -> dict:
         db.delete(row)
 
     agent.state = "quarantined"
-    # A branch left behind is state only a human can resolve — the fleet can release the ITEM
-    # but it cannot merge or discard someone's edits.
-    if agent.branch and released:
-        agent.branch_orphaned = True
     db.commit()
+    # Derived, not written (GRPH-396). A quarantined agent that declared a branch left it
+    # behind — and so does a dead one, which is what writing it here could never say.
     return {"quarantined": True, "released_items": released,
             "released_reservations": len(reservations),
-            "branch_orphaned": agent.branch_orphaned}
+            "branch_orphaned": has_orphaned_branch(agent, "quarantined")}
 
 
 # ---- D3: review, sign-off, and the self-review ban -----------------------------------------
@@ -805,12 +807,23 @@ def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = 
     stmt = select(Item).where(Item.status == "review")
     if project_id:
         stmt = stmt.where(Item.project_id == project_id)
+    taken = []
     for it in db.scalars(stmt).all():
         if it.built_by == agent_id:
+            continue
+        holder = review_claim_holder(it)
+        if holder is not None and holder != agent_id:
+            taken.append(holder)
             continue
         author = db.get(Agent, it.built_by) if it.built_by else None
         if me is not None and not independent(me, author):
             return NOT_INDEPENDENT
+    if taken:
+        # Now that a review claim is a real lease (GRPH-395) it can be the reason for an empty
+        # answer, and "nothing waiting" would be a lie with a queue full of work: the fleet is
+        # busy, not idle, and this reviewer should wait rather than go looking for a problem.
+        return (f"every item awaiting review is already being reviewed — by "
+                f"{', '.join(sorted(set(taken)))}; their claims lapse if they go silent")
     return "no item awaiting a second pair of eyes"
 
 
@@ -841,8 +854,9 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         # role system is to promote a worker to reviewer while it holds its own item; it does
         # not work, because an agent's id does not change when its role does.
         if it.built_by != agent_id
-        # Already being reviewed by somebody else.
-        and not (it.reviewed_by and it.reviewed_by != agent_id)
+        # Already being reviewed by somebody else — while their claim is still LIVE. A
+        # reviewer that went silent releases it, the same way a worker's lease releases.
+        and (review_claim_holder(it, lease_seconds=lease_seconds) or agent_id) == agent_id
         # And separate enough for the review to mean anything (GRPH-361).
         and (me is None or independent(me, db.get(Agent, it.built_by) if it.built_by else None))
     ]
@@ -857,7 +871,10 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         candidates = cross or candidates
 
     item = candidates[0]
-    item.reviewed_by = agent_id
+    # The HOLD, not the verdict. `reviewed_by` is written once, at sign-off, by whoever
+    # actually decided — so an abandoned review can never look like a completed one.
+    item.review_claimed_by = agent_id
+    item.review_claimed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(item)
     return item
@@ -917,6 +934,15 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # refusal: reporting a self-review on an item still in progress would send the caller
     # looking for a second agent when the actual answer is that the work is not finished.
     _require_in_review(item, "sign off")
+    # A live claim by SOMEBODY ELSE. Without this the lease is advisory — two reviewers can
+    # both work an item and the second one's verdict simply lands, which is the duplicated
+    # effort `claim_review` exists to prevent. An unclaimed item stays signable, because
+    # nothing requires a reviewer to claim before deciding.
+    holder = review_claim_holder(item)
+    if holder is not None and holder != agent_id:
+        raise NotInReview(
+            f"{item.key} is being reviewed by {holder}; wait for their verdict or take other "
+            "work with claim_review")
     # Danger mode is checked ONCE, here, and its answer is reused by the second gate below.
     # Asking twice would mean two chances to answer differently — and this is exactly the kind
     # of gate where a later refactor makes one of them read a weaker condition.
@@ -968,6 +994,10 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
 
     release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
+    # The hold is spent by the verdict. Leaving it set would keep a `done` item looking like
+    # something under review, which is the confusion these two columns were split to end.
+    item.review_claimed_by = None
+    item.review_claimed_at = None
     item.status = "done"
     if danger:
         # A self-review that leaves no trace is indistinguishable from a reviewed one, and the
@@ -1018,6 +1048,8 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     item.claimed_at = None
     item.assignee = ""
     item.reviewed_by = None
+    item.review_claimed_by = None
+    item.review_claimed_at = None
     item.bounce_pinned_to = author
     item.bounce_pinned_until = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
                                 if author else None)
@@ -1028,6 +1060,45 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     db.commit()
     db.refresh(item)
     return item
+
+
+def has_orphaned_branch(agent: Agent, state: str) -> bool:
+    """Did this agent leave a branch nobody can merge? (GRPH-396)
+
+    DERIVED, because a written flag had exactly one writer — `quarantine()`, which its own
+    docstring says is "only ever reached by an agent that is demonstrably alive". So it fired
+    for the drifting agent and never for the dead one, which is the case it exists for: a
+    crashed agent is precisely the agent that cannot clean up after itself. Found on the walk,
+    where a worker killed mid-lease left `walk/step10b` behind and nothing anywhere said so.
+
+    The definition is simply: it declared a branch, and it is not here any more. The fleet
+    releases the ITEM on its own; the branch is the part only a human can resolve, which is
+    why it belongs on the roster rather than in a log.
+    """
+    return bool(agent.branch) and state in ("offline", "quarantined")
+
+
+def review_claim_holder(item: Item, *, now: datetime | None = None,
+                        lease_seconds: int = DEFAULT_LEASE_SECONDS) -> str | None:
+    """Who is reviewing this right now, or None once their claim has gone stale (GRPH-395).
+
+    Deliberately shaped like `bounce_pin_holder` below, because it is the same fact: a hold
+    that must lapse. `claim_review` used to write `reviewed_by` with no expiry and nothing ever
+    cleared it, so a reviewer that died removed the item from every other reviewer's candidate
+    list for good — while it sat in `review` looking like ordinary queued work.
+
+    A claim with NO timestamp counts as expired. That is what makes the 0071 backfill free
+    every item the old behaviour stranded, rather than carrying the strand forward under new
+    column names.
+    """
+    if not item.review_claimed_by:
+        return None
+    if item.review_claimed_at is None:
+        return None
+    claimed = _aware(item.review_claimed_at)
+    if (now or datetime.now(timezone.utc)) - claimed > timedelta(seconds=lease_seconds):
+        return None
+    return item.review_claimed_by
 
 
 def bounce_pin_holder(item: Item, *, now: datetime | None = None) -> str | None:
@@ -1224,7 +1295,8 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     # more work should not be refused because of the cluster it is already holding.
     blocked = [r.area for r in taken if r.agent_id != agent_id]
 
-    for cluster in collision_svc.clusters_for_project(db, project_id):
+    for cluster in collision_svc.clusters_for_project(db, project_id,
+                                                       lease_seconds=lease_seconds):
         overlap = areas_collide(cluster.get("areas") or [], blocked)
         if overlap:
             continue
@@ -1721,7 +1793,11 @@ def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
         "id": it.id, "key": it.key, "title": it.title, "branch": it.branch,
         "built_by": it.built_by,
         "built_by_label": labels.get(it.built_by) if it.built_by else None,
-        "reviewed_by": it.reviewed_by,
+        # WHO IS ON IT NOW. Items in this queue are `review`, so `reviewed_by` is empty here by
+        # definition — the verdict is written at sign-off, which is when the item leaves. The
+        # queue's question is "is somebody already looking at this", and after the split
+        # (GRPH-395) that is the live claim, not the verdict.
+        "reviewed_by": review_claim_holder(it),
     } for it in rows]
 
 

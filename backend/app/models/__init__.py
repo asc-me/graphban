@@ -332,6 +332,20 @@ class Item(Base):
     # equal to `claimed_by` — an agent cannot pass its own work. Kept as data rather than
     # inferred from the event log so the assertion at sign-off is a column comparison.
     reviewed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    # THE IN-FLIGHT HOLD, which is a different fact from the verdict above and now has its own
+    # columns (GRPH-395). `claim_review` used to lease by writing `reviewed_by` — one column
+    # meaning both "somebody is reviewing this" and "somebody signed this off" — and nothing
+    # ever cleared the first meaning: no expiry, no sweep, and `release_item` refuses a
+    # reviewer because a reviewer holds no `claimed_by`. A reviewer that died kept the item out
+    # of every other reviewer's candidate list permanently, while it sat in `review` looking
+    # like ordinary queued work.
+    #
+    # This lease expires like the others. A NULL `review_claimed_at` beside a set
+    # `review_claimed_by` reads as ALREADY EXPIRED, which is what the 0071 backfill relies on
+    # to free every item the old behaviour stranded.
+    review_claimed_by: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    review_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                               nullable=True)
     # A bounced item goes back to its AUTHOR first (PRD-17 D-f): the agent that wrote it has
     # the context, and letting the fleet re-divvy it immediately would hand a stranger a
     # half-finished change plus a review comment about code they have never seen.
@@ -632,11 +646,11 @@ class Agent(Base):
     capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
     worktree: Mapped[str] = mapped_column(String, default="")
     branch: Mapped[str] = mapped_column(String, default="")
-    # Presence lapsed while a branch was unmerged. The fleet releases the ITEM by itself;
-    # the BRANCH is state only a human can resolve, so it is surfaced on the roster rather
-    # than left as a footnote in a log nobody reads.
-    branch_orphaned: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
-                                                  nullable=False)
+    # An orphaned branch is DERIVED from `branch` + presence — see `fleet.has_orphaned_branch`
+    # (GRPH-396). It used to be a column written in one place, inside `quarantine()`, which is
+    # only reachable by an agent making refused calls: so the flag fired for the DRIFTING agent
+    # and never for the DEAD one, which is the case it exists for. Deriving it also keeps the
+    # dismissal guard honest, since that guard reads the same definition everyone else does.
     # The agent that spawned this one, when it declares itself a subagent (GRPH-361). NULL for
     # a top-level process, which is almost all of them. Self-reported like `worktree` and
     # `vendor` — the server cannot see inside a call tree — but a declared parent is checked
@@ -655,6 +669,17 @@ class Agent(Base):
     # `GRPH-A3` name two different agents at different times and the audit trail could no
     # longer tell them apart. Hiding is the only safe removal.
     dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The MCP connection this agent registered over (PRD-19 E9a). Issued at `initialize` and
+    # echoed by the client, so a later `tools/list` on the same connection can be attributed to
+    # THIS agent rather than only to the credential — which several agents share by design.
+    #
+    # NOT AUTHORITY. It says which agent a request probably belongs to, for trimming the
+    # manifest and for sharper refusals; the seat still decides what may be called. A forged or
+    # replayed id buys its holder a different tool list and nothing else.
+    #
+    # Nullable because most callers never send one: a client that predates this, or one that
+    # drops the header, simply gets the untrimmed manifest it gets today.
+    mcp_session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 

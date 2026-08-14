@@ -12,9 +12,11 @@ Handled methods: `initialize`, `tools/list`, `tools/call`, and the
 from __future__ import annotations
 
 import json
+import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
+from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 import logging
 
@@ -1366,7 +1368,7 @@ LIVE_TOOL_COUNT = len(TOOLS)
 _SCHEMA_BY_NAME: dict[str, dict] = {t["name"]: t["inputSchema"] for t in TOOLS}
 
 
-def _visible_tools(key: ApiKey) -> list[dict]:
+def _visible_tools(key: ApiKey, role: str | None = None) -> list[dict]:
     """The manifest a given key should see, gated by SCOPE and then by ROLE.
 
     Scope (AL-78): a key without `write` gets a `Forbidden` on every mutating tool, so
@@ -1396,6 +1398,12 @@ def _visible_tools(key: ApiKey) -> list[dict]:
     tools = TOOLS if "write" in (key.scopes or []) else [
         t for t in TOOLS if t["name"] in _READ_ONLY]
     allowed = set(fleet_svc.eligible_roles(key))
+    # E9b: the SESSION's role, when this connection carries exactly one registered agent, is
+    # narrower than the credential and is what the agent will actually be judged by. It never
+    # widens — an intersection, so a worker seat on a reviewer-only key still sees neither
+    # role's extra tools rather than gaining the worker's.
+    if role and role != fleet_svc.ALL_IN_ONE:
+        allowed = allowed & {role}
     if allowed >= set(fleet_svc.ROLES):
         return tools           # unrestricted credential — the pre-PRD-17 manifest, unchanged
     return [t for t in tools
@@ -1624,7 +1632,8 @@ def _scoped_item(db: Session, item_id: str, scope_ids: list[str]) -> Item:
 TOOL_ALIASES = {"report_agentledger_issue": "report_graphban_issue"}
 
 
-def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any:
+def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
+               session_id: str | None = None) -> Any:
     name = TOOL_ALIASES.get(name, name)
     # Authority: a key's declared scopes ∩ its owner's memberships bound every call
     # (a key never out-ranks the user who minted it). `project_id` args can select
@@ -2076,6 +2085,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             # that already branches on refusals needs no new case.
             raise authz.Forbidden(str(e), hint="ask for a seat in the Fleet view, or register "
                                                "without one to work as all-in-one")
+        # E9a: remember which connection this agent arrived on, so a later `tools/list` over
+        # the same one can be answered for THIS agent instead of for the shared credential.
+        # Written after the refusal path above, because an agent that was refused does not
+        # exist to bind.
+        if session_id:
+            agent.mcp_session_id = session_id
+            db.commit()
         return {
             "agent_id": agent.id, "key": agent.key, "active_role": agent.active_role,
             "eligible_roles": list(fleet_svc.eligible_roles(key)),
@@ -2424,6 +2440,37 @@ def _attach_directive(db: Session, result: Any, args: dict) -> Any:
     return result
 
 
+def _session_role(db: Session, request: Request) -> str | None:
+    """The role of the agent registered on THIS connection, or None (PRD-19 E9a/E9b).
+
+    None means "cannot say", and every caller treats that as today's behaviour rather than as
+    a restriction — a client that never sends the header, one that predates it, or a connection
+    with no registered agent all land here.
+
+    **Two agents on one connection resolve to None as well**, and that case is real: an
+    orchestrator and the subagent it spawns can share a transport. Guessing between them would
+    hand somebody a manifest trimmed for the other one, and the whole value of this is that a
+    wrong answer costs nothing — so it declines to answer instead.
+    """
+    from app.models import Agent
+    from app.services import fleet as fleet_svc
+
+    sid = request.headers.get("mcp-session-id")
+    if not sid:
+        return None
+    rows = db.scalars(select(Agent).where(Agent.mcp_session_id == sid,
+                                          Agent.dismissed_at.is_(None))).all()
+    live = [a for a in rows if fleet_svc.presence_state(a) != "offline"]
+    if len(live) != 1:
+        return None
+    agent = live[0]
+    # An expired seat grants no role, so it must not narrow the manifest either — the agent
+    # needs `fleet_status` to collect the directive telling it to re-enrol.
+    if fleet_svc.session_expired(db, agent):
+        return None
+    return agent.active_role
+
+
 def _rpc_result(id_: Any, result: Any) -> dict:
     return {"jsonrpc": "2.0", "id": id_, "result": result}
 
@@ -2483,17 +2530,36 @@ async def mcp_endpoint(
     if method == "initialize":
         requested = body.get("params", {}).get("protocolVersion")
         version = requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
-        return _rpc_result(
+        out = JSONResponse(_rpc_result(
             id_,
             {
                 "protocolVersion": version,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "graphban", "version": "0.1.0"},
             },
-        )
+        ))
+        # E9a. A client that echoes this back lets a later `tools/list` be attributed to ONE
+        # agent rather than only to a credential several agents share. A client that ignores it
+        # is unaffected: every path below falls back to the credential.
+        out.headers["Mcp-Session-Id"] = secrets.token_urlsafe(18)
+        return out
 
     if method == "tools/list":
-        return _rpc_result(id_, {"tools": _visible_tools(key)})
+        # E9b. Narrowed to the registered agent's role when this connection carries exactly one
+        # — otherwise the credential's ceiling, which is today's answer.
+        role = _session_role(db, request)
+        if role is not None:
+            # THE PROBE E9c TURNS ON (GRPH-398). A narrowed answer can only be produced by a
+            # `tools/list` issued AFTER `register_agent` — so one of these events existing at
+            # all is proof that a real client re-fetches its manifest unprompted, and none of
+            # them existing after a week of fleet use is proof it does not.
+            #
+            # Recorded only in that case. The connect-time fetch happens on every session and
+            # would bury the Activity feed while answering nothing: it is the fetch we already
+            # know about.
+            events_svc.record_key(db, key, action="tools_list_refetched", target_type="",
+                                  target_id="", project_id=None, meta={"role": role})
+        return _rpc_result(id_, {"tools": _visible_tools(key, role=role)})
 
     if method == "tools/call":
         params = body.get("params", {})
@@ -2518,7 +2584,9 @@ async def mcp_endpoint(
             # Run tool dispatch (sync DB + any outbound IO like report_graphban_issue) off
             # the event loop, so a slow/hanging tool never blocks the async server — and a
             # same-host upstream loop-back can still be served concurrently.
-            result = await run_in_threadpool(_call_tool, db, name, args, key)
+            result = await run_in_threadpool(
+                _call_tool, db, name, args, key,
+                request.headers.get("mcp-session-id"))
             # The DOWNLINK (PRD-17 D-e). MCP is client→server: the server cannot wake an idle
             # terminal, so the orchestrator's intent rides back on whatever the agent polls
             # next. A role change is not an error and does not arrive as one — the agent's

@@ -518,6 +518,23 @@ def _is_claimable(it: Item, cutoff) -> bool:
     return False  # someone holds a live lease
 
 
+def claimable(item: Item, *, lease_seconds: int = DEFAULT_LEASE_SECONDS, now=None) -> bool:
+    """Could some agent take this item right now? (GRPH-397)
+
+    Public because the answer must be the SAME everywhere it is asked, and it was not: this
+    predicate governed `claim_next`, while `clusters_for_project` decided the divvy's pool with
+    its own rule — `status in ("backlog", "next")`. An item whose holder died stays
+    `in_progress` (the lease expires lazily; nothing rewrites the row), so it satisfied this
+    and failed that, and `claim_cluster` could never offer it again.
+
+    That was survivable while `claim_cluster` was a fleet-worker tool. It stopped being
+    survivable when it became what every posture is taught, because then a crashed agent's item
+    is offered to nobody at all — the queue silently losing work.
+    """
+    cutoff = (now or utcnow()) - timedelta(seconds=lease_seconds)
+    return _is_claimable(item, cutoff)
+
+
 def _ready_candidates(db: Session, project_id: str | None, lease_seconds: int) -> list[Item]:
     from app.services import prioritization as prio
 
