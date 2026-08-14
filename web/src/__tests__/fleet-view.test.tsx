@@ -51,6 +51,10 @@ const BASE = {
  * questions — who is out there, what seats are outstanding, which credential each agent is on
  * — so a test that provisions has to open the one that provisions.
  */
+async function openWork(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /^Work/ }));
+}
+
 async function openWave(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: /^Wave/ }));
 }
@@ -132,7 +136,7 @@ describe("Fleet view", () => {
     expect(screen.getByText("offline")).toBeInTheDocument();
   });
 
-  it("renders the review ban as a negative on the item", () => {
+  it("renders the review ban as a negative on the item", async () => {
     // "AGT-4 built it" — the refusal belongs to the ITEM. A list of who is eligible would make
     // the reader reconstruct the invariant instead of reading it.
     fleet.data = { ...BASE, review_queue: [{
@@ -140,10 +144,11 @@ describe("Fleet view", () => {
       built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: null,
     }] };
     renderView();
+    await openWork(userEvent.setup());
     expect(screen.getByText("opus @ macbook built it")).toBeInTheDocument();
   });
 
-  it("says why a held-back cluster is waiting", () => {
+  it("says why a held-back cluster is waiting", async () => {
     // Without the reason a queued cluster looks like the fleet being stuck, and a human
     // overrides the divvy.
     fleet.data = { ...BASE, clusters: [{
@@ -151,6 +156,7 @@ describe("Fleet view", () => {
       held_by: "GB-A1", blocked_on: "backend/app/models",
     }] };
     renderView();
+    await openWork(userEvent.setup());
     expect(screen.getByText(/queued until GB-A1 releases/)).toBeInTheDocument();
   });
 
@@ -403,7 +409,7 @@ describe("Fleet view", () => {
     expect(screen.getByText(/Clear the 2 unredeemed/)).toBeInTheDocument();
 
     // Credentials live on the ROSTER tab now, so this is a tab switch BACK, not onward.
-    await user.click(screen.getByRole("button", { name: /^Roster/ }));
+    await user.click(screen.getByRole("button", { name: /^Connections/ }));
     expect(screen.getByText("gb_sk_aaaa")).toBeInTheDocument();
     expect(screen.queryByText("gb_sk_bbbb")).not.toBeInTheDocument();
     await user.click(screen.getByText(/Show 1 revoked/));
@@ -478,5 +484,55 @@ describe("Fleet view", () => {
 
     await user.click(screen.getByText(/Show 1 gone/));
     expect(screen.getByText("GB-A2")).toBeInTheDocument();
+  });
+
+  it("names the tab for what it carries: connections, not just the agent roster", async () => {
+    // The tab holds the agent roster AND the credentials that can reach the project. "Roster"
+    // named only the first half — and when asked, the person who built this workflow read
+    // "roster" as meaning the MCP configs, which is the other half. One question, one name.
+    fleet.data = { ...BASE, agents: [AGENT], total: 1 };
+    renderView();
+
+    expect(screen.getByRole("button", { name: /^Connections/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Roster \(/ })).not.toBeInTheDocument();
+    // The agent list inside it is still a roster — that section keeps the word that fits it.
+    expect(screen.getByText("Roster")).toBeInTheDocument();
+  });
+
+  it("points at waiting review work from the other tabs, and takes you there", async () => {
+    // The cost of tabbing this page is that the review queue can be buried, and a queue nobody
+    // notices is a fleet quietly stalled. The count rides the tab label AND the other tabs say
+    // it in a sentence — a number is easy to miss when you are looking at something else.
+    fleet.data = {
+      ...BASE, total: 1, agents: [AGENT],
+      review_queue: [{ id: "GB-3", key: "GB-3", title: "thing", branch: "b",
+                       built_by: "GB-A1", built_by_label: "opus", reviewed_by: null }],
+    };
+    const user = userEvent.setup();
+    renderView();
+
+    expect(screen.getByRole("button", { name: /^Work \(1 in review\)/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", {
+      name: (_, el) => /1\s*items? waiting for review/.test(el.textContent ?? ""),
+    }));
+
+    // It navigated rather than merely informing.
+    expect(screen.getByText("thing")).toBeInTheDocument();
+    // And the pointer is gone once you are looking at the thing it pointed to.
+    expect(screen.queryByRole("button", {
+      name: (_, el) => /waiting for review/.test(el.textContent ?? ""),
+    })).not.toBeInTheDocument();
+  });
+
+  it("says nothing when nothing is waiting", async () => {
+    // A permanent banner is one you stop reading, which would cost exactly the attention this
+    // is buying.
+    fleet.data = { ...BASE, total: 1, agents: [AGENT], review_queue: [] };
+    renderView();
+
+    expect(screen.queryByRole("button", {
+      name: (_, el) => /waiting for review/.test(el.textContent ?? ""),
+    })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Work" })).toBeInTheDocument();
   });
 });
