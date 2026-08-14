@@ -3,10 +3,19 @@ import * as React from "react";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import {
+  collapse,
+  convexHull,
+  DETAIL_BUDGET,
+  enterComponent,
+  hullPath,
+  superRadius,
+} from "@/lib/graph/galaxy";
 import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
 import {
   cloudsFor,
   contentionOf,
+  holdersOf,
   describeContention,
   formatRemaining,
   indexByNode,
@@ -71,11 +80,10 @@ export function CodeGraphView() {
   // The UNFILTERED set drives layout; the filtered one only decides what is drawn. That split
   // is what makes a chip toggle redraw instead of rearranging the map under the user (AC-3).
   const allEdges = React.useMemo(() => map?.edges ?? [], [map]);
-  const edges = React.useMemo(() => allEdges.filter((e) => enabled[e.type]), [allEdges, enabled]);
   const isFiltered = EDGE_TYPES.some((t) => !enabled[t]);
 
   // Node ids are paths; include edge endpoints even if a node wasn't described (dangling).
-  const ids = React.useMemo(() => {
+  const allIds = React.useMemo(() => {
     const s = new Set<string>();
     nodes.forEach((nd) => s.add(nd.path));
     allEdges.forEach((e) => {
@@ -85,20 +93,55 @@ export function CodeGraphView() {
     return [...s].sort();
   }, [nodes, allEdges]);
 
+  // ── D9: the galaxy view ────────────────────────────────────────────────────
+  // Past the detail budget the graph changes WHAT it draws rather than drawing the same thing
+  // slower. `entered` is the component we are inside, or null for the whole map.
+  const [entered, setEntered] = React.useState<string | null>(null);
+  const galaxyEdges = React.useMemo(
+    () => allEdges.map((e) => ({ a: e.src, b: e.dst })),
+    [allEdges],
+  );
+  const galaxy = React.useMemo(() => collapse(allIds, galaxyEdges), [allIds, galaxyEdges]);
+  // Collapsed only when the flat view cannot hold D1's budget AND collapsing would actually
+  // help. One giant component collapses to a single dot, which is worse than the honest mess.
+  const galaxyMode =
+    entered === null && allIds.length > DETAIL_BUDGET && galaxy.superNodes.length > 1;
+
+  const ids = React.useMemo(() => {
+    if (entered) return enterComponent(galaxy, entered, galaxyEdges).ids;
+    return allIds;
+  }, [entered, galaxy, galaxyEdges, allIds]);
+
+  // The UNFILTERED set drives layout; the filtered one only decides what is drawn. That split
+  // is what makes a chip toggle redraw instead of rearranging the map under the user (AC-3).
+  const edges = React.useMemo(() => {
+    const drawn = allEdges.filter((e) => enabled[e.type]);
+    if (!entered) return drawn;
+    const inside = new Set(ids);
+    return drawn.filter((e) => inside.has(e.src) && inside.has(e.dst));
+  }, [allEdges, enabled, entered, ids]);
+
   const nodeByPath = React.useMemo(() => {
     const m: Record<string, (typeof nodes)[number]> = {};
     nodes.forEach((nd) => (m[nd.path] = nd));
     return m;
   }, [nodes]);
 
-  const layoutEdges = React.useMemo(
-    () => allEdges.map((e) => ({ a: e.src, b: e.dst })),
-    [allEdges],
+  // Layout runs over the collapsed set in galaxy mode, and over one component's nodes once
+  // entered — which is what makes the bound the largest COMPONENT rather than the repo.
+  const layoutIds = React.useMemo(
+    () => (galaxyMode ? galaxy.superNodes.map((s) => s.id) : ids),
+    [galaxyMode, galaxy, ids],
   );
+  const layoutEdges = React.useMemo(() => {
+    if (galaxyMode) return galaxy.superEdges.map((e) => ({ a: e.a, b: e.b }));
+    const within = new Set(ids);
+    return galaxyEdges.filter((e) => within.has(e.a) && within.has(e.b));
+  }, [galaxyMode, galaxy, ids, galaxyEdges]);
 
   const view = useGraphViewport(W, H);
   const pinsApi = useGraphPins(view.toWorld);
-  const { pos: laidOut, pending, relayout } = useGraphLayout(ids, layoutEdges, {
+  const { pos: laidOut, pending, relayout } = useGraphLayout(layoutIds, layoutEdges, {
     width: W,
     height: H,
     pinned: pinsApi.pins,
@@ -115,7 +158,21 @@ export function CodeGraphView() {
     (id: string) => `${id} ${nodeByPath[id]?.name ?? ""}`,
     [nodeByPath],
   );
-  const find = useGraphFind(ids, labelOf);
+  // Find searches EVERY node, including those inside collapsed components — a search that
+  // cannot see what the view is hiding is worse than no search.
+  const find = useGraphFind(allIds, labelOf);
+
+  // A match inside a collapsed component enters it, rather than leaving the user staring at a
+  // super-node with a hit count and no way to reach the hit.
+  const firstMatch = find.active ? [...find.matches].sort()[0] : undefined;
+  React.useEffect(() => {
+    if (!firstMatch) return;
+    const home = galaxy.componentOf[firstMatch];
+    setEntered((cur) => {
+      if (cur !== null || allIds.length <= DETAIL_BUDGET) return cur;
+      return home ?? cur;
+    });
+  }, [firstMatch, galaxy, allIds.length]);
   const hubs = React.useMemo(() => topByDegree(ids, layoutEdges, LOD_TOP_N), [ids, layoutEdges]);
 
   // Fetch the rich neighborhood for the selected node (edges + touching items).
@@ -218,10 +275,26 @@ export function CodeGraphView() {
         <div className="flex flex-none flex-wrap items-center gap-3 border-b border-line px-5 py-4">
           <div>
             <h1 className="text-[18px] font-semibold tracking-tight">Code graph</h1>
-            <p className="mt-0.5 text-[12.5px] text-muted">
-              The codebase as agents described it — modules, files, and symbols with typed
-              relations. {map ? `${map.node_count} nodes · ${map.edge_count} edges.` : ""}
-            </p>
+            {/* "You are here". Semantic zoom without a way back is how a user gets lost, so the
+                breadcrumb is always present once the view is not the whole map. */}
+            {entered ? (
+              <p className="mt-0.5 flex items-center gap-1.5 text-[12.5px] text-muted">
+                <button
+                  onClick={() => setEntered(null)}
+                  className="rounded border border-line-2 px-1.5 py-px font-mono text-[10.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+                >
+                  ← all components
+                </button>
+                <span className="font-mono text-[11px] text-fg-2">{label(entered, "")}</span>
+                <span className="text-faint">· {ids.length} nodes</span>
+              </p>
+            ) : (
+              <p className="mt-0.5 text-[12.5px] text-muted">
+                {galaxyMode
+                  ? `${allIds.length} nodes in ${galaxy.superNodes.length} components — too many to draw at once. Click a component to enter it.`
+                  : `The codebase as agents described it — modules, files, and symbols with typed relations. ${map ? `${map.node_count} nodes · ${map.edge_count} edges.` : ""}`}
+              </p>
+            )}
           </div>
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
             <div className="relative mr-1">
@@ -349,7 +422,39 @@ export function CodeGraphView() {
                   stroke. That is the load-bearing rule of the visual design: a held node must
                   still say what kind of node it is, and tinting the node would overload the one
                   channel that already carries meaning. */}
-              {clouds.map((c, i) => (
+              {/* Presence as one hull per (user, component) — section 7's own mitigation for
+                  the cost of a per-node cloud layer at scale, and the better visual besides. */}
+              {galaxyMode &&
+                holdersOf(presence).map((h) => {
+                  const byComponent = new Map<string, typeof pos[string][]>();
+                  for (const path of h.nodes) {
+                    const comp = galaxy.componentOf[path];
+                    const p = pos[comp];
+                    if (!comp || !p) continue;
+                    const list = byComponent.get(comp) ?? [];
+                    list.push(p);
+                    byComponent.set(comp, list);
+                  }
+                  return [...byComponent.entries()].map(([comp, pts]) => {
+                    const d = hullPath(convexHull(pts, 24));
+                    return d ? (
+                      <path key={`hull-${h.userId}-${comp}`} d={d} fill={h.color} fillOpacity={0.14} />
+                    ) : (
+                      <circle
+                        key={`hull-${h.userId}-${comp}`}
+                        cx={pts[0].x}
+                        cy={pts[0].y}
+                        r={superRadius(1) + 22}
+                        fill={h.color}
+                        fillOpacity={0.14}
+                        filter="url(#code-cloud-blur)"
+                      />
+                    );
+                  });
+                })}
+
+              {!galaxyMode &&
+                clouds.map((c, i) => (
                 <circle
                   key={`cloud-${c.userId}-${i}`}
                   cx={c.cx}
@@ -368,9 +473,64 @@ export function CodeGraphView() {
                   strokeDasharray={c.predicted ? "6 5" : undefined}
                   style={{ pointerEvents: "none" }}
                 />
-              ))}
+                ))}
 
-              {edges.map((e, i) => {
+              {/* Collapsed components. Radius grows with AREA, so one 400-node component does
+                  not become forty times the width of a 10-node one and swallow the canvas. */}
+              {galaxyMode &&
+                galaxy.superNodes.map((s) => {
+                  const p = pos[s.id];
+                  if (!p) return null;
+                  return (
+                    <g
+                      key={`super-${s.id}`}
+                      transform={`translate(${p.x},${p.y})`}
+                      className="cursor-pointer"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Component ${label(s.anchor, "")}, ${s.size} nodes. Enter to open.`}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setEntered(s.id);
+                      }}
+                      onKeyDown={(ev) => {
+                        if (ev.key === "Enter" || ev.key === " ") {
+                          ev.preventDefault();
+                          setEntered(s.id);
+                        }
+                      }}
+                    >
+                      <circle
+                        r={superRadius(s.size)}
+                        fill="#12171b"
+                        stroke="var(--color-line-3)"
+                        strokeWidth={2}
+                      />
+                      <text
+                        y={4}
+                        textAnchor="middle"
+                        fontSize={11}
+                        fontFamily="IBM Plex Mono, monospace"
+                        fill="#8b949e"
+                        style={{ pointerEvents: "none" }}
+                      >
+                        {s.size}
+                      </text>
+                      <text
+                        y={superRadius(s.size) + 14}
+                        textAnchor="middle"
+                        fontSize={10}
+                        fontFamily="IBM Plex Mono, monospace"
+                        fill="#5c656e"
+                        style={{ pointerEvents: "none" }}
+                      >
+                        {label(s.anchor, "")}
+                      </text>
+                    </g>
+                  );
+                })}
+
+              {!galaxyMode && edges.map((e, i) => {
                 const a = pos[e.src];
                 const b = pos[e.dst];
                 if (!a || !b) return null;
@@ -396,7 +556,7 @@ export function CodeGraphView() {
                 );
               })}
 
-              {ids.map((id) => {
+              {!galaxyMode && ids.map((id) => {
                 const p = pos[id];
                 if (!p) return null;
                 const node = nodeByPath[id];
