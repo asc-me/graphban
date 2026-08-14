@@ -265,3 +265,38 @@ def test_a_planner_commits_the_proposal(client, key, db):
     # Issued but not collected. The Fleet view renders that distinction so a human can see a
     # reassignment has been made and not yet picked up.
     assert out["pending"] is True
+
+
+def test_agents_on_a_single_posture_credential_are_not_proposed_a_reviewer(client, auth, proj, db):
+    """A proposal that cannot be committed is not a proposal. `assign_role` REFUSES an agent on
+    an all-in-one credential — the posture belongs to the credential, not to a role ceiling —
+    so offering the operator an Apply the server must reject is a plan made of nothing.
+
+    They do not need one: an all-in-one agent files into the review pool and pulls from it, and
+    the independence gates refuse it its own work, so two of them review each other."""
+    plaintext = client.post("/api/fleet/keys",
+                            json={"project_id": proj, "role": "all-in-one", "wave": "w1"},
+                            headers=auth).json()["plaintext"]
+    _clusters(client, plaintext, 2)
+    for i in range(2):
+        _ok(client, plaintext, "register_agent",
+            {"label": f"aio{i}", "capabilities": {"instance": f"aio{i}"}})
+
+    out = _ok(client, plaintext, "propose_allocation", {})
+
+    assert out["reviewers"] == 0, "there is no committable reviewer among them"
+    assert {m["role"] for m in out["mapping"]} == {"all-in-one"}
+    assert "review each other" in out["rationale"]
+
+
+def test_a_mixed_fleet_still_gets_a_reviewer_proposed(client, auth, proj, key, db):
+    """The narrow condition is the POSTURE, not the all-in-one role. An agent that resolved to
+    all-in-one only because its credential was unnarrowed IS re-taskable, so the ordinary
+    allocation applies — and skipping it would quietly stop proposing reviewers for every
+    default fleet."""
+    _clusters(client, key, 1)
+    _agents(client, key, 3)
+
+    out = _ok(client, key, "propose_allocation", {})
+
+    assert out["reviewers"] >= 1

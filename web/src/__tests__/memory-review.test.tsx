@@ -37,7 +37,7 @@ const { publishSpy, undoSpy } = vi.hoisted(() => ({
 const project = {
   id: "core", name: "Core", accent: "#a78bfa", visibility: "private", description: "",
   share_global_memory: false, auto_extract: true, mcp_enabled: true, embed_model: "",
-  memory_auto_reject: true, memory_write_mode: "review", memory_llm_judge: false, agent_adjudication: false,
+  memory_auto_reject: true, memory_write_mode: "review", memory_llm_judge: false, agent_adjudication: false, allow_self_review: false,
 };
 
 vi.mock("@/lib/api", () => ({

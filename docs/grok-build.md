@@ -73,10 +73,12 @@ Call `get_context` FIRST — it names your project, scopes, and what you can rea
 The loop:
 1. `prd_coverage` / `get_backlog` / `suggest_next` — find what's specced-but-unbuilt or ready.
    `get_backlog` ranks ready-first and never hands out blocked work.
-2. `claim_next` (or `next_cluster` for a whole code-neighborhood) — atomically claim work;
-   two agents never take the same item. `heartbeat(id)` keeps the lease while you work.
+2. `claim_cluster` — atomically claim a non-colliding batch and reserve the files it touches,
+   so two agents never take the same item or collide over one. `heartbeat(id)` keeps the lease.
 3. Do the work in the repo.
-4. `update_item(id, status="done")` — completes it and auto-extracts lessons to memory.
+4. `update_item(id, status="review")` — hand it on. Another agent calls `claim_review` and then
+   `sign_off` (which auto-extracts lessons to memory) or `bounce(id, reason)`; nobody signs off
+   their own work.
    `describe_code` as a byproduct so the code map stays fresh; `link_code` to bridge the item
    to the files it touched.
 5. Back to coverage — the loop closes.

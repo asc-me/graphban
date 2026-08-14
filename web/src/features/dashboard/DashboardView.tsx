@@ -89,9 +89,10 @@ function AgentLoopInfo() {
           <div className="text-[13px] font-semibold text-fg">Put agents on the backlog</div>
           <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
             Any MCP-connected agent can work the tracker as a queue:{" "}
-            <code className="font-mono text-[11px] text-fg-2">claim_next → work → update_item → done</code>. Claims are
-            atomic, so parallel agents never collide — use <code className="font-mono text-[11px] text-fg-2">next_cluster</code>{" "}
-            to hand each agent a conflict-free batch of related items.
+            <code className="font-mono text-[11px] text-fg-2">claim_cluster → work → update_item → review</code>. Claims
+            are atomic and a cluster reserves the files it touches, so parallel agents never collide. Finished work goes
+            to <code className="font-mono text-[11px] text-fg-2">review</code>, and any other agent picks it up with{" "}
+            <code className="font-mono text-[11px] text-fg-2">claim_review</code> — no agent can sign off its own.
           </p>
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px]">
             <Link to="/settings" className="text-[#7ca2ff] transition-colors hover:text-fg">

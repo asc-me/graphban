@@ -407,7 +407,7 @@ function ProjectPanel() {
   const [form, setForm] = React.useState<Partial<Project>>({});
   const [saved, setSaved] = React.useState(false);
   React.useEffect(() => {
-    if (active) setForm({ name: active.name, description: active.description, share_global_memory: active.share_global_memory, auto_extract: active.auto_extract, mcp_enabled: active.mcp_enabled, memory_write_mode: active.memory_write_mode, memory_auto_reject: active.memory_auto_reject, memory_llm_judge: active.memory_llm_judge, agent_adjudication: active.agent_adjudication });
+    if (active) setForm({ name: active.name, description: active.description, share_global_memory: active.share_global_memory, auto_extract: active.auto_extract, mcp_enabled: active.mcp_enabled, memory_write_mode: active.memory_write_mode, memory_auto_reject: active.memory_auto_reject, memory_llm_judge: active.memory_llm_judge, agent_adjudication: active.agent_adjudication, allow_self_review: active.allow_self_review });
   }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!active) return null;
@@ -423,6 +423,11 @@ function ProjectPanel() {
     { key: "share_global_memory", label: "Share global memory across projects" },
     { key: "auto_extract", label: "Auto-extract lessons on item completion" },
     { key: "mcp_enabled", label: "Expose MCP tools for this project" },
+    // GRPH-380. Named for what it is: with it on, an agent can be the only thing that ever
+    // looked at its own work. The hint states the condition, because the condition is the
+    // reason this is not simply "review off" — the server still refuses whenever anyone else
+    // could have reviewed it.
+    { key: "allow_self_review", label: "Danger mode: let an agent sign off its own work", hint: "Off by default. Only applies when NO other agent could review the item — with a second agent here, self-review is still refused. Items signed off this way say so on the item. Adversarial evidence is still required." },
   ];
 
   // AL-227: memory auto-triage — the scorer acts on agent candidates on write.

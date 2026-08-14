@@ -66,14 +66,28 @@ function primeSnippet(role: string, seat?: string) {
   // line: an agent that claims before registering is invisible to the roster and ungoverned by
   // the role gate.
   if (role === ALL_IN_ONE) {
-    // The DEFAULT posture, and its prompt says so plainly: no fleet, no server-side review
-    // gate, and the human is the reviewer. Priming it like a worker would imply a reviewer
-    // that is not there and a gate that does not apply.
+    // The DEFAULT posture, so what this prompt teaches is what most installs actually do.
+    //
+    // It used to say claim_next, and that single word made the collision divvy inert on a
+    // default install: `AreaReservation` has exactly one writer, inside `claim_cluster`, so
+    // the reservation table stayed permanently empty and anything reading live presence
+    // rendered nothing. The server had always disagreed — `_directive_next` tells every
+    // non-planner, non-reviewer role to "call claim_cluster" — and only the paste-in prompt
+    // said otherwise.
+    //
+    // It also used to say "you are the only agent" and "move items to done yourself". Both
+    // are now wrong: an all-in-one agent files into the review pool and pulls from it like
+    // every other posture, which is what lets two of them review each other with no new role
+    // machinery — the independence gates already refuse an agent its own work.
     return [
-      "You are the only agent on this Graphban project. You do everything: plan, build, and",
-      "record evidence. There is no reviewer agent — the human reviews your work.",
+      "You are an all-in-one agent on a Graphban project: you plan, build, and review.",
       "Call register_agent first, then heartbeat on the interval it returns, so you appear",
-      "on the roster. claim_next for work; move items to done yourself when they are done.",
+      "on the roster. Take work with claim_cluster — it reserves the files you are about to",
+      "touch, so another agent is never handed work that collides with yours.",
+      "When a change is finished, move it to review rather than done. Then call claim_review",
+      "to take somebody else's finished work and sign_off or bounce it with a reason.",
+      "You cannot sign off what you built; if you are the only agent here, the human reviews",
+      "your work unless the project owner has turned on self-review.",
     ].join("\n");
   }
   const duty =

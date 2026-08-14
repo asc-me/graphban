@@ -235,13 +235,25 @@ joined by typed **edges** (`imports` / `calls` / `owns` / `tested_by` / `referen
 
 ### Task claiming (safe multi-agent loops)
 
-Run an agent as a loop: `claim_next` **atomically** assigns the best ready item (unblocked
-`backlog`/`next`, best-first) to you and flips it to `in_progress` — an optimistic
-`claimed_by` guard means **two agents never claim the same item**. `agent_id` defaults to the
-API key's name, so one key = one agent. While working, call `heartbeat(id)` to keep the lease;
-if you go silent past `lease_seconds` (default 600) the item becomes reclaimable, so a crashed
-agent's work is automatically freed and picked up by another. `release_item(id)` hands it back.
-Completing is just `update_item(id, status="done")` (which also auto-extracts lessons to memory).
+Run an agent as a loop: `claim_cluster` **atomically** leases a non-colliding batch of ready
+work and **reserves the areas it touches**, so no other agent is handed work that collides with
+yours. `claim_next` still exists and claims a single item, but it reserves nothing — in a fleet
+that difference is the whole point of the divvy.
+
+An optimistic `claimed_by` guard means **two agents never claim the same item**. `agent_id`
+defaults to the API key's name, so one key = one agent. While working, call `heartbeat(id)` to
+keep the lease; if you go silent past `lease_seconds` (default 600) the item becomes
+reclaimable, so a crashed agent's work is automatically freed and picked up by another.
+`release_item(id)` hands it back.
+
+Finished work goes to `review`, not straight to `done`: `update_item(id, status="review")`.
+Another agent takes it with `claim_review` and calls `sign_off` (which auto-extracts lessons to
+memory) or `bounce(id, reason)`. **No agent can sign off work it built** — the server checks
+authorship, not the caller's current role, so no re-tasking launders it. A bounced item returns
+to `next` reserved for its author for one lease period, then opens to the fleet.
+
+A bounce reason is required, and it travels with the item: the author reads it on
+`get_item_details` after reclaiming.
 
 ### Built for agents
 
