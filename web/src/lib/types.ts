@@ -28,6 +28,8 @@ export interface Project {
   memory_write_mode: string;
   memory_llm_judge: boolean;
   agent_adjudication: boolean;
+  /** Danger mode: an agent may sign off its own work, but only when no independent agent exists. */
+  allow_self_review: boolean;
 }
 
 // ── Deploy config + Organizations (hosted-only, AL-74b) ────────────────────

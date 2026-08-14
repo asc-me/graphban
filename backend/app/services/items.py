@@ -466,6 +466,9 @@ def get_item_details(db: Session, item_id: str) -> dict | None:
         # HERE to find out what to fix.
         "claimed_by": item.claimed_by,
         "built_by": item.built_by,
+        # Who signed it off. Together with `built_by` this is where a self-review is visible:
+        # equal values mean one agent was the only thing that ever looked at the work.
+        "reviewed_by": item.reviewed_by,
         **bounce_fields(item),
         "linked_shards": [{"id": s.id, "text": s.text, "source": s.source} for s in shards],
         "linked_requests": [{"id": r.key, "title": r.title, "type": r.type} for r in reqs],

@@ -458,3 +458,166 @@ def test_a_collided_cluster_names_who_holds_the_areas(client, agent_key):
     assert out["claimed"] is False
     assert out["held_by"] == [first["agent_id"]]
     assert first["agent_id"] in out["reason"] and "frees in" in out["reason"]
+
+
+# ---- danger mode: self-review, and everything it still refuses (GRPH-380) ---------------------
+
+def _aio(client, key, label="solo"):
+    """An ALL-IN-ONE agent: no role hint on an unnarrowed credential, which is what the default
+    posture actually is. Registering it as a `worker` instead would meet the ROLE gate first —
+    `sign_off requires role reviewer` — and never reach the self-review question at all."""
+    return _ok(client, key, "register_agent",
+               {"label": label, "capabilities": {"instance": label}})
+
+
+def _built_by_aio(client, key, agent, title="work", effort=0):
+    body = {"title": title, "status": "next"}
+    if effort:
+        body["effort"] = effort
+    item = _ok(client, key, "create_item", body)
+    c = _ok(client, key, "claim_next", {"agent_id": agent["agent_id"]})
+    assert c["claimed"], "the fixture item should have been claimable"
+    _ok(client, key, "update_item",
+        {"id": item["id"], "status": "review", "agent_id": agent["agent_id"]})
+    return item["id"]
+
+
+def _danger(db, proj, on=True):
+    from app.models import Project
+    p = db.get(Project, proj)
+    p.allow_self_review = on
+    db.commit()
+
+
+def test_a_solo_agent_is_stuck_without_danger_mode(client, agent_key, proj, db):
+    """The configuration danger mode exists for, asserted BEFORE the escape hatch so the hatch
+    is answering a real problem. An all-in-one agent now files into the review pool like every
+    other posture — so a solo one finds only its own work there, and the gate refuses it.
+
+    The refusal has to say that nobody else can review it either, or a solo operator reads
+    "another agent has to take it" as advice and waits for an agent that is never coming."""
+    a = _aio(client, agent_key)
+    item_key = _built_by_aio(client, agent_key, a)
+
+    err = _refused(client, agent_key, "sign_off",
+                   {"id": item_key, "agent_id": a["agent_id"]})
+
+    assert "no other agent here can review it" in err["message"]
+
+
+def test_danger_mode_lets_a_solo_agent_sign_off_its_own_work(client, agent_key, proj, db):
+    a = _aio(client, agent_key)
+    item_key = _built_by_aio(client, agent_key, a)
+    _danger(db, proj)
+
+    out = _ok(client, agent_key, "sign_off", {"id": item_key, "agent_id": a["agent_id"]})
+
+    assert out["status"] == "done"
+    assert out["built_by"] == a["agent_id"]
+
+
+def test_danger_mode_still_refuses_while_another_agent_could_review(client, agent_key, proj, db):
+    """THE load-bearing condition. An escape hatch usable while a reviewer is sitting there is
+    not an escape hatch — it is the review gate switched off for everyone, and the flag would
+    then mean "no review on this project" rather than "no review was possible"."""
+    a = _aio(client, agent_key, label="A")
+    _register(client, agent_key, "reviewer", label="R")
+    item_key = _built_by_aio(client, agent_key, a, title="A's work")
+    _danger(db, proj)
+
+    err = _refused(client, agent_key, "sign_off", {"id": item_key, "agent_id": a["agent_id"]})
+
+    assert err["code"] == "unauthorized"
+
+
+def test_a_dead_reviewer_does_not_hold_the_gate_open(client, agent_key, proj, db):
+    """The other half: an agent that cannot act must not count as one who could review. A
+    reviewer that went offline would otherwise keep a solo agent blocked forever, which is the
+    stall danger mode exists to end — arriving through presence instead of the flag."""
+    from app.models import Agent
+    from datetime import datetime, timedelta, timezone
+
+    a = _aio(client, agent_key, label="A")
+    rev = _register(client, agent_key, "reviewer", label="R")
+    item_key = _built_by_aio(client, agent_key, a, title="A's work")
+    _danger(db, proj)
+    dead = db.get(Agent, rev["agent_id"])
+    dead.last_seen_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    db.commit()
+
+    out = _ok(client, agent_key, "sign_off", {"id": item_key, "agent_id": a["agent_id"]})
+
+    assert out["status"] == "done"
+
+
+def test_a_self_review_says_so_on_the_item(client, agent_key, proj, db):
+    """The bargain of danger mode is that it is VISIBLE. A self-review that leaves no trace is
+    indistinguishable from a reviewed item on every surface a human reads."""
+    a = _aio(client, agent_key)
+    item_key = _built_by_aio(client, agent_key, a)
+    _danger(db, proj)
+
+    _ok(client, agent_key, "sign_off", {"id": item_key, "agent_id": a["agent_id"]})
+
+    details = _ok(client, agent_key, "get_item_details", {"id": item_key})
+    assert details["built_by"] == details["reviewed_by"], "the row itself carries the fact"
+    said = " ".join(e["detail"] for e in _ok(client, agent_key, "search_items",
+                                             {"query": "work", "fields": "full"})["results"]
+                    [0].get("evidence", []))
+    assert "danger mode" in said
+
+
+def test_danger_mode_does_not_relax_adversarial_evidence(client, agent_key, proj, db):
+    """It relaxes INDEPENDENCE and nothing else. An effort-5 item signed off by its own author
+    with no sabotage receipt would be the weakest possible review passing the strongest gate."""
+    a = _aio(client, agent_key)
+    item_key = _built_by_aio(client, agent_key, a, title="big", effort=5)
+    _danger(db, proj)
+
+    err = _refused(client, agent_key, "sign_off", {"id": item_key, "agent_id": a["agent_id"]})
+
+    assert "adversarial evidence" in err["message"]
+
+
+def test_a_worker_present_does_not_block_a_solo_reviewer(client, agent_key, proj, db):
+    """The eligibility half of `could_review`: a WORKER cannot call `claim_review`, so its
+    presence is not a reviewer's presence. Counting it would leave danger mode refusing on a
+    project where nothing can ever review — the exact stall the mode exists to end.
+
+    Written because sabotaging the role filter left the suite green: the earlier tests each had
+    a single agent, so the filter was never reached."""
+    a = _aio(client, agent_key, label="A")
+    _register(client, agent_key, "worker", label="W")
+    item_key = _built_by_aio(client, agent_key, a, title="A's work")
+    _danger(db, proj)
+
+    out = _ok(client, agent_key, "sign_off", {"id": item_key, "agent_id": a["agent_id"]})
+
+    assert out["status"] == "done"
+
+
+def test_a_planner_present_does_not_block_it_either(client, agent_key, proj, db):
+    """Same reasoning, the other role that cannot review. A planner deliberately holds no
+    review tools — it is the one role with no authored work to launder."""
+    a = _aio(client, agent_key, label="A")
+    _register(client, agent_key, "planner", label="P")
+    item_key = _built_by_aio(client, agent_key, a, title="A's work")
+    _danger(db, proj)
+
+    out = _ok(client, agent_key, "sign_off", {"id": item_key, "agent_id": a["agent_id"]})
+
+    assert out["status"] == "done"
+
+
+def test_a_second_all_in_one_agent_does_block_it(client, agent_key, proj, db):
+    """And the case that must still refuse. Two all-in-one agents are a fleet that reviews
+    itself — that is the whole shape this ticket chose — so self-review is not the only option
+    and danger mode does not apply."""
+    a = _aio(client, agent_key, label="A")
+    _aio(client, agent_key, label="B")
+    item_key = _built_by_aio(client, agent_key, a, title="A's work")
+    _danger(db, proj)
+
+    err = _refused(client, agent_key, "sign_off", {"id": item_key, "agent_id": a["agent_id"]})
+
+    assert err["code"] == "unauthorized"

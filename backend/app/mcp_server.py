@@ -448,9 +448,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "claim_next",
         "description": (
-            "Atomically claim the best ready item (unblocked backlog/next), assign it to you, and "
-            "move it to in_progress. Two agents never get the same item — call this to pull work in "
-            "a loop. Returns {claimed, item}; item is null when nothing is ready."
+            "Claim ONE ready item (unblocked backlog/next) and move it to in_progress. Two agents "
+            "never get the same item, but this reserves NO files — prefer claim_cluster in a fleet. "
+            "Returns {claimed, item}; item is null when nothing is ready, and `reserved` then names "
+            "work held for somebody else."
         ),
         "inputSchema": {
             "type": "object",
@@ -506,11 +507,12 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "claim_cluster",
         "description": (
-            "Claim a whole non-colliding cluster and reserve its touch-areas for the lease. "
-            "Checked against work already in flight, not just a snapshot. `claimed: false` "
-            "with a reason when every ready cluster overlaps someone else — that is a real "
-            "answer, not a failure. Write actual `touchpoints` back via update_item when you "
-            "finish: it replaces the prediction and sharpens the next round."
+            "The way to take work. Claims a whole non-colliding cluster and reserves its "
+            "touch-areas against work in flight, so nobody is handed work that collides with "
+            "yours. `claimed: false` names who holds the areas and when the earliest frees — "
+            "a real answer, not a failure. Write actual `touchpoints` back via update_item "
+            "when you finish. A low max_items frees nothing for others: the whole cluster is "
+            "reserved either way."
         ),
         "inputSchema": {
             "type": "object",
@@ -1442,6 +1444,7 @@ def _item_dict(item) -> dict:
         # independence rule is decided on, and it was readable nowhere — so an agent could not
         # tell whose work it was about to review, nor explain a refusal it received.
         "built_by": item.built_by,
+        "reviewed_by": item.reviewed_by,
     }
     out.update(items_svc.bounce_fields(item))
     # In-flight invalidation (GRPH-242/312). Present only when this item's PRD rebaselined

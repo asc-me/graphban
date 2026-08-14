@@ -78,13 +78,20 @@ Point any MCP-connected agent session at the backlog and tell it to work. The in
 cycle is:
 
 ```
-claim_next → get_context / get_item_details → work
-  → update_item (status, notes) → heartbeat while working
-  → done, or release_item to hand it back
+claim_cluster → get_context / get_item_details → work
+  → update_item (touchpoints, status="review") → heartbeat while working
+  → claim_review someone else's work → sign_off or bounce
 ```
 
-`claim_next` **atomically** assigns the best ready item and moves it to in_progress, so
-two sessions never grab the same work. Filter by tag to scope a session to a theme
+`claim_cluster` **atomically** leases a non-colliding batch and **reserves the files it
+touches**, so two sessions never grab the same work — or work that collides with it.
+`claim_next` still claims a single item, but it reserves nothing.
+
+Finished work goes to `review`, not straight to `done`: another agent takes it with
+`claim_review` and signs it off. **No agent can sign off what it built**, whatever role it
+currently holds. A solo agent therefore leaves review to you, unless the project has
+danger mode on (Settings → the project) — and even then the server refuses self-review
+whenever another agent could have done it. Filter by tag to scope a session to a theme
 (e.g. "work the `railway` backlog"). The tracker shows live claim state as agents run.
 
 ### 2. Parallel agents, clustered by touchpoints

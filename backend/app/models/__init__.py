@@ -149,6 +149,20 @@ class Project(Base):
     agent_adjudication: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False
     )
+    # DANGER MODE (GRPH-380). May an agent sign off work it built itself? Off by default,
+    # because with it on the review gate is the honour system.
+    #
+    # It exists for one real configuration: a SOLO all-in-one agent, which now files into the
+    # review pool like everything else and would otherwise find only its own work there and
+    # stall. The gate still refuses whenever an independent agent exists to do the review —
+    # an escape hatch usable while a reviewer is available is just the gate turned off — so
+    # this permits self-review only where the alternative is no review at all.
+    #
+    # Nothing else relaxes: adversarial evidence is still required at effort >= 3, and
+    # `reviewed_by == built_by` stays on the row as the permanent evidence that it happened.
+    allow_self_review: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
     embed_model: Mapped[str] = mapped_column(String, default="stub-384")
     # Hosted SaaS only (AL-74): the owning organization. NULL on self-host, where
     # the org layer is inert. In hosted mode authz additionally requires the caller

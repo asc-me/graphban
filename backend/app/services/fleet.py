@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Agent, AreaReservation, Enrolment, Item
+from app.models import Agent, AreaReservation, Enrolment, Item, Project
 from app.services import items as items_svc
 from app.services import keys as keys_svc
 from app.services.items import DEFAULT_LEASE_SECONDS
@@ -749,6 +749,51 @@ NOT_INDEPENDENT = ("the only work in review was built by an agent you are not di
                    "so review means something")
 
 
+def _independent_of_author(db: Session, item: Item, agent_id: str) -> bool:
+    """Is this caller independent of whoever built the item? False when it built it itself."""
+    if item.built_by == agent_id:
+        return False
+    me = db.get(Agent, agent_id)
+    author = db.get(Agent, item.built_by) if item.built_by else None
+    return me is None or independent(me, author)
+
+
+def could_review(db: Session, *, item: Item, exclude_agent_id: str,
+                 lease_seconds: int = DEFAULT_LEASE_SECONDS) -> str | None:
+    """Some OTHER live agent that could legitimately review this item, or None.
+
+    This is the condition that keeps danger mode honest. The project flag says the operator
+    accepts self-review; this says the fleet has nobody else to do it. Both are required,
+    because a bypass that can be taken while a reviewer is sitting idle is not an escape hatch
+    — it is the review gate switched off for everyone.
+
+    Eligibility is the union of the two gates a real reviewer passes: it must be able to CALL
+    `claim_review` (a worker and a planner cannot), and it must be `independent` of the author.
+    Anything offline, quarantined, dismissed or on an expired seat cannot act at all, so
+    counting it would let a dead agent hold a gate open.
+    """
+    author = db.get(Agent, item.built_by) if item.built_by else None
+    for row in list_agents(db, item.project_id, lease_seconds=lease_seconds):
+        if row["id"] == exclude_agent_id or row["state"] in ("offline", "quarantined"):
+            continue
+        cand = db.get(Agent, row["id"])
+        if cand is None or session_expired(db, cand):
+            continue
+        if cand.active_role not in ("reviewer", ALL_IN_ONE):
+            continue
+        if independent(cand, author):
+            return cand.id
+    return None
+
+
+def self_review_allowed(db: Session, *, item: Item, agent_id: str) -> bool:
+    """Danger mode, and the two conditions it takes (GRPH-380)."""
+    project = db.get(Project, item.project_id) if item.project_id else None
+    if project is None or not project.allow_self_review:
+        return False
+    return could_review(db, item=item, exclude_agent_id=agent_id) is None
+
+
 def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = None) -> str:
     """Why `claim_review` found nothing, when the answer is more useful than "nothing".
 
@@ -846,10 +891,18 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     item = db.get(Item, item_id)
     if item is None:
         raise ValueError(f"item not found: {item_id}")
-    if item.built_by and item.built_by == agent_id:
+    # Danger mode is checked ONCE, here, and its answer is reused by the second gate below.
+    # Asking twice would mean two chances to answer differently — and this is exactly the kind
+    # of gate where a later refactor makes one of them read a weaker condition.
+    danger = (item.built_by == agent_id or not _independent_of_author(db, item, agent_id)) and \
+        self_review_allowed(db, item=item, agent_id=agent_id)
+    if item.built_by and item.built_by == agent_id and not danger:
         raise SelfReview(
             f"{agent_id} built {item.key} and cannot sign it off; "
             "another agent has to take it"
+            + ("" if could_review(db, item=item, exclude_agent_id=agent_id)
+               else " — no other agent here can review it either, so this item needs a second "
+                    "agent, or the project owner has to turn on self-review")
         )
     # The SECOND gate checks independence too, not just identity. `claim_review` already
     # filters on it, so this is redundant on the happy path — same reasoning as the identity
@@ -857,7 +910,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # something weaker, and the failure would be silent.
     me, author = db.get(Agent, agent_id), (db.get(Agent, item.built_by)
                                            if item.built_by else None)
-    if me is not None and not independent(me, author):
+    if me is not None and not independent(me, author) and not danger:
         raise SelfReview(
             f"{agent_id} is not independent of {item.built_by} — same call tree, or one "
             f"credential and one session — so signing off {item.key} would be self-review "
@@ -890,6 +943,18 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
     item.status = "done"
+    if danger:
+        # A self-review that leaves no trace is indistinguishable from a reviewed one, and the
+        # whole bargain of danger mode is that it is VISIBLE. Recorded as a receipt rather than
+        # a column because `reviewed_by == built_by` already carries the fact — a second column
+        # saying the same thing is one that can later disagree with it — while the receipt
+        # records what a column cannot: that at this moment nobody else could have reviewed it.
+        note = items_svc.normalize_evidence([{
+            "kind": "note",
+            "detail": f"self-reviewed by {agent_id} under danger mode — no independent agent "
+                      "was available to review it",
+        }])
+        fresh, merged = fresh + note, merged + note
     if fresh:
         # Normalised on the way in, so a sabotage receipt is validated here exactly as it is
         # on `update_item` — one definition of what a receipt is.
@@ -1606,6 +1671,35 @@ def propose_allocation(db: Session, project_id: str | None = None, *,
     if n == 0:
         return {"workers": 0, "reviewers": 0, "mapping": [], "rationale":
                 "no agents online — nothing to allocate"}
+
+    # AGENTS ON A SINGLE-POSTURE CREDENTIAL CANNOT BE RE-TASKED — `assign_role` refuses them,
+    # because the posture is a property of the credential rather than a role ceiling. Proposing
+    # a reviewer among them is a plan that can never be committed: the Fleet view would offer
+    # an Apply the server is structurally required to refuse.
+    #
+    # The narrow condition is the POSTURE, not the all-in-one role. An agent that resolved to
+    # all-in-one merely because its credential was unnarrowed and it stated no preference IS
+    # re-taskable, and the ordinary allocation below is both committable and better for it.
+    #
+    # Nor do they need a reviewer proposed: an all-in-one agent files into the review pool and
+    # pulls from it like every other posture, and both independence gates already govern the
+    # outcome, so N of them review each other. What they need is a cluster each.
+    single = [a for a in roster if a["credential_posture"] == POSTURE_SINGLE]
+    if single and len(single) == n:
+        mapping = [{"agent": a["id"], "role": ALL_IN_ONE,
+                    "cluster": (free_clusters[i]["items"] if i < len(free_clusters) else [])}
+                   for i, a in enumerate(roster)]
+        return {
+            "workers": n, "reviewers": 0, "mapping": mapping,
+            "rationale": (
+                f"{n} all-in-one agent(s) and {len(free_clusters)} free cluster(s): each takes "
+                "a cluster. " + ("They review each other — an all-in-one agent files into the "
+                                 "review pool and pulls from it, and cannot pass its own work."
+                                 if n > 1 else
+                                 "One agent has nobody to review for, so review is the human's "
+                                 "— or the project owner turns on self-review.")
+            ),
+        }
     if n == 1:
         # One agent reviews nothing, so make it a worker and say why rather than proposing a
         # reviewer that would idle the only pair of hands in the room.

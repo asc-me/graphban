@@ -220,6 +220,8 @@ class ProjectOut(ORMModel):
     memory_llm_judge: bool = False
     # May an agent operate this project's quality gates (AL-282)? Never authority gates.
     agent_adjudication: bool = False
+    # Danger mode (GRPH-380): may an agent sign off its own work when nobody else can?
+    allow_self_review: bool = False
 
 
 class ProjectCreate(BaseModel):
@@ -556,6 +558,7 @@ class ProjectUpdate(BaseModel):
     memory_auto_reject: bool | None = None
     memory_llm_judge: bool | None = None
     agent_adjudication: bool | None = None
+    allow_self_review: bool | None = None
 
     @field_validator("memory_write_mode")
     @classmethod
