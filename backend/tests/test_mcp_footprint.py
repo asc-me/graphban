@@ -215,3 +215,41 @@ def test_manifest_stays_within_token_budget():
     assert full_chars // 4 < 12800, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
+
+
+def test_a_session_scoped_manifest_actually_saves_the_tokens(client, auth):
+    """The number O6 was decided on. An unrestricted credential is what enrolment recommends,
+    so before E9 every agent carried the full manifest on every turn — the cost is per-request
+    for the life of the session, not once at connect.
+
+    Asserted as a floor rather than an exact figure: the manifest grows, and a test that
+    pinned the saving to a percentage would fail for the wrong reason every time a tool
+    lands."""
+    proj = client.post("/api/projects", json={"name": "FootprintSession"},
+                       headers=auth).json()["id"]
+    plaintext = client.post("/api/api-keys", json={"name": "fleet", "project_id": proj},
+                            headers=auth).json()["plaintext"]
+    seat = client.post("/api/fleet/seats",
+                       json={"project_id": proj, "roles": ["reviewer"], "wave": "w1"},
+                       headers=auth).json()["seats"][0]["code"]
+    sid = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                                        "params": {}},
+                      headers={"X-API-Key": plaintext}).headers["mcp-session-id"]
+    full = _rpc(client, plaintext, "tools/list")["result"]["tools"]
+
+    client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                  "params": {"name": "register_agent",
+                                             "arguments": {"label": "R",
+                                                           "enrolment_code": seat}}},
+                headers={"X-API-Key": plaintext, "Mcp-Session-Id": sid})
+    narrowed = client.post("/api/mcp",
+                           json={"jsonrpc": "2.0", "id": 3, "method": "tools/list",
+                                 "params": {}},
+                           headers={"X-API-Key": plaintext, "Mcp-Session-Id": sid},
+                           ).json()["result"]["tools"]
+
+    saved = len(json.dumps(full)) - len(json.dumps(narrowed))
+    assert saved > 0, "the whole point is that a registered reviewer carries less"
+    assert saved / len(json.dumps(full)) > 0.10, (
+        f"only {saved} chars saved — O6 was decided on 15-19%, and below ~10% the session "
+        "machinery is not paying for itself")
