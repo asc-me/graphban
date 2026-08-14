@@ -10,6 +10,7 @@ import {
   describeContention,
   formatRemaining,
   indexByNode,
+  nodesHeldBy,
   roleHex,
   secondsRemaining,
 } from "@/lib/graph/presence";
@@ -22,6 +23,7 @@ import { useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea } from "@/lib/types";
 
 import { CodeChat } from "./CodeChat";
+import { FleetLegend } from "./FleetLegend";
 
 const KIND_META: Record<string, { label: string; color: string }> = {
   module: { label: "Module", color: "#c6f24e" },
@@ -163,6 +165,8 @@ export function CodeGraphView() {
   const { data: presence } = useFleetPresence(activeId);
   const heldByNode = React.useMemo(() => indexByNode(presence), [presence]);
   const clouds = React.useMemo(() => cloudsFor(presence, pos), [presence, pos]);
+  const [soloUser, setSoloUser] = React.useState<string | null>(null);
+  const soloed = React.useMemo(() => nodesHeldBy(presence, soloUser), [presence, soloUser]);
 
   const degree = React.useMemo(() => degrees(ids, layoutEdges), [ids, layoutEdges]);
   const tabOrder = React.useMemo(
@@ -183,11 +187,16 @@ export function CodeGraphView() {
 
   // Find is highlight-by-another-name: it feeds the same dim path as selection rather than
   // introducing a second visual language for "these are the interesting ones".
+  // Precedence, most explicit first: a typed query beats a transient hover, which beats a
+  // sticky solo, which beats a selection made earlier. Each is the user's most recent act of
+  // intent at the moment it applies, and solo sits below hover so a soloed teammate does not
+  // stop you reading the rest of the graph.
   const lit = React.useMemo(() => {
     if (find.active) return find.matches;
     if (hovered) return hovered;
+    if (soloUser) return soloed;
     return hl?.hlNodes ?? null;
-  }, [find.active, find.matches, hovered, hl]);
+  }, [find.active, find.matches, hovered, soloUser, soloed, hl]);
 
   // Ease the viewport onto the hits, once per query — not on every keystroke's re-render.
   const fitRef = React.useRef(view.fitTo);
@@ -347,7 +356,10 @@ export function CodeGraphView() {
                   cy={c.cy}
                   r={c.r}
                   fill={c.color}
-                  fillOpacity={0.16}
+                  // Solo fades the others rather than hiding them: "my teammate is here and
+                  // three other people are elsewhere" is a different fact from "my teammate is
+                  // the only person in the codebase", and only one of them is true.
+                  fillOpacity={soloUser && c.userId !== soloUser ? 0.04 : 0.16}
                   filter="url(#code-cloud-blur)"
                   stroke={c.predicted ? c.color : undefined}
                   strokeOpacity={c.predicted ? 0.45 : undefined}
@@ -517,6 +529,10 @@ export function CodeGraphView() {
               })}
               </g>
             </svg>
+          )}
+
+          {!isLoading && !empty && (
+            <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
           )}
 
           {selPath && (

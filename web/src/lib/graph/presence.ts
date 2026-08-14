@@ -59,6 +59,27 @@ export function holdersOf(presence: FleetPresence | undefined) {
   return [...by.values()].sort((a, b) => a.userId.localeCompare(b.userId));
 }
 
+/**
+ * Every node one human is holding — what a legend chip solos onto (PRD-20 D7).
+ *
+ * Returns an EMPTY set for a user holding nothing, and for `null`. Both matter: a chip cannot
+ * be clicked for a user with no rows, but a solo that survives the holder going offline must
+ * light nothing rather than falling back to lighting everything, which would read as "your
+ * teammate is everywhere" at exactly the moment they left.
+ */
+export function nodesHeldBy(
+  presence: FleetPresence | undefined,
+  userId: string | null,
+): Set<string> {
+  const out = new Set<string>();
+  if (!userId) return out;
+  for (const row of presence?.held ?? []) {
+    if ((row.user_id ?? "unknown") !== userId) continue;
+    for (const p of row.node_paths ?? []) out.add(p);
+  }
+  return out;
+}
+
 export interface Contention {
   /** How many agents hold this node. Two windows of one person count as two. */
   agents: number;
