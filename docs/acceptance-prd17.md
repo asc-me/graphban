@@ -139,32 +139,68 @@ this guide. Note it.
 
 ## Results — 2026-08-13/14
 
-**Seven steps run, four defects found, all four fixed, one filed.** Every defect was invisible
-to a suite that was green throughout (1748 passing at the time).
+Run by a human driving real Grok agents through Cursor, against the isolated `gb-fleet` stack.
+**Eight steps run. Five defects found, four fixed, one filed.** Every one was invisible to a
+suite that was green throughout — 1748 passing at the time.
 
-| Found | What it was |
+### Steps
+
+| # | Step | Result |
+| --- | --- | --- |
+| 1 | Issue a wave of seats | ✅ four seats, two workers **not** deduplicated |
+| 2 | Each terminal registers | ✅ roles match seats — **found both heartbeat defects** |
+| 3 | A worker calls `update_item(status="done")` | ❌ **FAILED — gate unreachable** → fixed → ✅ re-run 03:39, first firing in the product's life |
+| 4 | Two workers `claim_cluster` concurrently | ✅ colliding items in ONE cluster, disjoint in the other, zero shared areas |
+| 6 | Reviewer signs off | ✅ **one credential, one host, one vendor** — independent by SEAT |
+| 6b | Effort ≥ 3 needs a sabotage receipt | ✅ real receipt: *reverted partition to clustering.shared_touchpoints only → 1 test failed* |
+| 8 | Re-task a live agent | ✅ directive rode a **heartbeat**, delivered **exactly once**, no reconnect |
+| 11 | End wave | ✅ 4 seats + 2 legacy keys revoked, 2 leases + 1 reservation released, **credential survived** |
+
+Not run: 5, 7, 9, 10, 12, 14. Steps 9 and 10 need ~10 minutes of lease-clock waiting each.
+Step 13 is superseded — seats decide independence now, so `host` is only the un-enrolled
+fallback.
+
+### Defects
+
+| Item | What it was |
 | --- | --- |
-| GRPH-377 | `update_item` never advertised `agent_id`, so the role gate was **unreachable through the published schema** — a worker wrote `done`. `WORKER_STATUS_CEILING` had never gated anything in production. My tests passed the parameter by hand, exercising a path no client could reach. |
-| GRPH-377 | `heartbeat` was gated to `("worker",)`, so a reviewer and a planner were refused the only call that keeps them on the roster and died 150s after registering. |
+| GRPH-377 | **`update_item` never advertised `agent_id`**, so its role gate was unreachable through the published schema and a worker wrote `done`. `WORKER_STATUS_CEILING` had never gated anything in production, leaving a hole under the self-review ban. My tests passed the parameter by hand — exercising a path no client could reach — and I cited those passes as evidence repeatedly. |
+| GRPH-377 | `heartbeat` was gated to `("worker",)`, so a reviewer and a planner were refused the only call that keeps them on the roster and died 150s after registering, terminals open. |
 | GRPH-377 | `heartbeat` **required an item id**, so presence was maintainable only while mid-work — a planner never holds an item at all. |
-| GRPH-377 | nginx set no `proxy_read_timeout`, defaulting to exactly `MAX_WAIT_SECONDS` (60s), so a full-length park raced the proxy and lost about half the time. A real client hit the 504. |
-| GRPH-376 | `sign_off` clears `claimed_by`, so **the self-review ban is unprovable after the fact** — every done item reads `built_by: -`. Enforcement is fine; the audit trail is not. Filed, not fixed. |
+| GRPH-377 | nginx set no `proxy_read_timeout`, defaulting to exactly `MAX_WAIT_SECONDS` (60s). A full-length park raced the proxy and lost about half the time; a real client hit the 504. |
+| GRPH-376 | `sign_off` clears `claimed_by`, so **the self-review ban is unprovable after the fact** — every done item reads `built_by: -`. Enforcement is fine; the audit trail is not. **Filed, not fixed.** |
 
-**What the walk proved that tests could not:**
+### What the walk proved that tests could not
 
-- Two agents on **one credential, one host, one vendor** reviewed each other's work — independent
+- Two agents on **one credential, one host, one vendor** reviewed each other's work, independent
   purely because they redeemed different seats. That configuration was impossible before PRD-19.
-- End wave revoked 4 seats and 2 legacy wave-tagged keys, released 2 leases and 1 reservation,
-  and **left the credential authenticating**. No config was touched.
-- The adversarial gate accepted a real sabotage receipt (`reverted partition to
-  clustering.shared_touchpoints only → 1 test failed`) on an effort-5 item.
-- The `update_item` role gate fired for the **first time in the product's life** at 03:39.
+- End wave revoked the wave and **left the credential authenticating** — no config touched, no
+  reconnect. That is the whole point of enrolment, demonstrated rather than argued.
+- A directive reached a real client on a call it was making anyway, once.
 
-**Environment friction, recorded because it is real and not ours:** Cursor's MCP client wedged
-mid-session and never recovered; a stale `index.html` served an old bundle until nginx got a
-`Cache-Control`; and the client silently drops an `mcp.json` entry it cannot parse. More of this
-walk was spent fighting the client than finding product defects, which is itself a finding for
-anyone standing up a fleet.
+### Predictions, scored
 
-**Not run:** steps 5, 7, 8, 9, 10, 12, 14. Step 8 — the directive downlink reaching a real
-client — remains the one I would bet against, and now carries two message types.
+Stated in advance so the walk would test claims rather than confirm them. **One of four held.**
+
+| Prediction | Outcome |
+| --- | --- |
+| Vendor strings never tested against real clients | **wrong** — real clients report `xai` and `cursor` |
+| `host` is self-reported and nothing reports it | **wrong** — reported, and seats made it moot |
+| `wait_seconds` has never parked against a real proxy | **right** — 504 at exactly 60s |
+| The directive downlink has never reached a real client | **wrong** — arrives, once, on a heartbeat |
+
+### Environment friction — real, and not ours
+
+Cursor's MCP client wedged mid-session and did not recover; a stale `index.html` served an old
+bundle until nginx got a `Cache-Control`; the client silently drops an `mcp.json` entry it
+cannot parse; and it does not interpolate `${env:VAR}` at all. More of this walk was spent
+fighting the client than finding product defects, which is itself a finding for anyone standing
+up a fleet.
+
+### Method notes
+
+Two hazards worth carrying forward. **A looping agent collects directives you meant to observe**
+— the first step-8 attempt looked like a failure because one of the fleet's own calls had
+already acked it. And **a green test can vouch for an unreachable path**: the `update_item`
+gate had passing tests for weeks because they supplied a parameter the schema forbade. Assert
+against the published surface, not the internal one.
