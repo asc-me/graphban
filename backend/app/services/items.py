@@ -469,6 +469,11 @@ def get_item_details(db: Session, item_id: str) -> dict | None:
         # Who signed it off. Together with `built_by` this is where a self-review is visible:
         # equal values mean one agent was the only thing that ever looked at the work.
         "reviewed_by": item.reviewed_by,
+        # The proof-on-done receipts. This read calls itself the FULL record and omitted them,
+        # so an agent could not see what a completion was justified by — including the
+        # danger-mode self-review note, whose entire purpose is to be visible. The web item
+        # panel has rendered them all along; the agent-facing read had not.
+        "evidence": item.evidence or [],
         **bounce_fields(item),
         "linked_shards": [{"id": s.id, "text": s.text, "source": s.source} for s in shards],
         "linked_requests": [{"id": r.key, "title": r.title, "type": r.type} for r in reqs],

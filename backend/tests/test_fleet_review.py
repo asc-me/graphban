@@ -172,6 +172,11 @@ def test_sign_off_is_a_second_independent_gate(db, client, agent_key):
     _new_item(client, agent_key)
     _ok(client, agent_key, "claim_next", {"agent_id": me["agent_id"]})
     item = db.query(Item).filter(Item.claimed_by == me["agent_id"]).one()
+    # Submitted first, or `NotInReview` answers before the authorship gate is ever reached and
+    # this stops testing what it names (GRPH-383).
+    _ok(client, agent_key, "update_item",
+        {"id": item.key, "status": "review", "agent_id": me["agent_id"]})
+    db.refresh(item)
 
     with pytest.raises(fleet.SelfReview):
         fleet.sign_off(db, item_id=item.id, agent_id=me["agent_id"])
@@ -621,3 +626,74 @@ def test_a_second_all_in_one_agent_does_block_it(client, agent_key, proj, db):
     err = _refused(client, agent_key, "sign_off", {"id": item_key, "agent_id": a["agent_id"]})
 
     assert err["code"] == "unauthorized"
+
+
+# ---- a review verdict needs something submitted to review (GRPH-383) -------------------------
+
+def test_sign_off_refuses_work_that_was_never_submitted(client, agent_key):
+    """Found by using the fleet, not by a test. `FA-18`, `in_progress` and LEASED to one agent,
+    went straight to `done` when another signed it off — every gate that existed passed,
+    because the two agents were genuinely independent. The gates asked who, never whether.
+
+    A verdict on unsubmitted work ends somebody else's lease mid-change and records a decision
+    about a diff nobody was ever shown."""
+    a = _register(client, agent_key, "worker", label="A")
+    rev = _register(client, agent_key, "reviewer", label="R")
+    _new_item(client, agent_key, "still being worked on")
+    c = _ok(client, agent_key, "claim_next", {"agent_id": a["agent_id"]})
+    assert c["item"]["status"] == "in_progress"
+
+    err = _refused(client, agent_key, "sign_off",
+                   {"id": c["item"]["id"], "agent_id": rev["agent_id"]})
+
+    assert err["code"] == "conflict", "the caller is permitted; the work is not submitted"
+    assert a["agent_id"] in err["message"], "name who is still holding it"
+    still = _ok(client, agent_key, "get_item_details", {"id": c["item"]["id"]})
+    assert still["status"] == "in_progress" and still["claimed_by"] == a["agent_id"]
+
+
+def test_bounce_refuses_work_that_was_never_submitted(client, agent_key):
+    """Same hole, the other verdict — and worse in one way: a bounce would reset an item
+    somebody is actively working to `next` and drop their lease."""
+    a = _register(client, agent_key, "worker", label="A")
+    rev = _register(client, agent_key, "reviewer", label="R")
+    _new_item(client, agent_key, "mid-flight")
+    c = _ok(client, agent_key, "claim_next", {"agent_id": a["agent_id"]})
+
+    err = _refused(client, agent_key, "bounce",
+                   {"id": c["item"]["id"], "agent_id": rev["agent_id"], "reason": "no"})
+
+    assert err["code"] == "conflict"
+    still = _ok(client, agent_key, "get_item_details", {"id": c["item"]["id"]})
+    assert still["status"] == "in_progress"
+
+
+def test_a_done_item_cannot_be_signed_off_twice(client, agent_key):
+    """The other side of the same check. Signing off a `done` item re-stamps `reviewed_by`,
+    quietly reassigning credit for a review that already happened."""
+    a = _register(client, agent_key, "worker", label="A")
+    r1 = _register(client, agent_key, "reviewer", label="R1")
+    r2 = _register(client, agent_key, "reviewer", label="R2")
+    item_key = _built_by(client, agent_key, a)
+    _ok(client, agent_key, "sign_off", {"id": item_key, "agent_id": r1["agent_id"]})
+
+    err = _refused(client, agent_key, "sign_off", {"id": item_key, "agent_id": r2["agent_id"]})
+
+    assert err["code"] == "conflict"
+    assert _ok(client, agent_key, "get_item_details",
+               {"id": item_key})["reviewed_by"] == r1["agent_id"]
+
+
+def test_the_full_record_carries_its_evidence(client, agent_key):
+    """`get_item_details` calls itself the full record and omitted `evidence` — so an agent
+    could not read what a completion was justified by. The danger-mode self-review note lives
+    there too, and a receipt nobody can read is not a disclosure."""
+    a = _register(client, agent_key, "worker", label="A")
+    rev = _register(client, agent_key, "reviewer", label="R")
+    item_key = _built_by(client, agent_key, a)
+    _ok(client, agent_key, "sign_off", {"id": item_key, "agent_id": rev["agent_id"],
+                                        "evidence": [{"kind": "test", "detail": "42 passed"}]})
+
+    details = _ok(client, agent_key, "get_item_details", {"id": item_key})
+
+    assert [e["detail"] for e in details["evidence"]] == ["42 passed"]

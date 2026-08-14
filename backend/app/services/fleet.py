@@ -875,6 +875,28 @@ class MissingAdversarialEvidence(Exception):
     """Above-threshold work signed off with nothing that tried to break it."""
 
 
+class NotInReview(Exception):
+    """A review verdict on work that was never submitted for review (GRPH-383).
+
+    Both verdicts checked WHO was calling and never WHETHER the work had been handed over.
+    Found by using the fleet: an item `in_progress` and leased to one agent was taken straight
+    to `done` by another. Every gate that existed passed — the two were genuinely independent —
+    which is why it survived a suite that tests all of them.
+
+    A verdict on unsubmitted work is not review. It ends somebody else's lease mid-change and
+    records a decision about a diff nobody was shown.
+    """
+
+
+def _require_in_review(item: Item, verb: str) -> None:
+    if item.status != "review":
+        raise NotInReview(
+            f"{item.key} is {item.status}, not awaiting review, so there is nothing to {verb} — "
+            + ("it is still being worked on by "
+               f"{item.claimed_by}; wait for it to reach review" if item.claimed_by
+               else "the agent working it has to move it to review first"))
+
+
 def needs_adversarial_evidence(item: Item) -> bool:
     return (item.effort or 0) >= ADVERSARIAL_EFFORT_THRESHOLD
 
@@ -891,6 +913,10 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     item = db.get(Item, item_id)
     if item is None:
         raise ValueError(f"item not found: {item_id}")
+    # BEFORE the authorship gates, because "this was never submitted" is the more fundamental
+    # refusal: reporting a self-review on an item still in progress would send the caller
+    # looking for a second agent when the actual answer is that the work is not finished.
+    _require_in_review(item, "sign off")
     # Danger mode is checked ONCE, here, and its answer is reused by the second gate below.
     # Asking twice would mean two chances to answer differently — and this is exactly the kind
     # of gate where a later refactor makes one of them read a weaker condition.
@@ -980,6 +1006,7 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     item = db.get(Item, item_id)
     if item is None:
         raise ValueError(f"item not found: {item_id}")
+    _require_in_review(item, "bounce")
     if not (reason or "").strip():
         # A bounce without a reason is a rejection the author cannot act on, and it costs
         # them a full cycle to discover that.
