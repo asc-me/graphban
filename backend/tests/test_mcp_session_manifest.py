@@ -209,3 +209,48 @@ def test_a_narrowed_refetch_is_recorded_so_e9c_can_be_decided(client, auth, proj
 
     rows = db.query(Event).filter(Event.action == "tools_list_refetched").all()
     assert len(rows) == 1 and rows[0].meta["role"] == "reviewer"
+
+
+# ---- the boundary, stated at the moment the role is granted -----------------------------------
+
+def test_register_names_the_tools_the_role_will_be_refused(client, auth, proj, key):
+    """The manifest cannot say this: `tools/list` is fetched at connect, before any role
+    exists, so a fleet agent holds all 52 tools all session and finds the edge by walking into
+    it — and three refusals in a row is how `quarantine` decides an agent has stopped
+    listening, so discovering the boundary by trial costs the agent its place in the fleet."""
+    out = _register(client, key, label="R", enrolment_code=_seat(client, auth, proj, "reviewer"))
+
+    assert "claim_cluster" in out["tools_off_limits"]
+    assert "claim_next" in out["tools_off_limits"]
+    assert "sign_off" not in out["tools_off_limits"], "its own tools are not off limits"
+
+
+def test_a_worker_is_told_a_different_boundary(client, auth, proj, key):
+    """Same call, opposite answer — otherwise it is a constant wearing a field's name."""
+    out = _register(client, key, label="W", enrolment_code=_seat(client, auth, proj, "worker"))
+
+    assert "sign_off" in out["tools_off_limits"] and "claim_review" in out["tools_off_limits"]
+    assert "claim_cluster" not in out["tools_off_limits"]
+
+
+def test_an_all_in_one_agent_is_told_nothing_is_off_limits(client, key):
+    """An empty list rather than a reassuring sentence: the single-agent posture really is
+    unrestricted, and a non-empty answer here would be the silent downgrade O3 warns about,
+    arriving as advice."""
+    out = _register(client, key, label="solo")
+
+    assert out["tools_off_limits"] == []
+
+
+def test_the_list_matches_what_the_gate_actually_refuses(client, auth, proj, key):
+    """The failure this guards is drift: a list that says one thing while the gate does
+    another is worse than no list, because an agent would trust it. Asserted against
+    TOOL_ROLES itself so a new gated tool cannot be added without appearing here."""
+    from app.services import fleet
+
+    out = _register(client, key, label="R", enrolment_code=_seat(client, auth, proj, "reviewer"))
+
+    for name in out["tools_off_limits"]:
+        assert "reviewer" not in fleet.TOOL_ROLES[name], f"{name} is not actually refused"
+    refused = {n for n, roles in fleet.TOOL_ROLES.items() if "reviewer" not in roles}
+    assert set(out["tools_off_limits"]) == refused, "every refused tool is named, not a sample"
