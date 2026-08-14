@@ -198,13 +198,18 @@ export const api = {
     request<{ id: string; plaintext: string; role: string; wave: string; prefix: string }>(
       "/fleet/keys", { method: "POST", body: JSON.stringify(body) }),
   issueSeats: (body: { project_id: string; roles: string[]; wave?: string }) =>
-    request<{ seats: { id: string; role: string; code: string; expires_at: string }[] }>(
+    request<{ wave: string; seats: { id: string; role: string; code: string; expires_at: string }[] }>(
       "/fleet/seats", { method: "POST", body: JSON.stringify(body) }),
+  revokeUnusedSeats: (projectId: string, wave?: string) =>
+    request<{ revoked: number }>("/fleet/seats/revoke-unused",
+      { method: "POST", body: JSON.stringify({ project_id: projectId, wave }) }),
+  revokeKey: (keyId: string) =>
+    request<unknown>(`/api-keys/${keyId}`, { method: "DELETE" }),
   reissueSeat: (seatId: string) =>
     request<{ id: string; role: string; code: string; reissued_from: string }>(
       `/fleet/seats/${seatId}/reissue`, { method: "POST" }),
   endWavePreview: (projectId: string, wave: string) =>
-    request<{ keys: number; agents: number; leases: number; reservations: number }>(
+    request<{ keys: number; seats: number; agents: number; leases: number; reservations: number }>(
       `/fleet/end-wave?project_id=${projectId}&wave=${wave}`),
   endWave: (projectId: string, wave: string) =>
     request<{ keys_revoked: number; leases_released: number; reservations_released: number }>(

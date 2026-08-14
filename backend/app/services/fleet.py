@@ -1226,6 +1226,71 @@ def list_enrolments(db: Session, project_id: str | None = None,
     } for r in rows]
 
 
+def list_credentials(db: Session, project_id: str | None = None) -> list[dict]:
+    """Credentials that can reach this project, with what each is FOR.
+
+    `wave` distinguishes a wave artifact from somebody's long-lived credential — the same
+    distinction End wave makes, surfaced so a human can see it before pressing anything.
+    Never returns key material: `prefix` is the display fragment already stored.
+    """
+    from app.models import ApiKey
+
+    stmt = select(ApiKey)
+    if project_id:
+        stmt = stmt.where(ApiKey.project_id == project_id)
+    rows = list(db.scalars(stmt.order_by(ApiKey.created_at.desc())).all())
+    agents_by_key: dict[str, int] = {}
+    for a in db.scalars(select(Agent)).all():
+        if a.api_key_id:
+            agents_by_key[a.api_key_id] = agents_by_key.get(a.api_key_id, 0) + 1
+    return [{
+        "id": r.id,
+        "name": r.name,
+        "prefix": r.prefix,
+        "wave": r.fleet_wave,
+        "revoked": bool(r.revoked),
+        "posture": r.posture,
+        "roles": list(r.roles or []),
+        "agents": agents_by_key.get(r.id, 0),
+        "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+    } for r in rows]
+
+
+def next_wave(db: Session, project_id: str) -> str:
+    """The next unused `wave-N` for this project.
+
+    Computed SERVER-SIDE because the client got it wrong: the Fleet view hardcoded `wave-1`,
+    so every wave since PRD-17 landed in one bucket — 19 seats and 15 keys deep by the time
+    anyone noticed. End wave therefore always ended *everything*, and two waves could never
+    run side by side. A number the UI has to remember to increment is a number that stays 1.
+
+    Reads both tables: a wave owns seats now and owned keys before PRD-19, and reusing a label
+    from either would let End wave reach back into a cohort somebody already finished with.
+    """
+    from app.models import ApiKey
+
+    labels = set(db.scalars(
+        select(Enrolment.wave).where(Enrolment.project_id == project_id)).all())
+    labels |= set(db.scalars(
+        select(ApiKey.fleet_wave).where(ApiKey.project_id == project_id)).all())
+    highest = 0
+    for label in labels:
+        if label and label.startswith("wave-") and label[5:].isdigit():
+            highest = max(highest, int(label[5:]))
+    return f"wave-{highest + 1}"
+
+
+def revoke_unused_seats(db: Session, *, project_id: str, wave: str | None = None) -> int:
+    """Revoke seats nobody redeemed. Consumed ones are left alone — they are the record of
+    which agent took what, and End wave is the thing that stops live sessions."""
+    rows = [r for r in db.scalars(_wave_seats(project_id, wave)).all()
+            if r.consumed_at is None]
+    for r in rows:
+        r.revoked = True
+    db.commit()
+    return len(rows)
+
+
 def issue_wave(db: Session, *, project_id: str, roles: list[str], wave: str,
                issued_by: str | None = None) -> list[tuple[Enrolment, str]]:
     """One seat per entry, so `["worker", "worker"]` issues TWO.

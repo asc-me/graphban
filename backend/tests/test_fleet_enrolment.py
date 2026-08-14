@@ -736,3 +736,70 @@ def test_heartbeat_needs_no_item(client, key, proj, db):
     out = _ok(client, key, "heartbeat", {"agent_id": me["agent_id"]})
 
     assert out["presence_ttl_seconds"] > 0
+
+
+# ---- waves actually increment (GRPH-378) -------------------------------------------------------
+
+def test_each_wave_gets_its_own_number(client, auth, proj):
+    """The Fleet view hardcoded `wave-1`, so every wave since PRD-17 landed in one bucket —
+    19 seats and 15 keys deep before anyone noticed. End wave therefore always ended
+    EVERYTHING, and two waves could never run side by side.
+
+    Computed server-side on purpose: a number the UI has to remember to increment is a number
+    that stays 1."""
+    first = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["worker"]},
+                        headers=auth).json()
+    second = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["worker"]},
+                         headers=auth).json()
+
+    assert first["wave"] == "wave-1"
+    assert second["wave"] == "wave-2"
+
+
+def test_the_next_wave_steps_over_a_legacy_key_wave(client, auth, proj):
+    """A wave owns seats now and owned KEYS before PRD-19. Reusing a label from either would
+    let End wave reach back into a cohort somebody already finished with."""
+    client.post("/api/fleet/keys", json={"project_id": proj, "role": "worker", "wave": "wave-7"},
+                headers=auth)
+
+    out = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["worker"]},
+                      headers=auth).json()
+
+    assert out["wave"] == "wave-8"
+
+
+def test_an_explicit_wave_is_still_honoured(client, auth, proj):
+    out = client.post("/api/fleet/seats",
+                      json={"project_id": proj, "roles": ["worker"], "wave": "hotfix"},
+                      headers=auth).json()
+    assert out["wave"] == "hotfix"
+
+
+def test_revoking_unused_seats_leaves_the_consumed_ones(client, auth, proj, key, db):
+    """A consumed seat is the record of which agent took what. Clearing leftovers must not
+    erase that — and it must not stop a live agent either; ending the wave is what does."""
+    issued = client.post("/api/fleet/seats",
+                         json={"project_id": proj, "roles": ["worker", "worker", "reviewer"]},
+                         headers=auth).json()["seats"]
+    me = _ok(client, key, "register_agent",
+             {"label": "w", "enrolment_code": issued[0]["code"]})
+
+    out = client.post("/api/fleet/seats/revoke-unused",
+                      json={"project_id": proj}, headers=auth).json()
+
+    assert out["revoked"] == 2
+    seats = {s["id"]: s for s in client.get(f"/api/fleet?project_id={proj}",
+                                            headers=auth).json()["seats"]}
+    assert seats[issued[0]["id"]]["state"] == "consumed", "the redeemed seat survives"
+    # And the agent that holds it is untouched.
+    assert _ok(client, key, "heartbeat", {"agent_id": me["agent_id"]})["agent_id"] == me["agent_id"]
+
+
+def test_the_roster_lists_credentials_without_key_material(client, auth, proj, key):
+    """The walk kept asking "which key is that agent on" and the answer lived on another
+    screen. Shown here — as the display prefix only, never anything usable."""
+    body = client.get(f"/api/fleet?project_id={proj}", headers=auth)
+    creds = body.json()["credentials"]
+
+    assert creds and all("prefix" in c and "hashed_key" not in c for c in creds)
+    assert key not in body.text
