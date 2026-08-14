@@ -192,6 +192,11 @@ export function FleetView() {
   // is chosen is the precise failure this dialog exists to prevent, so the numbers are hidden
   // while a new preview is in flight rather than left showing the previous wave's.
   const [previewing, setPreviewing] = React.useState(false);
+  // One flag per tab. A single shared one meant expanding spent SEATS also expanded revoked
+  // CREDENTIALS on the other tab — two unrelated disclosures moving together, which is
+  // confusing precisely because the tabs exist to keep those questions apart.
+  const [showSpentSeats, setShowSpentSeats] = React.useState(false);
+  const [showDeadCreds, setShowDeadCreds] = React.useState(false);
   // The wave label comes BACK from the server now. It used to be hardcoded `wave-1` here, so
   // every wave for weeks landed in one bucket and End wave always ended everything.
   const [wave, setWave] = React.useState<string | null>(null);
@@ -307,6 +312,13 @@ export function FleetView() {
     return [...seen].sort((a, b) => num(b) - num(a) || a.localeCompare(b));
   }, [data?.seats, data?.credentials]);
 
+  // A seat is LIVE if it can still do something: unused (redeemable) or consumed by an agent
+  // that may still be working. Revoked and expired are history.
+  const liveSeats = (data?.seats ?? []).filter((s) => s.state === "unused" || s.state === "consumed");
+  const liveCreds = (data?.credentials ?? []).filter((c) => !c.revoked);
+  const deadCreds = (data?.credentials ?? []).filter((c) => c.revoked);
+  const spentSeats = (data?.seats ?? []).filter((s) => s.state === "revoked" || s.state === "expired");
+
   const liveWave =
     wave ?? [...(data?.seats ?? [])].reverse().find((s) => s.wave)?.wave ?? "wave-1";
 
@@ -372,9 +384,16 @@ export function FleetView() {
               ) : (
                 <>
                   End <span className="font-mono">{confirmWave ?? liveWave}</span>: revoke{" "}
-                  {confirming.keys} key{confirming.keys === 1 ? "" : "s"} and{" "}
-                  {confirming.seats} seat{confirming.seats === 1 ? "" : "s"},
-                  release {confirming.leases} lease{confirming.leases === 1 ? "" : "s"} and{" "}
+                  {confirming.seats} seat{confirming.seats === 1 ? "" : "s"}
+                  {/* Keys are named ONLY when the wave owns some. Under enrolment a wave owns
+                      seats and no keys, so a permanent "revoke 0 keys" clause was describing
+                      a mechanism that no longer applies to new waves — and burying the number
+                      that does matter. Old waves predating PRD-19 still own keys, and for
+                      those it is real damage that must be named. */}
+                  {confirming.keys > 0 && (
+                    <> and {confirming.keys} wave-tagged key{confirming.keys === 1 ? "" : "s"}</>
+                  )}
+                  , release {confirming.leases} lease{confirming.leases === 1 ? "" : "s"} and{" "}
                   {confirming.reservations} reservation{confirming.reservations === 1 ? "" : "s"}?
                 </>
               )}
@@ -529,15 +548,22 @@ export function FleetView() {
             <div className="mt-3 space-y-1.5">
               {/* Clearing leftovers is not ending the wave. Unused seats only — a consumed one
                   records which agent took what, and a live session is stopped by End wave. */}
-              {data!.seats.some((s) => s.state === "unused") && (
+              {data!.seats.some((s) => s.state === "unused" || s.state === "expired") && (
                 <div className="flex justify-end">
+                  {/* Sweeps unredeemed seats — unused AND expired, since an expired one is
+                      already unusable and leaving it listed as "expired" forever is the
+                      clutter this button exists to clear. Consumed seats are never touched. */}
                   <button onClick={clearUnusedSeats}
                           className="text-[11px] text-muted hover:text-[color:var(--color-st-blocked)]">
-                    Revoke the {data!.seats.filter((s) => s.state === "unused").length} unused
+                    Clear the {data!.seats.filter((s) => s.state === "unused" || s.state === "expired").length} unredeemed
                   </button>
                 </div>
               )}
-              {data!.seats.map((s) => (
+              {/* SPENT seats are collapsed, not listed. A revoked or expired seat is history —
+                  after ending a wave the list was 19 dead rows deep and the two seats that
+                  still mattered were invisible in it. Kept reachable rather than dropped,
+                  because the chain of who took what is the audit trail. */}
+              {liveSeats.map((s) => (
                 <div key={s.id} className="flex items-center gap-3 rounded-[9px] border border-line-2 bg-surface-2 px-3 py-1.5">
                   <span className={cn("rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase",
                                       ROLE_TONE[s.role] ?? "text-muted border-line-2")}>
@@ -557,6 +583,23 @@ export function FleetView() {
                   )}
                 </div>
               ))}
+              {spentSeats.length > 0 && (
+                <button onClick={() => setShowSpentSeats((v) => !v)}
+                        className="w-full pt-1 text-left text-[11px] text-faint hover:text-fg-2">
+                  {showSpentSeats ? "Hide" : "Show"} {spentSeats.length} spent
+                </button>
+              )}
+              {showSpentSeats && spentSeats.map((s) => (
+                <div key={s.id} className="flex items-center gap-3 rounded-[9px] border border-line-2 bg-surface-2 px-3 py-1.5 opacity-50">
+                  <span className="rounded-md border border-line-2 px-2 py-0.5 font-mono text-[10px] uppercase text-muted">
+                    {s.role}
+                  </span>
+                  <span className="font-mono text-[11px] text-faint">{s.wave}</span>
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
+                    {s.state === "consumed" ? `taken by ${s.consumed_by}` : s.state}
+                  </span>
+                </div>
+              ))}
             </div>
           )}
         </Section>
@@ -573,7 +616,18 @@ export function FleetView() {
               <Empty>No credentials reach this project yet.</Empty>
             ) : (
               <div className="space-y-1.5">
-                {data!.credentials.map((c) => (
+                {/* Revoked credentials collapse the same way seats do. After ending wave-1 the
+                    list was 15 dead keys deep and the one credential still in use — the
+                    operator's own — was lost in it. */}
+                {liveCreds.length > 0 && deadCreds.length > 0 && (
+                  <div className="flex justify-end">
+                    <button onClick={() => setShowDeadCreds((v) => !v)}
+                            className="text-[11px] text-faint hover:text-fg-2">
+                      {showDeadCreds ? "Hide" : "Show"} {deadCreds.length} revoked
+                    </button>
+                  </div>
+                )}
+                {(showDeadCreds ? data!.credentials : liveCreds).map((c) => (
                   <div key={c.id}
                        className={cn("flex items-center gap-3 rounded-[9px] border border-line-2 bg-surface-2 px-3 py-2",
                                      c.revoked && "opacity-50")}>
