@@ -209,10 +209,31 @@ def test_manifest_stays_within_token_budget():
     The note above still stands and is now the live problem rather than a warning: under
     enrolment every agent holds an UNRESTRICTED credential, so the role-gated manifest trims
     nothing and this full number is what everyone pays. The next raise should be argued
-    against a real prose pass or per-enrolment trimming, not granted."""
+    against a real prose pass or per-enrolment trimming, not granted.
+
+    Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT the note
+    above demanded — it shipped rather than being deferred again. E9a/E9b bind the MCP session
+    to the agent and narrow `tools/list` to its role afterwards: a worker carries 43 tools, a
+    reviewer 42, against 52 here. This number is now the CONNECT-TIME worst case rather than
+    what every agent pays on every turn.
+
+    Two caveats kept deliberately, because they are the ones that would make this raise a
+    mistake:
+
+    - **The saving only lands if the client re-fetches after registering**, and no client is
+      yet known to. `tools_list_refetched` in the event log answers that; until it has rows
+      from a real wave, the full manifest is still what a fleet agent holds all session.
+    - What this raise buys is ~40 tokens of `register_agent` description naming
+      `tools_off_limits`. That exists so an agent learns its boundary by being TOLD rather
+      than by being refused three times, which is how `quarantine` decides an agent has
+      stopped listening. Cutting it to save 40 tokens would trade a wave's worth of agent
+      for a rounding error.
+
+    If the probe comes back empty, this ceiling should come down again with a real prose
+    pass — not stay here on the strength of a saving nothing collects."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 12800, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 13100, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
 

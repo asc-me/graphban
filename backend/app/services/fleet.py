@@ -561,6 +561,26 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
             )
 
 
+def tools_off_limits(role: str) -> list[str]:
+    """The gated tools this role will be refused, sorted.
+
+    The manifest cannot say this. `tools/list` is fetched at connect, before any role exists,
+    so a fleet agent holds the full list all session and finds the boundary by walking into
+    it — three refusals in a row is also how `quarantine` decides an agent has stopped
+    listening, so discovering the edge by trial is not free.
+
+    This is NOT a security surface and must never be read as one: it names what WILL be
+    refused, and the refusal itself is what enforces it. An agent that ignores this list is
+    exactly as constrained as one that reads it.
+
+    All-in-one is unrestricted, so the honest answer for it is an empty list rather than a
+    reassuring sentence.
+    """
+    if role == ALL_IN_ONE or role not in ROLES:
+        return []
+    return sorted(name for name, allowed in TOOL_ROLES.items() if role not in allowed)
+
+
 def _hint_for(tool: str, role: str) -> str:
     if role == "worker":
         return "your work moves to review; a reviewer takes it from there"
