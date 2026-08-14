@@ -511,6 +511,9 @@ def _try_claim(db: Session, cand: Item, agent_id: str) -> Item | None:
                        built_by=agent_id, status="in_progress")
     if db.execute(stmt).rowcount == 1:
         db.commit()
+        # Holding a lease outranks having been dismissed: the roster must never hide work.
+        from app.services import fleet as fleet_svc
+        fleet_svc.restore_on_work(db, agent_id)
         db.expire_all()
         item = db.get(Item, cand.id)
         stamp_baseline_at_start(db, item)

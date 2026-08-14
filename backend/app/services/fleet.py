@@ -327,6 +327,25 @@ def dismiss_agent(db: Session, *, agent_id: str, undo: bool = False) -> Agent:
     return agent
 
 
+def restore_on_work(db: Session, agent_id: str) -> None:
+    """An agent that takes work is not gone, whatever the roster was told. Called from the one
+    path that hands out a lease.
+
+    The refusal in `dismiss_agent` guards work held at that INSTANT; this is the same invariant
+    arriving late. On the real roster the two states overlap — of 24 rows, 8 were heartbeating
+    within seconds — so an agent dismissed while idle can claim a minute later, and without
+    this the roster would hide a live lease.
+
+    PRESENCE IS DELIBERATELY NOT ENOUGH. A heartbeat is also how an abandoned process behaves,
+    and restoring on one would make a chatty idle agent impossible to dismiss — which is most
+    of what dismissal is for. Taking work is the act that has to be visible.
+    """
+    agent = db.get(Agent, agent_id)
+    if agent is not None and agent.dismissed_at is not None:
+        agent.dismissed_at = None
+        db.commit()
+
+
 def fleet_status(db: Session, project_id: str | None = None, *,
                  lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
     """The roster plus the clock every member must obey.
