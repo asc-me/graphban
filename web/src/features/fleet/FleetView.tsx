@@ -206,7 +206,7 @@ export function FleetView() {
   // credentials — while the work is organised by CADENCE: a credential is written once per
   // machine, seats are issued per wave, the roster is watched continuously. A Credentials tab
   // that only listed things was a tab you visit once and never again.
-  const [tab, setTab] = React.useState<"roster" | "wave">("roster");
+  const [tab, setTab] = React.useState<"connections" | "wave">("connections");
 
   async function mint() {
     setError("");
@@ -449,7 +449,7 @@ export function FleetView() {
             screen entirely. */}
         <div className="mb-3 flex gap-1">
           {([
-            ["roster", `Roster${agents.length ? ` (${agents.length})` : ""}`],
+            ["connections", `Connections${agents.length ? ` (${agents.length})` : ""}`],
             ["wave", `Wave${(data?.seats ?? []).filter((s) => s.state === "unused").length
               ? ` (${data!.seats.filter((s) => s.state === "unused").length} unused)` : ""}`],
           ] as const).map(([id, label]) => (
@@ -467,7 +467,7 @@ export function FleetView() {
           <span className="self-center pl-2 font-mono text-[11px] text-faint">{liveWave}</span>
         </div>
 
-        {tab === "roster" && (
+        {tab === "connections" && (
           <>
         <Section title="Roster" desc="Offline agents fade rather than vanish — one that died holding a branch is what you need to see.">
           {agents.length === 0 ? (
@@ -598,7 +598,7 @@ export function FleetView() {
           </>
         )}
 
-        {tab === "roster" && (
+        {tab === "connections" && (
           <>
             {/* Credential provisioning sits WITH the roster: between them they answer
                 one question — who can reach this project, and who is here now. It used
@@ -654,7 +654,7 @@ export function FleetView() {
           </>
         )}
 
-        {tab === "roster" && (
+        {tab === "connections" && (
           <Section
             title="Credentials"
             desc="Which key each agent authenticates with. A wave-tagged key is a wave artifact — End wave sweeps those and never a hand-minted one."

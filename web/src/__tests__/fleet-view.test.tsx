@@ -403,7 +403,7 @@ describe("Fleet view", () => {
     expect(screen.getByText(/Clear the 2 unredeemed/)).toBeInTheDocument();
 
     // Credentials live on the ROSTER tab now, so this is a tab switch BACK, not onward.
-    await user.click(screen.getByRole("button", { name: /^Roster/ }));
+    await user.click(screen.getByRole("button", { name: /^Connections/ }));
     expect(screen.getByText("gb_sk_aaaa")).toBeInTheDocument();
     expect(screen.queryByText("gb_sk_bbbb")).not.toBeInTheDocument();
     await user.click(screen.getByText(/Show 1 revoked/));
@@ -478,5 +478,18 @@ describe("Fleet view", () => {
 
     await user.click(screen.getByText(/Show 1 gone/));
     expect(screen.getByText("GB-A2")).toBeInTheDocument();
+  });
+
+  it("names the tab for what it carries: connections, not just the agent roster", async () => {
+    // The tab holds the agent roster AND the credentials that can reach the project. "Roster"
+    // named only the first half — and when asked, the person who built this workflow read
+    // "roster" as meaning the MCP configs, which is the other half. One question, one name.
+    fleet.data = { ...BASE, agents: [AGENT], total: 1 };
+    renderView();
+
+    expect(screen.getByRole("button", { name: /^Connections/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Roster \(/ })).not.toBeInTheDocument();
+    // The agent list inside it is still a roster — that section keeps the word that fits it.
+    expect(screen.getByText("Roster")).toBeInTheDocument();
   });
 });
