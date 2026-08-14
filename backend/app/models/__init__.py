@@ -325,6 +325,13 @@ class Item(Base):
     # When the pin lapses. A pin without an expiry is a permanent assignment to an agent
     # that may already be dead, which is the queue silently losing an item.
     bounce_pinned_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # WHY it came back (GRPH-378). `bounce` has always REQUIRED a reason and then dropped it:
+    # no column held it, the event meta carried only the principal, and the author was handed
+    # the item back with nothing to act on — the exact failure the requirement exists to
+    # prevent. Kept after the pin lapses and after the next sign-off: "this was bounced once,
+    # and here is what for" is history worth having, and clearing it would leave the author
+    # reading a blank field for the one question they need answered.
+    bounce_reason: Mapped[str] = mapped_column(String, default="")
     # Spec traceability (feature D): the PRD + section this item implements.
     prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
     prd_section: Mapped[str] = mapped_column(String, default="")

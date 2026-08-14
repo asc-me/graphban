@@ -922,6 +922,9 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     item.bounce_pinned_to = author
     item.bounce_pinned_until = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
                                 if author else None)
+    # KEPT, not just demanded (GRPH-378). Requiring a reason and dropping it left the author
+    # exactly where a reasonless bounce would — the rejection arrives, the fix does not.
+    item.bounce_reason = reason.strip()
     item.blocker = ""
     db.commit()
     db.refresh(item)

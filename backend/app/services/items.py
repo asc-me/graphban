@@ -383,6 +383,59 @@ def get_backlog(db: Session, limit: int = 20, project_id: str | None = None) -> 
     return list(db.scalars(stmt).all())
 
 
+def bounce_fields(item) -> dict:
+    """What a bounce left on this item, for whoever reads it next (GRPH-378/379).
+
+    Two facts, with different lifetimes and different readers:
+
+    `bounce_reason` lasts. It is what the AUTHOR must act on, and they read it after they have
+    reclaimed the item — by which point the pin may well have lapsed — so tying it to the
+    reservation would delete it just before it is needed.
+
+    `reserved_for` / `reserved_until` last only as long as the pin, because they are a claim
+    about right now: who may take this item, and when everyone else may. A stale reservation
+    shown to a worker is worse than none, since it argues against a claim the server would
+    actually allow.
+
+    Both ABSENT rather than null when they do not apply, matching `intent_hold` — an
+    unbounced item should not carry three empty fields suggesting a bounce that never was.
+    """
+    out: dict = {}
+    if item.bounce_reason:
+        out["bounce_reason"] = item.bounce_reason
+    from app.services import fleet as fleet_svc
+    holder = fleet_svc.bounce_pin_holder(item)
+    if holder:
+        out["reserved_for"] = holder
+        out["reserved_until"] = item.bounce_pinned_until.isoformat()
+    return out
+
+
+def reserved_elsewhere(db: Session, agent_id: str, project_id: str | None = None,
+                       lease_seconds: int = DEFAULT_LEASE_SECONDS) -> list[dict]:
+    """Ready items this agent was refused because they are pinned to somebody else.
+
+    Without this an empty `claim_next` is byte-identical whether the backlog is empty or every
+    ready item is reserved — so a worker that should idle two minutes and retry concludes the
+    project is finished and stops asking. Absence read as clean, in the one response an idle
+    agent makes its next decision from.
+
+    The `holder != agent_id` guard is correctness by construction rather than a case that
+    arises: a ready item pinned to the caller is one the caller simply claims, so the branch
+    cannot run. Sabotaging it leaves the suite green — recorded here so the next reader does
+    not go looking for the test that covers it.
+    """
+    from app.services import fleet as fleet_svc
+
+    out = []
+    for cand in _ready_candidates(db, project_id, lease_seconds):
+        holder = fleet_svc.bounce_pin_holder(cand)
+        if holder and holder != agent_id:
+            out.append({"id": cand.key, "reserved_for": holder,
+                        "reserved_until": cand.bounce_pinned_until.isoformat()})
+    return out
+
+
 def get_item_details(db: Session, item_id: str) -> dict | None:
     from app.models import MemoryShard, Request
 
@@ -407,6 +460,13 @@ def get_item_details(db: Session, item_id: str) -> dict | None:
         "fidelity": item.fidelity,
         "blocker": item.blocker,
         "pr": item.pr,
+        # This read builds its own dict rather than going through `_item_dict` — which is how
+        # the intent hold went missing from the most important read, and how the whole bounce
+        # went missing from it too (GRPH-378/379). An author reclaiming a bounced item comes
+        # HERE to find out what to fix.
+        "claimed_by": item.claimed_by,
+        "built_by": item.built_by,
+        **bounce_fields(item),
         "linked_shards": [{"id": s.id, "text": s.text, "source": s.source} for s in shards],
         "linked_requests": [{"id": r.key, "title": r.title, "type": r.type} for r in reqs],
         # In-flight invalidation (GRPH-242/312). This is the read an agent makes right
@@ -505,8 +565,12 @@ def _try_claim(db: Session, cand: Item, agent_id: str) -> Item | None:
         if cand.claimed_by is None
         else stmt.where(Item.claimed_by == cand.claimed_by)
     )
-    # `built_by` is written HERE and nowhere else, and never cleared. This is the only path
-    # that makes an agent the author of an item, which is what makes the fact durable.
+    # `built_by` is written HERE and nowhere else, and never CLEARED — which is not the same
+    # as never changed, and the comment used to read as if it were. A later claimant overwrites
+    # it, so this is the CURRENT builder rather than the first one. That is what the self-review
+    # ban needs (the agent who wrote the code now is the one who must not pass it), and it does
+    # mean an item passed between agents keeps only its most recent author. Observed on the
+    # walk: after the bounce pin lapsed and a second worker took FA-12, `built_by` moved with it.
     stmt = stmt.values(claimed_by=agent_id, claimed_at=utcnow(), assignee=agent_id,
                        built_by=agent_id, status="in_progress")
     if db.execute(stmt).rowcount == 1:

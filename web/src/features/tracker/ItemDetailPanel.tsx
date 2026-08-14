@@ -107,6 +107,13 @@ export function ItemDetailPanel({
             </div>
           )}
 
+          {item.bounce_reason && (
+            <div className="rounded-[10px] border border-[rgba(224,179,74,0.3)] bg-[rgba(224,179,74,0.07)] px-3 py-2.5 text-[12.5px] text-[#e0b34a]">
+              <span className="font-mono text-[10px] uppercase tracking-wide">Bounced · </span>
+              {item.bounce_reason}
+            </div>
+          )}
+
           <Section label="Description">
             <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-fg-2">
               {item.description || "No description."}
