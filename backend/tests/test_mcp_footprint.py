@@ -209,9 +209,37 @@ def test_manifest_stays_within_token_budget():
     The note above still stands and is now the live problem rather than a warning: under
     enrolment every agent holds an UNRESTRICTED credential, so the role-gated manifest trims
     nothing and this full number is what everyone pays. The next raise should be argued
-    against a real prose pass or per-enrolment trimming, not granted."""
+    against a real prose pass or per-enrolment trimming, not granted.
+
+    Raised 12800 -> 13100 in GRPH-391, and the paragraph above said not to. Here is the
+    argument, since it is owed.
+
+    PRD-20 D8 adds `graph_query` — one tool, ~291 tokens after two trims (the description lost
+    a third of its words, and every parameter doc that only restated its own name was dropped).
+    Subtract it and the manifest measures ~12793: under the previous ceiling, so by the same
+    subtraction every earlier bump used, this is growth in tool COUNT, which this guard
+    explicitly permits.
+
+    **The prose pass was attempted first and is the wrong instrument here, which is the
+    finding.** Freeing 1164 chars from existing entries means the two largest, `update_item`
+    (2594 chars) and `create_item` (2106) — and NEITHER is verbose prose. Their descriptions are
+    77 and 76 chars; the bulk is per-parameter documentation on the two tools every agent uses
+    most. Cutting a quarter of that buys ~290 tokens by making the most-used write surface
+    harder to call correctly. That is not the bloat this guard exists to catch, and trading
+    agent correctness for manifest size is a bad trade at any exchange rate.
+
+    **The ceiling is set to 13100 deliberately: ~16 tokens of headroom.** The 12800 ceiling had
+    7, which is how a tool got added without anyone re-running this arithmetic. Leaving it
+    equally tight means the next tool argues its own case rather than spending slack voted for
+    something else — the discipline GRPH-369 applied.
+
+    The structural fix is filed rather than restated: progressive disclosure / tiered tool
+    exposure (GRPH-48, GRPH-146) is what makes this number stop mattering. Every bump since
+    GRPH-254 has said some version of "the next one should be the real fix"; the honest reading
+    is that this guard cannot force that work, only make its absence visible — and it has,
+    five times now."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 12800, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 13100, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55

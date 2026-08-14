@@ -76,7 +76,7 @@ mcp_servers:
 Every client authenticates the same way: the key in an `X-API-Key` header (or
 `Authorization: Bearer`), against a URL reachable **from where the agent runs**.
 
-## The 52 tools
+## The 53 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -138,6 +138,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `describe_code` | `nodes`, `edges`, `prune`, `project_id` | **Record code structure** — upsert code nodes (module/file/symbol + summary) and typed edges. Idempotent by path; re-describe on change |
 | `get_code_map` | `kind`, `project_id` | The project's code graph — described nodes + typed edges (read-only) |
 | `code_neighbors` | `path`, `project_id` | Edges around a path (in/out by type) + work items touching it (read-only) |
+| `graph_query` | `query` (`hubs`/`components`/`path`), `a`, `b`, `edge_types`, `limit`, `project_id` | **Structural questions** — inbound-degree hubs (what breaks if this changes), connected components each with an anchor, and the shortest path between two paths. Traversed undirected, reported with edge direction. Read-only and deterministic |
 | `search_code` | `query`, `top_k`, `project_id` | Semantic search over code-node summaries (read-only) |
 | `link_code` | `ref_id`, `path`, `relation`, `ref_type`, `project_id` | **Bridge a tracker item/request to a code path** (affects/implements/fixes/tests/references). Idempotent; surfaces both ways |
 | `unlink_code` | `ref_id`, `path`, `relation`, `project_id` | Remove an item/request ↔ code link |

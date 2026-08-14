@@ -134,6 +134,10 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         "related_work", "next_cluster", "claim_next", "heartbeat",
         "release_item", "describe_code", "get_code_map", "code_neighbors",
         "search_code", "link_code", "unlink_code", "report_graphban_issue",
+        # PRD-20 D8. QUALITY, not authority: it computes hubs/components/path over edges that
+        # already exist and writes nothing. It can tell an agent what depends on the thing it
+        # is about to change; it cannot grant that agent permission to change anything.
+        "graph_query",
         # PRD-12's acceptance surface (GRPH-254). All four are QUALITY, not authority.
         # `prd_acceptance` is read-only. `request_rebaseline` asks for new intent and
         # explicitly does not grant it — approval is still earned by answering the grill,
