@@ -858,3 +858,154 @@ def test_revoking_expired_keys_spares_the_ones_still_good(client, auth, proj, db
     db.expire_all()
     assert db.get(ApiKey, dead).revoked is True
     assert db.get(ApiKey, fresh).revoked is False, "a never-used key is not a dead one"
+
+
+# ---- authorship outlives the lease (GRPH-377 / GRPH-376) ---------------------------------------
+
+def test_ending_a_wave_does_not_let_an_agent_review_its_own_work(client, auth, proj, key, db):
+    """THE hole, in the exact sequence the walk produced. End wave releases every lease its
+    agents hold and only resets status for `in_progress` — so an item in REVIEW kept that
+    status and lost its author. `independent(reviewer, None)` then reads "human-authored,
+    nothing to be independent of", and the agent that built the work could sign it off.
+
+    An enforcement input removed by a routine operation, while the work was still in flight."""
+    from app.models import Item
+
+    seats = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "roles": ["worker", "reviewer"]},
+                        headers=auth).json()["seats"]
+    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    _ok(client, key, "create_item", {"title": "mine", "status": "next"})
+    got = _ok(client, key, "claim_next", {"agent_id": w["agent_id"]})
+    item_id = got["item"]["id"]
+    _ok(client, key, "update_item",
+        {"id": item_id, "status": "review", "agent_id": w["agent_id"]})
+
+    client.post("/api/fleet/end-wave", json={"project_id": proj}, headers=auth)
+
+    # The lease is gone, as it should be. The AUTHOR is not.
+    db.expire_all()
+    row = db.get(Item, item_id)
+    assert row.claimed_by is None, "the lease is correctly released"
+    assert row.built_by == w["agent_id"], "authorship survives the wave that released it"
+
+    # And the ban still bites for the agent that built it.
+    res = _rpc(client, key, "sign_off", {"id": item_id, "agent_id": w["agent_id"]})
+    assert res.get("isError") is True
+    assert res["structuredContent"]["error"]["code"] == "unauthorized"
+
+    # RESIDUAL, and it is the session model rather than this bug: the same PROCESS registered
+    # afresh on a NEW seat is a new session, and D-d makes two seats independent by
+    # construction. The server cannot tell that process from any other — which is the trade
+    # PRD-19 made deliberately, and why enrolment is called coordination rather than a
+    # boundary. What is fixed here is that authorship no longer VANISHES; who may act on it is
+    # a separate question with a stated answer.
+
+
+def test_signing_off_keeps_the_record_of_who_built_it(client, auth, proj, key, db):
+    """GRPH-376: `sign_off` released the lease and the audit trail went with it, so every done
+    item read `built_by: -` and PRD-17's own criterion — reviewed_by != claimed_by — was
+    unverifiable for exactly the items it describes."""
+    from app.models import Item
+
+    seats = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "roles": ["worker", "reviewer"]},
+                        headers=auth).json()["seats"]
+    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": seats[1]["code"]})
+    _ok(client, key, "create_item", {"title": "work", "status": "next"})
+    got = _ok(client, key, "claim_next", {"agent_id": w["agent_id"]})
+    _ok(client, key, "update_item",
+        {"id": got["item"]["id"], "status": "review", "agent_id": w["agent_id"]})
+    _ok(client, key, "claim_review", {"agent_id": r["agent_id"]})
+    _ok(client, key, "sign_off", {"id": got["item"]["id"], "agent_id": r["agent_id"]})
+
+    db.expire_all()
+    row = db.get(Item, got["item"]["id"])
+    assert row.status == "done"
+    assert row.built_by == w["agent_id"] and row.reviewed_by == r["agent_id"]
+    assert row.built_by != row.reviewed_by, "the criterion is checkable after the fact"
+
+
+def test_a_bounce_pins_to_the_author_not_the_lease(client, auth, proj, key, db):
+    """`bounce` pins the item to whoever BUILT it for one lease. Reading that from the lease
+    meant a bounce after an End wave pinned to nobody — the pin existed and pointed at no one,
+    so step 9's "invisible to other workers until the pin lapses" could not hold."""
+    from app.models import Item
+
+    seats = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "roles": ["worker", "reviewer"]},
+                        headers=auth).json()["seats"]
+    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": seats[1]["code"]})
+    _ok(client, key, "create_item", {"title": "bounce me", "status": "next"})
+    got = _ok(client, key, "claim_next", {"agent_id": w["agent_id"]})
+    _ok(client, key, "update_item",
+        {"id": got["item"]["id"], "status": "review", "agent_id": w["agent_id"]})
+    _ok(client, key, "claim_review", {"agent_id": r["agent_id"]})
+
+    _ok(client, key, "bounce", {"id": got["item"]["id"], "agent_id": r["agent_id"],
+                                "reason": "needs a test"})
+
+    db.expire_all()
+    row = db.get(Item, got["item"]["id"])
+    assert row.status == "next"
+    assert row.bounce_pinned_to == w["agent_id"], "pinned to the author, who can fix it"
+    assert row.built_by == w["agent_id"], "and still recorded as its author"
+
+
+def test_a_subagent_cannot_sign_its_parents_work_after_a_wave_ends(client, auth, proj, key, db):
+    """The half the identity check does NOT cover, and the one that made a sabotage pass. The
+    `built_by == agent_id` guard catches the author itself; `independent()` catches everyone in
+    the same call tree. Resolve the author from the LEASE and, after an End wave has released
+    it, independence is computed against None — so a subagent signs off its parent's work."""
+    seats = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "roles": ["worker", "reviewer"]},
+                        headers=auth).json()["seats"]
+    parent = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": seats[0]["code"]})
+    _ok(client, key, "create_item", {"title": "parent work", "status": "next"})
+    got = _ok(client, key, "claim_next", {"agent_id": parent["agent_id"]})
+    _ok(client, key, "update_item",
+        {"id": got["item"]["id"], "status": "review", "agent_id": parent["agent_id"]})
+    client.post("/api/fleet/end-wave", json={"project_id": proj}, headers=auth)
+
+    # The child registers AFTER the wave, on a seat that is still valid. Registering it before
+    # made this test vacuous: End wave revoked its seat too, so it was refused for SESSION
+    # EXPIRY and never reached the independence check the test exists to exercise. A sabotage
+    # that resolved the author from the released lease passed against that version.
+    fresh = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["reviewer"]},
+                        headers=auth).json()["seats"][0]
+    child = _ok(client, key, "register_agent",
+                {"label": "c", "enrolment_code": fresh["code"],
+                 "parent_agent_id": parent["agent_id"]})
+
+    res = _rpc(client, key, "sign_off",
+               {"id": got["item"]["id"], "agent_id": child["agent_id"]})
+
+    assert res.get("isError") is True, "a call tree cannot review itself, wave or no wave"
+
+
+def test_a_bounce_after_a_wave_ends_still_pins_to_the_author(client, auth, proj, key, db):
+    """`bounce` reads the author to pin the item to whoever can fix it. Read from the LEASE and
+    a bounce after an End wave pins to nobody — the pin exists, points at no one, and step 9's
+    "invisible to other workers until it lapses" is quietly false."""
+    from app.models import Item
+
+    seats = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "roles": ["worker", "reviewer"]},
+                        headers=auth).json()["seats"]
+    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    _ok(client, key, "create_item", {"title": "bounce after wave", "status": "next"})
+    got = _ok(client, key, "claim_next", {"agent_id": w["agent_id"]})
+    _ok(client, key, "update_item",
+        {"id": got["item"]["id"], "status": "review", "agent_id": w["agent_id"]})
+    client.post("/api/fleet/end-wave", json={"project_id": proj}, headers=auth)
+
+    fresh = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["reviewer"]},
+                        headers=auth).json()["seats"][0]
+    r = _ok(client, key, "register_agent", {"label": "r2", "enrolment_code": fresh["code"]})
+    _ok(client, key, "bounce", {"id": got["item"]["id"], "agent_id": r["agent_id"],
+                                "reason": "still needs a test"})
+
+    db.expire_all()
+    assert db.get(Item, got["item"]["id"]).bounce_pinned_to == w["agent_id"]

@@ -297,6 +297,16 @@ class Item(Base):
     evidence: Mapped[list] = mapped_column(JSON, default=list)
     # Assignment / agent claiming (feature A).
     assignee: Mapped[str] = mapped_column(String, default="")  # durable owner (human or agent)
+    # WHO MADE IT. Written when the item is claimed and never cleared — distinct from
+    # `claimed_by`, which is the LEASE and is correctly released by End wave, bounce and the
+    # stale-lease sweep.
+    #
+    # They were one column, and that is how two defects happened: `sign_off` cleared it and the
+    # audit trail went with it (GRPH-376), and End wave cleared it on items still in REVIEW, so
+    # `independent(reviewer, None)` read "nothing to be independent of" and an agent could sign
+    # off its own work (GRPH-377). One column carrying two meanings; releasing one destroyed
+    # the other.
+    built_by: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     claimed_by: Mapped[str | None] = mapped_column(String, nullable=True)  # agent holding the lease
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # --- the review handoff (PRD-17 D3) ---
