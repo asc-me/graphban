@@ -1,4 +1,4 @@
-import type { FleetOverview } from "@/lib/types";
+import type { FleetOverview, FleetPresence } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -194,6 +194,11 @@ export const api = {
   // queue would show an idle reviewer beside work it could already be taking.
   fleet: (projectId?: string) =>
     request<FleetOverview>(`/fleet${projectId ? `?project_id=${projectId}` : ""}`),
+  // Presence on the graph (PRD-20 D4). Separate from `fleet` on purpose: the roster is a
+  // page, this is polled by whichever graph view is open, and merging them would make every
+  // Fleet render pay for node resolution it does not use.
+  fleetPresence: (projectId?: string) =>
+    request<FleetPresence>(`/fleet/presence${projectId ? `?project_id=${projectId}` : ""}`),
   mintFleetKey: (body: { project_id: string; role: string; wave: string; label?: string }) =>
     request<{ id: string; plaintext: string; role: string; wave: string; prefix: string }>(
       "/fleet/keys", { method: "POST", body: JSON.stringify(body) }),

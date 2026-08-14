@@ -14,6 +14,7 @@ Edges are keyed by path so they can point at a not-yet-described node. Item↔co
 """
 from __future__ import annotations
 
+import fnmatch
 import uuid
 
 from sqlalchemy import delete, select, text
@@ -475,6 +476,49 @@ def search_code(
 def export_graph(db: Session, project_id: str) -> dict:
     """Portable dump of the project's code graph (for backup / migration parity)."""
     return get_code_map(db, project_id)
+
+
+def area_matches(area: str, path: str) -> bool:
+    """Does a reservation `area` cover the code node at `path`? (PRD-20 D4)
+
+    **Deliberately NOT `clustering._match`, and that is the point.** The divvy and the graph
+    want the same vocabulary and the OPPOSITE failure preference. Over-matching is *safe* for
+    collision avoidance — you over-block, you never collide — and is a *lie* for presence,
+    because it claims an agent is somewhere it is not. `_match`'s third rule treats any two
+    paths sharing a parent directory as related, which measured against the live graph turns
+    one file area into 25 nodes and `web/src/features/*` into 41. PRD-20 section 5.1 originally
+    claimed reusing `_match` meant the two "cannot drift"; that was backwards, and this
+    function is the correction.
+
+    Three rules, in order:
+      1. exact
+      2. glob — the AREA is the pattern (`web/src/features/*`), never the path
+      3. directory prefix — an area naming a directory covers everything beneath it
+
+    `::`-aware throughout: a symbol node `items.py::claim_next` is covered by anything that
+    covers `items.py`. There are zero symbol nodes on the live graph today (GRPH-382), so this
+    is written now rather than discovered as a gap the day the first one appears.
+    """
+    area = (area or "").strip()
+    path = (path or "").strip()
+    if not area or not path:
+        return False
+    if area == path:
+        return True
+
+    # A symbol is covered by whatever covers the file it lives in.
+    #
+    # This deliberately does NOT also require `"::" not in area`. That guard was here first and
+    # a sabotage pass proved it guards nothing: an area carrying `::` cannot match the stripped
+    # file path under any of the three rules below, so the recursion is already a no-op for it
+    # and `a.py::x` still does not cover `a.py::y`. A condition that cannot change an outcome
+    # reads as protection and provides none, which is worse than its absence.
+    if "::" in path and area_matches(area, path.split("::", 1)[0]):
+        return True
+
+    if fnmatch.fnmatch(path, area):
+        return True
+    return path.startswith(area.rstrip("/") + "/")
 
 
 # ── structural queries (PRD-20 D8) ────────────────────────────────────────────

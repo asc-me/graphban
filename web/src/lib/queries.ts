@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import * as React from "react";
 
 import { api } from "./api";
 import type { Item, RequestItem } from "./types";
@@ -407,6 +408,31 @@ export function useFleet(projectId?: string) {
     queryKey: ["fleet", projectId],
     queryFn: () => api.fleet(projectId),
     refetchInterval: 15000,
+  });
+}
+
+/**
+ * Live presence for the graph views (PRD-20 D4).
+ *
+ * **Polled at the interval the SERVER reports**, not a hardcoded number: presence is only as
+ * fresh as the heartbeat that feeds it, and asking faster than agents report renders a
+ * confidence we do not have. The payload carries `heartbeat_interval_seconds`, so the cadence
+ * corrects itself on the first response rather than needing a second call to learn it.
+ * `enabled` lets a view that is not showing a graph stop paying for the poll at all.
+ */
+export function useFleetPresence(projectId?: string, enabled = true) {
+  const [intervalMs, setIntervalMs] = React.useState(50_000);
+  return useQuery({
+    queryKey: ["fleet-presence", projectId],
+    queryFn: async () => {
+      const res = await api.fleetPresence(projectId);
+      if (res.heartbeat_interval_seconds > 0) {
+        setIntervalMs(res.heartbeat_interval_seconds * 1000);
+      }
+      return res;
+    },
+    refetchInterval: intervalMs,
+    enabled: enabled && !!projectId,
   });
 }
 
