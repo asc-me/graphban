@@ -111,6 +111,22 @@ def test_reissue_replaces_a_dead_seat_and_points_back_at_it(db, proj):
     assert fresh.role == dead.role and code.startswith("WORKER-")
 
 
+def test_list_enrolments_keeps_the_dead_seat_after_reissue(db, proj):
+    """The Fleet view's roster is this list. Filtering it to unused seats after reissue
+    would hide the consumed row — the audit trail reissue exists to leave behind."""
+    dead, _ = _seat(db, proj, "worker")
+    dead.consumed_at = datetime.now(timezone.utc)
+    dead.consumed_by = "FA-A1"
+    db.commit()
+
+    fresh, _ = fleet.reissue_enrolment(db, enrolment_id=dead.id)
+
+    by_id = {s["id"]: s for s in fleet.list_enrolments(db, proj)}
+    assert by_id[dead.id]["state"] == "consumed", "the dead seat stays on the roster"
+    assert by_id[fresh.id]["state"] == "unused"
+    assert by_id[fresh.id]["reissued_from"] == dead.id
+
+
 # ---- redeeming ------------------------------------------------------------------------------
 
 def test_a_seat_grants_its_role_on_a_shared_credential(client, key, proj, db):

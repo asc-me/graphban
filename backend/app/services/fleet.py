@@ -1213,6 +1213,8 @@ def list_enrolments(db: Session, project_id: str | None = None,
     if wave:
         stmt = stmt.where(Enrolment.wave == wave)
     rows = list(db.scalars(stmt.order_by(Enrolment.created_at.desc())).all())
+    # Intentionally no state filter: a consumed/expired/revoked row is the record
+    # reissue leaves behind. Dropping it here hides the dead seat from the Fleet view.
     return [{
         "id": r.id,
         "role": r.role,
