@@ -505,7 +505,10 @@ def _try_claim(db: Session, cand: Item, agent_id: str) -> Item | None:
         if cand.claimed_by is None
         else stmt.where(Item.claimed_by == cand.claimed_by)
     )
-    stmt = stmt.values(claimed_by=agent_id, claimed_at=utcnow(), assignee=agent_id, status="in_progress")
+    # `built_by` is written HERE and nowhere else, and never cleared. This is the only path
+    # that makes an agent the author of an item, which is what makes the fact durable.
+    stmt = stmt.values(claimed_by=agent_id, claimed_at=utcnow(), assignee=agent_id,
+                       built_by=agent_id, status="in_progress")
     if db.execute(stmt).rowcount == 1:
         db.commit()
         db.expire_all()

@@ -708,9 +708,9 @@ def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = 
     if project_id:
         stmt = stmt.where(Item.project_id == project_id)
     for it in db.scalars(stmt).all():
-        if it.claimed_by == agent_id:
+        if it.built_by == agent_id:
             continue
-        author = db.get(Agent, it.claimed_by) if it.claimed_by else None
+        author = db.get(Agent, it.built_by) if it.built_by else None
         if me is not None and not independent(me, author):
             return NOT_INDEPENDENT
     return "no item awaiting a second pair of eyes"
@@ -720,7 +720,9 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
                  lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
     """Lease an item awaiting review that this agent did NOT build.
 
-    **`WHERE claimed_by != caller` is the entire invariant.** With one agent in the fleet this
+    **`WHERE built_by != caller` is the entire invariant** — authorship, not the lease. It was
+    `claimed_by` and that is how End wave defeated it: releasing a lease erased the author, and
+    `independent(reviewer, None)` reads "nothing to be independent of" (GRPH-377). With one agent in the fleet this
     correctly returns nothing: self-review stops being a procedural discipline somebody
     remembers and becomes a clause the database enforces.
 
@@ -740,11 +742,11 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         # The ban, keyed on AUTHORSHIP rather than on role. The obvious attack on a dynamic
         # role system is to promote a worker to reviewer while it holds its own item; it does
         # not work, because an agent's id does not change when its role does.
-        if it.claimed_by != agent_id
+        if it.built_by != agent_id
         # Already being reviewed by somebody else.
         and not (it.reviewed_by and it.reviewed_by != agent_id)
         # And separate enough for the review to mean anything (GRPH-361).
-        and (me is None or independent(me, db.get(Agent, it.claimed_by) if it.claimed_by else None))
+        and (me is None or independent(me, db.get(Agent, it.built_by) if it.built_by else None))
     ]
     if not candidates:
         return None
@@ -753,7 +755,7 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
     if my_vendor:
         authors = {a.id: (a.capabilities or {}).get("vendor")
                    for a in db.scalars(select(Agent)).all()}
-        cross = [it for it in candidates if authors.get(it.claimed_by) != my_vendor]
+        cross = [it for it in candidates if authors.get(it.built_by) != my_vendor]
         candidates = cross or candidates
 
     item = candidates[0]
@@ -791,7 +793,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     item = db.get(Item, item_id)
     if item is None:
         raise ValueError(f"item not found: {item_id}")
-    if item.claimed_by and item.claimed_by == agent_id:
+    if item.built_by and item.built_by == agent_id:
         raise SelfReview(
             f"{agent_id} built {item.key} and cannot sign it off; "
             "another agent has to take it"
@@ -800,11 +802,11 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # filters on it, so this is redundant on the happy path — same reasoning as the identity
     # check above: a single gate keyed on a query is one refactor away from being keyed on
     # something weaker, and the failure would be silent.
-    me, author = db.get(Agent, agent_id), (db.get(Agent, item.claimed_by)
-                                           if item.claimed_by else None)
+    me, author = db.get(Agent, agent_id), (db.get(Agent, item.built_by)
+                                           if item.built_by else None)
     if me is not None and not independent(me, author):
         raise SelfReview(
-            f"{agent_id} is not independent of {item.claimed_by} — same call tree, or one "
+            f"{agent_id} is not independent of {item.built_by} — same call tree, or one "
             f"credential and one session — so signing off {item.key} would be self-review "
             "with extra steps. Redeem your own enrolment seat at register_agent, or declare "
             "a distinct capabilities.instance, or use a per-role credential"
@@ -865,7 +867,7 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
         # them a full cycle to discover that.
         raise ValueError("bounce requires a reason")
     release_reservations(db, item_id=item.id)
-    author = item.claimed_by
+    author = item.built_by
     item.status = "next"
     item.claimed_by = None
     item.claimed_at = None
@@ -1462,8 +1464,8 @@ def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
     labels = {a.id: (a.label or a.id) for a in db.scalars(select(Agent)).all()}
     return [{
         "id": it.id, "key": it.key, "title": it.title, "branch": it.branch,
-        "built_by": it.claimed_by,
-        "built_by_label": labels.get(it.claimed_by) if it.claimed_by else None,
+        "built_by": it.built_by,
+        "built_by_label": labels.get(it.built_by) if it.built_by else None,
         "reviewed_by": it.reviewed_by,
     } for it in rows]
 
