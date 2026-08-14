@@ -2,7 +2,7 @@
 
 **Accept:** with three workers registered and a backlog of overlapping items, no two
 concurrently-held clusters share a touch-area. A fourth worker with no non-colliding cluster
-available gets `{claimed: false, reason: "all ready clusters collide with in-flight work"}`
+available gets `{claimed: false, held_by: [...], reason: "...held by X, frees in Ns"}`
 rather than a colliding one.
 
 The subtlety the whole slice exists for: `collision_clusters` partitions a **snapshot**. As
@@ -152,7 +152,10 @@ def test_a_reservation_holds_when_the_partition_moves_underneath_it(client, key,
     out = _ok(client, key, "claim_cluster", {"agent_id": w2["agent_id"]})
 
     assert out["claimed"] is False, "the reservation, not the partition, is what refused it"
-    assert out["reason"] == "all ready clusters collide with in-flight work"
+    # Names the holder rather than describing the situation: "collides with in-flight work" is
+    # true of an abandoned lease too, and the caller cannot tell which without the agent id.
+    assert out["held_by"] == [w1["agent_id"]]
+    assert w1["agent_id"] in out["reason"]
 
 
 def test_a_worker_with_nothing_non_colliding_is_told_so(client, key, db):
@@ -168,7 +171,8 @@ def test_a_worker_with_nothing_non_colliding_is_told_so(client, key, db):
     out = _ok(client, key, "claim_cluster", {"agent_id": w2["agent_id"]})
 
     assert out["claimed"] is False
-    assert out["reason"] == "all ready clusters collide with in-flight work"
+    assert out["held_by"] == [w1["agent_id"]]
+    assert "frees in" in out["reason"], "how long to wait is the actionable half"
 
 
 def test_a_claim_reserves_its_areas_in_the_same_breath(client, key, db):

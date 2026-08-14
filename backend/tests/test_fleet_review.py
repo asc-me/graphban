@@ -74,8 +74,11 @@ def agent_key(client, auth, proj):
                        headers=auth).json()["plaintext"]
 
 
-def _new_item(client, key, title="work"):
-    return _ok(client, key, "create_item", {"title": title, "status": "next"})
+def _new_item(client, key, title="work", touchpoints=None):
+    body = {"title": title, "status": "next"}
+    if touchpoints:
+        body["touchpoints"] = touchpoints
+    return _ok(client, key, "create_item", body)
 
 
 def _built_by(client, key, agent, title="work"):
@@ -355,3 +358,103 @@ def test_authorship_is_readable_before_a_review(client, agent_key):
     details = _ok(client, agent_key, "get_item_details", {"id": item_key})
 
     assert details["built_by"] == a["agent_id"]
+
+
+# ---- the pin has to hold on EVERY claim path -------------------------------------------------
+
+def _bounced(client, key, author, reviewer, title="pinned work"):
+    """An item bounced back to `author`, so its pin is live."""
+    item_key = _built_by(client, key, author, title=title)
+    _ok(client, key, "bounce", {"id": item_key, "agent_id": reviewer["agent_id"],
+                                "reason": "tests missing"})
+    return item_key
+
+
+def test_claim_cluster_cannot_take_a_pinned_item(client, agent_key):
+    """The bypass, found while checking GRPH-380 and verified on the live fleet: an item pinned
+    with 592 SECONDS REMAINING was taken by another agent through `claim_cluster`.
+
+    `claim_item` — the path `claim_cluster` and `next_cluster` both claim through — never
+    consulted the pin; only `claim_next` did. A reservation that holds on one of three paths is
+    not a reservation, and GRPH-380 makes the broken path the DEFAULT posture's path."""
+    a = _register(client, agent_key, "worker", label="A")
+    rev = _register(client, agent_key, "reviewer", label="R")
+    item_key = _bounced(client, agent_key, a, rev)
+    other = _register(client, agent_key, "worker", label="C")
+
+    out = _ok(client, agent_key, "claim_cluster", {"agent_id": other["agent_id"]})
+
+    assert item_key not in [i["id"] for i in out.get("items", [])], \
+        "claim_cluster took an item reserved for its author"
+
+
+def test_next_cluster_cannot_take_a_pinned_item(client, agent_key):
+    """The same hole through the third door. `next_cluster` seeds itself with `claim_next` — so
+    the SEED respects the pin — and then claims NEIGHBOURS with `claim_item`, which did not.
+
+    The pinned item therefore has to be a neighbour of the seed to be reachable at all: shared
+    touchpoints are what make it one. A first draft of this test used an unrelated item, and it
+    passed with the guard deleted — the claim path it was supposed to cover was never entered."""
+    area = ["backend/app/services/shared_area.py"]
+    a = _register(client, agent_key, "worker", label="A")
+    rev = _register(client, agent_key, "reviewer", label="R")
+    _new_item(client, agent_key, "pinned neighbour", touchpoints=area)
+    c = _ok(client, agent_key, "claim_next", {"agent_id": a["agent_id"]})
+    item_key = c["item"]["id"]
+    _ok(client, agent_key, "update_item",
+        {"id": item_key, "status": "review", "agent_id": a["agent_id"]})
+    _ok(client, agent_key, "bounce", {"id": item_key, "agent_id": rev["agent_id"],
+                                      "reason": "tests missing"})
+    _new_item(client, agent_key, "the seed", touchpoints=area)
+    other = _register(client, agent_key, "worker", label="C")
+
+    out = _ok(client, agent_key, "next_cluster", {"agent_id": other["agent_id"]})
+
+    claimed = [i["id"] for i in out["cluster"]]
+    assert claimed, "the seed should have been claimable — otherwise this proves nothing"
+    assert item_key not in claimed
+
+
+def test_the_author_still_gets_its_pinned_item_from_claim_cluster(client, agent_key):
+    """Refusing everyone would be a different bug: the pin exists to give the AUTHOR first
+    refusal, so the author's own claim must go through on every path too."""
+    a = _register(client, agent_key, "worker", label="A")
+    rev = _register(client, agent_key, "reviewer", label="R")
+    item_key = _bounced(client, agent_key, a, rev)
+
+    out = _ok(client, agent_key, "claim_cluster", {"agent_id": a["agent_id"]})
+
+    assert item_key in [i["id"] for i in out.get("items", [])]
+
+
+def test_claiming_spends_the_reservation(client, agent_key, db):
+    """A pin that outlives its claim reads as current and is not. `built_by` moves to whoever
+    claims, while `bounce_pinned_to` kept naming the old author — so the item detail rendered a
+    live reservation for an agent that does not hold the item, which is a wrong answer to the
+    only question that field answers."""
+    a = _register(client, agent_key, "worker", label="A")
+    rev = _register(client, agent_key, "reviewer", label="R")
+    item_key = _bounced(client, agent_key, a, rev)
+
+    _ok(client, agent_key, "claim_next", {"agent_id": a["agent_id"]})
+
+    details = _ok(client, agent_key, "get_item_details", {"id": item_key})
+    assert "reserved_for" not in details, "the reservation is spent once somebody holds the item"
+    assert details["bounce_reason"] == "tests missing", "the REASON survives the claim"
+
+
+def test_a_collided_cluster_names_who_holds_the_areas(client, agent_key):
+    """`all ready clusters collide with in-flight work` is unactionable to the caller most
+    likely to see it — a solo human whose previous agent died holding areas, for whom the
+    answer is either "wait N seconds" or "that agent is gone"."""
+    first = _register(client, agent_key, "worker", label="first")
+    _new_item(client, agent_key, "shared work", touchpoints=["backend/app/services/x.py"])
+    taken = _ok(client, agent_key, "claim_cluster", {"agent_id": first["agent_id"]})
+    assert taken["claimed"], "the fixture cluster should have been claimable"
+    second = _register(client, agent_key, "worker", label="second")
+
+    out = _ok(client, agent_key, "claim_cluster", {"agent_id": second["agent_id"]})
+
+    assert out["claimed"] is False
+    assert out["held_by"] == [first["agent_id"]]
+    assert first["agent_id"] in out["reason"] and "frees in" in out["reason"]
