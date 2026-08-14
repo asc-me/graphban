@@ -252,6 +252,51 @@ instructions are worse than missing ones, because they are followed.
   one credential (D-d).
 - **`/api/fleet/keys`**, unchanged.
 
+## E9 — The manifest narrows to the role, after registration (O6)
+
+Added 2026-08-14, after E1-E8 shipped. Everything here is **advisory**: the role gate at call
+time is unchanged and stays the only enforcement. A client that ignores all of this pays tokens
+and nothing else — which is what makes it safe to try against real clients before knowing
+whether they cooperate.
+
+**E9a — Session identity.** Issue `Mcp-Session-Id` at `initialize` and accept it on subsequent
+requests. Bind session → agent when `register_agent` succeeds on that session. This is the
+piece with value independent of the rest: the server currently cannot tell two agents on one
+credential apart, which is why `role_for_call` resolves an unnamed caller on a fleet credential
+to `unidentified` rather than to a role.
+
+A session id is **not authority**. It says which agent a request probably belongs to, for
+trimming and for better refusal messages; the seat still decides what may be called, and a
+forged or replayed session id gains its holder nothing but a different tool list.
+
+**E9b — `tools/list` narrows for a bound session.** Same trimming `_visible_tools` already
+does, keyed on the session's agent role rather than the credential's ceiling. Unbound sessions
+get today's answer, so nothing regresses for a client that never registers.
+
+**E9c — Tell the client to re-fetch.** `notifications/tools/list_changed` after
+`register_agent` and after `assign_role`. This needs a server→client channel, which this
+transport does not have — PRD-17 D-b ruled SSE a non-goal, and that judgement should be re-made
+here rather than assumed, because the reason has changed: it was ruled out for the directive
+downlink, which turned out to ride heartbeats perfectly well, and this is a different problem
+that cannot ride a response the client is not waiting on.
+
+**Do E9a and E9b first, then measure.** Some clients re-fetch `tools/list` on their own — on
+reconnect, or periodically. If Claude Code and Cursor do, E9c is unnecessary; if they do not,
+we will know exactly what the push is worth before building it. A probe against both clients is
+half a day and decides whether the rest is worth anything.
+
+**Acceptance.** Two agents on one credential, registered into different roles, receive
+different manifests on a `tools/list` issued after registration — and the reviewer's manifest
+does not contain `claim_cluster`. An agent that never registers sees exactly what it sees
+today. Nothing about which calls SUCCEED changes: the role gate is the enforcement, and
+`test_fleet_role_gate.py` must pass untouched.
+
+**Watch for:** a trimmed manifest that becomes load-bearing. The moment anything reasons "the
+tool is not in the manifest, so the agent cannot call it", the gate has moved to a place a
+client controls. That is the failure GRPH-377 already demonstrated from the other direction —
+`update_item`'s gate was unreachable through the published schema, and the tests vouched for it
+anyway.
+
 ## 7. Non-goals
 
 - **Not an auth system.** A code is a role grant inside an already-authenticated call. It never
@@ -278,23 +323,64 @@ bounds a code to exactly one redemption, so binding adds friction — the seat s
 the agent connects from a second machine — without adding a property. Two mechanisms enforcing
 one fact is the shape A7 rejected for ceilings, and it is the same answer here.
 
-**O3 — Silent downgrade.** If a human forgets to paste a code, the agent silently becomes
-`all-in-one` — safe, but not what they intended, and the fleet quietly stops being a fleet. The
-roster must show `enrolled: no` prominently rather than just a role badge.
+**O3 — Silent downgrade.** *Resolved 2026-08-14, in the Connections work.* If a human forgets
+to paste a code the agent silently becomes `all-in-one` — safe, but not what they intended, and
+the fleet quietly stops being a fleet.
+
+The roster now groups un-enrolled agents apart rather than badging them, under a line that
+names what they are: `N un-enrolled · single-agent posture, no role gate`. Grouped rather than
+hidden, deliberately: these are live processes doing real work, and the single-agent posture is
+legitimate — it simply is not a fleet, which is the thing the operator needs to see at a glance.
 
 **O4 — Autonomous fleets.** *Resolved: yes, planners may mint — see D-g for the two traps.*
 
 **O6 — Enrolment defeats the role-gated manifest.** *Found while building E2, not predicted
-here.* The manifest is trimmed per the KEY's eligible roles, which works because the Fleet
-view mints single-role credentials. Under enrolment the recommended setup is ONE UNRESTRICTED
-credential — so the ceiling is all three roles, nothing trims, and every agent pays the full
-manifest again. A single-role key currently saves 16-19%.
+here. Decided 2026-08-14: trim per SESSION — see E9.* The manifest is trimmed per the KEY's
+eligible roles, which works because the Fleet view mints single-role credentials. Under
+enrolment the recommended setup is ONE UNRESTRICTED credential — so the ceiling is all three
+roles, nothing trims, and every agent pays the full manifest again.
 
-Trimming per ENROLMENT would restore it, and cannot be done on this transport: the enrolment
-is unknown until `register_agent` has run, while `tools/list` is fetched once at connect. That
-is the SSE change PRD-17 D-b ruled a non-goal. Not a blocker for E1-E8 — it is a token cost,
-not a correctness one — but it should be decided before the manifest is trimmed further on the
-assumption that role gating still pays.
+Measured 2026-08-14, 52 tools:
+
+| ceiling | tools | ~tokens | vs unrestricted |
+| --- | --- | --- | --- |
+| unrestricted — what this PRD recommends | 52 | 12793 | — |
+| worker only | 43 | 10650 | −17% |
+| reviewer only | 42 | 10432 | −19% |
+| planner only | 45 | 10986 | −15% |
+
+**The original framing understated this, and that is why it stayed open.** It reads as a
+connect-time cost, which sounds like a one-off. It is not: the tool list rides in context on
+EVERY turn of that agent's session, so the 15-19% is paid per request for the life of the
+agent. What is genuinely one-off is only the first load.
+
+It is also no longer purely theoretical. The unrestricted manifest sits within a few tokens of
+the budget guard, which was calibrated when role trimming was assumed to apply. The posture
+this PRD recommends is the one that pays full price, and it is the one closest to failing.
+
+**Rejected — a role hint at connect** (`?role=worker`, or a header). The server knows only the
+credential and the request itself before `register_agent` runs, so this is the only way to trim
+at connect. It puts the role back into per-agent client config, which is exactly what D-a
+removed — and Cursor stores ONE config across all of its agents (probed 3.16.2), so it cannot
+vary per agent even if we wanted it to. It would work for the client that never had the problem
+and fail for the one that motivated the PRD.
+
+**Rejected — trim the manifest globally instead.** Merging paired tools and compressing the
+long tail buys perhaps 8-12% and helps every client regardless of transport, so it is worth
+doing on its own merits. It is not a substitute: it does not restore role trimming, and the
+tail is where the descriptions live that tell an agent what a tool actually does. Three of the
+eight defects found on the PRD-17 walk were surfaces that failed to tell an agent something,
+which makes "buy headroom by cutting prose" a bad trade at exactly the wrong moment.
+
+**Chosen — the manifest narrows AFTER registration, per session (E9).** The ordering problem is
+real but it is not permanent: nothing says the manifest a client holds must be the one it
+fetched at connect. `notifications/tools/list_changed` exists for this. What we lack is session
+identity — several agents share one credential, so a second `tools/list` is indistinguishable
+from the first — and a server→client channel to push with.
+
+Session identity is worth having on its own. It is the same weakness `role_for_call` works
+around today by resolving an unnamed caller on a fleet credential to `unidentified`: the server
+cannot tell two agents on one key apart unless they name themselves.
 
 **O5 — Does this supersede the wave config?** *Resolved: delete what enrolment makes dead,
 in E8, and not before.* Named explicitly there so the removal is a reviewable act rather than
