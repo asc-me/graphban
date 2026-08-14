@@ -1051,11 +1051,17 @@ def test_an_agent_still_holding_work_refuses_to_be_dismissed(client, auth, proj,
 def test_an_orphaned_branch_also_refuses(client, auth, proj, key, db):
     """The other unfinished business, and the one only a human can resolve. The fleet releases
     the ITEM by itself; the branch it left behind is why the row must stay visible."""
+    from datetime import datetime, timedelta, timezone
+
     from app.models import Agent
 
-    me = _ok(client, key, "register_agent", {"label": "orphan"})
+    # A branch declared at registration, and an agent that then died holding it. The flag used
+    # to be set by hand here because it was a column; deriving it means this test now has to
+    # produce the actual SITUATION — which is the whole point of GRPH-396, since the situation
+    # is common and the column was only ever written for a different one.
+    me = _ok(client, key, "register_agent", {"label": "orphan", "branch": "feat/abandoned"})
     row = db.get(Agent, me["agent_id"])
-    row.branch_orphaned = True
+    row.last_seen_at = datetime.now(timezone.utc) - timedelta(hours=1)
     db.commit()
 
     r = client.post(f"/api/fleet/agents/{me['agent_id']}/dismiss", json={}, headers=auth)

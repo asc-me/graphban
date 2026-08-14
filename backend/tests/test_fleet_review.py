@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app.models import Agent, Item
+from app.models import Agent, Item, utcnow
 from app.services import fleet
 from app.services import items as items_svc
 
@@ -697,3 +697,160 @@ def test_the_full_record_carries_its_evidence(client, agent_key):
     details = _ok(client, agent_key, "get_item_details", {"id": item_key})
 
     assert [e["detail"] for e in details["evidence"]] == ["42 passed"]
+
+
+# ---- a review claim is a lease, not a permanent mark (GRPH-395) -------------------------------
+
+def test_a_dead_reviewer_releases_the_item_it_was_reviewing(client, agent_key, db):
+    """Found on the walk. `claim_review` leased by writing `reviewed_by` and NOTHING ever
+    cleared it — no expiry, no sweep, and `release_item` refuses a reviewer because a reviewer
+    holds no `claimed_by`. So a reviewer that died kept the item out of every other reviewer's
+    candidate list permanently, while it sat in `review` looking like ordinary queued work.
+    Live case: FA-9, its reviewer silent 2333 seconds.
+
+    This is what `bounce_pinned_until` exists to prevent, applied to the other hold."""
+    a = _register(client, agent_key, "worker", label="A")
+    r1 = _register(client, agent_key, "reviewer", label="R1")
+    item_key = _built_by(client, agent_key, a)
+    took = _ok(client, agent_key, "claim_review", {"agent_id": r1["agent_id"]})
+    assert took["item"]["id"] == item_key
+    row = db.query(Item).filter(Item.review_claimed_by == r1["agent_id"]).one()
+    row.review_claimed_at = utcnow() - timedelta(seconds=fleet.DEFAULT_LEASE_SECONDS + 60)
+    db.commit()
+
+    r2 = _register(client, agent_key, "reviewer", label="R2")
+    again = _ok(client, agent_key, "claim_review", {"agent_id": r2["agent_id"]})
+
+    assert again["claimed"] and again["item"]["id"] == item_key
+
+
+def test_a_live_review_claim_still_holds(client, agent_key, db):
+    """The other half — an expiry that expires immediately would just be the bug inverted, with
+    two reviewers on every item."""
+    a = _register(client, agent_key, "worker", label="A")
+    r1 = _register(client, agent_key, "reviewer", label="R1")
+    item_key = _built_by(client, agent_key, a)
+    _ok(client, agent_key, "claim_review", {"agent_id": r1["agent_id"]})
+
+    r2 = _register(client, agent_key, "reviewer", label="R2")
+    again = _ok(client, agent_key, "claim_review", {"agent_id": r2["agent_id"]})
+
+    assert again["claimed"] is False
+
+
+def test_a_reviewer_cannot_sign_off_work_another_is_reviewing(client, agent_key, db):
+    """Otherwise the lease is advisory: two reviewers both work the item and whichever finishes
+    first has the verdict, which is the duplicated effort claim_review exists to prevent."""
+    a = _register(client, agent_key, "worker", label="A")
+    r1 = _register(client, agent_key, "reviewer", label="R1")
+    r2 = _register(client, agent_key, "reviewer", label="R2")
+    item_key = _built_by(client, agent_key, a)
+    _ok(client, agent_key, "claim_review", {"agent_id": r1["agent_id"]})
+
+    err = _refused(client, agent_key, "sign_off",
+                   {"id": item_key, "agent_id": r2["agent_id"]})
+
+    assert err["code"] == "conflict"
+    assert r1["agent_id"] in err["message"]
+
+
+def test_signing_off_spends_the_review_claim(client, agent_key, db):
+    """`reviewed_by` goes back to meaning ONE thing — who decided. A `done` item still carrying
+    a live claim would read as something under review."""
+    a = _register(client, agent_key, "worker", label="A")
+    rev = _register(client, agent_key, "reviewer", label="R")
+    item_key = _built_by(client, agent_key, a)
+    _ok(client, agent_key, "claim_review", {"agent_id": rev["agent_id"]})
+
+    out = _ok(client, agent_key, "sign_off", {"id": item_key, "agent_id": rev["agent_id"]})
+
+    assert out["status"] == "done" and out["reviewed_by"] == rev["agent_id"]
+    row = db.query(Item).filter(Item.number == int(item_key.split("-")[-1])).one()
+    assert row.review_claimed_by is None and row.review_claimed_at is None
+
+
+# ---- an orphaned branch is derived, so the DEAD agent has one too (GRPH-396) ------------------
+
+def test_a_dead_agent_that_declared_a_branch_has_an_orphaned_one(client, agent_key, db):
+    """`branch_orphaned` was a column written in exactly one place — inside `quarantine()`,
+    reachable only by an agent making refused calls, i.e. one that is demonstrably ALIVE. So it
+    fired for the drifting agent and never for the dead one, which is the common case and the
+    case it exists for: a crashed agent is the one that cannot clean up after itself.
+
+    Found on the walk: a worker killed mid-lease left `walk/step10b` behind, went offline at
+    t+120s, and nothing anywhere recorded the branch."""
+    from app.models import Agent
+
+    me = _ok(client, agent_key, "register_agent",
+             {"label": "dies-holding-a-branch", "branch": "feat/left-behind"})
+    row = db.get(Agent, me["agent_id"])
+    row.last_seen_at = utcnow() - timedelta(hours=1)
+    db.commit()
+
+    rows = {a["id"]: a for a in fleet.list_agents(db)}
+
+    assert rows[me["agent_id"]]["state"] == "offline"
+    assert rows[me["agent_id"]]["branch_orphaned"] is True
+
+
+def test_a_live_agent_with_a_branch_has_not_orphaned_it(client, agent_key, db):
+    """It is working, not gone. Flagging it would put a permanent warning on every agent that
+    ever declared a branch, which is every worker in a fleet."""
+    me = _ok(client, agent_key, "register_agent",
+             {"label": "still-working", "branch": "feat/in-progress"})
+
+    rows = {a["id"]: a for a in fleet.list_agents(db)}
+
+    assert rows[me["agent_id"]]["branch_orphaned"] is False
+
+
+def test_a_dead_agent_with_no_branch_has_nothing_orphaned(client, agent_key, db):
+    """Most agents declare no branch at all, and an offline row is not by itself a problem —
+    the roster is full of them."""
+    from app.models import Agent
+
+    me = _ok(client, agent_key, "register_agent", {"label": "no-branch"})
+    row = db.get(Agent, me["agent_id"])
+    row.last_seen_at = utcnow() - timedelta(hours=1)
+    db.commit()
+
+    rows = {a["id"]: a for a in fleet.list_agents(db)}
+
+    assert rows[me["agent_id"]]["branch_orphaned"] is False
+
+
+def test_a_claim_with_no_timestamp_is_already_expired(client, agent_key, db):
+    """This is what the 0071 backfill relies on. Items stranded under the old semantics are
+    moved across with a NULL `review_claimed_at`, so they must read as EXPIRED — otherwise the
+    migration carries every strand forward under new column names and fixes nothing.
+
+    FA-9 on the walk fleet was exactly this row: in `review`, marked by a reviewer that had
+    been silent for 39 minutes, invisible to every other reviewer."""
+    a = _register(client, agent_key, "worker", label="A")
+    r1 = _register(client, agent_key, "reviewer", label="R1")
+    item_key = _built_by(client, agent_key, a)
+    row = db.query(Item).filter(Item.number == int(item_key.split("-")[-1])).one()
+    row.review_claimed_by, row.review_claimed_at = r1["agent_id"], None   # the migrated shape
+    db.commit()
+
+    r2 = _register(client, agent_key, "reviewer", label="R2")
+    again = _ok(client, agent_key, "claim_review", {"agent_id": r2["agent_id"]})
+
+    assert again["claimed"] and again["item"]["id"] == item_key
+
+
+def test_a_reviewer_is_told_the_queue_is_taken_not_empty(client, agent_key, db):
+    """Once a review claim is a real lease it becomes a reason for an empty answer — and
+    "no item awaiting a second pair of eyes" would then be a lie told over a full queue. The
+    two send a reviewer to opposite places: wait, or go find out what is broken."""
+    a = _register(client, agent_key, "worker", label="A")
+    r1 = _register(client, agent_key, "reviewer", label="R1")
+    _built_by(client, agent_key, a)
+    _ok(client, agent_key, "claim_review", {"agent_id": r1["agent_id"]})
+
+    r2 = _register(client, agent_key, "reviewer", label="R2")
+    out = _ok(client, agent_key, "claim_review", {"agent_id": r2["agent_id"]})
+
+    assert out["claimed"] is False
+    assert "already being reviewed" in out["reason"]
+    assert r1["agent_id"] in out["reason"]

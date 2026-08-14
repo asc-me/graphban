@@ -20,7 +20,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.models import AreaReservation, Item
+from app.models import utcnow
 from app.services import fleet
+from app.services import items as items_svc
 
 
 def _rpc(client, key, tool, args=None):
@@ -289,3 +291,74 @@ def test_a_planner_may_read_the_partition_but_not_claim_it(client, key):
     res = _rpc(client, key, "claim_cluster", {"agent_id": planner["agent_id"]})
     assert res.get("isError") is True
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
+
+
+# ---- abandoned work must come back to the divvy (GRPH-397) -----------------------------------
+
+def test_claim_cluster_re_offers_an_abandoned_item(client, key, db):
+    """Found on the walk, step 10. The cluster pool was `status in ("backlog", "next")`, and an
+    item whose holder died stays `in_progress` — the lease expires lazily and nothing rewrites
+    the row. So `claim_next` reclaimed it happily and `claim_cluster` could never see it again.
+
+    Survivable while `claim_cluster` was a fleet-worker tool. Not survivable once it became what
+    every posture is taught: a crashed agent's item is then offered to nobody at all, and shows
+    on the board as in-progress, assigned to an agent that is gone, forever.
+
+    Observed: FA-22, lease age 692s against a 600s lease, `claim_cluster` -> "nothing ready"."""
+    _item(client, key, "abandoned", ["backend/app/services/lonely.py"])
+    dead = _worker(client, key, "dies")
+    got = _ok(client, key, "claim_cluster", {"agent_id": dead["agent_id"], "max_items": 1})
+    assert got["claimed"], "the fixture item should have been claimable"
+    held = db.query(Item).filter(Item.claimed_by == dead["agent_id"]).one()
+    stale = utcnow() - timedelta(seconds=items_svc.DEFAULT_LEASE_SECONDS + 60)
+    held.claimed_at = stale
+    # The AREAS age with the lease — both are stamped in the same breath at claim time, so a
+    # dead agent's reservation lapses exactly when its lease does. Ageing only the item leaves
+    # the heir blocked by the reservation and proves nothing about the pool.
+    for r in db.query(AreaReservation).filter(AreaReservation.agent_id == dead["agent_id"]).all():
+        r.expires_at = stale
+    db.commit()
+    assert held.status == "in_progress", "the row is never swept — that is the premise"
+
+    heir = _worker(client, key, "heir")
+    out = _ok(client, key, "claim_cluster", {"agent_id": heir["agent_id"], "max_items": 1})
+
+    assert out["claimed"] is True
+    assert held.key in [i["id"] for i in out["items"]]
+
+
+def test_work_in_hand_stays_out_of_the_pool(client, key, db):
+    """The other half. Widening the pool to every `in_progress` item would put work somebody is
+    actively doing back into the divvy — the collision it exists to prevent, from the inside.
+
+    Asserted on the PARTITION rather than on the claim. Two earlier drafts passed with the
+    predicate sabotaged: the first because the holder's area RESERVATION turned the second
+    agent away, the second because `claim_item` refuses a live lease on its own. Both are real
+    defences, and both mask the thing this test names. What only the pool decides is what a
+    planner is shown."""
+    _item(client, key, "in hand", ["backend/app/services/busy.py"])
+    holder = _worker(client, key, "holder")
+    got = _ok(client, key, "claim_next", {"agent_id": holder["agent_id"]})
+    assert got["claimed"], "the fixture item should have been claimable"
+    mine = got["item"]["id"]
+
+    out = _ok(client, key, "collision_clusters", {})
+
+    assert not any(mine in c["items"] for c in out["clusters"]), \
+        "an item under a live lease is not work to divvy"
+
+
+def test_the_partition_a_planner_reads_shows_abandoned_work_too(client, key, db):
+    """`collision_clusters` and `claim_cluster` read the same pool on purpose. A planner
+    allocating against a partition that hides abandoned work would keep proposing clusters for
+    agents while the stalled item stays invisible to everyone."""
+    _item(client, key, "abandoned", ["backend/app/services/lonely2.py"])
+    dead = _worker(client, key, "dies")
+    _ok(client, key, "claim_cluster", {"agent_id": dead["agent_id"], "max_items": 1})
+    held = db.query(Item).filter(Item.claimed_by == dead["agent_id"]).one()
+    held.claimed_at = utcnow() - timedelta(seconds=items_svc.DEFAULT_LEASE_SECONDS + 60)
+    db.commit()
+
+    out = _ok(client, key, "collision_clusters", {})
+
+    assert any(held.key in c["items"] for c in out["clusters"])

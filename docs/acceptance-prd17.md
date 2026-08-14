@@ -71,22 +71,22 @@ death at once, keep the half-finished work reserved in case the process is merel
 | 2 | Each terminal registers | Roster shows 4 distinct ids, correct roles, counts broken out by role |✅ roles + ids correct — **found 2 heartbeat defects** (GRPH-377) |
 | 3 | A worker calls `update_item(status="done")` | `unauthorized` naming `reviewer`; item stays `review`; refusal in Activity with the human principal |❌→✅ **FAILED: gate unreachable** (GRPH-377); fixed, re-run 03:39, first firing ever |
 | 4 | Two workers `claim_cluster` concurrently | Zero shared touch-areas between the held clusters |✅ two workers, zero shared areas, real concurrent claims |
-| 5 | A worker tries `claim_review` on its own item | Refused — and a worker cannot call `claim_review` at all, which is stronger than the PRD's criterion |not run |
+| 5 | A worker tries `claim_review` on its own item | Refused — and a worker cannot call `claim_review` at all, which is stronger than the PRD's criterion |✅ refused at the role gate |
 | 6 | Reviewer signs off | `reviewed_by != claimed_by`; where the fleet has the diversity, reviewer vendor ≠ author vendor |✅ one credential, one host — independent by SEAT |
 | 6b | Reviewer signs off an **effort ≥ 3** item with no sabotage receipt | Refused (`conflict`), naming what is missing; passes once a receipt with `tests_failed ≥ 1` is recorded |✅ real sabotage receipt on effort 5 |
-| 7 | Promote a worker to reviewer **while it holds its own item in `review`** | Both gates refuse — `claim_review` filters it out, `sign_off` asserts authorship |not run |
+| 7 | Promote a worker to reviewer **while it holds its own item in `review`** | Both gates refuse — `claim_review` filters it out, `sign_off` asserts authorship |✅ both gates refused |
 | 8 | Re-task a live worker → reviewer | Takes effect on its **next poll**; no reconnect; Fleet view shows the directive pending, then acked |not run — the one I still bet against |
-| 9 | Reviewer bounces an item | Returns to `next`, invisible to other workers until the pin lapses (one lease), then claimable by any |not run |
-| 10 | Kill a worker mid-lease | `offline` within ~150s; item back to `next` at ~600s; reservation expired; orphaned branch flagged in its row |not run |
+| 9 | Reviewer bounces an item | Returns to `next`, invisible to other workers until the pin lapses (one lease), then claimable by any |✅ — found GRPH-378/379 |
+| 10 | Kill a worker mid-lease | `offline` within ~150s; item back to `next` at ~600s; reservation expired; orphaned branch flagged in its row |⏳ offline at t+120s; **branch never flagged** — GRPH-396 |
 | 11 | **End wave** | This wave's SEATS revoked; leases and reservations released; **your credential still authenticates** and the config is untouched; live agents get a `session_expired` directive on their next poll |✅ 4 seats + 2 legacy keys revoked, 2 leases released, **credential survived** |
 
 **New since the PRD was written — worth checking too:**
 
 | # | Step | Expected | Result |
 | --- | --- | --- | --- |
-| 12 | Have an orchestrator spawn a subagent that registers with `parent_agent_id` | The subagent cannot `claim_review` or `sign_off` its parent's work |not run |
+| 12 | Have an orchestrator spawn a subagent that registers with `parent_agent_id` | The subagent cannot `claim_review` or `sign_off` its parent's work |✅ refused while holding a reviewer seat |
 | 13 | Two terminals on **one** key, same machine, both reporting `host` | Neither can review the other; the reason says to mint a per-role credential |superseded — seats decide independence now |
-| 14 | A worker calls `claim_cluster(wait_seconds=60)` on an empty backlog | Parks; returns within the window when work appears; **one** tool call, not twelve |not run |
+| 14 | A worker calls `claim_cluster(wait_seconds=60)` on an empty backlog | Parks; returns within the window when work appears; **one** tool call, not twelve |✅ returned at 8.1s, one call |
 | 15 | Register with **no seat at all** | Roster shows `all-in-one` and `not enrolled`, posture reads `single-agent — you are the reviewer`, and it can take an item to `done` itself | ✅ (as an all-in-one key) |
 
 ---
@@ -156,6 +156,11 @@ suite that was green throughout — 1748 passing at the time.
 | 8 | Re-task a live agent | ✅ directive rode a **heartbeat**, delivered **exactly once**, no reconnect |
 | 11 | End wave | ✅ 4 seats + 2 legacy keys revoked, 2 leases + 1 reservation released, **credential survived** |
 | 9 | Reviewer bounces an item | ✅ refused to a non-author twice, author took it back, **pin lapsed at the second** — and **found 2 defects** (GRPH-378/379) |
+| 5 | A worker tries `claim_review` on its own item | ✅ and **stronger than the criterion** — a worker cannot call `claim_review` at all, so whose item it is never arises |
+| 7 | Promote a worker to reviewer **holding its own item in review** | ✅ promotion took effect, then `claim_review` handed it somebody else's item and `sign_off` refused its own |
+| 12 | Subagent registers with `parent_agent_id` | ✅ refused **while holding a reviewer seat** — a seat does not launder a call tree |
+| 14 | `claim_cluster(wait_seconds=60)` on an empty backlog | ✅ **one** call, parked, returned at **8.1s** the moment work appeared |
+| 10 | Kill a worker mid-lease | ⏳ offline at **t+120s**; branch **never flagged** — GRPH-396 |
 
 Step 9 was run on 2026-08-14, after the others, and differently: **driven over the real MCP
 HTTP surface by script rather than by four humans in terminals.** Three credentials, three
@@ -165,7 +170,8 @@ through the service layer, as the human does through the UI. Worth stating plain
 test client behaviour, so it is weaker evidence than steps 2/3/8, and it still found two
 defects.
 
-Not run: 5, 7, 10, 12, 14. Step 10 needs ~10 minutes of lease-clock waiting.
+Steps 5, 7, 12 and 14 were run on 2026-08-14 the same way as step 9 — scripted over the real
+MCP surface. Step 10 is the last one outstanding and is mid-clock.
 Step 13 is superseded — seats decide independence now, so `host` is only the un-enrolled
 fallback.
 
@@ -179,6 +185,8 @@ fallback.
 | GRPH-377 | nginx set no `proxy_read_timeout`, defaulting to exactly `MAX_WAIT_SECONDS` (60s). A full-length park raced the proxy and lost about half the time; a real client hit the 504. |
 | GRPH-378 | **`bounce` required a reason and discarded it.** No column held it, the event meta carried only the principal, and after a real bounce the string appeared in **no row of any table**. The author got the item back with nothing to act on — the exact failure the requirement was written to prevent. `test_a_bounce_needs_a_reason` asserts the refusal on a blank reason and stops there. |
 | GRPH-379 | **The pin was invisible.** `bounce_pinned_to`/`until` and `built_by` appeared on no read surface, and a refused `claim_next` returned `{"claimed": false, "item": null}` — byte-identical to an empty backlog. A worker that should idle and retry concludes the project is finished. |
+| GRPH-395 | **A review claim never expires.** `claim_review` leases by setting `reviewed_by`, and nothing ever clears it — no expiry, no sweep, and `release_item` refuses because a reviewer holds no `claimed_by`. A reviewer that dies strands the item in `review` forever, looking like ordinary queued work. Live example: `FA-9`, reviewer silent 2333s. Exactly what `bounce_pinned_until` exists to prevent, without the expiry. |
+| GRPH-396 | **A dead agent's branch is never flagged.** `branch_orphaned` is written in one place — inside `quarantine()`, reachable only by an agent making three refused calls, i.e. one that is *demonstrably alive*. The agent that crashes holding a branch is recorded nowhere, and that is the common case. It also silently disables the dismissal guard built on it: Dismiss refuses on an orphaned branch, so it never refuses for the dead agents a cluttered roster is full of. |
 | GRPH-376 | `sign_off` clears `claimed_by`, so **the self-review ban is unprovable after the fact** — every done item reads `built_by: -`. Enforcement is fine; the audit trail is not. **Filed, not fixed.** |
 
 ### What the walk proved that tests could not
@@ -219,3 +227,25 @@ Two hazards worth carrying forward. **A looping agent collects directives you me
 already acked it. And **a green test can vouch for an unreachable path**: the `update_item`
 gate had passing tests for weeks because they supplied a parameter the schema forbade. Assert
 against the published surface, not the internal one.
+
+Three more from the 2026-08-14 run, all of which produced a wrong reading before they were
+caught:
+
+- **Do not reuse one agent across steps.** The first step-10 attempt used the agent from steps
+  5 and 7, whose refused calls had tripped `QUARANTINE_AFTER_REFUSALS`. Quarantine releases the
+  agent's work and flags its branch — so the release and the flag I observed both came from the
+  wrong cause, and would have scored step 10 as a pass on evidence that had nothing to do with
+  silence. Give each step its own agent.
+- **Debris makes a later step ambiguous.** By step 14 the project held live reservations from
+  earlier steps, so the parked call correctly returned nothing and the step read as a failure.
+  Re-run on a fresh project: the empty return then means what it says. A step that shares state
+  with the steps before it is testing their leftovers.
+- **`claimed: true` is not an assertion.** Step 7's first gate looked like it passed because
+  `claim_review` returned success — but the question is WHICH item it returned. It had taken
+  somebody else's, correctly; a bug that handed it its own would have produced the same
+  `claimed: true`. Assert the id.
+
+One method choice to state plainly: steps 5, 7, 9, 10, 12 and 14 were driven **by script over
+the real MCP surface** rather than by humans in terminals. Same endpoint, same credentials,
+same seats — but it does not exercise client behaviour, so it is weaker evidence than the
+steps that found the heartbeat and directive defects. It still found four.

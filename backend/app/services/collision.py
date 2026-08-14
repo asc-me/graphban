@@ -102,10 +102,24 @@ def collision_clusters(db: Session, items: list[Item], project_id: str | None) -
     return clusters
 
 
-def clusters_for_project(db: Session, project_id: str | None, status: str | None = None) -> list[dict]:
-    """Collision clusters over a project's work pool. Defaults to the unstarted pool
-    (backlog + next) when no status is given — the work a triage board would divvy."""
+def clusters_for_project(db: Session, project_id: str | None, status: str | None = None,
+                         lease_seconds: int = items_svc.DEFAULT_LEASE_SECONDS) -> list[dict]:
+    """Collision clusters over a project's work pool. Defaults to everything an agent could
+    actually take right now — which is NOT the same as the unstarted pool.
+
+    It used to be `status in ("backlog", "next")`, and that quietly excluded ABANDONED work.
+    An item whose holder died stays `in_progress`, because the lease expires lazily and nothing
+    rewrites the row; `claim_next` reclaims it happily, and the divvy could not see it at all.
+    Once `claim_cluster` became the path every posture is taught, that meant a crashed agent's
+    item was never offered to anybody again (GRPH-397).
+
+    Sharing `items_svc.claimable` is the point: two definitions of "claimable" is what produced
+    the gap, and a triage board should show the same work the claim path will hand out.
+
+    (Dependency readiness stays a `claim_next` filter, as it always has — a blocked item can
+    still appear in the partition a planner reads.)
+    """
     pool = items_svc.list_items(db, project_id=project_id, status=status)
     if status is None:
-        pool = [it for it in pool if it.status in ("backlog", "next")]
+        pool = [it for it in pool if items_svc.claimable(it, lease_seconds=lease_seconds)]
     return collision_clusters(db, pool, project_id)
