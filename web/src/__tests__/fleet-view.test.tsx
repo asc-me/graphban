@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   mintFleetKey: vi.fn(),
   endWavePreview: vi.fn(),
   endWave: vi.fn(),
+  dismissAgent: vi.fn(),
   revokeExpiredKeys: vi.fn(),
   revokeUnusedSeats: vi.fn(),
   revokeKey: vi.fn(),
@@ -35,6 +36,7 @@ function renderView() {
 
 const AGENT = {
   id: "GB-A1", key: "GB-A1", label: "opus @ macbook:wt-2", active_role: "worker",
+  enrolled: true, dismissed: false,
   state: "working", capabilities: {}, worktree: "~/wt-2", branch: "feat/x",
   branch_orphaned: false, last_seen_at: null, holdings: [],
 };
@@ -534,5 +536,47 @@ describe("Fleet view", () => {
       name: (_, el) => /waiting for review/.test(el.textContent ?? ""),
     })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Work" })).toBeInTheDocument();
+  });
+
+  it("groups un-enrolled agents apart instead of mixing them into the fleet", async () => {
+    // An un-enrolled agent is the single-agent posture: legitimate, and simply not a fleet.
+    // Grouped BELOW rather than hidden — these are live processes doing work, not history, so
+    // the disclosure is about order, not concealment.
+    fleet.data = {
+      ...BASE, total: 2,
+      agents: [
+        { ...AGENT, id: "GB-A1", key: "GB-A1", label: "seated", enrolled: true },
+        { ...AGENT, id: "GB-A2", key: "GB-A2", label: "solo", enrolled: false },
+      ],
+    };
+    renderView();
+
+    expect(screen.getByText("seated")).toBeInTheDocument();
+    expect(screen.getByText("solo")).toBeInTheDocument();
+    expect(screen.getByText(/1 un-enrolled/)).toBeInTheDocument();
+  });
+
+  it("dismisses an agent, and offers to put it back", async () => {
+    fleet.data = {
+      ...BASE, total: 2,
+      agents: [
+        { ...AGENT, id: "GB-A1", key: "GB-A1", label: "live one" },
+        { ...AGENT, id: "GB-A9", key: "GB-A9", label: "done with", dismissed: true },
+      ],
+    };
+    const user = userEvent.setup();
+    renderView();
+
+    // Dismissed rows are out of the roster entirely until asked for.
+    expect(screen.queryByText("done with")).not.toBeInTheDocument();
+    await user.click(screen.getByText(/Show 1 dismissed/));
+    expect(screen.getByText("done with")).toBeInTheDocument();
+
+    // And the action reverses, because hiding is a view decision rather than a verdict.
+    await user.click(screen.getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(api.dismissAgent).toHaveBeenCalledWith("GB-A9", true));
+
+    await user.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
+    await waitFor(() => expect(api.dismissAgent).toHaveBeenCalledWith("GB-A1", false));
   });
 });

@@ -156,6 +156,29 @@ def revoke_expired_keys(body: RevokeSeatsIn, db: Session = Depends(get_db),
     return {"revoked": n}
 
 
+class DismissIn(BaseModel):
+    undo: bool = False
+
+
+@router.post("/agents/{agent_id}/dismiss")
+def dismiss_agent(agent_id: str, body: DismissIn, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """Hide an agent from the roster. Never deletes — see the model."""
+    from app.models import Agent
+
+    row = db.get(Agent, agent_id)
+    if row is None:
+        raise HTTPException(404, "no such agent")
+    authz.require_writable(db, user.id, row.project_id)
+    try:
+        out = fleet_svc.dismiss_agent(db, agent_id=agent_id, undo=body.undo)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    events_svc.record_user(db, user, action="dismiss_agent" if not body.undo else "restore_agent",
+                           target_type="agent", target_id=agent_id, project_id=row.project_id)
+    return {"id": out.id, "dismissed": out.dismissed_at is not None}
+
+
 @router.get("/end-wave")
 def preview_end_wave(project_id: str | None = None, wave: str | None = None,
                      db: Session = Depends(get_db), user: User = Depends(get_current_user)):

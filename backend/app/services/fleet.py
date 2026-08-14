@@ -281,6 +281,10 @@ def list_agents(db: Session, project_id: str | None = None, *,
             # Why an all-in-one credential produces an all-in-one agent, shown next to it.
             # `single` means a role hint cannot narrow this key; NULL means it can (GRPH-362).
             "credential_posture": getattr(keys.get(a.api_key_id), "posture", None),
+            # Un-enrolled means the single-agent posture — legitimate, but not part of a
+            # fleet, which is why the view groups them apart rather than mixing them in.
+            "enrolled": a.enrolment_id is not None,
+            "dismissed": a.dismissed_at is not None,
             "worktree": a.worktree,
             "branch": a.branch,
             "branch_orphaned": a.branch_orphaned,
@@ -298,6 +302,29 @@ def list_agents(db: Session, project_id: str | None = None, *,
                          for i in held.get(a.id, [])],
         })
     return out
+
+
+def dismiss_agent(db: Session, *, agent_id: str, undo: bool = False) -> Agent:
+    """Hide an agent from the roster, or put it back. NEVER deletes.
+
+    A row still holding work refuses: that agent is unfinished business, and hiding it would
+    lose the one thing the roster exists to surface — a lease no living agent can finish, or a
+    branch only a human can resolve.
+    """
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        raise ValueError(f"unknown agent: {agent_id}")
+    if not undo:
+        held = db.scalars(select(Item).where(Item.claimed_by == agent_id)).all()
+        if held or agent.branch_orphaned:
+            raise ValueError(
+                f"{agent_id} still holds "
+                + (f"{len(held)} item(s)" if held else "an unmerged branch")
+                + " — release it first, or it disappears with the work still attached")
+    agent.dismissed_at = None if undo else datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(agent)
+    return agent
 
 
 def fleet_status(db: Session, project_id: str | None = None, *,
