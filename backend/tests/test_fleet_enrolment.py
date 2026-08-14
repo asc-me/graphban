@@ -1009,3 +1009,82 @@ def test_a_bounce_after_a_wave_ends_still_pins_to_the_author(client, auth, proj,
 
     db.expire_all()
     assert db.get(Item, got["item"]["id"]).bounce_pinned_to == w["agent_id"]
+
+
+# ---- dismissing an agent (GRPH-380) ------------------------------------------------------------
+
+def test_dismissing_hides_an_agent_without_deleting_it(client, auth, proj, key, db):
+    """A roster that only grows is one nobody reads — a day of walking left 24 rows of which 16
+    were dead processes holding nothing.
+
+    HIDDEN, NEVER DELETED. `Item.claimed_by`, `reviewed_by` and `built_by` hold agent ids as
+    plain strings, so removing a row dangles them silently; and `keys.mint` allocates
+    max(number)+1, so a freed number would let one id name two different agents at different
+    times. Everything that made authorship worth preserving in 0067 makes deletion wrong here."""
+    from app.models import Agent
+
+    me = _ok(client, key, "register_agent", {"label": "spent"})
+
+    out = client.post(f"/api/fleet/agents/{me['agent_id']}/dismiss",
+                      json={}, headers=auth).json()
+
+    assert out["dismissed"] is True
+    row = db.get(Agent, me["agent_id"])
+    assert row is not None, "the row survives — durable work references this id"
+    assert row.dismissed_at is not None
+
+
+def test_an_agent_still_holding_work_refuses_to_be_dismissed(client, auth, proj, key, db):
+    """The one case where hiding costs something. An agent holding a lease is unfinished
+    business — the exact thing the roster exists to surface — and dismissing it would take the
+    work out of view along with it."""
+    me = _ok(client, key, "register_agent", {"label": "busy"})
+    _ok(client, key, "create_item", {"title": "held", "status": "next"})
+    _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
+
+    r = client.post(f"/api/fleet/agents/{me['agent_id']}/dismiss", json={}, headers=auth)
+
+    assert r.status_code == 409
+    assert "still holds" in r.json()["detail"]
+
+
+def test_an_orphaned_branch_also_refuses(client, auth, proj, key, db):
+    """The other unfinished business, and the one only a human can resolve. The fleet releases
+    the ITEM by itself; the branch it left behind is why the row must stay visible."""
+    from app.models import Agent
+
+    me = _ok(client, key, "register_agent", {"label": "orphan"})
+    row = db.get(Agent, me["agent_id"])
+    row.branch_orphaned = True
+    db.commit()
+
+    r = client.post(f"/api/fleet/agents/{me['agent_id']}/dismiss", json={}, headers=auth)
+
+    assert r.status_code == 409
+    assert "branch" in r.json()["detail"]
+
+
+def test_a_dismissal_can_be_undone(client, auth, proj, key, db):
+    """Hiding is a view decision, not a verdict — and a mis-click on a roster of two dozen
+    should not be permanent."""
+    me = _ok(client, key, "register_agent", {"label": "oops"})
+    client.post(f"/api/fleet/agents/{me['agent_id']}/dismiss", json={}, headers=auth)
+
+    out = client.post(f"/api/fleet/agents/{me['agent_id']}/dismiss",
+                      json={"undo": True}, headers=auth).json()
+
+    assert out["dismissed"] is False
+
+
+def test_the_roster_reports_enrolment_and_dismissal(client, auth, proj, key, db):
+    """The view groups un-enrolled agents apart — they are the single-agent posture, which is
+    legitimate but is not a fleet — so it has to be told which is which."""
+    _, code = _seat(db, proj, "worker")
+    seated = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": code})
+    solo = _ok(client, key, "register_agent", {"label": "solo"})
+
+    rows = {a["id"]: a for a in fleet.list_agents(db, proj)}
+
+    assert rows[seated["agent_id"]]["enrolled"] is True
+    assert rows[solo["agent_id"]]["enrolled"] is False
+    assert all(a["dismissed"] is False for a in rows.values())

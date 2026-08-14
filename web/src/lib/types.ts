@@ -738,6 +738,12 @@ export interface FleetAgent {
    *  posture, which is safe but is NOT a fleet, and a forgotten code looks identical to a
    *  deliberate one unless the roster says so. */
   enrolment_id: string | null;
+  /** Holds a seat — part of a fleet. False is the single-agent posture: legitimate, but
+   *  grouped apart because it answers a different question. */
+  enrolled: boolean;
+  /** Hidden from the roster by a human. The row always survives — durable work references
+   *  this id as a plain string. */
+  dismissed: boolean;
   worktree: string;
   branch: string;
   branch_orphaned: boolean;

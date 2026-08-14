@@ -628,6 +628,12 @@ class Agent(Base):
     enrolment_id: Mapped[str | None] = mapped_column(ForeignKey("enrolments.id"), nullable=True,
                                                      index=True)
     state: Mapped[str] = mapped_column(String, default="idle", index=True)
+    # DISMISSED from the roster by a human — not deleted. The row is referenced by
+    # `Item.claimed_by`, `reviewed_by` and `built_by` as PLAIN STRINGS, so deleting one dangles
+    # those with no error; and `keys.mint` allocates max(number)+1, so a freed number would let
+    # `GRPH-A3` name two different agents at different times and the audit trail could no
+    # longer tell them apart. Hiding is the only safe removal.
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 

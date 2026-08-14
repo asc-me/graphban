@@ -108,7 +108,9 @@ function CopyRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function AgentRow({ a }: { a: FleetAgent }) {
+function AgentRow({ a, onDismiss, dismissed }: {
+  a: FleetAgent; onDismiss?: (id: string, undo?: boolean) => void; dismissed?: boolean;
+}) {
   const offline = a.state === "offline";
   const quarantined = a.state === "quarantined";
   return (
@@ -168,6 +170,12 @@ function AgentRow({ a }: { a: FleetAgent }) {
           ? <span className="text-faint">holding nothing</span>
           : a.holdings.map((h) => <div key={h.id} className="truncate">{h.id}</div>)}
       </div>
+      {onDismiss && (
+        <button onClick={() => onDismiss(a.id, dismissed)}
+                className="text-[11px] text-faint hover:text-fg-2">
+          {dismissed ? "Restore" : "Dismiss"}
+        </button>
+      )}
     </div>
   );
 }
@@ -198,6 +206,7 @@ export function FleetView() {
   const [showSpentSeats, setShowSpentSeats] = React.useState(false);
   const [showDeadCreds, setShowDeadCreds] = React.useState(false);
   const [showGone, setShowGone] = React.useState(false);
+  const [showDismissed, setShowDismissed] = React.useState(false);
   // The wave label comes BACK from the server now. It used to be hardcoded `wave-1` here, so
   // every wave for weeks landed in one bucket and End wave always ended everything.
   const [wave, setWave] = React.useState<string | null>(null);
@@ -258,6 +267,18 @@ export function FleetView() {
       await refetch();
     } catch (e) {
       setError(errorDetail(e, "could not clear the unused seats"));
+    }
+  }
+
+  async function dismiss(id: string, undo = false) {
+    setError("");
+    try {
+      await api.dismissAgent(id, undo);
+      await refetch();
+    } catch (e) {
+      // The server refuses an agent that still holds work — surfaced verbatim, because the
+      // reason IS the instruction: release it first.
+      setError(errorDetail(e, "could not dismiss that agent"));
     }
   }
 
@@ -342,10 +363,19 @@ export function FleetView() {
   // An offline agent holding nothing is history, exactly like a revoked seat. Two thirds of
   // this roster was that: 16 of 24 rows, so the tab answering "who is here now" was mostly
   // answering "who was ever here".
-  const shownAgents = agents.filter(
+  // Dismissed rows are out of every group — a human said they were done with them, and the
+  // row survives only because durable work references the id.
+  const kept = agents.filter((a) => !a.dismissed);
+  const dismissed = agents.filter((a) => a.dismissed);
+  const shownAgents = kept.filter(
     (a) => a.state !== "offline" || a.holdings.length > 0 || a.branch_orphaned);
-  const goneAgents = agents.filter(
+  const goneAgents = kept.filter(
     (a) => a.state === "offline" && a.holdings.length === 0 && !a.branch_orphaned);
+  // Un-enrolled agents hold no seat: the single-agent posture, which is legitimate and simply
+  // is not a fleet. Grouped BELOW rather than hidden — these are live processes doing work,
+  // not history, so the disclosure is about order rather than concealment.
+  const fleetAgents = shownAgents.filter((a) => a.enrolled);
+  const soloAgents = shownAgents.filter((a) => !a.enrolled);
   // Already dead, so revoking only tidies the list. Deliberately NOT "never used" — see
   // clearExpiredCredentials.
   const expiredCreds = liveCreds.filter(
@@ -497,14 +527,31 @@ export function FleetView() {
             <Empty>No agents yet. Mint a credential below and paste it into a terminal.</Empty>
           ) : (
             <div className="space-y-2">
-              {shownAgents.map((a) => <AgentRow key={a.id} a={a} />)}
+              {fleetAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} />)}
+              {soloAgents.length > 0 && (
+                <>
+                  <div className="pt-1 text-[11px] text-faint">
+                    {soloAgents.length} un-enrolled · single-agent posture, no role gate
+                  </div>
+                  {soloAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} />)}
+                </>
+              )}
               {goneAgents.length > 0 && (
                 <button onClick={() => setShowGone((v) => !v)}
                         className="w-full pt-1 text-left text-[11px] text-faint hover:text-fg-2">
                   {showGone ? "Hide" : "Show"} {goneAgents.length} gone
                 </button>
               )}
-              {showGone && goneAgents.map((a) => <AgentRow key={a.id} a={a} />)}
+              {showGone && goneAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} />)}
+              {dismissed.length > 0 && (
+                <button onClick={() => setShowDismissed((v) => !v)}
+                        className="w-full text-left text-[11px] text-faint hover:text-fg-2">
+                  {showDismissed ? "Hide" : "Show"} {dismissed.length} dismissed
+                </button>
+              )}
+              {showDismissed && dismissed.map((a) => (
+                <AgentRow key={a.id} a={a} onDismiss={dismiss} dismissed />
+              ))}
             </div>
           )}
         </Section>
