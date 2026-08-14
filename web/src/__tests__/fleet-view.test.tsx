@@ -240,7 +240,7 @@ describe("Fleet view", () => {
     // own span — a substring query would pass on a sentence that never mentions the wave.
     const line = await screen.findByText(
       (_, el) => el?.tagName === "P"
-        && /End wave-1: revoke 2 keys and 4 seats, release 1 lease and 3 reservations\?/
+        && /End wave-1: revoke 4 seats and 2 wave-tagged keys, release 1 lease and 3 reservations\?/
           .test(el.textContent ?? ""),
     );
     expect(line).toBeInTheDocument();
@@ -314,7 +314,7 @@ describe("Fleet view", () => {
 
     // The counts followed the selection rather than lingering from wave-2.
     const line = await screen.findByText(
-      (_, el) => el?.tagName === "P" && /End wave-1: revoke 9 keys and 7 seats/.test(el.textContent ?? ""),
+      (_, el) => el?.tagName === "P" && /End wave-1: revoke 7 seats and 9 wave-tagged keys/.test(el.textContent ?? ""),
     );
     expect(line).toBeInTheDocument();
     expect(api.endWavePreview).toHaveBeenLastCalledWith("core", "wave-1");
@@ -343,16 +343,60 @@ describe("Fleet view", () => {
     renderView();
 
     await user.click(screen.getByRole("button", { name: "End wave" }));
-    await screen.findByText((_, el) => el?.tagName === "P" && /revoke 9 keys/.test(el.textContent ?? ""));
+    await screen.findByText((_, el) => el?.tagName === "P" && /revoke 7 seats/.test(el.textContent ?? ""));
 
     await user.click(screen.getByRole("button", { name: "wave-1" }));
 
     // In flight: wave-2's numbers must be gone, and the destructive button unavailable.
-    expect(screen.queryByText((_, el) => el?.tagName === "P" && /revoke 9 keys/.test(el.textContent ?? "")))
+    expect(screen.queryByText((_, el) => el?.tagName === "P" && /revoke 7 seats/.test(el.textContent ?? "")))
       .not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "End wave-1" })).toBeDisabled();
 
     release({ keys: 0, seats: 1, agents: 1, leases: 0, reservations: 0 });
-    await screen.findByText((_, el) => el?.tagName === "P" && /revoke 0 keys and 1 seat,/.test(el.textContent ?? ""));
+    // A wave with no keys must not say "0 keys". Under enrolment that is every new wave, and
+    // a permanent zero clause buries the number that does matter behind one that never will.
+    await screen.findByText((_, el) => el?.tagName === "P" && /revoke 1 seat, release/.test(el.textContent ?? ""));
+  });
+
+  it("collapses spent seats and revoked credentials instead of listing them forever", async () => {
+    // After ending a wave the seats list was 19 dead rows deep and the two that still mattered
+    // were invisible in it. Spent is history: kept reachable, because the chain of who took
+    // what is the audit trail, but not competing with what is live.
+    const seat = (id: string, state: string) => ({
+      id, role: "worker", wave: "wave-1", state, consumed_by: null,
+      reissued_from: null, expires_at: null,
+    });
+    fleet.data = {
+      ...BASE,
+      seats: [seat("live", "unused"), seat("gone", "revoked"), seat("old", "expired")],
+      credentials: [
+        { id: "k1", name: "yours", prefix: "gb_sk_aaaa", wave: null, revoked: false,
+          posture: null, roles: [], agents: 1, expires_at: null },
+        { id: "k2", name: "spent", prefix: "gb_sk_bbbb", wave: "wave-1", revoked: true,
+          posture: null, roles: [], agents: 0, expires_at: null },
+      ],
+    };
+    const user = userEvent.setup();
+    renderView();
+    await openSeats(user);
+
+    // Asserting the TOGGLE exists proves nothing — the rows have to actually be gone. The
+    // first version of this checked only the toggle, and a sabotage that re-listed every seat
+    // inline passed it.
+    expect(screen.queryByText("revoked")).not.toBeInTheDocument();
+    expect(screen.queryByText("expired")).not.toBeInTheDocument();
+    expect(screen.getByText("unused")).toBeInTheDocument();
+
+    await user.click(screen.getByText(/Show 2 spent/));
+    expect(screen.getByText("revoked")).toBeInTheDocument();
+    expect(screen.getByText("expired")).toBeInTheDocument();
+    // The sweep names what it will actually take: unused AND expired, never consumed.
+    expect(screen.getByText(/Clear the 2 unredeemed/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Credentials/ }));
+    expect(screen.getByText("gb_sk_aaaa")).toBeInTheDocument();
+    expect(screen.queryByText("gb_sk_bbbb")).not.toBeInTheDocument();
+    await user.click(screen.getByText(/Show 1 revoked/));
+    expect(screen.getByText("gb_sk_bbbb")).toBeInTheDocument();
   });
 });
