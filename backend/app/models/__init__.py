@@ -669,6 +669,17 @@ class Agent(Base):
     # `GRPH-A3` name two different agents at different times and the audit trail could no
     # longer tell them apart. Hiding is the only safe removal.
     dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The MCP connection this agent registered over (PRD-19 E9a). Issued at `initialize` and
+    # echoed by the client, so a later `tools/list` on the same connection can be attributed to
+    # THIS agent rather than only to the credential — which several agents share by design.
+    #
+    # NOT AUTHORITY. It says which agent a request probably belongs to, for trimming the
+    # manifest and for sharper refusals; the seat still decides what may be called. A forged or
+    # replayed id buys its holder a different tool list and nothing else.
+    #
+    # Nullable because most callers never send one: a client that predates this, or one that
+    # drops the header, simply gets the untrimmed manifest it gets today.
+    mcp_session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
