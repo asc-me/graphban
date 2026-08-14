@@ -206,7 +206,7 @@ export function FleetView() {
   // credentials — while the work is organised by CADENCE: a credential is written once per
   // machine, seats are issued per wave, the roster is watched continuously. A Credentials tab
   // that only listed things was a tab you visit once and never again.
-  const [tab, setTab] = React.useState<"connections" | "wave">("connections");
+  const [tab, setTab] = React.useState<"connections" | "wave" | "work">("connections");
 
   async function mint() {
     setError("");
@@ -351,6 +351,8 @@ export function FleetView() {
   const expiredCreds = liveCreds.filter(
     (c) => c.expires_at !== null && new Date(c.expires_at) <= new Date());
 
+  const reviewCount = (data?.review_queue ?? []).length;
+
   const liveWave = wave ?? waves[0] ?? "wave-1";
 
   return (
@@ -452,6 +454,10 @@ export function FleetView() {
             ["connections", `Connections${agents.length ? ` (${agents.length})` : ""}`],
             ["wave", `Wave${(data?.seats ?? []).filter((s) => s.state === "unused").length
               ? ` (${data!.seats.filter((s) => s.state === "unused").length} unused)` : ""}`],
+            // The count rides the LABEL so the queue stays legible from any tab. Burying
+            // "3 items waiting, all built by the only reviewer" behind a click is the one
+            // real cost of tabbing this page, and this is what pays it.
+            ["work", `Work${reviewCount ? ` (${reviewCount} in review)` : ""}`],
           ] as const).map(([id, label]) => (
             <button
               key={id}
@@ -466,6 +472,23 @@ export function FleetView() {
           ))}
           <span className="self-center pl-2 font-mono text-[11px] text-faint">{liveWave}</span>
         </div>
+
+        {/* A number in a tab label is easy to miss when you are looking at something else.
+            Work waiting for a second pair of eyes is the one thing on this page that stalls a
+            fleet, so the other tabs say so in a sentence and take you there. Shown ONLY when
+            there is something waiting — a permanent banner is one you stop reading. */}
+        {tab !== "work" && reviewCount > 0 && (
+          <button
+            onClick={() => setTab("work")}
+            className="mb-4 flex w-full items-center gap-2 rounded-[11px] border border-[color:var(--color-st-review)]/40 bg-surface-2 px-3 py-2 text-left text-[12px] text-fg-2 hover:border-[color:var(--color-st-review)]/70"
+          >
+            <span className="font-mono text-[11px] text-[color:var(--color-st-review)]">
+              {reviewCount}
+            </span>
+            item{reviewCount === 1 ? "" : "s"} waiting for review
+            <span className="ml-auto text-[11px] text-muted">Work →</span>
+          </button>
+        )}
 
         {tab === "connections" && (
           <>
@@ -710,6 +733,8 @@ export function FleetView() {
           </Section>
         )}
 
+        {tab === "work" && (
+          <>
         <Section title="Review queue" desc="Who built each item — the reason it needs somebody else.">
           {(data?.review_queue ?? []).length === 0 ? (
             <Empty>Nothing waiting for a second pair of eyes.</Empty>
@@ -761,6 +786,8 @@ export function FleetView() {
             </div>
           )}
         </Section>
+          </>
+        )}
       </div>
     </div>
   );
