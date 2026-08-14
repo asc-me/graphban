@@ -285,6 +285,9 @@ class ItemOut(ORMModel):
     evidence: list[dict] = []
     assignee: str = ""
     claimed_by: str | None = None
+    # Why a reviewer sent it back (GRPH-378). A human opening a bounced item asks the same
+    # question its author does, and the board had no answer either.
+    bounce_reason: str = ""
     prd_id: str | None = _key("prd_key", default=None)
     prd_section: str = ""
     fidelity: str = "low"

@@ -280,3 +280,78 @@ def test_the_pin_lapses_so_an_item_is_never_stranded(client, agent_key, db):
     taken = _ok(client, agent_key, "claim_next", {"agent_id": other["agent_id"]})
 
     assert taken["claimed"] and taken["item"]["id"] == item_key
+
+
+def test_the_bounce_reason_reaches_the_author(client, agent_key):
+    """GRPH-378, found on the walk. `bounce` has always REQUIRED a reason and then dropped it:
+    no column held it, the event meta carried only the principal, and on the live fleet DB the
+    string appeared in no row of any table after a real bounce.
+
+    So the author got the item back with nothing to act on — the exact failure the requirement
+    exists to prevent. `test_a_bounce_needs_a_reason` above asserts the refusal on a blank
+    reason and stops there, which is why 1768 green tests never noticed the reason went
+    nowhere.
+
+    Asserted on `get_item_details` because that is the read an author makes after reclaiming,
+    and it builds its own dict — the divergence that hid the intent hold from the same read."""
+    a = _register(client, agent_key, "worker", label="A")
+    item_key = _built_by(client, agent_key, a)
+    rev = _register(client, agent_key, "reviewer", label="R")
+
+    _ok(client, agent_key, "bounce", {"id": item_key, "agent_id": rev["agent_id"],
+                                      "reason": "no test covers the refusal path"})
+
+    again = _ok(client, agent_key, "claim_next", {"agent_id": a["agent_id"]})
+    assert again["item"]["bounce_reason"] == "no test covers the refusal path"
+    details = _ok(client, agent_key, "get_item_details", {"id": item_key})
+    assert details["bounce_reason"] == "no test covers the refusal path", \
+        "the read an author makes after reclaiming is the one that must carry it"
+
+
+def test_a_refused_claim_is_distinguishable_from_an_empty_backlog(client, agent_key):
+    """GRPH-379. `{"claimed": false, "item": null}` was byte-identical whether the backlog was
+    empty or every ready item was pinned to somebody else — and those call for opposite
+    behaviour: wait and retry, or stop asking.
+
+    The pinned item is NOT named as reserved to its own author, who can simply take it."""
+    a = _register(client, agent_key, "worker", label="A")
+    item_key = _built_by(client, agent_key, a)
+    rev = _register(client, agent_key, "reviewer", label="R")
+    _ok(client, agent_key, "bounce", {"id": item_key, "agent_id": rev["agent_id"],
+                                      "reason": "tests missing"})
+    other = _register(client, agent_key, "worker", label="C")
+
+    refused = _ok(client, agent_key, "claim_next", {"agent_id": other["agent_id"]})
+
+    assert refused["claimed"] is False
+    assert refused["reserved"] == [{"id": item_key, "reserved_for": a["agent_id"],
+                                    "reserved_until": refused["reserved"][0]["reserved_until"]}]
+    assert refused["reserved"][0]["reserved_until"], "an agent deciding whether to wait needs the clock"
+
+
+def test_an_empty_backlog_says_nothing_about_reservations(client, agent_key):
+    """The other half of the distinction: when there is genuinely no work, the response must
+    stay empty-looking. A `reserved` key that is always present would restore the ambiguity in
+    the opposite direction — an agent would parse a field that never tells it anything.
+
+    This replaced a test that asserted the author is not told about ITS OWN pin. That state is
+    unreachable: a ready item pinned to the caller is one the caller just claims, so the
+    branch never runs. Sabotaging the guard left it green, which is the tell — the assertion
+    was vouching for a filter it could not exercise."""
+    a = _register(client, agent_key, "worker", label="A")
+
+    nothing = _ok(client, agent_key, "claim_next", {"agent_id": a["agent_id"]})
+
+    assert nothing["claimed"] is False
+    assert "reserved" not in nothing
+
+
+def test_authorship_is_readable_before_a_review(client, agent_key):
+    """`built_by` decides review independence and was readable on no surface, so an agent could
+    not tell whose work it was about to take, nor explain a refusal it received."""
+    a = _register(client, agent_key, "worker", label="A")
+    item_key = _built_by(client, agent_key, a)
+
+    details = _ok(client, agent_key, "get_item_details", {"id": item_key})
+
+    assert details["built_by"] == a["agent_id"]

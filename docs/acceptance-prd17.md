@@ -155,8 +155,17 @@ suite that was green throughout — 1748 passing at the time.
 | 6b | Effort ≥ 3 needs a sabotage receipt | ✅ real receipt: *reverted partition to clustering.shared_touchpoints only → 1 test failed* |
 | 8 | Re-task a live agent | ✅ directive rode a **heartbeat**, delivered **exactly once**, no reconnect |
 | 11 | End wave | ✅ 4 seats + 2 legacy keys revoked, 2 leases + 1 reservation released, **credential survived** |
+| 9 | Reviewer bounces an item | ✅ refused to a non-author twice, author took it back, **pin lapsed at the second** — and **found 2 defects** (GRPH-378/379) |
 
-Not run: 5, 7, 9, 10, 12, 14. Steps 9 and 10 need ~10 minutes of lease-clock waiting each.
+Step 9 was run on 2026-08-14, after the others, and differently: **driven over the real MCP
+HTTP surface by script rather than by four humans in terminals.** Three credentials, three
+seats redeemed, every agent action a JSON-RPC `tools/call` against the live fleet server — the
+same endpoint a Cursor terminal uses. Only the operator half (mint credential, issue wave) went
+through the service layer, as the human does through the UI. Worth stating plainly: it does not
+test client behaviour, so it is weaker evidence than steps 2/3/8, and it still found two
+defects.
+
+Not run: 5, 7, 10, 12, 14. Step 10 needs ~10 minutes of lease-clock waiting.
 Step 13 is superseded — seats decide independence now, so `host` is only the un-enrolled
 fallback.
 
@@ -168,6 +177,8 @@ fallback.
 | GRPH-377 | `heartbeat` was gated to `("worker",)`, so a reviewer and a planner were refused the only call that keeps them on the roster and died 150s after registering, terminals open. |
 | GRPH-377 | `heartbeat` **required an item id**, so presence was maintainable only while mid-work — a planner never holds an item at all. |
 | GRPH-377 | nginx set no `proxy_read_timeout`, defaulting to exactly `MAX_WAIT_SECONDS` (60s). A full-length park raced the proxy and lost about half the time; a real client hit the 504. |
+| GRPH-378 | **`bounce` required a reason and discarded it.** No column held it, the event meta carried only the principal, and after a real bounce the string appeared in **no row of any table**. The author got the item back with nothing to act on — the exact failure the requirement was written to prevent. `test_a_bounce_needs_a_reason` asserts the refusal on a blank reason and stops there. |
+| GRPH-379 | **The pin was invisible.** `bounce_pinned_to`/`until` and `built_by` appeared on no read surface, and a refused `claim_next` returned `{"claimed": false, "item": null}` — byte-identical to an empty backlog. A worker that should idle and retry concludes the project is finished. |
 | GRPH-376 | `sign_off` clears `claimed_by`, so **the self-review ban is unprovable after the fact** — every done item reads `built_by: -`. Enforcement is fine; the audit trail is not. **Filed, not fixed.** |
 
 ### What the walk proved that tests could not
@@ -177,6 +188,10 @@ fallback.
 - End wave revoked the wave and **left the credential authenticating** — no config touched, no
   reconnect. That is the whole point of enrolment, demonstrated rather than argued.
 - A directive reached a real client on a call it was making anyway, once.
+- The author pin holds on an item **nobody is holding**: after the author released it, the other
+  worker was still refused. That is what makes it a reservation rather than a side effect of the
+  lease — and it is the assertion the unit tests could not make, because they cannot let a lease
+  age. It then lapsed on the second: refused at t+0/15/30s, claimed at t+45s against 47s left.
 
 ### Predictions, scored
 

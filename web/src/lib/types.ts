@@ -167,6 +167,8 @@ export interface Item {
   effort: number;
   sort_order: number;
   blocker: string;
+  /** Why a reviewer sent it back. Survives the pin — the author reads it after reclaiming. */
+  bounce_reason: string;
   date: string;
   reporter: Reporter;
   pr: PR | null;

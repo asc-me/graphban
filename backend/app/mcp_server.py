@@ -1438,7 +1438,12 @@ def _item_dict(item) -> dict:
         "prd_section": item.prd_section,
         "fidelity": item.fidelity,
         "evidence": item.evidence or [],
+        # Authorship, distinct from the lease above (GRPH-379). It is the input the review
+        # independence rule is decided on, and it was readable nowhere — so an agent could not
+        # tell whose work it was about to review, nor explain a refusal it received.
+        "built_by": item.built_by,
     }
+    out.update(items_svc.bounce_fields(item))
     # In-flight invalidation (GRPH-242/312). Present only when this item's PRD rebaselined
     # after work on it started — so it costs nothing on the overwhelming majority of reads
     # and is impossible to miss on the ones that matter. Delivered here rather than on the
@@ -1905,7 +1910,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
                 lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS)),
             agent_id=args.get("agent_id"), wait_seconds=args.get("wait_seconds"),
         )
-        return {"claimed": item is not None, "item": _item_dict(item) if item else None}
+        out = {"claimed": item is not None, "item": _item_dict(item) if item else None}
+        if item is None:
+            # "Nothing for you" and "nothing at all" were the same response (GRPH-379). They
+            # call for opposite behaviour — wait and retry, or stop asking — so an agent that
+            # cannot tell them apart is guessing at the one decision this response drives.
+            if reserved := items_svc.reserved_elsewhere(db, agent, project_id=pid):
+                out["reserved"] = reserved
+        return out
     if name == "propose_allocation":
         return fleet_svc.propose_allocation(db, pid)
     if name == "assign_role":
