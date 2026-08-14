@@ -4,13 +4,20 @@ import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
+import {
+  cloudsFor,
+  formatRemaining,
+  indexByNode,
+  roleHex,
+  secondsRemaining,
+} from "@/lib/graph/presence";
 import { useGraphFind } from "@/lib/graph/useGraphFind";
 import { useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
 import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
-import { useCodeMap } from "@/lib/queries";
-import type { CodeEdgeType, CodeNeighbors } from "@/lib/types";
+import { useCodeMap, useFleetPresence } from "@/lib/queries";
+import type { CodeEdgeType, CodeNeighbors, HeldArea } from "@/lib/types";
 
 import { CodeChat } from "./CodeChat";
 
@@ -148,6 +155,12 @@ export function CodeGraphView() {
     () => (hoverId ? withinHops(ids, drawnEdges, hoverId, 1) : null),
     [hoverId, ids, drawnEdges],
   );
+
+  // Presence (D4/D5). Polled at the cadence the server reports; the graph renders exactly what
+  // the payload placed and never infers a holder for a node it did not name.
+  const { data: presence } = useFleetPresence(activeId);
+  const heldByNode = React.useMemo(() => indexByNode(presence), [presence]);
+  const clouds = React.useMemo(() => cloudsFor(presence, pos), [presence, pos]);
 
   const degree = React.useMemo(() => degrees(ids, layoutEdges), [ids, layoutEdges]);
   const tabOrder = React.useMemo(
@@ -312,12 +325,37 @@ export function CodeGraphView() {
                     <path d="M0,0 L10,5 L0,10 z" fill={EDGE_META[t].color} />
                   </marker>
                 ))}
+                <filter id="code-cloud-blur" x="-50%" y="-50%" width="200%" height="200%">
+                  <feGaussianBlur stdDeviation="18" />
+                </filter>
               </defs>
 
               <g
                 transform={view.transform}
                 style={{ transition: view.panning ? undefined : "transform 220ms ease" }}
               >
+              {/* Presence clouds sit BENEATH the edges and never touch a node's own fill or
+                  stroke. That is the load-bearing rule of the visual design: a held node must
+                  still say what kind of node it is, and tinting the node would overload the one
+                  channel that already carries meaning. */}
+              {clouds.map((c, i) => (
+                <circle
+                  key={`cloud-${c.userId}-${i}`}
+                  cx={c.cx}
+                  cy={c.cy}
+                  r={c.r}
+                  fill={c.color}
+                  fillOpacity={0.16}
+                  filter="url(#code-cloud-blur)"
+                  stroke={c.predicted ? c.color : undefined}
+                  strokeOpacity={c.predicted ? 0.45 : undefined}
+                  // A dashed edge says the area came from `predict_areas`, not declared
+                  // touchpoints: the lease is real, but WHERE it lands is a guess.
+                  strokeDasharray={c.predicted ? "6 5" : undefined}
+                  style={{ pointerEvents: "none" }}
+                />
+              ))}
+
               {edges.map((e, i) => {
                 const a = pos[e.src];
                 const b = pos[e.dst];
@@ -355,6 +393,7 @@ export function CodeGraphView() {
                 const pinned = pinsApi.isPinned(id);
                 const focused = kb.focusId === id;
                 const isHover = hoverId === id;
+                const holders = heldByNode.get(id) ?? [];
                 // Level of detail: zoomed out, only the names worth the ink survive — the
                 // selection, the search hits, and the hubs. Zoom past LABEL_ZOOM and the rest
                 // arrive. Past ~40 nodes the labels were previously the densest ink on screen.
@@ -379,7 +418,10 @@ export function CodeGraphView() {
                     aria-label={
                       `${meta.label} ${id}, ${degree[id] ?? 0} connections` +
                       (described ? (stale ? ", stale" : "") : ", not described") +
-                      (pinned ? ", pinned" : "")
+                      (pinned ? ", pinned" : "") +
+                      (holders.length
+                        ? `, held by ${holders.map((h) => h.user_initials || h.agent_label || "an agent").join(" and ")}`
+                        : "")
                     }
                     aria-pressed={selPath === id}
                     onFocus={() => kb.setFocusId(id)}
@@ -405,6 +447,28 @@ export function CodeGraphView() {
                     />
                     {pinned && (
                       <circle r={R + 3} fill="none" stroke="#8b949e" strokeWidth={1} opacity={0.55} />
+                    )}
+                    {holders.length > 0 && (
+                      <>
+                        {/* Pulse ring in the HOLDER's colour — whose, not what kind. */}
+                        <circle
+                          className="hold-pulse"
+                          r={R + 6}
+                          fill="none"
+                          stroke={holders[0].user_color ?? "#8b949e"}
+                          strokeWidth={2}
+                        />
+                        {/* Role dot: what they are DOING to it is a different question from
+                            whose they are, so it gets its own mark rather than tinting one. */}
+                        <circle
+                          cx={R + 4}
+                          cy={-(R + 4)}
+                          r={2.5}
+                          fill={roleHex(holders[0].active_role)}
+                          stroke="#0a0c0e"
+                          strokeWidth={1}
+                        />
+                      </>
                     )}
                     {/* One focus vocabulary: keyboard focus and selection wear the same ring. */}
                     {(selPath === id || focused) && (
@@ -443,6 +507,8 @@ export function CodeGraphView() {
               nb={nb}
               depth={depth}
               reach={hl?.hlNodes.size ?? 1}
+              holders={heldByNode.get(selPath) ?? []}
+              servedAt={presence?.served_at ?? null}
               onExpand={() => setDepth((d) => Math.min(4, d + 1))}
               onClose={() => setSelPath(null)}
             />
@@ -462,6 +528,8 @@ function NodeInspector({
   nb,
   depth,
   reach,
+  holders,
+  servedAt,
   onExpand,
   onClose,
 }: {
@@ -469,6 +537,8 @@ function NodeInspector({
   nb: CodeNeighbors | null;
   depth: number;
   reach: number;
+  holders: HeldArea[];
+  servedAt: string | null;
   onExpand: () => void;
   onClose: () => void;
 }) {
@@ -497,6 +567,45 @@ function NodeInspector({
         </button>
       </div>
       <div className="mb-2 break-all font-mono text-[11.5px] text-fg-2">{path}</div>
+
+      {holders.length > 0 && servedAt && (
+        <div className="mb-2.5 space-y-1 rounded-lg border border-line-2 bg-surface-2/60 p-2">
+          {holders.map((h, i) => {
+            const left = secondsRemaining(h.expires_at, servedAt);
+            return (
+              <div key={`${h.agent_id}-${i}`} className="flex items-center gap-2 text-[11.5px]">
+                <span
+                  className="h-2 w-2 flex-none rounded-full"
+                  style={{ background: h.user_color ?? "#8b949e" }}
+                />
+                <span className="font-mono text-[10px] text-fg-2">{h.user_initials || "??"}</span>
+                <span className="min-w-0 flex-1 truncate text-muted">
+                  {h.agent_label || h.agent_id}
+                </span>
+                <span
+                  className="flex-none font-mono text-[9px] uppercase tracking-wide"
+                  style={{ color: roleHex(h.active_role) }}
+                >
+                  {h.active_role}
+                </span>
+                {/* Time-remaining, not just a holder. An agent that dies mid-lease keeps its
+                    glow until `expires_at` by design — correct, since the lease IS still held —
+                    but it has to be legible, or this screen and the Fleet roster silently
+                    disagree for the 450s where an agent reads offline and still holds. */}
+                <span className="flex-none font-mono text-[9px] text-faint">
+                  {formatRemaining(left)}
+                </span>
+              </div>
+            );
+          })}
+          {holders.some((h) => h.predicted) && (
+            <div className="font-mono text-[9px] uppercase tracking-wide text-faint">
+              predicted area — the lease is real, where it lands is a guess
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="mb-2 flex items-center gap-2">
         <span className="font-mono text-[10px] uppercase tracking-wide text-faint">
           {depth} {depth === 1 ? "hop" : "hops"} · {reach} node{reach === 1 ? "" : "s"}
