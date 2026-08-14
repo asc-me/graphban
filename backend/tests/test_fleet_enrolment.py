@@ -803,3 +803,58 @@ def test_the_roster_lists_credentials_without_key_material(client, auth, proj, k
 
     assert creds and all("prefix" in c and "hashed_key" not in c for c in creds)
     assert key not in body.text
+
+
+# ---- the wave selector offers only what is live (GRPH-379) --------------------------------------
+
+def test_only_waves_that_still_own_something_are_offered(client, auth, proj, key, db):
+    """On the walk the selector listed three waves, none of which had a single live seat
+    between them. Ending history is not an action — it is noise on a destructive control."""
+    w1 = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["worker"]},
+                     headers=auth).json()
+    w2 = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["worker"]},
+                     headers=auth).json()
+    assert (w1["wave"], w2["wave"]) == ("wave-1", "wave-2")
+
+    assert client.get(f"/api/fleet?project_id={proj}",
+                      headers=auth).json()["waves"] == ["wave-2", "wave-1"]
+
+    client.post("/api/fleet/end-wave", json={"project_id": proj, "wave": "wave-1"}, headers=auth)
+
+    assert client.get(f"/api/fleet?project_id={proj}",
+                      headers=auth).json()["waves"] == ["wave-2"]
+
+
+def test_a_consumed_seat_keeps_its_wave_live(client, auth, proj, key, db):
+    """Live means "owns something un-revoked", not "has seats nobody took". A wave whose seats
+    are all consumed is the NORMAL running state — that is a fleet at work, and the one you are
+    most likely to want to end."""
+    issued = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["worker"]},
+                         headers=auth).json()
+    _ok(client, key, "register_agent", {"label": "w", "enrolment_code": issued["seats"][0]["code"]})
+
+    assert issued["wave"] in client.get(f"/api/fleet?project_id={proj}",
+                                        headers=auth).json()["waves"]
+
+
+def test_revoking_expired_keys_spares_the_ones_still_good(client, auth, proj, db):
+    """EXPIRED only. "Unused" would be the tempting second signal and is a trap: a key minted
+    minutes ago for a machine nobody has set up yet has never been used, and sweeping on that
+    would revoke an operator's own setup before they finished it."""
+    from app.models import ApiKey
+
+    dead = client.post("/api/api-keys", json={"name": "old", "project_id": proj},
+                       headers=auth).json()["id"]
+    fresh = client.post("/api/api-keys", json={"name": "new", "project_id": proj},
+                        headers=auth).json()["id"]
+    row = db.get(ApiKey, dead)
+    row.expires_at = datetime.now(timezone.utc) - timedelta(hours=1)
+    db.commit()
+
+    out = client.post("/api/fleet/keys/revoke-expired", json={"project_id": proj},
+                      headers=auth).json()
+
+    assert out["revoked"] == 1
+    db.expire_all()
+    assert db.get(ApiKey, dead).revoked is True
+    assert db.get(ApiKey, fresh).revoked is False, "a never-used key is not a dead one"

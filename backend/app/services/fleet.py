@@ -1256,6 +1256,57 @@ def list_credentials(db: Session, project_id: str | None = None) -> list[dict]:
     } for r in rows]
 
 
+def live_waves(db: Session, project_id: str | None = None) -> list[str]:
+    """Waves that still own something — newest first.
+
+    A wave is PROVISIONED while it holds at least one un-revoked seat or wave-tagged key.
+    Everything else is history, and offering to end it again is noise: on the acceptance walk
+    the selector listed three waves of which none had a single live seat between them.
+    """
+    from app.models import ApiKey
+
+    labels: set[str] = set()
+    seats = select(Enrolment).where(Enrolment.revoked.is_(False))
+    keys = select(ApiKey).where(ApiKey.fleet_wave.isnot(None), ApiKey.revoked.is_(False))
+    if project_id:
+        seats = seats.where(Enrolment.project_id == project_id)
+        keys = keys.where(ApiKey.project_id == project_id)
+    for row in db.scalars(seats).all():
+        if row.wave:
+            labels.add(row.wave)
+    for row in db.scalars(keys).all():
+        if row.fleet_wave:
+            labels.add(row.fleet_wave)
+
+    def order(w: str) -> int:
+        return int(w[5:]) if w.startswith("wave-") and w[5:].isdigit() else -1
+
+    return sorted(labels, key=lambda w: (order(w), w), reverse=True)
+
+
+def revoke_expired_keys(db: Session, *, project_id: str) -> int:
+    """Revoke credentials that have already expired.
+
+    EXPIRED ONLY, and deliberately not "unused": a key minted five minutes ago for a machine
+    nobody has set up yet has never been used, and sweeping on that signal would revoke an
+    operator's own setup before they finished it. Expiry is unambiguous — the key is already
+    dead and this only tidies the list.
+    """
+    from app.models import ApiKey
+
+    now = datetime.now(timezone.utc)
+    rows = [r for r in db.scalars(
+        select(ApiKey).where(ApiKey.project_id == project_id,
+                             ApiKey.revoked.is_(False),
+                             ApiKey.expires_at.isnot(None))).all()
+        if r.expires_at and (r.expires_at.replace(tzinfo=timezone.utc)
+                             if r.expires_at.tzinfo is None else r.expires_at) <= now]
+    for r in rows:
+        r.revoked = True
+    db.commit()
+    return len(rows)
+
+
 def next_wave(db: Session, project_id: str) -> str:
     """The next unused `wave-N` for this project.
 

@@ -769,6 +769,9 @@ export interface FleetOverview {
   seats: FleetSeat[];
   /** Credentials that reach this project. Display prefix only, never key material. */
   credentials: FleetCredential[];
+  /** Waves that still own an un-revoked seat or key — newest first. History is not offered:
+   *  ending a wave that owns nothing is noise on a destructive control. */
+  waves: string[];
 }
 
 export interface FleetCredential {
