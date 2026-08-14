@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   cloudsFor,
+  contentionOf,
+  describeContention,
   formatRemaining,
   holdersOf,
   indexByNode,
@@ -164,6 +166,70 @@ describe("formatRemaining", () => {
     expect(formatRemaining(120)).toBe("2m");
     expect(formatRemaining(0)).toBe("expired");
     expect(formatRemaining(null)).toBe("");
+  });
+});
+
+describe("contentionOf", () => {
+  it("does NOT ring two agents belonging to the same human", () => {
+    // One person, two windows, one worktree — ordinary. Ringing it would cry wolf on the
+    // normal case until nobody looked at the ring again.
+    const c = contentionOf([
+      held({ agent_id: "GRPH-A1", user_id: "u1" }),
+      held({ agent_id: "GRPH-A2", user_id: "u1" }),
+    ]);
+    expect(c.agents).toBe(2);
+    expect(c.users).toBe(1);
+    expect(c.contended).toBe(false);
+  });
+
+  it("rings two agents belonging to different humans", () => {
+    // The case where nobody involved can see the other's terminal.
+    const c = contentionOf([held({ user_id: "u1" }), held({ user_id: "u2" })]);
+    expect(c.contended).toBe(true);
+    expect(c.users).toBe(2);
+  });
+
+  it("is binary — three users is not more contended than two", () => {
+    const two = contentionOf([held({ user_id: "u1" }), held({ user_id: "u2" })]);
+    const three = contentionOf([
+      held({ user_id: "u1" }),
+      held({ user_id: "u2" }),
+      held({ user_id: "u3" }),
+    ]);
+    expect(three.contended).toBe(two.contended);
+    // The count is carried in text, never in the ring — that would be a fourth channel.
+    expect(three.users).toBe(3);
+  });
+
+  it("treats unresolvable humans as separate holders, not as one", () => {
+    // Assuming every null user is the same person is exactly how a real collision hides.
+    const c = contentionOf([
+      held({ user_id: null, agent_id: "GRPH-A1" }),
+      held({ user_id: null, agent_id: "GRPH-A2" }),
+    ]);
+    expect(c.contended).toBe(true);
+  });
+
+  it("is quiet for one holder and for none", () => {
+    expect(contentionOf([held()]).contended).toBe(false);
+    expect(contentionOf([]).contended).toBe(false);
+    expect(contentionOf([]).agents).toBe(0);
+  });
+});
+
+describe("describeContention", () => {
+  it("names the agent count, and the user count only when it is the alarm", () => {
+    expect(describeContention(contentionOf([held()]))).toBe("held by 1 agent");
+    expect(
+      describeContention(contentionOf([held({ user_id: "u1" }), held({ user_id: "u1" })])),
+    ).toBe("held by 2 agents");
+    expect(
+      describeContention(contentionOf([held({ user_id: "u1" }), held({ user_id: "u2" })])),
+    ).toBe("held by 2 agents across 2 users");
+  });
+
+  it("says nothing when nothing is held", () => {
+    expect(describeContention(contentionOf([]))).toBe("");
   });
 });
 

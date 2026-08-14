@@ -59,6 +59,41 @@ export function holdersOf(presence: FleetPresence | undefined) {
   return [...by.values()].sort((a, b) => a.userId.localeCompare(b.userId));
 }
 
+export interface Contention {
+  /** How many agents hold this node. Two windows of one person count as two. */
+  agents: number;
+  /** How many distinct HUMANS. This is what the alarm is keyed on. */
+  users: number;
+  /** True from two distinct users up. Binary — three users is not "more contended". */
+  contended: boolean;
+}
+
+/**
+ * Is this node held by more than one human? (PRD-20 D6)
+ *
+ * **Keyed on distinct USERS, not agents**, and that is the whole design. Two agents belonging
+ * to one person is ordinary — one human, two windows, one worktree — and ringing it would cry
+ * wolf on the normal case until nobody looked at the ring again. Two humans is the case where
+ * nobody involved can see the other's terminal, which is the only case worth an alarm.
+ *
+ * A `null` user_id counts as its own holder rather than collapsing with other nulls: an agent
+ * whose human cannot be resolved is exactly the situation where assuming they are all the same
+ * person would hide a real collision.
+ */
+export function contentionOf(holders: HeldArea[]): Contention {
+  const users = new Set<string>();
+  holders.forEach((h, i) => users.add(h.user_id ?? `unknown:${h.agent_id ?? i}`));
+  return { agents: holders.length, users: users.size, contended: users.size > 1 };
+}
+
+/** `held by 2 agents across 2 users` — read, not glanced. The ring does the glancing. */
+export function describeContention(c: Contention): string {
+  if (c.agents === 0) return "";
+  const a = `${c.agents} agent${c.agents === 1 ? "" : "s"}`;
+  if (c.users <= 1) return `held by ${a}`;
+  return `held by ${a} across ${c.users} users`;
+}
+
 export interface Cloud {
   userId: string;
   color: string;

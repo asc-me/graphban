@@ -6,6 +6,8 @@ import { cn } from "@/lib/cn";
 import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
 import {
   cloudsFor,
+  contentionOf,
+  describeContention,
   formatRemaining,
   indexByNode,
   roleHex,
@@ -394,6 +396,7 @@ export function CodeGraphView() {
                 const focused = kb.focusId === id;
                 const isHover = hoverId === id;
                 const holders = heldByNode.get(id) ?? [];
+                const contention = contentionOf(holders);
                 // Level of detail: zoomed out, only the names worth the ink survive — the
                 // selection, the search hits, and the hubs. Zoom past LABEL_ZOOM and the rest
                 // arrive. Past ~40 nodes the labels were previously the densest ink on screen.
@@ -468,6 +471,21 @@ export function CodeGraphView() {
                           stroke="#0a0c0e"
                           strokeWidth={1}
                         />
+                        {/* THE ALARM (D6). Two humans on one node means the partition failed,
+                            and nothing else in the system raises an error when it does. The
+                            colour blend of the overlapping clouds is what draws the eye; this
+                            ring is what confirms it was not a trick of the blur. Binary on
+                            purpose — three users is not "more contended", and encoding the
+                            count here would add a fourth visual channel to a surface that
+                            argues carefully for three. The number lives in the inspector. */}
+                        {contention.contended && (
+                          <circle
+                            r={R + 10}
+                            fill="none"
+                            stroke="var(--color-st-blocked)"
+                            strokeWidth={2}
+                          />
+                        )}
                       </>
                     )}
                     {/* One focus vocabulary: keyboard focus and selection wear the same ring. */}
@@ -542,6 +560,7 @@ function NodeInspector({
   onExpand: () => void;
   onClose: () => void;
 }) {
+  const contention = contentionOf(holders);
   const node = nb?.node ?? null;
   const meta = kindMeta(node?.kind ?? "");
   const stale = node ? !node.fresh : false;
@@ -569,7 +588,25 @@ function NodeInspector({
       <div className="mb-2 break-all font-mono text-[11.5px] text-fg-2">{path}</div>
 
       {holders.length > 0 && servedAt && (
-        <div className="mb-2.5 space-y-1 rounded-lg border border-line-2 bg-surface-2/60 p-2">
+        <div
+          className={cn(
+            "mb-2.5 space-y-1 rounded-lg border p-2",
+            contention.contended
+              ? "border-st-blocked/50 bg-st-blocked/5"
+              : "border-line-2 bg-surface-2/60",
+          )}
+        >
+          {/* The inspector LEADS with the contention, because a person who clicked a ringed
+              node is asking exactly one question and should not have to count rows to answer
+              it. */}
+          <div
+            className={cn(
+              "font-mono text-[10px] uppercase tracking-wide",
+              contention.contended ? "text-st-blocked" : "text-faint",
+            )}
+          >
+            {describeContention(contention)}
+          </div>
           {holders.map((h, i) => {
             const left = secondsRemaining(h.expires_at, servedAt);
             return (
