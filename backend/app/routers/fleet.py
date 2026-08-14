@@ -40,6 +40,11 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
         # one seat still unused" is one question, and two calls would let the page render a
         # half-answer.
         "seats": fleet_svc.list_enrolments(db, project_id),
+        # The credentials this project's agents authenticate with. Shown beside the seats
+        # because the walk kept asking "which key is that agent on" and the answer lived in a
+        # different screen — and because a wave-tagged key is a wave artifact somebody may
+        # want to clear without ending anything.
+        "credentials": fleet_svc.list_credentials(db, project_id),
     }
 
 
@@ -77,7 +82,9 @@ class SeatsIn(BaseModel):
     # ONE ENTRY PER AGENT, repeats included: ["planner", "worker", "worker", "reviewer"].
     # Two agents on one seat share a session and cannot review each other.
     roles: list[str]
-    wave: str = "wave-1"
+    # Blank means "the next one" — computed server-side, because the client hardcoded wave-1
+    # and every wave for weeks landed in the same bucket.
+    wave: str = ""
 
 
 @router.post("/seats", status_code=201)
@@ -88,14 +95,16 @@ def issue_seats(body: SeatsIn, db: Session = Depends(get_db),
     if not body.roles:
         raise HTTPException(422, "name at least one role")
     try:
+        wave = body.wave or fleet_svc.next_wave(db, body.project_id)
         issued = fleet_svc.issue_wave(db, project_id=body.project_id, roles=body.roles,
-                                      wave=body.wave, issued_by=user.id)
+                                      wave=wave, issued_by=user.id)
     except ValueError as e:
         raise HTTPException(422, str(e))
     events_svc.record_user(db, user, action="issue_seats", target_type="project",
                            target_id=body.project_id, project_id=body.project_id,
                            meta={"roles": body.roles, "wave": body.wave})
-    return {"seats": [{"id": row.id, "role": row.role, "code": code,
+    return {"wave": wave,
+            "seats": [{"id": row.id, "role": row.role, "code": code,
                        "expires_at": row.expires_at} for row, code in issued]}
 
 
@@ -113,6 +122,24 @@ def reissue_seat(seat_id: str, db: Session = Depends(get_db),
                            meta={"replaces": seat_id, "role": fresh.role})
     return {"id": fresh.id, "role": fresh.role, "code": code, "expires_at": fresh.expires_at,
             "reissued_from": seat_id}
+
+
+class RevokeSeatsIn(BaseModel):
+    project_id: str
+    wave: str | None = None
+
+
+@router.post("/seats/revoke-unused")
+def revoke_unused_seats(body: RevokeSeatsIn, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """Throw away seats nobody redeemed. Consumed seats are untouched — they record which
+    agent took what, and ending the wave is what stops live sessions."""
+    authz.require_writable(db, user.id, body.project_id)
+    n = fleet_svc.revoke_unused_seats(db, project_id=body.project_id, wave=body.wave)
+    events_svc.record_user(db, user, action="revoke_unused_seats", target_type="project",
+                           target_id=body.project_id, project_id=body.project_id,
+                           meta={"revoked": n, "wave": body.wave})
+    return {"revoked": n}
 
 
 @router.get("/end-wave")

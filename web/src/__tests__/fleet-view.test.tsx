@@ -38,8 +38,17 @@ const BASE = {
   agents: [], online: 0, total: 0, roles: ["planner", "worker", "reviewer"],
   by_role: {}, posture: "single-agent",
   presence_ttl_seconds: 150, heartbeat_interval_seconds: 50,
-  review_queue: [], clusters: [],
+  review_queue: [], clusters: [], seats: [], credentials: [],
 };
+
+/**
+ * The onboarding controls live under the SEATS tab. The view is three answers to three
+ * questions — who is out there, what seats are outstanding, which credential each agent is on
+ * — so a test that provisions has to open the one that provisions.
+ */
+async function openSeats(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /^Seats/ }));
+}
 
 /**
  * D5's job is to make a fleet usable — without it every wave costs a trip through Settings
@@ -134,7 +143,9 @@ describe("Fleet view", () => {
   it("offers all-in-one beside the three roles", async () => {
     // The roster REPORTS all-in-one, so the page must be able to create one — otherwise it
     // names a posture the reader has no way to produce.
+    const user = userEvent.setup();
     renderView();
+    await openSeats(user);
     for (const r of ["planner", "worker", "reviewer", "all-in-one"]) {
       expect(screen.getByRole("button", { name: r })).toBeInTheDocument();
     }
@@ -147,6 +158,7 @@ describe("Fleet view", () => {
     // anyone noticed. Asserted via aria-pressed so it cannot regress into a colour question.
     const user = userEvent.setup();
     renderView();
+    await openSeats(user);
 
     for (const r of ["planner", "worker", "reviewer", "all-in-one"]) {
       await user.click(screen.getByRole("button", { name: r }));
@@ -173,6 +185,7 @@ describe("Fleet view", () => {
     });
     const user = userEvent.setup();
     renderView();
+    await openSeats(user);
 
     await user.click(screen.getByRole("button", { name: "all-in-one" }));
     await user.click(screen.getByRole("button", { name: /Mint an all-in-one credential/ }));
@@ -190,6 +203,7 @@ describe("Fleet view", () => {
     });
     const user = userEvent.setup();
     renderView();
+    await openSeats(user);
 
     await user.click(screen.getByRole("button", { name: "reviewer" }));
     await user.click(screen.getByRole("button", { name: /Mint a reviewer credential/ }));
@@ -211,17 +225,29 @@ describe("Fleet view", () => {
     // "Are you sure?" teaches people to click through. "Revoke 2 keys, release 1 lease?" is a
     // decision — and the count has to arrive BEFORE anything is destroyed.
     fleet.data = { ...BASE, total: 1, agents: [AGENT] };
-    api.endWavePreview.mockResolvedValue({ keys: 2, agents: 1, leases: 1, reservations: 3 });
+    api.endWavePreview.mockResolvedValue({ keys: 2, seats: 4, agents: 1, leases: 1, reservations: 3 });
     const user = userEvent.setup();
     renderView();
+    await openSeats(user);
 
     await user.click(screen.getByRole("button", { name: "End wave" }));
 
-    expect(await screen.findByText(/Revoke 2 keys/)).toBeInTheDocument();
+    // Names SEATS as well as keys now: a wave owns seats, and under enrolment they are the
+    // part that actually stops the fleet. A confirm that counted only keys would understate
+    // the damage on every wave issued since PRD-19.
+    // Names the WAVE as well as the damage: with more than one wave in flight, "revoke 2 keys"
+    // does not say whose. Matched on the paragraph's full text because the wave sits in its
+    // own span — a substring query would pass on a sentence that never mentions the wave.
+    const line = await screen.findByText(
+      (_, el) => el?.tagName === "P"
+        && /End wave-1: revoke 2 keys and 4 seats, release 1 lease and 3 reservations\?/
+          .test(el.textContent ?? ""),
+    );
+    expect(line).toBeInTheDocument();
     expect(screen.getByText(/release 1 lease and 3 reservations/)).toBeInTheDocument();
     expect(api.endWave).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "End the wave" }));
+    await user.click(screen.getByRole("button", { name: "End wave-1" }));
     await waitFor(() => expect(api.endWave).toHaveBeenCalledWith("core", "wave-1"));
   });
 
@@ -234,6 +260,7 @@ describe("Fleet view", () => {
     });
     const user = userEvent.setup();
     const { container } = renderView();
+    await openSeats(user);
     await user.click(screen.getByRole("button", { name: /Mint a worker credential/ }));
     await screen.findByText(/Connect an agent · MCP/);
 
@@ -255,10 +282,77 @@ describe("Fleet view", () => {
     api.endWavePreview.mockResolvedValue({ keys: 1, agents: 1, leases: 0, reservations: 0 });
     const user = userEvent.setup();
     renderView();
+    await openSeats(user);
 
     await user.click(screen.getByRole("button", { name: "End wave" }));
     await user.click(await screen.findByRole("button", { name: "Cancel" }));
 
     expect(api.endWave).not.toHaveBeenCalled();
+  });
+
+  it("lets you pick WHICH wave to end, and never shows one wave's damage against another", async () => {
+    // Ending a wave is irreversible. With two waves in flight, a dialog that reads "revoke 2
+    // keys" without naming whose is an invitation to end the wrong cohort — and stale counts
+    // behind a new selection are worse still, because they look authoritative.
+    fleet.data = {
+      ...BASE, total: 1, agents: [AGENT],
+      seats: [{ id: "s1", role: "worker", wave: "wave-1", state: "unused", consumed_by: null,
+                reissued_from: null, expires_at: null },
+              { id: "s2", role: "worker", wave: "wave-2", state: "unused", consumed_by: null,
+                reissued_from: null, expires_at: null }],
+    };
+    api.endWavePreview
+      .mockResolvedValueOnce({ keys: 0, seats: 1, agents: 1, leases: 0, reservations: 0 })
+      .mockResolvedValueOnce({ keys: 9, seats: 7, agents: 3, leases: 2, reservations: 1 });
+    const user = userEvent.setup();
+    renderView();
+
+    await user.click(screen.getByRole("button", { name: "End wave" }));
+    await screen.findByRole("button", { name: "End wave-2" });   // newest by default
+
+    await user.click(screen.getByRole("button", { name: "wave-1" }));
+
+    // The counts followed the selection rather than lingering from wave-2.
+    const line = await screen.findByText(
+      (_, el) => el?.tagName === "P" && /End wave-1: revoke 9 keys and 7 seats/.test(el.textContent ?? ""),
+    );
+    expect(line).toBeInTheDocument();
+    expect(api.endWavePreview).toHaveBeenLastCalledWith("core", "wave-1");
+
+    await user.click(screen.getByRole("button", { name: "End wave-1" }));
+    await waitFor(() => expect(api.endWave).toHaveBeenCalledWith("core", "wave-1"));
+  });
+
+  it("hides the previous wave's counts while a new one is being read", async () => {
+    // The dangerous middle state: you pick wave-1, the request is in flight, and the dialog
+    // still shows wave-2's numbers under the new label. That reads as authoritative and is
+    // wrong. Needs a DEFERRED mock — with an instantly-resolving one the in-flight state
+    // never exists, and a sabotage that reinstates stale counts passes unnoticed.
+    fleet.data = {
+      ...BASE, total: 1, agents: [AGENT],
+      seats: [{ id: "s1", role: "worker", wave: "wave-1", state: "unused", consumed_by: null,
+                reissued_from: null, expires_at: null },
+              { id: "s2", role: "worker", wave: "wave-2", state: "unused", consumed_by: null,
+                reissued_from: null, expires_at: null }],
+    };
+    let release!: (v: unknown) => void;
+    api.endWavePreview
+      .mockResolvedValueOnce({ keys: 9, seats: 7, agents: 3, leases: 2, reservations: 1 })
+      .mockReturnValueOnce(new Promise((r) => { release = r; }));
+    const user = userEvent.setup();
+    renderView();
+
+    await user.click(screen.getByRole("button", { name: "End wave" }));
+    await screen.findByText((_, el) => el?.tagName === "P" && /revoke 9 keys/.test(el.textContent ?? ""));
+
+    await user.click(screen.getByRole("button", { name: "wave-1" }));
+
+    // In flight: wave-2's numbers must be gone, and the destructive button unavailable.
+    expect(screen.queryByText((_, el) => el?.tagName === "P" && /revoke 9 keys/.test(el.textContent ?? "")))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "End wave-1" })).toBeDisabled();
+
+    release({ keys: 0, seats: 1, agents: 1, leases: 0, reservations: 0 });
+    await screen.findByText((_, el) => el?.tagName === "P" && /revoke 0 keys and 1 seat,/.test(el.textContent ?? ""));
   });
 });

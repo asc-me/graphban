@@ -767,6 +767,23 @@ export interface FleetOverview {
   /** Seats for this project. No part of the code ever comes back — a seat is named by role
    *  and wave, and lives thirty minutes. */
   seats: FleetSeat[];
+  /** Credentials that reach this project. Display prefix only, never key material. */
+  credentials: FleetCredential[];
+}
+
+export interface FleetCredential {
+  id: string;
+  name: string;
+  /** Display fragment, e.g. `gb_sk_ab12`. */
+  prefix: string;
+  /** Set when this key was minted for a wave — a wave artifact rather than somebody's
+   *  long-lived credential. End wave sweeps these and only these. */
+  wave: string | null;
+  revoked: boolean;
+  posture: string | null;
+  roles: string[];
+  agents: number;
+  expires_at: string | null;
 }
 
 export interface FleetSeat {

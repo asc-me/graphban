@@ -185,14 +185,22 @@ export function FleetView() {
   const [issued, setIssued] = React.useState<{ id: string; role: string; code: string }[]>([]);
   const [error, setError] = React.useState("");
   const [confirming, setConfirming] = React.useState<null | {
-    keys: number; agents: number; leases: number; reservations: number;
+    keys: number; seats: number; agents: number; leases: number; reservations: number;
   }>(null);
-  const wave = "wave-1";
+  const [confirmWave, setConfirmWave] = React.useState<string | null>(null);
+  // The counts must never lag the selection. A confirm showing wave-1's damage while wave-2
+  // is chosen is the precise failure this dialog exists to prevent, so the numbers are hidden
+  // while a new preview is in flight rather than left showing the previous wave's.
+  const [previewing, setPreviewing] = React.useState(false);
+  // The wave label comes BACK from the server now. It used to be hardcoded `wave-1` here, so
+  // every wave for weeks landed in one bucket and End wave always ended everything.
+  const [wave, setWave] = React.useState<string | null>(null);
+  const [tab, setTab] = React.useState<"roster" | "seats" | "credentials">("roster");
 
   async function mint() {
     setError("");
     try {
-      const out = await api.mintFleetKey({ project_id: activeId, role, wave });
+      const out = await api.mintFleetKey({ project_id: activeId, role, wave: wave ?? "wave-1" });
       setMinted({ plaintext: out.plaintext, role: out.role });
     } catch (e) {
       setError(errorDetail(e, "could not mint a fleet credential"));
@@ -203,8 +211,9 @@ export function FleetView() {
     setError("");
     setMinting(true);
     try {
-      const roles = WAVE_ROLES.flatMap((r) => Array(seatPlan[r] ?? 0).fill(r));
-      const out = await api.issueSeats({ project_id: activeId, roles, wave });
+      const roles: string[] = WAVE_ROLES.flatMap((r) => Array(seatPlan[r] ?? 0).fill(r));
+      const out = await api.issueSeats({ project_id: activeId, roles });
+      setWave(out.wave);
       setIssued(out.seats);
       setSeatPlan({});
       await refetch();
@@ -228,21 +237,52 @@ export function FleetView() {
     }
   }
 
-  async function askEndWave() {
+  async function clearUnusedSeats() {
     setError("");
     try {
-      // Name the damage BEFORE acting. "Are you sure?" teaches people to click through;
-      // "revoke 4 keys, release 3 leases?" is a decision.
-      setConfirming(await api.endWavePreview(activeId, wave));
+      // Unused only. A consumed seat records which agent took what, and ending the wave is
+      // what stops a live session — clearing leftovers must not do either by accident.
+      await api.revokeUnusedSeats(activeId);
+      setIssued([]);
+      await refetch();
     } catch (e) {
-      setError(errorDetail(e, "could not read the wave"));
+      setError(errorDetail(e, "could not clear the unused seats"));
     }
+  }
+
+  async function revokeCredential(id: string) {
+    setError("");
+    try {
+      await api.revokeKey(id);
+      await refetch();
+    } catch (e) {
+      setError(errorDetail(e, "could not revoke that credential"));
+    }
+  }
+
+  async function previewWave(w: string) {
+    setError("");
+    setConfirmWave(w);
+    setPreviewing(true);
+    try {
+      setConfirming(await api.endWavePreview(activeId, w));
+    } catch (e) {
+      setConfirming(null);
+      setError(errorDetail(e, "could not read that wave"));
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  async function askEndWave() {
+    await previewWave(liveWave);
   }
 
   async function doEndWave() {
     try {
-      await api.endWave(activeId, wave);
+      await api.endWave(activeId, confirmWave ?? liveWave);
       setConfirming(null);
+      setConfirmWave(null);
       setMinted(null);
       setIssued([]);
       await refetch();
@@ -252,6 +292,23 @@ export function FleetView() {
   }
 
   const agents = data?.agents ?? [];
+  // WHICH wave End wave ends. Before, this was the hardcoded `wave-1`; leaving it blank once
+  // waves started incrementing would have meant "every wave in the project", which is a
+  // bigger hammer than the button promises. Falls back to the newest wave the seats know
+  // about, so the confirm always names a real cohort.
+  // Every wave this project has, newest first. Drawn from BOTH tables because a wave owns
+  // seats now and owned keys before PRD-19 — a wave whose keys are still around is still a
+  // wave somebody may want to end.
+  const waves = React.useMemo(() => {
+    const seen = new Set<string>();
+    for (const s of data?.seats ?? []) if (s.wave) seen.add(s.wave);
+    for (const c of data?.credentials ?? []) if (c.wave) seen.add(c.wave);
+    const num = (w: string) => (w.startsWith("wave-") && /^\d+$/.test(w.slice(5)) ? +w.slice(5) : -1);
+    return [...seen].sort((a, b) => num(b) - num(a) || a.localeCompare(b));
+  }, [data?.seats, data?.credentials]);
+
+  const liveWave =
+    wave ?? [...(data?.seats ?? [])].reverse().find((s) => s.wave)?.wave ?? "wave-1";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -287,21 +344,82 @@ export function FleetView() {
 
         {confirming && (
           <div className="mb-5 rounded-[11px] border border-[color:var(--color-st-blocked)]/50 bg-surface-2 p-4">
+            {/* WHICH wave, chosen explicitly. Ending a wave is irreversible, and before this
+                the target was whatever the page happened to think was current — fine with one
+                wave, wrong the moment there are two. */}
+            {waves.length > 1 && (
+              <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                <span className="text-[11px] text-faint">Wave:</span>
+                {waves.map((w) => (
+                  <button
+                    key={w}
+                    onClick={() => previewWave(w)}
+                    aria-pressed={(confirmWave ?? liveWave) === w}
+                    className={cn("rounded-md border px-2 py-0.5 font-mono text-[10.5px] transition-colors",
+                                  (confirmWave ?? liveWave) === w
+                                    ? "border-accent/50 bg-surface-3 text-fg"
+                                    : "border-line-2 text-muted hover:text-fg-2")}
+                  >
+                    {w}
+                  </button>
+                ))}
+              </div>
+            )}
             <p className="text-[13px] text-fg-2">
-              Revoke {confirming.keys} key{confirming.keys === 1 ? "" : "s"},
-              release {confirming.leases} lease{confirming.leases === 1 ? "" : "s"} and{" "}
-              {confirming.reservations} reservation{confirming.reservations === 1 ? "" : "s"}?
+              {previewing ? (
+                // Never show the previous wave's numbers against a new selection.
+                <span className="text-muted">Reading {confirmWave}…</span>
+              ) : (
+                <>
+                  End <span className="font-mono">{confirmWave ?? liveWave}</span>: revoke{" "}
+                  {confirming.keys} key{confirming.keys === 1 ? "" : "s"} and{" "}
+                  {confirming.seats} seat{confirming.seats === 1 ? "" : "s"},
+                  release {confirming.leases} lease{confirming.leases === 1 ? "" : "s"} and{" "}
+                  {confirming.reservations} reservation{confirming.reservations === 1 ? "" : "s"}?
+                </>
+              )}
             </p>
             <p className="mt-1 text-[12px] text-muted">
-              Hand-minted keys are untouched. This cannot be undone.
+              Your own credential is untouched — only wave-tagged keys and this wave&apos;s
+              seats. This cannot be undone.
             </p>
             <div className="mt-3 flex gap-2">
-              <Button onClick={doEndWave}>End the wave</Button>
+              <Button onClick={doEndWave} disabled={previewing}>
+                End {confirmWave ?? liveWave}
+              </Button>
               <Button onClick={() => setConfirming(null)}>Cancel</Button>
             </div>
           </div>
         )}
 
+        {/* Three views of one fleet, because they answer different questions and the walk
+            kept crossing between them: WHO is out there, WHAT seats are outstanding, and
+            WHICH credential each agent is on. Previously the last of those lived on another
+            screen entirely. */}
+        <div className="mb-3 flex gap-1">
+          {([
+            ["roster", `Roster${agents.length ? ` (${agents.length})` : ""}`],
+            ["seats", `Seats${(data?.seats ?? []).filter((s) => s.state === "unused").length
+              ? ` (${data!.seats.filter((s) => s.state === "unused").length} unused)` : ""}`],
+            ["credentials", `Credentials${(data?.credentials ?? []).filter((c) => !c.revoked).length
+              ? ` (${data!.credentials.filter((c) => !c.revoked).length})` : ""}`],
+          ] as const).map(([id, label]) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              aria-pressed={tab === id}
+              className={cn("rounded-[9px] border px-3 py-1.5 text-[12px] transition-colors",
+                            tab === id ? "border-accent/50 bg-surface-3 text-fg"
+                                       : "border-line-2 text-muted hover:text-fg-2")}
+            >
+              {label}
+            </button>
+          ))}
+          <span className="self-center pl-2 font-mono text-[11px] text-faint">{liveWave}</span>
+        </div>
+
+        {tab === "roster" && (
+          <>
         <Section title="Roster" desc="Offline agents fade rather than vanish — one that died holding a branch is what you need to see.">
           {agents.length === 0 ? (
             <Empty>No agents yet. Mint a credential below and paste it into a terminal.</Empty>
@@ -310,6 +428,11 @@ export function FleetView() {
           )}
         </Section>
 
+          </>
+        )}
+
+        {tab === "seats" && (
+          <>
         <Section
           title="Onboard one agent with its own credential"
           desc="The older route: a credential narrowed to one role. Seats above are the recommended path — this stays because a role-narrowed key still works and some setups are built on one."
@@ -404,6 +527,16 @@ export function FleetView() {
           )}
           {(data?.seats ?? []).length > 0 && (
             <div className="mt-3 space-y-1.5">
+              {/* Clearing leftovers is not ending the wave. Unused seats only — a consumed one
+                  records which agent took what, and a live session is stopped by End wave. */}
+              {data!.seats.some((s) => s.state === "unused") && (
+                <div className="flex justify-end">
+                  <button onClick={clearUnusedSeats}
+                          className="text-[11px] text-muted hover:text-[color:var(--color-st-blocked)]">
+                    Revoke the {data!.seats.filter((s) => s.state === "unused").length} unused
+                  </button>
+                </div>
+              )}
               {data!.seats.map((s) => (
                 <div key={s.id} className="flex items-center gap-3 rounded-[9px] border border-line-2 bg-surface-2 px-3 py-1.5">
                   <span className={cn("rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase",
@@ -427,6 +560,46 @@ export function FleetView() {
             </div>
           )}
         </Section>
+
+          </>
+        )}
+
+        {tab === "credentials" && (
+          <Section
+            title="Credentials"
+            desc="Which key each agent authenticates with. A wave-tagged key is a wave artifact — End wave sweeps those and never a hand-minted one."
+          >
+            {(data?.credentials ?? []).length === 0 ? (
+              <Empty>No credentials reach this project yet.</Empty>
+            ) : (
+              <div className="space-y-1.5">
+                {data!.credentials.map((c) => (
+                  <div key={c.id}
+                       className={cn("flex items-center gap-3 rounded-[9px] border border-line-2 bg-surface-2 px-3 py-2",
+                                     c.revoked && "opacity-50")}>
+                    <span className="font-mono text-[11px] text-muted-2">{c.prefix}</span>
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-fg-2">{c.name}</span>
+                    {c.posture === "single" && (
+                      <span className="font-mono text-[10px] text-faint">single</span>
+                    )}
+                    {c.wave
+                      ? <span className="font-mono text-[10px] text-[color:var(--color-st-review)]">{c.wave}</span>
+                      : <span className="font-mono text-[10px] text-faint">yours · never swept</span>}
+                    <span className="font-mono text-[10px] text-faint">
+                      {c.agents} agent{c.agents === 1 ? "" : "s"}
+                    </span>
+                    {c.revoked
+                      ? <span className="font-mono text-[10px] text-faint">revoked</span>
+                      : <button onClick={() => revokeCredential(c.id)}
+                                className="text-[11px] text-muted hover:text-[color:var(--color-st-blocked)]">
+                          Revoke
+                        </button>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Section>
+        )}
 
         <Section title="Review queue" desc="Who built each item — the reason it needs somebody else.">
           {(data?.review_queue ?? []).length === 0 ? (
