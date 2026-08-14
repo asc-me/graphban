@@ -68,25 +68,25 @@ death at once, keep the half-finished work reserved in case the process is merel
 | # | Step | Expected | Result |
 | --- | --- | --- | --- |
 | 1 | Issue a wave of 4 seats | 4 seats, one per agent, 30-min expiry, each `unused` | ✅ (as keys, pre-PRD-19) |
-| 2 | Each terminal registers | Roster shows 4 distinct ids, correct roles, counts broken out by role | |
-| 3 | A worker calls `update_item(status="done")` | `unauthorized` naming `reviewer`; item stays `review`; refusal in Activity with the human principal | |
-| 4 | Two workers `claim_cluster` concurrently | Zero shared touch-areas between the held clusters | |
-| 5 | A worker tries `claim_review` on its own item | Refused — and a worker cannot call `claim_review` at all, which is stronger than the PRD's criterion | |
-| 6 | Reviewer signs off | `reviewed_by != claimed_by`; where the fleet has the diversity, reviewer vendor ≠ author vendor | |
-| 6b | Reviewer signs off an **effort ≥ 3** item with no sabotage receipt | Refused (`conflict`), naming what is missing; passes once a receipt with `tests_failed ≥ 1` is recorded | |
-| 7 | Promote a worker to reviewer **while it holds its own item in `review`** | Both gates refuse — `claim_review` filters it out, `sign_off` asserts authorship | |
-| 8 | Re-task a live worker → reviewer | Takes effect on its **next poll**; no reconnect; Fleet view shows the directive pending, then acked | |
-| 9 | Reviewer bounces an item | Returns to `next`, invisible to other workers until the pin lapses (one lease), then claimable by any | |
-| 10 | Kill a worker mid-lease | `offline` within ~150s; item back to `next` at ~600s; reservation expired; orphaned branch flagged in its row | |
-| 11 | **End wave** | This wave's SEATS revoked; leases and reservations released; **your credential still authenticates** and the config is untouched; live agents get a `session_expired` directive on their next poll | |
+| 2 | Each terminal registers | Roster shows 4 distinct ids, correct roles, counts broken out by role |✅ roles + ids correct — **found 2 heartbeat defects** (GRPH-377) |
+| 3 | A worker calls `update_item(status="done")` | `unauthorized` naming `reviewer`; item stays `review`; refusal in Activity with the human principal |❌→✅ **FAILED: gate unreachable** (GRPH-377); fixed, re-run 03:39, first firing ever |
+| 4 | Two workers `claim_cluster` concurrently | Zero shared touch-areas between the held clusters |✅ two workers, zero shared areas, real concurrent claims |
+| 5 | A worker tries `claim_review` on its own item | Refused — and a worker cannot call `claim_review` at all, which is stronger than the PRD's criterion |not run |
+| 6 | Reviewer signs off | `reviewed_by != claimed_by`; where the fleet has the diversity, reviewer vendor ≠ author vendor |✅ one credential, one host — independent by SEAT |
+| 6b | Reviewer signs off an **effort ≥ 3** item with no sabotage receipt | Refused (`conflict`), naming what is missing; passes once a receipt with `tests_failed ≥ 1` is recorded |✅ real sabotage receipt on effort 5 |
+| 7 | Promote a worker to reviewer **while it holds its own item in `review`** | Both gates refuse — `claim_review` filters it out, `sign_off` asserts authorship |not run |
+| 8 | Re-task a live worker → reviewer | Takes effect on its **next poll**; no reconnect; Fleet view shows the directive pending, then acked |not run — the one I still bet against |
+| 9 | Reviewer bounces an item | Returns to `next`, invisible to other workers until the pin lapses (one lease), then claimable by any |not run |
+| 10 | Kill a worker mid-lease | `offline` within ~150s; item back to `next` at ~600s; reservation expired; orphaned branch flagged in its row |not run |
+| 11 | **End wave** | This wave's SEATS revoked; leases and reservations released; **your credential still authenticates** and the config is untouched; live agents get a `session_expired` directive on their next poll |✅ 4 seats + 2 legacy keys revoked, 2 leases released, **credential survived** |
 
 **New since the PRD was written — worth checking too:**
 
 | # | Step | Expected | Result |
 | --- | --- | --- | --- |
-| 12 | Have an orchestrator spawn a subagent that registers with `parent_agent_id` | The subagent cannot `claim_review` or `sign_off` its parent's work | |
-| 13 | Two terminals on **one** key, same machine, both reporting `host` | Neither can review the other; the reason says to mint a per-role credential | |
-| 14 | A worker calls `claim_cluster(wait_seconds=60)` on an empty backlog | Parks; returns within the window when work appears; **one** tool call, not twelve | |
+| 12 | Have an orchestrator spawn a subagent that registers with `parent_agent_id` | The subagent cannot `claim_review` or `sign_off` its parent's work |not run |
+| 13 | Two terminals on **one** key, same machine, both reporting `host` | Neither can review the other; the reason says to mint a per-role credential |superseded — seats decide independence now |
+| 14 | A worker calls `claim_cluster(wait_seconds=60)` on an empty backlog | Parks; returns within the window when work appears; **one** tool call, not twelve |not run |
 | 15 | Register with **no seat at all** | Roster shows `all-in-one` and `not enrolled`, posture reads `single-agent — you are the reviewer`, and it can take an item to `done` itself | ✅ (as an all-in-one key) |
 
 ---
@@ -134,3 +134,37 @@ form is the same one this repo has used all along:
 
 If a step passes only because you did something not written down, that counts as a failure of
 this guide. Note it.
+
+---
+
+## Results — 2026-08-13/14
+
+**Seven steps run, four defects found, all four fixed, one filed.** Every defect was invisible
+to a suite that was green throughout (1748 passing at the time).
+
+| Found | What it was |
+| --- | --- |
+| GRPH-377 | `update_item` never advertised `agent_id`, so the role gate was **unreachable through the published schema** — a worker wrote `done`. `WORKER_STATUS_CEILING` had never gated anything in production. My tests passed the parameter by hand, exercising a path no client could reach. |
+| GRPH-377 | `heartbeat` was gated to `("worker",)`, so a reviewer and a planner were refused the only call that keeps them on the roster and died 150s after registering. |
+| GRPH-377 | `heartbeat` **required an item id**, so presence was maintainable only while mid-work — a planner never holds an item at all. |
+| GRPH-377 | nginx set no `proxy_read_timeout`, defaulting to exactly `MAX_WAIT_SECONDS` (60s), so a full-length park raced the proxy and lost about half the time. A real client hit the 504. |
+| GRPH-376 | `sign_off` clears `claimed_by`, so **the self-review ban is unprovable after the fact** — every done item reads `built_by: -`. Enforcement is fine; the audit trail is not. Filed, not fixed. |
+
+**What the walk proved that tests could not:**
+
+- Two agents on **one credential, one host, one vendor** reviewed each other's work — independent
+  purely because they redeemed different seats. That configuration was impossible before PRD-19.
+- End wave revoked 4 seats and 2 legacy wave-tagged keys, released 2 leases and 1 reservation,
+  and **left the credential authenticating**. No config was touched.
+- The adversarial gate accepted a real sabotage receipt (`reverted partition to
+  clustering.shared_touchpoints only → 1 test failed`) on an effort-5 item.
+- The `update_item` role gate fired for the **first time in the product's life** at 03:39.
+
+**Environment friction, recorded because it is real and not ours:** Cursor's MCP client wedged
+mid-session and never recovered; a stale `index.html` served an old bundle until nginx got a
+`Cache-Control`; and the client silently drops an `mcp.json` entry it cannot parse. More of this
+walk was spent fighting the client than finding product defects, which is itself a finding for
+anyone standing up a fleet.
+
+**Not run:** steps 5, 7, 8, 9, 10, 12, 14. Step 8 — the directive downlink reaching a real
+client — remains the one I would bet against, and now carries two message types.
