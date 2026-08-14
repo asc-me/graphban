@@ -542,11 +542,8 @@ def claim_next(
     LAPSES rather than binding forever — an author who never comes back is the common case,
     and a hard pin would strand the item.
     """
-    from app.services import fleet as fleet_svc
-
     for cand in _ready_candidates(db, project_id, lease_seconds):
-        pinned_to = fleet_svc.bounce_pin_holder(cand)
-        if pinned_to is not None and pinned_to != agent_id:
+        if pinned_elsewhere(cand, agent_id):
             continue
         claimed = _try_claim(db, cand, agent_id)
         if claimed is not None:
@@ -571,8 +568,15 @@ def _try_claim(db: Session, cand: Item, agent_id: str) -> Item | None:
     # ban needs (the agent who wrote the code now is the one who must not pass it), and it does
     # mean an item passed between agents keeps only its most recent author. Observed on the
     # walk: after the bounce pin lapsed and a second worker took FA-12, `built_by` moved with it.
+    # The reservation is SPENT by the claim, whoever made it. It exists to give the author
+    # first refusal on work they still have in context; once anybody holds the item there is
+    # nothing left to reserve. Leaving it set outlived its meaning in a way that reads as
+    # current: `built_by` moves to the new holder while `bounce_pinned_to` still names the old
+    # author, so `get_item_details` renders a live reservation for an agent that does not hold
+    # the item — a wrong answer to the question the field exists to answer.
     stmt = stmt.values(claimed_by=agent_id, claimed_at=utcnow(), assignee=agent_id,
-                       built_by=agent_id, status="in_progress")
+                       built_by=agent_id, status="in_progress",
+                       bounce_pinned_to=None, bounce_pinned_until=None)
     if db.execute(stmt).rowcount == 1:
         db.commit()
         # Holding a lease outranks having been dismissed: the roster must never hide work.
@@ -605,11 +609,26 @@ def stamp_baseline_at_start(db: Session, item: Item) -> None:
     db.commit()
 
 
+def pinned_elsewhere(item: Item, agent_id: str) -> bool:
+    """Is this item reserved for a DIFFERENT agent right now?
+
+    Lives here, beside every claim path, because it used to live inside one of them: only
+    `claim_next` consulted the pin, so `claim_cluster` and `next_cluster` — which claim through
+    `claim_item` — handed a bounced item to a stranger while its author's reservation was still
+    live. Verified on the fleet: an item pinned with 592 seconds remaining, taken by another
+    agent through `claim_cluster`. A guarantee that holds on one of three paths is not one.
+    """
+    from app.services import fleet as fleet_svc
+
+    holder = fleet_svc.bounce_pin_holder(item)
+    return holder is not None and holder != agent_id
+
+
 def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
     """Claim one specific item if it's currently claimable. Used to grab a related cluster."""
     cutoff = utcnow() - timedelta(seconds=lease_seconds)
     it = db.get(Item, keys.resolve_item(db, item_id) or item_id)
-    if it is None or not _is_claimable(it, cutoff):
+    if it is None or not _is_claimable(it, cutoff) or pinned_elsewhere(it, agent_id):
         return None
     return _try_claim(db, it, agent_id)
 

@@ -374,7 +374,7 @@ the prediction and sharpening the next round (the AL-201 capture loop).
 
 **Accept:** with three workers registered and a backlog of overlapping items, no two
 concurrently-held clusters share a touch-area. A fourth worker with no non-colliding cluster
-available gets `{claimed: false, reason: "all ready clusters collide with in-flight work"}`
+available gets `{claimed: false, held_by: [agent...], reason: "...held by A2 — the earliest frees in 412s"}` — naming the holder and the wait, because "collides with in-flight work" is equally true of an abandoned lease
 rather than a colliding one.
 
 ### D5 — The Fleet view (dashboard v1)

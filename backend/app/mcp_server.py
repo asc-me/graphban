@@ -1948,19 +1948,28 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
         return {"clusters": out, "total": len(out)}
     if name == "claim_cluster":
         agent = args.get("agent_id") or key.name or key.id
-        got = fleet_svc.park(
-            db,
-            # `claim_cluster` reports a miss as `claimed: False` rather than None, so the park
-            # needs the falsy answer translated — otherwise it would return "nothing available"
-            # instantly and never wait at all.
-            lambda s: (out if (out := fleet_svc.claim_cluster(
+        # The last refusal, kept so it can be RETURNED. The park needs a falsy answer to keep
+        # waiting, and translating the miss to None threw away the only thing the caller could
+        # act on — the service names who holds the areas and when they free, and this handler
+        # replaced all of it with a fixed string. Found by asserting through this surface
+        # rather than against the service, which is how the `update_item` gate hid too.
+        miss: dict = {}
+
+        def _attempt(s):
+            out = fleet_svc.claim_cluster(
                 s, agent_id=agent, project_id=pid, max_items=args.get("max_items", 3),
                 lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS),
-            ))["claimed"] else None),
-            agent_id=args.get("agent_id"), wait_seconds=args.get("wait_seconds"),
-        )
-        return got or {"claimed": False, "items": [], "areas": [], "predicted": False,
-                       "reason": "all ready clusters collide with in-flight work"}
+            )
+            if out["claimed"]:
+                return out
+            miss["last"] = out
+            return None
+
+        got = fleet_svc.park(db, _attempt, agent_id=args.get("agent_id"),
+                             wait_seconds=args.get("wait_seconds"))
+        return got or miss.get("last") or {
+            "claimed": False, "items": [], "areas": [], "predicted": False, "held_by": [],
+            "reason": "nothing ready to claim"}
     if name == "claim_review":
         agent = args.get("agent_id") or key.name or key.id
         item = fleet_svc.park(

@@ -66,6 +66,15 @@ STATES = ("idle", "working", "reviewing", "offline", "quarantined")
 _NOT_SELF_ASSERTABLE = ("offline", "quarantined")
 
 
+def _aware(dt: datetime | None) -> datetime | None:
+    """UTC-aware, whatever the dialect handed back. SQLite returns naive datetimes and
+    Postgres returns aware ones, so comparing a stored timestamp to `now()` without this
+    raises on one engine and silently passes on the other."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def presence_ttl_seconds(lease_seconds: int = DEFAULT_LEASE_SECONDS) -> int:
     """How long since `last_seen_at` before an agent counts as offline.
 
@@ -102,11 +111,9 @@ def presence_state(agent: Agent, *, lease_seconds: int = DEFAULT_LEASE_SECONDS,
     # got it quarantined — so deriving from `last_seen_at` would report it healthy.
     if agent.state == "quarantined":
         return "quarantined"
-    seen = agent.last_seen_at
+    seen = _aware(agent.last_seen_at)
     if seen is None:
         return "offline"
-    if seen.tzinfo is None:
-        seen = seen.replace(tzinfo=timezone.utc)
     if now - seen > timedelta(seconds=presence_ttl_seconds(lease_seconds)):
         return "offline"
     return agent.state if agent.state in STATES else "idle"
@@ -1055,8 +1062,22 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                 "predicted": bool(cluster.get("predicted")),
                 "reason": ""}
 
+    # WHO is holding what, and until when. "All ready clusters collide with in-flight work" is
+    # unactionable to the one caller most likely to see it: a solo human whose previous agent
+    # died holding areas, for whom the answer is "wait N seconds" or "that agent is gone".
+    # Same failure as an empty `claim_next` (GRPH-379) — a refusal that cannot be told apart
+    # from having nothing to do.
+    held = sorted({r.agent_id for r in taken if r.agent_id != agent_id})
+    soonest = min((r.expires_at for r in taken if r.agent_id != agent_id), default=None)
+    if held:
+        free_in = max(0, int((_aware(soonest) - now).total_seconds())) if soonest else None
+        reason = ("all ready clusters collide with areas held by "
+                  + ", ".join(held)
+                  + (f" — the earliest frees in {free_in}s" if free_in is not None else ""))
+    else:
+        reason = "nothing ready to claim"
     return {"claimed": False, "items": [], "areas": [], "predicted": False,
-            "reason": "all ready clusters collide with in-flight work"}
+            "held_by": held, "reason": reason}
 
 
 def release_reservations(db: Session, *, item_id: str | None = None,
