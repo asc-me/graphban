@@ -45,6 +45,8 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
         # different screen — and because a wave-tagged key is a wave artifact somebody may
         # want to clear without ending anything.
         "credentials": fleet_svc.list_credentials(db, project_id),
+        # Only waves that still own something. History is not a thing you can end.
+        "waves": fleet_svc.live_waves(db, project_id),
     }
 
 
@@ -139,6 +141,18 @@ def revoke_unused_seats(body: RevokeSeatsIn, db: Session = Depends(get_db),
     events_svc.record_user(db, user, action="revoke_unused_seats", target_type="project",
                            target_id=body.project_id, project_id=body.project_id,
                            meta={"revoked": n, "wave": body.wave})
+    return {"revoked": n}
+
+
+@router.post("/keys/revoke-expired")
+def revoke_expired_keys(body: RevokeSeatsIn, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """Revoke credentials that have already expired. Expired only — see the service."""
+    authz.require_writable(db, user.id, body.project_id)
+    n = fleet_svc.revoke_expired_keys(db, project_id=body.project_id)
+    events_svc.record_user(db, user, action="revoke_expired_keys", target_type="project",
+                           target_id=body.project_id, project_id=body.project_id,
+                           meta={"revoked": n})
     return {"revoked": n}
 
 

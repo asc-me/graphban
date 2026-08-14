@@ -9,6 +9,11 @@ const api = vi.hoisted(() => ({
   mintFleetKey: vi.fn(),
   endWavePreview: vi.fn(),
   endWave: vi.fn(),
+  revokeExpiredKeys: vi.fn(),
+  revokeUnusedSeats: vi.fn(),
+  revokeKey: vi.fn(),
+  issueSeats: vi.fn(),
+  reissueSeat: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({ api }));
 
@@ -38,7 +43,7 @@ const BASE = {
   agents: [], online: 0, total: 0, roles: ["planner", "worker", "reviewer"],
   by_role: {}, posture: "single-agent",
   presence_ttl_seconds: 150, heartbeat_interval_seconds: 50,
-  review_queue: [], clusters: [], seats: [], credentials: [],
+  review_queue: [], clusters: [], seats: [], credentials: [], waves: ["wave-1"],
 };
 
 /**
@@ -46,8 +51,8 @@ const BASE = {
  * questions — who is out there, what seats are outstanding, which credential each agent is on
  * — so a test that provisions has to open the one that provisions.
  */
-async function openSeats(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: /^Seats/ }));
+async function openWave(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /^Wave/ }));
 }
 
 /**
@@ -143,9 +148,7 @@ describe("Fleet view", () => {
   it("offers all-in-one beside the three roles", async () => {
     // The roster REPORTS all-in-one, so the page must be able to create one — otherwise it
     // names a posture the reader has no way to produce.
-    const user = userEvent.setup();
     renderView();
-    await openSeats(user);
     for (const r of ["planner", "worker", "reviewer", "all-in-one"]) {
       expect(screen.getByRole("button", { name: r })).toBeInTheDocument();
     }
@@ -158,7 +161,6 @@ describe("Fleet view", () => {
     // anyone noticed. Asserted via aria-pressed so it cannot regress into a colour question.
     const user = userEvent.setup();
     renderView();
-    await openSeats(user);
 
     for (const r of ["planner", "worker", "reviewer", "all-in-one"]) {
       await user.click(screen.getByRole("button", { name: r }));
@@ -185,7 +187,6 @@ describe("Fleet view", () => {
     });
     const user = userEvent.setup();
     renderView();
-    await openSeats(user);
 
     await user.click(screen.getByRole("button", { name: "all-in-one" }));
     await user.click(screen.getByRole("button", { name: /Mint an all-in-one credential/ }));
@@ -203,7 +204,6 @@ describe("Fleet view", () => {
     });
     const user = userEvent.setup();
     renderView();
-    await openSeats(user);
 
     await user.click(screen.getByRole("button", { name: "reviewer" }));
     await user.click(screen.getByRole("button", { name: /Mint a reviewer credential/ }));
@@ -228,7 +228,6 @@ describe("Fleet view", () => {
     api.endWavePreview.mockResolvedValue({ keys: 2, seats: 4, agents: 1, leases: 1, reservations: 3 });
     const user = userEvent.setup();
     renderView();
-    await openSeats(user);
 
     await user.click(screen.getByRole("button", { name: "End wave" }));
 
@@ -260,7 +259,6 @@ describe("Fleet view", () => {
     });
     const user = userEvent.setup();
     const { container } = renderView();
-    await openSeats(user);
     await user.click(screen.getByRole("button", { name: /Mint a worker credential/ }));
     await screen.findByText(/Connect an agent · MCP/);
 
@@ -282,7 +280,7 @@ describe("Fleet view", () => {
     api.endWavePreview.mockResolvedValue({ keys: 1, agents: 1, leases: 0, reservations: 0 });
     const user = userEvent.setup();
     renderView();
-    await openSeats(user);
+    await openWave(user);
 
     await user.click(screen.getByRole("button", { name: "End wave" }));
     await user.click(await screen.findByRole("button", { name: "Cancel" }));
@@ -296,6 +294,7 @@ describe("Fleet view", () => {
     // behind a new selection are worse still, because they look authoritative.
     fleet.data = {
       ...BASE, total: 1, agents: [AGENT],
+      waves: ["wave-2", "wave-1"],
       seats: [{ id: "s1", role: "worker", wave: "wave-1", state: "unused", consumed_by: null,
                 reissued_from: null, expires_at: null },
               { id: "s2", role: "worker", wave: "wave-2", state: "unused", consumed_by: null,
@@ -330,6 +329,7 @@ describe("Fleet view", () => {
     // never exists, and a sabotage that reinstates stale counts passes unnoticed.
     fleet.data = {
       ...BASE, total: 1, agents: [AGENT],
+      waves: ["wave-2", "wave-1"],
       seats: [{ id: "s1", role: "worker", wave: "wave-1", state: "unused", consumed_by: null,
                 reissued_from: null, expires_at: null },
               { id: "s2", role: "worker", wave: "wave-2", state: "unused", consumed_by: null,
@@ -378,7 +378,7 @@ describe("Fleet view", () => {
     };
     const user = userEvent.setup();
     renderView();
-    await openSeats(user);
+    await openWave(user);
 
     // Asserting the TOGGLE exists proves nothing — the rows have to actually be gone. The
     // first version of this checked only the toggle, and a sabotage that re-listed every seat
@@ -393,10 +393,50 @@ describe("Fleet view", () => {
     // The sweep names what it will actually take: unused AND expired, never consumed.
     expect(screen.getByText(/Clear the 2 unredeemed/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /^Credentials/ }));
+    // Credentials live on the ROSTER tab now, so this is a tab switch BACK, not onward.
+    await user.click(screen.getByRole("button", { name: /^Roster/ }));
     expect(screen.getByText("gb_sk_aaaa")).toBeInTheDocument();
     expect(screen.queryByText("gb_sk_bbbb")).not.toBeInTheDocument();
     await user.click(screen.getByText(/Show 1 revoked/));
     expect(screen.getByText("gb_sk_bbbb")).toBeInTheDocument();
+  });
+
+  it("offers to clear EXPIRED credentials, and never merely unused ones", async () => {
+    // "Unused" is the tempting second signal and is a trap: a key minted minutes ago for a
+    // machine nobody has set up yet has never been used, and sweeping on that would revoke an
+    // operator's own setup before they finished it. Expiry is unambiguous.
+    const cred = (id: string, expires: string | null) => ({
+      id, name: id, prefix: `gb_sk_${id}`, wave: null, revoked: false,
+      posture: null, roles: [], agents: 0, expires_at: expires,
+    });
+    fleet.data = {
+      ...BASE,
+      credentials: [cred("dead", "2020-01-01T00:00:00Z"), cred("fresh", null)],
+    };
+    const user = userEvent.setup();
+    renderView();
+
+    await user.click(screen.getByText(/Revoke the 1 expired/));
+
+    await waitFor(() => expect(api.revokeExpiredKeys).toHaveBeenCalledWith("core"));
+    // The never-used one is still listed and was not swept.
+    expect(screen.getByText("gb_sk_fresh")).toBeInTheDocument();
+  });
+
+  it("hides End wave entirely when no wave owns anything", async () => {
+    // The state the walk was actually in: three waves existed, none had a single live seat or
+    // key between them, and the selector cheerfully offered all three. Ending history is not
+    // an action — and a destructive control that is always available teaches you to ignore it.
+    fleet.data = { ...BASE, total: 3, agents: [AGENT], waves: [] };
+    renderView();
+
+    expect(screen.queryByRole("button", { name: "End wave" })).not.toBeInTheDocument();
+  });
+
+  it("shows End wave as soon as one does", async () => {
+    fleet.data = { ...BASE, total: 3, agents: [AGENT], waves: ["wave-4"] };
+    renderView();
+
+    expect(screen.getByRole("button", { name: "End wave" })).toBeInTheDocument();
   });
 });

@@ -203,6 +203,9 @@ export const api = {
   revokeUnusedSeats: (projectId: string, wave?: string) =>
     request<{ revoked: number }>("/fleet/seats/revoke-unused",
       { method: "POST", body: JSON.stringify({ project_id: projectId, wave }) }),
+  revokeExpiredKeys: (projectId: string) =>
+    request<{ revoked: number }>("/fleet/keys/revoke-expired",
+      { method: "POST", body: JSON.stringify({ project_id: projectId }) }),
   revokeKey: (keyId: string) =>
     request<unknown>(`/api-keys/${keyId}`, { method: "DELETE" }),
   reissueSeat: (seatId: string) =>

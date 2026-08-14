@@ -200,7 +200,12 @@ export function FleetView() {
   // The wave label comes BACK from the server now. It used to be hardcoded `wave-1` here, so
   // every wave for weeks landed in one bucket and End wave always ended everything.
   const [wave, setWave] = React.useState<string | null>(null);
-  const [tab, setTab] = React.useState<"roster" | "seats" | "credentials">("roster");
+  // TWO tabs, one question each: "who can reach this project and who is here now", and "what
+  // is running right now". The previous three were organised by OBJECT — agents, seats,
+  // credentials — while the work is organised by CADENCE: a credential is written once per
+  // machine, seats are issued per wave, the roster is watched continuously. A Credentials tab
+  // that only listed things was a tab you visit once and never again.
+  const [tab, setTab] = React.useState<"roster" | "wave">("roster");
 
   async function mint() {
     setError("");
@@ -255,6 +260,19 @@ export function FleetView() {
     }
   }
 
+  async function clearExpiredCredentials() {
+    setError("");
+    try {
+      // EXPIRED only. "Unused" is the tempting second signal and is a trap: a key minted five
+      // minutes ago for a machine nobody has set up yet has never been used, and sweeping on
+      // that would revoke an operator's own setup before they finished it.
+      await api.revokeExpiredKeys(activeId);
+      await refetch();
+    } catch (e) {
+      setError(errorDetail(e, "could not clear the expired credentials"));
+    }
+  }
+
   async function revokeCredential(id: string) {
     setError("");
     try {
@@ -304,23 +322,23 @@ export function FleetView() {
   // Every wave this project has, newest first. Drawn from BOTH tables because a wave owns
   // seats now and owned keys before PRD-19 — a wave whose keys are still around is still a
   // wave somebody may want to end.
-  const waves = React.useMemo(() => {
-    const seen = new Set<string>();
-    for (const s of data?.seats ?? []) if (s.wave) seen.add(s.wave);
-    for (const c of data?.credentials ?? []) if (c.wave) seen.add(c.wave);
-    const num = (w: string) => (w.startsWith("wave-") && /^\d+$/.test(w.slice(5)) ? +w.slice(5) : -1);
-    return [...seen].sort((a, b) => num(b) - num(a) || a.localeCompare(b));
-  }, [data?.seats, data?.credentials]);
+  // Server-computed: a wave is offered only while it owns an un-revoked seat or key. Derived
+  // client-side this listed every wave that had EVER existed — three dead cohorts without one
+  // live seat between them.
+  const waves = data?.waves ?? [];
 
   // A seat is LIVE if it can still do something: unused (redeemable) or consumed by an agent
   // that may still be working. Revoked and expired are history.
   const liveSeats = (data?.seats ?? []).filter((s) => s.state === "unused" || s.state === "consumed");
+  const spentSeats = (data?.seats ?? []).filter((s) => s.state === "revoked" || s.state === "expired");
   const liveCreds = (data?.credentials ?? []).filter((c) => !c.revoked);
   const deadCreds = (data?.credentials ?? []).filter((c) => c.revoked);
-  const spentSeats = (data?.seats ?? []).filter((s) => s.state === "revoked" || s.state === "expired");
+  // Already dead, so revoking only tidies the list. Deliberately NOT "never used" — see
+  // clearExpiredCredentials.
+  const expiredCreds = liveCreds.filter(
+    (c) => c.expires_at !== null && new Date(c.expires_at) <= new Date());
 
-  const liveWave =
-    wave ?? [...(data?.seats ?? [])].reverse().find((s) => s.wave)?.wave ?? "wave-1";
+  const liveWave = wave ?? waves[0] ?? "wave-1";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -346,7 +364,8 @@ export function FleetView() {
             </div>
           )}
         </div>
-        {(data?.total ?? 0) > 0 && (
+        {/* Nothing live means nothing to end. */}
+        {waves.length > 0 && (
           <Button onClick={askEndWave}>End wave</Button>
         )}
       </div>
@@ -418,10 +437,8 @@ export function FleetView() {
         <div className="mb-3 flex gap-1">
           {([
             ["roster", `Roster${agents.length ? ` (${agents.length})` : ""}`],
-            ["seats", `Seats${(data?.seats ?? []).filter((s) => s.state === "unused").length
+            ["wave", `Wave${(data?.seats ?? []).filter((s) => s.state === "unused").length
               ? ` (${data!.seats.filter((s) => s.state === "unused").length} unused)` : ""}`],
-            ["credentials", `Credentials${(data?.credentials ?? []).filter((c) => !c.revoked).length
-              ? ` (${data!.credentials.filter((c) => !c.revoked).length})` : ""}`],
           ] as const).map(([id, label]) => (
             <button
               key={id}
@@ -450,56 +467,8 @@ export function FleetView() {
           </>
         )}
 
-        {tab === "seats" && (
+        {tab === "wave" && (
           <>
-        <Section
-          title="Onboard one agent with its own credential"
-          desc="The older route: a credential narrowed to one role. Seats above are the recommended path — this stays because a role-narrowed key still works and some setups are built on one."
-        >
-          {/* NOT deleted with the rest of PRD-19 E8, deliberately. G6 says nothing that works
-              today stops working, and a role-narrowed credential still does — the API is
-              unchanged and this repo's own tests use one. What was wrong was having two routes
-              with nothing saying which to reach for, so the ambiguity is resolved by NAMING
-              the order rather than by removing the option out from under anyone. */}
-          <div className="mb-3 flex flex-wrap gap-2">
-            {/* `all-in-one` is offered beside the three because the roster REPORTS it — a
-                page that counts a posture it cannot create names a category the reader has no
-                way to produce. It mints an unnarrowed credential, which is what makes the
-                agent unrestricted. */}
-            {[...(data?.roles ?? ["planner", "worker", "reviewer"]), ALL_IN_ONE].map((r) => (
-              // Selection is signalled by BACKGROUND and border, never by the role tone.
-              // Tinting the selected item with `ROLE_TONE` put `all-in-one` in `text-muted
-              // border-line-2` — byte-identical to the unselected style — so choosing it
-              // looked exactly like not choosing it. Found on the first walk, after three
-              // credentials came out all-in-one. The roster badges keep the colours; a
-              // picker's job is "which one is selected".
-              <button key={r} onClick={() => setRole(r)} aria-pressed={role === r}
-                className={cn("rounded-[9px] border px-3 py-1.5 text-[12px] transition-colors",
-                              role === r
-                                ? "border-accent/50 bg-surface-3 text-fg"
-                                : "border-line-2 text-muted hover:text-fg-2")}>
-                {r}
-              </button>
-            ))}
-          </div>
-          <Button onClick={mint}>
-            Mint {role === ALL_IN_ONE ? "an" : "a"} {role} credential
-          </Button>
-          {minted && (
-            <div className="mt-3 space-y-2">
-              {/* Shown once — keys are stored hashed and cannot be recovered. */}
-              <CopyRow label="1. Key (shown once)" value={minted.plaintext} />
-              {/* The REAL generator, shared with Settings → API Keys (AL-78): per-client
-                  formats verified against each tool's docs, correct config filenames, and the
-                  note that Grok needs an mcp-remote stdio bridge. This view first shipped a
-                  two-branch stub of its own that handed the `claude mcp add` command to
-                  Codex, Grok and opencode alike — found on the first real walk. */}
-              <McpInstall apiKey={minted.plaintext} />
-              <CopyRow label="3. Prime" value={primeSnippet(minted.role)} />
-            </div>
-          )}
-        </Section>
-
         <Section
           title="Provision a whole wave"
           desc="One seat per agent. A seat grants a role for one session and expires — paste it into the prompt, not the config."
@@ -607,7 +576,63 @@ export function FleetView() {
           </>
         )}
 
-        {tab === "credentials" && (
+        {tab === "roster" && (
+          <>
+            {/* Credential provisioning sits WITH the roster: between them they answer
+                one question — who can reach this project, and who is here now. It used
+                to live beside a per-wave action, which put a once-per-machine job next
+                to one you do every run. */}
+        <Section
+          title="Onboard one agent with its own credential"
+          desc="The older route: a credential narrowed to one role. Seats above are the recommended path — this stays because a role-narrowed key still works and some setups are built on one."
+        >
+          {/* NOT deleted with the rest of PRD-19 E8, deliberately. G6 says nothing that works
+              today stops working, and a role-narrowed credential still does — the API is
+              unchanged and this repo's own tests use one. What was wrong was having two routes
+              with nothing saying which to reach for, so the ambiguity is resolved by NAMING
+              the order rather than by removing the option out from under anyone. */}
+          <div className="mb-3 flex flex-wrap gap-2">
+            {/* `all-in-one` is offered beside the three because the roster REPORTS it — a
+                page that counts a posture it cannot create names a category the reader has no
+                way to produce. It mints an unnarrowed credential, which is what makes the
+                agent unrestricted. */}
+            {[...(data?.roles ?? ["planner", "worker", "reviewer"]), ALL_IN_ONE].map((r) => (
+              // Selection is signalled by BACKGROUND and border, never by the role tone.
+              // Tinting the selected item with `ROLE_TONE` put `all-in-one` in `text-muted
+              // border-line-2` — byte-identical to the unselected style — so choosing it
+              // looked exactly like not choosing it. Found on the first walk, after three
+              // credentials came out all-in-one. The roster badges keep the colours; a
+              // picker's job is "which one is selected".
+              <button key={r} onClick={() => setRole(r)} aria-pressed={role === r}
+                className={cn("rounded-[9px] border px-3 py-1.5 text-[12px] transition-colors",
+                              role === r
+                                ? "border-accent/50 bg-surface-3 text-fg"
+                                : "border-line-2 text-muted hover:text-fg-2")}>
+                {r}
+              </button>
+            ))}
+          </div>
+          <Button onClick={mint}>
+            Mint {role === ALL_IN_ONE ? "an" : "a"} {role} credential
+          </Button>
+          {minted && (
+            <div className="mt-3 space-y-2">
+              {/* Shown once — keys are stored hashed and cannot be recovered. */}
+              <CopyRow label="1. Key (shown once)" value={minted.plaintext} />
+              {/* The REAL generator, shared with Settings → API Keys (AL-78): per-client
+                  formats verified against each tool's docs, correct config filenames, and the
+                  note that Grok needs an mcp-remote stdio bridge. This view first shipped a
+                  two-branch stub of its own that handed the `claude mcp add` command to
+                  Codex, Grok and opencode alike — found on the first real walk. */}
+              <McpInstall apiKey={minted.plaintext} />
+              <CopyRow label="3. Prime" value={primeSnippet(minted.role)} />
+            </div>
+          )}
+        </Section>
+          </>
+        )}
+
+        {tab === "roster" && (
           <Section
             title="Credentials"
             desc="Which key each agent authenticates with. A wave-tagged key is a wave artifact — End wave sweeps those and never a hand-minted one."
@@ -619,6 +644,14 @@ export function FleetView() {
                 {/* Revoked credentials collapse the same way seats do. After ending wave-1 the
                     list was 15 dead keys deep and the one credential still in use — the
                     operator's own — was lost in it. */}
+                {expiredCreds.length > 0 && (
+                  <div className="flex justify-end">
+                    <button onClick={clearExpiredCredentials}
+                            className="text-[11px] text-muted hover:text-[color:var(--color-st-blocked)]">
+                      Revoke the {expiredCreds.length} expired
+                    </button>
+                  </div>
+                )}
                 {liveCreds.length > 0 && deadCreds.length > 0 && (
                   <div className="flex justify-end">
                     <button onClick={() => setShowDeadCreds((v) => !v)}
