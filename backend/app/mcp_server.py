@@ -1995,6 +1995,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             item = fleet_svc.sign_off(
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
                 agent_id=agent, evidence=args.get("evidence"))
+        except fleet_svc.NotInReview as e:
+            # Conflict, not unauthorized, for the same reason the evidence gate below is: the
+            # caller is permitted to sign this off, the work simply has not been handed over.
+            raise errors.Conflict(str(e), hint=(
+                "wait for the agent working it to call update_item(status='review'), or take "
+                "other work with claim_review"))
         except fleet_svc.SelfReview as e:
             raise authz.Forbidden(
                 str(e), hint="another agent takes it from review; call fleet_status to see who")
@@ -2020,6 +2026,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey) -> Any
             item = fleet_svc.bounce(
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
                 agent_id=agent, reason=args["reason"])
+        except fleet_svc.NotInReview as e:
+            raise errors.Conflict(str(e), hint=(
+                "a bounce is a review verdict; an item still being worked on is released with "
+                "release_item, not bounced"))
         except ValueError as e:
             raise errors.Validation(str(e))
         return _item_dict(item)
