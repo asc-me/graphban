@@ -28,6 +28,15 @@ export interface LayoutOpts {
   height: number;
   /** Defaults to `iterationsFor(ids.length)`. Pass explicitly only to pin it in a test. */
   iterations?: number;
+  /**
+   * Nodes the user has dragged, held at exactly these positions (PRD-20 D2).
+   *
+   * A pinned node still *exerts* repulsion and spring force on everything else — it is part of
+   * the graph, not removed from it — but it is skipped in the integrate step, so it does not
+   * move. Dragging is how a human says "this one matters, stop moving it", and a pin that
+   * drifted back would make the gesture a lie.
+   */
+  pinned?: Record<string, Pos>;
 }
 
 // Physics, carried over unchanged from the two originals so the extraction moves no node.
@@ -73,7 +82,7 @@ export function computeLayout(
   edges: LayoutEdge[],
   opts: LayoutOpts,
 ): Record<string, Pos> {
-  const { width, height } = opts;
+  const { width, height, pinned } = opts;
   const iterations = opts.iterations ?? iterationsFor(ids.length);
   const n = ids.length;
   const cx = width / 2;
@@ -82,6 +91,11 @@ export function computeLayout(
 
   const pos: Record<string, Pos> = {};
   ids.forEach((id, i) => {
+    const held = pinned?.[id];
+    if (held) {
+      pos[id] = { x: held.x, y: held.y };
+      return;
+    }
     const angle = (2 * Math.PI * i) / Math.max(1, n);
     pos[id] = { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
   });
@@ -124,8 +138,10 @@ export function computeLayout(
       disp[e.b].y -= dy;
     }
 
-    // Center pull + integrate (capped step).
+    // Center pull + integrate (capped step). A pinned node is skipped here and nowhere else:
+    // it has already contributed its forces above, it just does not accept any itself.
     for (const id of ids) {
+      if (pinned?.[id]) continue;
       disp[id].x += (cx - pos[id].x) * CENTER_PULL;
       disp[id].y += (cy - pos[id].y) * CENTER_PULL;
       pos[id].x += Math.max(-MAX_STEP, Math.min(MAX_STEP, disp[id].x * STEP));

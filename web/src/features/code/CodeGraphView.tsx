@@ -3,7 +3,11 @@ import * as React from "react";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { topByDegree } from "@/lib/graph/metrics";
+import { useGraphFind } from "@/lib/graph/useGraphFind";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
+import { useGraphPins } from "@/lib/graph/useGraphPins";
+import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
 import { useCodeMap } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors } from "@/lib/types";
 
@@ -28,6 +32,8 @@ const EDGE_TYPES = Object.keys(EDGE_META) as CodeEdgeType[];
 const W = 900;
 const H = 560;
 const R = 7;
+/** How many hubs keep their name when zoomed out (PRD-20 D2, level of detail). */
+const LOD_TOP_N = 12;
 
 /** Short label for a node: its name, else the last path segment (after `/` or `::`). */
 function label(path: string, name: string): string {
@@ -73,7 +79,28 @@ export function CodeGraphView() {
     () => allEdges.map((e) => ({ a: e.src, b: e.dst })),
     [allEdges],
   );
-  const { pos, pending, relayout } = useGraphLayout(ids, layoutEdges, { width: W, height: H });
+
+  const view = useGraphViewport(W, H);
+  const pinsApi = useGraphPins(view.toWorld);
+  const { pos: laidOut, pending, relayout } = useGraphLayout(ids, layoutEdges, {
+    width: W,
+    height: H,
+    pinned: pinsApi.pins,
+  });
+  // A dragged node sits where the user put it; everything else where the layout put it.
+  const pos = React.useMemo(
+    () => ({ ...laidOut, ...pinsApi.pins }),
+    [laidOut, pinsApi.pins],
+  );
+
+  // Search the path AND the described name: a user hunting "claim_next" should find
+  // `items.py::claim_next` whether they type the symbol or the file.
+  const labelOf = React.useCallback(
+    (id: string) => `${id} ${nodeByPath[id]?.name ?? ""}`,
+    [nodeByPath],
+  );
+  const find = useGraphFind(ids, labelOf);
+  const hubs = React.useMemo(() => topByDegree(ids, layoutEdges, LOD_TOP_N), [ids, layoutEdges]);
 
   // Fetch the rich neighborhood for the selected node (edges + touching items).
   React.useEffect(() => {
@@ -107,6 +134,25 @@ export function CodeGraphView() {
     return { hlNodes, hlEdges };
   }, [selPath, edges]);
 
+  // Find is highlight-by-another-name: it feeds the same dim path as selection rather than
+  // introducing a second visual language for "these are the interesting ones".
+  const lit = React.useMemo(() => {
+    if (find.active) return find.matches;
+    return hl?.hlNodes ?? null;
+  }, [find.active, find.matches, hl]);
+
+  // Ease the viewport onto the hits, once per query — not on every keystroke's re-render.
+  const fitRef = React.useRef(view.fitTo);
+  fitRef.current = view.fitTo;
+  const posRef = React.useRef(pos);
+  posRef.current = pos;
+  const matchKey = find.active ? [...find.matches].sort().join(",") : "";
+  React.useEffect(() => {
+    if (!matchKey) return;
+    const points = matchKey.split(",").map((id) => posRef.current[id]).filter(Boolean);
+    if (points.length) fitRef.current(points);
+  }, [matchKey]);
+
   const empty = !isLoading && nodes.length === 0;
 
   return (
@@ -121,6 +167,40 @@ export function CodeGraphView() {
             </p>
           </div>
           <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            <div className="relative mr-1">
+              <input
+                ref={find.inputRef}
+                value={find.query}
+                onChange={(e) => find.setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Escape" && find.clear()}
+                placeholder="Find  /"
+                aria-label="Find a node"
+                className="w-[168px] rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-line-hover focus:outline-none"
+              />
+              {find.active && (
+                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-faint">
+                  {find.matches.size}
+                </span>
+              )}
+            </div>
+            {(view.viewport.k !== 1 || view.viewport.x !== 0 || view.viewport.y !== 0) && (
+              <button
+                onClick={view.reset}
+                title="Reset the view (or double-click the background)"
+                className="mr-1 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+              >
+                Reset view
+              </button>
+            )}
+            {pinsApi.pinCount > 0 && (
+              <button
+                onClick={pinsApi.clearPins}
+                title="Release every pinned node"
+                className="mr-1 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+              >
+                Unpin {pinsApi.pinCount}
+              </button>
+            )}
             {isFiltered && (
               // Only offered under a filter: with every type on, the layout already reflects
               // exactly what is drawn and re-laying out would move nodes for no reason.
@@ -166,7 +246,13 @@ export function CodeGraphView() {
               </p>
             </div>
           ) : (
-            <svg viewBox={`0 0 ${W} ${H}`} className="h-full w-full" onClick={() => setSelPath(null)}>
+            <svg
+              ref={view.svgRef}
+              viewBox={`0 0 ${W} ${H}`}
+              className={cn("h-full w-full touch-none", view.panning ? "cursor-grabbing" : "cursor-grab")}
+              onClick={() => setSelPath(null)}
+              {...view.svgHandlers}
+            >
               <defs>
                 {EDGE_TYPES.map((t) => (
                   <marker
@@ -184,6 +270,10 @@ export function CodeGraphView() {
                 ))}
               </defs>
 
+              <g
+                transform={view.transform}
+                style={{ transition: view.panning ? undefined : "transform 220ms ease" }}
+              >
               {edges.map((e, i) => {
                 const a = pos[e.src];
                 const b = pos[e.dst];
@@ -214,18 +304,30 @@ export function CodeGraphView() {
                 const p = pos[id];
                 if (!p) return null;
                 const node = nodeByPath[id];
-                const active = !hl || hl.hlNodes.has(id);
+                const active = !lit || lit.has(id);
                 const meta = kindMeta(node?.kind ?? "");
                 const described = !!node;
                 const stale = described && !node.fresh;
+                const pinned = pinsApi.isPinned(id);
+                // Level of detail: zoomed out, only the names worth the ink survive — the
+                // selection, the search hits, and the hubs. Zoom past LABEL_ZOOM and the rest
+                // arrive. Past ~40 nodes the labels were previously the densest ink on screen.
+                const showLabel =
+                  view.viewport.k > LABEL_ZOOM ||
+                  selPath === id ||
+                  find.matches.has(id) ||
+                  hubs.has(id);
                 return (
                   <g
                     key={id}
                     transform={`translate(${p.x},${p.y})`}
-                    className="cursor-pointer"
+                    className={pinned ? "cursor-grab" : "cursor-pointer"}
                     opacity={active ? 1 : 0.22}
+                    {...pinsApi.nodeHandlers(id)}
                     onClick={(ev) => {
                       ev.stopPropagation();
+                      // A drag ends with a click on the same node; do not also select it.
+                      if (pinsApi.consumedDrag()) return;
                       setSelPath(id);
                     }}
                   >
@@ -237,15 +339,30 @@ export function CodeGraphView() {
                       strokeDasharray={!described || stale ? "2 2" : undefined}
                       opacity={described ? 1 : 0.7}
                     />
+                    {pinned && (
+                      <circle r={R + 3} fill="none" stroke="#8b949e" strokeWidth={1} opacity={0.55} />
+                    )}
                     {selPath === id && (
                       <circle r={R + 4} fill="none" stroke={meta.color} strokeWidth={1.5} opacity={0.5} />
                     )}
-                    <text x={11} y={4} fontSize={11} fontFamily="IBM Plex Mono, monospace" fill="#8b949e">
-                      {node ? label(id, node.name) : label(id, "")}
-                    </text>
+                    {showLabel && (
+                      <text
+                        x={11}
+                        y={4}
+                        fontSize={11}
+                        fontFamily="IBM Plex Mono, monospace"
+                        fill="#8b949e"
+                        // The label must not swallow the pointer, or a node becomes undraggable
+                        // wherever its name happens to overlap a neighbour.
+                        style={{ pointerEvents: "none" }}
+                      >
+                        {node ? label(id, node.name) : label(id, "")}
+                      </text>
+                    )}
                   </g>
                 );
               })}
+              </g>
             </svg>
           )}
 

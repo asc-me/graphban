@@ -40,6 +40,10 @@ export function useGraphLayout(
   edges: LayoutEdge[],
   opts: LayoutOpts,
 ): GraphLayout {
+  // `opts.pinned` is read through `optsRef` at run time and is deliberately NOT part of the
+  // memo key: dragging a node moves that node and nothing else, because reflowing the whole
+  // graph on every drag is the churn D1 just removed. Pins are honoured on the NEXT run — a
+  // data change or an explicit re-layout — which is where "stop moving it" actually bites.
   const [pos, setPos] = React.useState<Record<string, Pos>>({});
   const [pending, setPending] = React.useState(false);
 

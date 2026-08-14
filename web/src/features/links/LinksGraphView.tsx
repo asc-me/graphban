@@ -2,7 +2,11 @@ import * as React from "react";
 
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
+import { topByDegree } from "@/lib/graph/metrics";
+import { useGraphFind } from "@/lib/graph/useGraphFind";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
+import { useGraphPins } from "@/lib/graph/useGraphPins";
+import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
 import { useLinks } from "@/lib/queries";
 import type { LinkType } from "@/lib/types";
 
@@ -16,6 +20,8 @@ const LINK_TYPES = Object.keys(LINK_META) as LinkType[];
 
 const W = 900;
 const H = 560;
+/** How many hubs keep their name when zoomed out (PRD-20 D2, level of detail). */
+const LOD_TOP_N = 12;
 
 export function LinksGraphView() {
   const { activeId } = useProjectCtx();
@@ -40,7 +46,19 @@ export function LinksGraphView() {
   }, [links]);
 
   const layoutEdges = React.useMemo(() => links.map((l) => ({ a: l.a, b: l.b })), [links]);
-  const { pos, pending, relayout } = useGraphLayout(ids, layoutEdges, { width: W, height: H });
+
+  const view = useGraphViewport(W, H);
+  const pinsApi = useGraphPins(view.toWorld);
+  const { pos: laidOut, pending, relayout } = useGraphLayout(ids, layoutEdges, {
+    width: W,
+    height: H,
+    pinned: pinsApi.pins,
+  });
+  // A dragged node sits where the user put it; everything else where the layout put it.
+  const pos = React.useMemo(() => ({ ...laidOut, ...pinsApi.pins }), [laidOut, pinsApi.pins]);
+
+  const find = useGraphFind(ids, (id) => id);
+  const hubs = React.useMemo(() => topByDegree(ids, layoutEdges, LOD_TOP_N), [ids, layoutEdges]);
 
   const nodeKind = (id: string) => (id.startsWith("R-") ? "request" : "item");
 
@@ -69,6 +87,24 @@ export function LinksGraphView() {
     return { nodes, edgeIds };
   }, [sel, shown, links]);
 
+  // Find feeds the same dim path as selection rather than adding a second visual language.
+  const lit = React.useMemo(
+    () => (find.active ? find.matches : (hl?.nodes ?? null)),
+    [find.active, find.matches, hl],
+  );
+
+  // Ease onto the hits once per query, not on every keystroke's re-render.
+  const fitRef = React.useRef(view.fitTo);
+  fitRef.current = view.fitTo;
+  const posRef = React.useRef(pos);
+  posRef.current = pos;
+  const matchKey = find.active ? [...find.matches].sort().join(",") : "";
+  React.useEffect(() => {
+    if (!matchKey) return;
+    const points = matchKey.split(",").map((id) => posRef.current[id]).filter(Boolean);
+    if (points.length) fitRef.current(points);
+  }, [matchKey]);
+
   const selLink = sel?.kind === "link" ? links.find((l) => l.id === sel.id) : null;
   const selNodeLinks = sel?.kind === "node" ? shown.filter((l) => l.a === sel.id || l.b === sel.id) : [];
 
@@ -82,6 +118,40 @@ export function LinksGraphView() {
           </p>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
+          <div className="relative mr-1">
+            <input
+              ref={find.inputRef}
+              value={find.query}
+              onChange={(e) => find.setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Escape" && find.clear()}
+              placeholder="Find  /"
+              aria-label="Find a node"
+              className="w-[168px] rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-line-hover focus:outline-none"
+            />
+            {find.active && (
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-faint">
+                {find.matches.size}
+              </span>
+            )}
+          </div>
+          {(view.viewport.k !== 1 || view.viewport.x !== 0 || view.viewport.y !== 0) && (
+            <button
+              onClick={view.reset}
+              title="Reset the view (or double-click the background)"
+              className="mr-1 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+            >
+              Reset view
+            </button>
+          )}
+          {pinsApi.pinCount > 0 && (
+            <button
+              onClick={pinsApi.clearPins}
+              title="Release every pinned node"
+              className="mr-1 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+            >
+              Unpin {pinsApi.pinCount}
+            </button>
+          )}
           {isFiltered && (
             // Only offered under a filter: with every type on, the layout already reflects
             // exactly what is drawn and re-laying out would move nodes for no reason.
@@ -115,10 +185,16 @@ export function LinksGraphView() {
           <div className="p-8 text-center text-[13px] text-muted">Loading graph…</div>
         ) : (
           <svg
+            ref={view.svgRef}
             viewBox={`0 0 ${W} ${H}`}
-            className="h-full w-full"
+            className={cn("h-full w-full touch-none", view.panning ? "cursor-grabbing" : "cursor-grab")}
             onClick={() => setSel(null)}
+            {...view.svgHandlers}
           >
+            <g
+              transform={view.transform}
+              style={{ transition: view.panning ? undefined : "transform 220ms ease" }}
+            >
             {shown.map((l) => {
               const active = !hl || hl.edgeIds.has(l.id);
               const a = pos[l.a];
@@ -142,27 +218,49 @@ export function LinksGraphView() {
             {ids.map((id) => {
               const p = pos[id];
               if (!p) return null;
-              const active = !hl || hl.nodes.has(id);
+              const active = !lit || lit.has(id);
               const kind = nodeKind(id);
               const color = kind === "request" ? "#4fd6c4" : "#c6f24e";
+              const pinned = pinsApi.isPinned(id);
+              const showLabel =
+                view.viewport.k > LABEL_ZOOM ||
+                (sel?.kind === "node" && sel.id === id) ||
+                find.matches.has(id) ||
+                hubs.has(id);
               return (
                 <g
                   key={id}
                   transform={`translate(${p.x},${p.y})`}
-                  className="cursor-pointer"
+                  className={pinned ? "cursor-grab" : "cursor-pointer"}
                   opacity={active ? 1 : 0.25}
+                  {...pinsApi.nodeHandlers(id)}
                   onClick={(e) => {
                     e.stopPropagation();
+                    // A drag ends with a click on the same node; do not also select it.
+                    if (pinsApi.consumedDrag()) return;
                     setSel({ kind: "node", id });
                   }}
                 >
                   <circle r={8} fill={color} stroke="#0a0c0e" strokeWidth={2} />
-                  <text x={12} y={4} fontSize={11} fontFamily="IBM Plex Mono, monospace" fill="#8b949e">
-                    {id}
-                  </text>
+                  {pinned && (
+                    <circle r={11} fill="none" stroke="#8b949e" strokeWidth={1} opacity={0.55} />
+                  )}
+                  {showLabel && (
+                    <text
+                      x={12}
+                      y={4}
+                      fontSize={11}
+                      fontFamily="IBM Plex Mono, monospace"
+                      fill="#8b949e"
+                      style={{ pointerEvents: "none" }}
+                    >
+                      {id}
+                    </text>
+                  )}
                 </g>
               );
             })}
+            </g>
           </svg>
         )}
 
