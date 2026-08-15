@@ -99,7 +99,11 @@ function primeSnippet(role: string, seat?: string) {
   const call = seat
     ? `register_agent(enrolment_code="${seat}", label="<model> @ <host>")`
     : "register_agent";
-  return `You are a ${role} in a Graphban fleet.\nCall ${call} first, then heartbeat on the interval it returns.\n${duty}`;
+  // `tools_off_limits` comes back from register_agent and is named here on purpose: the tool
+  // manifest was fetched before this agent had a role, so it still lists every tool in the
+  // product. Without this line the agent learns its boundary by being refused — and three
+  // refusals in a row is how the server decides an agent has stopped listening.
+  return `You are a ${role} in a Graphban fleet.\nCall ${call} first, then heartbeat on the interval it returns.\nIt returns tools_off_limits — the tools your role will be refused. Your tool list was fetched before you had a role, so it still shows them; do not call them.\n${duty}`;
 }
 
 function CopyRow({ label, value }: { label: string; value: string }) {

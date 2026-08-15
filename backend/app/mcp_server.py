@@ -579,8 +579,9 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Register THIS process as an agent at startup, before claiming work. Two terminals on "
             "one key become two agents. Pass `enrolment_code` if you were given a seat; without "
-            "one you are `all-in-one`. Read `active_role` back. Heartbeat at the returned "
-            "interval or you go offline and your items requeue."
+            "one you are `all-in-one`. Read back `active_role` and `tools_off_limits` — your tool "
+            "list was fetched before you had a role, so it still shows tools you will be refused. "
+            "Heartbeat at the returned interval or you go offline and your items requeue."
         ),
         "inputSchema": {
             "type": "object",
@@ -2099,6 +2100,15 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # seat role and what an un-enrolled agent gets, so a client cannot tell the
             # deliberate case from the forgotten one without being told (PRD-19 A2).
             "enrolled": agent.enrolment_id is not None,
+            # The boundary, stated once, at the moment the role is granted. The MANIFEST cannot
+            # say this: `tools/list` is fetched at connect, before any role exists, so a fleet
+            # agent holds the full list all session and finds the edge by walking into it — and
+            # three refusals in a row is how `quarantine` decides an agent has stopped
+            # listening, so discovering it by trial is not free.
+            #
+            # Advisory, exactly like the trimmed manifest: the call-time gate is what enforces
+            # this, and an agent that ignores the list is no less constrained.
+            "tools_off_limits": fleet_svc.tools_off_limits(agent.active_role),
             # The cadence travels with the identity: an agent that has to read a constant out
             # of documentation to stay alive is one that eventually does not.
             "heartbeat_interval_seconds": fleet_svc.heartbeat_interval_seconds(),

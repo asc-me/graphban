@@ -237,10 +237,49 @@ def test_manifest_stays_within_token_budget():
     exposure (GRPH-48, GRPH-146) is what makes this number stop mattering. Every bump since
     GRPH-254 has said some version of "the next one should be the real fix"; the honest reading
     is that this guard cannot force that work, only make its absence visible — and it has,
-    five times now."""
+    five times now.
+
+Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT the note
+    above demanded — it shipped rather than being deferred again. E9a/E9b bind the MCP session
+    to the agent and narrow `tools/list` to its role afterwards: a worker carries 43 tools, a
+    reviewer 42, against 52 here. This number is now the CONNECT-TIME worst case rather than
+    what every agent pays on every turn.
+
+    Two caveats kept deliberately, because they are the ones that would make this raise a
+    mistake:
+
+    - **The saving only lands if the client re-fetches after registering**, and no client is
+      yet known to. `tools_list_refetched` in the event log answers that; until it has rows
+      from a real wave, the full manifest is still what a fleet agent holds all session.
+    - What this raise buys is ~40 tokens of `register_agent` description naming
+      `tools_off_limits`. That exists so an agent learns its boundary by being TOLD rather
+      than by being refused three times, which is how `quarantine` decides an agent has
+      stopped listening. Cutting it to save 40 tokens would trade a wave's worth of agent
+      for a rounding error.
+
+    If the probe comes back empty, this ceiling should come down again with a real prose
+    pass — not stay here on the strength of a saving nothing collects.
+
+    **Both of the paragraphs above raised 12800 -> 13100, independently, and neither could see
+    the other.** GRPH-391 (PRD-20's `graph_query`) and GRPH-398 (PRD-19's session-scoped
+    manifest) were in flight on separate branches, each ran this arithmetic correctly for its
+    own change, and each picked the same number. Merged, the manifest measures ~13118 — over
+    the ceiling both of them set.
+
+    Raised 13100 -> 13150 on the merge, and the number is the least interesting part of this
+    entry. The interesting part is that **a ceiling cannot serialise two branches**. Each raise
+    was individually justified by the procedure this docstring prescribes; the procedure has no
+    step for "someone else is also spending this". That is not a reason to distrust the guard —
+    it caught the collision at merge time, which is when it could still be fixed cheaply — but
+    it is the clearest argument yet that the ceiling is the wrong instrument for a repo with
+    concurrent fleets, and that GRPH-48 / GRPH-146 (progressive disclosure, tiered exposure) is
+    the fix rather than a sixth raise.
+
+    Kept at ~32 tokens of headroom, in line with the ~7 and ~16 the last two left, so the next
+    tool argues its own case rather than spending slack voted for something else."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 13100, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 13150, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
 
