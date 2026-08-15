@@ -154,3 +154,105 @@ def test_reclassification_is_idempotent(db):
     cg.upsert_node(db, project_id="core", path="a/b.py", kind="file", name="b")
     db.commit()
     assert cg.list_nodes(db, "core")[0].kind == first == "file"
+
+
+# ── doc and config (GRPH-381) ─────────────────────────────────────────────────
+
+def test_prose_is_a_doc_not_a_file():
+    """The files the graph could not represent at all.
+
+    Measured on the live instance, 15 of 100 item touchpoints resolved to no node, and the set
+    was dominated by exactly these: `docs/mcp.md` twice, `AGENTS.md`, `README.md`. They are
+    load-bearing — the rules file every agent reads and the tool contract — so work touching
+    them has a blast radius a human wants to see.
+    """
+    assert cg.kind_for_path("AGENTS.md") == "doc"
+    assert cg.kind_for_path("docs/mcp.md") == "doc"
+    assert cg.kind_for_path("README.md") == "doc"
+    assert cg.kind_for_path("docs/design/notes.rst") == "doc"
+
+
+def test_settings_files_are_config():
+    assert cg.kind_for_path("docker-compose.yml") == "config"
+    assert cg.kind_for_path("web/nginx.conf") == "config"
+    assert cg.kind_for_path("backend/pyproject.toml") == "config"
+    assert cg.kind_for_path("package.json") == "config"
+    # Cursor rule files, which prime editor agents and were previously unrepresentable.
+    assert cg.kind_for_path(".cursor/rules/graphban.mdc") == "config"
+
+
+def test_extensionless_config_is_not_mistaken_for_a_package():
+    # Without the basename table these read as directories — the same shape a package has.
+    assert cg.kind_for_path("Dockerfile") == "config"
+    assert cg.kind_for_path("backend/Dockerfile") == "config"
+    assert cg.kind_for_path("Makefile") == "config"
+    assert cg.kind_for_path(".gitignore") == "config"
+
+
+def test_code_is_still_code():
+    # The split must not drag source files out of `file` with it.
+    assert cg.kind_for_path("backend/app/services/items.py") == "file"
+    assert cg.kind_for_path("web/src/lib/queries.ts") == "file"
+    assert cg.kind_for_path("web/src/index.css") == "file"
+
+
+def test_doc_and_config_beat_the_code_table():
+    """Order matters: `.md`, `.yml`, `.toml` and `.json` used to be IN the code table.
+
+    If code were tested first they would keep resolving to `file` and this change would be a
+    no-op that looked like a feature.
+    """
+    for path in ("a.md", "a.yml", "a.toml", "a.json"):
+        assert cg.kind_for_path(path) != "file", path
+
+
+def test_a_symbol_inside_a_doc_is_still_a_symbol():
+    # `::` decides before any suffix does — a heading reference in a doc is not a config file.
+    assert cg.kind_for_path("AGENTS.md::invariants") == "symbol"
+
+
+def test_describe_code_accepts_and_corrects_doc_and_config(client, auth, db):
+    key = _key(client, auth)
+    res = _mcp(client, key, "describe_code", {
+        "nodes": [
+            {"path": "AGENTS.md", "kind": "file", "name": "agent guide"},
+            {"path": "docker-compose.yml", "kind": "file", "name": "compose"},
+            {"path": "README.md", "kind": "doc", "name": "readme"},
+        ],
+    })
+    assert res["nodes_upserted"] == 3
+    # The two that asked for `file` are told; the one that got it right is not.
+    assert res["kind_corrections"] == [
+        {"path": "AGENTS.md", "asked": "file", "stored": "doc"},
+        {"path": "docker-compose.yml", "asked": "file", "stored": "config"},
+    ]
+    kinds = {n.path: n.kind for n in cg.list_nodes(db, "core")}
+    assert kinds["AGENTS.md"] == "doc"
+    assert kinds["docker-compose.yml"] == "config"
+    assert kinds["README.md"] == "doc"
+
+
+def test_the_map_can_be_filtered_to_docs(client, auth, db):
+    """`get_code_map(kind=...)` is what makes the new kinds useful rather than decorative."""
+    key = _key(client, auth)
+    _mcp(client, key, "describe_code", {
+        "nodes": [
+            {"path": "AGENTS.md", "kind": "doc", "name": "guide"},
+            {"path": "backend/app/services/items.py", "kind": "file", "name": "items"},
+        ],
+    })
+    only_docs = _mcp(client, key, "get_code_map", {"kind": "doc"})
+    assert [n["path"] for n in only_docs["nodes"]] == ["AGENTS.md"]
+
+
+def test_an_area_that_is_not_a_path_still_resolves_to_nothing(db):
+    """The honest limit, restated as a test.
+
+    `doc` and `config` make repo FILES describable. They do nothing for areas that are not repo
+    paths — `vercel env`, `twitch developer console`, `../ascme-labs/**` — which stay off-map by
+    construction, exactly as PRD-20 D4 says. This item removes a blocker; it does not empty the
+    tray, and claiming otherwise would be the reassuring reading.
+    """
+    for area in ("vercel env", "twitch developer console"):
+        assert cg.kind_for_path(area) == "module"
+        assert not cg.area_matches(area, "AGENTS.md")

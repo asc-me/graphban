@@ -658,7 +658,8 @@ TOOLS: list[dict[str, Any]] = [
             "Upsert the codebase's structure as a queryable graph of `nodes` and `edges`. You "
             "have the repo in context, so you are the source of truth. Idempotent per path — "
             "re-describe a changed file with its new `content_hash`. `prune=true` after a whole "
-            "subtree marks unseen nodes stale."
+            "subtree marks unseen nodes stale. A `kind` contradicting its path is corrected and "
+            "returned in `kind_corrections`."
         ),
         "inputSchema": {
             "type": "object",
@@ -669,12 +670,13 @@ TOOLS: list[dict[str, Any]] = [
                     "items": {
                         "type": "object",
                         "properties": {
-                            "path": {"type": "string", "description": "Repo-relative; `path.py::symbol` for a symbol."},
-                            "kind": {"type": "string", "enum": code_svc.NODE_KINDS, "description": "Default file."},
+                            "path": {"type": "string", "description": "Repo-relative."},
+                            "kind": {"type": "string", "enum": code_svc.NODE_KINDS,
+                                     "description": "package | file | `path::name` | prose | settings. Include docs and config."},
                             "name": {"type": "string", "description": "Short label."},
                             "lang": {"type": "string", "description": "python | ts | ... (optional)."},
                             "summary": {"type": "string", "description": "One paragraph: what it is and owns."},
-                            "content_hash": {"type": "string", "description": "Source hash (e.g. git blob sha) — powers staleness."},
+                            "content_hash": {"type": "string", "description": "Source hash — powers staleness."},
                         },
                         "required": ["path"],
                     },

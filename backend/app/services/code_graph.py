@@ -37,34 +37,69 @@ from app.services.clustering import _match
 #   file   — ONE SOURCE FILE: `backend/app/services/items.py`.
 #   symbol — a NAMED THING INSIDE a file, written `path::name`:
 #            `backend/app/services/items.py::claim_next`.
+#   doc    — PROSE a human wrote for a reader: `AGENTS.md`, `docs/mcp.md`, `README.md`.
+#   config — a file that CONFIGURES something rather than executing: `docker-compose.yml`,
+#            `web/nginx.conf`, `pyproject.toml`, `.cursor/rules/*`.
 #
 # The distinction is not cosmetic. PRD-20 D5 encodes kind in node fill and argues presence
 # clouds are safe because they use a different channel; on a graph that is 97% one value, that
 # argument defends something that is not there.
-NODE_KINDS = ["module", "file", "symbol"]
+#
+# `doc` and `config` exist because the graph could not represent them AT ALL (GRPH-381), and
+# measured on the live instance that was 15 of 100 item touchpoints resolving to nothing —
+# `docs/mcp.md` twice, `AGENTS.md`, `README.md`, `web/nginx.conf`, `.cursor/rules/*`. These are
+# load-bearing files: the rules file every agent reads, the tool contract, the thing that primes
+# editor agents. Work touching them is exactly the work whose blast radius a human wants to see.
+NODE_KINDS = ["module", "file", "symbol", "doc", "config"]
 
-# Extensions that make a path a FILE rather than a package. Deliberately a suffix check and not
-# a filesystem probe: the server holds no checkout, and `describe_code`'s caller is the only
-# thing that does — which is why the server can validate the SHAPE of a claim but never its
-# truth.
-_SOURCE_SUFFIXES = (
+# Suffix tables, deliberately not a filesystem probe: the server holds no checkout, and
+# `describe_code`'s caller is the only thing that does — which is why the server can validate
+# the SHAPE of a claim but never its truth.
+#
+# Split three ways rather than one, because that is the whole of GRPH-381. Order matters below:
+# a path is tested against doc and config BEFORE code, since `.md` and `.yml` used to fall into
+# the code table and would otherwise keep doing so.
+_DOC_SUFFIXES = (".md", ".mdx", ".rst", ".txt", ".adoc")
+_CONFIG_SUFFIXES = (
+    ".toml", ".yaml", ".yml", ".json", ".ini", ".cfg", ".conf", ".env", ".properties",
+    ".lock", ".mdc",  # .mdc — Cursor rule files
+)
+_CODE_SUFFIXES = (
     ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".rb", ".java",
     ".kt", ".swift", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".php", ".sh", ".sql",
-    ".css", ".scss", ".html", ".vue", ".svelte", ".toml", ".yaml", ".yml", ".json", ".md",
+    ".css", ".scss", ".html", ".vue", ".svelte",
 )
+# Extensionless files that are nonetheless config, matched on the basename. Without this,
+# `Dockerfile` and `Makefile` read as packages — the same shape a directory has.
+_CONFIG_BASENAMES = frozenset({
+    "dockerfile", "makefile", "procfile", "caddyfile", "justfile", "brewfile", ".gitignore",
+    ".dockerignore", ".editorconfig", ".gitattributes", ".npmrc", ".nvmrc",
+})
+
+# Kept as the union, because `area_matches` and anything else asking "is this a file at all"
+# wants every suffix rather than the three tables separately.
+_SOURCE_SUFFIXES = _CODE_SUFFIXES + _DOC_SUFFIXES + _CONFIG_SUFFIXES
 
 
 def kind_for_path(path: str) -> str:
-    """The kind a path's SHAPE implies: `path::name` is a symbol, a suffixed path is a file,
-    anything else is a package.
+    """The kind a path's SHAPE implies.
 
-    Used to validate a caller's claim at write time, and to reclassify the rows written before
-    the vocabulary above was written down.
+    `path::name` is a symbol; then doc, config and code by suffix; then a handful of
+    extensionless config basenames; anything left is a package.
+
+    Used to validate a caller's claim at write time, and to reclassify rows written before the
+    vocabulary above existed.
     """
     p = (path or "").strip()
     if "::" in p:
         return "symbol"
-    if p.lower().endswith(_SOURCE_SUFFIXES):
+    low = p.lower()
+    base = low.rsplit("/", 1)[-1]
+    if low.endswith(_DOC_SUFFIXES):
+        return "doc"
+    if low.endswith(_CONFIG_SUFFIXES) or base in _CONFIG_BASENAMES:
+        return "config"
+    if low.endswith(_CODE_SUFFIXES):
         return "file"
     return "module"
 
