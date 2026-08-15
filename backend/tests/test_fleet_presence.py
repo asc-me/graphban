@@ -87,6 +87,27 @@ def _item_id(db, project_id="core"):
     return db.scalars(select(Item).where(Item.project_id == project_id)).first().id
 
 
+def _agent(db, label="a1", project_id="core"):
+    """A REAL agent row, registered the way the product registers one.
+
+    An earlier version of this fixture invented `agent_id="GRPH-A1"` and passed on SQLite,
+    which does not enforce foreign keys by default — Postgres does, and CI runs both. The
+    reservation is also what the holder join reads, so a made-up id was testing the join
+    against nothing: no `ApiKey`, therefore no `User`, therefore no colour.
+    """
+    from sqlalchemy import select
+
+    from app.models import ApiKey
+    from app.services import fleet as fs
+
+    key = db.scalars(select(ApiKey).where(ApiKey.project_id == project_id)).first()
+    if key is None:  # pragma: no cover — the seeded dataset always has one
+        key = db.scalars(select(ApiKey)).first()
+    agent = fs.register_agent(db, project_id=project_id, api_key=key, label=label)
+    db.commit()
+    return agent.id
+
+
 def _reserve(db, agent_id, area, item_id=None, seconds=600):
     db.add(AreaReservation(
         agent_id=agent_id, item_id=item_id or _item_id(db), area=area,
@@ -99,7 +120,7 @@ def test_held_resolves_an_area_to_exactly_its_node(db):
     for p in ("backend/app/services/items.py", "backend/app/services/fleet.py"):
         cg.upsert_node(db, project_id="core", path=p, kind="module", name=p)
     db.commit()
-    _reserve(db, "GRPH-A1", "backend/app/services/items.py")
+    _reserve(db, _agent(db), "backend/app/services/items.py")
 
     out = fleet_svc.held_areas(db, "core")
     assert len(out["held"]) == 1
@@ -111,7 +132,7 @@ def test_held_resolves_an_area_to_exactly_its_node(db):
 def test_an_unplaceable_area_is_reported_not_dropped(db):
     cg.upsert_node(db, project_id="core", path="a.py", kind="module", name="a")
     db.commit()
-    _reserve(db, "GRPH-A1", "vercel env")
+    _reserve(db, _agent(db), "vercel env")
 
     out = fleet_svc.held_areas(db, "core")
     assert out["held"] == []
@@ -125,7 +146,7 @@ def test_a_stale_node_is_reported_rather_than_glowing_as_current(db):
     db.commit()  # mark_paths_stale SELECTs, so the node has to be visible first
     assert cg.mark_paths_stale(db, "core", ["gone.py"]) == 1
     db.commit()
-    _reserve(db, "GRPH-A1", "gone.py")
+    _reserve(db, _agent(db), "gone.py")
 
     out = fleet_svc.held_areas(db, "core")
     assert out["held"] == []
@@ -135,7 +156,7 @@ def test_a_stale_node_is_reported_rather_than_glowing_as_current(db):
 def test_the_payload_carries_the_holder_and_the_lease_clock(db):
     cg.upsert_node(db, project_id="core", path="a.py", kind="module", name="a")
     db.commit()
-    _reserve(db, "GRPH-A1", "a.py")
+    _reserve(db, _agent(db), "a.py")
 
     out = fleet_svc.held_areas(db, "core")
     row = out["held"][0]
@@ -151,7 +172,7 @@ def test_an_expired_reservation_stops_holding_with_no_sweeper(db):
     """AC-10: the glow fades by construction, on the lease clock, with nothing swept."""
     cg.upsert_node(db, project_id="core", path="a.py", kind="module", name="a")
     db.commit()
-    _reserve(db, "GRPH-A1", "a.py", seconds=600)
+    _reserve(db, _agent(db), "a.py", seconds=600)
 
     assert len(fleet_svc.held_areas(db, "core")["held"]) == 1
     later = datetime.now(timezone.utc) + timedelta(seconds=601)
@@ -163,7 +184,7 @@ def test_the_cap_truncates_visibly_and_reports_the_true_total(db):
     cg.upsert_node(db, project_id="core", path="a.py", kind="module", name="a")
     db.commit()
     for i in range(5):
-        _reserve(db, f"GRPH-A{i}", "a.py")
+        _reserve(db, _agent(db, label=f"a{i}"), "a.py")
 
     out = fleet_svc.held_areas(db, "core", cap=2)
     assert out["truncated"] is True
@@ -175,7 +196,7 @@ def test_the_cap_truncates_visibly_and_reports_the_true_total(db):
 def test_an_untruncated_payload_says_so(db):
     cg.upsert_node(db, project_id="core", path="a.py", kind="module", name="a")
     db.commit()
-    _reserve(db, "GRPH-A1", "a.py")
+    _reserve(db, _agent(db), "a.py")
     out = fleet_svc.held_areas(db, "core")
     assert out["truncated"] is False and out["total"] == 1
 
@@ -184,7 +205,7 @@ def test_the_truncated_prefix_is_deterministic(db):
     cg.upsert_node(db, project_id="core", path="a.py", kind="module", name="a")
     db.commit()
     for i in range(5):
-        _reserve(db, f"GRPH-A{i}", "a.py")
+        _reserve(db, _agent(db, label=f"a{i}"), "a.py")
     first = fleet_svc.held_areas(db, "core", cap=2)["held"]
     second = fleet_svc.held_areas(db, "core", cap=2)["held"]
     assert [r["agent_id"] for r in first] == [r["agent_id"] for r in second]
@@ -202,7 +223,7 @@ def test_an_empty_fleet_is_shaped_not_absent(db):
 def test_presence_route_serves_a_member(client, auth, db):
     cg.upsert_node(db, project_id="core", path="a.py", kind="module", name="a")
     db.commit()
-    _reserve(db, "GRPH-A1", "a.py")
+    _reserve(db, _agent(db), "a.py")
     r = client.get("/api/fleet/presence?project_id=core", headers=auth)
     assert r.status_code == 200
     assert len(r.json()["held"]) == 1
