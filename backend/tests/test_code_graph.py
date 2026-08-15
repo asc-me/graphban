@@ -20,7 +20,9 @@ def _key(client, auth):
 
 ITEMS_NODE = {
     "path": "backend/app/services/items.py",
-    "kind": "module",
+    # A source file is a `file`. These fixtures said `module` — the same drift GRPH-382 found
+    # 119 times on the live graph — and the server now corrects it and says so.
+    "kind": "file",
     "name": "items service",
     "lang": "python",
     "summary": "Owns tracker item CRUD, status transitions, and agent claiming/leasing.",
@@ -28,7 +30,7 @@ ITEMS_NODE = {
 }
 MEM_NODE = {
     "path": "backend/app/services/memory.py",
-    "kind": "module",
+    "kind": "file",
     "name": "memory service",
     "lang": "python",
     "summary": "Semantic memory shards: embed on write, pgvector cosine search with a SQLite fallback.",
@@ -53,7 +55,7 @@ def test_describe_then_map_and_neighbors(client, auth):
 
     # Outgoing from items.py -> memory.py; incoming on memory.py from items.py.
     out = _mcp(client, key, "code_neighbors", {"path": ITEMS_NODE["path"]})
-    assert out["node"]["kind"] == "module"
+    assert out["node"]["kind"] == "file"
     assert {"dst": MEM_NODE["path"], "type": "imports"} in out["outgoing"]
     inc = _mcp(client, key, "code_neighbors", {"path": MEM_NODE["path"]})
     assert {"src": ITEMS_NODE["path"], "type": "imports"} in inc["incoming"]
@@ -222,7 +224,7 @@ def test_link_item_and_request_to_code_both_ways(client, auth):
     # Work side (REST reverse): the item's linked code, with the described node attached.
     rows = client.get("/api/agent/code/for?ref_id=AL-12&project_id=core", headers=auth).json()
     hit = next(r for r in rows if r["path"] == MEM_NODE["path"])
-    assert hit["relation"] == "implements" and hit["node"]["kind"] == "module"
+    assert hit["relation"] == "implements" and hit["node"]["kind"] == "file"
 
 
 def test_link_code_is_idempotent(client, auth):

@@ -26,7 +26,48 @@ from app.models import CodeEdge, CodeNode, CodeRef, Item, Request
 from app.services import items as items_svc
 from app.services.clustering import _match
 
+# What each kind MEANS (GRPH-382). The enum existed without definitions, so callers guessed —
+# and the live graph guessed the same way 119 times out of 123, labelling every file a module
+# and never once producing a symbol. A vocabulary nobody can look up is one nobody applies
+# consistently.
+#
+#   module — a PACKAGE or DIRECTORY: `backend/app/services`, `web/src/lib`. A thing that
+#            CONTAINS other things, and therefore has no file extension.
+#   file   — ONE SOURCE FILE: `backend/app/services/items.py`.
+#   symbol — a NAMED THING INSIDE a file, written `path::name`:
+#            `backend/app/services/items.py::claim_next`.
+#
+# The distinction is not cosmetic. PRD-20 D5 encodes kind in node fill and argues presence
+# clouds are safe because they use a different channel; on a graph that is 97% one value, that
+# argument defends something that is not there.
 NODE_KINDS = ["module", "file", "symbol"]
+
+# Extensions that make a path a FILE rather than a package. Deliberately a suffix check and not
+# a filesystem probe: the server holds no checkout, and `describe_code`'s caller is the only
+# thing that does — which is why the server can validate the SHAPE of a claim but never its
+# truth.
+_SOURCE_SUFFIXES = (
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".rb", ".java",
+    ".kt", ".swift", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".php", ".sh", ".sql",
+    ".css", ".scss", ".html", ".vue", ".svelte", ".toml", ".yaml", ".yml", ".json", ".md",
+)
+
+
+def kind_for_path(path: str) -> str:
+    """The kind a path's SHAPE implies: `path::name` is a symbol, a suffixed path is a file,
+    anything else is a package.
+
+    Used to validate a caller's claim at write time, and to reclassify the rows written before
+    the vocabulary above was written down.
+    """
+    p = (path or "").strip()
+    if "::" in p:
+        return "symbol"
+    if p.lower().endswith(_SOURCE_SUFFIXES):
+        return "file"
+    return "module"
+
+
 EDGE_TYPES = ["imports", "calls", "owns", "tested_by", "references"]
 REF_TYPES = ["item", "request"]
 # How a piece of work relates to a code path (item/request → code node).
@@ -66,8 +107,18 @@ def upsert_node(
     """Create or update the node at (project_id, path). Re-embeds only when the embed
     input actually changed, so an unchanged re-describe is cheap."""
     path = path.strip()
+    # Was: `if kind not in NODE_KINDS: kind = "file"`.
+    #
+    # Two different failures were being handled as one. An UNRECOGNISED kind is invalid input
+    # and now refuses — silently rewriting it to `file` is why a caller passing junk got a
+    # plausible node back and never learned. A kind that CONTRADICTS the path's shape is the
+    # common case (119 of 123 live nodes are files labelled `module`), and refusing it would
+    # break every agent currently describing code. So it is corrected to the shape the path
+    # implies, and `describe_code` REPORTS the correction — the data gets right immediately and
+    # the caller is told, which is the part silent coercion never did.
     if kind not in NODE_KINDS:
-        kind = "file"
+        raise ValueError(f"unknown kind {kind!r} for {path!r}; valid: {', '.join(NODE_KINDS)}")
+    kind = kind_for_path(path)
     node = db.scalars(
         select(CodeNode).where(CodeNode.project_id == project_id, CodeNode.path == path)
     ).first()
@@ -167,20 +218,28 @@ def describe_code(
     seen_paths: set[str] = set()
 
     n_up = 0
+    corrected: list[dict] = []
     for n in nodes:
         path = str(n.get("path", "")).strip()
         if not path:
             continue
+        asked = str(n.get("kind", "file"))
         upsert_node(
             db,
             project_id=project_id,
             path=path,
-            kind=str(n.get("kind", "file")),
+            kind=asked,
             name=str(n.get("name", "")),
             lang=str(n.get("lang", "")),
             summary=str(n.get("summary", "")),
             content_hash=str(n.get("content_hash", "")),
         )
+        # Reported, not silent (GRPH-382). Coercing without saying so is how the live graph
+        # became 97% one value with nobody noticing; a caller that learns it mislabelled can
+        # stop doing it, and one that is never told cannot.
+        implied = kind_for_path(path)
+        if asked in NODE_KINDS and asked != implied:
+            corrected.append({"path": path, "asked": asked, "stored": implied})
         seen_paths.add(path)
         n_up += 1
 
@@ -218,6 +277,10 @@ def describe_code(
         "marked_stale": len(stale_paths),
         "upserted_paths": sorted(seen_paths),
         "stale_paths": sorted(stale_paths),
+        # Empty when every kind agreed with its path. Non-empty means "these were stored as
+        # something other than what you asked for, and here is which" — the signal the old
+        # silent coercion never gave.
+        "kind_corrections": sorted(corrected, key=lambda c: c["path"]),
     }
 
 
