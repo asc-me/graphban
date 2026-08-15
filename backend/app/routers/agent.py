@@ -195,6 +195,31 @@ def code_map(project_id: str | None = None, db: Session = Depends(get_db), user:
     return code_svc.get_code_map(db, pid)
 
 
+@router.get("/code/health")
+def code_health(
+    project_id: str | None = None,
+    limit: int = 40,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Is the code graph still true (GRPH-404) — coverage, stale nodes open work still claims,
+    and touchpoints that resolve to nothing.
+
+    **REST only, no MCP tool, and the reason is the manifest ceiling rather than principle.**
+    Folding `health` into `graph_query` as a fourth mode cost ~20 tokens more than the surface
+    had left, after trimming everything in that entry that could go. The footprint guard's own
+    procedure says trim before raising, and the trimming was done; a sixth raise for a
+    maintenance read that a HUMAN runs before a describe pass is the wrong thing to spend the
+    last of that budget on. When progressive disclosure lands (GRPH-48 / GRPH-146) this can join
+    the manifest for what it actually costs.
+
+    Retires nothing, and reports `ever_described` so "nothing is stale" and "nothing has ever
+    been described" are distinguishable answers.
+    """
+    pid = _readable_pid(db, user, project_id)
+    return code_svc.health(db, pid, limit=limit)
+
+
 @router.get("/code/analysis")
 def code_analysis(
     project_id: str | None = None,
