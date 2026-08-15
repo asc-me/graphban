@@ -193,7 +193,7 @@ def has_effective_sabotage(evidence) -> bool:
     return any(e.get("tests_failed") for e in sabotage_receipts(evidence))
 
 
-def update_item(db: Session, item_id: str, **fields) -> Item | None:
+def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
     item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if item is None:
         return None
@@ -239,9 +239,45 @@ def update_item(db: Session, item_id: str, **fields) -> Item | None:
 
     if item.status == "done" and prev_status != "done":
         _record_superseded_intent(db, item, hold_at_completion)
-        _classify_against_goal(db, item)
-        _auto_extract_lessons(db, item)
+        # The two MODEL calls, moved off the response path (GRPH-399). Measured on the live
+        # instance: a trivial prompt to its 24B chat model takes 20s, each call is bounded by
+        # `llm_timeout_seconds = 90`, and completion ran both — so `update_item` could block
+        # for ~180s against a presence TTL of 150s. A fleet agent is single-threaded, so
+        # completing an item could push it past its own TTL and take it offline, releasing the
+        # rest of its work. Completing is the call every agent makes at the end of every item.
+        #
+        # `defer` defaults to INLINE, which is today's behaviour, so every existing caller and
+        # test keeps its ordering. The web callers pass a scheduler; under Starlette a
+        # background task still runs before the test client returns, so the tests that drive
+        # this through the status transition stay deterministic — and they must, because
+        # catching a caller that quietly skips extraction is the reason they exist.
+        run = defer or (lambda fn: fn())
+        run(lambda: enrich_completed_item(item.id))
     return item
+
+
+def enrich_completed_item(item_id: str) -> None:
+    """The judge and the lesson extractor, on their own session (GRPH-399).
+
+    Opens its own because it can outlive the request that scheduled it — the caller's session
+    is closed by then, and reusing it is a use-after-free that only shows up under load.
+
+    Neither result is needed by whoever completed the item: the judge writes a classification
+    and the extractor writes candidate shards for human review. Both were already exception-
+    isolated so a failure could not break the completion; this is about the DELAY, which was
+    never isolated at all.
+    """
+    from app.db import SessionLocal
+
+    s = SessionLocal()
+    try:
+        item = s.get(Item, item_id)
+        if item is None:
+            return
+        _classify_against_goal(s, item)
+        _auto_extract_lessons(s, item)
+    finally:
+        s.close()
 
 
 def _classify_against_goal(db: Session, item: Item) -> None:
