@@ -10,6 +10,7 @@ import {
   enterComponent,
   hullPath,
   superRadius,
+  worthCollapsing,
 } from "@/lib/graph/galaxy";
 import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
 import {
@@ -109,9 +110,13 @@ export function CodeGraphView() {
   );
   const galaxy = React.useMemo(() => collapse(allIds, galaxyEdges), [allIds, galaxyEdges]);
   // Collapsed only when the flat view cannot hold D1's budget AND collapsing would actually
-  // help. One giant component collapses to a single dot, which is worse than the honest mess.
+  // explain something. `worthCollapsing` checks the DISTRIBUTION, not just the count: this
+  // project measured [146, 3, 1, 1, 1, 1] on the live graph, which passes a count check and
+  // renders one huge dot beside five specks (GRPH-403).
   const galaxyMode =
-    entered === null && allIds.length > DETAIL_BUDGET && galaxy.superNodes.length > 1;
+    entered === null &&
+    allIds.length > DETAIL_BUDGET &&
+    worthCollapsing(galaxy.superNodes, allIds.length);
 
   const ids = React.useMemo(() => {
     if (entered) return enterComponent(galaxy, entered, galaxyEdges).ids;

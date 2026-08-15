@@ -72,6 +72,8 @@ Interactive OpenAPI docs are at **`/docs`**.
 | POST | `/api/agent/code` | JWT |
 | POST | `/api/agent/code/stream` | JWT (SSE) |
 | GET | `/api/agent/code/map` | JWT |
+| GET | `/api/agent/code/analysis` | JWT — hubs, components, and optionally a path (PRD-20 D8) |
+| GET | `/api/agent/code/health` | JWT — is the graph still true: coverage, stale nodes open work still claims, touchpoints resolving to nothing. Retires nothing; `ever_described` distinguishes "nothing stale" from "nothing described" |
 | GET | `/api/agent/code/neighbors` | JWT |
 | GET | `/api/agent/code/for` | JWT — code linked to an item/request (work→code) |
 | POST | `/api/agent/code/link` | JWT — link an item/request to a code path |

@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   collapse,
   componentsOf,
+  DOMINANCE_LIMIT,
   convexHull,
   DETAIL_BUDGET,
   enterComponent,
   hullPath,
   superRadius,
+  worthCollapsing,
 } from "@/lib/graph/galaxy";
 import { computeLayout, iterationsFor, type LayoutEdge } from "@/lib/graph/layout";
 
@@ -203,5 +205,48 @@ describe("hullPath", () => {
 
   it("is empty when there is no region", () => {
     expect(hullPath([{ x: 0, y: 0 }])).toBe("");
+  });
+});
+
+describe("worthCollapsing (GRPH-403)", () => {
+  const comps = (...sizes: number[]) =>
+    sizes.map((n, i) => ({ members: Array.from({ length: n }, (_, j) => `c${i}/n${j}`) }));
+
+  it("REFUSES this repo's real shape, which a count check accepted", () => {
+    // Measured on the live project during the PRD-20 acceptance walk: 146 of 153 in one
+    // component. Six components passes `length > 1` and renders one huge dot beside five
+    // specks — worse than the honest mess, because it hides structure while claiming to
+    // summarise it.
+    const real = comps(146, 3, 1, 1, 1, 1);
+    expect(real.length).toBeGreaterThan(1); // the old guard was satisfied
+    expect(worthCollapsing(real, 153)).toBe(false);
+  });
+
+  it("accepts a graph that genuinely divides", () => {
+    // Ten equal components of 90 — the case D9's original tests used, and the one I invented.
+    expect(worthCollapsing(comps(...Array(10).fill(90)), 900)).toBe(true);
+  });
+
+  it("still refuses a single component", () => {
+    expect(worthCollapsing(comps(900), 900)).toBe(false);
+  });
+
+  it("refuses an empty or degenerate graph rather than dividing by zero", () => {
+    expect(worthCollapsing([], 0)).toBe(false);
+    expect(worthCollapsing(comps(1), 1)).toBe(false);
+    expect(worthCollapsing(comps(1, 1), 0)).toBe(false);
+  });
+
+  it("turns on the dominance share, not the component count", () => {
+    // Same count, opposite verdicts: three components each time.
+    expect(worthCollapsing(comps(80, 10, 10), 100)).toBe(false); // 80% in one
+    expect(worthCollapsing(comps(40, 30, 30), 100)).toBe(true); // 40% in one
+  });
+
+  it("sits exactly at the documented limit", () => {
+    // 60% is allowed, 61% is not — pinned so DOMINANCE_LIMIT cannot drift silently.
+    expect(worthCollapsing(comps(60, 40), 100)).toBe(true);
+    expect(worthCollapsing(comps(61, 39), 100)).toBe(false);
+    expect(DOMINANCE_LIMIT).toBe(0.6);
   });
 });

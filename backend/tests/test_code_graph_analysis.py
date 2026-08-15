@@ -274,3 +274,112 @@ def test_code_analysis_route_422s_on_an_unknown_edge_type(client, auth, db):
 def test_code_analysis_route_needs_auth(client, db):
     _seed(db)
     assert client.get("/api/agent/code/analysis?project_id=core").status_code == 401
+
+
+# ── graph health (GRPH-404) ───────────────────────────────────────────────────
+
+def test_health_distinguishes_never_described_from_nothing_stale(db):
+    """The absence rule, which is the whole reason this is a read and not a red/green light.
+
+    "Nothing is stale" and "no describe pass has ever run, so nothing COULD be stale" must not
+    print the same. `ever_described` is the third answer.
+    """
+    empty = cg.health(db, "core")
+    assert empty["ever_described"] is False
+    assert empty["described"] == 0
+    assert empty["stale_but_claimed"] == []
+
+    cg.upsert_node(db, project_id="core", path="a.py", kind="file", name="a")
+    db.commit()
+    described = cg.health(db, "core")
+    assert described["ever_described"] is True
+    # Same empty stale list, different meaning — and the payload says which.
+    assert described["stale_but_claimed"] == []
+
+
+def test_health_reports_a_stale_node_that_open_work_still_claims(client, auth, db):
+    """The highest-value signal: the map is out of date exactly where work is happening."""
+    cg.upsert_node(db, project_id="core", path="backend/gone.py", kind="file", name="gone")
+    db.commit()
+    cg.mark_paths_stale(db, "core", ["backend/gone.py"])
+    db.commit()
+    key = _key(client, auth)
+    _mcp(client, key, "create_item", {"title": "touches the stale file",
+                                      "touchpoints": ["backend/gone.py"]})
+
+    out = cg.health(db, "core")
+    hit = [r for r in out["stale_but_claimed"] if r["area"] == "backend/gone.py"]
+    assert hit and hit[0]["paths"] == ["backend/gone.py"]
+
+
+def test_health_reports_an_unresolvable_touchpoint_without_guessing_why(client, auth, db):
+    """The server has no checkout, so it flags only what it can know for CERTAIN.
+
+    `outside_repo` is decidable from the string. Whether `vercel env` is a missing file or not a
+    path at all is not, and guessing would contradict the same decision PRD-20 D4 made about
+    off-map areas.
+    """
+    cg.upsert_node(db, project_id="core", path="a.py", kind="file", name="a")
+    db.commit()
+    key = _key(client, auth)
+    _mcp(client, key, "create_item", {"title": "external work",
+                                      "touchpoints": ["vercel env", "../other-repo/**"]})
+
+    out = cg.health(db, "core")
+    by_area = {r["area"]: r for r in out["unresolvable"]}
+    assert by_area["vercel env"]["outside_repo"] is False
+    assert by_area["../other-repo/**"]["outside_repo"] is True
+    # No verdict beyond that — no `missing_file`, no `not_a_path`.
+    assert set(by_area["vercel env"]) == {"area", "items", "outside_repo"}
+
+
+def test_health_counts_coverage_and_orphans(db):
+    cg.upsert_node(db, project_id="core", path="linked.py", kind="file", name="l")
+    cg.upsert_node(db, project_id="core", path="other.py", kind="file", name="o")
+    cg.upsert_node(db, project_id="core", path="alone.py", kind="file", name="a")
+    cg.upsert_edge(db, project_id="core", src="linked.py", dst="other.py", type_="imports")
+    db.commit()
+    out = cg.health(db, "core")
+    assert out["described"] == 3 and out["edges"] == 1
+    assert "alone.py" in out["orphans"]
+    assert "linked.py" not in out["orphans"]
+    assert out["kinds"]["file"] == 3
+
+
+def test_health_never_retires_anything(client, auth, db):
+    """GRPH-343's rule, transferred: output is a prompt for a human, never an automatic retire.
+
+    An earlier version stale-marked a node and called `health` with NO item claiming it — so
+    `stale_but_claimed` was empty, the retirement path was never reached, and a sabotage that
+    deleted every node in that list PASSED. The fixture has to reach the code the test claims to
+    guard, which is the failure mode this suite keeps turning up.
+    """
+    cg.upsert_node(db, project_id="core", path="gone.py", kind="file", name="g")
+    db.commit()
+    cg.mark_paths_stale(db, "core", ["gone.py"])
+    db.commit()
+    key = _key(client, auth)
+    _mcp(client, key, "create_item", {"title": "claims the stale file",
+                                      "touchpoints": ["gone.py"]})
+
+    out = cg.health(db, "core")
+    assert out["stale_but_claimed"], "the fixture must reach the retirement path"
+    db.commit()
+    assert [n.path for n in cg.list_nodes(db, "core")] == ["gone.py"]
+
+
+def test_health_route_serves_a_member_and_refuses_anonymous(client, auth, db):
+    cg.upsert_node(db, project_id="core", path="a.py", kind="file", name="a")
+    db.commit()
+    r = client.get("/api/agent/code/health?project_id=core", headers=auth)
+    assert r.status_code == 200 and r.json()["ever_described"] is True
+    assert client.get("/api/agent/code/health?project_id=core").status_code == 401
+
+
+def test_health_is_not_on_the_mcp_surface(client, auth):
+    """Not principle — the manifest ceiling. See the route docstring."""
+    from app.mcp_server import TOOLS
+    names = {t["name"] for t in TOOLS}
+    assert "graph_health" not in names
+    gq = [t for t in TOOLS if t["name"] == "graph_query"][0]
+    assert "health" not in gq["inputSchema"]["properties"]["query"]["enum"]

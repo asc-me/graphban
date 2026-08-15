@@ -76,9 +76,34 @@ _CONFIG_BASENAMES = frozenset({
     ".dockerignore", ".editorconfig", ".gitattributes", ".npmrc", ".nvmrc",
 })
 
+# Suffixes that describe how a file is USED rather than what it IS (GRPH-402). They wrap a real
+# file: `nginx.conf.template` is a config file for the same reason `nginx.conf` is. Matching on
+# the final suffix alone made it a `module` — the one kind meaning "this contains other things",
+# i.e. the shape a directory has. Stripped and re-evaluated rather than added to the config
+# table, because `settings.py.j2` is a template of CODE and belongs with code.
+_WRAPPER_SUFFIXES = (".template", ".tmpl", ".j2", ".example", ".sample", ".dist", ".in")
+
 # Kept as the union, because `area_matches` and anything else asking "is this a file at all"
 # wants every suffix rather than the three tables separately.
-_SOURCE_SUFFIXES = _CODE_SUFFIXES + _DOC_SUFFIXES + _CONFIG_SUFFIXES
+_SOURCE_SUFFIXES = _CODE_SUFFIXES + _DOC_SUFFIXES + _CONFIG_SUFFIXES + _WRAPPER_SUFFIXES
+
+
+def _strip_wrappers(low: str) -> tuple[str, bool]:
+    """Peel trailing wrapper suffixes. Returns (stripped, whether anything came off).
+
+    Loops, because `.env.example.template` is a real shape, and is bounded so a pathological
+    name cannot spin. Only TRAILING wrappers matter: in `graphban-claim.example.json` the
+    wrapper is already interior and `.json` decides correctly without help.
+    """
+    stripped = False
+    for _ in range(4):
+        for w in _WRAPPER_SUFFIXES:
+            if low.endswith(w) and len(low) > len(w):
+                low, stripped = low[: -len(w)], True
+                break
+        else:
+            break
+    return low, stripped
 
 
 def kind_for_path(path: str) -> str:
@@ -94,6 +119,11 @@ def kind_for_path(path: str) -> str:
     if "::" in p:
         return "symbol"
     low = p.lower()
+    low, wrapped = _strip_wrappers(low)
+    # A bare wrapper (`deploy.template`) has nothing underneath to classify, and calling it a
+    # package would repeat the bug one level down. A template of an unnamed thing is config.
+    if wrapped and not low.endswith(_SOURCE_SUFFIXES):
+        return "config"
     base = low.rsplit("/", 1)[-1]
     if low.endswith(_DOC_SUFFIXES):
         return "doc"
@@ -802,6 +832,94 @@ def path(
         cur = src
     hops.reverse()
     return {"a": a, "b": b, "found": True, "missing": [], "hops": hops}
+
+
+def health(db: Session, project_id: str, *, limit: int = 40) -> dict:
+    """Is the code graph still TRUE? (GRPH-404)
+
+    A read, not a sweep, and deliberately so: the live graph currently has zero stale nodes, so
+    a periodic job would report nothing on a schedule. What was actually missing is that none of
+    this was visible without running a script by hand — coverage moved 30% -> 48% during the
+    PRD-20 walk and only because someone measured it, and one item had pointed at a file that
+    does not exist for an unknown length of time.
+
+    **Bounded by what the server can KNOW.** There is no checkout here, so it cannot tell a
+    deleted file from one nobody described — which is exactly why `describe_code`'s caller is
+    the source of truth and why `mark_paths_stale` exists as the caller-driven signal (AL-139,
+    PRD-5). This reports internal inconsistency only, and never infers that a file is gone.
+
+    **Retires nothing.** Output is a prompt for a human, the rule GRPH-343 settled for rules and
+    which transfers unchanged: deleting a node because a heuristic thinks a file vanished costs
+    more than the mess it tidies.
+
+    **`described == 0` is its own answer.** "Nothing is stale" and "no describe pass has ever
+    run, so nothing COULD be stale" must not print the same — the absence rule AGENTS.md names
+    and that PRD-20 D4's `off_map` already implements for presence.
+    """
+    nodes = list_nodes(db, project_id)
+    edges = list_edges(db, project_id)
+    by_path = {n.path: n for n in nodes}
+
+    degree: dict[str, int] = {n.path: 0 for n in nodes}
+    for e in edges:
+        if e.src in degree:
+            degree[e.src] += 1
+        if e.dst in degree:
+            degree[e.dst] += 1
+
+    open_items = [
+        it for it in items_svc.list_items(db, project_id=project_id)
+        if it.status not in ("done",)
+    ]
+
+    stale_but_claimed: list[dict] = []
+    unresolvable: list[dict] = []
+    seen_areas: set[str] = set()
+    touched: set[str] = set()
+
+    for it in open_items:
+        for tp in (it.touchpoints or []):
+            touched.add(tp)
+            matched = [p for p in by_path if area_matches(tp, p)]
+            if not matched:
+                if tp in seen_areas:
+                    for row in unresolvable:
+                        if row["area"] == tp:
+                            row["items"].append(it.key)
+                    continue
+                seen_areas.add(tp)
+                unresolvable.append({
+                    "area": tp,
+                    "items": [it.key],
+                    # The ONLY classification the server can make with certainty. Everything
+                    # else — is `vercel env` a missing file or not a path at all? — needs a
+                    # checkout, and guessing here would contradict the same decision D4 made.
+                    "outside_repo": tp.startswith("../"),
+                })
+            else:
+                stale = [p for p in matched if not by_path[p].fresh]
+                if stale:
+                    stale_but_claimed.append({"area": tp, "item": it.key, "paths": sorted(stale)})
+
+    resolved = sum(1 for tp in touched if any(area_matches(tp, p) for p in by_path))
+    orphans = sorted(p for p, d in degree.items() if d == 0)
+
+    return {
+        "described": len(nodes),
+        "edges": len(edges),
+        # The distinguishing field. False means nothing below is evidence of anything.
+        "ever_described": len(nodes) > 0,
+        "kinds": {k: sum(1 for n in nodes if n.kind == k) for k in NODE_KINDS},
+        "touched_paths": len(touched),
+        "touched_resolved": resolved,
+        "open_items": len(open_items),
+        "stale_but_claimed": stale_but_claimed[:limit],
+        "unresolvable": unresolvable[:limit],
+        "orphans": orphans[:limit],
+        "truncated": max(
+            len(stale_but_claimed), len(unresolvable), len(orphans)
+        ) > limit,
+    }
 
 
 def analysis(
