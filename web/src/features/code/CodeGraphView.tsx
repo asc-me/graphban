@@ -3,10 +3,36 @@ import * as React from "react";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { useCodeMap } from "@/lib/queries";
-import type { CodeEdge, CodeEdgeType, CodeNeighbors } from "@/lib/types";
+import {
+  collapse,
+  convexHull,
+  DETAIL_BUDGET,
+  enterComponent,
+  hullPath,
+  superRadius,
+} from "@/lib/graph/galaxy";
+import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
+import {
+  cloudsFor,
+  contentionOf,
+  holdersOf,
+  describeContention,
+  formatRemaining,
+  indexByNode,
+  nodesHeldBy,
+  roleHex,
+  secondsRemaining,
+} from "@/lib/graph/presence";
+import { useGraphFind } from "@/lib/graph/useGraphFind";
+import { useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
+import { useGraphLayout } from "@/lib/graph/useGraphLayout";
+import { useGraphPins } from "@/lib/graph/useGraphPins";
+import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
+import { useCodeMap, useFleetPresence } from "@/lib/queries";
+import type { CodeEdgeType, CodeNeighbors, HeldArea } from "@/lib/types";
 
 import { CodeChat } from "./CodeChat";
+import { FleetLegend } from "./FleetLegend";
 
 const KIND_META: Record<string, { label: string; color: string }> = {
   module: { label: "Module", color: "#c6f24e" },
@@ -27,74 +53,14 @@ const EDGE_TYPES = Object.keys(EDGE_META) as CodeEdgeType[];
 const W = 900;
 const H = 560;
 const R = 7;
-
-interface Pos {
-  x: number;
-  y: number;
-}
+/** How many hubs keep their name when zoomed out (PRD-20 D2, level of detail). */
+const LOD_TOP_N = 12;
 
 /** Short label for a node: its name, else the last path segment (after `/` or `::`). */
 function label(path: string, name: string): string {
   if (name) return name;
   const seg = path.split("::").pop() ?? path;
   return seg.split("/").pop() ?? seg;
-}
-
-/** Deterministic force-directed layout (no randomness — stable across renders). */
-function computeLayout(ids: string[], edges: CodeEdge[]): Record<string, Pos> {
-  const n = ids.length;
-  const cx = W / 2;
-  const cy = H / 2;
-  const r = Math.min(W, H) / 2.6;
-  const pos: Record<string, Pos> = {};
-  ids.forEach((id, i) => {
-    const a = (2 * Math.PI * i) / Math.max(1, n);
-    pos[id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
-  });
-
-  const REST = 150;
-  for (let iter = 0; iter < 300; iter++) {
-    const disp: Record<string, Pos> = {};
-    ids.forEach((id) => (disp[id] = { x: 0, y: 0 }));
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const u = ids[i];
-        const v = ids[j];
-        let dx = pos[u].x - pos[v].x;
-        let dy = pos[u].y - pos[v].y;
-        const d2 = dx * dx + dy * dy || 0.01;
-        const f = 26000 / d2;
-        const d = Math.sqrt(d2);
-        dx /= d;
-        dy /= d;
-        disp[u].x += dx * f;
-        disp[u].y += dy * f;
-        disp[v].x -= dx * f;
-        disp[v].y -= dy * f;
-      }
-    }
-    for (const e of edges) {
-      if (!pos[e.src] || !pos[e.dst]) continue;
-      let dx = pos[e.dst].x - pos[e.src].x;
-      let dy = pos[e.dst].y - pos[e.src].y;
-      const d = Math.hypot(dx, dy) || 0.01;
-      const f = (d - REST) * 0.06;
-      dx = (dx / d) * f;
-      dy = (dy / d) * f;
-      disp[e.src].x += dx;
-      disp[e.src].y += dy;
-      disp[e.dst].x -= dx;
-      disp[e.dst].y -= dy;
-    }
-    for (const id of ids) {
-      disp[id].x += (cx - pos[id].x) * 0.02;
-      disp[id].y += (cy - pos[id].y) * 0.02;
-      const step = 0.6;
-      pos[id].x += Math.max(-14, Math.min(14, disp[id].x * step));
-      pos[id].y += Math.max(-14, Math.min(14, disp[id].y * step));
-    }
-  }
-  return pos;
 }
 
 export function CodeGraphView() {
@@ -105,20 +71,55 @@ export function CodeGraphView() {
   });
   const [selPath, setSelPath] = React.useState<string | null>(null);
   const [nb, setNb] = React.useState<CodeNeighbors | null>(null);
+  const [hoverId, setHoverId] = React.useState<string | null>(null);
+  // How many rings the selection lights. Shift-click (or Shift+Enter) widens it; a fresh
+  // selection resets it, so depth never quietly persists into the next thing you click.
+  const [depth, setDepth] = React.useState(1);
 
   const nodes = map?.nodes ?? [];
-  const edges = React.useMemo(() => (map?.edges ?? []).filter((e) => enabled[e.type]), [map, enabled]);
+  // The UNFILTERED set drives layout; the filtered one only decides what is drawn. That split
+  // is what makes a chip toggle redraw instead of rearranging the map under the user (AC-3).
+  const allEdges = React.useMemo(() => map?.edges ?? [], [map]);
+  const isFiltered = EDGE_TYPES.some((t) => !enabled[t]);
 
   // Node ids are paths; include edge endpoints even if a node wasn't described (dangling).
-  const ids = React.useMemo(() => {
+  const allIds = React.useMemo(() => {
     const s = new Set<string>();
     nodes.forEach((nd) => s.add(nd.path));
-    (map?.edges ?? []).forEach((e) => {
+    allEdges.forEach((e) => {
       s.add(e.src);
       s.add(e.dst);
     });
     return [...s].sort();
-  }, [nodes, map]);
+  }, [nodes, allEdges]);
+
+  // ── D9: the galaxy view ────────────────────────────────────────────────────
+  // Past the detail budget the graph changes WHAT it draws rather than drawing the same thing
+  // slower. `entered` is the component we are inside, or null for the whole map.
+  const [entered, setEntered] = React.useState<string | null>(null);
+  const galaxyEdges = React.useMemo(
+    () => allEdges.map((e) => ({ a: e.src, b: e.dst })),
+    [allEdges],
+  );
+  const galaxy = React.useMemo(() => collapse(allIds, galaxyEdges), [allIds, galaxyEdges]);
+  // Collapsed only when the flat view cannot hold D1's budget AND collapsing would actually
+  // help. One giant component collapses to a single dot, which is worse than the honest mess.
+  const galaxyMode =
+    entered === null && allIds.length > DETAIL_BUDGET && galaxy.superNodes.length > 1;
+
+  const ids = React.useMemo(() => {
+    if (entered) return enterComponent(galaxy, entered, galaxyEdges).ids;
+    return allIds;
+  }, [entered, galaxy, galaxyEdges, allIds]);
+
+  // The UNFILTERED set drives layout; the filtered one only decides what is drawn. That split
+  // is what makes a chip toggle redraw instead of rearranging the map under the user (AC-3).
+  const edges = React.useMemo(() => {
+    const drawn = allEdges.filter((e) => enabled[e.type]);
+    if (!entered) return drawn;
+    const inside = new Set(ids);
+    return drawn.filter((e) => inside.has(e.src) && inside.has(e.dst));
+  }, [allEdges, enabled, entered, ids]);
 
   const nodeByPath = React.useMemo(() => {
     const m: Record<string, (typeof nodes)[number]> = {};
@@ -126,7 +127,53 @@ export function CodeGraphView() {
     return m;
   }, [nodes]);
 
-  const pos = React.useMemo(() => computeLayout(ids, edges), [ids, edges]);
+  // Layout runs over the collapsed set in galaxy mode, and over one component's nodes once
+  // entered — which is what makes the bound the largest COMPONENT rather than the repo.
+  const layoutIds = React.useMemo(
+    () => (galaxyMode ? galaxy.superNodes.map((s) => s.id) : ids),
+    [galaxyMode, galaxy, ids],
+  );
+  const layoutEdges = React.useMemo(() => {
+    if (galaxyMode) return galaxy.superEdges.map((e) => ({ a: e.a, b: e.b }));
+    const within = new Set(ids);
+    return galaxyEdges.filter((e) => within.has(e.a) && within.has(e.b));
+  }, [galaxyMode, galaxy, ids, galaxyEdges]);
+
+  const view = useGraphViewport(W, H);
+  const pinsApi = useGraphPins(view.toWorld);
+  const { pos: laidOut, pending, relayout } = useGraphLayout(layoutIds, layoutEdges, {
+    width: W,
+    height: H,
+    pinned: pinsApi.pins,
+  });
+  // A dragged node sits where the user put it; everything else where the layout put it.
+  const pos = React.useMemo(
+    () => ({ ...laidOut, ...pinsApi.pins }),
+    [laidOut, pinsApi.pins],
+  );
+
+  // Search the path AND the described name: a user hunting "claim_next" should find
+  // `items.py::claim_next` whether they type the symbol or the file.
+  const labelOf = React.useCallback(
+    (id: string) => `${id} ${nodeByPath[id]?.name ?? ""}`,
+    [nodeByPath],
+  );
+  // Find searches EVERY node, including those inside collapsed components — a search that
+  // cannot see what the view is hiding is worse than no search.
+  const find = useGraphFind(allIds, labelOf);
+
+  // A match inside a collapsed component enters it, rather than leaving the user staring at a
+  // super-node with a hit count and no way to reach the hit.
+  const firstMatch = find.active ? [...find.matches].sort()[0] : undefined;
+  React.useEffect(() => {
+    if (!firstMatch) return;
+    const home = galaxy.componentOf[firstMatch];
+    setEntered((cur) => {
+      if (cur !== null || allIds.length <= DETAIL_BUDGET) return cur;
+      return home ?? cur;
+    });
+  }, [firstMatch, galaxy, allIds.length]);
+  const hubs = React.useMemo(() => topByDegree(ids, layoutEdges, LOD_TOP_N), [ids, layoutEdges]);
 
   // Fetch the rich neighborhood for the selected node (edges + touching items).
   React.useEffect(() => {
@@ -145,20 +192,80 @@ export function CodeGraphView() {
     };
   }, [selPath, activeId]);
 
-  // Highlight set: the selected node, its edges, and their other endpoints.
+  // Highlight set: everything within `depth` rings of the selection. A BFS rather than the
+  // one-hop scan this replaced, so "expand by one ring" keeps working at ring two and three.
+  const drawnEdges = React.useMemo(
+    () => edges.map((e) => ({ a: e.src, b: e.dst })),
+    [edges],
+  );
   const hl = React.useMemo(() => {
     if (!selPath) return null;
-    const hlNodes = new Set<string>([selPath]);
+    const hlNodes = withinHops(ids, drawnEdges, selPath, depth);
     const hlEdges = new Set<string>();
     edges.forEach((e, i) => {
-      if (e.src === selPath || e.dst === selPath) {
-        hlEdges.add(String(i));
-        hlNodes.add(e.src);
-        hlNodes.add(e.dst);
-      }
+      // An edge lights only when BOTH ends are in the reach set — otherwise the outermost
+      // ring would trail half-edges into nodes that are themselves dimmed.
+      if (hlNodes.has(e.src) && hlNodes.has(e.dst)) hlEdges.add(String(i));
     });
     return { hlNodes, hlEdges };
-  }, [selPath, edges]);
+  }, [selPath, depth, ids, drawnEdges, edges]);
+
+  // Hover previews the 1-hop neighbourhood without committing a selection — read-before-click,
+  // which is what makes a dense graph explorable.
+  const hovered = React.useMemo(
+    () => (hoverId ? withinHops(ids, drawnEdges, hoverId, 1) : null),
+    [hoverId, ids, drawnEdges],
+  );
+
+  // Presence (D4/D5). Polled at the cadence the server reports; the graph renders exactly what
+  // the payload placed and never infers a holder for a node it did not name.
+  const { data: presence } = useFleetPresence(activeId);
+  const heldByNode = React.useMemo(() => indexByNode(presence), [presence]);
+  const clouds = React.useMemo(() => cloudsFor(presence, pos), [presence, pos]);
+  const [soloUser, setSoloUser] = React.useState<string | null>(null);
+  const soloed = React.useMemo(() => nodesHeldBy(presence, soloUser), [presence, soloUser]);
+
+  const degree = React.useMemo(() => degrees(ids, layoutEdges), [ids, layoutEdges]);
+  const tabOrder = React.useMemo(
+    () => [...ids].sort((a, b) => degree[b] - degree[a] || (a < b ? -1 : a > b ? 1 : 0)),
+    [ids, degree],
+  );
+  const selectNode = React.useCallback((id: string) => {
+    setSelPath(id);
+    setDepth(1);
+  }, []);
+  const kb = useGraphKeyboard({
+    order: tabOrder,
+    onSelect: selectNode,
+    onClear: () => setSelPath(null),
+    onExpand: () => setDepth((d) => Math.min(4, d + 1)),
+    setViewport: view.setViewport,
+  });
+
+  // Find is highlight-by-another-name: it feeds the same dim path as selection rather than
+  // introducing a second visual language for "these are the interesting ones".
+  // Precedence, most explicit first: a typed query beats a transient hover, which beats a
+  // sticky solo, which beats a selection made earlier. Each is the user's most recent act of
+  // intent at the moment it applies, and solo sits below hover so a soloed teammate does not
+  // stop you reading the rest of the graph.
+  const lit = React.useMemo(() => {
+    if (find.active) return find.matches;
+    if (hovered) return hovered;
+    if (soloUser) return soloed;
+    return hl?.hlNodes ?? null;
+  }, [find.active, find.matches, hovered, soloUser, soloed, hl]);
+
+  // Ease the viewport onto the hits, once per query — not on every keystroke's re-render.
+  const fitRef = React.useRef(view.fitTo);
+  fitRef.current = view.fitTo;
+  const posRef = React.useRef(pos);
+  posRef.current = pos;
+  const matchKey = find.active ? [...find.matches].sort().join(",") : "";
+  React.useEffect(() => {
+    if (!matchKey) return;
+    const points = matchKey.split(",").map((id) => posRef.current[id]).filter(Boolean);
+    if (points.length) fitRef.current(points);
+  }, [matchKey]);
 
   const empty = !isLoading && nodes.length === 0;
 
@@ -168,12 +275,74 @@ export function CodeGraphView() {
         <div className="flex flex-none flex-wrap items-center gap-3 border-b border-line px-5 py-4">
           <div>
             <h1 className="text-[18px] font-semibold tracking-tight">Code graph</h1>
-            <p className="mt-0.5 text-[12.5px] text-muted">
-              The codebase as agents described it — modules, files, and symbols with typed
-              relations. {map ? `${map.node_count} nodes · ${map.edge_count} edges.` : ""}
-            </p>
+            {/* "You are here". Semantic zoom without a way back is how a user gets lost, so the
+                breadcrumb is always present once the view is not the whole map. */}
+            {entered ? (
+              <p className="mt-0.5 flex items-center gap-1.5 text-[12.5px] text-muted">
+                <button
+                  onClick={() => setEntered(null)}
+                  className="rounded border border-line-2 px-1.5 py-px font-mono text-[10.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+                >
+                  ← all components
+                </button>
+                <span className="font-mono text-[11px] text-fg-2">{label(entered, "")}</span>
+                <span className="text-faint">· {ids.length} nodes</span>
+              </p>
+            ) : (
+              <p className="mt-0.5 text-[12.5px] text-muted">
+                {galaxyMode
+                  ? `${allIds.length} nodes in ${galaxy.superNodes.length} components — too many to draw at once. Click a component to enter it.`
+                  : `The codebase as agents described it — modules, files, and symbols with typed relations. ${map ? `${map.node_count} nodes · ${map.edge_count} edges.` : ""}`}
+              </p>
+            )}
           </div>
-          <div className="ml-auto flex flex-wrap gap-1.5">
+          <div className="ml-auto flex flex-wrap items-center gap-1.5">
+            <div className="relative mr-1">
+              <input
+                ref={find.inputRef}
+                value={find.query}
+                onChange={(e) => find.setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Escape" && find.clear()}
+                placeholder="Find  /"
+                aria-label="Find a node"
+                className="w-[168px] rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-line-hover focus:outline-none"
+              />
+              {find.active && (
+                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-faint">
+                  {find.matches.size}
+                </span>
+              )}
+            </div>
+            {(view.viewport.k !== 1 || view.viewport.x !== 0 || view.viewport.y !== 0) && (
+              <button
+                onClick={view.reset}
+                title="Reset the view (or double-click the background)"
+                className="mr-1 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+              >
+                Reset view
+              </button>
+            )}
+            {pinsApi.pinCount > 0 && (
+              <button
+                onClick={pinsApi.clearPins}
+                title="Release every pinned node"
+                className="mr-1 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+              >
+                Unpin {pinsApi.pinCount}
+              </button>
+            )}
+            {isFiltered && (
+              // Only offered under a filter: with every type on, the layout already reflects
+              // exactly what is drawn and re-laying out would move nodes for no reason.
+              <button
+                onClick={() => relayout(edges.map((e) => ({ a: e.src, b: e.dst })))}
+                disabled={pending}
+                title="Recompute positions from the visible edges only"
+                className="mr-1 inline-flex items-center gap-1.5 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg disabled:opacity-50"
+              >
+                {pending ? "Laying out…" : "Re-layout to visible"}
+              </button>
+            )}
             {EDGE_TYPES.map((t) => (
               <button
                 key={t}
@@ -207,7 +376,24 @@ export function CodeGraphView() {
               </p>
             </div>
           ) : (
-            <svg viewBox={`0 0 ${W} ${H}`} className="h-full w-full" onClick={() => setSelPath(null)}>
+            <svg
+              ref={view.svgRef}
+              viewBox={`0 0 ${W} ${H}`}
+              className={cn(
+                "h-full w-full touch-none focus:outline-none",
+                view.panning ? "cursor-grabbing" : "cursor-grab",
+              )}
+              role="application"
+              tabIndex={0}
+              aria-label={
+                `Code graph: ${ids.length} nodes, ${edges.length} of ${allEdges.length} edges shown. ` +
+                `Arrow keys move between nodes, Enter selects, Shift+Enter widens by one ring, ` +
+                `Shift+arrows pan, Escape clears.`
+              }
+              onKeyDown={kb.onKeyDown}
+              onClick={() => setSelPath(null)}
+              {...view.svgHandlers}
+            >
               <defs>
                 {EDGE_TYPES.map((t) => (
                   <marker
@@ -223,9 +409,128 @@ export function CodeGraphView() {
                     <path d="M0,0 L10,5 L0,10 z" fill={EDGE_META[t].color} />
                   </marker>
                 ))}
+                <filter id="code-cloud-blur" x="-50%" y="-50%" width="200%" height="200%">
+                  <feGaussianBlur stdDeviation="18" />
+                </filter>
               </defs>
 
-              {edges.map((e, i) => {
+              <g
+                transform={view.transform}
+                style={{ transition: view.panning ? undefined : "transform 220ms ease" }}
+              >
+              {/* Presence clouds sit BENEATH the edges and never touch a node's own fill or
+                  stroke. That is the load-bearing rule of the visual design: a held node must
+                  still say what kind of node it is, and tinting the node would overload the one
+                  channel that already carries meaning. */}
+              {/* Presence as one hull per (user, component) — section 7's own mitigation for
+                  the cost of a per-node cloud layer at scale, and the better visual besides. */}
+              {galaxyMode &&
+                holdersOf(presence).map((h) => {
+                  const byComponent = new Map<string, typeof pos[string][]>();
+                  for (const path of h.nodes) {
+                    const comp = galaxy.componentOf[path];
+                    const p = pos[comp];
+                    if (!comp || !p) continue;
+                    const list = byComponent.get(comp) ?? [];
+                    list.push(p);
+                    byComponent.set(comp, list);
+                  }
+                  return [...byComponent.entries()].map(([comp, pts]) => {
+                    const d = hullPath(convexHull(pts, 24));
+                    return d ? (
+                      <path key={`hull-${h.userId}-${comp}`} d={d} fill={h.color} fillOpacity={0.14} />
+                    ) : (
+                      <circle
+                        key={`hull-${h.userId}-${comp}`}
+                        cx={pts[0].x}
+                        cy={pts[0].y}
+                        r={superRadius(1) + 22}
+                        fill={h.color}
+                        fillOpacity={0.14}
+                        filter="url(#code-cloud-blur)"
+                      />
+                    );
+                  });
+                })}
+
+              {!galaxyMode &&
+                clouds.map((c, i) => (
+                <circle
+                  key={`cloud-${c.userId}-${i}`}
+                  cx={c.cx}
+                  cy={c.cy}
+                  r={c.r}
+                  fill={c.color}
+                  // Solo fades the others rather than hiding them: "my teammate is here and
+                  // three other people are elsewhere" is a different fact from "my teammate is
+                  // the only person in the codebase", and only one of them is true.
+                  fillOpacity={soloUser && c.userId !== soloUser ? 0.04 : 0.16}
+                  filter="url(#code-cloud-blur)"
+                  stroke={c.predicted ? c.color : undefined}
+                  strokeOpacity={c.predicted ? 0.45 : undefined}
+                  // A dashed edge says the area came from `predict_areas`, not declared
+                  // touchpoints: the lease is real, but WHERE it lands is a guess.
+                  strokeDasharray={c.predicted ? "6 5" : undefined}
+                  style={{ pointerEvents: "none" }}
+                />
+                ))}
+
+              {/* Collapsed components. Radius grows with AREA, so one 400-node component does
+                  not become forty times the width of a 10-node one and swallow the canvas. */}
+              {galaxyMode &&
+                galaxy.superNodes.map((s) => {
+                  const p = pos[s.id];
+                  if (!p) return null;
+                  return (
+                    <g
+                      key={`super-${s.id}`}
+                      transform={`translate(${p.x},${p.y})`}
+                      className="cursor-pointer"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Component ${label(s.anchor, "")}, ${s.size} nodes. Enter to open.`}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setEntered(s.id);
+                      }}
+                      onKeyDown={(ev) => {
+                        if (ev.key === "Enter" || ev.key === " ") {
+                          ev.preventDefault();
+                          setEntered(s.id);
+                        }
+                      }}
+                    >
+                      <circle
+                        r={superRadius(s.size)}
+                        fill="#12171b"
+                        stroke="var(--color-line-3)"
+                        strokeWidth={2}
+                      />
+                      <text
+                        y={4}
+                        textAnchor="middle"
+                        fontSize={11}
+                        fontFamily="IBM Plex Mono, monospace"
+                        fill="#8b949e"
+                        style={{ pointerEvents: "none" }}
+                      >
+                        {s.size}
+                      </text>
+                      <text
+                        y={superRadius(s.size) + 14}
+                        textAnchor="middle"
+                        fontSize={10}
+                        fontFamily="IBM Plex Mono, monospace"
+                        fill="#5c656e"
+                        style={{ pointerEvents: "none" }}
+                      >
+                        {label(s.anchor, "")}
+                      </text>
+                    </g>
+                  );
+                })}
+
+              {!galaxyMode && edges.map((e, i) => {
                 const a = pos[e.src];
                 const b = pos[e.dst];
                 if (!a || !b) return null;
@@ -251,46 +556,157 @@ export function CodeGraphView() {
                 );
               })}
 
-              {ids.map((id) => {
+              {!galaxyMode && ids.map((id) => {
                 const p = pos[id];
                 if (!p) return null;
                 const node = nodeByPath[id];
-                const active = !hl || hl.hlNodes.has(id);
+                const active = !lit || lit.has(id);
                 const meta = kindMeta(node?.kind ?? "");
                 const described = !!node;
                 const stale = described && !node.fresh;
+                const pinned = pinsApi.isPinned(id);
+                const focused = kb.focusId === id;
+                const isHover = hoverId === id;
+                const holders = heldByNode.get(id) ?? [];
+                const contention = contentionOf(holders);
+                // Level of detail: zoomed out, only the names worth the ink survive — the
+                // selection, the search hits, and the hubs. Zoom past LABEL_ZOOM and the rest
+                // arrive. Past ~40 nodes the labels were previously the densest ink on screen.
+                const showLabel =
+                  view.viewport.k > LABEL_ZOOM ||
+                  selPath === id ||
+                  focused ||
+                  isHover ||
+                  find.matches.has(id) ||
+                  hubs.has(id);
                 return (
                   <g
                     key={id}
                     transform={`translate(${p.x},${p.y})`}
-                    className="cursor-pointer"
+                    className={cn(
+                      "focus:outline-none",
+                      pinned ? "cursor-grab" : "cursor-pointer",
+                    )}
                     opacity={active ? 1 : 0.22}
+                    role="button"
+                    tabIndex={kb.tabIndexFor(id)}
+                    aria-label={
+                      `${meta.label} ${id}, ${degree[id] ?? 0} connections` +
+                      (described ? (stale ? ", stale" : "") : ", not described") +
+                      (pinned ? ", pinned" : "") +
+                      (holders.length
+                        ? `, held by ${holders.map((h) => h.user_initials || h.agent_label || "an agent").join(" and ")}`
+                        : "")
+                    }
+                    aria-pressed={selPath === id}
+                    onFocus={() => kb.setFocusId(id)}
+                    onMouseEnter={() => setHoverId(id)}
+                    onMouseLeave={() => setHoverId((h) => (h === id ? null : h))}
+                    {...pinsApi.nodeHandlers(id)}
                     onClick={(ev) => {
                       ev.stopPropagation();
-                      setSelPath(id);
+                      // A drag ends with a click on the same node; do not also select it.
+                      if (pinsApi.consumedDrag()) return;
+                      // Shift-click widens the reach by a ring instead of starting over.
+                      if (ev.shiftKey && selPath === id) setDepth((d) => Math.min(4, d + 1));
+                      else selectNode(id);
                     }}
                   >
                     <circle
-                      r={R}
+                      r={isHover ? R + 2 : R}
                       fill={described ? meta.color : "#0d1114"}
                       stroke={described ? "#0a0c0e" : meta.color}
                       strokeWidth={2}
                       strokeDasharray={!described || stale ? "2 2" : undefined}
                       opacity={described ? 1 : 0.7}
                     />
-                    {selPath === id && (
-                      <circle r={R + 4} fill="none" stroke={meta.color} strokeWidth={1.5} opacity={0.5} />
+                    {pinned && (
+                      <circle r={R + 3} fill="none" stroke="#8b949e" strokeWidth={1} opacity={0.55} />
                     )}
-                    <text x={11} y={4} fontSize={11} fontFamily="IBM Plex Mono, monospace" fill="#8b949e">
-                      {node ? label(id, node.name) : label(id, "")}
-                    </text>
+                    {holders.length > 0 && (
+                      <>
+                        {/* Pulse ring in the HOLDER's colour — whose, not what kind. */}
+                        <circle
+                          className="hold-pulse"
+                          r={R + 6}
+                          fill="none"
+                          stroke={holders[0].user_color ?? "#8b949e"}
+                          strokeWidth={2}
+                        />
+                        {/* Role dot: what they are DOING to it is a different question from
+                            whose they are, so it gets its own mark rather than tinting one. */}
+                        <circle
+                          cx={R + 4}
+                          cy={-(R + 4)}
+                          r={2.5}
+                          fill={roleHex(holders[0].active_role)}
+                          stroke="#0a0c0e"
+                          strokeWidth={1}
+                        />
+                        {/* THE ALARM (D6). Two humans on one node means the partition failed,
+                            and nothing else in the system raises an error when it does. The
+                            colour blend of the overlapping clouds is what draws the eye; this
+                            ring is what confirms it was not a trick of the blur. Binary on
+                            purpose — three users is not "more contended", and encoding the
+                            count here would add a fourth visual channel to a surface that
+                            argues carefully for three. The number lives in the inspector. */}
+                        {contention.contended && (
+                          <circle
+                            r={R + 10}
+                            fill="none"
+                            stroke="var(--color-st-blocked)"
+                            strokeWidth={2}
+                          />
+                        )}
+                      </>
+                    )}
+                    {/* One focus vocabulary: keyboard focus and selection wear the same ring. */}
+                    {(selPath === id || focused) && (
+                      <circle
+                        r={R + 4}
+                        fill="none"
+                        stroke={meta.color}
+                        strokeWidth={1.5}
+                        opacity={focused ? 0.9 : 0.5}
+                      />
+                    )}
+                    {showLabel && (
+                      <text
+                        x={11}
+                        y={4}
+                        fontSize={11}
+                        fontFamily="IBM Plex Mono, monospace"
+                        fill="#8b949e"
+                        // The label must not swallow the pointer, or a node becomes undraggable
+                        // wherever its name happens to overlap a neighbour.
+                        style={{ pointerEvents: "none" }}
+                      >
+                        {node ? label(id, node.name) : label(id, "")}
+                      </text>
+                    )}
                   </g>
                 );
               })}
+              </g>
             </svg>
           )}
 
-          {selPath && <NodeInspector path={selPath} nb={nb} onClose={() => setSelPath(null)} />}
+          {!isLoading && !empty && (
+            <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
+          )}
+
+          {selPath && (
+            <NodeInspector
+              path={selPath}
+              nb={nb}
+              depth={depth}
+              reach={hl?.hlNodes.size ?? 1}
+              holders={heldByNode.get(selPath) ?? []}
+              servedAt={presence?.served_at ?? null}
+              onExpand={() => setDepth((d) => Math.min(4, d + 1))}
+              onClose={() => setSelPath(null)}
+            />
+          )}
         </div>
       </div>
 
@@ -304,12 +720,23 @@ export function CodeGraphView() {
 function NodeInspector({
   path,
   nb,
+  depth,
+  reach,
+  holders,
+  servedAt,
+  onExpand,
   onClose,
 }: {
   path: string;
   nb: CodeNeighbors | null;
+  depth: number;
+  reach: number;
+  holders: HeldArea[];
+  servedAt: string | null;
+  onExpand: () => void;
   onClose: () => void;
 }) {
+  const contention = contentionOf(holders);
   const node = nb?.node ?? null;
   const meta = kindMeta(node?.kind ?? "");
   const stale = node ? !node.fresh : false;
@@ -335,6 +762,77 @@ function NodeInspector({
         </button>
       </div>
       <div className="mb-2 break-all font-mono text-[11.5px] text-fg-2">{path}</div>
+
+      {holders.length > 0 && servedAt && (
+        <div
+          className={cn(
+            "mb-2.5 space-y-1 rounded-lg border p-2",
+            contention.contended
+              ? "border-st-blocked/50 bg-st-blocked/5"
+              : "border-line-2 bg-surface-2/60",
+          )}
+        >
+          {/* The inspector LEADS with the contention, because a person who clicked a ringed
+              node is asking exactly one question and should not have to count rows to answer
+              it. */}
+          <div
+            className={cn(
+              "font-mono text-[10px] uppercase tracking-wide",
+              contention.contended ? "text-st-blocked" : "text-faint",
+            )}
+          >
+            {describeContention(contention)}
+          </div>
+          {holders.map((h, i) => {
+            const left = secondsRemaining(h.expires_at, servedAt);
+            return (
+              <div key={`${h.agent_id}-${i}`} className="flex items-center gap-2 text-[11.5px]">
+                <span
+                  className="h-2 w-2 flex-none rounded-full"
+                  style={{ background: h.user_color ?? "#8b949e" }}
+                />
+                <span className="font-mono text-[10px] text-fg-2">{h.user_initials || "??"}</span>
+                <span className="min-w-0 flex-1 truncate text-muted">
+                  {h.agent_label || h.agent_id}
+                </span>
+                <span
+                  className="flex-none font-mono text-[9px] uppercase tracking-wide"
+                  style={{ color: roleHex(h.active_role) }}
+                >
+                  {h.active_role}
+                </span>
+                {/* Time-remaining, not just a holder. An agent that dies mid-lease keeps its
+                    glow until `expires_at` by design — correct, since the lease IS still held —
+                    but it has to be legible, or this screen and the Fleet roster silently
+                    disagree for the 450s where an agent reads offline and still holds. */}
+                <span className="flex-none font-mono text-[9px] text-faint">
+                  {formatRemaining(left)}
+                </span>
+              </div>
+            );
+          })}
+          {holders.some((h) => h.predicted) && (
+            <div className="font-mono text-[9px] uppercase tracking-wide text-faint">
+              predicted area — the lease is real, where it lands is a guess
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="mb-2 flex items-center gap-2">
+        <span className="font-mono text-[10px] uppercase tracking-wide text-faint">
+          {depth} {depth === 1 ? "hop" : "hops"} · {reach} node{reach === 1 ? "" : "s"}
+        </span>
+        {depth < 4 && (
+          <button
+            onClick={onExpand}
+            title="Widen the highlight by one ring (or Shift-click the node)"
+            className="rounded border border-line-2 px-1.5 py-px font-mono text-[10px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+          >
+            expand +1
+          </button>
+        )}
+      </div>
       {node?.summary && <p className="mb-3 text-[12.5px] leading-relaxed text-muted">{node.summary}</p>}
 
       {!nb ? (

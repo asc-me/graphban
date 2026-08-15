@@ -195,6 +195,31 @@ def code_map(project_id: str | None = None, db: Session = Depends(get_db), user:
     return code_svc.get_code_map(db, pid)
 
 
+@router.get("/code/analysis")
+def code_analysis(
+    project_id: str | None = None,
+    edge_types: str | None = None,
+    limit: int = 10,
+    a: str | None = None,
+    b: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Structural answers over the code graph — hubs, components, and optionally a path between
+    two nodes (PRD-20 D8). Read-only, and deterministic for a given graph. `edge_types` is a
+    comma-separated subset of `code_graph.EDGE_TYPES`."""
+    pid = _readable_pid(db, user, project_id)
+    types = [t.strip() for t in edge_types.split(",") if t.strip()] if edge_types else None
+    if types:
+        unknown = [t for t in types if t not in code_svc.EDGE_TYPES]
+        if unknown:
+            # Silently dropping an unknown type would answer a narrower question than the one
+            # asked and return it looking like a real result — the absence-reads-as-clean
+            # failure this codebase keeps naming.
+            raise HTTPException(422, f"unknown edge type(s): {', '.join(sorted(unknown))}")
+    return code_svc.analysis(db, pid, edge_types=types, limit=limit, a=a, b=b)
+
+
 @router.get("/code/neighbors", response_model=CodeNeighborsOut)
 def code_neighbors(path: str, project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The relations around one code path — in/out edges, work touching it, and items/requests

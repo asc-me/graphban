@@ -720,6 +720,34 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "graph_query",
+        "description": (
+            "Structure of the code graph, before you refactor. `hubs`: nodes by INBOUND edges — "
+            "what breaks if this changes. `components`: connected groups, largest first, each with "
+            "an `anchor`. `path`: shortest route between two paths, walked undirected, each hop "
+            "reporting which way the edge points. Deterministic."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"enum": ["hubs", "components", "path"], "type": "string"},
+                "a": {"description": "Start path, for `path`.", "type": "string"},
+                "b": {"description": "End path, for `path`.", "type": "string"},
+                "edge_types": {"items": {"type": "string"}, "type": "array"},
+                "limit": {"description": "Rows for `hubs` (10).", "type": "integer"},
+            },
+            "required": ["query"],
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "results": {"type": "array"},
+                           "returned": {"type": "integer"}, "found": {"type": "boolean"},
+                           "hops": {"type": "array"}},
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False,
+                        "idempotentHint": True, "openWorldHint": False},
+    },
+    {
         "name": "search_code",
         "description": "Semantic search over code-node summaries (pgvector cosine). Returns ranked nodes with scores.",
         "inputSchema": {
@@ -975,7 +1003,7 @@ TOOLS: list[dict[str, Any]] = [
 _PROJECT_SCOPED = {
     "create_item", "search_items", "add_memory", "search_memory",
     "get_backlog", "suggest_next", "generate_digest", "link_items", "unlink_items", "claim_next", "next_cluster",
-    "describe_code", "get_code_map", "code_neighbors", "search_code",
+    "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "create_prd",
 }
 # Creates accept an idempotency key so a retried call returns the original resource.
@@ -994,6 +1022,7 @@ _READ_ONLY = {
     "get_context", "list_projects", "setup_project", "search_items", "search_memory",
     "get_backlog", "get_item_details", "suggest_next", "generate_digest", "related_work",
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
+    "graph_query",
     "prd_acceptance", "learning_loop", "fleet_status",
 }
 
@@ -2313,6 +2342,28 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return code_svc.get_code_map(db, pid, kind=args.get("kind"))
     if name == "code_neighbors":
         return code_svc.neighbors(db, pid, args["path"])
+    if name == "graph_query":
+        q = args["query"]
+        types = args.get("edge_types") or None
+        if types:
+            unknown = sorted(t for t in types if t not in code_svc.EDGE_TYPES)
+            if unknown:
+                # Refuse rather than narrow silently: a filtered-to-nothing answer is
+                # indistinguishable from a real empty one.
+                raise ValueError(
+                    f"unknown edge type(s): {', '.join(unknown)}; valid: {', '.join(code_svc.EDGE_TYPES)}"
+                )
+        if q == "hubs":
+            rows = code_svc.hubs(db, pid, edge_types=types, limit=args.get("limit", 10))
+            return {"query": q, "results": rows, "returned": len(rows)}
+        if q == "components":
+            rows = code_svc.components(db, pid, edge_types=types)
+            return {"query": q, "results": rows, "returned": len(rows)}
+        if q == "path":
+            if not args.get("a") or not args.get("b"):
+                raise ValueError("path needs both `a` and `b`")
+            return {"query": q, **code_svc.path(db, pid, args["a"], args["b"], edge_types=types)}
+        raise ValueError(f"unknown query: {q}; valid: hubs, components, path")
     if name == "search_code":
         top_k = args.get("top_k", 5)
         hits = code_svc.search_code(db, args["query"], project_id=pid, top_k=top_k)

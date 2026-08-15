@@ -755,6 +755,37 @@ export interface FleetAgent {
   holdings: { id: string; title: string; status: string }[];
 }
 
+/** One live reservation, resolved to the agent and the human behind it (PRD-20 D4). */
+export interface HeldArea {
+  area: string;
+  item_id: string | null;
+  expires_at: string | null;
+  agent_id: string | null;
+  agent_label: string;
+  active_role: string | null;
+  state: string;
+  user_id: string | null;
+  user_initials: string;
+  /** A hex colour — `User.avatar`, the same one the person's avatar wears everywhere else. */
+  user_color: string | null;
+  /** Present on `held`: which nodes the area resolved to. Plural — one area covers many. */
+  node_paths?: string[];
+  /** True when the area came from `predict_areas` rather than declared touchpoints. */
+  predicted?: boolean;
+  /** Present on `off_map`: why it could not be placed. */
+  reason?: "undescribed" | "stale";
+}
+
+export interface FleetPresence {
+  served_at: string;
+  heartbeat_interval_seconds: number;
+  held: HeldArea[];
+  /** Held work the graph cannot place. Reported, never dropped — see PRD-20 G8. */
+  off_map: HeldArea[];
+  truncated: boolean;
+  total: number;
+}
+
 export interface FleetOverview {
   agents: FleetAgent[];
   online: number;

@@ -57,6 +57,24 @@ class FleetKeyIn(BaseModel):
     label: str = ""
 
 
+@router.get("/presence")
+def fleet_presence(project_id: str | None = None, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Which code nodes are under an agent's hands right now (PRD-20 D4).
+
+    **JWT only, and that restriction IS the privacy design rather than a check bolted beside
+    it.** This payload says which HUMAN is editing which file, so it is reachable by a project
+    member's session and by nothing else. An agent has no use for it — `graph_query` already
+    answers what depends on the code it is about to touch, which is the question an agent
+    actually has — and shipping this on the MCP surface would put a live map of everyone's
+    activity behind every credential in the fleet. `test_cross_tenant.py` exists because this
+    codebase has shipped isolation bugs; narrowing the surface removes the class rather than
+    guarding it.
+    """
+    authz.require_readable(db, user.id, project_id)
+    return fleet_svc.held_areas(db, project_id)
+
+
 @router.post("/keys", status_code=201)
 def mint_fleet_key(body: FleetKeyIn, db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):

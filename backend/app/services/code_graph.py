@@ -14,6 +14,7 @@ Edges are keyed by path so they can point at a not-yet-described node. Item↔co
 """
 from __future__ import annotations
 
+import fnmatch
 import uuid
 
 from sqlalchemy import delete, select, text
@@ -475,3 +476,248 @@ def search_code(
 def export_graph(db: Session, project_id: str) -> dict:
     """Portable dump of the project's code graph (for backup / migration parity)."""
     return get_code_map(db, project_id)
+
+
+def area_matches(area: str, path: str) -> bool:
+    """Does a reservation `area` cover the code node at `path`? (PRD-20 D4)
+
+    **Deliberately NOT `clustering._match`, and that is the point.** The divvy and the graph
+    want the same vocabulary and the OPPOSITE failure preference. Over-matching is *safe* for
+    collision avoidance — you over-block, you never collide — and is a *lie* for presence,
+    because it claims an agent is somewhere it is not. `_match`'s third rule treats any two
+    paths sharing a parent directory as related, which measured against the live graph turns
+    one file area into 25 nodes and `web/src/features/*` into 41. PRD-20 section 5.1 originally
+    claimed reusing `_match` meant the two "cannot drift"; that was backwards, and this
+    function is the correction.
+
+    Three rules, in order:
+      1. exact
+      2. glob — the AREA is the pattern (`web/src/features/*`), never the path
+      3. directory prefix — an area naming a directory covers everything beneath it
+
+    `::`-aware throughout: a symbol node `items.py::claim_next` is covered by anything that
+    covers `items.py`. There are zero symbol nodes on the live graph today (GRPH-382), so this
+    is written now rather than discovered as a gap the day the first one appears.
+    """
+    area = (area or "").strip()
+    path = (path or "").strip()
+    if not area or not path:
+        return False
+    if area == path:
+        return True
+
+    # A symbol is covered by whatever covers the file it lives in.
+    #
+    # This deliberately does NOT also require `"::" not in area`. That guard was here first and
+    # a sabotage pass proved it guards nothing: an area carrying `::` cannot match the stripped
+    # file path under any of the three rules below, so the recursion is already a no-op for it
+    # and `a.py::x` still does not cover `a.py::y`. A condition that cannot change an outcome
+    # reads as protection and provides none, which is worse than its absence.
+    if "::" in path and area_matches(area, path.split("::", 1)[0]):
+        return True
+
+    if fnmatch.fnmatch(path, area):
+        return True
+    return path.startswith(area.rstrip("/") + "/")
+
+
+# ── structural queries (PRD-20 D8) ────────────────────────────────────────────
+#
+# The three questions a graph exists to answer — which node is load-bearing, which things move
+# together, and what connects these two — over data we already hold. Reads only: no new table,
+# no background job, no write path.
+#
+# **Every one of these is deterministic**, and that is a requirement rather than a nicety. The
+# layout is hand-written precisely because stability across renders is what lets a person keep
+# their place, and a structural overlay that reshuffled underneath it would give that away for
+# nothing. So: candidate sets are sorted, ties break on the id, and traversal visits neighbours
+# in sorted order. Nothing here consults a random seed or dict insertion order.
+
+
+def _graph_paths(db: Session, project_id: str, edge_types: list[str] | None):
+    """(sorted node ids, filtered edges). Ids include edge endpoints that were never described,
+    because an undescribed file that many modules import is exactly the load-bearing node this
+    is meant to surface — dropping it would hide the answer."""
+    nodes = list_nodes(db, project_id)
+    edges = list_edges(db, project_id)
+    if edge_types:
+        wanted = set(edge_types)
+        edges = [e for e in edges if e.type in wanted]
+    ids = {n.path for n in nodes}
+    for e in edges:
+        ids.add(e.src)
+        ids.add(e.dst)
+    return sorted(ids), edges
+
+
+def hubs(
+    db: Session,
+    project_id: str,
+    *,
+    edge_types: list[str] | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Nodes ranked by INBOUND degree — "what would break the most if this changed".
+
+    Inbound rather than total: a file importing forty things is complicated, while a file that
+    forty things import is load-bearing, and only the second is the single point of failure the
+    question is really asking about. Both counts are returned so a caller can see the
+    difference rather than take our word for it.
+    """
+    ids, edges = _graph_paths(db, project_id, edge_types)
+    incoming: dict[str, int] = {p: 0 for p in ids}
+    outgoing: dict[str, int] = {p: 0 for p in ids}
+    for e in edges:
+        if e.dst in incoming:
+            incoming[e.dst] += 1
+        if e.src in outgoing:
+            outgoing[e.src] += 1
+    described = {n.path: n for n in list_nodes(db, project_id)}
+    ranked = sorted(ids, key=lambda p: (-incoming[p], -outgoing[p], p))
+    return [
+        {
+            "path": p,
+            "inbound": incoming[p],
+            "outbound": outgoing[p],
+            "kind": described[p].kind if p in described else None,
+            "described": p in described,
+        }
+        for p in ranked[: max(0, limit)]
+    ]
+
+
+def components(
+    db: Session,
+    project_id: str,
+    *,
+    edge_types: list[str] | None = None,
+) -> list[dict]:
+    """Connected components — "which things move together".
+
+    **Connected components only. Modularity is deliberately out.** Every practical community
+    method (Louvain, Leiden) is stochastic and order-dependent, which contradicts the reason
+    this project hand-writes its layout instead of adopting d3-force. Components are O(V+E),
+    exactly reproducible, and answer the question adequately at this graph size. If modularity
+    is ever wanted it has to arrive with a named algorithm, a fixed seed, and a documented node
+    ordering — not as an unqualified "cluster the big one".
+
+    Ordered largest-first with ties broken by the first member, and members sorted. `anchor` is
+    the highest-inbound member: the label a collapsed component wears in the galaxy view (D9).
+    """
+    ids, edges = _graph_paths(db, project_id, edge_types)
+    adj: dict[str, list[str]] = {p: [] for p in ids}
+    for e in edges:
+        if e.src in adj and e.dst in adj and e.src != e.dst:
+            adj[e.src].append(e.dst)
+            adj[e.dst].append(e.src)
+    for p in adj:
+        adj[p].sort()
+
+    inbound: dict[str, int] = {p: 0 for p in ids}
+    for e in edges:
+        if e.dst in inbound:
+            inbound[e.dst] += 1
+
+    seen: set[str] = set()
+    found: list[list[str]] = []
+    for start in ids:  # already sorted, so the walk order is fixed
+        if start in seen:
+            continue
+        stack = [start]
+        seen.add(start)
+        member: list[str] = []
+        while stack:
+            cur = stack.pop()
+            member.append(cur)
+            for nb in adj[cur]:
+                if nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        found.append(sorted(member))
+
+    found.sort(key=lambda m: (-len(m), m[0]))
+    # Anchor ties break on the id so a component's label cannot change between identical reads.
+    return [
+        {"anchor": sorted(m, key=lambda p: (-inbound[p], p))[0], "size": len(m), "members": m}
+        for m in found
+    ]
+
+
+def path(
+    db: Session,
+    project_id: str,
+    a: str,
+    b: str,
+    *,
+    edge_types: list[str] | None = None,
+) -> dict:
+    """Shortest path between two code paths — "what connects these two".
+
+    **Traversed UNDIRECTED, reported with direction.** Asking what connects two files is a
+    reachability question, and answering it directionally would report "not connected" for two
+    modules that plainly are, merely because the arrows between them point the wrong way. Each
+    hop carries `forward`, so a reader still sees which way the real edge runs.
+
+    Returns `found: False` rather than raising, and distinguishes no-route from an endpoint
+    that is not in the graph at all (`missing`). "Nothing connects these" and "you named a file
+    I have never heard of" are different answers, and a caller acts differently on each.
+    """
+    a, b = a.strip(), b.strip()
+    ids, edges = _graph_paths(db, project_id, edge_types)
+    id_set = set(ids)
+    missing = [p for p in (a, b) if p not in id_set]
+    if missing:
+        return {"a": a, "b": b, "found": False, "missing": missing, "hops": []}
+    if a == b:
+        return {"a": a, "b": b, "found": True, "missing": [], "hops": []}
+
+    adj: dict[str, list[tuple[str, str, bool]]] = {p: [] for p in ids}
+    for e in edges:
+        if e.src in adj and e.dst in adj:
+            adj[e.src].append((e.dst, e.type, True))
+            adj[e.dst].append((e.src, e.type, False))
+    for p in adj:
+        adj[p].sort()  # deterministic tie-break between equally short routes
+
+    prev: dict[str, tuple[str, str, bool]] = {}
+    seen = {a}
+    frontier = [a]
+    while frontier and b not in seen:
+        nxt: list[str] = []
+        for cur in frontier:
+            for dst, etype, forward in adj[cur]:
+                if dst in seen:
+                    continue
+                seen.add(dst)
+                prev[dst] = (cur, etype, forward)
+                nxt.append(dst)
+        frontier = nxt
+
+    if b not in prev:
+        return {"a": a, "b": b, "found": False, "missing": [], "hops": []}
+
+    hops = []
+    cur = b
+    while cur != a:
+        src, etype, forward = prev[cur]
+        hops.append({"src": src, "dst": cur, "type": etype, "forward": forward})
+        cur = src
+    hops.reverse()
+    return {"a": a, "b": b, "found": True, "missing": [], "hops": hops}
+
+
+def analysis(
+    db: Session,
+    project_id: str,
+    *,
+    edge_types: list[str] | None = None,
+    limit: int = 10,
+    a: str | None = None,
+    b: str | None = None,
+) -> dict:
+    """The three structural answers in one read, for the graph view's overlay panel."""
+    return {
+        "hubs": hubs(db, project_id, edge_types=edge_types, limit=limit),
+        "components": components(db, project_id, edge_types=edge_types),
+        "path": path(db, project_id, a, b, edge_types=edge_types) if a and b else None,
+    }
