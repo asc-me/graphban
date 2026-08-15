@@ -42,6 +42,9 @@ operator runs rather than something an agent does — see PRD-14.
 From a clean working tree on the revision you want to ship:
 
 ```bash
+# 0. Be ON that revision. A deploy from a stale tree succeeds and ships the OLD build.
+git pull origin main
+
 # 1. Stamp the build with the git revision so /health can report it.
 export GIT_SHA=$(git rev-parse --short HEAD)
 
@@ -106,6 +109,32 @@ server the deploy path, the Postgres role, the database, and the volume all stay
   The build succeeds, the deploy looks clean, and release identity is silently
   lost — done exactly this way on 2026-08-06.
 
+- **`git pull` first.** A deploy from a stale tree does not fail. It rsyncs the same
+  bytes it sent last time, every Docker layer hits the cache, the containers restart
+  cleanly, and the box keeps serving the previous revision. Done exactly this way on
+  2026-08-15, one step after being warned about it in the same session.
+
+  **What it looks like** — the tells are in the build output, and both are easy to
+  read past:
+
+  ```
+  #20 [web stage-1 4/4] RUN echo "99504cf" > .../version.txt   CACHED
+  #28 [api 7/7] RUN pip install --no-cache-dir .               CACHED
+  ```
+
+  That `echo` bakes the revision into the image. Seeing it `CACHED` **printing the
+  sha you already had** means the build arg never changed, which means the source
+  never changed. A real deploy rebuilds `COPY app ./app` and re-runs `pip install`;
+  if those are cached, nothing shipped.
+
+  This is the same failure as the `GIT_SHA` one-liner above, one step earlier: there,
+  release identity is lost; here, release identity is *accurate about the wrong
+  revision*. And it is the more dangerous of the two, because `git_sha: "unknown"`
+  announces itself while `git_sha: "<the sha from last week>"` is indistinguishable
+  from "already up to date" unless you know what you expected it to say. That is why
+  Verify compares against `origin/main` rather than against your own `HEAD` — a check
+  that compares the deploy to itself cannot catch this.
+
 ## Verify (release identity)
 
 `/health` reports the exact running revision — always check it after a deploy:
@@ -115,7 +144,10 @@ ssh ubuntu-srv 'curl -s http://localhost:8001/health'
 # {"status":"ok","service":"graphban-api","version":"0.1.0","git_sha":"<sha>","db":"ok"}
 ```
 
-- `git_sha` must match `git rev-parse --short HEAD` of what you deployed.
+- `git_sha` must match **`git rev-parse --short origin/main`**, not merely "what you
+  deployed". Checking it against your own `HEAD` compares the deploy to itself and
+  passes for whatever you shipped — including the revision you shipped last time.
+  See the stale-tree invariant below.
 - `db: "ok"` confirms the API reached Postgres (readiness). `status` is `degraded`
   if the DB is unreachable — the API still answers 200 (liveness), so the
   container healthcheck tracks the process, not a DB blip.
