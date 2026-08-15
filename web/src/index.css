@@ -92,6 +92,22 @@ body {
 
 .blink { animation: alBlink 2.2s ease-in-out infinite; }
 
+/* PRD-20 D5: a held node's pulse ring. 2.4s to sit alongside `.blink`'s 2.2s so the app has
+   one idle rhythm rather than two that beat against each other. */
+@keyframes alHoldPulse {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 0.3; }
+}
+.hold-pulse { animation: alHoldPulse 2.4s ease-in-out infinite; }
+
+/* The information is in the RING, not the animation — the animation only makes it findable in
+   peripheral vision. So reduced motion holds the ring at the pulse's mean opacity and stops it
+   moving, rather than hiding presence from anyone who asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .blink { animation: none; }
+  .hold-pulse { animation: none; opacity: 0.575; }
+}
+
 /* Element defaults live in @layer base so Tailwind utility classes (which sit in a
    later cascade layer) can override them — otherwise a bare `a{color:accent}` would
    beat `text-muted` on nav links and tint every icon lime. */

@@ -1158,6 +1158,99 @@ def active_reservations(db: Session, project_id: str | None = None, *,
     return out
 
 
+# The most reservations one presence read resolves. NOT pagination: a live viewport snapshot
+# cannot be paged, because half a fleet rendered looks exactly like a whole one. Over the cap
+# the payload says `truncated` and reports the true `total` — a silent cut is the
+# absence-reads-as-a-clean-result failure this codebase keeps naming.
+PRESENCE_CAP = 200
+
+
+def held_areas(db: Session, project_id: str | None = None, *,
+               now: datetime | None = None,
+               lease_seconds: int = DEFAULT_LEASE_SECONDS,
+               cap: int = PRESENCE_CAP) -> dict:
+    """Live reservations, resolved to code nodes, the agent, and the human behind it (D4).
+
+    Reads `active_reservations`, so the LEASE CLOCK governs the glow: nothing here needs
+    sweeping, and an agent that died stops holding by the same lapse that already frees its
+    items. Inherited rather than reimplemented — one owner for "what is still held".
+
+    **Areas that resolve to no node are reported, not dropped** (`off_map`). Measured on the
+    live graph, 15 of 100 item touchpoints resolve to nothing: docs, config, `.cursor/rules/*`,
+    and areas that are not repo paths at all (`vercel env`). A payload that silently omitted
+    them would render an idle-looking codebase while someone was editing it, and its emptiness
+    would be indistinguishable from nobody working. `reason` separates `undescribed` (no node
+    at all) from `stale` (a node exists but `fresh=False` — `prune` marks, never deletes).
+
+    No classification beyond that: `AGENTS.md` is a real repo path merely undescribed while
+    `vercel env` never will be one, and the server cannot tell them apart from the string.
+    Guessing misfiles `web/nginx.conf` one way and `../ascme-labs/**` the other.
+    """
+    from app.models import ApiKey, User
+    from app.services import code_graph as code_svc
+
+    now = now or datetime.now(timezone.utc)
+    rows = active_reservations(db, project_id, now=now)
+    total = len(rows)
+    # Ordered before the cap, so a truncated payload is a deterministic prefix rather than
+    # whatever the database happened to return.
+    rows = sorted(rows, key=lambda r: (r.agent_id or "", r.area or "", r.item_id or ""))
+    truncated = total > cap
+    rows = rows[:cap]
+
+    agents = {a.id: a for a in db.scalars(select(Agent)).all()}
+    keys = {k.id: k for k in db.scalars(select(ApiKey)).all()}
+    users = {u.id: u for u in db.scalars(select(User)).all()}
+    nodes = code_svc.list_nodes(db, project_id) if project_id else []
+    node_by_path = {n.path: n for n in nodes}
+
+    def holder(agent) -> dict:
+        # Agent -> ApiKey -> User is the whole of G4: the colour the graph tints itself with is
+        # the one this person's avatar already wears everywhere else in the app. No new
+        # palette, and no assignment logic to get wrong.
+        key = keys.get(agent.api_key_id) if agent is not None and agent.api_key_id else None
+        user = users.get(key.user_id) if key is not None and key.user_id else None
+        return {
+            "agent_id": agent.id if agent is not None else None,
+            "agent_label": agent.label if agent is not None else "",
+            "active_role": agent.active_role if agent is not None else None,
+            "state": (presence_state(agent, lease_seconds=lease_seconds, now=now)
+                      if agent is not None else "offline"),
+            "user_id": user.id if user is not None else None,
+            "user_initials": user.initials if user is not None else "",
+            "user_color": user.avatar if user is not None else None,
+        }
+
+    held: list[dict] = []
+    off_map: list[dict] = []
+    for r in rows:
+        base = {
+            "area": r.area,
+            "item_id": r.item_id,
+            "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+            **holder(agents.get(r.agent_id)),
+        }
+        matched = sorted(p for p in node_by_path if code_svc.area_matches(r.area or "", p))
+        fresh_paths = [p for p in matched if node_by_path[p].fresh]
+        if fresh_paths:
+            held.append({**base, "node_paths": fresh_paths, "predicted": False})
+        if matched and len(fresh_paths) != len(matched):
+            # A held area whose map is out of date carries the same message as an unplaceable
+            # one, so it is reported rather than left to glow as though current.
+            off_map.append({**base, "reason": "stale"})
+        elif not matched:
+            off_map.append({**base, "reason": "undescribed"})
+
+    return {
+        "served_at": now.isoformat(),
+        "heartbeat_interval_seconds": heartbeat_interval_seconds(lease_seconds),
+        "held": held,
+        "off_map": off_map,
+        "truncated": truncated,
+        "total": total,
+    }
+
+
 def _normalise_area(area: str) -> str:
     return (area or "").strip().rstrip("/").lower()
 
