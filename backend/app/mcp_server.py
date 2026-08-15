@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 import logging
 
@@ -1634,7 +1635,7 @@ TOOL_ALIASES = {"report_agentledger_issue": "report_graphban_issue"}
 
 
 def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
-               session_id: str | None = None) -> Any:
+               session_id: str | None = None, defer=None) -> Any:
     name = TOOL_ALIASES.get(name, name)
     # Authority: a key's declared scopes ∩ its owner's memberships bound every call
     # (a key never out-ranks the user who minted it). `project_id` args can select
@@ -1792,6 +1793,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         item = items_svc.update_item(
             db,
             args["id"],
+            # The judge and the lesson extractor are MODEL calls, and an agent completing an
+            # item is single-threaded: waiting on them stops its heartbeat (GRPH-399).
+            defer=defer,
             status=args.get("status"),
             title=args.get("title"),
             description=args.get("description"),
@@ -2489,6 +2493,16 @@ def _rpc_error(id_: Any, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": id_, "error": {"code": code, "message": message}}
 
 
+def _run_deferred(jobs: list) -> None:
+    """Run the work scheduled off the response path. One failure must not eat the rest, and
+    none of it may reach the client — the response has already been sent."""
+    for job in jobs:
+        try:
+            job()
+        except Exception:  # noqa: BLE001
+            logger.exception("deferred post-completion work failed")
+
+
 def _success(id_: Any, result: Any) -> dict:
     """Wrap a tool result. Objects are also returned as `structuredContent` (typed,
     no JSON-in-a-text-block); text mirrors it for back-compat (#8)."""
@@ -2594,9 +2608,10 @@ async def mcp_endpoint(
             # Run tool dispatch (sync DB + any outbound IO like report_graphban_issue) off
             # the event loop, so a slow/hanging tool never blocks the async server — and a
             # same-host upstream loop-back can still be served concurrently.
+            deferred: list = []
             result = await run_in_threadpool(
                 _call_tool, db, name, args, key,
-                request.headers.get("mcp-session-id"))
+                request.headers.get("mcp-session-id"), deferred.append)
             # The DOWNLINK (PRD-17 D-e). MCP is client→server: the server cannot wake an idle
             # terminal, so the orchestrator's intent rides back on whatever the agent polls
             # next. A role change is not an error and does not arrive as one — the agent's
@@ -2641,6 +2656,15 @@ async def mcp_endpoint(
         # Audit every accepted agent mutation, attributed to the key (AL-43).
         if name not in _READ_ONLY:
             _audit_tool(db, key, name, result)
+        if deferred:
+            # AFTER the response, not before it (GRPH-399). Completion schedules the judge and
+            # the lesson extractor here; on the live instance those are two calls to a 24B
+            # model, and an agent that waits on them stops heartbeating. Starlette runs a
+            # background task once the response is sent — and, under the test client, before
+            # the call returns, so the tests that drive extraction through the status
+            # transition stay deterministic.
+            return JSONResponse(_success(id_, result),
+                                background=BackgroundTask(_run_deferred, deferred))
         return _success(id_, result)
 
     return _rpc_error(id_, -32601, f"method not found: {method}")

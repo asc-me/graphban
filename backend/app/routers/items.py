@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -93,6 +93,7 @@ def get_item(item_id: str, db: Session = Depends(get_db), user: User = Depends(g
 def update_item(
     item_id: str,
     body: ItemUpdate,
+    background: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -101,7 +102,10 @@ def update_item(
         raise HTTPException(404, "item not found")
     authz.require_writable(db, user.id, existing.project_id, "item")
     try:
-        item = items_svc.update_item(db, item_id, **body.model_dump(exclude_unset=True))
+        # Completion fires the judge and the lesson extractor, which are model calls
+        # (GRPH-399). Scheduled here so the response does not wait on them.
+        item = items_svc.update_item(db, item_id, defer=background.add_task,
+                                     **body.model_dump(exclude_unset=True))
     except ValueError as e:
         raise HTTPException(422, str(e))
     if item is None:
