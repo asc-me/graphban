@@ -38,6 +38,12 @@ const KIND_META: Record<string, { label: string; color: string }> = {
   module: { label: "Module", color: "#c6f24e" },
   file: { label: "File", color: "#7ca2ff" },
   symbol: { label: "Symbol", color: "#a78bfa" },
+  // GRPH-381. Muted against the three code kinds on purpose: docs and config are part of the
+  // blast radius of a change, not part of the call graph, and colouring them as loudly as a
+  // module would say they are the same kind of thing. Both values are already in the token set
+  // (`--color-st-review`, `--color-muted-2`), so this adds no new colour vocabulary.
+  doc: { label: "Doc", color: "#e0b34a" },
+  config: { label: "Config", color: "#9aa3ab" },
 };
 const kindMeta = (kind: string) => KIND_META[kind] ?? { label: kind || "node", color: "#8b949e" };
 
