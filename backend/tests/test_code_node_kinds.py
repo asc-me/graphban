@@ -256,3 +256,50 @@ def test_an_area_that_is_not_a_path_still_resolves_to_nothing(db):
     for area in ("vercel env", "twitch developer console"):
         assert cg.kind_for_path(area) == "module"
         assert not cg.area_matches(area, "AGENTS.md")
+
+
+# ── wrapper suffixes (GRPH-402) ───────────────────────────────────────────────
+
+def test_a_templated_config_is_config_not_a_package():
+    """Found by the PRD-20 acceptance walk's describe pass on the live instance.
+
+    Matching on the FINAL suffix made `.template` win over `.conf`, so a templated config file
+    read as `module` — the one kind that means "this contains other things", i.e. the shape a
+    directory has.
+    """
+    assert cg.kind_for_path("web/nginx.conf.template") == "config"
+    assert cg.kind_for_path("backend/settings.toml.example") == "config"
+    assert cg.kind_for_path(".env.sample") == "config"
+
+
+def test_a_templated_source_file_is_still_code():
+    # Stripped and re-evaluated rather than added to the config table: a template of CODE
+    # belongs with code, which a config-table entry could not express.
+    assert cg.kind_for_path("deploy/settings.py.j2") == "file"
+    assert cg.kind_for_path("web/index.html.tmpl") == "file"
+
+
+def test_a_templated_doc_is_still_a_doc():
+    assert cg.kind_for_path("docs/release-notes.md.template") == "doc"
+
+
+def test_a_bare_wrapper_is_config_not_a_package():
+    # Nothing underneath to classify. Calling it a package would repeat the same bug one level
+    # down; a template of an unnamed thing is a config artifact.
+    assert cg.kind_for_path("deploy.template") == "config"
+    assert cg.kind_for_path("foo.example") == "config"
+
+
+def test_stacked_wrappers_are_peeled():
+    assert cg.kind_for_path(".env.example.template") == "config"
+
+
+def test_an_interior_wrapper_needs_no_help():
+    # `.json` already decides this correctly; the strip must not change the answer.
+    assert cg.kind_for_path(".cursor/graphban-claim.example.json") == "config"
+
+
+def test_a_wrapper_that_is_the_whole_name_is_not_stripped_to_nothing():
+    # `len(low) > len(w)` guard: ".template" as a full basename must not become "".
+    assert cg.kind_for_path(".template") in {"config", "module"}
+    assert cg.kind_for_path("") == "module"
