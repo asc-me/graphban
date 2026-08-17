@@ -97,3 +97,44 @@ def test_the_runbook_quotes_the_compose_project_name_correctly():
     """It claims compose pins a project name; that claim has to match the pin, or the
     volume-orphaning explanation around it is nonsense."""
     assert "pins `name: agentledger`" in DEPLOY_DOC
+
+
+# ---- source files must stay diffable -----------------------------------------
+def test_no_tracked_text_file_contains_control_bytes():
+    """A NUL byte in a source file makes it BINARY to git, and unreviewable.
+
+    `web/src/lib/graph/galaxy.ts` shipped through a PR with two NUL bytes in it, used as the
+    separator in `` `${x}\\0${y}` `` and `key.split("\\0")`. They were consistent with each
+    other, so every test passed and `tsc` was clean — the separator is arbitrary and the same
+    one was used both times. Nothing was functionally wrong.
+
+    What was wrong is that git stored it as binary. The merge showed
+    `galaxy.ts | Bin 8159 -> 10020 bytes` instead of a diff, `grep` and `ripgrep` skipped the
+    file entirely, and a reviewer had no way to read the change. In a repo whose whole practice
+    is reviewable commits carrying their reasoning, an undiffable source file defeats the
+    review rather than failing it — which is why this is a guard and not a lint rule someone
+    can skip.
+
+    Tabs, newlines and carriage returns are allowed; everything else below 0x20 is not.
+    """
+    import subprocess
+
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=REPO, capture_output=True, text=True
+    ).stdout.split()
+    binary_ext = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".woff", ".woff2", ".pdf", ".zip"}
+
+    offenders = []
+    for rel in tracked:
+        path = REPO / rel
+        if not path.is_file() or path.suffix.lower() in binary_ext:
+            continue
+        data = path.read_bytes()
+        bad = [i for i, b in enumerate(data) if b == 0 or b < 9 or 13 < b < 32]
+        if bad:
+            offenders.append(f"{rel} (first at byte {bad[0]}, {len(bad)} total)")
+
+    assert offenders == [], (
+        "control bytes in tracked text files — git will treat these as BINARY and they cannot "
+        f"be diffed or grepped: {offenders}"
+    )
