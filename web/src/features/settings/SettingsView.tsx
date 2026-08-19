@@ -72,7 +72,8 @@ function Label({ children }: { children: React.ReactNode }) {
 }
 
 function IntegrationsPanel() {
-  const { data: cfg } = usePlatform();
+  const { activeId } = useProjectCtx();
+  const { data: cfg } = usePlatform(activeId);
   const qc = useQueryClient();
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const invalidate = () => qc.invalidateQueries({ queryKey: ["platform"] });
@@ -86,7 +87,7 @@ function IntegrationsPanel() {
   async function runSync() {
     setSyncing(true);
     try {
-      setSyncReport(await api.gdriveSync());
+      setSyncReport(await api.gdriveSync(activeId));
       qc.invalidateQueries({ queryKey: keys.prds });
     } finally {
       setSyncing(false);
@@ -109,7 +110,7 @@ function IntegrationsPanel() {
       turnstile_sitekey: sitekey,
     };
     if (secret) body.turnstile_secret = secret;
-    await api.updatePlatform(body);
+    await api.updatePlatform(activeId, body);
     setSecret("");
     invalidate();
     setSpamSaved(true);
@@ -132,7 +133,7 @@ function IntegrationsPanel() {
             <Row label="Account" value={cfg.github_account} />
             <Row label="Repository" value={cfg.github_repo} />
             <Row label="Scope" value={cfg.github_scope} />
-            <Button variant="danger" size="sm" onClick={() => api.githubDisconnect().then(invalidate)}>
+            <Button variant="danger" size="sm" onClick={() => api.githubDisconnect(activeId).then(invalidate)}>
               Disconnect
             </Button>
           </div>
@@ -142,7 +143,7 @@ function IntegrationsPanel() {
               <div><Label>Account / org</Label><Input value={ghAccount} onChange={(e) => setGhAccount(e.target.value)} placeholder="acme" /></div>
               <div><Label>Repository</Label><Input value={ghRepo} onChange={(e) => setGhRepo(e.target.value)} placeholder="acme/app" /></div>
             </div>
-            <Button size="sm" disabled={!ghAccount || !ghRepo} onClick={() => api.githubConnect(ghAccount, ghRepo).then(invalidate)}>
+            <Button size="sm" disabled={!ghAccount || !ghRepo} onClick={() => api.githubConnect(activeId, ghAccount, ghRepo).then(invalidate)}>
               Connect
             </Button>
           </div>
@@ -187,7 +188,7 @@ function IntegrationsPanel() {
                 <RefreshCw size={13} className={syncing ? "animate-spin" : ""} />
                 {syncing ? "Syncing…" : "Sync now"}
               </Button>
-              <Button variant="danger" size="sm" onClick={() => api.gdriveDisconnect().then(invalidate)}>
+              <Button variant="danger" size="sm" onClick={() => api.gdriveDisconnect(activeId).then(invalidate)}>
                 Disconnect
               </Button>
             </div>
@@ -211,7 +212,7 @@ function IntegrationsPanel() {
               <div><Label>Account</Label><Input value={drAccount} onChange={(e) => setDrAccount(e.target.value)} placeholder="you@example.com" /></div>
               <div><Label>Folder</Label><Input value={drFolder} onChange={(e) => setDrFolder(e.target.value)} placeholder="/Graphban" /></div>
             </div>
-            <Button size="sm" disabled={!drAccount} onClick={() => api.gdriveConnect(drAccount, drFolder).then(invalidate)}>
+            <Button size="sm" disabled={!drAccount} onClick={() => api.gdriveConnect(activeId, drAccount, drFolder).then(invalidate)}>
               Connect
             </Button>
           </div>
@@ -250,7 +251,7 @@ function IntegrationsPanel() {
             type="checkbox"
             checked={cfg.public_share_enabled}
             onChange={async (e) => {
-              await api.updatePlatform({ public_share_enabled: e.target.checked });
+              await api.updatePlatform(activeId, { public_share_enabled: e.target.checked });
               invalidate();
             }}
             className="accent-accent"

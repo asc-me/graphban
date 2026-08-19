@@ -12,10 +12,12 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Input, Textarea } from "@/components/ui/input";
+import { useProjectCtx } from "@/features/ProjectContext";
 import { useCreateItem } from "@/lib/queries";
 
 export function NewItemDialog() {
-  const create = useCreateItem();
+  const { activeId } = useProjectCtx();
+  const create = useCreateItem(activeId);
   const [open, setOpen] = React.useState(false);
   const [title, setTitle] = React.useState("");
   const [description, setDescription] = React.useState("");

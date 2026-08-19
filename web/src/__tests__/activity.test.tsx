@@ -3,6 +3,8 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ActivityView } from "@/features/activity/ActivityView";
+import { MemoryRouter } from "react-router-dom";
+
 import { ProjectProvider } from "@/features/ProjectContext";
 import type { EventPage } from "@/lib/types";
 
@@ -36,9 +38,11 @@ describe("Activity ledger", () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={qc}>
-        <ProjectProvider>
-          <ActivityView />
-        </ProjectProvider>
+        <MemoryRouter initialEntries={["/activity"]}>
+          <ProjectProvider>
+            <ActivityView />
+          </ProjectProvider>
+        </MemoryRouter>
       </QueryClientProvider>,
     );
 

@@ -49,9 +49,20 @@ export interface Org {
   role: OrgRole;
 }
 
+export interface OrgProjectAccess {
+  project_id: string;
+  tag: string;
+  name: string;
+  level: "write" | "read";
+}
+
 export interface OrgMember {
   user: User;
   role: OrgRole;
+  /** Projects in this org they can reach. Empty is "reaches nothing", never "unknown". */
+  access: OrgProjectAccess[];
+  /** Newest recorded write, or null for "no write on record" — not inactivity. */
+  last_write_at: string | null;
 }
 
 export interface Invite {
@@ -101,6 +112,13 @@ export interface Billing {
 
 // ── Operator console (hosted + platform-admin only, AL-94) ────────────────
 // Metadata only by design — no tenant content ever crosses this boundary.
+export interface AdminOrgMember {
+  handle: string;
+  name: string;
+  role: string;
+  joined_at: string | null;
+}
+
 export interface AdminOrg {
   id: string;
   name: string;
@@ -108,8 +126,17 @@ export interface AdminOrg {
   created_at: string | null;
   owner_email: string | null;
   owner_name: string;
+  owner_handle: string;
   usage: Usage;
   limits: PlanLimits;
+  /** Everyone seated in the tenant, owner first. Listed, never actionable. */
+  members: AdminOrgMember[];
+}
+
+export interface AdminUserOrg {
+  id: string;
+  name: string;
+  role: string;
 }
 
 export interface AdminUser {
@@ -119,6 +146,33 @@ export interface AdminUser {
   email: string;
   created_at: string | null;
   org_count: number;
+  orgs: AdminUserOrg[];
+  /**
+   * Newest recorded write, or null for "nothing on record". Not last *activity*:
+   * reads are never evented, so a browsing user and an absent one look identical
+   * here — which is why null renders as its own state rather than as a dash.
+   */
+  last_write_at: string | null;
+}
+
+/** A platform invite with the provenance the Licensing table is built on. */
+export interface AdminInvite extends Invite {
+  invited_by_handle: string;
+  /** Empty until the account this invite seeded has actually founded an org. */
+  redeemed_org_id: string;
+  redeemed_org_name: string;
+  /** Past its expiry while still pending — evaluated on read, not by a sweeper. */
+  expired: boolean;
+}
+
+/** One row of the operator ledger: an action taken from this plane, by an operator. */
+export interface AdminActivity {
+  ts: string;
+  action: string;
+  actor_label: string;
+  target_type: string;
+  target_id: string;
+  meta: Record<string, unknown> | null;
 }
 
 export interface OrgRequest {

@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentSidebar } from "@/components/shell/AgentSidebar";
+import { MemoryRouter } from "react-router-dom";
+
 import { ProjectProvider } from "@/features/ProjectContext";
 import type { ShardHit } from "@/lib/types";
 
@@ -22,7 +24,13 @@ const hits: ShardHit[] = [
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
-    projects: vi.fn(async () => []),
+    // A project must resolve for memory to have a scope — see the "without a project"
+    // test below, which is the other half of this.
+    projects: vi.fn(async () => [
+      { id: "core", tag: "CORE", name: "Core", accent: "#c6f24e", visibility: "private",
+        description: "", share_global_memory: false, auto_extract: true, mcp_enabled: true,
+        embed_model: "" },
+    ]),
     shards: vi.fn(async () => []),
     searchMemory: vi.fn(async () => hits),
     addShard: vi.fn(async () => hits[0].shard),
@@ -34,9 +42,11 @@ function renderSidebar() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <ProjectProvider>
+      <MemoryRouter initialEntries={["/tracker"]}>
+        <ProjectProvider>
         <AgentSidebar open onClose={() => {}} />
-      </ProjectProvider>
+        </ProjectProvider>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -49,11 +59,25 @@ describe("Memory panel", () => {
     const { api } = await import("@/lib/api");
     renderSidebar();
 
-    const input = screen.getByPlaceholderText(/Semantic search over memory/i);
+    // Enabled only once a project resolves, so this is a find, not a get.
+    const input = await screen.findByPlaceholderText(/Semantic search over memory/i);
     await user.type(input, "pgvector self-host{Enter}");
 
     expect(await screen.findByText(/keep self-host to one Postgres container/i)).toBeInTheDocument();
     expect(screen.getByText("0.83")).toBeInTheDocument();
-    expect(api.searchMemory).toHaveBeenCalledWith("pgvector self-host", 5);
+    expect(api.searchMemory).toHaveBeenCalledWith("core", "pgvector self-host", 5);
+  });
+
+  it("refuses to search when no project has resolved", async () => {
+    // The scope of a memory search is a project. Searching without one would come back
+    // empty and read as "no matches", when the truth is that nothing was searched — so
+    // the input says which of the two it is instead of quietly returning zero.
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.projects).mockResolvedValueOnce([]);
+    renderSidebar();
+
+    const input = await screen.findByPlaceholderText(/No project selected/i);
+    expect(input).toBeDisabled();
+    expect(api.searchMemory).not.toHaveBeenCalled();
   });
 });

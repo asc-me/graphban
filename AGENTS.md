@@ -137,8 +137,16 @@ stop that, and a failure there is never a naming bug.
 ### Add a view / frontend feature
 Route in `web/src/App.tsx`, feature dir under `web/src/features/`, API methods in
 `lib/api.ts` + hooks in `lib/queries.ts` (key on project id). Tests rendering a
-view that touches `useProjectCtx` must wrap in `<ProjectProvider>` and mock
-`api.projects`. Docs overlay: register the route in `features/docs/content.ts`.
+view that touches `useProjectCtx` must wrap in `<ProjectProvider>` **inside a
+router** and mock `api.projects`. Docs overlay: register the route in
+`features/docs/content.ts`.
+
+**There is no ambient project** (PRD-21 D1.1). Every project-scoped write takes the
+id as its first argument — `createItem(projectId, body)` — and the active project is
+derived from the URL, not from a module variable or an effect. Build org-plane paths
+with the helpers in `lib/routes.ts`; a literal `"/org"` anywhere outside that file
+fails `hierarchy.test.tsx`, because the base becomes `""` when an org is served from
+its own host.
 
 ### Work on providers / embeddings
 `docs/ai-providers.md`. Changing `EMBED_DIM` requires DB reprovision AND note

@@ -47,7 +47,7 @@ export function AgentSidebar({ open, onClose }: { open: boolean; onClose: () => 
 function MemoryPanel() {
   const { activeId } = useProjectCtx();
   const { data: shards = [] } = useShards(activeId);
-  const addShard = useAddShard();
+  const addShard = useAddShard(activeId);
   const [query, setQuery] = React.useState("");
   const [hits, setHits] = React.useState<ShardHit[] | null>(null);
   const [searching, setSearching] = React.useState(false);
@@ -55,13 +55,17 @@ function MemoryPanel() {
 
   async function runSearch(e: React.FormEvent) {
     e.preventDefault();
+    // No project resolved means no scope to search. Sending an empty one would return
+    // zero hits and render as "no matches" — an absence reading as a clean result, when
+    // the truth is that nothing was searched at all.
+    if (!activeId) return;
     if (!query.trim()) {
       setHits(null);
       return;
     }
     setSearching(true);
     try {
-      setHits(await api.searchMemory(query, 5));
+      setHits(await api.searchMemory(activeId, query, 5));
     } finally {
       setSearching(false);
     }
@@ -69,7 +73,7 @@ function MemoryPanel() {
 
   async function addMemory(e: React.FormEvent) {
     e.preventDefault();
-    if (!draft.trim()) return;
+    if (!activeId || !draft.trim()) return;
     await addShard.mutateAsync({ text: draft.trim(), scope: "global" });
     setDraft("");
   }
@@ -85,8 +89,11 @@ function MemoryPanel() {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Semantic search over memory…"
-          className="h-9 w-full rounded-[9px] border border-line-2 bg-surface-2 pl-8 pr-3 text-[12.5px] outline-none focus:border-line-hover"
+          disabled={!activeId}
+          placeholder={
+            activeId ? "Semantic search over memory…" : "No project selected — nothing to search"
+          }
+          className="h-9 w-full rounded-[9px] border border-line-2 bg-surface-2 pl-8 pr-3 text-[12.5px] outline-none focus:border-line-hover disabled:cursor-not-allowed disabled:text-faint"
         />
       </form>
 

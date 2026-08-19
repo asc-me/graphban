@@ -120,3 +120,31 @@ def _event_dict(e: Event) -> dict:
         "project_id": e.project_id,
         "meta": e.meta,
     }
+
+
+# The complete set of actions that can be taken FROM the operator plane. It's an
+# allowlist, not a "not project-scoped" filter: a project-less tenant event (a global
+# memory write, say) is still tenant activity and must not surface cross-tenant.
+PLATFORM_ACTIONS = (
+    "create_platform_invite",
+    "revoke_platform_invite",
+    "decide_org_request",
+    "set_org_plan",
+)
+
+
+def platform_ledger(db: Session, *, limit: int = 12) -> list[Event]:
+    """Most-recent-first operator-plane actions, across every tenant.
+
+    This is the operator's own ledger, not a platform activity feed. Nothing a tenant
+    does appears here, so an empty result means "no operator has done anything", never
+    "the platform is quiet" — the caller renders those as different sentences.
+    """
+    return list(
+        db.scalars(
+            select(Event)
+            .where(Event.action.in_(PLATFORM_ACTIONS))
+            .order_by(Event.id.desc())
+            .limit(limit)
+        )
+    )

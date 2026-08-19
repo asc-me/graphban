@@ -29,7 +29,7 @@ const MODES: FeedbackMode[] = ["inline", "launcher"];
  *  and copy the embed snippet (inline iframe or floating launcher). */
 export function FeedbackKitView() {
   const { activeId } = useProjectCtx();
-  const { data: platform } = usePlatform();
+  const { data: platform } = usePlatform(activeId);
   const [cfg, setCfg] = React.useState<FeedbackConfig>(() => ({ ...DEFAULT_CONFIG, projectId: activeId }));
   const [copied, setCopied] = React.useState(false);
   const set = <K extends keyof FeedbackConfig>(k: K, v: FeedbackConfig[K]) =>

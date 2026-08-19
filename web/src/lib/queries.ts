@@ -69,8 +69,22 @@ export function useAdminUsers(enabled = true) {
   return useQuery({ queryKey: ["admin-users"], queryFn: () => api.adminUsers(), enabled, retry: false });
 }
 
-export function useAdminInvites(enabled = true) {
-  return useQuery({ queryKey: ["admin-invites"], queryFn: () => api.adminInvites(), enabled, retry: false });
+export function useAdminInvites(history = false, enabled = true) {
+  return useQuery({
+    queryKey: ["admin-invites", history],
+    queryFn: () => api.adminInvites(history),
+    enabled,
+    retry: false,
+  });
+}
+
+export function useAdminActivity(enabled = true) {
+  return useQuery({
+    queryKey: ["admin-activity"],
+    queryFn: () => api.adminActivity(),
+    enabled,
+    retry: false,
+  });
 }
 
 export function useAdminOrgRequests(enabled = true) {
@@ -86,7 +100,10 @@ export function useAdminCreateInvite() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: { email: string; plan?: string | null }) => api.adminCreateInvite(body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-invites"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin-invites"] });
+      qc.invalidateQueries({ queryKey: ["admin-activity"] });
+    },
   });
 }
 
@@ -94,7 +111,10 @@ export function useAdminRevokeInvite() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.adminRevokeInvite(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-invites"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin-invites"] });
+      qc.invalidateQueries({ queryKey: ["admin-activity"] });
+    },
   });
 }
 
@@ -103,7 +123,10 @@ export function useAdminDecideOrgRequest() {
   return useMutation({
     mutationFn: (v: { id: string; approve: boolean; note?: string }) =>
       api.adminDecideOrgRequest(v.id, v.approve, v.note ?? ""),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-org-requests"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin-org-requests"] });
+      qc.invalidateQueries({ queryKey: ["admin-activity"] });
+    },
   });
 }
 
@@ -113,6 +136,7 @@ export function useSetOrgPlan() {
     mutationFn: (v: { orgId: string; plan: string }) => api.setOrgPlan(v.orgId, v.plan),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["admin-orgs"] });
+      qc.invalidateQueries({ queryKey: ["admin-activity"] });
       qc.invalidateQueries({ queryKey: keys.orgs });
     },
   });
@@ -221,8 +245,12 @@ export function useCodeMap(projectId?: string) {
   return useQuery({ queryKey: ["code-map", projectId], queryFn: () => api.codeMap(projectId) });
 }
 
-export function usePlatform() {
-  return useQuery({ queryKey: ["platform"], queryFn: () => api.platform() });
+export function usePlatform(projectId: string) {
+  return useQuery({
+    queryKey: ["platform", projectId],
+    queryFn: () => api.platform(projectId),
+    enabled: !!projectId,
+  });
 }
 
 // Instance-wide cloud link + per-project sync state (AL-141). Not project-keyed — the link
@@ -264,10 +292,10 @@ export function useUpdateItem() {
   });
 }
 
-export function useCreateItem() {
+export function useCreateItem(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: Partial<Item>) => api.createItem(body),
+    mutationFn: (body: Partial<Item>) => api.createItem(projectId, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.items }),
   });
 }
@@ -295,10 +323,10 @@ export function useShards(projectId?: string) {
   return useQuery({ queryKey: [...keys.shards, projectId], queryFn: () => api.shards(projectId), enabled: !!projectId });
 }
 
-export function useAddShard() {
+export function useAddShard(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { text: string; scope?: string }) => api.addShard(body),
+    mutationFn: (body: { text: string; scope?: string }) => api.addShard(projectId, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.shards }),
   });
 }

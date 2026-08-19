@@ -133,9 +133,9 @@ def _populated_admin_gets(client, operator) -> int:
 
 def test_content_sweep_actually_inspects_populated_responses(client, operator, tenant_with_content):
     """Guard against a vacuous sweep: every admin GET must return data to inspect."""
-    assert _populated_admin_gets(client, operator) == 5
+    assert _populated_admin_gets(client, operator) == 6
     for path in ("/api/admin/orgs", "/api/admin/users", "/api/admin/invites",
-                 "/api/admin/org-requests"):
+                 "/api/admin/activity", "/api/admin/org-requests"):
         assert len(client.get(path, headers=operator).json()) > 0, f"{path} was empty"
 
 

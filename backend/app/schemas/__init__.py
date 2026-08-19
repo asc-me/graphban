@@ -82,9 +82,24 @@ class OrgOut(BaseModel):
     role: str  # the requesting user's role in this org
 
 
+class OrgProjectAccessOut(BaseModel):
+    """One project this member can reach, and at what level."""
+
+    project_id: str
+    tag: str = ""
+    name: str = ""
+    level: str  # write | read
+
+
 class OrgMemberOut(BaseModel):
     user: UserOut
     role: str
+    # Which projects they can reach. Empty means no project access at all — a real and
+    # distinct state from "we did not look", which is why it is a list and never null.
+    access: list[OrgProjectAccessOut] = []
+    # Newest recorded write. NULL is "no write on record", NOT inactivity: reads leave no
+    # ledger row, so a member who only browses is indistinguishable from one who left.
+    last_write_at: datetime | None = None
 
 
 class InviteCreate(BaseModel):
@@ -139,6 +154,21 @@ class OrgRequestDecision(BaseModel):
 class AdminWhoamiOut(BaseModel):
     is_platform_admin: bool = True
     email: EmailStr
+    # Deployment policy the console states rather than guesses. Both are env config —
+    # read-only from here, which is why the Licensing screen reports them instead of
+    # offering a control that would silently do nothing.
+    signup_mode: str = "open"
+    invite_expiry_days: int = 14
+
+
+class AdminOrgMemberOut(BaseModel):
+    """Who is seated in a tenant. Identity + role only; an operator can see that a
+    membership exists and never act on it — role changes belong to the org's admins."""
+
+    handle: str
+    name: str = ""
+    role: str
+    joined_at: datetime | None = None
 
 
 class AdminOrgOut(BaseModel):
@@ -148,8 +178,16 @@ class AdminOrgOut(BaseModel):
     created_at: datetime | None = None
     owner_email: EmailStr | None = None
     owner_name: str = ""
+    owner_handle: str = ""
     usage: UsageOut
     limits: PlanLimitsOut
+    members: list[AdminOrgMemberOut] = []
+
+
+class AdminUserOrgOut(BaseModel):
+    id: str
+    name: str
+    role: str
 
 
 class AdminUserOut(BaseModel):
@@ -159,6 +197,41 @@ class AdminUserOut(BaseModel):
     email: EmailStr
     created_at: datetime | None = None
     org_count: int = 0
+    orgs: list[AdminUserOrgOut] = []
+    # Last *write* — the newest event this account is the actor of. Deliberately not
+    # called "last active": reads leave no ledger row, so a user who only browsed is
+    # indistinguishable from one who never signed in. NULL means "no write on record",
+    # which is a different fact from "inactive" and is rendered as its own state.
+    last_write_at: datetime | None = None
+
+
+class AdminInviteOut(InviteOut):
+    """A platform invite as the operator plane sees it — the invite plus its provenance.
+
+    ``redeemed_org_*`` is populated only once the invite has been accepted AND the
+    account it seeded owns an org; an accepted invite whose owner has not founded
+    anything yet reports empty rather than guessing, so "redeemed" and "redeemed into
+    something" stay separable."""
+
+    invited_by_handle: str = ""
+    redeemed_org_id: str = ""
+    redeemed_org_name: str = ""
+    expired: bool = False
+
+
+class AdminActivityOut(BaseModel):
+    """One row of the operator ledger — an action taken FROM this plane.
+
+    Not a tenant activity feed: events inside an org are project-scoped and stay there.
+    The console says so on the panel, because an operator reading six rows and inferring
+    "the platform was quiet" would be reading an absence as a result."""
+
+    ts: datetime
+    action: str
+    actor_label: str = ""
+    target_type: str = ""
+    target_id: str = ""
+    meta: dict | None = None
 
 
 class InvitePreviewOut(BaseModel):

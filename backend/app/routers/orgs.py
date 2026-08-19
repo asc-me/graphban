@@ -12,11 +12,20 @@ token: preview is intentionally unauthenticated (so the accept page can render "
 email matches the invitation.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import get_db
-from app.models import OrgInvite, OrgMembership, Organization, User
+from app.models import (
+    Event,
+    Membership,
+    OrgInvite,
+    OrgMembership,
+    Organization,
+    Project,
+    User,
+)
 from app.schemas import (
     BillingOut,
     InviteAcceptIn,
@@ -25,6 +34,7 @@ from app.schemas import (
     InvitePreviewOut,
     OrgCreate,
     OrgMemberOut,
+    OrgProjectAccessOut,
     OrgOut,
     OrgRequestCreate,
     OrgRequestOut,
@@ -166,11 +176,36 @@ def set_org_plan(
 def list_members(org_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     authz.require_org_member(db, user.id, org_id)
     seats = db.query(OrgMembership).filter(OrgMembership.org_id == org_id).all()
+    org_projects = {
+        p.id: p for p in db.scalars(select(Project).where(Project.org_id == org_id))
+    }
     out = []
     for seat in seats:
         member = db.get(User, seat.user_id)
-        if member is not None:
-            out.append(OrgMemberOut(user=UserOut.model_validate(member), role=seat.role))
+        if member is None:
+            continue
+        # Project access is per-membership and lives on `Membership.access`. `none` is
+        # an access level meaning "explicitly not this one", so it is filtered out here
+        # rather than rendered as a grant.
+        access = [
+            OrgProjectAccessOut(
+                project_id=m.project_id,
+                tag=org_projects[m.project_id].tag,
+                name=org_projects[m.project_id].name,
+                level=m.access,
+            )
+            for m in db.scalars(select(Membership).where(Membership.user_id == member.id))
+            if m.project_id in org_projects and m.access in ("write", "read")
+        ]
+        last_write = db.scalar(
+            select(func.max(Event.ts)).where(
+                Event.actor_type == "user", Event.actor_id == member.id
+            )
+        )
+        out.append(OrgMemberOut(
+            user=UserOut.model_validate(member), role=seat.role,
+            access=access, last_write_at=last_write,
+        ))
     return out
 
 

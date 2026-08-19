@@ -1,6 +1,7 @@
 import { AlertTriangle } from "lucide-react";
 import { Link } from "react-router-dom";
 
+import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { usePlatform } from "@/lib/queries";
 
@@ -12,7 +13,8 @@ import { usePlatform } from "@/lib/queries";
  * real provider is in effect.
  */
 export function NoModelBanner({ withSettingsLink = true, className }: { withSettingsLink?: boolean; className?: string }) {
-  const { data: cfg } = usePlatform();
+  const { activeId } = useProjectCtx();
+  const { data: cfg } = usePlatform(activeId);
   if (!cfg || cfg.effective_chat_provider !== "stub") return null;
   return (
     <div
