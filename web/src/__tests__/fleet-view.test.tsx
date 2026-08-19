@@ -122,6 +122,25 @@ describe("Fleet view", () => {
     expect(screen.getByText("branch orphaned")).toBeInTheDocument();
   });
 
+  it("says when an agent was last heard from, not just that it is offline", () => {
+    // `offline` alone cannot tell a process that died thirty seconds ago from one gone for
+    // a week, and those call for opposite responses — wait, or clean up after it.
+    fleet.data = { ...BASE, total: 1, online: 0,
+                   agents: [{ ...AGENT, state: "offline", holdings: [{ id: "GB-1", title: "held work", status: "in_progress" }],
+                              last_seen_at: new Date(Date.now() - 3 * 3600_000).toISOString() }] };
+    renderView();
+    expect(screen.getByText("3h ago")).toBeInTheDocument();
+  });
+
+  it("distinguishes an agent that never reported from one that stopped", () => {
+    // A registered agent with no heartbeat has not run yet. Rendering that as silence,
+    // identically to one that ran and died, loses the only difference that matters.
+    fleet.data = { ...BASE, total: 1, online: 0,
+                   agents: [{ ...AGENT, state: "offline", holdings: [{ id: "GB-1", title: "held work", status: "in_progress" }], last_seen_at: null }] };
+    renderView();
+    expect(screen.getByText("no heartbeat yet")).toBeInTheDocument();
+  });
+
   it("keeps an offline agent reachable rather than dropping it", async () => {
     // The rule TIGHTENED here, and the distinction is holding rather than presence. An offline
     // agent that holds nothing is history — two thirds of a real roster was that, so the tab

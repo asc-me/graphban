@@ -6,6 +6,7 @@ import type { FleetOverview, FleetPresence } from "@/lib/types";
  */
 import type {
   AdminActivity,
+  TriageRow,
   AdminInvite,
   AdminOrg,
   AdminUser,
@@ -384,6 +385,12 @@ export const api = {
 
   requests: (projectId?: string) =>
     request<RequestItem[]>(`/requests${projectId ? `?project_id=${projectId}` : ""}`),
+  /** What is waiting to be triaged, each row carrying its closest duplicate. */
+  triageQueue: (projectId: string) =>
+    request<TriageRow[]>(`/requests/triage?project_id=${encodeURIComponent(projectId)}`),
+  /** Turn a request into tracked work. One transaction — item and link land together. */
+  acceptRequest: (id: string) =>
+    request<{ request: RequestItem; item: Item }>(`/requests/${id}/accept`, { method: "POST" }),
   voteRequest: (id: string, delta = 1) =>
     request<RequestItem>(`/requests/${id}/vote`, {
       method: "POST",

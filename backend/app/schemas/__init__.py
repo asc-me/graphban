@@ -424,6 +424,9 @@ class ScoredCandidate(BaseModel):
 class RequestCreate(BaseModel):
     type: str
     title: str
+    # The model and the service have always carried a detail; only this schema did not,
+    # so an authenticated caller submitting one had it silently dropped.
+    detail: str = ""
     by: str = ""
     project_id: str = "core"
 
@@ -434,6 +437,33 @@ class RequestLinkIn(BaseModel):
 
 class RequestVoteIn(BaseModel):
     delta: int = 1
+
+
+class DuplicateHintOut(BaseModel):
+    """A request or item that looks like this one. Advisory — never auto-merged."""
+
+    kind: str  # request | item
+    id: str
+    title: str
+    score: float
+
+
+class TriageRequestOut(BaseModel):
+    """A queued request plus the one thing a triager needs that the row itself cannot
+    say: whether it has already been reported."""
+
+    request: RequestOut
+    # Best duplicate above threshold, or null. Null means "compared, nothing matched" —
+    # the comparison always runs, so it is never "we did not look".
+    duplicate: DuplicateHintOut | None = None
+
+
+class RequestAcceptOut(BaseModel):
+    """Both halves of a triage decision, so the client never has to guess whether the
+    link landed."""
+
+    request: RequestOut
+    item: ItemOut
 
 
 class RequestOut(ORMModel):

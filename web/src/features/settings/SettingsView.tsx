@@ -15,7 +15,7 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { keys, useApiKeys, useMembers, usePlatform } from "@/lib/queries";
-import type { PlatformConfig, Project } from "@/lib/types";
+import type { ApiKey, PlatformConfig, Project } from "@/lib/types";
 
 const TABS = ["AI Providers", "Integrations", "Sync / Link", "Project", "Members", "API Keys", "Account"] as const;
 type Tab = (typeof TABS)[number];
@@ -600,6 +600,8 @@ type KeyKind = "agent" | "sync";
 
 function ApiKeysPanel() {
   const { data: apiKeys = [] } = useApiKeys();
+  const syncKeys = apiKeys.filter((k) => k.scopes?.includes("sync"));
+  const agentKeys = apiKeys.filter((k) => !k.scopes?.includes("sync"));
   const { active, projects } = useProjectCtx();
   const qc = useQueryClient();
   const [kind, setKind] = React.useState<KeyKind>("agent");
@@ -736,8 +738,13 @@ function ApiKeysPanel() {
           )}
         </label>
       )}
-      <div className="space-y-2">
-        {apiKeys.map((k) => (
+      <KeyGroup
+        title="Agent keys"
+        blurb="Read and write items, memory and claims — the credential a coding agent carries."
+        rows={agentKeys}
+        empty="No agent key has been minted. Nothing can reach the MCP endpoint until one is."
+      >
+        {(k) => (
           <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">
             <div className="flex items-center gap-3 px-3 py-2.5">
               <KeyRound size={14} className="text-muted" />
@@ -769,7 +776,9 @@ function ApiKeysPanel() {
                   {new Date(k.expires_at) <= new Date() ? "expired" : `expires ${new Date(k.expires_at).toLocaleDateString()}`}
                 </span>
               )}
-              <span className="ml-auto font-mono text-[10px] text-faint-2">{k.last_used ? "used" : "never used"}</span>
+              <span className="ml-auto font-mono text-[10px] text-faint-2" title={k.last_used ?? undefined}>
+                {lastUsedLabel(k.last_used)}
+              </span>
               {/* Sync credentials never touch the MCP endpoint, so the MCP install snippet
                   would be misleading for them — the link hand-off is shown at mint time. */}
               {!k.scopes?.includes("sync") && (
@@ -791,10 +800,117 @@ function ApiKeysPanel() {
               </div>
             )}
           </div>
-        ))}
-        {apiKeys.length === 0 && <p className="text-[12.5px] text-faint">No keys yet.</p>}
-      </div>
+        )}
+      </KeyGroup>
+
+      <KeyGroup
+        title="Sync credentials"
+        blurb={
+          <>
+            Push a code graph and nothing else. Each one <em className="not-italic text-fg-2">is</em>{" "}
+            a linked deployment's identity — one key, one box — so revoking it unlinks that
+            deployment rather than just closing an access path.
+          </>
+        }
+        rows={syncKeys}
+        empty="No deployment is linked. A sync credential is what links one, and it is minted here."
+      >
+        {(k) => (
+          <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">
+            <div className="flex items-center gap-3 px-3 py-2.5">
+              <KeyRound size={14} className="text-muted" />
+              <span className="text-[13px] text-fg-2">{k.name}</span>
+              <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
+              {k.scopes?.includes("sync") && (
+                <span className="rounded border border-accent/40 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-accent">
+                  sync
+                </span>
+              )}
+              <span
+                className={cn(
+                  "rounded border px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide",
+                  k.project_id
+                    ? "border-line-2 text-muted"
+                    : "border-[rgba(167,139,250,0.3)] text-purple-2",
+                )}
+              >
+                {projectName(k.project_id)}
+              </span>
+              {k.expires_at && (
+                <span
+                  className={cn(
+                    "font-mono text-[9.5px] uppercase tracking-wide",
+                    new Date(k.expires_at) <= new Date() ? "text-st-blocked" : "text-faint-2",
+                  )}
+                  title={`Expires ${new Date(k.expires_at).toLocaleDateString()}`}
+                >
+                  {new Date(k.expires_at) <= new Date() ? "expired" : `expires ${new Date(k.expires_at).toLocaleDateString()}`}
+                </span>
+              )}
+              <span className="ml-auto font-mono text-[10px] text-faint-2" title={k.last_used ?? undefined}>
+                {lastUsedLabel(k.last_used)}
+              </span>
+              {/* Sync credentials never touch the MCP endpoint, so the MCP install snippet
+                  would be misleading for them — the link hand-off is shown at mint time. */}
+              {!k.scopes?.includes("sync") && (
+                <button
+                  className={cn("hover:text-fg", connectId === k.id ? "text-accent" : "text-faint")}
+                  onClick={() => setConnectId(connectId === k.id ? null : k.id)}
+                  title="Connect an agent (MCP setup)"
+                >
+                  <Plug size={14} />
+                </button>
+              )}
+              <button className="text-faint hover:text-st-blocked" onClick={() => revoke(k.id)} title="Revoke">
+                <Trash2 size={14} />
+              </button>
+            </div>
+            {connectId === k.id && (
+              <div className="border-t border-line px-3 pb-3">
+                <McpInstall apiKey="<YOUR_API_KEY>" keyPrefix={k.prefix} />
+              </div>
+            )}
+          </div>
+        )}
+      </KeyGroup>
     </Section>
+  );
+}
+
+/**
+ * One of the two kinds of credential, kept visually apart.
+ *
+ * They are not variants of one thing: an agent key reads and writes a tenant's work, and a
+ * sync credential can only push a code graph — but it also *is* a deployment's identity, so
+ * revoking it does something an access list does not describe. Listing them together made
+ * the second look like the first with a narrower scope.
+ */
+function KeyGroup({
+  title,
+  blurb,
+  rows,
+  empty,
+  children,
+}: {
+  title: string;
+  blurb: React.ReactNode;
+  rows: ApiKey[];
+  empty: string;
+  children: (k: ApiKey) => React.ReactNode;
+}) {
+  return (
+    <div className="mb-5">
+      <div className="mb-1 font-mono text-[10px] uppercase tracking-wide text-faint">{title}</div>
+      <p className="mb-2.5 max-w-[74ch] text-[11.5px] leading-relaxed text-muted">{blurb}</p>
+      <div className="space-y-2">
+        {rows.map((k) => (
+          <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">
+            {children(k)}
+          </div>
+        ))}
+        {rows.length === 0 && <p className="text-[12.5px] text-faint">{empty}</p>}
+      </div>
+    </div>
   );
 }
 
@@ -819,4 +935,21 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="text-fg-2">{value}</span>
     </div>
   );
+}
+
+/**
+ * When a key was last used, or that it never has been.
+ *
+ * "never used" is the interesting state, not the boring one: a key nobody has used is
+ * either about to be, or was minted and forgotten — and a forgotten credential is the one
+ * worth revoking. Collapsing it into a dash alongside real dates hides the only row on the
+ * page that asks a question.
+ */
+function lastUsedLabel(at: string | null): string {
+  if (!at) return "never used";
+  const iso = /(Z|[+-]\d{2}:?\d{2})$/.test(at) ? at : `${at}Z`;
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 3600) return `used ${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `used ${Math.floor(s / 3600)}h ago`;
+  return `used ${Math.floor(s / 86400)}d ago`;
 }

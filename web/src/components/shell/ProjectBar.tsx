@@ -23,7 +23,10 @@ export function ProjectBar() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const [open, setOpen] = React.useState(false);
-  const { data: items = [] } = useItems();
+  // Scoped explicitly. Called bare, this asks the server for items with no project and
+  // gets whatever it resolves by default — the bar then reports counts for a project the
+  // user is not looking at, which is the ambient-project bug in a different costume.
+  const { data: items = [] } = useItems(active?.id);
 
   if (!active) return null;
   const view = viewFromPath(pathname);
