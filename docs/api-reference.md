@@ -189,6 +189,37 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | POST | `/api/platform/github/connect` · `/disconnect` · `/create-issue` | JWT |
 | POST | `/api/platform/gdrive/connect` · `/disconnect` | JWT |
 
+## Operator plane (hosted only)
+
+Cross-tenant, and gated twice: `HOSTED_MODE` must be on **and** the caller must be in
+`PLATFORM_ADMIN_EMAILS`. Every route 404s otherwise — not 403 — so the plane's existence
+is never disclosed to a tenant. Returns **metadata only**: orgs, plans, usage, identity,
+invites. No tenant content (items, memory, PRDs, requests, code graph) is reachable here,
+which is what keeps the cross-tenant isolation guarantee honest.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/admin/me` | Operator probe; also reports `signup_mode` + `invite_expiry_days` |
+| GET | `/api/admin/orgs` | Every tenant: owner, plan, usage vs limits, members |
+| GET | `/api/admin/users` | Every account: identity, org memberships, `last_write_at` |
+| GET | `/api/admin/invites` | Outstanding platform invites; `?history=true` for all ever issued |
+| POST | `/api/admin/invites` | Issue a platform invite (new customer founds their own org) |
+| DELETE | `/api/admin/invites/{id}` | Revoke a **pending** invite |
+| GET | `/api/admin/activity` | Operator ledger — actions taken from this plane, newest first |
+| GET | `/api/admin/org-requests` | Pending additional-org requests |
+| POST | `/api/admin/org-requests/{id}` | Approve or deny one |
+
+Plan assignment is `PUT /api/orgs/{id}/plan`, operator-gated the same way. There is no
+suspend, restore, or impersonate — those endpoints do not exist.
+
+Two response fields carry a distinction the UI depends on:
+
+- **`last_write_at: null`** means "no write on record", not "inactive". Reads are never
+  evented, so a user who signs in daily and only reads is indistinguishable in the data
+  from one who never returned. The console renders it as its own state.
+- **`redeemed_org_name: ""`** on an accepted invite means the account it seeded exists but
+  has not founded an org yet — a different fact from a pending invite.
+
 ## API keys
 
 | Method | Path | Auth |

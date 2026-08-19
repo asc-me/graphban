@@ -42,6 +42,27 @@
   --color-ty-enhancement: #7ca2ff;
   --color-ty-feedback: #c9b8ff;
 
+  /* Operator plane (PRD-21). A separate, cooler chrome so the cross-tenant console is
+     never mistaken for a tenant view — the tenant surfaces are warm/green-black, this
+     one is blue-black and its accent is blue, not lime. Not a re-theme: the status
+     palette above is shared, because a quota bar means the same thing on both planes. */
+  --color-op-bg: #080a0d;
+  --color-op-rail: #06080a;
+  --color-op-card: #0c1015;
+  --color-op-inset: #0a0d12;
+  --color-op-line: #1d222b;
+  --color-op-line-2: #161b23;
+  --color-op-line-hover: #2b3444;
+  --color-op-line-3: #12161d;
+  --color-op-fg: #dfe4ea;
+  --color-op-fg-2: #c3cad6;
+  --color-op-muted: #8a93a3;
+  --color-op-muted-2: #6b7486;
+  --color-op-faint: #4d5666;
+  --color-op-faint-2: #41495a;
+  --color-op-faint-3: #333a47;
+  --color-op-accent: #7ca2ff;
+
   --animate-fade: alFade 0.16s ease both;
   --animate-slide-up: alSlideUp 0.18s ease both;
 }

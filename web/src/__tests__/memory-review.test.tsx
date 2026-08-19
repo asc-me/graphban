@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
+import { MemoryRouter } from "react-router-dom";
+
 import { ProjectProvider } from "@/features/ProjectContext";
 import type { Shard } from "@/lib/types";
 
@@ -59,9 +61,11 @@ function renderView() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <ProjectProvider>
+      <MemoryRouter initialEntries={["/memory-review"]}>
+        <ProjectProvider>
         <MemoryReviewView />
-      </ProjectProvider>
+        </ProjectProvider>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }

@@ -5,6 +5,8 @@ import type { FleetOverview, FleetPresence } from "@/lib/types";
  * refresh, then retries the original request.
  */
 import type {
+  AdminActivity,
+  AdminInvite,
   AdminOrg,
   AdminUser,
   AiProvider,
@@ -64,15 +66,42 @@ const REFRESH_KEY = "al_refresh";
 
 let accessToken: string | null = null;
 
-// The project the app is currently scoped to. Writes (create item / shard / PRD,
-// platform settings) target this project. ProjectProvider keeps it in sync with the
-// active project so no create silently falls back to a non-existent default.
-let activeProjectId: string | undefined;
-export function setActiveProjectId(id: string | undefined) {
-  activeProjectId = id;
+/**
+ * There is deliberately no ambient project here (PRD-21 D1.1).
+ *
+ * A module-level `activeProjectId` synced from a `useEffect` was safe only while the
+ * switcher was the sole thing that moved the project: a render always separated the
+ * change from the user's next action. Putting the project in the URL destroys that —
+ * the route changes synchronously on a deep link and on back/forward, while the effect
+ * fires one render later, so a request issued in that window targets the *previous*
+ * project. `github/connect` is the worst case: it wires an integration into the wrong
+ * project's config, and for a user who belongs to two orgs the server has nothing to
+ * reject, because they can read both.
+ *
+ * So every project-scoped write takes the id as its first argument and is uncallable
+ * without one. The route is the only source; nothing caches it.
+ */
+function projectQuery(projectId: string): string {
+  return `?project_id=${encodeURIComponent(projectId)}`;
 }
-function projectQuery(): string {
-  return activeProjectId ? `?project_id=${encodeURIComponent(activeProjectId)}` : "";
+
+/**
+ * Merge the route's project into a write body, and refuse a disagreement.
+ *
+ * Overwriting a caller-supplied `project_id` silently would relocate the exact bug this
+ * decision deletes — a wrong-project write, one layer down and harder to see. So a body
+ * that names a different project throws in development and is corrected in production:
+ * the route wins either way, but in development somebody finds out.
+ */
+function withProject<T extends object>(projectId: string, body: T) {
+  const stated = (body as { project_id?: string }).project_id;
+  if (import.meta.env.DEV && stated && stated !== projectId) {
+    throw new Error(
+      `project mismatch: body says ${stated}, route says ${projectId}. ` +
+        "The route is the only source of the active project (PRD-21 D1.1).",
+    );
+  }
+  return { ...body, project_id: projectId };
 }
 
 export function setRefreshToken(t: string | null) {
@@ -281,12 +310,22 @@ export const api = {
 
   // ── Operator console (AL-94). Every call 404s unless the caller is a
   // platform admin on a hosted deployment, so the surface is invisible to tenants.
-  adminWhoami: () => request<{ is_platform_admin: boolean; email: string }>("/admin/me"),
+  adminWhoami: () =>
+    request<{
+      is_platform_admin: boolean;
+      email: string;
+      signup_mode: string;
+      invite_expiry_days: number;
+    }>("/admin/me"),
   adminOrgs: () => request<AdminOrg[]>("/admin/orgs"),
   adminUsers: () => request<AdminUser[]>("/admin/users"),
-  adminInvites: () => request<Invite[]>("/admin/invites"),
+  /** `history` widens the read from outstanding invites to every one ever issued. */
+  adminInvites: (history = false) =>
+    request<AdminInvite[]>(`/admin/invites${history ? "?history=true" : ""}`),
+  /** The operator ledger — actions taken from this plane, not tenant activity. */
+  adminActivity: (limit = 12) => request<AdminActivity[]>(`/admin/activity?limit=${limit}`),
   adminCreateInvite: (body: { email: string; plan?: string | null }) =>
-    request<Invite>("/admin/invites", { method: "POST", body: JSON.stringify(body) }),
+    request<AdminInvite>("/admin/invites", { method: "POST", body: JSON.stringify(body) }),
   adminRevokeInvite: (id: string) => request<void>(`/admin/invites/${id}`, { method: "DELETE" }),
   adminOrgRequests: () => request<OrgRequest[]>("/admin/org-requests"),
   adminDecideOrgRequest: (id: string, approve: boolean, note = "") =>
@@ -297,10 +336,10 @@ export const api = {
 
   items: (projectId?: string) =>
     request<Item[]>(`/items${projectId ? `?project_id=${projectId}` : ""}`),
-  createItem: (body: Partial<Item>) =>
+  createItem: (projectId: string, body: Partial<Item>) =>
     request<Item>("/items", {
       method: "POST",
-      body: JSON.stringify({ project_id: activeProjectId, ...body }),
+      body: JSON.stringify(withProject(projectId, body)),
     }),
   updateItem: (id: string, body: Partial<Item>) =>
     request<Item>(`/items/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
@@ -312,15 +351,15 @@ export const api = {
 
   shards: (projectId?: string) =>
     request<Shard[]>(`/memory/shards${projectId ? `?project_id=${projectId}` : ""}`),
-  addShard: (body: { text: string; scope?: string; item_id?: string | null }) =>
+  addShard: (projectId: string, body: { text: string; scope?: string; item_id?: string | null }) =>
     request<Shard>("/memory/shards", {
       method: "POST",
-      body: JSON.stringify({ project_id: activeProjectId, ...body }),
+      body: JSON.stringify(withProject(projectId, body)),
     }),
-  searchMemory: (query: string, top_k = 5) =>
+  searchMemory: (projectId: string, query: string, top_k = 5) =>
     request<ShardHit[]>("/memory/search", {
       method: "POST",
-      body: JSON.stringify({ query, top_k, project_id: activeProjectId }),
+      body: JSON.stringify({ query, top_k, project_id: projectId }),
     }),
   candidateShards: (projectId?: string) =>
     request<Shard[]>(`/memory/candidates${projectId ? `?project_id=${projectId}` : ""}`),
@@ -385,10 +424,10 @@ export const api = {
       `/prds/${id}/decompose?create=${create}`,
       { method: "POST" },
     ),
-  createPrd: (title: string, template = "standard", body?: string) =>
+  createPrd: (projectId: string, title: string, template = "standard", body?: string) =>
     request<Prd>("/prds", {
       method: "POST",
-      body: JSON.stringify({ title, template, project_id: activeProjectId, body }),
+      body: JSON.stringify({ title, template, project_id: projectId, body }),
     }),
   updatePrd: (id: string, body: { title?: string; status?: PrdStatus; body?: string }) =>
     request<Prd>(`/prds/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
@@ -536,19 +575,21 @@ export const api = {
   events: (projectId?: string, limit = 100) =>
     request<EventPage>(`/events?limit=${limit}${projectId ? `&project_id=${projectId}` : ""}`),
 
-  platform: () => request<PlatformConfig>(`/platform${projectQuery()}`),
-  updatePlatform: (body: Partial<PlatformConfig>) =>
-    request<PlatformConfig>(`/platform${projectQuery()}`, { method: "PATCH", body: JSON.stringify(body) }),
+  platform: (projectId: string) => request<PlatformConfig>(`/platform${projectQuery(projectId)}`),
+  updatePlatform: (projectId: string, body: Partial<PlatformConfig>) =>
+    request<PlatformConfig>(`/platform${projectQuery(projectId)}`, { method: "PATCH", body: JSON.stringify(body) }),
   aiProviders: () => request<{ providers: AiProvider[] }>("/platform/providers"),
-  saveProviders: (body: { active_chat_provider?: string; providers?: Record<string, ProviderConfigUpdate> }) =>
-    request<PlatformConfig>(`/platform${projectQuery()}`, { method: "PATCH", body: JSON.stringify(body) }),
-  githubConnect: (account: string, repo: string) =>
-    request<PlatformConfig>(`/platform/github/connect${projectQuery()}`, { method: "POST", body: JSON.stringify({ account, repo }) }),
-  githubDisconnect: () => request<PlatformConfig>(`/platform/github/disconnect${projectQuery()}`, { method: "POST" }),
-  gdriveConnect: (account: string, folder: string) =>
-    request<PlatformConfig>(`/platform/gdrive/connect${projectQuery()}`, { method: "POST", body: JSON.stringify({ account, folder }) }),
-  gdriveDisconnect: () => request<PlatformConfig>(`/platform/gdrive/disconnect${projectQuery()}`, { method: "POST" }),
-  gdriveSync: () =>
+  saveProviders: (projectId: string, body: { active_chat_provider?: string; providers?: Record<string, ProviderConfigUpdate> }) =>
+    request<PlatformConfig>(`/platform${projectQuery(projectId)}`, { method: "PATCH", body: JSON.stringify(body) }),
+  githubConnect: (projectId: string, account: string, repo: string) =>
+    request<PlatformConfig>(`/platform/github/connect${projectQuery(projectId)}`, { method: "POST", body: JSON.stringify({ account, repo }) }),
+  githubDisconnect: (projectId: string) =>
+    request<PlatformConfig>(`/platform/github/disconnect${projectQuery(projectId)}`, { method: "POST" }),
+  gdriveConnect: (projectId: string, account: string, folder: string) =>
+    request<PlatformConfig>(`/platform/gdrive/connect${projectQuery(projectId)}`, { method: "POST", body: JSON.stringify({ account, folder }) }),
+  gdriveDisconnect: (projectId: string) =>
+    request<PlatformConfig>(`/platform/gdrive/disconnect${projectQuery(projectId)}`, { method: "POST" }),
+  gdriveSync: (projectId: string) =>
     request<{
       folder: string;
       prds_dir: string;
@@ -558,7 +599,7 @@ export const api = {
       updated_file: string[];
       conflicts: string[];
       in_sync: number;
-    }>(`/platform/gdrive/sync${projectQuery()}`, { method: "POST" }),
+    }>(`/platform/gdrive/sync${projectQuery(projectId)}`, { method: "POST" }),
 
   // Local↔cloud sync link (AL-141). Status/link/unlink are instance-wide; push/purge/
   // export/import are per-project (the credential is resolved server-side).

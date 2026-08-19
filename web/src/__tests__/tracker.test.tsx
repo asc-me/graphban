@@ -49,15 +49,15 @@ function renderTracker() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <ProjectProvider>
-        <MemoryRouter initialEntries={["/tracker"]}>
+      <MemoryRouter initialEntries={["/tracker"]}>
+        <ProjectProvider>
           <Routes>
             <Route element={<Outlet context={""} />}>
               <Route path="/tracker" element={<TrackerView />} />
             </Route>
           </Routes>
-        </MemoryRouter>
-      </ProjectProvider>
+        </ProjectProvider>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }

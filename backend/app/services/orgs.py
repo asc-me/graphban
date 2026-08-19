@@ -259,14 +259,55 @@ def _send_platform_invite_email(invite: OrgInvite, inviter: User) -> None:
     email_svc.send_email(invite.email, subject, text)
 
 
-def pending_platform_invites(db: Session) -> list[OrgInvite]:
-    return list(
-        db.scalars(
-            select(OrgInvite)
-            .where(OrgInvite.kind == "platform", OrgInvite.status == "pending")
-            .order_by(OrgInvite.created_at.desc())
+def platform_invites(db: Session, *, include_history: bool = False) -> list[OrgInvite]:
+    """Platform invites, newest first.
+
+    ``include_history`` widens the read from "still outstanding" to "every one ever
+    issued", which is what the Licensing screen shows: a redeemed invite is the only
+    record of which org came from which invite and at what plan it was founded, so
+    dropping it after acceptance would erase the provenance the row exists to carry.
+    """
+    stmt = select(OrgInvite).where(OrgInvite.kind == "platform")
+    if not include_history:
+        stmt = stmt.where(OrgInvite.status == "pending")
+    return list(db.scalars(stmt.order_by(OrgInvite.created_at.desc())))
+
+
+def invite_is_expired(invite: OrgInvite) -> bool:
+    """Past its expiry while still pending. Expiry is evaluated on read — there is no
+    sweeper — so a pending row and an expired row are the same row seen at different
+    times, and the UI must not report the first as available."""
+    if invite.status != "pending" or invite.expires_at is None:
+        return False
+    # SQLite hands datetimes back tz-naive; coerce to UTC before comparing (as the
+    # api-key expiry check does) so aware/naive never collide.
+    exp = invite.expires_at if invite.expires_at.tzinfo else invite.expires_at.replace(tzinfo=timezone.utc)
+    return exp < utcnow()
+
+
+def org_founded_from(db: Session, invite: OrgInvite) -> Organization | None:
+    """The org an accepted platform invite actually produced, or None.
+
+    Resolved through the account that redeemed it: a platform invite authorizes signup,
+    and the org is founded afterwards, so acceptance and founding are two facts. An
+    invite accepted by someone who has not founded anything yet returns None rather
+    than the nearest plausible org.
+
+    ``accepted_user_id`` alone is the signal: it is set only on redemption and nothing
+    clears it, so pairing it with a status check would add a branch no state can reach.
+    """
+    if not invite.accepted_user_id:
+        return None
+    org_id = db.scalar(
+        select(OrgMembership.org_id)
+        .join(Organization, Organization.id == OrgMembership.org_id)
+        .where(
+            OrgMembership.user_id == invite.accepted_user_id,
+            OrgMembership.role == "owner",
         )
+        .order_by(Organization.created_at)
     )
+    return db.get(Organization, org_id) if org_id else None
 
 
 def platform_plan_for(db: Session, user: User) -> str | None:
@@ -294,12 +335,8 @@ def _validate_pending(invite: OrgInvite | None) -> OrgInvite:
     non-existent one."""
     if invite is None or invite.status != "pending":
         raise HTTPException(404, "invitation not found or already used")
-    if invite.expires_at is not None:
-        # SQLite hands datetimes back tz-naive; coerce to UTC before comparing (as the
-        # api-key expiry check does) so aware/naive never collide.
-        exp = invite.expires_at if invite.expires_at.tzinfo else invite.expires_at.replace(tzinfo=timezone.utc)
-        if exp < utcnow():
-            raise HTTPException(410, "this invitation has expired")
+    if invite_is_expired(invite):
+        raise HTTPException(410, "this invitation has expired")
     return invite
 
 

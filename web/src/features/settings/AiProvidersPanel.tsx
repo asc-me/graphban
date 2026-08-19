@@ -21,7 +21,7 @@ type Draft = { api_key: string; base_url: string; chat_model: string; embed_mode
  */
 export function AiProvidersPanel() {
   const { activeId } = useProjectCtx();
-  const { data: cfg } = usePlatform();
+  const { data: cfg } = usePlatform(activeId);
   const { data: reg } = useQuery({ queryKey: ["ai-providers"], queryFn: () => api.aiProviders() });
   const qc = useQueryClient();
   const [openId, setOpenId] = React.useState<string | null>(null);
@@ -52,7 +52,7 @@ export function AiProvidersPanel() {
         p.id === "stub"
           ? undefined
           : { [p.id]: { api_key: d.api_key, base_url: d.base_url, chat_model: d.chat_model, embed_model: d.embed_model } };
-      return api.saveProviders({ active_chat_provider: p.id, providers: providersBody });
+      return api.saveProviders(activeId, { active_chat_provider: p.id, providers: providersBody });
     },
     onSuccess: (_r, p) => {
       setDrafts((d) => ({ ...d, [p.id]: { ...draftFor(p), api_key: "" } })); // clear the key input post-save

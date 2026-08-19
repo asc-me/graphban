@@ -32,6 +32,11 @@ def _clear_outbox():
     outbox.clear()
 
 
+def _token_of(client, invite: dict) -> str:
+    """The accept link is what the API exposes; the raw token never is."""
+    return invite["accept_url"].rsplit("/", 1)[-1]
+
+
 def _make_org(client, headers, name="Acme"):
     r = client.post("/api/orgs", json={"name": name}, headers=headers)
     assert r.status_code == 201, r.text
@@ -277,3 +282,47 @@ def test_expired_invite_refused(client, hosted):
     dana = _login(client, "dana@ascme-labs.com")
     assert client.post("/api/invites/accept", json={"token": token}, headers=dana).status_code == 410
     assert client.get(f"/api/invites/{token}/preview").status_code == 410
+
+
+# ---- PRD-21 screen B: what the Users & access table reads ----------------------
+def test_member_listing_carries_project_access_and_last_write(client, hosted):
+    """The org-admin table answers "who is here, what can they reach, are they working".
+    Role alone answers none of the second two."""
+    alex = _login(client, "alex@ascme-labs.com")
+    org = _make_org(client, alex, "Acme")
+    client.post("/api/projects", json={"name": "Rocket"}, headers=alex)
+
+    rows = client.get(f"/api/orgs/{org['id']}/members", headers=alex).json()
+    me = next(r for r in rows if r["user"]["email"] == "alex@ascme-labs.com")
+    assert me["role"] == "owner"
+    assert [a["name"] for a in me["access"]] == ["Rocket"]
+    assert me["access"][0]["level"] == "write"
+    assert me["access"][0]["tag"]  # the tag is what the project URL is built from
+    # Creating the org and the project are both recorded writes.
+    assert me["last_write_at"] is not None
+
+
+def test_no_project_access_is_an_empty_list_never_null(client, hosted):
+    """"Reaches nothing" and "we did not look" must not render the same way, so access is
+    always a list — an absent grant is an empty one, not a null."""
+    alex = _login(client, "alex@ascme-labs.com")
+    org = _make_org(client, alex, "Acme")
+    inv = client.post(f"/api/orgs/{org['id']}/invites",
+                      json={"email": "dana@ascme-labs.com"}, headers=alex).json()
+    dana = _login(client, "dana@ascme-labs.com")
+    client.post("/api/invites/accept", json={"token": _token_of(client, inv)}, headers=dana)
+
+    rows = client.get(f"/api/orgs/{org['id']}/members", headers=alex).json()
+    dana_row = next(r for r in rows if r["user"]["email"] == "dana@ascme-labs.com")
+    assert dana_row["access"] == []
+
+
+def test_member_access_does_not_leak_another_orgs_projects(client, hosted):
+    """Access is filtered to the projects of THIS org. A membership in someone else's
+    project must not appear on this org's roster."""
+    alex = _login(client, "alex@ascme-labs.com")
+    org = _make_org(client, alex, "Acme")
+    rows = client.get(f"/api/orgs/{org['id']}/members", headers=alex).json()
+    me = next(r for r in rows if r["user"]["email"] == "alex@ascme-labs.com")
+    # The seeded demo projects belong to no org, so none of them may show up here.
+    assert me["access"] == []
