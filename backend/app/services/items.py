@@ -65,7 +65,15 @@ def create_item(
     prd_id: str | None = None,
     prd_section: str = "",
     fidelity: str = "low",
+    commit: bool = True,
 ) -> Item:
+    """Create a tracked item.
+
+    ``commit=False`` leaves the row flushed but uncommitted so a caller can make the item
+    and something that references it one transaction — `accept_request` needs the item and
+    its link to land together, because an item that exists while its request still sits in
+    the triage queue reads as untriaged work that is already on the board.
+    """
     if status not in STATUSES:
         raise ValueError(f"invalid status: {status}")
     if fidelity not in FIDELITIES:
@@ -94,8 +102,11 @@ def create_item(
         fidelity=fidelity,
     )
     db.add(item)
-    db.commit()
-    db.refresh(item)
+    if commit:
+        db.commit()
+        db.refresh(item)
+    else:
+        db.flush()  # assigns the row without ending the caller's transaction
     if item.touchpoints:
         from app.services.clustering import sync_code_links
         sync_code_links(db, item)

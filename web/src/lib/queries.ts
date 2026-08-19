@@ -403,6 +403,26 @@ export function useRequests(projectId?: string) {
   return useQuery({ queryKey: [...keys.requests, projectId], queryFn: () => api.requests(projectId), enabled: !!projectId });
 }
 
+export function useTriageQueue(projectId: string) {
+  return useQuery({
+    queryKey: ["triage", projectId],
+    queryFn: () => api.triageQueue(projectId),
+    enabled: !!projectId,
+  });
+}
+
+export function useAcceptRequest(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.acceptRequest(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["triage", projectId] });
+      qc.invalidateQueries({ queryKey: keys.requests });
+      qc.invalidateQueries({ queryKey: keys.items });
+    },
+  });
+}
+
 export function useVoteRequest() {
   const qc = useQueryClient();
   return useMutation({
@@ -435,6 +455,10 @@ export function useFleet(projectId?: string) {
   return useQuery({
     queryKey: ["fleet", projectId],
     queryFn: () => api.fleet(projectId),
+    // Gated: without a project the server resolves the request against its default one,
+    // so an ungated call renders another project's fleet for a frame before the real
+    // one arrives. Harmless-looking, and exactly the class of thing D1 deleted.
+    enabled: !!projectId,
     refetchInterval: 15000,
   });
 }

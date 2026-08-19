@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Item, Request
+from app.services import items as items_svc
 from app.services import keys
 
 REQUEST_TYPES = ["bug", "feature", "enhancement", "feedback"]
@@ -83,6 +84,42 @@ def link_request(db: Session, request_id: str, item_id: str | None) -> Request |
     db.commit()
     db.refresh(req)
     return req
+
+
+def accept_request(db: Session, request_id: str, *, reporter: dict | None = None) -> tuple[Request, Item] | None:
+    """Triage a request into tracked work: create the item and link it, atomically.
+
+    Doing this as two calls from the client leaves a window where the item exists and the
+    link failed — an orphan item plus a request still sitting in the queue, which reads as
+    "nobody triaged this" while the work is already on the board. One commit, or neither.
+
+    Idempotent: a request already linked returns its existing item rather than minting a
+    second one, so a double-click cannot fork the same report into two pieces of work.
+    """
+    req = db.get(Request, keys.resolve_request(db, request_id) or request_id)
+    if req is None:
+        return None
+    if req.linked_to:
+        existing = db.get(Item, keys.resolve_item(db, req.linked_to) or req.linked_to)
+        if existing is not None:
+            return req, existing
+
+    item = items_svc.create_item(
+        db,
+        title=req.title,
+        description=req.detail or "",
+        # The request's type is what a triager sorts by, so it survives onto the item.
+        tags=[req.type] if req.type else [],
+        project_id=req.project_id,
+        reporter=reporter,
+        commit=False,
+    )
+    req.linked_to = item.id
+    req.status = "linked"
+    db.commit()
+    db.refresh(req)
+    db.refresh(item)
+    return req, item
 
 
 def set_status(db: Session, request_id: str, status: str) -> Request | None:

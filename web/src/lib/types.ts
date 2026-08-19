@@ -342,6 +342,20 @@ export interface RequestItem {
   created_at: string;
 }
 
+/** A request or item that looks like this one. Advisory — never auto-merged. */
+export interface DuplicateHint {
+  kind: "request" | "item";
+  id: string;
+  title: string;
+  score: number;
+}
+
+export interface TriageRow {
+  request: RequestItem;
+  /** Null means "compared, nothing matched" — the comparison always runs. */
+  duplicate: DuplicateHint | null;
+}
+
 export interface ApiKey {
   id: string;
   name: string;

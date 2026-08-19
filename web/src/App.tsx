@@ -33,6 +33,7 @@ import { RoadmapView } from "@/features/roadmap/RoadmapView";
 import { SettingsView } from "@/features/settings/SettingsView";
 import { RequestsView } from "@/features/requests/RequestsView";
 import { TrackerView } from "@/features/tracker/TrackerView";
+import { TriageView } from "@/features/triage/TriageView";
 import { useConfig } from "@/lib/queries";
 import { ORG_BASE, lastProjectTag, projectPath } from "@/lib/routes";
 
@@ -60,6 +61,7 @@ export function App() {
 const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["tracker", <TrackerView />],
   ["requests", <RequestsView />],
+  ["triage", <TriageView />],
   ["dashboard", <DashboardView />],
   ["links", <LinksGraphView />],
   ["code", <CodeGraphView />],

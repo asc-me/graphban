@@ -1,4 +1,4 @@
-import { BarChart3, Building2, Check, ChevronDown, CreditCard, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, Palette, Plug, Plus, ScrollText, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
+import { BarChart3, Building2, Check, ChevronDown, CreditCard, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, Palette, Plug, Plus, Radar, ScrollText, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
 import * as React from "react";
 import { NavLink } from "react-router-dom";
 
@@ -28,6 +28,7 @@ import { ORG_BASE, adminPath, projectPath } from "@/lib/routes";
 const WORKSPACE = [
   { to: "tracker", icon: <ListChecks size={16} />, label: "Tracker", count: "items" },
   { to: "requests", icon: <Star size={16} />, label: "Requests", count: "requests" },
+  { to: "triage", icon: <Radar size={16} />, label: "Triage" },
   { to: "dashboard", icon: <LayoutGrid size={16} />, label: "Dashboard" },
   { to: "links", icon: <GitFork size={16} />, label: "Links" },
   { to: "code", icon: <Network size={16} />, label: "Code graph" },
