@@ -126,6 +126,22 @@ function CopyRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+/**
+ * How long since an agent last reported.
+ *
+ * Null is "never reported", which is a registered agent that has not run — different from
+ * one that ran and stopped, and the two would otherwise both render as silence.
+ */
+function heartbeatLabel(at: string | null): string {
+  if (!at) return "no heartbeat yet";
+  const iso = /(Z|[+-]\d{2}:?\d{2})$/.test(at) ? at : `${at}Z`;
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
 function AgentRow({ a, onDismiss, dismissed }: {
   a: FleetAgent; onDismiss?: (id: string, undo?: boolean) => void; dismissed?: boolean;
 }) {
@@ -182,6 +198,12 @@ function AgentRow({ a, onDismiss, dismissed }: {
           {a.active_role}
         </span>
         <span className="font-mono text-[10px] text-faint">{a.state}</span>
+        {/* WHEN it was last heard from, not just that it is offline. `offline` alone cannot
+            tell a process that died thirty seconds ago from one gone for a week, and those
+            call for opposite responses: wait, or go clean up the branch it left behind. */}
+        <span className="font-mono text-[9.5px] text-faint-2" title={a.last_seen_at ?? undefined}>
+          {heartbeatLabel(a.last_seen_at)}
+        </span>
       </div>
       <div className="w-40 text-right text-[11px] text-muted">
         {a.holdings.length === 0

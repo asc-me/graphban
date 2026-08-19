@@ -380,6 +380,13 @@ export function CodeGraphView() {
             <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
               <div className="text-[14px] font-semibold text-fg-2">No code described yet</div>
               <p className="max-w-[420px] text-[12.5px] leading-relaxed text-muted">
+                {/* Naming the wrong reading, rather than trusting "yet" to imply it. An empty
+                    graph over a large repository looks identical to a graph of a small one,
+                    and the reassuring reading — "there is not much here" — is the wrong one. */}
+                Empty because nothing has been described, not because this project has no
+                structure.
+              </p>
+              <p className="max-w-[420px] text-[12.5px] leading-relaxed text-muted">
                 A coding agent populates this graph by calling the{" "}
                 <span className="font-mono text-accent">describe_code</span> MCP tool as it works —
                 upserting module/file/symbol nodes and their imports/calls/ownership edges. Ask a
