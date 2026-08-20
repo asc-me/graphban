@@ -185,6 +185,22 @@ def set_org_plan(
     return OrgOut(id=org.id, name=org.name, plan=org.plan, role=role)
 
 
+@router.get("/orgs/{org_id}/deployments")
+def org_deployments(org_id: str, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """Which local boxes push into this tenant (PRD-21 D6).
+
+    Everything here is cloud-held. A linked box forwards its claims, leases and heartbeats,
+    so who is working on what is a query — nothing is framed, proxied, relayed or tunnelled,
+    and the cloud never reaches into a deployment.
+
+    The address a box reports is a **hint**: the same machine answers differently from
+    different networks, and this endpoint makes no attempt to verify it.
+    """
+    authz.require_org_member(db, user.id, org_id)
+    return galaxy_svc.deployments(db, org_id)
+
+
 @router.get("/orgs/{org_id}/galaxy")
 def org_galaxy(org_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The org's repo-level dependency graph (PRD-21 D3).

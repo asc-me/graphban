@@ -261,3 +261,92 @@ def test_a_project_outside_an_org_has_no_arrows_rather_than_an_error(client, aut
     """Self-host, and any project with no org: there are no siblings to depend on. That
     is different from having none, and it is an empty list, never a failure."""
     assert _map(client, auth, "core")["outbound"] == []
+
+
+# ---- D6: linked deployments -----------------------------------------------------
+def _deployments(client, auth, org_id):
+    r = client.get(f"/api/orgs/{org_id}/deployments", headers=auth)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_a_deployment_is_named_by_its_credential(client, org):
+    """The cloud stores no other deployment identity, which is what makes naming the key
+    at mint time load-bearing — the name IS the label everywhere in the console."""
+    key = _sync_key(client, org["auth"], org["core"]["id"])
+    _push(client, key, base_url="http://ubuntu-srv:8080", nodes=[
+        {"path": "a.py", "kind": "file", "name": "a", "summary": "x"},
+    ])
+
+    rows = _deployments(client, org["auth"], org["org"]["id"])
+    row = next(r for r in rows if r["project_tag"] == "CORE")
+    assert row["label"] == "pusher"
+    assert row["base_url"] == "http://ubuntu-srv:8080"
+    assert row["node_count"] == 1
+    assert row["freshness"] == "in_sync"
+
+
+def test_never_pushed_is_not_the_same_as_stale(client, org):
+    """A credential that never pushed is a link somebody set up and did not finish; one
+    that pushed a month ago is a box that stopped. Different actions, different words."""
+    _sync_key(client, org["auth"], org["core"]["id"])
+    row = next(r for r in _deployments(client, org["auth"], org["org"]["id"])
+               if r["project_tag"] == "CORE")
+    assert row["freshness"] == "never"
+    assert row["last_push_at"] is None
+    assert row["node_count"] == 0
+
+
+def test_an_unreported_address_is_empty_rather_than_invented(client, org):
+    """The cloud cannot know where a box lives until the box says so."""
+    key = _sync_key(client, org["auth"], org["core"]["id"])
+    _push(client, key, nodes=[])  # no base_url in the payload
+    row = next(r for r in _deployments(client, org["auth"], org["org"]["id"])
+               if r["project_tag"] == "CORE")
+    assert row["base_url"] == ""
+
+
+def test_only_sync_credentials_are_deployments(client, org):
+    """An agent key is a client, not a box. Listing it here would invent a deployment."""
+    client.post("/api/api-keys", headers=org["auth"],
+                json={"name": "an agent", "scopes": ["read", "write"],
+                      "project_id": org["core"]["id"]})
+    labels = {r["label"] for r in _deployments(client, org["auth"], org["org"]["id"])}
+    assert "an agent" not in labels
+
+
+def test_deployments_are_org_scoped(client, org, hosted):
+    dana = _login(client, "dana@ascme-labs.com")
+    client.post("/api/orgs", json={"name": "Dana Co"}, headers=dana)
+    assert client.get(f"/api/orgs/{org['org']['id']}/deployments",
+                      headers=dana).status_code == 404
+
+
+def test_a_revoked_credential_stays_visible(client, org):
+    """A retired deployment is history, not noise. Dropping the row would make a box that
+    was deliberately unlinked indistinguishable from one that never existed.
+
+    Revoked here means the SOFT kill switch — what the fleet sweeps set (`end_wave`,
+    `revoke-expired`). Note the gap: `DELETE /api/api-keys/{id}` hard-deletes the row, so a
+    credential retired that way does vanish from this list. The design asks for retired
+    deployments to stay visible; only the soft path currently delivers that.
+    """
+    from app.db import SessionLocal
+    from app.models import ApiKey
+    from sqlalchemy import select
+
+    key = _sync_key(client, org["auth"], org["core"]["id"])
+    _push(client, key, nodes=[])
+
+    db = SessionLocal()
+    try:
+        row = db.scalar(select(ApiKey).where(ApiKey.name == "pusher"))
+        row.revoked = True
+        kid = row.id
+        db.commit()
+    finally:
+        db.close()
+
+    row = next((r for r in _deployments(client, org["auth"], org["org"]["id"])
+                if r["credential_id"] == kid), None)
+    assert row is not None and row["revoked"] is True

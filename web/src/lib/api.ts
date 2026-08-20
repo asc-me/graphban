@@ -6,6 +6,7 @@ import type { FleetOverview, FleetPresence } from "@/lib/types";
  */
 import type {
   AdminActivity,
+  Deployment,
   Team,
   Galaxy,
   OrgProjectAccess,
@@ -306,6 +307,7 @@ export const api = {
   previewInvite: (token: string) => request<InvitePreview>(`/invites/${token}/preview`),
   acceptInvite: (token: string) =>
     request<Org>("/invites/accept", { method: "POST", body: JSON.stringify({ token }) }),
+  deployments: (orgId: string) => request<Deployment[]>(`/orgs/${orgId}/deployments`),
   teams: (orgId: string) => request<Team[]>(`/orgs/${orgId}/teams`),
   createTeam: (orgId: string, name: string, description = "") =>
     request<Team>(`/orgs/${orgId}/teams`, {

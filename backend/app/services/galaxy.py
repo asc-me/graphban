@@ -16,7 +16,11 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import CodeNode, Project, ProjectEdge, utcnow
+from datetime import timezone
+
+from sqlalchemy import func
+
+from app.models import Agent, ApiKey, CodeNode, Event, Project, ProjectEdge, utcnow
 
 KINDS = ("depends_on", "serves", "declared")
 
@@ -273,3 +277,77 @@ def outbound_stubs(db: Session, project_id: str) -> list[dict]:
             "unanchored": not anchors,
         })
     return out
+
+
+def deployments(db: Session, org_id: str) -> list[dict]:
+    """The local boxes pushing into this tenant (PRD-21 D6).
+
+    Every field here is **already cloud-held**, which is the finding that removes the hard
+    part of this screen. When a box is linked, only the code-graph tools run locally;
+    claims, leases, heartbeats and enrolments are forwarded, so `Agent` and
+    `AreaReservation` are cloud rows. "Which agents are running, on what" is a query, not
+    an embed — and nothing here reaches into the box.
+
+    One key is one deployment. The cloud stores no other deployment identity, so the sync
+    credential's **name** is the label, which is what makes naming it at mint time
+    load-bearing.
+    """
+    projects = {
+        p.id: p for p in db.scalars(select(Project).where(Project.org_id == org_id))
+    }
+    if not projects:
+        return []
+
+    out: list[dict] = []
+    for key in db.scalars(
+        select(ApiKey).where(ApiKey.project_id.in_(projects.keys())).order_by(ApiKey.created_at)
+    ):
+        if "sync" not in (key.scopes or []):
+            continue
+        project = projects[key.project_id]
+
+        last_push = db.scalar(
+            select(func.max(Event.ts)).where(
+                Event.action == "sync_code_graph", Event.project_id == project.id
+            )
+        )
+        node_count = db.scalar(
+            select(func.count()).select_from(CodeNode).where(
+                CodeNode.project_id == project.id, CodeNode.fresh.is_(True)
+            )
+        ) or 0
+
+        # Agents currently working this project — forwarded up by the linked box itself.
+        agents = [
+            {"key": a.key, "label": a.label, "role": a.active_role, "state": a.state}
+            for a in db.scalars(select(Agent).where(Agent.project_id == project.id))
+            if not a.dismissed
+        ]
+
+        out.append({
+            # The key's name IS the deployment's label; there is no other identity stored.
+            "label": key.name,
+            "credential_id": key.id,
+            "prefix": key.prefix,
+            "project_id": project.id,
+            "project_tag": project.tag,
+            "project_name": project.name,
+            "base_url": key.base_url,
+            "last_push_at": last_push.isoformat() if last_push else None,
+            "node_count": node_count,
+            # `never` is not `stale`. A credential that has never pushed is a link that was
+            # set up and not finished; one that pushed a month ago is a box that stopped.
+            # They call for different actions, so they are different words.
+            "freshness": "never" if last_push is None else _freshness(last_push),
+            "revoked": key.revoked,
+            "agents": agents,
+        })
+    return out
+
+
+def _freshness(last_push) -> str:
+    """`in_sync` while a push is recent, `stale` once it is not. Evaluated on read — there
+    is no sweeper, so a deployment cannot be marked stale by a job that failed to run."""
+    ts = last_push if last_push.tzinfo else last_push.replace(tzinfo=timezone.utc)
+    age = (utcnow() - ts).total_seconds()
+    return "in_sync" if age < 24 * 3600 else "stale"

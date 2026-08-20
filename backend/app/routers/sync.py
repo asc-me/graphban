@@ -103,6 +103,9 @@ class CodeGraphIn(BaseModel):
     # "evidence": [{"file": "web/package.json", "fact": "@acme/core ^2.1"}]}].
     # OMITTED and EMPTY differ — see `galaxy.apply_manifests`.
     manifests: list[dict] | None = None
+    # Where this deployment says it can be reached. Self-reported and advisory — the cloud
+    # has no way to verify it and never tries (PRD-21 D6).
+    base_url: str | None = None
 
 
 @router.post("/code-graph")
@@ -130,6 +133,11 @@ def ingest_code_graph(
     # PRD-21 D3: the galaxy rides along with the code-graph push, because a manifest is
     # read from the same checkout at the same moment. Org-scoped, so it is a no-op on a
     # self-host where a project belongs to no org.
+    if body.base_url is not None:
+        # One key is one deployment, so the credential is where its address lives.
+        key.base_url = (body.base_url or "").strip()
+        db.commit()
+
     project = db.get(Project, project_id)
     org_id = project.org_id if project is not None else None
     if org_id:

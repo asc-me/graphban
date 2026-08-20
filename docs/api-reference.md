@@ -216,6 +216,34 @@ Three rules the wire format encodes, each of which would be a permanent defect i
 
 Stale edges are marked, never deleted, and their evidence is never trimmed: a relationship
 with no explanation is worse than a deleted one. Purging is an explicit operator action.
+## Linked deployments (hosted only, PRD-21 D6)
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/orgs/{id}/deployments` | The local boxes pushing into this tenant |
+
+**Nothing here reaches into a box.** Every field is already cloud-held: a linked deployment
+runs only the code-graph tools locally and forwards claims, leases and heartbeats, so
+"which agents are running, on what" is a query rather than an embed. Relay and reverse
+tunnel are *rejected, not deferred* — the box pushes, the cloud never reaches in.
+
+**One key is one deployment.** The cloud stores no other deployment identity, so the sync
+credential's name is the label everywhere, which makes naming it at mint time load-bearing.
+
+`POST /api/sync/code-graph` gained an optional `base_url`: where the box says it can be
+reached. It is **a hint, never a guarantee** — the same machine answers at different
+addresses from different networks, and the cloud makes no attempt to verify it (a
+cross-origin probe from the console would hang or be blocked). The UI renders it as text
+and then links it, with a per-user override in `localStorage`.
+
+Two distinctions the payload carries:
+
+- **`never` is not `stale`.** A credential that has never pushed is a link somebody set up
+  and did not finish; one that pushed a month ago is a box that stopped. Different actions.
+- **A revoked credential stays listed**, marked. A retired deployment is history, not
+  noise. (Gap: `DELETE /api/api-keys/{id}` hard-deletes, so a credential retired that way
+  does vanish; only the soft revoke used by the fleet sweeps keeps the row.)
+
 ## Teams (hosted only, PRD-21 D5)
 
 A team is a named group in an org with **grants** — a project plus an access level — and a

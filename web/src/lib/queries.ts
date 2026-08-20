@@ -142,6 +142,14 @@ export function useSetOrgPlan() {
   });
 }
 
+export function useDeployments(orgId?: string) {
+  return useQuery({
+    queryKey: ["deployments", orgId],
+    queryFn: () => api.deployments(orgId!),
+    enabled: !!orgId,
+  });
+}
+
 export function useTeams(orgId?: string) {
   return useQuery({
     queryKey: ["teams", orgId],

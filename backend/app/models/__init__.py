@@ -1452,6 +1452,19 @@ class ApiKey(Base):
     # agent `done` and `sign_off` with nothing to indicate the choice had been overridden.
     posture: Mapped[str | None] = mapped_column(String, nullable=True)
     last_used: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Where the deployment using this credential says it can be reached (PRD-21 D6).
+    #
+    # **A hint, never a guarantee.** The cloud stores nothing pointing back at a box —
+    # `SyncLink.cloud_url` runs the other way — so this is self-reported on the push. The
+    # same machine answers at different addresses from different networks:
+    # `http://ubuntu-srv:8080` is correct on that LAN and meaningless anywhere else. The
+    # console therefore renders it as text and then links it, rather than offering a button
+    # that dead-ends in a connection error, and a per-user override lives in localStorage.
+    #
+    # It sits on the credential because **one key is one deployment** — the cloud stores no
+    # other deployment identity, which is what makes naming the key at mint time
+    # load-bearing.
+    base_url: Mapped[str] = mapped_column(String, default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # Lifecycle (AL-72): NULL expires_at = non-expiring; revoked is a soft kill switch.
     # verify_api_key rejects a key that is past expiry or revoked.

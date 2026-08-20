@@ -457,6 +457,8 @@ materializes nothing. Access resolves to the highest across all sources.
 
 ## D6 — Linked deployments, and why the drill-down is mostly not an iframe
 
+**Built.**
+
 The vision asked for a developer to zoom into their own local deployment and see which agents
 are running on which projects. **In a linked topology the cloud already knows this**, and the
 discovery is worth stating plainly because it removes the hardest engineering risk in the PRD.
@@ -511,6 +513,11 @@ properties govern how it is shown:
   click.
 
 ## D7 — The project plane
+
+**Built.** Most of it landed with D1: `/p/:tag/*` mounts the existing views unchanged and
+`/p/:tag/prds/:id` gives the PRD workspace its URL. Triage arrived correctly labelled
+per-project. What D7 added on top is the landing pad at `/p/:tag` — counts, routes into the
+project's own surfaces, and the dependency strip read from the galaxy in **both** directions.
 
 `/p/:tag` is where the existing app lives, reused unchanged: tracker, requests, memory, roadmap,
 activity, fleet, code graph.
