@@ -1,0 +1,100 @@
+{
+  "prds": {
+    "GRPH-P17": {
+      "file": "docs/prd-17-fleet-roles.md",
+      "status": "approved",
+      "sections": [
+        "Overview",
+        "Goals",
+        "Non-Goals",
+        "Key decisions",
+        "Roles",
+        "Data model",
+        "D1 — Agent registry and presence",
+        "D2 — Role eligibility and the call gate",
+        "D3 — claim_review and the self-review ban",
+        "D4 — The divvy over MCP",
+        "D5 — The Fleet view",
+        "D6 — Allocation and the directive downlink",
+        "D7 — wait_seconds long-poll",
+        "D8 — Client half: extend the roster generator",
+        "D9 — The adversarial evidence gate",
+        "Relationship to in-session orchestrators",
+        "Risks and open questions",
+        "Acceptance walk"
+      ]
+    },
+    "GRPH-P19": {
+      "file": "docs/prd-19-enrolment-sessions.md",
+      "status": "review",
+      "sections": [
+        "1. Overview",
+        "2. Goals",
+        "3. Problem",
+        "4. Key decisions",
+        "5. Data model",
+        "6. Rollout",
+        "E1 — The enrolments table and the issue/consume service",
+        "E2 — register_agent consumes an enrolment code",
+        "E3 — Independence derives from the session",
+        "E4 — The Fleet view issues and tracks seats",
+        "E5 — End wave expires sessions, not credentials",
+        "E6 — Role prompts carry the seat",
+        "E7 — mint_enrolment, planner-only",
+        "E8 — Delete what enrolment makes dead",
+        "E9 — The manifest narrows to the role, after registration (O6)",
+        "7. Non-goals",
+        "8. Risks and open questions",
+        "9. Success criteria",
+        "10. Appendix",
+        "11. Contracts, failure modes and edges — recorded after shipping"
+      ]
+    },
+    "GRPH-P20": {
+      "file": "docs/prd-20-living-graph.md",
+      "status": "approved",
+      "sections": [
+        "1. Overview",
+        "2. Goals",
+        "3. Problem (what is actually wrong today)",
+        "D1 — One layout owner, off the main thread",
+        "D2 — Pan, zoom, drag, find",
+        "D3 — Hover, focus, and reach",
+        "D4 — The held set",
+        "D5 — How a held node looks",
+        "D6 — Overlapping clouds are the alarm",
+        "D7 — The fleet legend",
+        "D8 — Asking the graph (G5)",
+        "D9 — The galaxy view (scale)",
+        "4. Data model",
+        "5. Acceptance criteria",
+        "6. Phasing",
+        "7. Risks",
+        "8. Decisions from grilling"
+      ]
+    },
+    "GRPH-P21": {
+      "file": "docs/prd-21-cloud-org-plane.md",
+      "status": "approved",
+      "sections": [
+        "1. Overview",
+        "2. Goals",
+        "3. Problem (verified against the tree)",
+        "D1 — The hierarchy, and the URL that carries it",
+        "D2 — The org dashboard: the first aggregate",
+        "D3 — The super galaxy: an edge between repos must name the file that proves it",
+        "D4 — The arrow out",
+        "D5 — Teams, and what a grant writes",
+        "D6 — Linked deployments, and why the drill-down is mostly not an iframe",
+        "D7 — The project plane",
+        "D8 — Membership mutations",
+        "D9 — Reserved slots, and what Design must not draw",
+        "4. Data model",
+        "5. Acceptance criteria",
+        "6. Phasing",
+        "7. Risks"
+      ]
+    }
+  },
+  "unindexed": []
+}

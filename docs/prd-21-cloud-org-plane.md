@@ -1,6 +1,6 @@
 # PRD-21 — The cloud org plane: a hierarchy over the projects, a galaxy over the graphs
 
-**Status:** **review — rebaselined 2026-08-18** (`scope-change`), which cleared the dimension
+**Status:** **approved — re-earned 2026-08-20**, after the 2026-08-18 `scope-change` rebaseline cleared the dimension
 verdicts and re-opened the grill. **The 2026-08-17 baseline still governs** until a new one is
 earned; anything built meanwhile is measured against it. First baseline: three batches, 24
 questions; what they settled is recorded in the section each decision governs, and the grill
