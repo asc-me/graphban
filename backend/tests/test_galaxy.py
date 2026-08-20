@@ -198,3 +198,66 @@ def test_the_galaxy_is_org_scoped(client, org):
     assert names == {"Core", "Web"}
     # 404, not 403 — the org gate hides existence rather than confirming it.
     assert client.get(f"/api/orgs/{org['org']['id']}/galaxy", headers=dana).status_code == 404
+
+
+# ---- D4: the arrows out ---------------------------------------------------------
+def _map(client, auth, project_id):
+    r = client.get(f"/api/agent/code/map?project_id={project_id}", headers=auth)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_the_arrow_out_anchors_on_the_file_that_declares_it(client, org):
+    """The payoff for D3 being strict: because the edge had to name a file, the project
+    view can attach the arrow to the REAL node for that file rather than float it."""
+    core_key = _sync_key(client, org["auth"], org["core"]["id"])
+    web_key = _sync_key(client, org["auth"], org["web"]["id"])
+    _push(client, core_key, provides=["@acme/core"], manifests=[])
+    _push(client, web_key, manifests=[
+        {"name": "@acme/core", "evidence": [{"file": "web/package.json", "fact": "^2.1"}]},
+    ], nodes=[
+        {"path": "web/package.json", "kind": "config", "name": "manifest", "summary": "deps"},
+    ])
+
+    stubs = _map(client, org["auth"], org["web"]["id"])["outbound"]
+    assert len(stubs) == 1
+    assert stubs[0]["tag"] == "CORE"
+    assert stubs[0]["anchor_paths"] == ["web/package.json"]
+    assert stubs[0]["unanchored"] is False
+    assert stubs[0]["evidence"] == [{"file": "web/package.json", "fact": "^2.1"}]
+
+
+def test_an_arrow_whose_file_was_never_described_says_so(client, org):
+    """The manifest can name a file the code graph has never described. The arrow is
+    real; its anchor is missing. Hiding it would lose a dependency, and drawing it from
+    nowhere with no explanation is what D3 exists to prevent — so it renders and says why."""
+    core_key = _sync_key(client, org["auth"], org["core"]["id"])
+    web_key = _sync_key(client, org["auth"], org["web"]["id"])
+    _push(client, core_key, provides=["@acme/core"], manifests=[])
+    _push(client, web_key, manifests=[
+        {"name": "@acme/core", "evidence": [{"file": "web/package.json", "fact": "^2.1"}]},
+    ])  # no nodes pushed, so nothing describes web/package.json
+
+    stubs = _map(client, org["auth"], org["web"]["id"])["outbound"]
+    assert len(stubs) == 1
+    assert stubs[0]["anchor_paths"] == []
+    assert stubs[0]["unanchored"] is True
+
+
+def test_a_stale_edge_still_draws_an_arrow_marked_stale(client, org):
+    core_key = _sync_key(client, org["auth"], org["core"]["id"])
+    web_key = _sync_key(client, org["auth"], org["web"]["id"])
+    _push(client, core_key, provides=["@acme/core"], manifests=[])
+    _push(client, web_key, manifests=[
+        {"name": "@acme/core", "evidence": [{"file": "web/package.json", "fact": "^2.1"}]},
+    ])
+    _push(client, web_key, manifests=[])
+
+    stubs = _map(client, org["auth"], org["web"]["id"])["outbound"]
+    assert len(stubs) == 1 and stubs[0]["fresh"] is False
+
+
+def test_a_project_outside_an_org_has_no_arrows_rather_than_an_error(client, auth):
+    """Self-host, and any project with no org: there are no siblings to depend on. That
+    is different from having none, and it is an empty list, never a failure."""
+    assert _map(client, auth, "core")["outbound"] == []

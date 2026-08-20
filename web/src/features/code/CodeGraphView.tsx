@@ -30,7 +30,7 @@ import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
 import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
 import { useCodeMap, useFleetPresence } from "@/lib/queries";
-import type { CodeEdgeType, CodeNeighbors, HeldArea } from "@/lib/types";
+import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
 import { CodeChat } from "./CodeChat";
 import { FleetLegend } from "./FleetLegend";
@@ -231,6 +231,10 @@ export function CodeGraphView() {
   // Presence (D4/D5). Polled at the cadence the server reports; the graph renders exactly what
   // the payload placed and never infers a holder for a node it did not name.
   const { data: presence } = useFleetPresence(activeId);
+  // D4: dependencies that leave this repo. Empty outside an org — no siblings to depend
+  // on, which is a different fact from having none.
+  const outbound = map?.outbound ?? [];
+  const [stubHover, setStubHover] = React.useState<ProjectStub | null>(null);
   const heldByNode = React.useMemo(() => indexByNode(presence), [presence]);
   const clouds = React.useMemo(() => cloudsFor(presence, pos), [presence, pos]);
   const [soloUser, setSoloUser] = React.useState<string | null>(null);
@@ -705,9 +709,13 @@ export function CodeGraphView() {
                   </g>
                 );
               })}
+
+              {!galaxyMode && <ArrowsOut stubs={outbound} pos={pos} onHover={setStubHover} />}
               </g>
             </svg>
           )}
+
+          {stubHover && <StubEvidence stub={stubHover} />}
 
           {!isLoading && !empty && (
             <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
@@ -923,6 +931,115 @@ function EdgeList({ title, rows }: { title: string; rows: { path: string; type: 
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The arrows out (PRD-21 D4).
+ *
+ * A dependency that leaves the repo is drawn as a project stub — a square, so it is not
+ * mistakable for a file — attached by a dashed line to the **real node for the file that
+ * declares it**. That anchoring is the payoff for D3 refusing edges without evidence:
+ * because the edge had to name `web/package.json`, this arrow can start there instead of
+ * floating somewhere plausible, and every arrow is explainable by opening one file.
+ *
+ * A stub whose declaring file was never described still renders, in a tray at the edge,
+ * saying why it has no anchor. Hiding it would lose a real dependency; drawing it from
+ * nowhere with no explanation is the thing D3 exists to prevent.
+ */
+export function ArrowsOut({
+  stubs,
+  pos,
+  onHover,
+}: {
+  stubs: ProjectStub[];
+  pos: Record<string, { x: number; y: number }>;
+  onHover: (s: ProjectStub | null) => void;
+}) {
+  if (stubs.length === 0) return null;
+  let trayRow = 0;
+
+  return (
+    <g data-testid="arrows-out">
+      {stubs.map((stub) => {
+        const anchor = stub.anchor_paths.map((p) => pos[p]).find(Boolean);
+        // Unanchored stubs stack down the left edge rather than overlapping the graph.
+        const at = anchor
+          ? { x: anchor.x + 90, y: anchor.y - 40 }
+          : { x: 40, y: 60 + trayRow++ * 44 };
+
+        return (
+          <g
+            key={stub.edge_id}
+            data-testid={`stub-${stub.tag}`}
+            opacity={stub.fresh ? 1 : 0.5}
+            onPointerEnter={() => onHover(stub)}
+            onPointerLeave={() => onHover(null)}
+            className="cursor-pointer"
+          >
+            {anchor && (
+              <line
+                x1={anchor.x}
+                y1={anchor.y}
+                x2={at.x}
+                y2={at.y}
+                stroke={stub.accent}
+                strokeOpacity={0.5}
+                strokeWidth={1.5}
+                strokeDasharray="5 4"
+              />
+            )}
+            {/* Square, not a circle: a project is not a file, and the shapes should not
+                have to be told apart by size alone. */}
+            <rect
+              x={at.x - 9}
+              y={at.y - 9}
+              width={18}
+              height={18}
+              rx={4}
+              fill={`${stub.accent}22`}
+              stroke={stub.accent}
+              strokeWidth={1.5}
+              strokeDasharray={stub.fresh ? undefined : "3 3"}
+            />
+            <text
+              x={at.x + 14}
+              y={at.y + 4}
+              fontSize={11}
+              fontFamily="IBM Plex Mono, monospace"
+              fill={stub.accent}
+              style={{ pointerEvents: "none" }}
+            >
+              {stub.tag}
+              {stub.unanchored ? " ·  no anchor" : ""}
+            </text>
+          </g>
+        );
+      })}
+    </g>
+  );
+}
+
+/** The evidence for one arrow — the file, and the fact found in it. */
+function StubEvidence({ stub }: { stub: ProjectStub }) {
+  return (
+    <div className="pointer-events-none absolute bottom-3 left-3 max-w-[420px] rounded-[11px] border border-line-2 bg-surface-2 px-3 py-2.5 shadow-xl">
+      <div className="font-mono text-[10px] uppercase tracking-[0.06em] text-faint-2">
+        depends on {stub.tag}
+        {!stub.fresh && <span className="ml-2 text-st-review">stale</span>}
+      </div>
+      {stub.evidence.map((e, i) => (
+        <div key={i} className="mt-1 font-mono text-[11px] text-fg-2">
+          {e.file} <span className="text-muted">→ {e.fact}</span>
+        </div>
+      ))}
+      {stub.unanchored && (
+        <p className="mt-1.5 text-[11px] leading-relaxed text-st-review/80">
+          The manifest names that file, but nothing here has described it — so the arrow is
+          real and has nowhere to attach. Describing the file gives it an anchor.
+        </p>
+      )}
     </div>
   );
 }

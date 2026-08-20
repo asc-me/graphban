@@ -664,11 +664,30 @@ export interface CodeAnswer {
   nodes: CodeHit[];
 }
 
+/** A dependency that leaves this repo (PRD-21 D4). */
+export interface ProjectStub {
+  edge_id: string;
+  project_id: string;
+  tag: string;
+  name: string;
+  accent: string;
+  kind: string;
+  resolved_name: string;
+  fresh: boolean;
+  evidence: { file: string; fact: string }[];
+  /** Paths in THIS project's graph that declare it — where the arrow attaches. */
+  anchor_paths: string[];
+  /** The declaring file is named by the manifest but not described here. */
+  unanchored: boolean;
+}
+
 export interface CodeMap {
   nodes: CodeNode[];
   edges: CodeEdge[];
   node_count: number;
   edge_count: number;
+  /** Empty outside an org — no siblings to depend on, which differs from having none. */
+  outbound: ProjectStub[];
 }
 
 export interface CodeLinkedItem {

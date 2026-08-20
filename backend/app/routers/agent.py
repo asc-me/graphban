@@ -34,6 +34,7 @@ from app.schemas import (
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import code_graph as code_svc
+from app.services import galaxy as galaxy_svc
 from app.services import items as items_svc
 from app.services import memory as mem_svc
 from app.services import platform as platform_svc
@@ -192,7 +193,11 @@ def _code_hits(db: Session, message: str, project_id: str):
 def code_map(project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The project's code graph — every described node and typed edge. Powers the graph view."""
     pid = _readable_pid(db, user, project_id)
-    return code_svc.get_code_map(db, pid)
+    payload = code_svc.get_code_map(db, pid)
+    # D4: the arrows out ride along with the map the graph already fetches, rather than a
+    # second request the view would have to sequence against the first.
+    payload["outbound"] = galaxy_svc.outbound_stubs(db, pid)
+    return payload
 
 
 @router.get("/code/health")

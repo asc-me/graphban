@@ -884,11 +884,36 @@ class CodeEdgeOut(BaseModel):
     type: str
 
 
+class ProjectStubOut(BaseModel):
+    """A dependency that leaves this repo (PRD-21 D4).
+
+    Anchored on the real node for the file that declares it, so every arrow out is
+    explainable by opening one file."""
+
+    edge_id: str
+    project_id: str
+    tag: str
+    name: str
+    accent: str
+    kind: str
+    resolved_name: str = ""
+    fresh: bool = True
+    evidence: list[dict] = []
+    # Paths in THIS project's described graph that carry the declaration.
+    anchor_paths: list[str] = []
+    # True when the declaring file is named by the manifest but not described here — the
+    # arrow is real and its anchor is missing, which is a state, not a reason to hide it.
+    unanchored: bool = False
+
+
 class CodeMapOut(BaseModel):
     nodes: list[CodeNodeOut]
     edges: list[CodeEdgeOut]
     node_count: int
     edge_count: int
+    # Empty on self-host and on any project outside an org — there are no siblings to
+    # depend on, which is different from having none.
+    outbound: list[ProjectStubOut] = []
 
 
 class CodeOutEdge(BaseModel):
