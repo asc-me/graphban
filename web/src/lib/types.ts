@@ -65,6 +65,25 @@ export interface OrgMember {
   last_write_at: string | null;
 }
 
+// ── Linked deployments (PRD-21 D6) ─────────────────────────────────────────
+export interface Deployment {
+  /** The sync credential's name — the cloud stores no other deployment identity. */
+  label: string;
+  credential_id: string;
+  prefix: string;
+  project_id: string;
+  project_tag: string;
+  project_name: string;
+  /** Self-reported on the push. A hint: the same box answers differently per network. */
+  base_url: string;
+  last_push_at: string | null;
+  node_count: number;
+  /** `never` is a link nobody finished; `stale` is a box that stopped. Not the same. */
+  freshness: "in_sync" | "stale" | "never";
+  revoked: boolean;
+  agents: { key: string; label: string; role: string; state: string }[];
+}
+
 // ── Teams (PRD-21 D5) ──────────────────────────────────────────────────────
 export interface TeamGrant {
   project_id: string;

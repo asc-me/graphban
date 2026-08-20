@@ -1,4 +1,4 @@
-import { BarChart3, Building2, Check, ChevronDown, CreditCard, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
+import { BarChart3, Building2, Check, ChevronDown, CreditCard, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
 import * as React from "react";
 import { NavLink } from "react-router-dom";
 
@@ -162,6 +162,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
           <nav className="flex flex-col gap-0.5">
             <NavItem to={adminPath("users")} icon={<UsersRound size={16} />} label="Users & access" />
             <NavItem to={adminPath("teams")} icon={<Users size={16} />} label="Teams" />
+            <NavItem to={adminPath("deployments")} icon={<Server size={16} />} label="Deployments" />
             {SPECULATIVE_ENABLED && (
               <NavItem to={adminPath("branding")} icon={<Palette size={16} />} label="Branding" />
             )}
