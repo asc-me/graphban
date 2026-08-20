@@ -189,6 +189,34 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | POST | `/api/platform/github/connect` · `/disconnect` · `/create-issue` | JWT |
 | POST | `/api/platform/gdrive/connect` · `/disconnect` | JWT |
 
+## Galaxy (hosted only, PRD-21 D3)
+
+Repo-level dependencies inside one org. Every edge names the file that proves it — the
+whole difference between this graph and a guess. Nothing is inferred from similarity.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/orgs/{id}/galaxy` | Nodes (projects), edges (typed + evidenced), and name collisions |
+
+Edges arrive on the code-graph push (`POST /api/sync/code-graph`), which gained two
+optional fields. The client sends **facts, not edges**: it cannot know what else exists in
+the org, so the server resolves each declared name against `Project.provides`.
+
+- `provides` — package names this project publishes.
+- `manifests` — `[{"name": "@acme/core", "evidence": [{"file": …, "fact": …}]}]`.
+
+Three rules the wire format encodes, each of which would be a permanent defect if wrong:
+
+- **Omitted `manifests` ≠ empty.** Omitted means an older client did not look, and stales
+  nothing. Present-but-empty means it looked and found none, and stales that project's
+  edges. Collapsing them would make every old client silently delete a dependency graph.
+- **Evidence is required** — 422 without it.
+- **Unresolved names are dropped but counted**, and reported in the push response. A name
+  two projects both claim resolves to neither and is surfaced as a collision.
+
+Stale edges are marked, never deleted, and their evidence is never trimmed: a relationship
+with no explanation is worse than a deleted one. Purging is an explicit operator action.
+
 ## Operator plane (hosted only)
 
 Cross-tenant, and gated twice: `HOSTED_MODE` must be on **and** the caller must be in

@@ -46,6 +46,7 @@ from app.schemas import (
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import events as events_svc
+from app.services import galaxy as galaxy_svc
 from app.services import orgs as orgs_svc
 from app.services import quotas
 
@@ -170,6 +171,19 @@ def set_org_plan(
                            target_id=org_id, meta={"plan": body.plan})
     role = authz.org_role(db, user.id, org_id) or "admin"
     return OrgOut(id=org.id, name=org.name, plan=org.plan, role=role)
+
+
+@router.get("/orgs/{org_id}/galaxy")
+def org_galaxy(org_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """The org's repo-level dependency graph (PRD-21 D3).
+
+    Every edge carries the evidence that proves it — the file and the fact found there —
+    because that is the whole difference between this graph and a guess. Stale edges are
+    included and flagged rather than filtered, so "this dependency went away" and "there
+    was never a dependency" do not arrive looking the same.
+    """
+    authz.require_org_member(db, user.id, org_id)
+    return galaxy_svc.galaxy(db, org_id)
 
 
 @router.get("/orgs/{org_id}/members", response_model=list[OrgMemberOut])

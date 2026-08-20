@@ -113,6 +113,11 @@ class Project(Base):
     # stored, so no other row in the database moves. See app/tagging.py.
     tag: Mapped[str] = mapped_column(String, unique=True)
     accent: Mapped[str] = mapped_column(String, default="#c6f24e")
+    # Package names this project publishes — `@acme/core`, `acme-core` (PRD-21 D3). The
+    # registry a sibling's manifest dependency resolves against. A monorepo is ONE project
+    # that provides several names: the galaxy's resolution is the checkout, not the
+    # package, which is a stated limit rather than a defect.
+    provides: Mapped[list] = mapped_column(JSON, default=list)
     visibility: Mapped[str] = mapped_column(String, default="private")
     description: Mapped[str] = mapped_column(Text, default="")
     share_global_memory: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -1143,6 +1148,51 @@ class Link(Base):
     confidence: Mapped[float] = mapped_column(default=1.0)
     reason: Mapped[str] = mapped_column(String, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ProjectEdge(Base):
+    """An evidenced dependency between two projects in one org (PRD-21 D3).
+
+    **Every edge names the file that proves it.** `evidence` is a list of
+    ``{"file": ..., "fact": ...}`` — `web/package.json` declaring `@acme/core ^2.1` — and
+    the API refuses an empty one. That is the whole difference between this graph and a
+    guess, so it is a constraint rather than a convention.
+
+    **No inference.** Nothing here is created from embedding similarity, shared vocabulary
+    or summary overlap. Two repos that both describe "authentication" are not related; two
+    repos where one's lockfile names the other are.
+
+    **Stale, never deleted** — the same handle `CodeNode` uses, for the same reason. An
+    edge whose evidence is no longer declared goes `fresh = False` and renders faint. A
+    relationship that quietly disappeared is information; deleting it silently is the
+    absence-reads-as-clean failure, and trimming its evidence would be worse still — a
+    relationship with no explanation. Purging is an explicit operator action, never a timer.
+    """
+
+    __tablename__ = "project_edges"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # pe_...
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    src_project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    dst_project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    # depends_on (manifest) | serves (declared contract) | declared (a human, with a reason)
+    kind: Mapped[str] = mapped_column(String, default="depends_on")
+    # The name that resolved this edge — kept so a rename is legible rather than a new edge
+    # appearing from nowhere.
+    resolved_name: Mapped[str] = mapped_column(String, default="")
+    # [{"file": "web/package.json", "fact": "@acme/core ^2.1"}]. Never empty.
+    evidence: Mapped[list] = mapped_column(JSON, default=list)
+    # `declared` edges only: why a human drew it. Required for that kind.
+    reason: Mapped[str] = mapped_column(Text, default="")
+    fresh: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("src_project_id", "dst_project_id", "kind", name="uq_project_edge"),
+    )
 
 
 class CodeNode(Base):

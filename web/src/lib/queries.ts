@@ -142,6 +142,14 @@ export function useSetOrgPlan() {
   });
 }
 
+export function useGalaxy(orgId?: string) {
+  return useQuery({
+    queryKey: ["galaxy", orgId],
+    queryFn: () => api.orgGalaxy(orgId!),
+    enabled: !!orgId,
+  });
+}
+
 export function useBilling(orgId?: string) {
   return useQuery({
     queryKey: keys.billing(orgId ?? ""),

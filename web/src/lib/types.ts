@@ -356,6 +356,47 @@ export interface TriageRow {
   duplicate: DuplicateHint | null;
 }
 
+// ── The super galaxy (PRD-21 D3) ──────────────────────────────────────────
+/** The file, and the fact found in it, that proves an edge between two repos. */
+export interface EdgeEvidence {
+  file: string;
+  fact: string;
+}
+
+export interface GalaxyNode {
+  id: string;
+  tag: string;
+  name: string;
+  accent: string;
+  /** Package names this project publishes — the registry siblings resolve against. */
+  provides: string[];
+  node_count: number;
+  /** False = no deployment has pushed a graph yet. Distinct from "has no structure". */
+  pushed: boolean;
+}
+
+export interface GalaxyEdge {
+  id: string;
+  src: string;
+  dst: string;
+  kind: "depends_on" | "serves" | "declared";
+  resolved_name: string;
+  /** Never empty — an edge that cannot name its proof is refused server-side. */
+  evidence: EdgeEvidence[];
+  weight: number;
+  /** False = the evidence is no longer declared. Faint, never removed. */
+  fresh: boolean;
+  reason: string;
+  updated_at: string | null;
+}
+
+export interface Galaxy {
+  nodes: GalaxyNode[];
+  edges: GalaxyEdge[];
+  /** Names two projects both claim. These draw no edge, and saying so is the point. */
+  collisions: { name: string; project_ids: string[] }[];
+}
+
 export interface ApiKey {
   id: string;
   name: string;
