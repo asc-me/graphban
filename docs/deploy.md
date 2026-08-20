@@ -39,25 +39,48 @@ operator runs rather than something an agent does — see PRD-14.
 
 ## Deploy
 
-From a clean working tree on the revision you want to ship:
+```bash
+scripts/deploy.sh              # ships origin/main
+scripts/deploy.sh <ref>        # ships any ref
+```
+
+**It syncs from a detached worktree at `../agentledger-wt-deploy`, not from your checkout.**
+`rsync` ships whatever is on disk, and that stopped being a safe assumption the day agents
+began working in the same clone: on 2026-08-20 a deploy was one command from shipping 17 files
+and 281 lines of a fleet agent's UNCOMMITTED work to the live box, stamped `b71535f` — a sha
+that described none of it. Release identity is the thing this runbook verifies, so a tree that
+disagrees with its sha defeats the whole procedure.
+
+The worktree removes both directions of that coupling: nothing can be mid-edit where nobody
+works, and a deploy no longer touches the shared checkout at all. It is created on first run.
+The script REFUSES if that worktree is somehow dirty rather than shipping it — anything there
+means something is wrong that a deploy must not paper over.
+
+It also ends the `GIT_SHA` trap documented in the invariants below: the sha is read from the
+worktree instead of exported by hand into two separate statements, which is the step that
+silently shipped `git_sha: unknown` on 2026-08-06.
+
+Finally it VERIFIES rather than trusting: it polls `/health`, then fails unless the api and
+the web bundle both report the sha it just shipped. A deploy that builds cleanly and serves
+the previous revision looks identical to a successful one from the outside.
+
+<details><summary>What it runs, if you need to do it by hand</summary>
 
 ```bash
-# 0. Be ON that revision. A deploy from a stale tree succeeds and ships the OLD build.
-git pull origin main
+git -C ../agentledger-wt-deploy checkout --detach origin/main
+GIT_SHA=$(git -C ../agentledger-wt-deploy rev-parse --short HEAD)
 
-# 1. Stamp the build with the git revision so /health can report it.
-export GIT_SHA=$(git rev-parse --short HEAD)
-
-# 2. Sync the tree to the server. ALWAYS exclude .env and sync (see invariants).
+# ALWAYS exclude .env and sync (see invariants).
 rsync -az --delete \
   --exclude .git --exclude .env --exclude sync \
   --exclude node_modules --exclude dist --exclude __pycache__ \
   --exclude .venv --exclude .serena \
-  ./ ubuntu-srv:~/agentledger/
+  ../agentledger-wt-deploy/ ubuntu-srv:~/agentledger/
 
-# 3. Build + restart on the server, passing the revision through to the images.
 ssh ubuntu-srv "cd ~/agentledger && GIT_SHA=$GIT_SHA docker compose up -d --build"
 ```
+
+</details>
 
 Migrations apply on API startup, so a schema change ships with the same command.
 
