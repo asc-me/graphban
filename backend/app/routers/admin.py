@@ -103,7 +103,10 @@ def list_orgs(db: Session = Depends(get_db)):
         # list as "who to contact", so the order is meaning, not presentation.
         rank = {"owner": 0, "admin": 1}
         members.sort(key=lambda m: rank.get(m.role, 2))
-        owner_id = db.scalar(
+        # The founder, not "whoever holds the owner seat" — that seat is demotable now
+        # (PRD-21 D8.2), and an org whose founder was demoted must still say who made it.
+        # Falls back to the seat for orgs created before `created_by` existed.
+        owner_id = org.created_by or db.scalar(
             select(OrgMembership.user_id).where(
                 OrgMembership.org_id == org.id, OrgMembership.role == "owner"
             )

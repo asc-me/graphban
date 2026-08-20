@@ -167,34 +167,69 @@ def _seat(db: Session, org_id: str, user_id: str) -> OrgMembership:
     return seat
 
 
+ADMIN_ROLES = ("owner", "admin")
+
+
+def _administrators(db: Session, org_id: str, *, lock: bool = False) -> list[OrgMembership]:
+    """Every seat that can administer this org. `lock` takes them FOR UPDATE."""
+    q = select(OrgMembership).where(
+        OrgMembership.org_id == org_id, OrgMembership.role.in_(ADMIN_ROLES)
+    )
+    if lock:
+        q = q.with_for_update()
+    return list(db.scalars(q))
+
+
+def _refuse_if_last_administrator(db: Session, org_id: str, seat: OrgMembership) -> None:
+    """The floor: an org must always keep at least one owner-or-admin (PRD-21 D8.1).
+
+    This replaces three separate prohibitions on the `owner` seat. They protected a proxy
+    — that one specific person exists — rather than the property anyone actually needs,
+    which is that **somebody can still administer the org**. The proxy is also what
+    stranded an org whose owner departed, since ownership was neither transferable nor
+    removable.
+
+    Taken FOR UPDATE, and that is not decoration. The self-action rules make zero
+    administrators unreachable one step at a time — A may demote B but never A — so the
+    only route to zero is two administrators demoting each other at the same instant.
+    The lock is the whole difference between this check and a comment.
+    """
+    if seat.role not in ADMIN_ROLES:
+        return
+    remaining = [m for m in _administrators(db, org_id, lock=True) if m.user_id != seat.user_id]
+    if not remaining:
+        raise HTTPException(
+            409,
+            "this is the organization's last owner or admin — promote somebody else "
+            "first, or the organization would be left with nobody who can administer it",
+        )
+
+
 def set_member_role(
     db: Session, org_id: str, user_id: str, role: str, *, actor: User
 ) -> OrgMembership:
     """Change someone's org role. Commits.
 
-    Three refusals, and each is a rule rather than a precaution:
+    **Owner and admin are equivalent in power** (PRD-21 D8.1) — `authz.require_org_admin`
+    is the only org-administration gate and has always accepted either. So the owner seat
+    is demotable and removable like any other, and what protects the org is the floor
+    invariant rather than one immortal seat.
 
-    - **The owner cannot be demoted.** Ownership is the creator's, and an org that can
-      lose its last owner is an org nobody can administer.
-    - **Nobody may promote themselves.** An admin who can grant themselves owner is not
-      an admin, and the rank ladder means nothing if it can be climbed from below.
-    - **Nobody may grant a rank above their own**, for the same reason.
+    The refusals that remain are about the rank ladder, not about ownership:
+
+    - **Nobody may promote themselves.** The ladder means nothing if it can be climbed
+      from below.
+    - **Nobody may grant a rank above their own**, for the same reason. This is also what
+      keeps `owner` grantable only by an owner.
+    - **Nobody may vacate the last administrative seat** — see `_refuse_if_last_administrator`.
     """
     if role not in ORG_ROLES:
         raise HTTPException(422, f"unknown role {role!r}; expected one of {', '.join(ORG_ROLES)}")
     seat = _seat(db, org_id, user_id)
     actor_role = authz.require_org_admin(db, actor.id, org_id)
 
-    if seat.role == "owner":
-        raise HTTPException(
-            409,
-            "the owner's role cannot be changed — ownership belongs to the account that "
-            "created the organization",
-        )
-    if role == "owner":
-        raise HTTPException(
-            409, "ownership is not grantable here; it belongs to the org's creator"
-        )
+    if role not in ADMIN_ROLES:
+        _refuse_if_last_administrator(db, org_id, seat)
     if user_id == actor.id:
         raise HTTPException(409, "you cannot change your own role")
     if authz._ORG_RANK[role] > authz._ORG_RANK[actor_role]:
@@ -216,8 +251,7 @@ def remove_member(db: Session, org_id: str, user_id: str, *, actor: User) -> dic
     seat = _seat(db, org_id, user_id)
     authz.require_org_admin(db, actor.id, org_id)
 
-    if seat.role == "owner":
-        raise HTTPException(409, "the owner cannot be removed from their own organization")
+    _refuse_if_last_administrator(db, org_id, seat)
     if user_id == actor.id:
         raise HTTPException(409, "you cannot remove yourself from the organization")
 
@@ -299,6 +333,7 @@ def create_org(db: Session, user: User, name: str) -> Organization:
     org = Organization(id="org_" + uuid.uuid4().hex[:10], name=name)
     db.add(org)
     db.flush()
+    org.created_by = user.id  # durable; the seat below is not (D8.2)
     db.add(OrgMembership(org_id=org.id, user_id=user.id, role="owner"))
     db.commit()
     db.refresh(org)
