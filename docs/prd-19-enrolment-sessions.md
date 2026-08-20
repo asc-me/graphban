@@ -280,10 +280,37 @@ here rather than assumed, because the reason has changed: it was ruled out for t
 downlink, which turned out to ride heartbeats perfectly well, and this is a different problem
 that cannot ride a response the client is not waiting on.
 
-**Do E9a and E9b first, then measure.** Some clients re-fetch `tools/list` on their own — on
-reconnect, or periodically. If Claude Code and Cursor do, E9c is unnecessary; if they do not,
-we will know exactly what the push is worth before building it. A probe against both clients is
-half a day and decides whether the rest is worth anything.
+**E9c — MEASURED 2026-08-20, and NOT NEEDED for the client that can use it.** Two waves on the
+live instance, `tools_list_refetched` in the event log as the instrument:
+
+| client | connection model | session bound | re-fetches | narrowing lands |
+| --- | --- | --- | --- | --- |
+| Grok Build shell | one per process | yes | **yes, within 20s of registering** | **yes — 43/42 tools instead of 52** |
+| Cursor | ONE shared across all its agents | yes | unknowable | **no** |
+
+Grok asked again by itself, seconds after `register_agent`, and got the narrowed manifest. No
+push, no SSE, no transport change. E9c is closed as unnecessary for that shape.
+
+**Cursor is a different problem, and no push would solve it.** It multiplexes every agent over
+a single MCP connection — the first wave put THREE agents on one session id — so a `tools/list`
+on that connection cannot be attributed to any one of them. The request carries no arguments to
+disambiguate by, which is a property of the method rather than a gap in our implementation.
+`_session_role` therefore declines to answer, and declining is correct: guessing would hand one
+agent a manifest trimmed for another. Sending `tools/list_changed` would only prompt a fetch
+that still cannot be attributed.
+
+So the honest statement of the outcome is: **per-role trimming works for one-connection-per-agent
+clients and is structurally impossible for multiplexing ones.** That is not a defect to fix
+later; it is the boundary of what this transport can do, and the enrolment posture is what makes
+Cursor usable at all in exchange.
+
+**What the first attempt could not tell us, and why.** The Cursor wave returned zero probe
+events, and zero looked like "the client does not re-fetch". It was not: the ambiguity guard
+suppresses the narrowing AND the event together, so a re-fetch and no fetch are
+indistinguishable there. The instrument only records SUCCESSFUL narrowing, which was a
+deliberate choice to keep the connect-time fetch out of the Activity feed — and it is the
+choice that made the first measurement unreadable. Anyone extending this should record the
+ATTEMPT and its binding state, not just the narrowed answer.
 
 **Acceptance.** Two agents on one credential, registered into different roles, receive
 different manifests on a `tools/list` issued after registration — and the reviewer's manifest

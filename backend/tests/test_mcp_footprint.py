@@ -260,6 +260,17 @@ Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT th
     If the probe comes back empty, this ceiling should come down again with a real prose
     pass — not stay here on the strength of a saving nothing collects.
 
+    **MEASURED 2026-08-20: the probe is not empty, and the ceiling stands.** Grok Build shell
+    re-fetched `tools/list` within 20 seconds of registering, unprompted, and took the narrowed
+    manifest — 43 tools for the worker, 42 for the reviewer, against the number below. The
+    saving is collected, so the raise was not granted on a promise.
+
+    Collected for ONE-CONNECTION-PER-AGENT clients only. Cursor multiplexes every agent over a
+    single connection — three agents on one session id on the first wave — so a `tools/list`
+    there cannot be attributed to an agent and is answered with this full number. For those
+    clients this ceiling is what every agent pays PER TURN, which is the argument for keeping it
+    tight rather than treating the slack as headroom to spend.
+
     **Both of the paragraphs above raised 12800 -> 13100, independently, and neither could see
     the other.** GRPH-391 (PRD-20's `graph_query`) and GRPH-398 (PRD-19's session-scoped
     manifest) were in flight on separate branches, each ran this arithmetic correctly for its
