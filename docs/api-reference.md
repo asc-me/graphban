@@ -197,6 +197,17 @@ whole difference between this graph and a guess. Nothing is inferred from simila
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/orgs/{id}/galaxy` | Nodes (projects), edges (typed + evidenced), and name collisions |
+| GET | `/api/orgs/{id}/overview` | Every project in the org at once — item counts, open claims, graph size, last push (PRD-21 D2) |
+
+`overview` is the org's **only** cross-project read, and it is a new endpoint rather than a
+relaxed one. `authz.require_readable` fails closed on a null project by design, so
+"list everything" is unreachable and stays that way: this route resolves its scope from org
+membership first and then reads project by project. A non-member gets **404**, not 403.
+
+A project that has **never** synced appears in the response with `sync: "never"` and a zero
+node count — omitting it would shrink the org and hide precisely the project that needs
+attention. Its item counts are still real, because the cloud is authoritative for items
+when a box is linked, so a never-synced project is not an empty one.
 
 Edges arrive on the code-graph push (`POST /api/sync/code-graph`), which gained two
 optional fields. The client sends **facts, not edges**: it cannot know what else exists in

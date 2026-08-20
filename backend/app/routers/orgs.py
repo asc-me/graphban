@@ -201,6 +201,20 @@ def org_deployments(org_id: str, db: Session = Depends(get_db),
     return galaxy_svc.deployments(db, org_id)
 
 
+@router.get("/orgs/{org_id}/overview")
+def org_overview(org_id: str, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """Every project in the org at once (PRD-21 D2) — the org's first cross-project read.
+
+    Scope is resolved from **org membership first**, then read project by project, so
+    `require_readable`'s fail-closed behaviour on a null project is untouched and the
+    "list everything" path is never entered. A non-member gets 404, not 403: the org
+    should be indistinguishable from one that does not exist.
+    """
+    authz.require_org_member(db, user.id, org_id)
+    return galaxy_svc.overview(db, org_id, user.id)
+
+
 @router.get("/orgs/{org_id}/galaxy")
 def org_galaxy(org_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The org's repo-level dependency graph (PRD-21 D3).
