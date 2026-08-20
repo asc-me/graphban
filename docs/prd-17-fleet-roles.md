@@ -1,5 +1,6 @@
 # PRD-17 — Fleet roles: server-arbitrated agentic role assignment
 
+**Ledger id:** GRPH-P17
 **Status:** approved — reached by completing the grill (PRD-15) on 2026-08-09; all four
 dimensions graded `resolved`. This line said `draft` until 2026-08-20, while the ledger
 had recorded the approval for eleven days and every slice shipped against it.
