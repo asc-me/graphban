@@ -26,6 +26,8 @@ propose-only boundary was built to prevent. Nothing detected that state before t
 from __future__ import annotations
 
 import hashlib
+
+from app import hashing
 import logging
 import os
 from dataclasses import dataclass
@@ -86,8 +88,14 @@ def content_hash(text: str) -> str:
     Normalised because an editor that adds a final newline is not a human forking an
     artifact, and a fork flag that fires on that is one people learn to ignore — at which
     point it stops protecting the edits it exists to protect.
+
+    Delegates to `app.hashing` (GRPH-406), which generalised this rule for code nodes. The
+    value is unchanged and unprefixed on purpose: every stored artifact hash was produced
+    this way, and prefixing them here would make the whole inventory read as forked on the
+    next scan. This surface only ever compares its own output against its own output — the
+    situation the prefix exists to distinguish, and the one this does not have.
     """
-    return hashlib.sha256(text.rstrip().encode("utf-8", "replace")).hexdigest()
+    return hashing.bare_digest(text)
 
 
 def _tier_of(path: Path, root: Path) -> str | None:

@@ -237,6 +237,25 @@ joined by typed **edges** (`imports` / `calls` / `owns` / `tested_by` / `referen
   the node is marked `fresh` again. A `describe_code(..., prune=true)` pass marks any node it
   *didn't* see as stale (`fresh=false`) instead of deleting it, so a partial describe never
   loses history. This is what keeps the map from rotting into confidently-wrong structure.
+
+  **`content_hash` has a stated rule** (GRPH-406): `sha256:<hex>` of the file's contents
+  with trailing whitespace stripped, UTF-8 with errors replaced. Trailing whitespace is
+  normalised because an editor adding a final newline is not a change, and a staleness flag
+  that fires on that is one people learn to ignore.
+
+  The rule exists because a hash that only ever meets its own previous value needs no
+  rule, and two places need more than that. `code_sync` decides what an incremental push
+  sends by comparing hashes, so a second agent hashing differently re-pushes every path it
+  touched — and PRD-17 made several agents describing one project normal. Cross-repo
+  duplication detection has no other proof-grade signal at all, since the cloud holds
+  summaries and structure but never source.
+
+  Hashes written before the rule are **unprefixed and stay valid** for staleness, where a
+  value only has to match itself. They are refused for any comparison across producers:
+  unprefixed, an unknown is indistinguishable from a specified value, and the system would
+  compare incomparable things and be confidently wrong. `app.hashing.same_content` returns
+  False for two *equal* legacy digests for exactly that reason — "probably the same rule"
+  is the guess the prefix exists to prevent.
 - **Reuses touchpoints for item↔code.** `code_neighbors(path)` intersects live item
   touchpoints rather than storing a second copy of the relation — "what work touches this
   module" and "what code this item affects" stay one source of truth.

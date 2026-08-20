@@ -676,7 +676,7 @@ TOOLS: list[dict[str, Any]] = [
                             "name": {"type": "string", "description": "Short label."},
                             "lang": {"type": "string", "description": "python | ts | ... (optional)."},
                             "summary": {"type": "string", "description": "One paragraph: what it is and owns."},
-                            "content_hash": {"type": "string", "description": "Source hash — powers staleness."},
+                            "content_hash": {"type": "string", "description": "`sha256:<hex>` of rstripped contents."},
                         },
                         "required": ["path"],
                     },
