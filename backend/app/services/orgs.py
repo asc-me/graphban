@@ -18,7 +18,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import OrgInvite, OrgMembership, OrgRequest, Organization, User, utcnow
+from app.models import (
+    Membership,
+    OrgInvite,
+    OrgMembership,
+    OrgRequest,
+    Organization,
+    Project,
+    User,
+    utcnow,
+)
 from app.security import authz
 from app.services import email as email_svc
 from app.services import quotas
@@ -133,6 +142,133 @@ def decide_org_request(
     db.commit()
     db.refresh(req)
     return req
+
+
+# ---- membership mutations (PRD-21 D8) -----------------------------------------
+# The governance gap §3.5 named: until this existed, members arrived by accepting an
+# invite and stayed forever, at the role the invite carried. D5 (teams and grants) cannot
+# exist on top of an API that cannot write access, and a role system on top of a role
+# nobody can change is nothing.
+ORG_ROLES = ("owner", "admin", "member")
+ACCESS_LEVELS = ("write", "read", "none")
+
+
+def _seat(db: Session, org_id: str, user_id: str) -> OrgMembership:
+    seat = db.scalar(
+        select(OrgMembership).where(
+            OrgMembership.org_id == org_id, OrgMembership.user_id == user_id
+        )
+    )
+    if seat is None:
+        raise HTTPException(404, "that person is not a member of this organization")
+    return seat
+
+
+def set_member_role(
+    db: Session, org_id: str, user_id: str, role: str, *, actor: User
+) -> OrgMembership:
+    """Change someone's org role. Commits.
+
+    Three refusals, and each is a rule rather than a precaution:
+
+    - **The owner cannot be demoted.** Ownership is the creator's, and an org that can
+      lose its last owner is an org nobody can administer.
+    - **Nobody may promote themselves.** An admin who can grant themselves owner is not
+      an admin, and the rank ladder means nothing if it can be climbed from below.
+    - **Nobody may grant a rank above their own**, for the same reason.
+    """
+    if role not in ORG_ROLES:
+        raise HTTPException(422, f"unknown role {role!r}; expected one of {', '.join(ORG_ROLES)}")
+    seat = _seat(db, org_id, user_id)
+    actor_role = authz.require_org_admin(db, actor.id, org_id)
+
+    if seat.role == "owner":
+        raise HTTPException(
+            409,
+            "the owner's role cannot be changed — ownership belongs to the account that "
+            "created the organization",
+        )
+    if role == "owner":
+        raise HTTPException(
+            409, "ownership is not grantable here; it belongs to the org's creator"
+        )
+    if user_id == actor.id:
+        raise HTTPException(409, "you cannot change your own role")
+    if authz._ORG_RANK[role] > authz._ORG_RANK[actor_role]:
+        raise HTTPException(403, f"an {actor_role} cannot grant the {role} role")
+
+    seat.role = role
+    db.commit()
+    db.refresh(seat)
+    return seat
+
+
+def remove_member(db: Session, org_id: str, user_id: str, *, actor: User) -> dict:
+    """Remove someone from the org, cascading their project memberships. Commits.
+
+    Returns what was actually removed, so the caller can say what was lost rather than
+    reporting a bare success. A removal that silently left project access behind would be
+    the worst kind of quiet: the seat is gone from the roster and the access is not.
+    """
+    seat = _seat(db, org_id, user_id)
+    authz.require_org_admin(db, actor.id, org_id)
+
+    if seat.role == "owner":
+        raise HTTPException(409, "the owner cannot be removed from their own organization")
+    if user_id == actor.id:
+        raise HTTPException(409, "you cannot remove yourself from the organization")
+
+    project_ids = [p.id for p in db.scalars(select(Project).where(Project.org_id == org_id))]
+    dropped = []
+    if project_ids:
+        for m in db.scalars(
+            select(Membership).where(
+                Membership.user_id == user_id, Membership.project_id.in_(project_ids)
+            )
+        ):
+            dropped.append(m.project_id)
+            db.delete(m)
+    db.delete(seat)
+    db.commit()
+    return {"removed_role": seat.role, "projects_revoked": dropped}
+
+
+def set_project_access(
+    db: Session, project_id: str, user_id: str, access: str, *, actor: User
+) -> Membership:
+    """Grant or change one person's access to one project. Commits.
+
+    `none` is stored, not deleted: an explicit "not this project" is a decision somebody
+    made, and it should not read the same as never having been considered.
+    """
+    if access not in ACCESS_LEVELS:
+        raise HTTPException(
+            422, f"unknown access {access!r}; expected one of {', '.join(ACCESS_LEVELS)}"
+        )
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "project not found")
+    if not project.org_id:
+        raise HTTPException(
+            400, "this project belongs to no organization; access is not administered here"
+        )
+    authz.require_org_admin(db, actor.id, project.org_id)
+    # A seat in the org is what makes someone grantable at all — access to a project
+    # inside an org they do not belong to would be an access path with no roster entry.
+    _seat(db, project.org_id, user_id)
+
+    membership = db.scalar(
+        select(Membership).where(
+            Membership.project_id == project_id, Membership.user_id == user_id
+        )
+    )
+    if membership is None:
+        membership = Membership(project_id=project_id, user_id=user_id, role="member")
+        db.add(membership)
+    membership.access = access
+    db.commit()
+    db.refresh(membership)
+    return membership
 
 
 def create_org(db: Session, user: User, name: str) -> Organization:

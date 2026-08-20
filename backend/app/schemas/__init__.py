@@ -102,6 +102,22 @@ class OrgMemberOut(BaseModel):
     last_write_at: datetime | None = None
 
 
+class MemberRoleIn(BaseModel):
+    role: str  # admin | member — owner is never grantable
+
+
+class ProjectAccessIn(BaseModel):
+    access: str  # write | read | none
+
+
+class MemberRemovedOut(BaseModel):
+    """What a removal actually took away, so the caller can say it rather than report a
+    bare success."""
+
+    removed_role: str
+    projects_revoked: list[str] = []
+
+
 class InviteCreate(BaseModel):
     email: EmailStr
     role: str = "member"  # admin | member (owner is never invitable)

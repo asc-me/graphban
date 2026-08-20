@@ -166,6 +166,36 @@ export function useCreateOrg() {
   });
 }
 
+// PRD-21 D8. Each invalidates the roster AND billing: a seat freed by a removal changes
+// the seat count, and a stale meter beside a shorter table is the mismatch these screens
+// spend paragraphs explaining.
+function useMembershipMutation<T>(orgId: string, fn: (v: T) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.orgMembers(orgId) });
+      qc.invalidateQueries({ queryKey: keys.billing(orgId) });
+    },
+  });
+}
+
+export function useSetMemberRole(orgId: string) {
+  return useMembershipMutation(orgId, (v: { userId: string; role: string }) =>
+    api.setMemberRole(orgId, v.userId, v.role),
+  );
+}
+
+export function useRemoveMember(orgId: string) {
+  return useMembershipMutation(orgId, (userId: string) => api.removeMember(orgId, userId));
+}
+
+export function useSetProjectAccess(orgId: string) {
+  return useMembershipMutation(orgId, (v: { projectId: string; userId: string; access: string }) =>
+    api.setProjectAccess(v.projectId, v.userId, v.access),
+  );
+}
+
 export function useCreateInvite(orgId: string) {
   const qc = useQueryClient();
   return useMutation({

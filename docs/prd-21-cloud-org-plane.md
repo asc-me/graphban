@@ -508,7 +508,8 @@ not designed here (D9).
 
 ## D8 — Membership mutations
 
-The governance gap from §3.5, closed inside this PRD because D5 cannot exist without it:
+**Built.** The governance gap from §3.5, closed inside this PRD because D5 cannot exist
+without it:
 
 - `PATCH /api/orgs/{org_id}/members/{user_id}` — change org role. Owner is immutable and cannot
   be demoted; the existing rank rule (owner > admin > member) holds and a member cannot promote
