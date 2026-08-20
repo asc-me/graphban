@@ -294,3 +294,108 @@ def test_the_predicate_never_treats_absence_as_a_difference(db):
     for pair in (both_absent, one_absent, absent_other_way, both_same):
         assert fleet.independent(*pair) is False, f"absence or a match is not independence: {pair}"
     assert fleet.independent(*genuinely_different) is True
+
+
+# ---- parentage as the LOAD-BEARING reason (GRPH-361, sent back in review) ---------------------
+#
+# The tests above were bounced, correctly: every one of them puts both agents on ONE credential
+# with no seats and no differing discriminator, so the fallback at the bottom of `independent`
+# refuses them whatever parentage says. Delete the three `parent_agent_id` branches and all of
+# them still pass — the gate they name is never the reason for the answer.
+#
+# Each case below is chosen so that WITHOUT parentage the predicate returns True. That is the
+# only way a test can vouch for those branches.
+
+def _pair(**kw):
+    """Two agents, defaulting to the shape that is otherwise INDEPENDENT."""
+    base = {"api_key_id": "k1", "capabilities": {}, "parent_agent_id": None, "enrolment_id": None}
+    a = Agent(**{**base, "id": "A", **kw.get("a", {})})
+    b = Agent(**{**base, "id": "B", **kw.get("b", {})})
+    return b, a          # (reviewer, author)
+
+
+def test_parentage_refuses_a_child_holding_its_own_seat(db):
+    """The configuration the acceptance walk actually ran: one credential, two SEATS, and the
+    child declares its parent. Seats are the strongest signal short of separate credentials —
+    the server issued two and each agent redeemed one — so without parentage this pair is
+    independent and the child reviews its parent's work.
+
+    Control below proves the seats really would have carried it."""
+    reviewer, author = _pair(a={"enrolment_id": "seat-1"},
+                             b={"enrolment_id": "seat-2", "parent_agent_id": "A"})
+
+    assert fleet.independent(reviewer, author) is False
+
+    unrelated, other = _pair(a={"enrolment_id": "seat-1"}, b={"enrolment_id": "seat-2"})
+    assert fleet.independent(unrelated, other) is True, \
+        "without the declared parent this pair IS independent — so parentage decided it"
+
+
+def test_parentage_refuses_a_child_on_a_different_credential(db):
+    """A subagent that authenticates with its own key. Different credentials are the FIRST
+    thing `independent` accepts as separation, so this returns True the moment the parent
+    branches are gone — and a spawned verifier holding its own credential is the most likely
+    real shape of this, not the least."""
+    reviewer, author = _pair(a={"api_key_id": "k1"},
+                             b={"api_key_id": "k2", "parent_agent_id": "A"})
+
+    assert fleet.independent(reviewer, author) is False
+
+    unrelated, other = _pair(a={"api_key_id": "k1"}, b={"api_key_id": "k2"})
+    assert fleet.independent(unrelated, other) is True, "different keys alone are independent"
+
+
+def test_parentage_refuses_upward_too(db):
+    """Either direction. A parent reviewing its child's work is the same call tree, and the
+    branch is a separate `or` clause that nothing else covers."""
+    reviewer, author = _pair(a={"api_key_id": "k2", "parent_agent_id": "B"},
+                             b={"api_key_id": "k1"})
+
+    assert fleet.independent(reviewer, author) is False
+
+
+def test_siblings_are_refused_when_their_seats_would_have_allowed_it(db):
+    """The sibling branch, made load-bearing the same way. Two children of one parent, each
+    with its own seat: without that branch the seats separate them and one signs off the
+    other's work, inside a single call tree."""
+    reviewer, author = _pair(a={"enrolment_id": "seat-1", "parent_agent_id": "P"},
+                             b={"enrolment_id": "seat-2", "parent_agent_id": "P"})
+
+    assert fleet.independent(reviewer, author) is False
+
+    a2, b2 = _pair(a={"enrolment_id": "seat-1", "parent_agent_id": "P1"},
+                   b={"enrolment_id": "seat-2", "parent_agent_id": "P2"})
+    assert fleet.independent(a2, b2) is True, "different parents are different call trees"
+
+
+def test_a_subagent_with_its_own_seat_is_refused_through_the_surface(client, auth, proj, db):
+    """The same case as the first test, driven through MCP rather than the predicate — because
+    a gate that holds in the function and is unreachable through the published surface is the
+    failure GRPH-377 already cost us once.
+
+    Two seats on one credential, the child declaring its parent: refused at BOTH gates."""
+    from app.services import fleet as fleet_svc
+
+    plaintext = client.post("/api/api-keys", json={"name": "sub", "project_id": proj},
+                            headers=auth).json()["plaintext"]
+    codes = client.post("/api/fleet/seats",
+                        json={"project_id": proj, "roles": ["worker", "reviewer"],
+                              "wave": "w1"}, headers=auth).json()["seats"]
+    parent = _ok(client, plaintext, "register_agent",
+                 {"label": "orchestrator", "enrolment_code": codes[0]["code"]})
+    child = _ok(client, plaintext, "register_agent",
+                {"label": "verifier", "enrolment_code": codes[1]["code"],
+                 "parent_agent_id": parent["agent_id"]})
+    assert child["active_role"] == "reviewer" and child["enrolled"] is True
+
+    item = _ok(client, plaintext, "create_item", {"title": "the parent's work", "status": "next"})
+    _ok(client, plaintext, "claim_next", {"agent_id": parent["agent_id"]})
+    _ok(client, plaintext, "update_item",
+        {"id": item["id"], "status": "review", "agent_id": parent["agent_id"]})
+
+    got = _ok(client, plaintext, "claim_review", {"agent_id": child["agent_id"]})
+    assert got["claimed"] is False, "claim_review must filter its parent's work out"
+
+    res = _rpc(client, plaintext, "sign_off", {"id": item["id"], "agent_id": child["agent_id"]})
+    assert res.get("isError") is True, "and sign_off refuses it directly"
+    assert "not independent" in res["structuredContent"]["error"]["message"]
