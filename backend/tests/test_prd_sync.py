@@ -22,10 +22,16 @@ import json
 import pathlib
 import re
 import subprocess
+import sys
+import tempfile
 
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(REPO / "scripts"))
+
+import gen_prd_index  # noqa: E402
+
 SNAPSHOT = json.loads((REPO / "docs" / "prd-index.json").read_text(encoding="utf-8"))
 INDEX = SNAPSHOT["prds"]
 
@@ -123,3 +129,86 @@ def test_the_known_divergence_is_still_real():
         "GRPH-P17's bodies now agree — delete it from KNOWN_BODY_DIVERGENCE so the real check "
         "applies to it."
     )
+
+
+# ---- the join key (GRPH-425) ----------------------------------------------------------------
+#
+# The index used to pair a document with a ledger row by the digits in its FILENAME. That is not
+# the repo's to choose: numbering is per-project and issued by the ledger, so a document named
+# before its row exists carries whatever number its author expected.
+# `docs/prd-22-org-administration-plane.md` was named that way while the ledger issued 22 to the
+# fleet supervisor PRD, and the index bound the two together. Neither was past `draft`, so the
+# section check never compared them and nothing failed — the gap this whole file exists to close,
+# reappearing inside the tool built to close it.
+
+
+def test_the_filename_is_not_the_join_key():
+    """Written against a file whose name and declaration DISAGREE, because live data cannot tell
+    the two rules apart: every committed PRD's filename happens to match its id, so an assertion
+    over `docs/` passes under the old generator and proves nothing."""
+    with tempfile.TemporaryDirectory() as d:
+        doc = pathlib.Path(d) / "prd-99-a-number-nobody-issued.md"
+        doc.write_text("# PRD-99 — misnamed\n\n**Ledger id:** GRPH-P17\n", encoding="utf-8")
+
+        assert gen_prd_index._declared_id(doc) == "GRPH-P17"
+
+
+def test_a_document_that_declares_nothing_is_not_guessed_at():
+    """No declaration means no pair. The old code fell back to the filename here, which is how a
+    document the ledger had never seen became a confident mis-pairing rather than an unindexed
+    row somebody would have noticed."""
+    with tempfile.TemporaryDirectory() as d:
+        doc = pathlib.Path(d) / "prd-17-looks-familiar.md"
+        doc.write_text("# PRD-17 — no declaration\n\n**Status:** draft\n", encoding="utf-8")
+
+        assert gen_prd_index._declared_id(doc) is None
+
+
+@pytest.mark.parametrize("prd_id", sorted(INDEX))
+def test_every_indexed_doc_declares_the_id_it_is_indexed_under(prd_id):
+    """The integration half: the snapshot's pairing agrees with the documents themselves, so a
+    regenerated index that quietly re-paired something fails here rather than at `review`."""
+    entry = INDEX[prd_id]
+    declared = gen_prd_index._declared_id(REPO / entry["file"])
+
+    assert declared == prd_id, (
+        f"{entry['file']} declares {declared!r} but the snapshot indexes it under {prd_id!r}. "
+        "Regenerate with scripts/gen_prd_index.py, or fix the doc's `**Ledger id:**` line."
+    )
+
+
+def test_the_pairing_asks_the_document_not_the_filename():
+    """The discriminating test: `build` is handed a file whose NAME says 99 and whose DECLARATION
+    says GRPH-P17, and the ledger must be asked for GRPH-P17.
+
+    Testing `_declared_id` alone would not catch a regression — the old generator could keep that
+    helper and go on pairing by filename, and every assertion over `docs/` would still pass,
+    because every committed PRD's name happens to match its id. This one fails."""
+    with tempfile.TemporaryDirectory() as d:
+        doc = pathlib.Path(d) / "prd-99-a-number-nobody-issued.md"
+        doc.write_text("# PRD-99 — misnamed\n\n**Ledger id:** GRPH-P17\n", encoding="utf-8")
+        asked = []
+
+        def lookup(prd_id):
+            asked.append(prd_id)
+            return {"status": "approved", "sections": [{"section": "Overview"}]}
+
+        index, unindexed = gen_prd_index.build([doc], lookup)
+
+    assert asked == ["GRPH-P17"], f"the ledger was asked for {asked}, so the filename decided it"
+    assert set(index) == {"GRPH-P17"} and not unindexed
+
+
+def test_a_declared_id_the_ledger_does_not_have_is_recorded_not_paired():
+    """A claim the ledger cannot confirm is not a pairing. It lands in `unindexed`, where
+    `test_the_snapshot_accounts_for_every_repo_prd` can see it."""
+    with tempfile.TemporaryDirectory() as d:
+        doc = pathlib.Path(d) / "prd-40-not-filed-yet.md"
+        doc.write_text("# PRD-40\n\n**Ledger id:** GRPH-P40\n", encoding="utf-8")
+
+        def lookup(prd_id):
+            raise gen_prd_index.Missing("no such prd")
+
+        index, unindexed = gen_prd_index.build([doc], lookup)
+
+    assert index == {} and unindexed == ["docs/prd-40-not-filed-yet.md"]

@@ -1,5 +1,6 @@
 # PRD-21 — The cloud org plane: a hierarchy over the projects, a galaxy over the graphs
 
+**Ledger id:** GRPH-P21
 **Status:** **approved — re-earned 2026-08-20**, after the 2026-08-18 `scope-change` rebaseline cleared the dimension
 verdicts and re-opened the grill. **The 2026-08-17 baseline still governs** until a new one is
 earned; anything built meanwhile is measured against it. First baseline: three batches, 24
@@ -591,7 +592,7 @@ missing capability named, so the gap is in the backlog rather than in a mockup:
 
 | Screen | Disposition |
 | --- | --- |
-| Cross-repo triage | New item — requires an org-scoped collision service. Candidate PRD-22. |
+| Cross-repo triage | New item — requires an org-scoped collision service. Not yet filed, so it has no number: the ledger issues those and 22 went to the fleet supervisor PRD on 2026-08-20. Naming a future one here is what put two documents on 22 (GRPH-425). |
 | Security / SSO | New item. Nothing exists; not designed. |
 | Billing payment half | GRPH-82. The *display* half (plan, limits, usage) is in scope — it is backed by `/api/orgs/{id}/billing` today. |
 | Usage charts | New item — requires time-series `OrgUsage`. The current-period meter is in scope. |

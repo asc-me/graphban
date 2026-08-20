@@ -1,5 +1,6 @@
 # PRD-20 — The living graph: an interactive code graph with agent presence
 
+**Ledger id:** GRPH-P20
 **Status:** approved — reached by completing the grill (PRD-15), 2026-08-14. Decisions in §8.
 **Depends on:** PRD-17 (fleet roles, `Agent`, `AreaReservation`) · AL-192 (collision clustering) · AL-197 (principal on events)
 **Blocked on:** GRPH-380 (the all-in-one posture claims through the collision divvy) — D4–D7 read a table that is empty until it lands

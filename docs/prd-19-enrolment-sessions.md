@@ -1,5 +1,6 @@
 # PRD-19 — Enrolment sessions: one credential, ephemeral roles
 
+**Ledger id:** GRPH-P19
 **Status:** review — E1-E9b shipped and O1-O6 are resolved, but the grill's four
 dimensions are unanswered, so it has not earned `approved` and cannot be given it.
 **Depends on:** PRD-17 (fleet roles) · GRPH-362 (all-in-one posture) · GRPH-365 (declared independence)
