@@ -33,8 +33,11 @@ from app.schemas import (
     InviteOut,
     InvitePreviewOut,
     OrgCreate,
+    MemberRemovedOut,
+    MemberRoleIn,
     OrgMemberOut,
     OrgProjectAccessOut,
+    ProjectAccessIn,
     OrgOut,
     OrgRequestCreate,
     OrgRequestOut,
@@ -184,6 +187,60 @@ def org_galaxy(org_id: str, db: Session = Depends(get_db), user: User = Depends(
     """
     authz.require_org_member(db, user.id, org_id)
     return galaxy_svc.galaxy(db, org_id)
+# ---- membership mutations (PRD-21 D8) -----------------------------------------
+# Authority actions, so every one lands in the ledger. `test_authority_gates.py` exists to
+# assert that authority stays human-adjudicated and audited, and these are exactly that.
+@router.patch("/orgs/{org_id}/members/{user_id}", response_model=OrgMemberOut)
+def set_member_role(
+    org_id: str,
+    user_id: str,
+    body: MemberRoleIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Change a member's org role. The owner is immutable and nobody promotes themselves."""
+    seat = orgs_svc.set_member_role(db, org_id, user_id, body.role, actor=user)
+    events_svc.record_user(db, user, action="set_member_role", target_type="org_membership",
+                           target_id=f"{org_id}:{user_id}", meta={"role": seat.role})
+    member = db.get(User, user_id)
+    return OrgMemberOut(user=UserOut.model_validate(member), role=seat.role)
+
+
+@router.delete("/orgs/{org_id}/members/{user_id}", response_model=MemberRemovedOut)
+def remove_member(
+    org_id: str,
+    user_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Remove a member, cascading their project memberships.
+
+    Returns what was revoked. A removal that left project access behind would be the worst
+    kind of quiet — gone from the roster, still able to reach the work.
+    """
+    result = orgs_svc.remove_member(db, org_id, user_id, actor=user)
+    events_svc.record_user(db, user, action="remove_member", target_type="org_membership",
+                           target_id=f"{org_id}:{user_id}", meta=result)
+    return MemberRemovedOut(**result)
+
+
+@router.put("/projects/{project_id}/members/{user_id}", response_model=OrgProjectAccessOut)
+def set_project_access(
+    project_id: str,
+    user_id: str,
+    body: ProjectAccessIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Grant or change one person's access to one project (`write` / `read` / `none`)."""
+    membership = orgs_svc.set_project_access(db, project_id, user_id, body.access, actor=user)
+    project = db.get(Project, project_id)
+    events_svc.record_user(db, user, action="set_project_access", target_type="membership",
+                           target_id=f"{project_id}:{user_id}", project_id=project_id,
+                           meta={"access": membership.access})
+    return OrgProjectAccessOut(
+        project_id=project_id, tag=project.tag, name=project.name, level=membership.access,
+    )
 
 
 @router.get("/orgs/{org_id}/members", response_model=list[OrgMemberOut])

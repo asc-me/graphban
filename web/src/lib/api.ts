@@ -7,6 +7,7 @@ import type { FleetOverview, FleetPresence } from "@/lib/types";
 import type {
   AdminActivity,
   Galaxy,
+  OrgProjectAccess,
   TriageRow,
   AdminInvite,
   AdminOrg,
@@ -305,6 +306,22 @@ export const api = {
   acceptInvite: (token: string) =>
     request<Org>("/invites/accept", { method: "POST", body: JSON.stringify({ token }) }),
   orgGalaxy: (orgId: string) => request<Galaxy>(`/orgs/${orgId}/galaxy`),
+  setMemberRole: (orgId: string, userId: string, role: string) =>
+    request<OrgMember>(`/orgs/${orgId}/members/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ role }),
+    }),
+  /** Returns what was revoked, so the UI can say it rather than report bare success. */
+  removeMember: (orgId: string, userId: string) =>
+    request<{ removed_role: string; projects_revoked: string[] }>(
+      `/orgs/${orgId}/members/${userId}`,
+      { method: "DELETE" },
+    ),
+  setProjectAccess: (projectId: string, userId: string, access: string) =>
+    request<OrgProjectAccess>(`/projects/${projectId}/members/${userId}`, {
+      method: "PUT",
+      body: JSON.stringify({ access }),
+    }),
   orgBilling: (orgId: string) => request<Billing>(`/orgs/${orgId}/billing`),
   setOrgPlan: (orgId: string, plan: string) =>
     request<Org>(`/orgs/${orgId}/plan`, { method: "PUT", body: JSON.stringify({ plan }) }),

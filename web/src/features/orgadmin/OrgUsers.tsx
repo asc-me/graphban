@@ -4,13 +4,16 @@ import { NavLink, Route, Routes } from "react-router-dom";
 
 import { copyText } from "@/lib/clipboard";
 import { errorDetail } from "@/lib/errors";
+import { useAuth } from "@/features/auth/AuthContext";
 import {
   useBilling,
   useCreateInvite,
   useInvites,
   useOrgMembers,
   useOrgs,
+  useRemoveMember,
   useRevokeInvite,
+  useSetMemberRole,
 } from "@/lib/queries";
 import { adminPath } from "@/lib/routes";
 import type { Invite, OrgMember } from "@/lib/types";
@@ -147,7 +150,7 @@ function MembersTab() {
       ) : members.length <= 1 && invites.length === 0 ? (
         <JustYou onInvite={() => setInviting(true)} />
       ) : (
-        <MemberTable members={members} />
+        <MemberTable members={members} orgId={org?.id ?? ""} />
       )}
 
       {inviting && org && <InviteForm orgId={org.id} onDone={() => setInviting(false)} />}
@@ -180,7 +183,7 @@ const ROLE_TONE: Record<string, string> = {
   member: "text-muted border-line",
 };
 
-function MemberTable({ members }: { members: OrgMember[] }) {
+function MemberTable({ members, orgId }: { members: OrgMember[]; orgId: string }) {
   return (
     <div className="overflow-x-auto rounded-[13px] border border-line bg-surface-2">
       <div style={{ minWidth: 900 }}>
@@ -190,19 +193,16 @@ function MemberTable({ members }: { members: OrgMember[] }) {
           <span className="w-[84px] shrink-0">ORG ROLE</span>
           <span className="min-w-0 flex-1">PROJECT ACCESS</span>
           <span className="w-[82px] shrink-0 text-right">LAST WRITE</span>
-          <span className="flex w-[178px] shrink-0 justify-end text-purple">ACTIONS · NOT BACKED</span>
+          <span className="flex w-[178px] shrink-0 justify-end">ACTIONS</span>
         </div>
         {members.map((m) => (
-          <MemberRow key={m.user.id} member={m} />
+          <MemberRow key={m.user.id} member={m} orgId={orgId} />
         ))}
         <div className="flex gap-2.5 bg-surface px-3.5 py-2.5">
-          <span className="h-[15px] shrink-0 rounded border border-purple/30 px-1.5 font-mono text-[8.5px] uppercase tracking-[0.05em] text-purple">
-            not backed
-          </span>
           <span className="text-[11px] leading-relaxed text-muted">
-            No endpoint changes a role or removes a member today — specified as D8 in PRD-21 §3.5,
-            unbuilt. Both actions are drawn so the flow is settled; neither is wired. The owner's
-            actions are disabled regardless: the owner cannot be demoted.
+            The owner's actions stay disabled: ownership belongs to the account that created
+            the org, and one that can lose its last owner is one nobody can administer. You
+            cannot change or remove yourself either.
           </span>
         </div>
       </div>
@@ -210,11 +210,18 @@ function MemberTable({ members }: { members: OrgMember[] }) {
   );
 }
 
-function MemberRow({ member }: { member: OrgMember }) {
+function MemberRow({ member, orgId }: { member: OrgMember; orgId: string }) {
   const { user, role, access, last_write_at } = member;
   const isOwner = role === "owner";
+  const { user: me } = useAuth();
+  const isSelf = me?.id === user.id;
+  const setRole = useSetMemberRole(orgId);
+  const [confirming, setConfirming] = React.useState(false);
   return (
-    <div className="flex items-center gap-3 border-b border-line px-3.5 py-2.5 hover:bg-surface-3">
+    <div
+      data-testid={`member-${user.handle}`}
+      className="flex items-center gap-3 border-b border-line px-3.5 py-2.5 hover:bg-surface-3"
+    >
       <span className="flex w-[186px] min-w-0 shrink-0 items-center gap-2.5">
         <span
           className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border font-mono text-[10px] font-semibold"
@@ -264,39 +271,109 @@ function MemberRow({ member }: { member: OrgMember }) {
       <span className="w-[82px] shrink-0 text-right">
         <LastWrite at={last_write_at} />
       </span>
-      <span className="flex w-[178px] shrink-0 justify-end gap-1">
-        <UnwiredAction label="CHANGE ROLE" owner={isOwner} />
-        <UnwiredAction label="REMOVE" owner={isOwner} danger />
+      <span className="flex w-[178px] shrink-0 items-center justify-end gap-1">
+        <select
+          value={role}
+          aria-label={`Role for ${user.handle}`}
+          disabled={isOwner || isSelf || setRole.isPending}
+          title={
+            isOwner
+              ? "The owner cannot be demoted."
+              : isSelf
+                ? "You cannot change your own role."
+                : undefined
+          }
+          onChange={(e) => setRole.mutate({ userId: user.id, role: e.target.value })}
+          className="h-[23px] rounded-md border border-line-2 bg-surface px-1.5 font-mono text-[10px] disabled:cursor-not-allowed disabled:text-faint-2"
+        >
+          <option value="owner" disabled>
+            owner
+          </option>
+          <option value="admin">admin</option>
+          <option value="member">member</option>
+        </select>
+        <button
+          onClick={() => setConfirming(true)}
+          disabled={isOwner || isSelf}
+          title={
+            isOwner
+              ? "The owner cannot be removed."
+              : isSelf
+                ? "You cannot remove yourself."
+                : undefined
+          }
+          className="h-[23px] rounded-md border border-st-blocked/30 px-2 font-mono text-[9px] uppercase tracking-[0.05em] text-st-blocked disabled:cursor-not-allowed disabled:border-line disabled:text-faint-2"
+        >
+          Remove
+        </button>
       </span>
+      {confirming && (
+        <RemoveConfirm member={member} orgId={orgId} onClose={() => setConfirming(false)} />
+      )}
     </div>
   );
 }
 
 /**
- * Drawn, dashed, and inert.
+ * The confirmation names exactly what is lost.
  *
- * A dashed border and a `not-allowed` cursor say "designed, not built" without pretending
- * to be a live control. Clicking does nothing rather than failing — there is no endpoint
- * to fail against, and a fake error would imply one exists.
+ * Removing someone cascades their project access, and a dialog that said only "are you
+ * sure?" would hide the half of the action with consequences — the seat is the visible
+ * part, the access is the part that mattered.
  */
-function UnwiredAction({ label, owner, danger }: { label: string; owner: boolean; danger?: boolean }) {
-  const title = owner
-    ? "The owner cannot be demoted or removed."
-    : "Not built — no endpoint changes a role or removes a member (PRD-21 D8).";
+function RemoveConfirm({
+  member,
+  orgId,
+  onClose,
+}: {
+  member: OrgMember;
+  orgId: string;
+  onClose: () => void;
+}) {
+  const remove = useRemoveMember(orgId);
+  const { user, access } = member;
   return (
-    <button
-      disabled
-      title={title}
-      className={`h-[23px] cursor-not-allowed rounded-md border border-dashed px-2 font-mono text-[9px] uppercase tracking-[0.05em] ${
-        owner
-          ? "border-line text-faint-2"
-          : danger
-            ? "border-st-blocked/30 text-st-blocked/70"
-            : "border-purple/30 text-purple/80"
-      }`}
-    >
-      {label}
-    </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-6">
+      <div className="w-full max-w-[440px] rounded-[13px] border border-line-2 bg-surface-2 p-5">
+        <h2 className="text-[15px] font-semibold">
+          Remove {user.name} from this organization?
+        </h2>
+        <p className="mt-2 text-[12.5px] leading-relaxed text-muted">
+          Their seat is freed immediately.{" "}
+          {access.length === 0 ? (
+            <>They have no project access, so nothing else changes.</>
+          ) : (
+            <>
+              Access to{" "}
+              <span className="font-mono text-fg-2">
+                {access.map((a) => a.tag || a.name).join(", ")}
+              </span>{" "}
+              is revoked with it — {access.length === 1 ? "that project" : "those projects"}{" "}
+              become unreachable for them.
+            </>
+          )}
+        </p>
+        <p className="mt-2 text-[11.5px] leading-relaxed text-faint">
+          Work they authored is unaffected: items, PRDs and memory reference an id, not a
+          seat.
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="h-[30px] rounded-lg border border-line-2 px-3 text-[12.5px] text-muted hover:text-fg"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={remove.isPending}
+            onClick={() => remove.mutate(user.id, { onSuccess: onClose })}
+            className="h-[30px] rounded-lg border border-st-blocked/40 bg-st-blocked/[0.12] px-3 text-[12.5px] font-semibold text-st-blocked disabled:opacity-50"
+          >
+            {remove.isPending ? "Removing…" : "Remove"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

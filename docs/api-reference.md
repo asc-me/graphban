@@ -216,6 +216,32 @@ Three rules the wire format encodes, each of which would be a permanent defect i
 
 Stale edges are marked, never deleted, and their evidence is never trimmed: a relationship
 with no explanation is worse than a deleted one. Purging is an explicit operator action.
+## Membership mutations (hosted only, PRD-21 D8)
+
+Closes the governance gap in §3.5: before these, members arrived by accepting an invite
+and stayed forever at the role it carried. Every one is an **authority action** and lands
+in the event ledger.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| PATCH | `/api/orgs/{id}/members/{user_id}` | Change org role (`admin` / `member`) |
+| DELETE | `/api/orgs/{id}/members/{user_id}` | Remove from the org, cascading project access |
+| PUT | `/api/projects/{id}/members/{user_id}` | Set project access (`write` / `read` / `none`) |
+
+Four refusals, each a rule rather than a precaution:
+
+- **The owner cannot be demoted or removed**, and ownership is not grantable. An org that
+  can lose its last owner is one nobody can administer.
+- **Nobody edits themselves.** An admin who can grant themselves owner is not an admin.
+- **Nobody grants a rank above their own.**
+- **Project access needs an org seat first** — access inside an org you do not belong to
+  would be a path with no roster entry, invisible on every screen that lists who is here.
+
+`DELETE` returns `{removed_role, projects_revoked}` rather than a bare success, so the
+caller can say what was lost. A removal that silently left project access behind is the
+worst kind of quiet: gone from the roster, still able to reach the work. `none` is a
+**stored** access level, not a deletion — an explicit "not this project" is a decision
+somebody made, and should not read the same as never having been considered.
 
 ## Operator plane (hosted only)
 
