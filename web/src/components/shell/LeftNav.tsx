@@ -161,6 +161,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
           <RailHeading>Admin</RailHeading>
           <nav className="flex flex-col gap-0.5">
             <NavItem to={adminPath("users")} icon={<UsersRound size={16} />} label="Users & access" />
+            <NavItem to={adminPath("teams")} icon={<Users size={16} />} label="Teams" />
             {SPECULATIVE_ENABLED && (
               <NavItem to={adminPath("branding")} icon={<Palette size={16} />} label="Branding" />
             )}

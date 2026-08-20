@@ -142,6 +142,67 @@ export function useSetOrgPlan() {
   });
 }
 
+export function useTeams(orgId?: string) {
+  return useQuery({
+    queryKey: ["teams", orgId],
+    queryFn: () => api.teams(orgId!),
+    enabled: !!orgId,
+  });
+}
+
+/**
+ * Every team write also invalidates the org roster and the project members.
+ *
+ * A grant MATERIALIZES — it writes real `Membership` rows — so a team change silently
+ * moves what the Users screen shows. Leaving that cache stale would put two screens in
+ * the same session disagreeing about who can reach what.
+ */
+function useTeamMutation<T>(orgId: string, fn: (v: T) => Promise<unknown>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["teams", orgId] });
+      qc.invalidateQueries({ queryKey: keys.orgMembers(orgId) });
+      qc.invalidateQueries({ queryKey: ["members"] });
+    },
+  });
+}
+
+export function useCreateTeam(orgId: string) {
+  return useTeamMutation(orgId, (v: { name: string; description?: string }) =>
+    api.createTeam(orgId, v.name, v.description ?? ""),
+  );
+}
+
+export function useDeleteTeam(orgId: string) {
+  return useTeamMutation(orgId, (teamId: string) => api.deleteTeam(teamId));
+}
+
+export function useAddTeamMember(orgId: string) {
+  return useTeamMutation(orgId, (v: { teamId: string; userId: string }) =>
+    api.addTeamMember(v.teamId, v.userId),
+  );
+}
+
+export function useRemoveTeamMember(orgId: string) {
+  return useTeamMutation(orgId, (v: { teamId: string; userId: string }) =>
+    api.removeTeamMember(v.teamId, v.userId),
+  );
+}
+
+export function useSetTeamGrant(orgId: string) {
+  return useTeamMutation(orgId, (v: { teamId: string; projectId: string; access: string }) =>
+    api.setTeamGrant(v.teamId, v.projectId, v.access),
+  );
+}
+
+export function useRevokeTeamGrant(orgId: string) {
+  return useTeamMutation(orgId, (v: { teamId: string; projectId: string }) =>
+    api.revokeTeamGrant(v.teamId, v.projectId),
+  );
+}
+
 export function useGalaxy(orgId?: string) {
   return useQuery({
     queryKey: ["galaxy", orgId],

@@ -102,6 +102,44 @@ class OrgMemberOut(BaseModel):
     last_write_at: datetime | None = None
 
 
+# ---- Teams (hosted-only, PRD-21 D5) ----
+class TeamCreate(BaseModel):
+    name: str
+    description: str = ""
+
+
+class TeamGrantIn(BaseModel):
+    access: str  # write | read
+
+
+class TeamGrantOut(BaseModel):
+    project_id: str
+    tag: str = ""
+    name: str = ""
+    access: str
+    # Who this grant currently reaches, split by whether it is what provides the access.
+    # A `direct` member keeps theirs when the grant is revoked, and saying so is the
+    # difference between a revoke that does what an admin expects and one that does less.
+    derived_user_ids: list[str] = []
+    direct_user_ids: list[str] = []
+
+
+class TeamOut(BaseModel):
+    id: str
+    org_id: str
+    name: str
+    description: str = ""
+    members: list[UserOut] = []
+    grants: list[TeamGrantOut] = []
+
+
+class GrantRevokedOut(BaseModel):
+    """What survived a revoke. "Revoked" and "everyone lost access" are different facts."""
+
+    affected: int
+    kept_access: list[str] = []
+
+
 class MemberRoleIn(BaseModel):
     role: str  # admin | member — owner is never grantable
 

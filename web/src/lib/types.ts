@@ -65,6 +65,27 @@ export interface OrgMember {
   last_write_at: string | null;
 }
 
+// ── Teams (PRD-21 D5) ──────────────────────────────────────────────────────
+export interface TeamGrant {
+  project_id: string;
+  tag: string;
+  name: string;
+  access: "write" | "read";
+  /** Who this grant actually provides access to. */
+  derived_user_ids: string[];
+  /** Members who already had it directly — revoking the grant will NOT remove theirs. */
+  direct_user_ids: string[];
+}
+
+export interface Team {
+  id: string;
+  org_id: string;
+  name: string;
+  description: string;
+  members: User[];
+  grants: TeamGrant[];
+}
+
 export interface Invite {
   id: string;
   /** "org" seats the invitee in an existing org; "platform" onboards a new tenant. */

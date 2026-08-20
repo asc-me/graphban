@@ -283,9 +283,71 @@ class Membership(Base):
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
     role: Mapped[str] = mapped_column(String, default="member")  # owner/admin/member
     access: Mapped[str] = mapped_column(String, default="read")  # write/read/none
+    # Where this row came from: `direct` (a human granted it) or `team` (a grant wrote it).
+    #
+    # **Authorization never reads this — it reads `access`.** `origin` exists only so D8
+    # can refuse a direct edit on a derived row, and so revocation knows what it may
+    # recompute. Keeping it out of every permission decision is what holds this feature
+    # to being administrative rather than a change to the hottest path in the app.
+    origin: Mapped[str] = mapped_column(String, default="direct", server_default="direct")
 
     user: Mapped[User] = relationship(back_populates="memberships")
     project: Mapped[Project] = relationship(back_populates="memberships")
+
+
+class Team(Base):
+    """A named group inside an org whose grants write project access in bulk (PRD-21 D5).
+
+    Teams are **additive** to the two tiers that already exist: `OrgMembership`
+    (owner > admin > member) still governs the org, `Membership` still governs a project,
+    and a team is the instrument that writes the second in bulk.
+    """
+
+    __tablename__ = "teams"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # tm_...
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    name: Mapped[str] = mapped_column(String)
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("org_id", "name", name="uq_team_name"),)
+
+
+class TeamMember(Base):
+    """Who is in a team. Membership here grants nothing by itself — the team's *grants*
+    are what write access, and they write it as real `Membership` rows."""
+
+    __tablename__ = "team_members"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("team_id", "user_id", name="uq_team_member"),)
+
+
+class TeamGrant(Base):
+    """A team's access to one project — the unit of access administration.
+
+    A grant **materializes**: creating or changing one writes `Membership` rows rather
+    than adding a resolution step to `can_read` / `can_write`. Those two are the hottest
+    authorization path in the application and every route depends on them; resolving team
+    closure at read time would change the risk profile of the whole app for a feature that
+    is fundamentally administrative. Materialized, the blast radius is one sync function
+    with a test suite, and every existing authz test keeps its meaning.
+    """
+
+    __tablename__ = "team_grants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    access: Mapped[str] = mapped_column(String, default="read")  # write | read
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("team_id", "project_id", name="uq_team_grant"),)
 
 
 class Item(Base):

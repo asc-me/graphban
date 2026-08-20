@@ -216,6 +216,41 @@ Three rules the wire format encodes, each of which would be a permanent defect i
 
 Stale edges are marked, never deleted, and their evidence is never trimmed: a relationship
 with no explanation is worse than a deleted one. Purging is an explicit operator action.
+## Teams (hosted only, PRD-21 D5)
+
+A team is a named group in an org with **grants** — a project plus an access level — and a
+grant is the unit of access administration.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET / POST | `/api/orgs/{id}/teams` | List or create teams |
+| DELETE | `/api/teams/{id}` | Disband, recomputing what it granted |
+| POST / DELETE | `/api/teams/{id}/members/{user_id}` | Add or remove a member |
+| PUT / DELETE | `/api/teams/{id}/grants/{project_id}` | Set or revoke a grant |
+
+**A grant materializes.** It writes real `Membership` rows rather than adding a resolution
+step to `authz.can_read` / `can_write`. Those two are the hottest authorization path in the
+application and every route depends on them, so resolving team closure at read time would
+change the risk profile of the whole app for a feature that is administrative. Materialized,
+the blast radius is `teams.recompute` and its tests, and every existing authz test keeps its
+meaning.
+
+Four rules follow, and each is a wrong answer avoided:
+
+- **Authorization never reads `origin` — it reads `access`.** `origin` exists only so D8 can
+  refuse a direct edit on a derived row, and so revocation knows what it may recompute.
+- **Revocation recomputes** from the grants that remain, in the same transaction. It does not
+  delete rows attributable to the revoked team: a second team still granting the project keeps
+  the row, and bookkeeping that removed it would strip access someone legitimately has.
+- **A direct membership always survives and wins.** Where direct and derived collide the grant
+  materializes nothing — bulk administration does not overwrite a human's explicit decision.
+- **Access resolves to the highest** across all sources, so nobody is less able because of the
+  order two administrators happened to act in.
+
+A derived membership refuses a direct edit through `PUT /api/projects/{id}/members/{user_id}`
+(409, naming the team). That is the drift materializing costs, made visible rather than silent:
+an edit there would be undone by the next recompute.
+
 ## Membership mutations (hosted only, PRD-21 D8)
 
 Closes the governance gap in §3.5: before these, members arrived by accepting an invite
