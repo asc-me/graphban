@@ -1,0 +1,200 @@
+"""PRD-21 D3: the super galaxy — an edge between repos must name the file that proves it.
+
+The assertions here are mostly about what must NOT happen: no edge without evidence, no
+edge from a guess, no silent drop, and above all no protocol in which an old client
+deletes a dependency graph by staying quiet.
+"""
+import pytest
+
+SEED_PW = "graphban"
+
+
+def _login(client, email="alex@ascme-labs.com", password=SEED_PW):
+    r = client.post("/api/auth/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+@pytest.fixture()
+def hosted(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "hosted_mode", True)
+    return settings
+
+
+@pytest.fixture()
+def org(client, hosted):
+    """An org with two projects: `web` depends on `core`, once a push says so."""
+    auth = _login(client)
+    org = client.post("/api/orgs", json={"name": "Acme"}, headers=auth).json()
+    core = client.post("/api/projects", json={"name": "Core"}, headers=auth).json()
+    web = client.post("/api/projects", json={"name": "Web"}, headers=auth).json()
+    return {"auth": auth, "org": org, "core": core, "web": web}
+
+
+def _sync_key(client, auth, project_id):
+    r = client.post("/api/api-keys", headers=auth,
+                    json={"name": "pusher", "scopes": ["read", "sync"], "project_id": project_id})
+    assert r.status_code == 201, r.text
+    return r.json()["plaintext"]
+
+
+def _push(client, key, **body):
+    return client.post("/api/sync/code-graph", json=body, headers={"X-API-Key": key})
+
+
+def _galaxy(client, auth, org_id):
+    r = client.get(f"/api/orgs/{org_id}/galaxy", headers=auth)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+# ---- resolution ----------------------------------------------------------------
+def test_a_manifest_name_resolves_to_the_sibling_that_publishes_it(client, org):
+    core_key = _sync_key(client, org["auth"], org["core"]["id"])
+    web_key = _sync_key(client, org["auth"], org["web"]["id"])
+
+    _push(client, core_key, provides=["@acme/core"], manifests=[])
+    r = _push(client, web_key, provides=["@acme/web"], manifests=[
+        {"name": "@acme/core",
+         "evidence": [{"file": "web/package.json", "fact": "@acme/core ^2.1"}]},
+    ])
+    assert r.status_code == 200, r.text
+    assert r.json()["galaxy"]["resolved"] == 1
+
+    g = _galaxy(client, org["auth"], org["org"]["id"])
+    edge = next(e for e in g["edges"])
+    assert edge["src"] == org["web"]["id"] and edge["dst"] == org["core"]["id"]
+    assert edge["kind"] == "depends_on"
+    assert edge["evidence"] == [{"file": "web/package.json", "fact": "@acme/core ^2.1"}]
+    assert edge["fresh"] is True
+
+
+def test_an_edge_without_evidence_is_refused(client, org):
+    """The whole difference between this graph and a guess. 422, not a silent drop."""
+    key = _sync_key(client, org["auth"], org["web"]["id"])
+    r = _push(client, key, manifests=[{"name": "@acme/core", "evidence": []}])
+    assert r.status_code == 422
+    assert "evidence" in r.json()["detail"]
+
+
+def test_an_external_package_is_dropped_but_counted(client, org):
+    """A silent drop with no count is the failure this codebase keeps finding."""
+    key = _sync_key(client, org["auth"], org["web"]["id"])
+    r = _push(client, key, manifests=[
+        {"name": "react", "evidence": [{"file": "web/package.json", "fact": "react ^19"}]},
+        {"name": "lodash", "evidence": [{"file": "web/package.json", "fact": "lodash ^4"}]},
+    ])
+    body = r.json()["galaxy"]
+    assert body["resolved"] == 0
+    assert body["external"] == 2
+    assert set(body["external_names"]) == {"react", "lodash"}
+    assert _galaxy(client, org["auth"], org["org"]["id"])["edges"] == []
+
+
+def test_a_name_two_projects_claim_draws_nothing_and_is_reported(client, org):
+    """An ambiguous name is a coin flip, and this graph does not guess. It must also not
+    quietly resolve to whichever row came back first."""
+    core_key = _sync_key(client, org["auth"], org["core"]["id"])
+    web_key = _sync_key(client, org["auth"], org["web"]["id"])
+    _push(client, core_key, provides=["@acme/shared"], manifests=[])
+    # Web publishes the same name AND declares a dependency on it. The collision is what
+    # drops the edge — resolution never gets as far as picking one.
+    r = _push(client, web_key, provides=["@acme/shared"], manifests=[
+        {"name": "@acme/shared", "evidence": [{"file": "web/package.json", "fact": "@acme/shared ^1"}]},
+    ])
+    assert r.json()["galaxy"]["resolved"] == 0
+    assert r.json()["galaxy"]["external"] == 1
+
+    g = _galaxy(client, org["auth"], org["org"]["id"])
+    assert g["edges"] == []
+    collision = next(c for c in g["collisions"] if c["name"] == "@acme/shared")
+    assert set(collision["project_ids"]) == {org["core"]["id"], org["web"]["id"]}
+
+
+def test_a_project_depending_on_a_name_it_publishes_makes_no_self_edge(client, org):
+    """A monorepo's internal package relationships belong in its code graph. The galaxy's
+    resolution is the checkout, not the package."""
+    key = _sync_key(client, org["auth"], org["core"]["id"])
+    r = _push(client, key, provides=["@acme/core"], manifests=[
+        {"name": "@acme/core", "evidence": [{"file": "pkg/a/package.json", "fact": "@acme/core"}]},
+    ])
+    assert r.json()["galaxy"]["resolved"] == 0
+    assert _galaxy(client, org["auth"], org["org"]["id"])["edges"] == []
+
+
+# ---- the distinction that would be permanent if wrong ---------------------------
+def test_an_omitted_manifests_block_stales_nothing(client, org):
+    """An older client that did not look must not delete the graph by staying quiet.
+
+    Collapsing omitted and empty writes absence-reads-as-clean into a wire format, where
+    it is far harder to dig out than a bad test: EVERY old client would silently drop the
+    dependencies of every project it pushed.
+    """
+    core_key = _sync_key(client, org["auth"], org["core"]["id"])
+    web_key = _sync_key(client, org["auth"], org["web"]["id"])
+    _push(client, core_key, provides=["@acme/core"], manifests=[])
+    _push(client, web_key, manifests=[
+        {"name": "@acme/core", "evidence": [{"file": "web/package.json", "fact": "^2.1"}]},
+    ])
+
+    r = _push(client, web_key, nodes=[], edges=[])  # no `manifests` key at all
+    assert r.json()["galaxy"]["looked"] is False
+    assert r.json()["galaxy"]["edges_marked_stale"] == 0
+    assert _galaxy(client, org["auth"], org["org"]["id"])["edges"][0]["fresh"] is True
+
+
+def test_an_empty_manifests_block_stales_the_edges(client, org):
+    """Looked, found none — a fact, and a different one from not having looked."""
+    core_key = _sync_key(client, org["auth"], org["core"]["id"])
+    web_key = _sync_key(client, org["auth"], org["web"]["id"])
+    _push(client, core_key, provides=["@acme/core"], manifests=[])
+    _push(client, web_key, manifests=[
+        {"name": "@acme/core", "evidence": [{"file": "web/package.json", "fact": "^2.1"}]},
+    ])
+
+    r = _push(client, web_key, manifests=[])
+    assert r.json()["galaxy"]["looked"] is True
+    assert r.json()["galaxy"]["edges_marked_stale"] == 1
+
+    edge = _galaxy(client, org["auth"], org["org"]["id"])["edges"][0]
+    assert edge["fresh"] is False
+    # Stale, not deleted, and its evidence is NOT trimmed — a relationship with no
+    # explanation is worse than a deleted one.
+    assert edge["evidence"] == [{"file": "web/package.json", "fact": "^2.1"}]
+
+
+def test_a_stale_edge_comes_back_fresh_when_redeclared(client, org):
+    core_key = _sync_key(client, org["auth"], org["core"]["id"])
+    web_key = _sync_key(client, org["auth"], org["web"]["id"])
+    _push(client, core_key, provides=["@acme/core"], manifests=[])
+    dep = [{"name": "@acme/core", "evidence": [{"file": "web/package.json", "fact": "^2.1"}]}]
+    _push(client, web_key, manifests=dep)
+    _push(client, web_key, manifests=[])
+    _push(client, web_key, manifests=dep)
+
+    edges = _galaxy(client, org["auth"], org["org"]["id"])["edges"]
+    assert len(edges) == 1 and edges[0]["fresh"] is True
+
+
+# ---- the read ------------------------------------------------------------------
+def test_nodes_separate_never_pushed_from_pushed_but_unconnected(client, org):
+    """Two of the three empty states. An org with projects that have pushed nothing is not
+    an empty org — the EDGES are empty, and the nodes must still be drawn."""
+    g = _galaxy(client, org["auth"], org["org"]["id"])
+    assert len(g["nodes"]) == 2
+    assert all(n["pushed"] is False for n in g["nodes"])
+    assert g["edges"] == []
+
+
+def test_the_galaxy_is_org_scoped(client, org):
+    """Another tenant's projects are not in this graph, whatever they publish."""
+    dana = _login(client, "dana@ascme-labs.com")
+    client.post("/api/orgs", json={"name": "Dana Co"}, headers=dana)
+    client.post("/api/projects", json={"name": "Theirs"}, headers=dana)
+
+    names = {n["name"] for n in _galaxy(client, org["auth"], org["org"]["id"])["nodes"]}
+    assert names == {"Core", "Web"}
+    # 404, not 403 — the org gate hides existence rather than confirming it.
+    assert client.get(f"/api/orgs/{org['org']['id']}/galaxy", headers=dana).status_code == 404

@@ -6,6 +6,7 @@ import type { FleetOverview, FleetPresence } from "@/lib/types";
  */
 import type {
   AdminActivity,
+  Galaxy,
   TriageRow,
   AdminInvite,
   AdminOrg,
@@ -303,6 +304,7 @@ export const api = {
   previewInvite: (token: string) => request<InvitePreview>(`/invites/${token}/preview`),
   acceptInvite: (token: string) =>
     request<Org>("/invites/accept", { method: "POST", body: JSON.stringify({ token }) }),
+  orgGalaxy: (orgId: string) => request<Galaxy>(`/orgs/${orgId}/galaxy`),
   orgBilling: (orgId: string) => request<Billing>(`/orgs/${orgId}/billing`),
   setOrgPlan: (orgId: string, plan: string) =>
     request<Org>(`/orgs/${orgId}/plan`, { method: "PUT", body: JSON.stringify({ plan }) }),

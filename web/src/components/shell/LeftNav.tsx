@@ -1,4 +1,4 @@
-import { BarChart3, Building2, Check, ChevronDown, CreditCard, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, Palette, Plug, Plus, Radar, ScrollText, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
+import { BarChart3, Building2, Check, ChevronDown, CreditCard, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
 import * as React from "react";
 import { NavLink } from "react-router-dom";
 
@@ -22,7 +22,7 @@ import {
   useOrgs,
   useRequests,
 } from "@/lib/queries";
-import { ORG_BASE, adminPath, projectPath } from "@/lib/routes";
+import { ORG_BASE, adminPath, orgPath, projectPath } from "@/lib/routes";
 
 /** The project-scoped views, in rail order. */
 const WORKSPACE = [
@@ -183,7 +183,10 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
           </div>
         )}
         {hosted && (
-          <NavItem to={ORG_BASE} icon={<Building2 size={16} />} label="Organization" end />
+          <>
+            <NavItem to={orgPath("galaxy")} icon={<Orbit size={16} />} label="Galaxy" />
+            <NavItem to={ORG_BASE} icon={<Building2 size={16} />} label="Organization" end />
+          </>
         )}
         {!hosted && <NavItem to="/organization" icon={<Building2 size={16} />} label="Organization" />}
         {isPlatformAdmin && <NavItem to="/admin" icon={<ShieldCheck size={16} />} label="Operator" />}

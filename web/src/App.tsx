@@ -15,6 +15,7 @@ import { EmbedFeedbackPage } from "@/features/feedback/EmbedFeedbackPage";
 import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
 import { LinksGraphView } from "@/features/links/LinksGraphView";
 import { FleetView } from "@/features/fleet/FleetView";
+import { GalaxyView } from "@/features/galaxy/GalaxyView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
 import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
@@ -114,6 +115,7 @@ function AuthedApp() {
         {hosted && (
           <>
             <Route path={ORG_BASE} element={<OrganizationView />} />
+            <Route path={`${ORG_BASE}/galaxy`} element={<GalaxyView />} />
             <Route path={`${ORG_BASE}/admin`} element={<OrgAdminShell />}>
               <Route index element={<Navigate to="users" replace />} />
               <Route path="users" element={<OrgUsers />} />

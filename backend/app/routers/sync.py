@@ -30,6 +30,7 @@ from app.security.deps import get_agent_key, get_current_user
 from app.services import code_graph
 from app.services import code_sync
 from app.services import events as events_svc
+from app.services import galaxy as galaxy_svc
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -95,6 +96,13 @@ class CodeGraphIn(BaseModel):
     edges: list[dict] = []
     remove: list[str] = []
     prune: bool = False
+    # Package names this project publishes — the registry siblings resolve against.
+    # None means "this client did not look"; [] means "looked, publishes nothing".
+    provides: list[str] | None = None
+    # Manifest dependencies parsed by the pusher: [{"name": "@acme/core",
+    # "evidence": [{"file": "web/package.json", "fact": "@acme/core ^2.1"}]}].
+    # OMITTED and EMPTY differ — see `galaxy.apply_manifests`.
+    manifests: list[dict] | None = None
 
 
 @router.post("/code-graph")
@@ -118,6 +126,23 @@ def ingest_code_graph(
     if marked:
         db.commit()
     result["marked_stale"] += marked
+
+    # PRD-21 D3: the galaxy rides along with the code-graph push, because a manifest is
+    # read from the same checkout at the same moment. Org-scoped, so it is a no-op on a
+    # self-host where a project belongs to no org.
+    project = db.get(Project, project_id)
+    org_id = project.org_id if project is not None else None
+    if org_id:
+        if body.provides is not None:
+            project.provides = [str(n).strip() for n in body.provides if str(n).strip()]
+            db.commit()
+        try:
+            result["galaxy"] = galaxy_svc.apply_manifests(
+                db, org_id=org_id, project_id=project_id, manifests=body.manifests
+            )
+        except galaxy_svc.GalaxyError as e:
+            raise HTTPException(422, str(e))
+
     events_svc.record_key(
         db, key, action="sync_code_graph", target_type="project", target_id=project_id,
         project_id=project_id,

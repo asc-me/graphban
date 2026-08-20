@@ -78,7 +78,9 @@ describe("path helpers", () => {
 
     const offenders: string[] = [];
     for (const [path, text] of Object.entries(sources)) {
-      if (path.includes("/lib/routes.ts") || path.includes("__tests__")) continue;
+      // Sibling test files resolve as `./galaxy.test.tsx` — no `__tests__` segment — so
+      // excluding by directory alone let one through. Match the filename too.
+      if (path.includes("/lib/routes.ts") || path.includes(".test.")) continue;
       for (const line of text.split("\n")) {
         // Prose in a doc comment may name the path — that is documentation, not a link.
         const trimmed = line.trim();
