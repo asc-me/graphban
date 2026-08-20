@@ -130,7 +130,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `extract_lessons` | `id` | Distill lessons from an item into memory |
 | `generate_digest` | `project_id` | Compose a progress digest across the project |
 | `prd_coverage` | `prd_id` | Spec-to-task rollup: per-section counts, coverage %, gaps (read-only) |
-| `decompose_prd` | `prd_id`, `create` | Propose (or create) one task per un-covered PRD section |
+| `decompose_prd` | `prd_id`, `create` | Propose (or create) one task per un-covered PRD section, each carrying the PRD's framing prose |
 | `create_prd` | `title`, `body`, `template`, `project_id` | **Author a PRD** (the handoff artifact) — `## ` sections drive decompose/coverage |
 | `update_prd` | `prd_id`, `title`, `status`, `body` | Patch a PRD's title, status (`draft`/`review`) or body. **`approved` is not settable** — it is reached by finishing the grill; setting it returns `conflict` naming what is still outstanding (AL-300) |
 | `answer_grill` | `prd_id`, `answer` | Relay the author's answer to a grill question — recorded as **agent-relayed**, visible to whoever reviews later. Returns `outstanding` + `complete` (AL-299) |
@@ -177,7 +177,20 @@ first: it reports `readable_projects` and `writable_projects` for the key.
 Items can link to a **PRD + section** (`prd_id` / `prd_section` on `create_item`/`update_item`),
 so the spec and the tracker stay joined. `decompose_prd(prd_id, create=true)` proposes one
 tracked task per un-covered PRD section (the gaps) and, with `create`, creates them as backlog
-items linked back to the section — the spec drives the tracker. `prd_coverage(prd_id)` returns
+items linked back to the section — the spec drives the tracker.
+
+**Each task carries the PRD's framing sections with it** (GRPH-261). A section body reads
+correctly inside a document and incompletely outside one: the rules an implementer needs —
+an invariant, a charset, a set of assigned values — live in Overview, Context or Goals, and
+the buildable sections assume the reader has already seen them. On PRD-13 the tag charset and
+the five tag assignments never reached the six items meant to implement them, and all six had
+to be rewritten by hand. The framing is duplicated onto every item on purpose: an item that
+must fetch its parent to be actionable is the cost this tool exists to remove.
+
+Relative references (`the five tags above`, `the mint path below`) are **reported, not
+rewritten** — they arrive on each proposal as `dangling_refs`, visible on a dry run before
+anything is created. Repairing them means guessing which five, and a confidently wrong
+substitution reads as fact where a visible "above" tells the reader to go looking. `prd_coverage(prd_id)` returns
 the per-section rollup (task counts by status, `percent_done`, and `gaps`) so an agent knows
 what's specced-but-unbuilt. Completing an item then updates coverage; ask `get_backlog`/
 `next_cluster` for what to pick up next — the loop.

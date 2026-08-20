@@ -339,9 +339,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "decompose_prd",
         "description": (
-            "Propose one tracked task per un-covered PRD section. With `create=true`, creates them "
-            "as backlog items linked to the PRD+section. Framing sections (Problem, Goals, "
-            "Non-goals, …) are skipped unless `include_prose=true`."
+            "One task per un-covered PRD section, each carrying the PRD's framing prose so it "
+            "needs no other reading. `create=true` files them, linked to PRD+section. Framing "
+            "sections aren't tasks unless `include_prose=true`."
         ),
         "inputSchema": {
             "type": "object",
