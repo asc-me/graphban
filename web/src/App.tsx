@@ -21,6 +21,7 @@ import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
 import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
 import { OrgAdminShell } from "@/features/orgadmin/OrgAdminShell";
 import { OrgBranding } from "@/features/orgadmin/OrgBranding";
+import { SPECULATIVE_ENABLED } from "@/features/orgadmin/Speculative";
 import { OrgBilling } from "@/features/orgadmin/OrgBilling";
 import { OrgIntegrations } from "@/features/orgadmin/OrgIntegrations";
 import { OrgDeployments } from "@/features/orgadmin/OrgDeployments";
@@ -124,7 +125,13 @@ function AuthedApp() {
               <Route path="users" element={<OrgUsers />} />
               <Route path="teams" element={<OrgTeams />} />
               <Route path="deployments" element={<OrgDeployments />} />
-              <Route path="branding" element={<OrgBranding />} />
+              {/* Gated on the ROUTE as well as the nav item. A speculative screen still
+                  reachable by URL gets linked to, screenshotted and demoed — and a nav
+                  gate on its own reads as an oversight rather than a decision, so the
+                  next person cannot tell which it was (PRD-21 D9). */}
+              {SPECULATIVE_ENABLED && (
+                <Route path="branding" element={<OrgBranding />} />
+              )}
               <Route path="integrations" element={<OrgIntegrations />} />
               <Route path="billing" element={<OrgBilling />} />
             </Route>
