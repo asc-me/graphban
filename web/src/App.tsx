@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import { AppFrame } from "@/components/shell/AppFrame";
 import { useAuth } from "@/features/auth/AuthContext";
@@ -23,12 +23,14 @@ import { OrgAdminShell } from "@/features/orgadmin/OrgAdminShell";
 import { OrgBranding } from "@/features/orgadmin/OrgBranding";
 import { OrgBilling } from "@/features/orgadmin/OrgBilling";
 import { OrgIntegrations } from "@/features/orgadmin/OrgIntegrations";
+import { OrgDeployments } from "@/features/orgadmin/OrgDeployments";
 import { OrgTeams } from "@/features/orgadmin/OrgTeams";
 import { OrgUsers } from "@/features/orgadmin/OrgUsers";
 import { OrganizationView } from "@/features/organization/OrganizationView";
 import { PrdEditorView } from "@/features/prds/PrdEditorView";
 import { PrdListView } from "@/features/prds/PrdListView";
 import { ProfileView } from "@/features/profile/ProfileView";
+import { ProjectHome } from "@/features/projecthome/ProjectHome";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { EmbedRoadmapPage } from "@/features/roadmap/EmbedRoadmapPage";
 import { RoadmapView } from "@/features/roadmap/RoadmapView";
@@ -110,7 +112,7 @@ function AuthedApp() {
           : PROJECT_VIEWS.map(([path, el]) => (
               <Route key={path} path={`/${path}`} element={el} />
             ))}
-        {hosted && <Route path="/p/:tag" element={<ProjectIndex />} />}
+        {hosted && <Route path="/p/:tag" element={<ProjectHome />} />}
 
         {/* ---- the org plane (hosted only) ---- */}
         {hosted && (
@@ -121,6 +123,7 @@ function AuthedApp() {
               <Route index element={<Navigate to="users" replace />} />
               <Route path="users" element={<OrgUsers />} />
               <Route path="teams" element={<OrgTeams />} />
+              <Route path="deployments" element={<OrgDeployments />} />
               <Route path="branding" element={<OrgBranding />} />
               <Route path="integrations" element={<OrgIntegrations />} />
               <Route path="billing" element={<OrgBilling />} />
@@ -141,12 +144,6 @@ function AuthedApp() {
       </Route>
     </Routes>
   );
-}
-
-/** `/p/:tag` with no view — land on the tracker, the view the app opens on. */
-function ProjectIndex() {
-  const { tag } = useParams();
-  return <Navigate to={projectPath(tag ?? "", "tracker")} replace />;
 }
 
 /**
