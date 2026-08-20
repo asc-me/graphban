@@ -2756,6 +2756,62 @@ def coverage(db: Session, prd: Prd) -> dict:
     }
 
 
+# Relative pointers that are true inside a document and false inside a task. "Above" and
+# "below" are the common ones; the rest showed up in the PRD-13 items that had to be
+# hand-rewritten. Matched on word boundaries so "aboveboard" and "belowdecks" survive.
+_DANGLING_REF = re.compile(
+    r"\b(?:above|below|earlier in this|later in this|the (?:first|second|last|previous|next|preceding|following) section)\b",
+    re.IGNORECASE,
+)
+
+
+def framing_context(prd: Prd) -> str:
+    """The framing sections, assembled so a task can carry its own spec.
+
+    `decompose` lifts one section body verbatim, which reads correctly inside a document
+    and incompletely outside one. Every rule a PRD states — an invariant, a charset, a set
+    of assigned values, the reason a decision went the way it did — lives in framing prose
+    that the implementable sections assume the reader has already seen. Extracted alone,
+    the section is a paragraph about *what* with no *how* and no *why*.
+
+    That is not hypothetical: on PRD-13 the ID grammar, the tag charset `^[A-Z][A-Z0-9]{1,3}$`
+    and the five tag assignments all lived in `## Context`, and none of them reached the six
+    items that had to implement them. All six were hand-rewritten to be self-contained,
+    which is the exact cost `decompose_prd` exists to remove.
+
+    So the framing goes WITH the work rather than being left behind for someone to go and
+    find. It is duplicated onto every item on purpose: an item that has to fetch its parent
+    to be actionable is the failure this repairs, and bloat is the cheaper of the two.
+    """
+    bodies = section_bodies(prd.body)
+    parts = []
+    for title, body in bodies.items():
+        if is_implementable_section(title):
+            continue
+        text = (body or "").strip()
+        if text:
+            parts.append(f"### {title}\n\n{text}")
+    if not parts:
+        return ""
+    return "\n\n".join(parts)
+
+
+def dangling_refs(text: str) -> list[str]:
+    """Relative references in a section body that stop resolving once it is a task.
+
+    Reported rather than rewritten. "The five tags above" could be repaired by guessing
+    which five, and a wrong guess is worse than a visible dangle — the reader who sees
+    "above" knows to go looking, while a confidently wrong substitution reads as fact.
+    """
+    seen: list[str] = []
+    for line in (text or "").splitlines():
+        if _DANGLING_REF.search(line):
+            trimmed = line.strip()
+            if trimmed not in seen:
+                seen.append(trimmed)
+    return seen
+
+
 def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool = False) -> dict:
     """Propose one tracked task per un-covered section (gap). With create=True, creates them
     as backlog items linked to the PRD + section, so the spec drives the tracker.
@@ -2765,6 +2821,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     genuinely uses one of those headings for buildable scope."""
     cov = coverage(db, prd)
     bodies = section_bodies(prd.body)
+    context = framing_context(prd)
     proposals = []
     for p in cov["sections"]:
         if not include_prose and not p["implementable"]:
@@ -2774,11 +2831,25 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         body = bodies.get(p["section"], "").strip()
         # A section about how something looks/feels needs a prototype first (AL-68).
         fidelity = classify_fidelity(f"{p['section']} {body}")
+        described = body
+        if context:
+            # The section first, because that is the work. The spec follows it as context
+            # rather than preceding it, so an implementer reads their task before the
+            # material that frames it.
+            described = (
+                f"{body}\n\n---\n\n"
+                f"## Context from {prd.id} — {prd.title}\n\n"
+                f"Carried with the task on purpose: an item that has to fetch its parent "
+                f"to be actionable is the gap this fills. Framing sections only — the "
+                f"other implementable sections are their own items.\n\n{context}"
+            )
         proposals.append({
             "section": p["section"],
             "title": f"Implement: {p['section']}",
-            "description": body,
+            "description": described,
             "fidelity": fidelity,
+            # Surfaced on the proposal so a dry run shows them before anything is created.
+            "dangling_refs": dangling_refs(body),
         })
     created = []
     if create:
