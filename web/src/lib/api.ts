@@ -74,7 +74,7 @@ let accessToken: string | null = null;
 /**
  * There is deliberately no ambient project here (PRD-21 D1.1).
  *
- * A module-level `activeProjectId` synced from a `useEffect` was safe only while the
+ * A module-level active-project id synced from a `useEffect` was safe only while the
  * switcher was the sole thing that moved the project: a render always separated the
  * change from the user's next action. Putting the project in the URL destroys that —
  * the route changes synchronously on a deep link and on back/forward, while the effect

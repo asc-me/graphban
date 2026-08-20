@@ -188,6 +188,11 @@ class Organization(Base):
     plan: Mapped[str] = mapped_column(String, default="free")  # free | pro | team (AL-75)
     stripe_customer_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # Who founded this org (PRD-21 D8.2). Recorded here rather than inferred from an
+    # `owner` seat, because the seat is now demotable: **who created the org is a durable
+    # fact, who administers it is a mutable role.** Conflating the two is what made the
+    # role immutable in the first place. Nullable for orgs that predate the column.
+    created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
 class OrgMembership(Base):
@@ -293,6 +298,14 @@ class Membership(Base):
 
     user: Mapped[User] = relationship(back_populates="memberships")
     project: Mapped[Project] = relationship(back_populates="memberships")
+
+    # One row per (user, project). PRD-21 AC 9e, and the backstop that makes a racing
+    # `teams.recompute` fail loudly instead of writing a second row: a duplicate is not
+    # merely untidy, because `db.scalar` returns whichever row it finds first and a
+    # revocation that recomputes the wrong one leaves access behind.
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_id", name="uq_membership_user_project"),
+    )
 
 
 class Team(Base):

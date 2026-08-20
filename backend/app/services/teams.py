@@ -59,6 +59,13 @@ def recompute(db: Session, user_id: str, project_id: str) -> Membership | None:
     Does NOT commit — the caller owns the transaction, so a grant change and everything it
     materializes land together or not at all.
     """
+    # Serialize concurrent recomputes for this pair before reading. A (user, project)
+    # that has no row yet offers nothing to lock, so the lock is taken on the row that
+    # always exists — the project. Two grant changes touching one project queue here
+    # instead of both reading `None` and both inserting. `with_for_update` is a no-op on
+    # SQLite, which serializes writes globally anyway, so this degrades rather than lies.
+    db.get(Project, project_id, with_for_update=True)
+
     existing = db.scalar(
         select(Membership).where(
             Membership.user_id == user_id, Membership.project_id == project_id

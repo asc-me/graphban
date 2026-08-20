@@ -61,20 +61,50 @@ def test_an_owner_promotes_a_member_to_admin(client, org):
     assert r.json()["role"] == "admin"
 
 
-def test_the_owner_cannot_be_demoted(client, org):
-    """An org that can lose its last owner is an org nobody can administer."""
+def test_an_owner_is_demotable_while_another_administrator_remains(client, org):
+    """Replaces `test_the_owner_cannot_be_demoted`, which asserted the rule PRD-21 D8.1
+    retired — and asserted it green, so it would have made the correct behaviour look
+    like the regression.
+
+    The old rule protected a proxy: that one specific person exists. What an org needs is
+    that *somebody* can administer it, and `require_org_admin` has always accepted an
+    admin as readily as an owner. So the owner seat is ordinary, and the floor invariant
+    is what protects the org.
+    """
     uid = _uid(client, org["owner"], org["org"]["id"], "alex@ascme-labs.com")
     r = client.patch(f"/api/orgs/{org['org']['id']}/members/{uid}",
                      json={"role": "member"}, headers=org["admin"])
-    assert r.status_code == 409
-    assert "owner" in r.json()["detail"]
+    assert r.status_code == 200, r.text
+    assert r.json()["role"] == "member"
 
 
-def test_ownership_is_not_grantable(client, org):
+def test_the_founder_is_still_named_after_being_demoted(client, org):
+    """PRD-21 D8.2. Who created the org is a durable fact; who administers it is a
+    mutable role. Conflating them is what made the role immutable."""
+    from app.db import SessionLocal
+    from app.models import Organization, User
+
+    uid = _uid(client, org["owner"], org["org"]["id"], "alex@ascme-labs.com")
+    client.patch(f"/api/orgs/{org['org']['id']}/members/{uid}",
+                 json={"role": "member"}, headers=org["admin"])
+
+    s = SessionLocal()
+    try:
+        o = s.get(Organization, org["org"]["id"])
+        assert o.created_by == uid, "the founder must survive their own demotion"
+        assert s.get(User, o.created_by).email == "alex@ascme-labs.com"
+    finally:
+        s.close()
+
+
+def test_only_an_owner_may_grant_the_owner_role(client, org):
+    """Ownership is grantable now, but the rank ladder still governs: nobody grants a rank
+    above their own, so an admin cannot mint an owner."""
     uid = _uid(client, org["owner"], org["org"]["id"], "ops@ascme-labs.com")
-    r = client.patch(f"/api/orgs/{org['org']['id']}/members/{uid}",
-                     json={"role": "owner"}, headers=org["owner"])
-    assert r.status_code == 409
+    assert client.patch(f"/api/orgs/{org['org']['id']}/members/{uid}",
+                        json={"role": "owner"}, headers=org["admin"]).status_code == 403
+    assert client.patch(f"/api/orgs/{org['org']['id']}/members/{uid}",
+                        json={"role": "owner"}, headers=org["owner"]).status_code == 200
 
 
 def test_nobody_promotes_themselves(client, org):
@@ -121,10 +151,54 @@ def test_removal_cascades_project_access_and_says_what_it_took(client, org):
     assert all(m["user"]["id"] != uid for m in members)
 
 
-def test_the_owner_cannot_be_removed(client, org):
+def test_an_owner_is_removable_while_another_administrator_remains(client, org):
+    """The counterpart of demotion, and retired for the same reason."""
     uid = _uid(client, org["owner"], org["org"]["id"], "alex@ascme-labs.com")
     r = client.delete(f"/api/orgs/{org['org']['id']}/members/{uid}", headers=org["admin"])
-    assert r.status_code == 409
+    assert r.status_code == 200, r.text
+
+
+def test_the_last_administrator_cannot_be_demoted_or_removed(client, org):
+    """The floor invariant that replaced owner-immutability, from both directions.
+
+    Demote the admin first so the owner is the only administrator left, then try to empty
+    the seat. The refusal must name what would be lost rather than saying `409`.
+    """
+    org_id = org["org"]["id"]
+    dana = _uid(client, org["owner"], org_id, "dana@ascme-labs.com")
+    assert client.patch(f"/api/orgs/{org_id}/members/{dana}",
+                        json={"role": "member"}, headers=org["owner"]).status_code == 200
+
+    alex = _uid(client, org["owner"], org_id, "alex@ascme-labs.com")
+    demote = client.patch(f"/api/orgs/{org_id}/members/{alex}",
+                          json={"role": "member"}, headers=org["owner"])
+    assert demote.status_code == 409
+    assert "last owner or admin" in demote.json()["detail"]
+
+    # `remove_member` refuses first on the floor, before the cannot-remove-yourself rule.
+    remove = client.delete(f"/api/orgs/{org_id}/members/{alex}", headers=org["owner"])
+    assert remove.status_code == 409
+    assert "last owner or admin" in remove.json()["detail"]
+
+
+def test_promoting_a_replacement_first_is_what_unblocks_it(client, org):
+    """The refusal is a sequencing rule, not a wall — it tells you what to do and the
+    instruction has to actually work."""
+    org_id = org["org"]["id"]
+    dana = _uid(client, org["owner"], org_id, "dana@ascme-labs.com")
+    client.patch(f"/api/orgs/{org_id}/members/{dana}", json={"role": "member"},
+                 headers=org["owner"])
+
+    ops = _uid(client, org["owner"], org_id, "ops@ascme-labs.com")
+    assert client.patch(f"/api/orgs/{org_id}/members/{ops}", json={"role": "admin"},
+                        headers=org["owner"]).status_code == 200
+
+    # The replacement does the demoting: `you cannot change your own role` is a separate
+    # rule and still holds, so an owner never steps down unaided even with a floor to
+    # spare. That is the sequence the refusal is actually asking for.
+    alex = _uid(client, org["owner"], org_id, "alex@ascme-labs.com")
+    assert client.patch(f"/api/orgs/{org_id}/members/{alex}", json={"role": "member"},
+                        headers=org["member"]).status_code == 200
 
 
 def test_you_cannot_remove_yourself(client, org):
