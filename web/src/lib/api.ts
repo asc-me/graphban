@@ -1,4 +1,5 @@
-import type { FleetOverview, FleetPresence } from "@/lib/types";
+import type {
+  OrgOverview, FleetOverview, FleetPresence } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -308,6 +309,7 @@ export const api = {
   acceptInvite: (token: string) =>
     request<Org>("/invites/accept", { method: "POST", body: JSON.stringify({ token }) }),
   deployments: (orgId: string) => request<Deployment[]>(`/orgs/${orgId}/deployments`),
+  orgOverview: (orgId: string) => request<OrgOverview>(`/orgs/${orgId}/overview`),
   teams: (orgId: string) => request<Team[]>(`/orgs/${orgId}/teams`),
   createTeam: (orgId: string, name: string, description = "") =>
     request<Team>(`/orgs/${orgId}/teams`, {

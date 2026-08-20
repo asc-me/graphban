@@ -20,7 +20,12 @@ from datetime import timezone
 
 from sqlalchemy import func
 
-from app.models import Agent, ApiKey, CodeNode, Event, Project, ProjectEdge, utcnow
+from app.models import (
+    Agent, ApiKey, CodeNode, Event, Item, Organization, Project, ProjectEdge, utcnow,
+)
+from app.security import authz
+from app.services import items as items_svc
+from app.services import quotas
 
 KINDS = ("depends_on", "serves", "declared")
 
@@ -351,3 +356,90 @@ def _freshness(last_push) -> str:
     ts = last_push if last_push.tzinfo else last_push.replace(tzinfo=timezone.utc)
     age = (utcnow() - ts).total_seconds()
     return "in_sync" if age < 24 * 3600 else "stale"
+
+
+def overview(db: Session, org_id: str, user_id: str) -> dict:
+    """Every project in the org at once — the first cross-project aggregate (PRD-21 D2).
+
+    §3.3 established that no org-scoped aggregate existed anywhere and that one could not
+    be obtained by relaxing a filter: `authz.require_readable` fails closed on a null
+    project *by design*, so "list everything" is unreachable and stays that way. This is a
+    new read that resolves its scope from **org membership first** and only then reads
+    project by project — the fail-closed guard is untouched, and the unscoped path is
+    never entered even internally.
+
+    A **join, not a new write path**: every number here already exists in a table. A figure
+    with no query behind it does not belong on the screen.
+
+    The load-bearing case is the project that has never synced. It **appears**, with a
+    `never` status — omitting it would shrink the org and hide precisely the projects that
+    need attention. Its item counts are real, because the cloud is authoritative for items
+    when a box is linked; only its node count is zero. `never` and `stale` are different
+    words for the same reason they are on the deployments screen: a link set up and not
+    finished is not a box that stopped.
+    """
+    readable = set(authz.readable_project_ids(db, user_id))
+    projects = [
+        p for p in db.scalars(
+            select(Project).where(Project.org_id == org_id).order_by(Project.name)
+        )
+        if p.id in readable
+    ]
+
+    rows: list[dict] = []
+    for p in projects:
+        counts = {s: 0 for s in items_svc.STATUSES}
+        for status, n in db.execute(
+            select(Item.status, func.count()).where(Item.project_id == p.id).group_by(Item.status)
+        ):
+            if status in counts:
+                counts[status] = n
+
+        claims = [
+            {"item_id": i.id, "title": i.title, "agent": i.claimed_by,
+             "claimed_at": i.claimed_at.isoformat() if i.claimed_at else None}
+            for i in db.scalars(
+                select(Item).where(Item.project_id == p.id, Item.claimed_by.is_not(None))
+                .order_by(Item.claimed_at)
+            )
+        ]
+
+        nodes = db.scalar(
+            select(func.count()).select_from(CodeNode).where(
+                CodeNode.project_id == p.id, CodeNode.fresh.is_(True)
+            )
+        ) or 0
+        last_push = db.scalar(
+            select(func.max(Event.ts)).where(
+                Event.action == "sync_code_graph", Event.project_id == p.id
+            )
+        )
+
+        rows.append({
+            "id": p.id, "tag": p.tag, "name": p.name, "accent": p.accent,
+            "items": counts,
+            "open_items": sum(counts[s] for s in items_svc.STATUSES if s != "done"),
+            "claims": claims,
+            "nodes": nodes,
+            "last_push_at": last_push.isoformat() if last_push else None,
+            "sync": "live" if last_push else "never",
+        })
+
+    org = db.get(Organization, org_id)
+    return {
+        "org_id": org_id,
+        "plan": org.plan if org else None,
+        "projects": rows,
+        "totals": {
+            "projects": len(rows),
+            "open_items": sum(r["open_items"] for r in rows),
+            "claims": sum(len(r["claims"]) for r in rows),
+            "nodes": sum(r["nodes"] for r in rows),
+            # Counted, not inferred from the rows above: a project the caller cannot read
+            # is still a project that has never synced, and the nudge on an empty org
+            # depends on this being the truth about the ORG rather than about the viewer.
+            "never_synced": sum(1 for r in rows if r["sync"] == "never"),
+        },
+        "usage": quotas.usage(db, org_id),
+        "limits": quotas.plan_of(org).__dict__ if org else {},
+    }

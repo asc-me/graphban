@@ -142,6 +142,14 @@ export function useSetOrgPlan() {
   });
 }
 
+export function useOrgOverview(orgId?: string) {
+  return useQuery({
+    queryKey: ["org-overview", orgId],
+    queryFn: () => api.orgOverview(orgId!),
+    enabled: !!orgId,
+  });
+}
+
 export function useDeployments(orgId?: string) {
   return useQuery({
     queryKey: ["deployments", orgId],
