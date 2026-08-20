@@ -24,6 +24,9 @@ from app.models import (
     OrgMembership,
     Organization,
     Project,
+    Team,
+    TeamGrant,
+    TeamMember,
     User,
 )
 from app.schemas import (
@@ -33,11 +36,16 @@ from app.schemas import (
     InviteOut,
     InvitePreviewOut,
     OrgCreate,
+    GrantRevokedOut,
     MemberRemovedOut,
     MemberRoleIn,
     OrgMemberOut,
     OrgProjectAccessOut,
     ProjectAccessIn,
+    TeamCreate,
+    TeamGrantIn,
+    TeamGrantOut,
+    TeamOut,
     OrgOut,
     OrgRequestCreate,
     OrgRequestOut,
@@ -51,6 +59,7 @@ from app.security.deps import get_current_user
 from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import orgs as orgs_svc
+from app.services import teams as teams_svc
 from app.services import quotas
 
 
@@ -187,6 +196,118 @@ def org_galaxy(org_id: str, db: Session = Depends(get_db), user: User = Depends(
     """
     authz.require_org_member(db, user.id, org_id)
     return galaxy_svc.galaxy(db, org_id)
+# ---- teams (PRD-21 D5) ---------------------------------------------------------
+def _team_out(db: Session, team) -> TeamOut:
+    members = [
+        UserOut.model_validate(db.get(User, uid))
+        for (uid,) in db.execute(
+            select(TeamMember.user_id).where(TeamMember.team_id == team.id)
+        )
+        if db.get(User, uid) is not None
+    ]
+    grants = []
+    for g in db.scalars(select(TeamGrant).where(TeamGrant.team_id == team.id)):
+        project = db.get(Project, g.project_id)
+        reach = teams_svc.materialized_by(db, team.id, g.project_id)
+        grants.append(TeamGrantOut(
+            project_id=g.project_id,
+            tag=project.tag if project else "",
+            name=project.name if project else "",
+            access=g.access,
+            derived_user_ids=reach["derived"],
+            direct_user_ids=reach["direct"],
+        ))
+    return TeamOut(id=team.id, org_id=team.org_id, name=team.name,
+                   description=team.description, members=members, grants=grants)
+
+
+def _require_team_admin(db: Session, team_id: str, user: User):
+    team = db.get(Team, team_id)
+    if team is None:
+        raise HTTPException(404, "team not found")
+    authz.require_org_admin(db, user.id, team.org_id)
+    return team
+
+
+@router.get("/orgs/{org_id}/teams", response_model=list[TeamOut])
+def list_teams(org_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    authz.require_org_member(db, user.id, org_id)
+    return [
+        _team_out(db, t)
+        for t in db.scalars(select(Team).where(Team.org_id == org_id).order_by(Team.name))
+    ]
+
+
+@router.post("/orgs/{org_id}/teams", response_model=TeamOut, status_code=201)
+def create_team(org_id: str, body: TeamCreate, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    authz.require_org_admin(db, user.id, org_id)
+    team = teams_svc.create_team(db, org_id, body.name, body.description)
+    events_svc.record_user(db, user, action="create_team", target_type="team",
+                           target_id=team.id, meta={"name": team.name})
+    return _team_out(db, team)
+
+
+@router.delete("/teams/{team_id}")
+def delete_team(team_id: str, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    """Disband a team and recompute. Access held directly, or through another team,
+    survives — only what this team alone provided goes away."""
+    _require_team_admin(db, team_id, user)
+    result = teams_svc.delete_team(db, team_id)
+    events_svc.record_user(db, user, action="delete_team", target_type="team",
+                           target_id=team_id, meta=result)
+    return result
+
+
+@router.post("/teams/{team_id}/members/{user_id}", response_model=TeamOut, status_code=201)
+def add_team_member(team_id: str, user_id: str, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    team = _require_team_admin(db, team_id, user)
+    authz.require_org_member(db, user_id, team.org_id)  # a seat in the org comes first
+    teams_svc.add_member(db, team_id, user_id)
+    events_svc.record_user(db, user, action="add_team_member", target_type="team",
+                           target_id=team_id, meta={"user_id": user_id})
+    return _team_out(db, db.get(Team, team_id))
+
+
+@router.delete("/teams/{team_id}/members/{user_id}", response_model=TeamOut)
+def remove_team_member(team_id: str, user_id: str, db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
+    _require_team_admin(db, team_id, user)
+    teams_svc.remove_member(db, team_id, user_id)
+    events_svc.record_user(db, user, action="remove_team_member", target_type="team",
+                           target_id=team_id, meta={"user_id": user_id})
+    return _team_out(db, db.get(Team, team_id))
+
+
+@router.put("/teams/{team_id}/grants/{project_id}", response_model=TeamOut)
+def set_team_grant(team_id: str, project_id: str, body: TeamGrantIn,
+                   db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Grant or change a team's access to a project.
+
+    The grant and every membership it materializes are one transaction: a grant that
+    landed while its memberships did not would be a promise authorization never heard."""
+    _require_team_admin(db, team_id, user)
+    teams_svc.set_grant(db, team_id, project_id, body.access)
+    events_svc.record_user(db, user, action="set_team_grant", target_type="team",
+                           target_id=team_id, project_id=project_id,
+                           meta={"access": body.access})
+    return _team_out(db, db.get(Team, team_id))
+
+
+@router.delete("/teams/{team_id}/grants/{project_id}", response_model=GrantRevokedOut)
+def revoke_team_grant(team_id: str, project_id: str, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """Revoke, and report what survived — access someone also holds directly or through
+    another team is recomputed, not deleted."""
+    _require_team_admin(db, team_id, user)
+    result = teams_svc.revoke_grant(db, team_id, project_id)
+    events_svc.record_user(db, user, action="revoke_team_grant", target_type="team",
+                           target_id=team_id, project_id=project_id, meta=result)
+    return GrantRevokedOut(**result)
+
+
 # ---- membership mutations (PRD-21 D8) -----------------------------------------
 # Authority actions, so every one lands in the ledger. `test_authority_gates.py` exists to
 # assert that authority stays human-adjudicated and audited, and these are exactly that.

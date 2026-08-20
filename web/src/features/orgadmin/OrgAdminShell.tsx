@@ -18,6 +18,7 @@ import { adminPath } from "@/lib/routes";
  */
 const TABS = [
   { to: "users", label: "Users & access", backed: true },
+  { to: "teams", label: "Teams", backed: true },
   { to: "branding", label: "Branding", backed: false },
   { to: "integrations", label: "Integrations", backed: true },
   { to: "billing", label: "Billing", backed: true },

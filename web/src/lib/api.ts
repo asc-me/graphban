@@ -6,6 +6,7 @@ import type { FleetOverview, FleetPresence } from "@/lib/types";
  */
 import type {
   AdminActivity,
+  Team,
   Galaxy,
   OrgProjectAccess,
   TriageRow,
@@ -305,6 +306,32 @@ export const api = {
   previewInvite: (token: string) => request<InvitePreview>(`/invites/${token}/preview`),
   acceptInvite: (token: string) =>
     request<Org>("/invites/accept", { method: "POST", body: JSON.stringify({ token }) }),
+  teams: (orgId: string) => request<Team[]>(`/orgs/${orgId}/teams`),
+  createTeam: (orgId: string, name: string, description = "") =>
+    request<Team>(`/orgs/${orgId}/teams`, {
+      method: "POST",
+      body: JSON.stringify({ name, description }),
+    }),
+  deleteTeam: (teamId: string) =>
+    request<{ users: number; projects: number; memberships_kept: number }>(
+      `/teams/${teamId}`,
+      { method: "DELETE" },
+    ),
+  addTeamMember: (teamId: string, userId: string) =>
+    request<Team>(`/teams/${teamId}/members/${userId}`, { method: "POST" }),
+  removeTeamMember: (teamId: string, userId: string) =>
+    request<Team>(`/teams/${teamId}/members/${userId}`, { method: "DELETE" }),
+  setTeamGrant: (teamId: string, projectId: string, access: string) =>
+    request<Team>(`/teams/${teamId}/grants/${projectId}`, {
+      method: "PUT",
+      body: JSON.stringify({ access }),
+    }),
+  /** Reports what survived — access held directly or via another team is recomputed. */
+  revokeTeamGrant: (teamId: string, projectId: string) =>
+    request<{ affected: number; kept_access: string[] }>(
+      `/teams/${teamId}/grants/${projectId}`,
+      { method: "DELETE" },
+    ),
   orgGalaxy: (orgId: string) => request<Galaxy>(`/orgs/${orgId}/galaxy`),
   setMemberRole: (orgId: string, userId: string, role: string) =>
     request<OrgMember>(`/orgs/${orgId}/members/${userId}`, {

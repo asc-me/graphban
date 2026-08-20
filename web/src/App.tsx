@@ -23,6 +23,7 @@ import { OrgAdminShell } from "@/features/orgadmin/OrgAdminShell";
 import { OrgBranding } from "@/features/orgadmin/OrgBranding";
 import { OrgBilling } from "@/features/orgadmin/OrgBilling";
 import { OrgIntegrations } from "@/features/orgadmin/OrgIntegrations";
+import { OrgTeams } from "@/features/orgadmin/OrgTeams";
 import { OrgUsers } from "@/features/orgadmin/OrgUsers";
 import { OrganizationView } from "@/features/organization/OrganizationView";
 import { PrdEditorView } from "@/features/prds/PrdEditorView";
@@ -119,6 +120,7 @@ function AuthedApp() {
             <Route path={`${ORG_BASE}/admin`} element={<OrgAdminShell />}>
               <Route index element={<Navigate to="users" replace />} />
               <Route path="users" element={<OrgUsers />} />
+              <Route path="teams" element={<OrgTeams />} />
               <Route path="branding" element={<OrgBranding />} />
               <Route path="integrations" element={<OrgIntegrations />} />
               <Route path="billing" element={<OrgBilling />} />

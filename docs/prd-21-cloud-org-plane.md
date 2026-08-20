@@ -140,16 +140,33 @@ One `project_id` for the edge, and both endpoints are bare paths interpreted wit
 (item↔item) is scoped the same way. There is no representation of a relationship between two
 projects at any layer of the system.
 
-### 3.5 Membership is read-only over HTTP
+### 3.5 Membership is read-only over HTTP — but the service layer is not
 
 The only membership endpoints in the tree are `GET /api/orgs/{id}/members` and
-`GET /api/projects/{id}/members`. There is **no endpoint that changes a role, removes a member,
-or grants project access.** Members arrive by accepting an invite and stay forever, at the role
-the invite carried.
+`GET /api/projects/{id}/members`. **No route changes a role, removes a member, or grants project
+access**, so over HTTP a member arrives by accepting an invite and stays forever at the role the
+invite carried.
 
-Screen 14 of the design set specifies "row actions: change role, remove." Nothing backs either.
-This is the single largest governance gap and it blocks D5 outright — teams cannot administer
-access through an API that cannot write access.
+**The capability, however, already exists and is wired to nothing.** `services/orgs.py` implements
+`set_member_role` and `remove_member` in full — role validation, `require_org_admin` on the actor,
+a refusal to grant a rank above your own, a refusal to act on yourself, and a removal that
+cascades project memberships and reports what it dropped rather than returning a bare success.
+Verified: **no router calls either function.**
+
+So this is a missing *surface*, not a missing capability, and D8 is correspondingly smaller than
+it first appeared. The gap still blocks D5 — teams cannot administer access through an API that
+cannot write access — but closing it is wiring, not design.
+
+### 3.5.1 The lockout the current rules create
+
+`authz.require_org_admin` is the **only** org-administration gate and it accepts owner *or*
+admin, so the two are already equivalent in power. What `owner` uniquely carries is three
+*prohibitions*: its role cannot be changed, it cannot be removed, and it cannot be granted to
+anyone else.
+
+The consequence is a live hole rather than a design choice: **an org whose owner departs has no
+path to a new owner.** Ownership is not transferable, the owner cannot be demoted, and no
+endpoint exists to move it. D8 resolves this.
 
 ### 3.6 The design prompt set describes screens nothing backs
 
@@ -411,6 +428,8 @@ project-level view gets to draw it in the right place without any extra data.
 
 ## D5 — Teams, and what a grant writes
 
+**Built.**
+
 A `Team` belongs to an org, has members (users) and grants (project + access level).
 
 **A grant materializes.** Creating or changing a team grant writes `Membership` rows —
@@ -508,19 +527,43 @@ not designed here (D9).
 
 ## D8 — Membership mutations
 
-**Built.** The governance gap from §3.5, closed inside this PRD because D5 cannot exist
-without it:
+**Mostly wiring.** §3.5 establishes that `set_member_role` and `remove_member` already exist and
+are reachable from nothing. Three routes expose them:
 
-- `PATCH /api/orgs/{org_id}/members/{user_id}` — change org role. Owner is immutable and cannot
-  be demoted; the existing rank rule (owner > admin > member) holds and a member cannot promote
-  themselves.
+- `PATCH /api/orgs/{org_id}/members/{user_id}` — change org role.
 - `DELETE /api/orgs/{org_id}/members/{user_id}` — remove from the org, cascading project
-  memberships. Refused for the owner.
+  memberships and reporting what was dropped.
 - `PUT /api/projects/{project_id}/members/{user_id}` — grant or change project access
-  (`write` / `read` / `none`).
+  (`write` / `read` / `none`). This one is genuinely new; the other two are not.
 
-Every one records an `Event`, because these are authority actions and `test_authority_gates.py`
-exists to assert that authority actions stay human-adjudicated and audited.
+Every route records an `Event`. These are authority actions and `test_authority_gates.py` exists
+to assert that authority actions stay human-adjudicated and audited.
+
+### D8.1 — One floor invariant replaces three special cases
+
+Owner-immutability protects a proxy for the thing that matters. What matters is that **somebody
+can always administer the org**; what the rules currently enforce is that *one specific person
+exists*, which is why a departing owner strands the org (§3.5.1).
+
+Settled: **admin is equivalent to owner, and an org must always retain at least one
+owner-or-admin.** That single invariant replaces the owner's three prohibitions, and it is
+checked **transactionally** — under a row lock over the org's memberships, because the existing
+self-action rules make zero admins unreachable sequentially but *not* under a race. `you cannot
+change your own role` means A can demote B while A remains; two admins demoting each other
+simultaneously is the only path to zero, and a lock is what closes it.
+
+With the floor in place the owner becomes demotable and removable **provided another
+administrator remains**, and the departing-owner hole closes without an ownership-transfer
+endpoint.
+
+### D8.2 — Provenance separates from power
+
+Ownership is currently recorded *only* as the owner's `OrgMembership` row — `Organization` has no
+`created_by`, and the operator console derives `owner_email` from that row (`routers/admin.py`).
+Once the role is demotable that derivation breaks, so **`Organization.created_by` is added**.
+
+The split is the point: **who created the org is a durable fact; who administers it is a mutable
+role.** Conflating them is what made the role immutable in the first place.
 
 Team-derived memberships carry their origin and refuse direct edit with a message pointing at
 the team — the drift D5 accepted, made visible rather than silent.
@@ -646,7 +689,11 @@ Mechanical, in the PRD-20 sense — each is a command or a click with one right 
 13. A team grant creates `Membership` rows with `origin = team:<id>`. Revoking the grant removes
     exactly those rows and no directly-created one.
 14. `can_read` and `can_write` are byte-identical to their pre-PRD versions.
-15. Demoting an owner is refused. Every membership mutation writes an `Event`.
+15. A role change or removal that would leave an org with **zero** owner-or-admin members is
+    refused, including when two administrators demote each other concurrently — the test races
+    them and asserts one survives. An owner IS demotable while another administrator remains.
+    `Organization.created_by` still names the creator after that demotion. Every membership
+    mutation writes an `Event`.
 16. `/org/deployments` renders fully for a deployment that has reported no base URL, and for one
     whose address is unreachable from the viewer's network. No pane is empty or errored, and the
     address is legible as text before it is clicked. Nothing on the screen frames, proxies or

@@ -25,6 +25,9 @@ from app.models import (
     OrgRequest,
     Organization,
     Project,
+    Team,
+    TeamGrant,
+    TeamMember,
     User,
     utcnow,
 )
@@ -262,6 +265,23 @@ def set_project_access(
             Membership.project_id == project_id, Membership.user_id == user_id
         )
     )
+    # The drift D5 accepts, made visible rather than silent. A derived row is owned by the
+    # grant that wrote it, so editing it here would be undone by the next recompute — and
+    # an admin who thought they had changed something would be wrong without being told.
+    if membership is not None and membership.origin == "team":
+        teams = ", ".join(
+            name for (name,) in db.execute(
+                select(Team.name)
+                .join(TeamMember, TeamMember.team_id == Team.id)
+                .join(TeamGrant, TeamGrant.team_id == Team.id)
+                .where(TeamMember.user_id == user_id, TeamGrant.project_id == project_id)
+            )
+        )
+        raise HTTPException(
+            409,
+            "this access comes from a team grant and cannot be edited here — change it on "
+            + (f"the team ({teams})" if teams else "the team that grants it"),
+        )
     if membership is None:
         membership = Membership(project_id=project_id, user_id=user_id, role="member")
         db.add(membership)
