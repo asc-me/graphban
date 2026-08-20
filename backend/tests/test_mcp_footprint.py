@@ -248,17 +248,19 @@ Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT th
     Two caveats kept deliberately, because they are the ones that would make this raise a
     mistake:
 
-    - **The saving only lands if the client re-fetches after registering**, and no client is
-      yet known to. `tools_list_refetched` in the event log answers that; until it has rows
-      from a real wave, the full manifest is still what a fleet agent holds all session.
+    - **The saving only lands if the client re-fetches after registering.** ANSWERED on
+      2026-08-20: Grok Build shell does, within 20 seconds, unprompted. Cursor cannot — it
+      multiplexes every agent onto one connection, so nothing narrows there and this full
+      number is what each of its agents pays per turn.
     - What this raise buys is ~40 tokens of `register_agent` description naming
       `tools_off_limits`. That exists so an agent learns its boundary by being TOLD rather
       than by being refused three times, which is how `quarantine` decides an agent has
       stopped listening. Cutting it to save 40 tokens would trade a wave's worth of agent
       for a rounding error.
 
-    If the probe comes back empty, this ceiling should come down again with a real prose
-    pass — not stay here on the strength of a saving nothing collects.
+    The probe that settled this has been RETIRED — it had one question and got an answer, and
+    an instrument left running past its question is just a cost. The ceiling stands on the
+    measurement rather than on the instrument.
 
     **MEASURED 2026-08-20: the probe is not empty, and the ceiling stands.** Grok Build shell
     re-fetched `tools/list` within 20 seconds of registering, unprompted, and took the narrowed

@@ -283,7 +283,7 @@ downlink, which turned out to ride heartbeats perfectly well, and this is a diff
 that cannot ride a response the client is not waiting on.
 
 **E9c — MEASURED 2026-08-20, and NOT NEEDED for the client that can use it.** Two waves on the
-live instance, `tools_list_refetched` in the event log as the instrument:
+live instance, with a `tools_list_refetched` event as the instrument — since retired, because an instrument left running past its question is just a cost:
 
 | client | connection model | session bound | re-fetches | narrowing lands |
 | --- | --- | --- | --- | --- |
