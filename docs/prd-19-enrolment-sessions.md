@@ -1,6 +1,7 @@
 # PRD-19 — Enrolment sessions: one credential, ephemeral roles
 
-**Status:** draft
+**Status:** review — E1-E9b shipped and O1-O6 are resolved, but the grill's four
+dimensions are unanswered, so it has not earned `approved` and cannot be given it.
 **Depends on:** PRD-17 (fleet roles) · GRPH-362 (all-in-one posture) · GRPH-365 (declared independence)
 
 ## 1. Overview
@@ -323,6 +324,34 @@ tool is not in the manifest, so the agent cannot call it", the gate has moved to
 client controls. That is the failure GRPH-377 already demonstrated from the other direction —
 `update_item`'s gate was unreachable through the published schema, and the tests vouched for it
 anyway.
+
+## 11. Contracts, failure modes and edges — recorded after shipping
+
+Written from the built system rather than from intent, so where the two differ the built one is
+recorded. **This is not a grill answer and does not count as one** — the completion standard
+credits only the author's turns in the interrogation, never the document, because a model once
+read a thorough PRD and reported that failure modes were explained when the author had said
+nothing about them.
+
+**Contracts.** Concurrent redemption of one code: single use is enforced in the service, and
+the loser of a race is refused as already-consumed. Expiry is 30 minutes, single use, and NOT
+extendable — reissue mints a replacement carrying `reissued_from` and the dead seat survives as
+the audit record. A ceiling conflict at `register_agent` is refused `unauthorized` and does not
+consume the seat. A seat is never a role change on a live agent: `register_agent` mints a row
+per call, so a second seat produces a second AGENT; re-tasking a running one is `assign_role`,
+planner-only and bounded by the credential ceiling.
+
+**Failure modes.** An expired seat grants no role, and the shared reads stay open on purpose —
+`fleet_status` is how the agent collects the directive telling it to re-enrol. An agent that
+never enrols is `all-in-one` and unrestricted, so "enrolment required" is not a failure this
+system has; the related one it does have is `unidentified`, when an anonymous caller shares a
+credential with live specialised agents.
+
+**Scope edges.** In: role and wave membership, which change every session. Out: identity and
+ceiling, which stay on the credential. Not attempted: making a MULTIPLEXED client attributable
+— `tools/list` carries no arguments, so a connection shared by three agents cannot be resolved
+to one, and the server declines rather than guessing. Not attempted: enforcement by manifest.
+Trimming is advisory everywhere; the call-time gate is the only thing that refuses.
 
 ## 7. Non-goals
 
