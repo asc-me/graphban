@@ -75,9 +75,9 @@ death at once, keep the half-finished work reserved in case the process is merel
 | 6 | Reviewer signs off | `reviewed_by != claimed_by`; where the fleet has the diversity, reviewer vendor ≠ author vendor |✅ one credential, one host — independent by SEAT |
 | 6b | Reviewer signs off an **effort ≥ 3** item with no sabotage receipt | Refused (`conflict`), naming what is missing; passes once a receipt with `tests_failed ≥ 1` is recorded |✅ real sabotage receipt on effort 5 |
 | 7 | Promote a worker to reviewer **while it holds its own item in `review`** | Both gates refuse — `claim_review` filters it out, `sign_off` asserts authorship |✅ both gates refused |
-| 8 | Re-task a live worker → reviewer | Takes effect on its **next poll**; no reconnect; Fleet view shows the directive pending, then acked |not run — the one I still bet against |
+| 8 | Re-task a live worker → reviewer | Takes effect on its **next poll**; no reconnect; Fleet view shows the directive pending, then acked |✅ the one I bet against — it arrived on a heartbeat, once |
 | 9 | Reviewer bounces an item | Returns to `next`, invisible to other workers until the pin lapses (one lease), then claimable by any |✅ — found GRPH-378/379 |
-| 10 | Kill a worker mid-lease | `offline` within ~150s; item back to `next` at ~600s; reservation expired; orphaned branch flagged in its row |⏳ offline at t+120s; **branch never flagged** — GRPH-396 |
+| 10 | Kill a worker mid-lease | `offline` within ~150s; item back to `next` at ~600s; reservation expired; orphaned branch flagged in its row |✅ offline at t+120s, lease and reservation lapsed — **branch never flagged** (GRPH-396) and the item never re-offered (GRPH-397), both since fixed |
 | 11 | **End wave** | This wave's SEATS revoked; leases and reservations released; **your credential still authenticates** and the config is untouched; live agents get a `session_expired` directive on their next poll |✅ 4 seats + 2 legacy keys revoked, 2 leases released, **credential survived** |
 
 **New since the PRD was written — worth checking too:**
@@ -160,7 +160,7 @@ suite that was green throughout — 1748 passing at the time.
 | 7 | Promote a worker to reviewer **holding its own item in review** | ✅ promotion took effect, then `claim_review` handed it somebody else's item and `sign_off` refused its own |
 | 12 | Subagent registers with `parent_agent_id` | ✅ refused **while holding a reviewer seat** — a seat does not launder a call tree |
 | 14 | `claim_cluster(wait_seconds=60)` on an empty backlog | ✅ **one** call, parked, returned at **8.1s** the moment work appeared |
-| 10 | Kill a worker mid-lease | ⏳ offline at **t+120s**; branch **never flagged** — GRPH-396 |
+| 10 | Kill a worker mid-lease | ✅ on the second attempt — offline **t+120s**, lease and reservation lapsed, and **two defects the step was not looking for** (GRPH-396, GRPH-397) |
 
 Step 9 was run on 2026-08-14, after the others, and differently: **driven over the real MCP
 HTTP surface by script rather than by four humans in terminals.** Three credentials, three
@@ -170,8 +170,20 @@ through the service layer, as the human does through the UI. Worth stating plain
 test client behaviour, so it is weaker evidence than steps 2/3/8, and it still found two
 defects.
 
-Steps 5, 7, 12 and 14 were run on 2026-08-14 the same way as step 9 — scripted over the real
-MCP surface. Step 10 is the last one outstanding and is mid-clock.
+Steps 5, 7, 10, 12 and 14 were run on 2026-08-14 the same way as step 9 — scripted over the
+real MCP surface. **THE WALK IS COMPLETE**: every step has an outcome, and step 13 is
+superseded rather than skipped.
+
+Step 10 needed a second attempt, and the first one is the more useful record. I reused the
+agent from steps 5 and 7, whose refused calls had already tripped `QUARANTINE_AFTER_REFUSALS`
+— and quarantine releases the agent's work and flags its branch. So every transition I
+observed came from the wrong cause, and I would have scored the step a pass on evidence that
+had nothing to do with an agent dying. The re-run used a worker that made no refused call.
+
+One expectation in the plan is worth correcting rather than ticking. "Item back to `next` at
+~600s" does not happen: the lease expires LAZILY, so the row stays `in_progress`, assigned to
+a dead agent, until somebody claims it. That is by design and it is also how GRPH-397 hid —
+`claim_cluster` drew its pool from `backlog`/`next` and therefore never saw it again.
 Step 13 is superseded — seats decide independence now, so `host` is only the un-enrolled
 fallback.
 
@@ -186,6 +198,7 @@ fallback.
 | GRPH-378 | **`bounce` required a reason and discarded it.** No column held it, the event meta carried only the principal, and after a real bounce the string appeared in **no row of any table**. The author got the item back with nothing to act on — the exact failure the requirement was written to prevent. `test_a_bounce_needs_a_reason` asserts the refusal on a blank reason and stops there. |
 | GRPH-379 | **The pin was invisible.** `bounce_pinned_to`/`until` and `built_by` appeared on no read surface, and a refused `claim_next` returned `{"claimed": false, "item": null}` — byte-identical to an empty backlog. A worker that should idle and retry concludes the project is finished. |
 | GRPH-395 | **A review claim never expires.** `claim_review` leases by setting `reviewed_by`, and nothing ever clears it — no expiry, no sweep, and `release_item` refuses because a reviewer holds no `claimed_by`. A reviewer that dies strands the item in `review` forever, looking like ordinary queued work. Live example: `FA-9`, reviewer silent 2333s. Exactly what `bounce_pinned_until` exists to prevent, without the expiry. |
+| GRPH-397 | **`claim_cluster` never re-offered abandoned work.** Its pool was `backlog`/`next`, while `claim_next` used `_is_claimable`, which counts a stale lease. An item whose holder died stays `in_progress`, so it satisfied one definition of claimable and failed the other — and once GRPH-380 made `claim_cluster` what every posture is taught, a crashed agent's item was offered to nobody at all. Two definitions of one fact, which is what most of this walk found. |
 | GRPH-396 | **A dead agent's branch is never flagged.** `branch_orphaned` is written in one place — inside `quarantine()`, reachable only by an agent making three refused calls, i.e. one that is *demonstrably alive*. The agent that crashes holding a branch is recorded nowhere, and that is the common case. It also silently disables the dismissal guard built on it: Dismiss refuses on an orphaned branch, so it never refuses for the dead agents a cluttered roster is full of. |
 | GRPH-376 | `sign_off` clears `claimed_by`, so **the self-review ban is unprovable after the fact** — every done item reads `built_by: -`. Enforcement is fine; the audit trail is not. **Filed, not fixed.** |
 
