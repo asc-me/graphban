@@ -220,3 +220,56 @@ def galaxy(db: Session, org_id: str) -> dict:
             {"name": n, "project_ids": pids} for n, pids in sorted(collisions.items())
         ],
     }
+
+
+def outbound_stubs(db: Session, project_id: str) -> list[dict]:
+    """Dependencies that leave this repo, ready to draw on its own code graph (D4).
+
+    The payoff for D3 being strict. Because every edge had to name the file that proves
+    it, the project-level view can anchor each arrow on the **real node** for that file —
+    `web/package.json` — instead of floating it somewhere plausible. No new edge rows and
+    no migration on a hot table: this is `ProjectEdge.evidence` read from a second angle.
+
+    ``anchor_paths`` is the intersection of the evidence files with this project's
+    described nodes, and ``unanchored`` says when that intersection is empty. A manifest
+    can name a file the code graph has never described, and an arrow drawn from nowhere
+    with no explanation would be indistinguishable from one drawn from a guess — the thing
+    D3 exists to prevent. So the stub still renders, and it says why it is floating.
+    """
+    project = db.get(Project, project_id)
+    if project is None or not project.org_id:
+        return []
+
+    described = {
+        path for (path,) in db.execute(
+            select(CodeNode.path).where(
+                CodeNode.project_id == project_id, CodeNode.fresh.is_(True)
+            )
+        )
+    }
+
+    out: list[dict] = []
+    for edge in db.scalars(
+        select(ProjectEdge).where(ProjectEdge.src_project_id == project_id)
+    ):
+        target = db.get(Project, edge.dst_project_id)
+        if target is None:
+            continue
+        files = [str(e.get("file") or "") for e in (edge.evidence or [])]
+        anchors = [f for f in files if f in described]
+        out.append({
+            "edge_id": edge.id,
+            "project_id": target.id,
+            "tag": target.tag,
+            "name": target.name,
+            "accent": target.accent,
+            "kind": edge.kind,
+            "resolved_name": edge.resolved_name,
+            "fresh": edge.fresh,
+            "evidence": list(edge.evidence or []),
+            "anchor_paths": anchors,
+            # True when the declaring file exists in the manifest but not in this
+            # project's described graph — the arrow is real, its anchor is missing.
+            "unanchored": not anchors,
+        })
+    return out
