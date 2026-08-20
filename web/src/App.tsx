@@ -20,6 +20,7 @@ import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
 import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
 import { OrgAdminShell } from "@/features/orgadmin/OrgAdminShell";
+import { OrgOverviewView } from "@/features/orgadmin/OrgOverviewView";
 import { OrgBranding } from "@/features/orgadmin/OrgBranding";
 import { SPECULATIVE_ENABLED } from "@/features/orgadmin/Speculative";
 import { OrgBilling } from "@/features/orgadmin/OrgBilling";
@@ -118,7 +119,7 @@ function AuthedApp() {
         {/* ---- the org plane (hosted only) ---- */}
         {hosted && (
           <>
-            <Route path={ORG_BASE} element={<OrganizationView />} />
+            <Route path={ORG_BASE} element={<OrgOverviewView />} />
             <Route path={`${ORG_BASE}/galaxy`} element={<GalaxyView />} />
             <Route path={`${ORG_BASE}/admin`} element={<OrgAdminShell />}>
               <Route index element={<Navigate to="users" replace />} />

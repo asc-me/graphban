@@ -1008,3 +1008,33 @@ export interface FleetSeat {
   reissued_from: string | null;
   expires_at: string | null;
 }
+
+/** PRD-21 D2 — the org's first cross-project aggregate. */
+export interface OrgOverviewProject {
+  id: string;
+  tag: string;
+  name: string;
+  accent: string;
+  items: Record<string, number>;
+  open_items: number;
+  claims: { item_id: string; title: string; agent: string | null; claimed_at: string | null }[];
+  nodes: number;
+  last_push_at: string | null;
+  /** `never` is a link nobody finished, not a box that stopped. Different words on purpose. */
+  sync: "live" | "never";
+}
+
+export interface OrgOverview {
+  org_id: string;
+  plan: string | null;
+  projects: OrgOverviewProject[];
+  totals: {
+    projects: number;
+    open_items: number;
+    claims: number;
+    nodes: number;
+    never_synced: number;
+  };
+  usage: Record<string, number>;
+  limits: Record<string, number>;
+}
