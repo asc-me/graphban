@@ -2573,19 +2573,17 @@ async def mcp_endpoint(
     if method == "tools/list":
         # E9b. Narrowed to the registered agent's role when this connection carries exactly one
         # — otherwise the credential's ceiling, which is today's answer.
-        role = _session_role(db, request)
-        if role is not None:
-            # THE PROBE E9c TURNS ON (GRPH-398). A narrowed answer can only be produced by a
-            # `tools/list` issued AFTER `register_agent` — so one of these events existing at
-            # all is proof that a real client re-fetches its manifest unprompted, and none of
-            # them existing after a week of fleet use is proof it does not.
-            #
-            # Recorded only in that case. The connect-time fetch happens on every session and
-            # would bury the Activity feed while answering nothing: it is the fetch we already
-            # know about.
-            events_svc.record_key(db, key, action="tools_list_refetched", target_type="",
-                                  target_id="", project_id=None, meta={"role": role})
-        return _rpc_result(id_, {"tools": _visible_tools(key, role=role)})
+        # A probe recorded `tools_list_refetched` here until 2026-08-20, to settle whether a
+        # real client re-fetches its manifest unprompted. It does: Grok Build shell asked again
+        # within 20 seconds of registering and took the narrowed list. That closed E9c — no
+        # `tools/list_changed` push, no SSE — so the instrument came out rather than costing an
+        # event row per narrowed fetch for the rest of the product's life.
+        #
+        # What it could NOT answer is worth carrying: it recorded only successful narrowing, so
+        # on a multiplexed client — where `_session_role` declines and nothing narrows — a
+        # re-fetch and no fetch look identical. Anyone measuring that case needs to record the
+        # ATTEMPT and its binding state, which is a different instrument, not this one revived.
+        return _rpc_result(id_, {"tools": _visible_tools(key, role=_session_role(db, request))})
 
     if method == "tools/call":
         params = body.get("params", {})

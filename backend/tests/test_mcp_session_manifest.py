@@ -189,26 +189,29 @@ def test_an_all_in_one_agent_keeps_the_whole_manifest(client, key):
     assert "claim_cluster" in tools and "sign_off" in tools
 
 
-def test_a_narrowed_refetch_is_recorded_so_e9c_can_be_decided(client, auth, proj, key, db):
-    """A narrowed answer is only possible on a `tools/list` issued AFTER `register_agent`, so
-    one of these events existing at all proves a real client re-fetches unprompted — and none
-    existing after a week of fleet use proves it does not. That is the whole question E9c
-    (pushing `tools/list_changed`) rests on, and it had no data behind it.
+def test_a_registered_session_still_narrows_without_the_probe(client, auth, proj, key, db):
+    """What the retired probe was watching, kept as a behavioural assertion.
 
-    The connect-time fetch is deliberately NOT recorded: it happens on every session and is
-    the one we already know about."""
+    `tools_list_refetched` existed to answer one question — does a real client re-fetch its
+    manifest unprompted? — and it did: Grok Build shell asked again within 20s of registering
+    and took the narrowed list, which closed E9c. The instrument came out on 2026-08-20 rather
+    than costing an event row per narrowed fetch forever.
+
+    Deleting it must not quietly delete the coverage, so the case it exercised is asserted on
+    the RESULT instead of on a side effect: a `tools/list` after registration narrows, and
+    nothing needs recording for that to be true."""
     from app.models import Event
 
     sid = _rpc(client, key, "initialize").headers["mcp-session-id"]
-    _tools(client, key, sid=sid)                      # the connect-time fetch: not interesting
-    assert db.query(Event).filter(Event.action == "tools_list_refetched").count() == 0
-
+    before = _tools(client, key, sid=sid)
     _register(client, key, sid=sid, label="R",
               enrolment_code=_seat(client, auth, proj, "reviewer"))
-    _tools(client, key, sid=sid)                      # the re-fetch: the signal
 
-    rows = db.query(Event).filter(Event.action == "tools_list_refetched").all()
-    assert len(rows) == 1 and rows[0].meta["role"] == "reviewer"
+    after = _tools(client, key, sid=sid)
+
+    assert "claim_cluster" in before and "claim_cluster" not in after
+    assert not db.query(Event).filter(Event.action == "tools_list_refetched").all(), \
+        "the probe is retired — a re-fetch must leave no event behind"
 
 
 # ---- the boundary, stated at the moment the role is granted -----------------------------------
