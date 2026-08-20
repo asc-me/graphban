@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app import errors
 from app.db import get_db
-from app.models import User
+from app.models import ApiKey, User
 from app.providers import iter_reply
 from app.schemas import (
     ChatIn,
@@ -32,7 +32,7 @@ from app.schemas import (
     ShardOut,
 )
 from app.security import authz
-from app.security.deps import get_current_user
+from app.security.deps import get_current_user, get_user_or_agent_key
 from app.services import code_graph as code_svc
 from app.services import galaxy as galaxy_svc
 from app.services import items as items_svc
@@ -41,6 +41,25 @@ from app.services import platform as platform_svc
 from app.services.projects import resolve_project_id
 
 router = APIRouter(prefix="/agent", tags=["agent"])
+
+
+def _principal_readable_pid(db: Session, principal, project_id: str | None) -> str:
+    """`_readable_pid`, for a caller that may be a user OR an agent key (GRPH-405).
+
+    Same shape and same guarantee: the fallback for an omitted id is bounded to the
+    caller's own projects, and the resolved project must be readable by *that* caller. A
+    key is scoped by `authz.key_readable_ids`, which already refuses another tenant's
+    project — so widening the credential does not widen the reach.
+    """
+    if isinstance(principal, ApiKey):
+        readable = authz.key_readable_ids(db, principal)
+        pid = resolve_project_id(db, project_id, allowed_ids=readable)
+        if pid not in readable:
+            # 404 rather than 403, matching `require_readable`: a project the caller
+            # cannot see must be indistinguishable from one that does not exist.
+            raise HTTPException(404, "project not found")
+        return pid
+    return _readable_pid(db, principal, project_id)
 
 
 def _readable_pid(db: Session, user: User, project_id: str | None) -> str:
@@ -205,10 +224,20 @@ def code_health(
     project_id: str | None = None,
     limit: int = 40,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    principal=Depends(get_user_or_agent_key),
 ):
     """Is the code graph still true (GRPH-404) — coverage, stale nodes open work still claims,
     and touchpoints that resolve to nothing.
+
+    **A JWT or an agent key** (GRPH-405). The key half is not a widening: every input this
+    computes is already readable with an agent key — `get_code_map` returns each node's
+    `fresh` flag and `get_backlog(fields="full")` returns `touchpoints` — so an agent could
+    always join the two and arrive at these numbers. The gate withheld the convenience of
+    the answer and charged two round trips for it, which is the wrong thing to charge an
+    agent deciding whether the graph is worth trusting before a refactor.
+
+    `/api/fleet/presence` stays JWT-only and this is not a precedent for it: presence names
+    which human is editing which file, and its inputs are not already agent-readable.
 
     **REST only, no MCP tool, and the reason is the manifest ceiling rather than principle.**
     Folding `health` into `graph_query` as a fourth mode cost ~20 tokens more than the surface
@@ -221,7 +250,7 @@ def code_health(
     Retires nothing, and reports `ever_described` so "nothing is stale" and "nothing has ever
     been described" are distinguishable answers.
     """
-    pid = _readable_pid(db, user, project_id)
+    pid = _principal_readable_pid(db, principal, project_id)
     return code_svc.health(db, pid, limit=limit)
 
 

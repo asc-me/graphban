@@ -383,3 +383,70 @@ def test_health_is_not_on_the_mcp_surface(client, auth):
     assert "graph_health" not in names
     gq = [t for t in TOOLS if t["name"] == "graph_query"][0]
     assert "health" not in gq["inputSchema"]["properties"]["query"]["enum"]
+
+
+# ---- graph_health takes either credential (GRPH-405) ----------------------------
+
+
+def test_an_agent_key_reads_health_for_its_own_project(client, auth, db):
+    """The gate withheld the convenience of an answer, not the answer.
+
+    Every input `health` computes is already agent-readable: `get_code_map` returns each
+    node's `fresh` flag and `get_backlog(fields="full")` returns `touchpoints`. An agent
+    could always join the two and arrive at these numbers — it just paid two round trips
+    and a join for what one call computes, which is the wrong toll on an agent deciding
+    whether the graph is worth trusting before it refactors.
+    """
+    _seed(db)
+    key = _key(client, auth)
+
+    r = client.get("/api/agent/code/health", headers={"X-API-Key": key})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "ever_described" in body, "the absence-vs-empty distinction must survive"
+
+
+def test_a_jwt_still_reads_health(client, auth, db):
+    """Widening a credential must not narrow the other one."""
+    _seed(db)
+    r = client.get("/api/agent/code/health", headers=auth)
+    assert r.status_code == 200, r.text
+
+
+def test_an_agent_key_cannot_read_another_projects_health(client, auth, db):
+    """The key is scoped by `authz.key_readable_ids`, which already refuses another
+    tenant's project — so widening the credential does not widen the reach. 404 rather
+    than 403, matching `require_readable`: a project you cannot see is indistinguishable
+    from one that does not exist."""
+    _seed(db)
+    key = _key(client, auth)
+    other = client.post("/api/projects", json={"name": "Elsewhere"}, headers=auth).json()
+
+    r = client.get(f"/api/agent/code/health?project_id={other['id']}",
+                   headers={"X-API-Key": key})
+    assert r.status_code == 404, r.text
+
+
+def test_no_credential_at_all_is_refused(client, db):
+    _seed(db)
+    assert client.get("/api/agent/code/health").status_code == 401
+    assert client.get("/api/agent/code/health",
+                      headers={"X-API-Key": "gb_sk_not_a_real_key"}).status_code == 401
+
+
+def test_presence_did_not_move_with_it(client, auth, db):
+    """The line this change must not cross.
+
+    Presence names which HUMAN is editing which file — `user_id`, `user_initials`,
+    `user_color` — and its inputs are NOT already agent-readable. That pair of facts is
+    what makes health different, and it is the entire argument for the gate staying put
+    here. If a later change ever gives `/api/fleet/presence` the same treatment, this is
+    where it should be noticed.
+    """
+    key = _key(client, auth)
+    # An explicit project, because presence fails closed on an omitted one exactly as every
+    # other scoped read does — without it the JWT arm would 404 and prove nothing.
+    assert client.get("/api/fleet/presence?project_id=core",
+                      headers={"X-API-Key": key}).status_code == 401
+    assert client.get("/api/fleet/presence?project_id=core",
+                      headers=auth).status_code == 200
