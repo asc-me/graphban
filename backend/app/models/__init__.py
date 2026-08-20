@@ -294,6 +294,14 @@ class Membership(Base):
     user: Mapped[User] = relationship(back_populates="memberships")
     project: Mapped[Project] = relationship(back_populates="memberships")
 
+    # One row per (user, project). PRD-21 AC 9e, and the backstop that makes a racing
+    # `teams.recompute` fail loudly instead of writing a second row: a duplicate is not
+    # merely untidy, because `db.scalar` returns whichever row it finds first and a
+    # revocation that recomputes the wrong one leaves access behind.
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_id", name="uq_membership_user_project"),
+    )
+
 
 class Team(Base):
     """A named group inside an org whose grants write project access in bulk (PRD-21 D5).

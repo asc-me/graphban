@@ -211,3 +211,64 @@ def test_an_unknown_grant_level_is_refused_by_name(client, org):
     r = client.put(f"/api/teams/{t['id']}/grants/{org['project']['id']}",
                    json={"access": "admin"}, headers=org["owner"])
     assert r.status_code == 422 and "admin" in r.json()["detail"]
+
+
+# ---- one row per (user, project) ------------------------------------------------
+
+
+def test_two_sessions_materializing_the_same_pair_cannot_both_win(client, org):
+    """The race `recompute` is exposed to, run for real rather than reasoned about.
+
+    `recompute` reads whether a membership exists and then writes one. Two transactions
+    doing that concurrently for one (user, project) both read `None` and both insert, and
+    until AC 9e's constraint existed nothing rejected the second.
+
+    A duplicate is not untidiness. `db.scalar` returns whichever row it happens to find,
+    so a later revocation recomputes one of them and **leaves the other behind** — access
+    surviving a revocation that was supposed to remove it.
+
+    Written against the session layer, not the API, because that is where the window is:
+    going through HTTP would serialize on the request handler and prove nothing.
+
+    **This test must fail on the code before GRPH-420** — without the unique constraint
+    both inserts commit and the pair ends up with two rows.
+    """
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Membership
+
+    user_id, project_id = org["ops_id"], org["project"]["id"]
+
+    a, b = SessionLocal(), SessionLocal()
+    try:
+        for s in (a, b):
+            assert s.scalar(
+                select(Membership).where(
+                    Membership.user_id == user_id, Membership.project_id == project_id
+                )
+            ) is None, "the pair must start empty or the race is not the thing under test"
+
+        a.add(Membership(user_id=user_id, project_id=project_id,
+                         role="member", access="read", origin="team"))
+        a.commit()
+
+        b.add(Membership(user_id=user_id, project_id=project_id,
+                         role="member", access="write", origin="team"))
+        with pytest.raises(Exception):   # IntegrityError under either driver
+            b.commit()
+        b.rollback()
+    finally:
+        a.close()
+        b.close()
+
+    check = SessionLocal()
+    try:
+        rows = check.scalars(
+            select(Membership).where(
+                Membership.user_id == user_id, Membership.project_id == project_id
+            )
+        ).all()
+        assert len(rows) == 1, f"expected exactly one membership, found {len(rows)}"
+    finally:
+        check.close()
