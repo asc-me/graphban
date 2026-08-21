@@ -331,6 +331,16 @@ def list_agents(db: Session, project_id: str | None = None, *,
             # Un-enrolled means the single-agent posture — legitimate, but not part of a
             # fleet, which is why the view groups them apart rather than mixing them in.
             "enrolled": a.enrolment_id is not None,
+            # The SEAT, not just whether there is one. PRD-22 §6's specific complaint is
+            # that `enrolled` carries "the consequences of revocation, never the
+            # transition" — a planner watching its fleet could see an agent vanish and
+            # not know which seat went with it. It is also what a supervisor needs to
+            # match a child it spawned to the roster row it became: PRD-22's acceptance
+            # walk step 3 asks for exactly this and could not be run without it.
+            #
+            # Safe to emit. It is the seat's ROW id, never its code — the code is hashed
+            # and `list_enrolments` deliberately returns no fragment of it.
+            "enrolment_id": a.enrolment_id,
             "dismissed": a.dismissed_at is not None,
             "worktree": a.worktree,
             "branch": a.branch,
@@ -1629,8 +1639,17 @@ def consume_enrolment(db: Session, *, code: str, project_id: str, api_key) -> En
 
 
 def list_enrolments(db: Session, project_id: str | None = None,
-                    wave: str | None = None) -> list[dict]:
+                    wave: str | None = None, minted_by: str | None = None) -> list[dict]:
     """Every seat with its DERIVED state, newest first.
+
+    `minted_by` is the scope PRD-22 §6 turns on: mint, list and retire are ONE capability
+    with one bound, and it is the provenance already recorded at mint time. A planner
+    passing its own id sees the seats it issued and nothing else — not another planner's,
+    and not the hand-minted long-lived credentials that were never its business.
+
+    It is also returned on every row, because a seat whose minter is invisible cannot be
+    scoped by anyone reading the list, and the audit trail `mint_enrolment_as` records
+    instead of parentage is only a trail if something surfaces it.
 
     **No part of the code comes back, not even a display fragment.** An API key shows a prefix
     because it is long-lived and a human needs to match it against a config; a seat lives for
@@ -1643,6 +1662,8 @@ def list_enrolments(db: Session, project_id: str | None = None,
         stmt = stmt.where(Enrolment.project_id == project_id)
     if wave:
         stmt = stmt.where(Enrolment.wave == wave)
+    if minted_by:
+        stmt = stmt.where(Enrolment.minted_by == minted_by)
     rows = list(db.scalars(stmt.order_by(Enrolment.created_at.desc())).all())
     # Intentionally no state filter: a consumed/expired/revoked row is the record
     # reissue leaves behind. Dropping it here hides the dead seat from the Fleet view.
@@ -1652,6 +1673,7 @@ def list_enrolments(db: Session, project_id: str | None = None,
         "wave": r.wave,
         "state": enrolment_state(r),
         "consumed_by": r.consumed_by,
+        "minted_by": r.minted_by,
         "reissued_from": r.reissued_from,
         "expires_at": r.expires_at.isoformat() if r.expires_at else None,
     } for r in rows]
@@ -1852,6 +1874,89 @@ def end_wave(db: Session, *, project_id: str | None, wave: str | None = None) ->
     db.commit()
     return {"keys_revoked": len(keys), "seats_revoked": len(seats), "agents": len(agents),
             "leases_released": len(released), "reservations_released": reservations}
+
+
+def retire_wave(db: Session, *, minter_id: str, project_id: str | None,
+                wave: str | None = None) -> dict:
+    """A planner retires the seats IT minted. PRD-22 §6.
+
+    Spin-up was agent-callable and spin-down was not, and that asymmetry fails in the
+    direction that costs money: a fleet that can grow and cannot shrink. Mint, list and
+    retire are one capability with one scope — `minted_by` — which is the provenance
+    `mint_enrolment_as` already records.
+
+    The containment argument is the one minting already makes: the capability is
+    planner-only and a planner cannot build, so it has no authored work that revoking its
+    own seats could launder.
+
+    **Scope: seats this caller minted, and nothing else.** Not another planner's, and not
+    API keys — `end_wave` revokes keys because a human is ending a whole wave; a planner
+    never minted a key and retiring one would be a surprise it never promised. The human
+    `end_wave` stays and stays broader; this is a scoped subset, not a replacement.
+
+    **Effect: revoke those seats and release what agents on them hold, in one
+    transaction.** A half-retired wave — seats dead, leases held — is the genuinely
+    confusing state: work no living agent can finish, held by credentials that no longer
+    authenticate, and nothing in the roster explaining why the queue is stuck.
+
+    **It does not stop processes, and the return value refuses to imply otherwise.** The
+    server has no process control; that is PRD-22's premise, not an omission. Termination
+    follows because the planner then calls the supervisor's local `stop`, or the
+    supervisor's backstop poll notices. So the result carries `agents_still_running` —
+    agents on the retired seats that were seen within the presence TTL and are therefore
+    probably still executing, right now, against seats that no longer authenticate.
+    Without that number `{"seats_revoked": 4}` reads as "the wave is over", which is
+    exactly the misreading that leaves four children building in the dark.
+    """
+    now = datetime.now(timezone.utc)
+    stmt = select(Enrolment).where(Enrolment.minted_by == minter_id,
+                                   Enrolment.revoked.is_(False))
+    if project_id:
+        stmt = stmt.where(Enrolment.project_id == project_id)
+    if wave:
+        stmt = stmt.where(Enrolment.wave == wave)
+    seats = list(db.scalars(stmt).all())
+
+    seat_ids = [s.id for s in seats]
+    agents: list[Agent] = []
+    if seat_ids:
+        agents = list(db.scalars(select(Agent).where(Agent.enrolment_id.in_(seat_ids))).all())
+
+    released, reservations = [], 0
+    for a in agents:
+        for it in db.scalars(select(Item).where(Item.claimed_by == a.id)).all():
+            it.claimed_by = None
+            it.claimed_at = None
+            it.assignee = ""
+            if it.status == "in_progress":
+                it.status = "next"
+            released.append(it.id)
+        for row in db.scalars(
+                select(AreaReservation).where(AreaReservation.agent_id == a.id)).all():
+            db.delete(row)
+            reservations += 1
+        # An un-acked role directive is moot once the seat is gone; the session_expired
+        # directive is derived from the seat, so revoking it IS the notification.
+        a.role_acked_at = a.role_assigned_at
+
+    still_running = [a.id for a in agents
+                     if presence_state(a, now=now) != "offline"]
+
+    for seat in seats:
+        seat.revoked = True
+    db.commit()
+
+    return {
+        "seats_revoked": len(seats),
+        "agents": len(agents),
+        "leases_released": len(released),
+        "reservations_released": reservations,
+        # Never omitted and never implied. An empty list means the supervisor has nothing
+        # left to stop; a populated one means these processes are still going, and
+        # retiring a seat did not and could not touch them.
+        "agents_still_running": still_running,
+        "stopped_no_processes": True,
+    }
 
 
 def end_wave_preview(db: Session, *, project_id: str | None, wave: str | None = None) -> dict:
