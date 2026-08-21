@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
+from .adapters import ADAPTERS, AdapterError, resolve
 from .client import Graphban
 from .lock import RepoLocked
 from .seat import Seat
@@ -69,8 +70,15 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--adapter",
         required=True,
-        help="which vendor this command is. Named, never inferred: a fleet whose "
-        "composition nobody chose defeats the one thing the supervisor can enforce.",
+        help="which vendor to run: " + ", ".join(sorted(ADAPTERS)) + ". Named, never "
+        "inferred: a fleet whose composition nobody chose defeats the one thing the "
+        "supervisor can enforce. With a trailing -- command, this is only a label.",
+    )
+    run.add_argument(
+        "--binary",
+        default=None,
+        help="override the resolved path for --adapter (skips the PATH lookup, not the "
+        "version check)",
     )
     run.add_argument("--wave", default="wave", help="wave name, used in branch names")
     run.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
@@ -91,6 +99,21 @@ def read_seats(source: str, server: str, api_key: str) -> list[Seat]:
         if line.strip() and not line.lstrip().startswith("#")
     ]
     return [Seat(code=c, server_url=server, api_key=api_key) for c in codes]
+
+
+def make_adapter_factory(name: str, binary: str | None):
+    """Resolve the named vendor NOW, so a bad one refuses before any worktree exists.
+
+    The version check happens here rather than after launch, because a mismatch that
+    surfaces as a child which starts, misbehaves and never registers costs a full
+    registration window and blames the wrong component.
+    """
+    adapter, path = resolve(name, binary=binary)
+
+    def factory(seat: Seat, tree: Worktree, instruction_file: Path) -> Launch:
+        return adapter.launch(seat, tree, instruction_file, path)
+
+    return factory
 
 
 def make_launch_factory(adapter: str, template: list[str]):
@@ -174,8 +197,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     template = [a for a in (args.argv or []) if a != "--"]
-    if not template:
-        print("gbfleet up: nothing to run — put the child's command after --", file=sys.stderr)
+    try:
+        # An explicit trailing command wins and `--adapter` is then just a label — the
+        # escape hatch for a vendor with no adapter yet, and still explicit about which
+        # binary runs. Otherwise the named adapter is resolved and version-checked.
+        factory = (
+            make_launch_factory(args.adapter, template)
+            if template
+            else make_adapter_factory(args.adapter, args.binary)
+        )
+    except AdapterError as exc:
+        print(f"gbfleet up: {exc}", file=sys.stderr)
         return 2
 
     api_key = os.environ.get(API_KEY_ENV)
@@ -193,7 +225,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         wave = up(
             Path(args.repo),
             seats,
-            make_launch_factory(args.adapter, template),
+            factory,
             client,
             wave_name=args.wave,
             limits=Limits(
