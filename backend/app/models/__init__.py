@@ -792,6 +792,17 @@ class AreaReservation(Base):
     # A path, glob or module — the same vocabulary as `Item.touchpoints`, so the reservation
     # and the collision map are comparable without a translation step.
     area: Mapped[str] = mapped_column(String, index=True)
+    # Whether this area was PREDICTED for the item rather than declared on it (PRD-20 D4).
+    # An item with no touchpoints has its areas inferred from the code map, and the graph
+    # draws that hold as a dashed guess rather than a solid claim — a reservation the fleet
+    # will honour either way, but not a fact the same way a human-written touchpoint is.
+    #
+    # Persisted rather than recomputed. `claim_cluster` knows it at write time and it is a
+    # property OF THE HOLD: re-deriving it later would ask the current divvy about a
+    # partition that has since moved, and answer about a different cluster than the one
+    # actually held.
+    predicted: Mapped[bool] = mapped_column(Boolean, default=False,
+                                            server_default=false(), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

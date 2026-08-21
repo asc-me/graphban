@@ -108,10 +108,11 @@ def _agent(db, label="a1", project_id="core"):
     return agent.id
 
 
-def _reserve(db, agent_id, area, item_id=None, seconds=600):
+def _reserve(db, agent_id, area, item_id=None, seconds=600, predicted=False):
     db.add(AreaReservation(
         agent_id=agent_id, item_id=item_id or _item_id(db), area=area,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=seconds),
+        predicted=predicted,
     ))
     db.commit()
 
@@ -249,3 +250,29 @@ def test_presence_is_not_reachable_with_an_agent_api_key(client, auth):
     from app.mcp_server import TOOLS
     assert "fleet_presence" not in {t["name"] for t in TOOLS}
     assert "held_areas" not in {t["name"] for t in TOOLS}
+
+
+# ---- the dashed channel (GRPH-387) ----------------------------------------------
+
+
+def test_a_predicted_hold_says_so_rather_than_reading_as_declared(db):
+    """`held_areas` returned `predicted: False` for every row, so the graph's dashed
+    "guess" channel could never light from the API.
+
+    The distinction is the point of the channel. An item with touchpoints a human wrote is
+    a claim; an item whose areas were inferred from the code map is a guess the fleet will
+    still honour — and drawing the second like the first asserts a confidence nobody has.
+
+    `test_the_payload_carries_the_holder_and_the_lease_clock` only asserted the KEY was
+    present, which a hardcoded literal satisfies. This asserts the value.
+    """
+    cg.upsert_node(db, project_id="core", path="a.py", kind="module", name="a")
+    cg.upsert_node(db, project_id="core", path="b.py", kind="module", name="b")
+    db.commit()
+    agent = _agent(db)
+    _reserve(db, agent, "a.py", predicted=True)
+    _reserve(db, agent, "b.py", predicted=False)
+
+    rows = {r["area"]: r for r in fleet_svc.held_areas(db, "core")["held"]}
+    assert rows["a.py"]["predicted"] is True
+    assert rows["b.py"]["predicted"] is False

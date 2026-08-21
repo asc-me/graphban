@@ -1233,7 +1233,7 @@ def held_areas(db: Session, project_id: str | None = None, *,
         matched = sorted(p for p in node_by_path if code_svc.area_matches(r.area or "", p))
         fresh_paths = [p for p in matched if node_by_path[p].fresh]
         if fresh_paths:
-            held.append({**base, "node_paths": fresh_paths, "predicted": False})
+            held.append({**base, "node_paths": fresh_paths, "predicted": bool(r.predicted)})
         if matched and len(fresh_paths) != len(matched):
             # A held area whose map is out of date carries the same message as an unplaceable
             # one, so it is reported rather than left to glow as though current.
@@ -1331,7 +1331,8 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         expires = now + timedelta(seconds=lease_seconds)
         for area in (cluster.get("areas") or []):
             db.add(AreaReservation(agent_id=agent_id, item_id=claimed[0].id,
-                                   area=area, expires_at=expires))
+                                   area=area, expires_at=expires,
+                                   predicted=bool(cluster.get("predicted"))))
         db.commit()
         return {"claimed": True,
                 "items": [{"id": it.key, "stored_id": it.id, "title": it.title} for it in claimed],
