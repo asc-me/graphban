@@ -594,7 +594,16 @@ TOOLS: list[dict[str, Any]] = [
                 "branch": {"type": "string"},
                 "role_hint": {"type": "string", "enum": list(fleet_svc.ROLES)},
                 "enrolment_code": {"type": "string", "description": "Your seat, e.g. 'WORKER-7F3K'. Grants your role and beats role_hint. Single-use."},
-                "parent_agent_id": {"type": "string", "description": "Set if you are a SUBAGENT: who spawned you. Stops a call tree reviewing itself."},
+                # "who spawned you" is the phrasing that caused the trouble: a process a
+                # supervisor launched has an obvious answer to it, and the answer is wrong.
+                # It is a separate PROCESS, not a subagent inside anyone's turn, and
+                # declaring a parent would make it and its reviewer one call tree
+                # (`independent`), so review across a spawned fleet would silently stop
+                # meaning anything. Naming the distinction is the whole job here; the old
+                # second sentence explained the consequence in a way that made setting the
+                # field sound like the careful choice. Net 5 chars shorter — the manifest
+                # budget has no room (test_mcp_footprint).
+                "parent_agent_id": {"type": "string", "description": "ONLY if you run inside another agent's turn. A spawned process is not one."},
             },
         },
     },
