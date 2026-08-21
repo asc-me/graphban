@@ -942,6 +942,14 @@ class Prd(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+    # When the BODY last changed, which `updated_at` cannot say (GRPH-430). That column
+    # carries `onupdate`, so it moves for any row write — and answering a grill writes the
+    # row whenever the answer changes the derived status. The body would then look freshly
+    # edited at exactly the moments it had not been touched. Written only when the text
+    # actually differs; see `prds.update_prd`.
+    body_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=True
+    )
 
     versions: Mapped[list[PrdVersion]] = relationship(
         back_populates="prd", cascade="all, delete-orphan", order_by="desc(PrdVersion.id)"

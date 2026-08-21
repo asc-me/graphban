@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from collections import Counter
+from datetime import timezone
 
 from app.models import (
     CodeNode, Event, GrillDimension, GrillTurn, Item, Prd, PrdVersion, Verdict,
@@ -148,6 +149,11 @@ def update_prd(db: Session, prd_id: str, **fields) -> Prd | None:
                 + ". Rebaselining adjusts a PRD to match reality; new scope belongs in a "
                 "sub-PRD or a follow-up PRD linked back to this one."
             )
+    # Stamped only when the text actually differs (GRPH-430). A caller that saves the whole
+    # object every keystroke, or echoes an unchanged body back, must not read as an edit —
+    # otherwise "the body has absorbed the grill" becomes true by autosave.
+    if fields.get("body") is not None and fields["body"] != prd.body:
+        prd.body_updated_at = utcnow()
     for key in ("title", "status", "body"):
         if fields.get(key) is not None:
             setattr(prd, key, fields[key])
@@ -2522,6 +2528,57 @@ def grill_state(db: Session, prd_id: str) -> dict:
         "outstanding": done["outstanding"],
         "deferred": done["deferred"],
         "complete": done["complete"],
+        # Whether the BODY has caught up with what the grill settled (GRPH-430). A finished
+        # grill and a stale document look identical from every downstream surface, so the
+        # one place that knows both says so.
+        "absorption": grill_absorption(db, prd_id),
+    }
+
+
+def grill_absorption(db: Session, prd_id: str) -> dict:
+    """Has the BODY been edited since the grill last said something?
+
+    GRPH-424 closed *repo copy vs ledger*. This is the same absence one level in — *ledger
+    body vs its own grill*. A PRD can be interrogated across five rounds, settle real
+    decisions, and keep a body that still describes the older ones; to `decompose_prd`,
+    `prd_coverage`, the completeness pass and any human reading it, that document is
+    indistinguishable from one that absorbed everything.
+
+    **Staleness, never correctness.** Whether a section genuinely *reflects* an answer is a
+    judgement, and a check that claimed to make it would either nag constantly or pass on
+    anything — both of which end with somebody switching it off. What is exact is the
+    ordering: answers newer than the last body edit have demonstrably not been written down.
+    That is the failure that actually happens.
+
+    Counted inside the evidence window (`grill_from_seq`), matching what `completion` grades:
+    after a rebaseline the previous round's answers are not what this body owes.
+
+    A PRD nobody has grilled is absorbed by definition — there is nothing outstanding to
+    absorb, and reporting it as stale would make the signal meaningless on the majority of
+    rows.
+    """
+    prd = db.get(Prd, keys.resolve_prd(db, prd_id) or prd_id)
+    if prd is None:
+        return {}
+    window = grill_window(db, prd.id)
+    answers = [t for t in grill_turns(db, prd.id) if t.role == "user" and t.seq >= window]
+    # `body_updated_at` is nullable for rows that predate 0082. Falling back to `updated_at`
+    # keeps those optimistic rather than flagging the whole backlog on the day this ships.
+    edited = prd.body_updated_at or prd.updated_at
+
+    def _aware(dt):
+        return dt.replace(tzinfo=timezone.utc) if dt is not None and dt.tzinfo is None else dt
+
+    edited = _aware(edited)
+    behind = [t for t in answers if edited is None or _aware(t.created_at) > edited]
+    latest = max((_aware(t.created_at) for t in answers), default=None)
+    return {
+        "prd_id": prd.key,
+        "absorbed": not behind,
+        "answers_behind": len(behind),
+        "behind_seqs": [t.seq for t in behind],
+        "last_answer_at": latest.isoformat() if latest else None,
+        "body_updated_at": edited.isoformat() if edited else None,
     }
 
 
