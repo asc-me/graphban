@@ -117,3 +117,74 @@ def test_a_prd_with_no_framing_sections_adds_no_context_block():
         body = "## D1 — Only work\n\nBuild the thing."
 
     assert prds.framing_context(Bare()) == ""
+
+
+# ---- the framing is bounded, and says what it left behind (GRPH-428) -------------
+
+# Real framing headings, because `_section_key` classifies by NAME: "Context part 2"
+# normalises to `contextpart2`, which is not in `_PROSE_SECTIONS`, so an earlier version of
+# this fixture produced sections decompose treated as WORK and never carried at all.
+_FILLER = ("filler prose. " * 120).strip()
+BIG = (
+    "## 1. Overview\n\nThe rule is `^[A-Z]{2,4}$`.\n\n"
+    + "".join(f"## {n}. {name}\n\n{_FILLER}\n\n" for n, name in enumerate(
+        ("Background", "Context", "Motivation", "Goals", "Non-goals",
+         "Risks", "Appendix", "Glossary"), start=2))
+    + "## D1 — The work\n\nBuild it.\n"
+)
+
+
+class _Big:
+    key, id, title, project_id, version = "GRPH-P99", "p99", "Identity", "core", "v2.3"
+    body = BIG
+
+
+def test_the_framing_block_is_capped():
+    """PRD-21's block is 13,345 characters on EVERY item decomposed from it — about 3,336
+    tokens, against a whole MCP manifest of ~13,150 that this repo has argued over five
+    times. Unbounded duplication deserved a number."""
+    ctx = prds.framing_context(_Big())
+    assert len(ctx) <= prds.FRAMING_BUDGET_CHARS + 400, (
+        f"framing block is {len(ctx)} chars against a "
+        f"{prds.FRAMING_BUDGET_CHARS} budget"
+    )
+
+
+def test_what_did_not_fit_is_named_rather_than_silently_dropped():
+    """A block that is quietly short reads exactly like a PRD with nothing more to say.
+
+    This is the same absence-reads-as-clean rule the rest of the codebase follows: the
+    reader has to be able to tell "there was no more" from "there was more, elsewhere".
+    """
+    ctx = prds.framing_context(_Big())
+    assert "Not carried" in ctx
+    assert "Glossary" in ctx, "the omitted sections must be named"
+    assert "read them there" in ctx.lower() or "in the PRD" in ctx
+
+
+def test_the_rules_at_the_top_survive_the_cap():
+    """Sections go in document order, and every PRD in this repo states its rules first —
+    so the cap drops narrative rather than the thing an implementer cannot build without."""
+    ctx = prds.framing_context(_Big())
+    assert "^[A-Z]{2,4}$" in ctx
+
+
+def test_a_small_prd_is_not_truncated_and_says_nothing_about_it():
+    """The notice must not appear where nothing was dropped, or it becomes noise that
+    teaches people to skip it."""
+    class Small:
+        key, id, title, project_id, version = "GRPH-P98", "p98", "Small", "core", "v1.0"
+        body = BODY
+
+    ctx = prds.framing_context(Small())
+    assert ctx and "Not carried" not in ctx
+
+
+def test_the_copy_says_which_version_it_came_from(proposals):
+    """The framing is a snapshot that re-decompose never refreshes, so a PRD edited
+    afterwards leaves every task holding the old rules. `intent_hold` says intent MOVED,
+    which reads as "scope changed"; the stamp is what says "your spec is stale"."""
+    props, prd = proposals
+    d1 = next(p for p in props if p["section"].startswith("D1"))
+    assert prd.version in d1["description"]
+    assert "snapshot" in d1["description"].lower()

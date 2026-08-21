@@ -187,6 +187,19 @@ the five tag assignments never reached the six items meant to implement them, an
 to be rewritten by hand. The framing is duplicated onto every item on purpose: an item that
 must fetch its parent to be actionable is the cost this tool exists to remove.
 
+The block is **bounded and says what it left out** (GRPH-428). Framing across this repo's
+PRDs runs 7,461–15,819 characters, and copying all of it onto every task put ~3,300 tokens
+of duplicated prose on each — against an MCP manifest of ~13,150 whose ceiling has been
+argued five separate times. The budget is 8,000 characters, sections are taken in document
+order because PRDs state their rules first, and anything that does not fit is **named** in a
+`Not carried` block rather than silently dropped. A short block and a PRD with nothing more
+to say must not look the same.
+
+The copy also carries the PRD's **version**, because re-decompose skips sections that
+already have an item and therefore never refreshes it. `intent_hold` already warns that
+intent has moved; the stamp is what tells a reader the rules in front of them are the old
+ones rather than merely that scope changed.
+
 Relative references (`the five tags above`, `the mint path below`) are **reported, not
 rewritten** — they arrive on each proposal as `dangling_refs`, visible on a dry run before
 anything is created. Repairing them means guessing which five, and a confidently wrong
