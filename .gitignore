@@ -5,6 +5,11 @@ backend/.venv/
 backend/*.db
 backend/.pytest.db
 backend/.pytest_cache/
+# graphban-fleet is a separate distribution with its own venv (PRD-22 D-e). `uv` drops a
+# self-ignoring .gitignore inside .venv/, but naming it here means the repo does not
+# depend on that convenience holding.
+fleet/.venv/
+fleet/.pytest_cache/
 *.egg-info/
 
 # Node

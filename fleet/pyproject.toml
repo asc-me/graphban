@@ -1,0 +1,36 @@
+[project]
+name = "graphban-fleet"
+version = "0.1.0"
+description = "Fleet supervisor for Graphban — spawns and retires fleet members on the machine the agents actually run on"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+
+# PRD-22 D-e / G6: install surface is httpx-thin, and that is a REQUIREMENT rather
+# than a preference. `graphban-api` pulls fastapi, sqlalchemy, pgvector, psycopg,
+# alembic, redis and cryptography; a laptop running four vendor CLIs needs none of
+# them. `tests/test_packaging.py` fails if any of those appear here, because the
+# only thing keeping a dependency list thin is something that objects when it isn't.
+dependencies = [
+    "httpx>=0.28",
+]
+
+[project.scripts]
+# `graphban` and `agentledger` are both already claimed by backend/pyproject.toml, so a
+# distinct entry point is required regardless of where this package lives (PRD-22 D-e).
+gbfleet = "gbfleet.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gbfleet"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
