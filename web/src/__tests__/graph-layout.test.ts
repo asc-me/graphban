@@ -167,12 +167,21 @@ describe("iterationsFor", () => {
 });
 
 describe("layoutKey", () => {
-  it("is unchanged when only the DRAWN subset changes — this is AC-3", () => {
-    // Both views pass their unfiltered edges, so toggling a type chip cannot alter the key
-    // and therefore cannot move a node.
-    const all = layoutKey(IDS, EDGES);
-    const alsoAll = layoutKey(IDS, [...EDGES]);
-    expect(alsoAll).toBe(all);
+  it("IS sensitive to the edge set — which is why the views must not pass a filtered one", () => {
+    // The previous version of this test compared `layoutKey(IDS, EDGES)` with
+    // `layoutKey(IDS, [...EDGES])` and called it AC-3. A copy of one array cannot differ
+    // from itself, so it passed under every implementation including a broken one.
+    //
+    // The real property is the opposite of what it asserted: the key MUST change when the
+    // edges change, because the hook memoizes on ids AND edges. Keying on ids alone would
+    // miss a describe-pass edge, so that is the right call — and it means AC-3 cannot be
+    // satisfied here at all. It is a CALL-SITE guarantee, pinned below.
+    // `LayoutEdge` is deliberately just {a, b} — the layout has no concept of edge type,
+    // which is itself why the filtering has to happen above it. A chip toggle reaches this
+    // layer only as a SUBSET, so that is what is simulated.
+    const afterAChipToggle = EDGES.slice(0, -1);
+    expect(afterAChipToggle.length).toBeLessThan(EDGES.length);
+    expect(layoutKey(IDS, afterAChipToggle)).not.toBe(layoutKey(IDS, EDGES));
   });
 
   it("changes when the node set changes", () => {
