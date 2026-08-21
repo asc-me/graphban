@@ -192,7 +192,9 @@ def _refuse_if_last_administrator(db: Session, org_id: str, seat: OrgMembership)
     Taken FOR UPDATE, and that is not decoration. The self-action rules make zero
     administrators unreachable one step at a time — A may demote B but never A — so the
     only route to zero is two administrators demoting each other at the same instant.
-    The lock is the whole difference between this check and a comment.
+    The lock is the whole difference between this check and a comment — and it is raced for
+    real in tests/test_lock_concurrency.py on Postgres, because it was undefended until
+    GRPH-432 went looking.
     """
     if seat.role not in ADMIN_ROLES:
         return

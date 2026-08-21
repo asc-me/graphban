@@ -64,6 +64,7 @@ def recompute(db: Session, user_id: str, project_id: str) -> Membership | None:
     # always exists — the project. Two grant changes touching one project queue here
     # instead of both reading `None` and both inserting. `with_for_update` is a no-op on
     # SQLite, which serializes writes globally anyway, so this degrades rather than lies.
+    # Raced for real in tests/test_lock_concurrency.py, on Postgres (GRPH-432).
     db.get(Project, project_id, with_for_update=True)
 
     existing = db.scalar(
