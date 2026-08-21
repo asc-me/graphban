@@ -555,7 +555,11 @@ export interface Member {
   access: string;
 }
 
-export type PrdStatus = "draft" | "review" | "approved";
+// Mirrors `STATUSES` in backend/app/services/prds.py. `closed` was missing here for as
+// long as it existed there, and `Record<PrdStatus, …>` was exhaustive over the WRONG
+// union — so the compiler had nothing to say while the PRD page crashed on real data
+// (GRPH-458). `test_prd_status_union` fails if the two drift again.
+export type PrdStatus = "draft" | "review" | "approved" | "closed";
 
 /** The completion standard (PRD-15). `approved` is REACHED when every dimension is
  *  resolved or deferred — it is not a status anyone picks. */

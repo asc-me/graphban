@@ -21,7 +21,7 @@ import type { PrdStatus, PrdVersion } from "@/lib/types";
 
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
 import { GrillPanel } from "./GrillPanel";
-import { PRD_SETTABLE_STATUSES, PRD_STATUS_META } from "./meta";
+import { PRD_SETTABLE_STATUSES, PRD_STATUS_META, prdStatusMeta } from "./meta";
 import { ApprovedIsEarned, GrillProgress } from "./GrillProgress";
 import { AcceptancePanel } from "./AcceptancePanel";
 import { IntentDiff } from "./IntentDiff";
@@ -229,7 +229,7 @@ function StatusMenu({
   onChange: (s: PrdStatus) => void;
   complete: boolean;
 }) {
-  const meta = PRD_STATUS_META[status];
+  const meta = prdStatusMeta(status);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>

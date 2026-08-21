@@ -17,7 +17,7 @@ import { api } from "@/lib/api";
 import { keys, usePrds } from "@/lib/queries";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { PRD_STATUS_META } from "./meta";
+import { prdStatusMeta } from "./meta";
 
 export function PrdListView() {
   const search = useOutletContext<string>();
@@ -49,7 +49,7 @@ export function PrdListView() {
         ) : (
           <div className="space-y-2">
             {visible.map((p) => {
-              const meta = PRD_STATUS_META[p.status];
+              const meta = prdStatusMeta(p.status);
               return (
                 <button
                   key={p.id}
