@@ -17,16 +17,16 @@ and deliberately the OPTIMISTIC one. A backfill of NULL or epoch would flag ever
 as stale on day one, and a check that cries wolf about history is one people switch off before
 it ever catches anything real.
 
-Revision ID: 0082
-Revises: 0081
+Revision ID: 0083
+Revises: 0082
 """
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0082"
-down_revision: Union[str, None] = "0081"
+revision: str = "0083"
+down_revision: Union[str, None] = "0082"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
