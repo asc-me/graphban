@@ -2828,6 +2828,30 @@ _DANGLING_REF = re.compile(
 )
 
 
+#: How much framing prose one task may carry. PRD-21's block is 13,345 characters — about
+#: 3,336 tokens, on EVERY item decomposed from it. For scale, the whole MCP manifest is
+#: ~13,150 tokens, a ceiling this repo has raised five times and argued each time, and a
+#: session-scoped trimmer exists to save 2,100–2,400 tokens per turn. An item quietly
+#: carrying a quarter of that deserved a number rather than none (GRPH-428).
+#:
+#: 8,000 characters is roughly 2,000 tokens, and it is measured rather than picked. Framing
+#: across the five PRDs in this repo runs 7,461-15,819 chars. At this budget PRD-21 drops
+#: only its Problem section — the largest and most narrative — while keeping the invariant,
+#: the goals and the risks; PRD-22 fits whole. 6,000 cut PRD-20 to its Overview alone;
+#: 10,000 bought almost nothing more for 25% more on every item.
+#:
+#: Sections go in DOCUMENT ORDER, because every PRD here states its rules first, so the cap
+#: drops narrative rather than the thing an implementer cannot build without. The known cost
+#: of that rule: a small early section can displace a more useful later one — at 6,000,
+#: PRD-21's Phasing (1,275 chars) pushed out its Risks (1,995). Ordering by usefulness would
+#: need judgement the tool does not have, so the budget is set where that trade stops biting
+#: rather than pretending to solve it.
+#:
+#: What does not fit is NAMED, because a block that is silently short reads exactly like a
+#: PRD with nothing more to say.
+FRAMING_BUDGET_CHARS = 8_000
+
+
 def framing_context(prd: Prd) -> str:
     """The framing sections, assembled so a task can carry its own spec.
 
@@ -2847,16 +2871,33 @@ def framing_context(prd: Prd) -> str:
     to be actionable is the failure this repairs, and bloat is the cheaper of the two.
     """
     bodies = section_bodies(prd.body)
-    parts = []
+    kept: list[str] = []
+    dropped: list[str] = []
+    spent = 0
     for title, body in bodies.items():
         if is_implementable_section(title):
             continue
         text = (body or "").strip()
-        if text:
-            parts.append(f"### {title}\n\n{text}")
-    if not parts:
+        if not text:
+            continue
+        block = f"### {title}\n\n{text}"
+        # Whole sections, never a cut sentence. A section that half-arrives is worse than
+        # one that is named as absent: the reader cannot tell where the rule stopped.
+        if spent + len(block) > FRAMING_BUDGET_CHARS and kept:
+            dropped.append(title)
+            continue
+        kept.append(block)
+        spent += len(block)
+    if not kept:
         return ""
-    return "\n\n".join(parts)
+    if dropped:
+        kept.append(
+            "### Not carried\n\n"
+            f"Over the {FRAMING_BUDGET_CHARS}-character budget, so these are in the PRD and "
+            f"not here: {', '.join(dropped)}. Read them there before assuming they say "
+            "nothing you need."
+        )
+    return "\n\n".join(kept)
 
 
 def dangling_refs(text: str) -> list[str]:
@@ -2904,7 +2945,16 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 f"## Context from {prd.key} — {prd.title}\n\n"
                 f"Carried with the task on purpose: an item that has to fetch its parent "
                 f"to be actionable is the gap this fills. Framing sections only — the "
-                f"other implementable sections are their own items.\n\n{context}"
+                f"other implementable sections are their own items.\n\n"
+                # A SNAPSHOT, and it now says so. Re-decompose skips a section that
+                # already has an item, so this copy is never refreshed — a PRD edited or
+                # rebaselined afterwards leaves every task holding the rules as they
+                # were. `intent_hold` warns that intent MOVED, which an agent can
+                # reasonably read as "scope changed" rather than "the spec in your
+                # description is wrong"; the stamp makes the second reading available.
+                f"*Copied from {prd.key} at {prd.version}. A snapshot: if this item shows "
+                f"an intent hold, or the PRD has moved since, these are the old rules and "
+                f"the PRD is the source.*\n\n{context}"
             )
         proposals.append({
             "section": p["section"],
