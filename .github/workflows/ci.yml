@@ -29,6 +29,14 @@ jobs:
             backend:
               - 'backend/**'
               - '.github/workflows/ci.yml'
+              # The backend suite reads these, so a PR touching only them must still run
+              # it — otherwise the guards that exist to keep them honest never fire, and
+              # the filter silently turns a doc edit into an untested one.
+              # `test_docs_sync` reads AGENTS.md and docs/mcp.md; `test_prd_sync` reads
+              # every docs/prd-*.md; `test_subagent_fleet` reads AGENTS.md via the
+              # generator.
+              - 'AGENTS.md'
+              - 'docs/**'
             frontend:
               - 'web/**'
               - '.github/workflows/ci.yml'
@@ -39,6 +47,10 @@ jobs:
             fleet:
               - 'fleet/**'
               - 'backend/pyproject.toml'
+              # `test_adapters` reads docs/fleet-adapters.md and asserts the support
+              # matrix matches the registry. Without this the matrix could drift with a
+              # green tick, which is the exact failure that guard exists to prevent.
+              - 'docs/fleet-adapters.md'
               - '.github/workflows/ci.yml'
 
   backend-sqlite:

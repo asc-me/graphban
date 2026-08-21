@@ -169,6 +169,7 @@ that migrations 0001/0013 pin 384 in the column type — see AL-46.
 | Providers/AI | [`docs/ai-providers.md`](docs/ai-providers.md) |
 | Config/env | [`docs/configuration.md`](docs/configuration.md) |
 | Fleet supervisor (`fleet/`) | [`fleet/README.md`](fleet/README.md), [`docs/prd-22-fleet-supervisor.md`](docs/prd-22-fleet-supervisor.md) |
+| Vendor CLIs the fleet can run | [`docs/fleet-adapters.md`](docs/fleet-adapters.md) |
 
 ## Deploy
 

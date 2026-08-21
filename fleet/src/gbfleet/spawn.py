@@ -79,6 +79,10 @@ class Launch:
     seat_path: Path
     config: dict
     instruction: str
+    #: Fed to the child on stdin. This is how the enrolment CODE reaches a vendor whose
+    #: only prompt channel is a command-line argument: argv is readable by every process
+    #: on the machine, stdin is not. `grok` takes `--prompt-file` and needs neither.
+    stdin_file: Path | None = None
     env: dict[str, str] = field(default_factory=dict)
 
 
@@ -134,12 +138,15 @@ def spawn(launch: Launch, worktree: Path, branch: str, log_dir: Path) -> Child:
 
     env = {**os.environ, **launch.env}
     started = time.monotonic()
+    stdin = subprocess.DEVNULL
+    if launch.stdin_file is not None:
+        stdin = open(launch.stdin_file, "rb")
     try:
         process = subprocess.Popen(
             launch.argv,
             cwd=str(worktree),
             env=env,
-            stdin=subprocess.DEVNULL,
+            stdin=stdin,
             stdout=open(log_dir / _STDOUT, "wb"),
             stderr=open(log_dir / _STDERR, "wb"),
             start_new_session=True,
@@ -148,6 +155,9 @@ def spawn(launch: Launch, worktree: Path, branch: str, log_dir: Path) -> Child:
         raise LaunchFailed(
             f"adapter {launch.adapter!r}: could not start {launch.argv[0]!r}: {exc}"
         ) from exc
+    finally:
+        if stdin is not subprocess.DEVNULL:
+            stdin.close()  # the child holds its own dup
 
     return Child(
         adapter=launch.adapter,

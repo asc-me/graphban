@@ -31,7 +31,9 @@ BRANCH_PREFIX = "gb/"
 #: seat ends up. Every other vendor takes a path to a private temp file outside the
 #: tree. Adapters extend this list (GRPH-449); it is declared here because salvage
 #: must know it before any adapter exists.
-SEAT_FILES: tuple[str, ...] = (".cursor/mcp.json", ".gbfleet-instruction")
+SEAT_FILES: tuple[str, ...] = (
+    ".cursor/mcp.json", ".grok/mcp.json", ".gbfleet-instruction",
+)
 
 #: `.gbfleet-instruction` is in that tuple for the same reason as the Cursor config and
 #: it is easier to miss: it carries the enrolment CODE, because the code is an argument

@@ -31,6 +31,7 @@ from typing import Callable, Iterable, Sequence
 from . import worktree as wt_mod
 from .client import Graphban, ServerUnreachable
 from .lock import Acquired, hold
+from . import seat as seat_mod
 from .seat import Seat, instruction_for
 from .spawn import Child, Launch, LaunchFailed, Reason, await_registration, spawn, stop
 from .worktree import Reaped, Worktree
@@ -266,6 +267,16 @@ def _wait_out(
 
 
 def _reap_all(wave: Wave, children: list[Child]) -> None:
+    """Reap each worktree, then take away any seat that was never inside one.
+
+    `worktree.reap` removes the seat files it knows about — the ones a vendor forced
+    into the project directory. Claude Code takes `--mcp-config`, so its seat lives in a
+    private temp file OUTSIDE the tree, and reaping the worktree does not touch it.
+
+    Walk step 8 says the child's seat file is gone after reap, with no exception for the
+    vendors that were tidy about where it went. Without this, the vendor that handled
+    credentials BEST is the one that leaves one behind.
+    """
     for child in children:
         wave.reaped.append(
             wt_mod.reap(
@@ -273,6 +284,16 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
                 message=f"WIP: salvaged by gbfleet ({child.adapter})",
             )
         )
+        if not _inside(child.seat_path, child.worktree):
+            seat_mod.remove(child.seat_path)
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def _repo_of(child: Child) -> Path:
