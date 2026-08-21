@@ -118,6 +118,110 @@ def test_cross_org_reads_blocked(client, tenants):
         assert _blocked(r.status_code), f"{method} {path} leaked: {r.status_code} {r.text[:200]}"
 
 
+# ---- every project-scoped read, enumerated from the app ------------------------
+#
+# The list above is hand-written, and that is the whole problem with it: it named 11 of the
+# 36 GET routes this app serves that take a `project_id`. `/api/fleet/presence` and
+# `/api/projects/{id}/counts` were both absent, so `require_readable` could be deleted from
+# either one with this entire file green (GRPH-436, measured 2026-08-21). A route that joins
+# the app but not the list is protected by nobody noticing.
+#
+# So the routes come from the app itself. The hand-written list stays: it pins exact query
+# shapes and covers `POST /api/memory/search`, which is a read wearing a POST and is not
+# reachable by enumerating GETs. The two are not redundant — one asserts specific requests
+# keep working, the other asserts nothing was left out.
+
+# WRITES ARE NOT ENUMERATED HERE, and the reason is a measurement rather than a shrug.
+# 14 write routes take a `project_id` as a query or path parameter; 23 more carry it in the
+# REQUEST BODY (`POST /api/items`, `POST /api/api-keys`, and most of the agent surface).
+# Enumerating parameters alone would therefore cover 14 of 37 while reading exactly like a
+# complete sweep — the same absence-reads-as-clean shape this block exists to close, rebuilt
+# one level up. Probing the other 23 needs a valid body per schema, which is real work and is
+# not being smuggled in under a test file. `test_cross_org_writes_blocked` remains a hand
+# list, and remains incomplete, and now says so.
+
+# Routes whose `project_id` is not the only thing they need. A 422 is neither blocked nor
+# leaked, so it must never count as a pass: an unprobeable route is not a safe route.
+PROBE_PARAMS = {
+    "/api/agent/code/for": {"ref_id": "x"},
+    "/api/agent/code/neighbors": {"path": "a/b.py"},
+    "/api/public/duplicates": {"q": "hello"},
+}
+
+# Deliberately EMPTY, and that is a finding rather than an oversight: every one of the 36
+# blocks a cross-org caller today, `/api/public/*` included — those are scoped by what a
+# project has published, not by being unauthenticated. If a route ever needs to be here it
+# needs a reason here too, so the exemption is a reviewable act and not a hole.
+CROSS_TENANT_EXEMPT: dict[str, str] = {}
+
+
+def _project_scoped_gets(client) -> dict[str, list[str]]:
+    """Every GET the app serves that takes a `project_id`, from its OpenAPI schema.
+
+    Asked of the SCHEMA, not of `app.routes`. On this FastAPI version the routers mount as
+    `_IncludedRouter` objects, so walking `app.routes` finds four routes and reports a clean
+    sweep of nothing — which is how the first version of this passed while testing zero
+    endpoints.
+    """
+    found = {}
+    for path, ops in client.app.openapi()["paths"].items():
+        op = ops.get("get")
+        if not op:
+            continue
+        params = {p["name"]: p for p in op.get("parameters", [])}
+        if "project_id" not in params:
+            continue
+        found[path] = sorted(n for n, p in params.items()
+                             if p.get("required") and n != "project_id")
+    return found
+
+
+def test_the_enumeration_finds_the_routes_it_claims_to(client):
+    """The control. Every assertion below is a loop over this set, so an enumerator that
+    silently returns nothing would turn the whole check into a pass. Pinned by count and by
+    naming the two routes whose absence from the hand-written list started this."""
+    found = _project_scoped_gets(client)
+
+    assert len(found) >= 30, f"only {len(found)} project-scoped GETs found — enumeration broke"
+    assert "/api/fleet/presence" in found
+    assert "/api/projects/{project_id}/counts" in found
+
+
+def test_every_project_scoped_read_blocks_another_org(client, tenants):
+    """The point of the file, asked of every route rather than of a remembered list."""
+    alex, pb = tenants["alex"], tenants["p_b"]
+    leaked, unprobeable = [], []
+
+    for path, needs in sorted(_project_scoped_gets(client).items()):
+        if path in CROSS_TENANT_EXEMPT:
+            continue
+        query = {"project_id": pb} if "{project_id}" not in path else {}
+        query.update(PROBE_PARAMS.get(path, {}))
+        url = path.replace("{project_id}", pb)
+        if query:
+            url += "?" + "&".join(f"{k}={v}" for k, v in query.items())
+
+        r = client.get(url, headers=alex)
+        if r.status_code == 422:
+            unprobeable.append(f"{path} (needs {needs})")
+        elif not _blocked(r.status_code):
+            leaked.append(f"{path} -> {r.status_code} {r.text[:120]}")
+
+    assert not leaked, f"cross-org reads that did not block: {leaked}"
+    # A 422 is not a pass. The route needs an entry in PROBE_PARAMS so it can actually be
+    # asked the question — otherwise it sits here looking covered while never being called.
+    assert not unprobeable, (
+        f"these could not be probed, so they are untested: {unprobeable}. "
+        "Add the required params to PROBE_PARAMS.")
+
+
+def test_an_exemption_must_carry_a_reason(client):
+    """An exemption map that fills up with bare entries is the hand-written list again."""
+    for path, reason in CROSS_TENANT_EXEMPT.items():
+        assert path in _project_scoped_gets(client), f"{path} is exempt from nothing"
+        assert len(reason) > 20, f"{path} is exempt without a reason"
+
+
 # ---- REST reads by resource id (deeper than project_id) ------------------------
 def test_cross_org_resource_ids_blocked(client, tenants):
     a = tenants["alex"]
