@@ -90,11 +90,21 @@ def test_the_entry_point_is_wired_and_reports_that_version():
 
 def test_a_bare_invocation_says_what_is_wrong_rather_than_only_failing():
     """Exit 2 with a bare usage string reads identically to subcommands failing to
-    register. It has to name which of the two happened."""
+    register. It has to name which of the two happened, and point somewhere."""
     script = _console_script("gbfleet")
     result = subprocess.run([str(script)], capture_output=True, text=True, timeout=30)
     assert result.returncode == 2
-    assert "no commands are available" in result.stderr
+    assert "no command given" in result.stderr
+    assert "--help" in result.stderr
+
+
+def test_the_commands_that_exist_are_registered():
+    """The other half of the same failure: subcommands that silently fail to register
+    leave a CLI whose only symptom is a usage string with nothing in it."""
+    script = _console_script("gbfleet")
+    result = subprocess.run([str(script), "--help"], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0
+    assert "up" in result.stdout
 
 
 # --- the size of what it installs -------------------------------------------------

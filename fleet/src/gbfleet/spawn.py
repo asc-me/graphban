@@ -53,6 +53,12 @@ class Reason(str, Enum):
     SCALED_DOWN = "scaled_down"  # --max-workers lowered
     SHUTDOWN = "shutdown"  # the supervisor is going away
     NEVER_REGISTERED = "never_registered"  # the bounded window above
+    #: PRD-22 §7 authorises a max wall-clock per child as one of the three things the
+    #: supervisor "enforces because it can measure them" — and D-d's list of kill cases
+    #: does not include it. The two sections disagree. Following §7, because the whole
+    #: point it argues is that a limit people rely on which silently does not bind is
+    #: worse than no limit at all, and a wall-clock cap that never fires is exactly that.
+    WALL_CLOCK = "wall_clock"
 
 
 class LaunchFailed(RuntimeError):
