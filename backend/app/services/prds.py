@@ -2798,7 +2798,13 @@ def coverage(db: Session, prd: Prd) -> dict:
     done = sum(1 for it in items if it.status == "done")
     buildable = [p for p in per if p["implementable"]]
     return {
-        "prd_id": prd.id, "title": prd.title, "status": prd.status,
+        # The RENDERED key, like every sibling return in this module. `prd.id` is frozen at
+        # issue time, so a retagged project reports itself under a tag it no longer holds:
+        # `AL-P14` and `AL-P15` still surface that way, and `PRD-1`..`PRD-13` carry no project
+        # marker at all. The identical fix was already applied to `item_ids` six lines below,
+        # with the reason spelled out, and these two fields in the same dict were missed.
+        # Safe to round-trip: `keys.resolve_prd` accepts a rendered key and a frozen id.
+        "prd_id": prd.key, "title": prd.title, "status": prd.status,
         "sections": per,
         # `section_count` stays the total for continuity; coverage is measured against
         # the buildable subset so prose can't drag the ratio down.
@@ -2895,7 +2901,7 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
             # material that frames it.
             described = (
                 f"{body}\n\n---\n\n"
-                f"## Context from {prd.id} — {prd.title}\n\n"
+                f"## Context from {prd.key} — {prd.title}\n\n"
                 f"Carried with the task on purpose: an item that has to fetch its parent "
                 f"to be actionable is the gap this fills. Framing sections only — the "
                 f"other implementable sections are their own items.\n\n{context}"
@@ -2920,4 +2926,8 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 reporter={"name": "Spec", "handle": "prd", "avatar": "#c9b8ff"},
             )
             created.append(item.id)
-    return {"prd_id": prd.id, "proposals": proposals, "created": created}
+    # Rendered, as in `coverage` above. NOT the same as the `prd_id=prd.id` written onto each
+    # created item further up: that column holds the frozen id deliberately (GRPH-319), because
+    # a stored rendering would rot the moment the project is retagged. Displayed keys render;
+    # stored ids freeze — and this dict is read, not stored.
+    return {"prd_id": prd.key, "proposals": proposals, "created": created}
