@@ -61,7 +61,7 @@ def age_state(shard: MemoryShard, *, now: datetime | None = None) -> str:
 
 def list_shards(
     db: Session, project_id: str | None = None, status: str | None = None,
-    include_expired: bool = False,
+    include_expired: bool = False, limit: int | None = None,
 ) -> list[MemoryShard]:
     """`include_expired` exists for the review UI and for tests, so an expired candidate is
     still REACHABLE — PRD-16 asks that it stop appearing in retrieval "without being
@@ -78,9 +78,13 @@ def list_shards(
         stmt = stmt.where(MemoryShard.status == status)
     stmt = stmt.order_by(MemoryShard.created_at.desc())
     rows = list(db.scalars(stmt).all())
-    if include_expired:
-        return rows
-    return [r for r in rows if age_state(r) != "expired"]
+    if not include_expired:
+        rows = [r for r in rows if age_state(r) != "expired"]
+    # Applied AFTER the expiry filter, deliberately. `LIMIT` in SQL would cap the rows read and
+    # then drop expired ones from that page, so a caller asking for 50 could receive 30 and read
+    # it as "that is all there is" — the shape where an absence looks like a clean result. This
+    # way `limit` means "this many live shards", which is what the caller asked for.
+    return rows[:limit] if limit else rows
 
 
 def add_memory(

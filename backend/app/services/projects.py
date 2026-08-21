@@ -8,11 +8,19 @@ from __future__ import annotations
 
 import re
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import tagging
-from app.models import LegacyEntityKey, Membership, Project, ProjectTagHistory, utcnow
+from app.models import (
+    Item,
+    LegacyEntityKey,
+    Membership,
+    Project,
+    ProjectTagHistory,
+    Request,
+    utcnow,
+)
 
 
 def unique_slug(db: Session, name: str) -> str:
@@ -195,3 +203,55 @@ def retag_project(db: Session, project_id: str, new_tag: str) -> Project:
     db.commit()
     db.refresh(project)
     return project
+
+
+# What the app shell renders as badge numbers. The nav wanted four integers and was fetching
+# four full collections to call `.length` on them (GRPH-431): 765 KB of items, 740 KB of memory
+# shards and 621 KB of candidates on EVERY route, to draw three badges and a stat. The page
+# whose data is 2.8 KB was moving 2.1 MB, and nginx logged three "upstream response is buffered
+# to a temporary file" warnings serving one view of it.
+#
+# TWO STRATEGIES HERE ON PURPOSE, and the split is the interesting part.
+#
+# `items` and `requests` are counted in SQL, because `items.list_items` and
+# `requests.list_requests` are pure `select` — no Python-side filtering — so `count(*)` over the
+# same predicate is provably the same number.
+#
+# `review` is NOT counted in SQL. `memory.list_shards` drops expired candidates in Python
+# (`age_state`) and may fold in global shards depending on the project, so a hand-written
+# `count(*)` would be a SECOND definition of the review queue and would quietly disagree with
+# the list it labels. A badge that says 4 above a list of 7 is worse than a slow badge. So the
+# service is reused and its result counted: same rows loaded server-side as before, but they
+# stop crossing the wire, which is the cost that was actually being paid.
+#
+# Making `review` a SQL count later is a real optimization, and its precondition is stated so
+# nobody does it by eye: move the expiry rule and the global-shard inclusion into the query
+# first, and keep `test_counts_match_the_collections_they_replace` as the pin.
+def shell_counts(db: Session, project_id: str | None) -> dict:
+    """The integers the shell draws, without the collections it used to draw them from."""
+    from app.services import memory as mem_svc
+
+    if not project_id:
+        # No project resolved means no scope. Zeroes, not the whole instance — asking bare
+        # is how a nav badge ends up counting every project on the box.
+        return {"items": 0, "items_in_progress": 0, "requests": 0, "review": 0}
+
+    def _count(model, **where) -> int:
+        stmt = select(func.count()).select_from(model).where(model.project_id == project_id)
+        for col, val in where.items():
+            stmt = stmt.where(getattr(model, col) == val)
+        return db.scalar(stmt) or 0
+
+    # The reviewer's real backlog is candidates PLUS anything auto-published without them
+    # (AL-287) — counting only candidates reads as "no work" on a project whose agents publish
+    # directly, which is exactly when there is most to look at. Mirrors the nav's own filter.
+    candidates = mem_svc.list_shards(db, project_id=project_id, status="candidate")
+    auto = mem_svc.auto_triaged_shards(db, project_id=project_id)
+    review = len(candidates) + sum(1 for s in auto if s.scoring_source in ("trusted", "agent"))
+
+    return {
+        "items": _count(Item),
+        "items_in_progress": _count(Item, status="in_progress"),
+        "requests": _count(Request),
+        "review": review,
+    }

@@ -13,6 +13,7 @@ export const keys = {
   invites: (id: string) => ["org-invites", id] as const,
   billing: (id: string) => ["org-billing", id] as const,
   items: ["items"] as const,
+  counts: (projectId?: string) => ["counts", projectId] as const,
   shards: ["shards"] as const,
   requests: ["requests"] as const,
   apiKeys: ["api-keys"] as const,
@@ -434,8 +435,28 @@ export function useReorderItems() {
   });
 }
 
-export function useShards(projectId?: string) {
-  return useQuery({ queryKey: [...keys.shards, projectId], queryFn: () => api.shards(projectId), enabled: !!projectId });
+export function useShards(projectId?: string, limit?: number) {
+  return useQuery({
+    queryKey: [...keys.shards, projectId, limit ?? null],
+    queryFn: () => api.shards(projectId, limit),
+    enabled: !!projectId,
+  });
+}
+
+/**
+ * The shell's badge numbers, in one small request.
+ *
+ * The nav and the project bar previously called `useItems`, `useRequests`,
+ * `useCandidateShards` and `useShards` purely to read `.length` off them, so every route paid
+ * for the whole project: 765 KB of items, 740 KB of shards, 621 KB of candidates (GRPH-431).
+ * Anything that needs the rows themselves still fetches them — this is only for counting.
+ */
+export function useCounts(projectId?: string) {
+  return useQuery({
+    queryKey: keys.counts(projectId),
+    queryFn: () => api.counts(projectId!),
+    enabled: !!projectId,
+  });
 }
 
 export function useAddShard(projectId: string) {

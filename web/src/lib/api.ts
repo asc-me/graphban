@@ -1,5 +1,5 @@
 import type {
-  OrgOverview, FleetOverview, FleetPresence } from "@/lib/types";
+  OrgOverview, FleetOverview, FleetPresence, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -387,6 +387,9 @@ export const api = {
 
   items: (projectId?: string) =>
     request<Item[]>(`/items${projectId ? `?project_id=${projectId}` : ""}`),
+  // The shell's badge numbers. It used to fetch four whole collections to call `.length` on
+  // them — 2.1 MB on every route to draw three badges and a stat (GRPH-431).
+  counts: (projectId: string) => request<ShellCounts>(`/projects/${projectId}/counts`),
   createItem: (projectId: string, body: Partial<Item>) =>
     request<Item>("/items", {
       method: "POST",
@@ -400,8 +403,12 @@ export const api = {
       body: JSON.stringify({ ordered_ids: orderedIds }),
     }),
 
-  shards: (projectId?: string) =>
-    request<Shard[]>(`/memory/shards${projectId ? `?project_id=${projectId}` : ""}`),
+  shards: (projectId?: string, limit?: number) =>
+    request<Shard[]>(
+      `/memory/shards${projectId ? `?project_id=${projectId}` : ""}${
+        projectId && limit ? `&limit=${limit}` : ""
+      }`,
+    ),
   addShard: (projectId: string, body: { text: string; scope?: string; item_id?: string | null }) =>
     request<Shard>("/memory/shards", {
       method: "POST",

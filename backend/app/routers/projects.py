@@ -131,6 +131,15 @@ def retag(
     return project
 
 
+@router.get("/{project_id}/counts")
+def project_counts(project_id: str, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """The badge numbers the app shell renders — a few integers instead of the four full
+    collections it used to fetch on every route (GRPH-431)."""
+    authz.require_readable(db, user.id, project_id)
+    return projects_svc.shell_counts(db, project_id)
+
+
 @router.get("/{project_id}/members", response_model=list[MemberOut])
 def list_members(project_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     authz.require_readable(db, user.id, project_id)

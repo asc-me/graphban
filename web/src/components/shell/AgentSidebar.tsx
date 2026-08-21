@@ -8,6 +8,8 @@ import { cn } from "@/lib/cn";
 import { useAddShard, useShards } from "@/lib/queries";
 import type { ShardHit } from "@/lib/types";
 
+const SHARD_PAGE = 50;
+
 export function AgentSidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   if (!open) return null;
   return (
@@ -46,7 +48,10 @@ export function AgentSidebar({ open, onClose }: { open: boolean; onClose: () => 
 
 function MemoryPanel() {
   const { activeId } = useProjectCtx();
-  const { data: shards = [] } = useShards(activeId);
+  // A page, not the corpus. This panel renders a scrolling list and has its own search, and
+  // it mounts OPEN by default (AppFrame) — so it was pulling every shard in the project on
+  // every page load, 740 KB of it (GRPH-431). Search reaches everything the page does not.
+  const { data: shards = [] } = useShards(activeId, SHARD_PAGE);
   const addShard = useAddShard(activeId);
   const [query, setQuery] = React.useState("");
   const [hits, setHits] = React.useState<ShardHit[] | null>(null);
