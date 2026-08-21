@@ -74,9 +74,22 @@ def link_request(db: Session, request_id: str, item_id: str | None) -> Request |
     if req is None:
         return None
     if item_id:
-        if db.get(Item, keys.resolve_item(db, item_id) or item_id) is None:
+        # RESOLVE BEFORE STORING, not merely to check existence. `items.id` is frozen at issue
+        # time while the key a human sees is rendered from the project's current tag, so the
+        # two diverge the moment a project is retagged — and `requests.linked_to` carries a
+        # foreign key to `items(id)`. Storing the caller's spelling put `GRPH-141` in a column
+        # whose rows are keyed `AL-141`, so every link made through the UI died on
+        # `requests_linked_to_fkey` (GRPH-459). `ItemOut.id` is aliased from `key`, so the
+        # rendered key is exactly what the client has to send.
+        #
+        # Same rule `_stored_prd_id` follows for `Item.prd_id` (GRPH-319); this writer was
+        # missed when that class was closed. Unlike that one, there is no degrade-as-given
+        # path here: the foreign key means an unresolvable value cannot be stored at all, and
+        # the check below has already rejected it.
+        resolved = keys.resolve_item(db, item_id) or item_id
+        if db.get(Item, resolved) is None:
             raise ValueError(f"item not found: {item_id}")
-        req.linked_to = item_id
+        req.linked_to = resolved
         req.status = "linked"
     else:
         req.linked_to = None
