@@ -2,7 +2,7 @@
 
 Graphban is an agent-native dev tool: linear tracker + pgvector agent memory +
 request triage + a code-structure graph, all operable by coding agents through
-36 MCP tools (`POST /api/mcp`, JSON-RPC) that share one service layer with the
+53 MCP tools (`POST /api/mcp`, JSON-RPC) that share one service layer with the
 REST API and web UI. Local-Docker-first; stays fully offline by default (stub
 embeddings/chat — real providers are opt-in env config).
 
@@ -51,7 +51,7 @@ output. Deploy, then read what it actually says about a real PRD.
   functions in `backend/app/services/`. Never duplicate domain logic in a router
   or tool handler.
 - **Schema is owned by Alembic** on Postgres (`backend/alembic/versions/`,
-  currently 0001–0082). SQLite/tests use `create_all`. Never edit an applied
+  currently 0001–0083). SQLite/tests use `create_all`. Never edit an applied
   migration; add a new one.
 - **AI providers only via `backend/app/providers/`** (`Embedder`/`ChatModel`/
   `Extractor` protocols, selected by `EMBED_PROVIDER`/`CHAT_PROVIDER`). Offline

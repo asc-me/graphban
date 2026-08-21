@@ -2232,12 +2232,18 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             via="agent", actor=f"agent:{key.name or key.id}",
         )
         done = prd_svc.classify_grill(db, prd)
+        # Told HERE, at the moment the gap opens, rather than left for somebody to discover
+        # downstream (GRPH-430). An answer is recorded against a body that does not yet say
+        # it, and the agent that just relayed it is the one positioned to fix that.
+        absorption = prd_svc.grill_absorption(db, prd.id)
         return {
             "prd_id": prd.key,
             "complete": done["complete"],
             "outstanding": done["outstanding"],
             "deferred": done["deferred"],
             "answers": done["answers"],
+            "body_absorbed": absorption["absorbed"],
+            "answers_body_has_not_absorbed": absorption["answers_behind"],
         }
     if name == "grill_prd":
         prd = prd_svc.get_prd(db, args["prd_id"])
