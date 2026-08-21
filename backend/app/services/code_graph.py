@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.embeddings import cosine_similarity, get_embedder, safe_embed
 from app.errors import NotFound
+from app import hashing
 from app.models import CodeEdge, CodeNode, CodeRef, Item, Request
 from app.services import items as items_svc
 from app.services.clustering import _match
@@ -169,6 +170,7 @@ def upsert_node(
     summary: str = "",
     content_hash: str = "",
     fresh: bool = True,
+    retained_unspecified: list | None = None,
 ) -> CodeNode:
     """Create or update the node at (project_id, path). Re-embeds only when the embed
     input actually changed, so an unchanged re-describe is cheap."""
@@ -210,7 +212,21 @@ def upsert_node(
         node.name = name
         node.lang = lang or node.lang
         node.summary = summary
-        node.content_hash = content_hash or node.content_hash
+        # A hash whose rule is unknown never overwrites one whose rule is known
+        # (GRPH-406). `upsert` used to take whatever arrived, so an agent that had not
+        # adopted the spec destroyed the provenance an agent that had just established —
+        # and `code_sync.compute_diff` then re-pushed every path it touched, which is the
+        # churn this exists to stop. PRD-17 made several agents describing one project the
+        # normal case, so that collision is the common one rather than a corner.
+        #
+        # Monotone on purpose: provenance can improve and never degrade. The server cannot
+        # compute the hash — it never sees the file — so retaining the better of the two is
+        # the whole of what it CAN do, and it needs no migration and breaks no caller.
+        if content_hash and hashing.comparable(node.content_hash) and not hashing.comparable(content_hash):
+            if retained_unspecified is not None:
+                retained_unspecified.append(path)
+        else:
+            node.content_hash = content_hash or node.content_hash
         node.fresh = fresh
         if new_embed_input != old_embed_input:
             node.embedding = safe_embed(new_embed_input)
@@ -285,6 +301,7 @@ def describe_code(
 
     n_up = 0
     corrected: list[dict] = []
+    retained: list[str] = []
     for n in nodes:
         path = str(n.get("path", "")).strip()
         if not path:
@@ -299,6 +316,7 @@ def describe_code(
             lang=str(n.get("lang", "")),
             summary=str(n.get("summary", "")),
             content_hash=str(n.get("content_hash", "")),
+            retained_unspecified=retained,
         )
         # Reported, not silent (GRPH-382). Coercing without saying so is how the live graph
         # became 97% one value with nobody noticing; a caller that learns it mislabelled can
@@ -347,6 +365,13 @@ def describe_code(
         # something other than what you asked for, and here is which" — the signal the old
         # silent coercion never gave.
         "kind_corrections": sorted(corrected, key=lambda c: c["path"]),
+        # Paths where a hash of unknown rule was NOT stored, because the one already there
+        # had a known one (GRPH-406). Same contract as `kind_corrections`: empty means every
+        # hash was accepted as sent; non-empty means "these were kept as they were, and here
+        # is which" — the signal a silent retain would never give. An agent that learns its
+        # hashes are being refused can adopt `sha256:<hex>` of rstripped contents; one that
+        # is never told cannot.
+        "hash_retained": sorted(set(retained)),
     }
 
 

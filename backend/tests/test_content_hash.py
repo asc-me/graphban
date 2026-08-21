@@ -43,32 +43,90 @@ def test_there_is_one_rule_and_not_two():
     assert hashing.content_hash(SOURCE) == f"sha256:{artifact_inventory.content_hash(SOURCE)}"
 
 
-def test_two_independent_producers_following_the_spec_agree():
-    """The whole point. Both compute from the same bytes by the stated rule and land on the
-    same value, so a second agent re-describing an unchanged file changes nothing."""
-    agent_a = hashing.content_hash(SOURCE)
-    agent_b = hashing.content_hash("".join(SOURCE))  # same bytes, different construction
-    assert agent_a == agent_b
+def test_a_second_agent_re_describing_an_unchanged_file_causes_no_re_push(client):
+    """The acceptance criterion, with the two sides coming from DIFFERENT producers.
 
-    changed, removed = compute_diff({"app/f.py": agent_b}, {"app/f.py": agent_a})
-    assert changed == [] and removed == []
+    The first version of this test had both sides call `hashing.content_hash`. Two calls to
+    one function agreeing cannot fail against code where that function did not exist — it
+    asserted that sha256 is deterministic and nothing about the rule. Bounced, correctly.
 
+    Here agent A describes with the spec and agent B re-describes the same unchanged file
+    with a raw digest, which is what an agent that has not adopted the rule actually sends.
+    B's hash no longer overwrites A's, so `compute_diff` — the consumer this item names as
+    where the churn is paid — reports nothing changed.
 
-def test_a_producer_that_does_not_follow_the_spec_re_pushes_everything():
-    """The cost being paid today, made visible.
-
-    Before the rule existed this was the *normal* case, because nothing said what to
-    compute. A plausible variant — hashing without the trailing-whitespace normalisation —
-    disagrees on a file that did not change, and every path it touched re-pushes.
+    **Fails against pre-GRPH-406 code**, where `upsert_node` took whatever arrived.
     """
     import hashlib
 
-    spec = hashing.content_hash(SOURCE)
-    plausible_variant = "sha256:" + hashlib.sha256(SOURCE.encode()).hexdigest()  # no rstrip
-    assert plausible_variant != spec
+    from app.db import SessionLocal
+    from app.services import code_graph
 
-    changed, _ = compute_diff({"app/f.py": plausible_variant}, {"app/f.py": spec})
-    assert changed == ["app/f.py"], "an unchanged file reads as changed"
+    spec = hashing.content_hash(SOURCE)
+    raw = hashlib.sha256(SOURCE.encode()).hexdigest()  # no prefix, no rstrip: a real variant
+    assert raw != spec and not hashing.comparable(raw)
+
+    db = SessionLocal()
+    try:
+        a = code_graph.describe_code(db, project_id="core", nodes=[
+            {"path": "app/f.py", "kind": "file", "summary": "f", "content_hash": spec}], edges=[])
+        db.commit()
+        assert a["hash_retained"] == [], "the spec-compliant hash must be stored as sent"
+        pushed = {"app/f.py": spec}
+
+        b = code_graph.describe_code(db, project_id="core", nodes=[
+            {"path": "app/f.py", "kind": "file", "summary": "f", "content_hash": raw}], edges=[])
+        db.commit()
+        assert b["hash_retained"] == ["app/f.py"], "the retain must be REPORTED, not silent"
+
+        node = next(n for n in code_graph.list_nodes(db, "core") if n.path == "app/f.py")
+        assert node.content_hash == spec, "provenance must not degrade"
+
+        changed, removed = compute_diff({"app/f.py": node.content_hash}, pushed)
+        assert changed == [] and removed == [], "an unchanged file must not re-push"
+    finally:
+        db.close()
+
+
+def test_a_known_hash_is_still_replaced_by_another_known_one(client):
+    """The retain is scoped to provenance, not to change. A spec-compliant hash for genuinely
+    different contents must still land, or the graph would freeze the first value it saw."""
+    from app.db import SessionLocal
+    from app.services import code_graph
+
+    first = hashing.content_hash(SOURCE)
+    second = hashing.content_hash(SOURCE.replace("1", "2"))
+
+    db = SessionLocal()
+    try:
+        for h in (first, second):
+            code_graph.describe_code(db, project_id="core", nodes=[
+                {"path": "app/g.py", "kind": "file", "summary": "g", "content_hash": h}], edges=[])
+            db.commit()
+        node = next(n for n in code_graph.list_nodes(db, "core") if n.path == "app/g.py")
+        assert node.content_hash == second
+    finally:
+        db.close()
+
+
+def test_an_unspecified_hash_still_lands_where_there_is_nothing_better(client):
+    """Monotone, not restrictive. An agent that has not adopted the rule is not blocked from
+    describing — 498 of the live graph's nodes carry a bare hash today, and refusing them
+    would make a re-describe fail against the real graph rather than improve it."""
+    from app.db import SessionLocal
+    from app.services import code_graph
+
+    db = SessionLocal()
+    try:
+        r = code_graph.describe_code(db, project_id="core", nodes=[
+            {"path": "app/h.py", "kind": "file", "summary": "h", "content_hash": "h-legacy"}],
+            edges=[])
+        db.commit()
+        assert r["hash_retained"] == []
+        node = next(n for n in code_graph.list_nodes(db, "core") if n.path == "app/h.py")
+        assert node.content_hash == "h-legacy"
+    finally:
+        db.close()
 
 
 def test_a_legacy_hash_is_refused_for_cross_producer_comparison():
@@ -87,11 +145,10 @@ def test_a_legacy_hash_is_refused_for_cross_producer_comparison():
     assert hashing.comparable(None) is False
     assert hashing.comparable("") is False
 
-    assert hashing.same_content(specified, specified) is True
-    assert hashing.same_content(legacy, legacy) is False, (
-        "two equal legacy digests are not proof; they are two unknowns that match"
-    )
-    assert hashing.same_content(legacy, specified) is False
+    # `same_content` was removed with this rework. It existed for a cross-repo duplication
+    # check that has not been built, and nothing outside its own test ever called it — the
+    # same dead-code standard this repo applied to the `total <= 0` guard. It comes back
+    # with the feature that needs it, where a test can exercise it for real.
 
 
 def test_a_legacy_hash_still_works_for_same_project_staleness():
