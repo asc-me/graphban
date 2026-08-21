@@ -362,3 +362,56 @@ def test_the_partition_a_planner_reads_shows_abandoned_work_too(client, key, db)
     out = _ok(client, key, "collision_clusters", {})
 
     assert any(held.key in c["items"] for c in out["clusters"])
+
+
+# ---- the guess travels with the hold (GRPH-387) ---------------------------------
+
+
+def test_claiming_a_predicted_cluster_records_the_guess_on_the_reservation(client, key, db):
+    """The contract is that `predicted` carries `cluster['predicted']` from the divvy —
+    not merely that the payload has the key.
+
+    An item with **no touchpoints** has its areas inferred from the code map by
+    `collision.predict_touch_areas`, so its cluster is a guess. The hold is real either way
+    and the fleet honours it; what differs is what the graph is entitled to draw, and a
+    guess drawn as a solid claim asserts a confidence nobody has.
+
+    Persisted at claim time rather than re-derived at read time: the divvy partitions the
+    READY pool, and a claimed item has left it — so asking later would answer about a
+    different cluster than the one actually held. That is the same reasoning reservations
+    exist for at all.
+    """
+    # Prediction has two sources: semantic nearness to described code, and the touchpoints
+    # of LINKED items. The link path is used here because it does not depend on embeddings,
+    # which are stubbed in tests — routing through the semantic path made this test SKIP,
+    # and a skipped test asserting a contract is worse than none.
+    declared = _item(client, key, "declares an area", ["backend/app/services/items.py"])
+    guess = _item(client, key, "declares nothing", [])
+    _ok(client, key, "link_items",
+        {"a": guess["id"], "b": declared["id"], "type": "dependency",
+         "reason": "same surface", "confidence": 0.9})
+    _ok(client, key, "update_item", {"id": declared["id"], "status": "done"})
+
+    w = _worker(client, key, "guesser")
+    got = _ok(client, key, "claim_cluster", {"agent_id": w["agent_id"]})
+
+    assert got["claimed"] and got["areas"], "the linked item's areas must be predictable"
+    assert got["predicted"] is True, "an item with no touchpoints yields a predicted cluster"
+    rows = db.query(AreaReservation).filter_by(agent_id=w["agent_id"]).all()
+    assert rows, "claim_cluster must reserve what it handed out"
+    assert all(r.predicted for r in rows), (
+        "the guess must be recorded ON the hold — reading it back is what lets presence "
+        "report it, and it was hardcoded False before this"
+    )
+
+
+def test_a_declared_cluster_is_not_marked_a_guess(client, key, db):
+    """The other half. If everything came back `predicted` the channel would be as useless
+    as when everything came back `False`."""
+    _item(client, key, "declares its areas", ["backend/app/services/items.py"])
+    w = _worker(client, key, "declarer")
+
+    got = _ok(client, key, "claim_cluster", {"agent_id": w["agent_id"]})
+    assert got["claimed"] and got["predicted"] is False
+    rows = db.query(AreaReservation).filter_by(agent_id=w["agent_id"]).all()
+    assert rows and not any(r.predicted for r in rows)
