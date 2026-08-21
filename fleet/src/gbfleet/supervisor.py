@@ -94,6 +94,57 @@ class AllocationRead:
 
 
 @dataclass
+class Partition:
+    """What the supervisor knows about being cut off, and what it may promise.
+
+    PRD-22 D-i. The instinct is to keep running offline until claimed work is finished,
+    and it cannot: `sign_off` and `bounce` are server acts, and leases expire
+    server-side because heartbeats cannot land. Worse, the unbounded version puts **two
+    agents on one item** the moment the partition is one-sided — the laptop is offline,
+    the server is fine and re-hands the item — which is the collision that clustering
+    exists to prevent.
+
+    **`ceiling` is the presence TTL the server reported**, remembered from the last
+    successful call, and it is the honest number rather than the one D-i names. D-i says
+    "until a worker's LEASE expires the server will not give its item to anyone else" —
+    but `lease_seconds` is known at *claim*, by the child, and the supervisor never sees
+    it. What the supervisor is given is `presence_ttl_seconds`, on every `fleet_status`,
+    and it is the number that actually decides: past its presence TTL an agent reads
+    offline and its item leases lapse into the queue. That is the moment the claim dies.
+
+    **`ceiling is None` means we never learned it, which is not "unbounded".** Treating
+    an unknown ceiling as no ceiling is the absence-reads-clean defect aimed at the one
+    decision this class exists to make, so it stops the children instead.
+    """
+
+    ceiling: float | None = None
+    #: Monotonic time contact was lost, or None while the server is answering.
+    since: float | None = None
+    longest: float = 0.0
+    reached_ceiling: bool = False
+    #: Items an agent held before the partition and no longer holds after it. Reported
+    #: rather than acted on: re-submitting a transition for work the server has already
+    #: re-handed is exactly the blind replay D-i forbids.
+    reclaimed: dict[str, list[str]] = field(default_factory=dict)
+    #: What each agent held at the last successful read, and a snapshot of that taken
+    #: the moment contact was lost. Two fields rather than one because they answer
+    #: different questions: the first is "what is true now", the second is "what was
+    #: true going in", and comparing the live value against itself — which an earlier
+    #: version did — can only ever report nothing.
+    held: dict[str, list[str]] = field(default_factory=dict)
+    held_at_cutoff: dict[str, list[str]] | None = None
+
+    @property
+    def offline(self) -> bool:
+        return self.since is not None
+
+    def describe(self) -> str:
+        if self.ceiling is None:
+            return "never learned the server's presence TTL, so nothing could be bounded"
+        return f"tolerated up to {self.ceiling:.0f}s (one presence TTL); longest gap {self.longest:.0f}s"
+
+
+@dataclass
 class Wave:
     """What one `up` actually did. Every field is something that happened."""
 
@@ -108,6 +159,7 @@ class Wave:
     #: that reads as "nothing went wrong" when the list is short for a bad reason.
     unused_seats: int = 0
     offline: bool = False
+    partition: Partition = field(default_factory=Partition)
 
     @property
     def ok(self) -> bool:
@@ -118,6 +170,53 @@ class Wave:
 #: version with a per-vendor registry; until then the operator names the command, which
 #: is what "selection is explicit, never inferred" asks for anyway.
 LaunchFactory = Callable[[Seat, Worktree, Path], Launch]
+
+
+def _roster(client: Graphban, partition: Partition) -> dict | None:
+    """Read the roster, remembering what the server said about presence.
+
+    Returns None when the server is unreachable. Every supervisor read of `fleet_status`
+    goes through here so the ceiling and the moment of last contact are recorded
+    wherever the call happens, rather than at one call site somebody remembers.
+    """
+    try:
+        payload = client.fleet_status()
+    except ServerUnreachable:
+        if partition.since is None:
+            partition.since = time.monotonic()
+            # Snapshot on the way IN, because this is the last moment the answer is
+            # knowable. Taken here rather than in the caller so there is one place that
+            # decides what "before the partition" means.
+            partition.held_at_cutoff = dict(partition.held)
+        return None
+
+    ttl = payload.get("presence_ttl_seconds")
+    if isinstance(ttl, (int, float)) and ttl > 0:
+        partition.ceiling = float(ttl)
+
+    holdings = _holdings(payload)
+    if partition.since is not None:
+        partition.longest = max(partition.longest, time.monotonic() - partition.since)
+        partition.since = None
+        for agent, items in (partition.held_at_cutoff or {}).items():
+            lost = [i for i in items if i not in holdings.get(agent, [])]
+            if lost:
+                # Reported, never replayed. Re-submitting a transition for work the
+                # server has already re-handed is exactly the blind replay D-i forbids,
+                # and §4 means the supervisor could not submit one anyway.
+                partition.reclaimed.setdefault(agent, []).extend(lost)
+        partition.held_at_cutoff = None
+
+    partition.held = holdings
+    return payload
+
+
+def _holdings(roster: dict) -> dict[str, list[str]]:
+    return {
+        a["id"]: [h.get("id") for h in (a.get("holdings") or [])]
+        for a in (roster.get("agents") or [])
+        if a.get("id")
+    }
 
 
 def _read_allocation(client: Graphban, wave: Wave) -> AllocationRead | None:
@@ -173,7 +272,7 @@ def up(
         children = list(_start(
             wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client, limits
         ))
-        _wait_out(wave, children, limits, poll=poll, sleep=sleep)
+        _wait_out(wave, children, limits, client, poll=poll, sleep=sleep)
         _reap_all(wave, children)
 
         wave.after = _read_allocation(client, wave)
@@ -218,7 +317,21 @@ def _start(
             child = spawn(launch, tree.path, tree.branch, _logs(workspace, agent_slot))
             started.append(child)
             wave.spawned.append(child)
-            await_registration(child, client.fleet_status, window=limits.registration_window)
+            # Through `_roster`, not straight to the client: this is where the ceiling
+            # is first learned, and routing around it left `partition.ceiling` None for
+            # the whole wave — so the very first missed poll read as "no ceiling known"
+            # and stopped every child. `_roster`'s docstring said every read went
+            # through it; this is what makes that true.
+            #
+            # An empty roster while unreachable means the registration window still
+            # applies, and a partition lasting the whole window is recorded as
+            # never-registered rather than lease-lapsed. Slightly the wrong word for the
+            # right outcome: a child with no identity has no claim either way (D-i).
+            await_registration(
+                child,
+                lambda: _roster(client, wave.partition) or {},
+                window=limits.registration_window,
+            )
         except (LaunchFailed, wt_mod.BranchExists, wt_mod.GitError) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
             if tree is not None and tree.path.exists() and not any(
@@ -260,18 +373,26 @@ def _wait_out(
     wave: Wave,
     children: list[Child],
     limits: Limits,
+    client: Graphban,
     *,
     poll: float,
     sleep: Callable[[float], None],
 ) -> None:
-    """Wait for children to exit on their own, stopping any that run too long.
+    """Wait for children to exit on their own, stopping any that overrun or outlive their claim.
 
     Exiting is the normal end of a worker's life (D-c): it claims with
     `wait_seconds=0`, works what it got, and leaves when there is nothing. The
     supervisor does not tell it to stop being idle — `fleet_idle` is deliberately not a
     kill reason, because two things owning one transition is how they come to disagree.
+
+    The partition handling is D-i, and the ceiling is one presence TTL. A child that
+    cannot reach the server may keep building until its own deadline and not past it:
+    that is not optimism, it is what the lease promises. Past it, the server has given
+    the item to somebody else and a second agent is already working it.
     """
     while any(child.running for child in children):
+        _roster(client, wave.partition)
+
         for child in children:
             if not child.running:
                 continue
@@ -280,8 +401,49 @@ def _wait_out(
                 wave.failures.append(
                     f"{child.adapter} pid {child.pid}: over {limits.child_wall_clock:.0f}s, stopped"
                 )
+
+        _enforce_the_lease(wave, children)
+
         if any(child.running for child in children):
             sleep(poll)
+
+    # One last read, so a partition that ended just as the children did is still
+    # reconciled rather than left as the last thing that happened.
+    _roster(client, wave.partition)
+
+
+def _enforce_the_lease(wave: Wave, children: list[Child]) -> None:
+    """Stop children that have been cut off for longer than one presence TTL.
+
+    **Worktree and branch are left intact.** The work survives; the claim does not —
+    reaping happens afterwards and salvages it onto the child's own branch.
+    """
+    partition = wave.partition
+    if not partition.offline:
+        return
+
+    elapsed = time.monotonic() - (partition.since or 0.0)
+    partition.longest = max(partition.longest, elapsed)
+
+    if partition.ceiling is None:
+        reason = (
+            "server unreachable and its presence TTL was never learned, so no partition "
+            "could be bounded — stopping rather than guessing a ceiling"
+        )
+    elif elapsed >= partition.ceiling:
+        partition.reached_ceiling = True
+        reason = (
+            f"server unreachable for {elapsed:.0f}s, past the {partition.ceiling:.0f}s "
+            "presence TTL — the server has requeued this work and a second agent may "
+            "already hold it"
+        )
+    else:
+        return
+
+    for child in children:
+        if child.running:
+            stop(child, Reason.LEASE_LAPSED)
+            wave.failures.append(f"{child.adapter} pid {child.pid}: {reason}")
 
 
 def _reap_all(wave: Wave, children: list[Child]) -> None:
