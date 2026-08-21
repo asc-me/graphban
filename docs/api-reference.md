@@ -73,11 +73,23 @@ Interactive OpenAPI docs are at **`/docs`**.
 | POST | `/api/agent/code/stream` | JWT (SSE) |
 | GET | `/api/agent/code/map` | JWT |
 | GET | `/api/agent/code/analysis` | JWT — hubs, components, and optionally a path (PRD-20 D8) |
-| GET | `/api/agent/code/health` | JWT — is the graph still true: coverage, stale nodes open work still claims, touchpoints resolving to nothing. Retires nothing; `ever_described` distinguishes "nothing stale" from "nothing described" |
+| GET | `/api/agent/code/health` | **JWT or API key** — is the graph still true: coverage, stale nodes open work still claims, touchpoints resolving to nothing. Retires nothing; `ever_described` distinguishes "nothing stale" from "nothing described" |
 | GET | `/api/agent/code/neighbors` | JWT |
 | GET | `/api/agent/code/for` | JWT — code linked to an item/request (work→code) |
 | POST | `/api/agent/code/link` | JWT — link an item/request to a code path |
 | POST | `/api/agent/code/unlink` | JWT |
+
+`code/health` is the one `/api/agent/*` read an **agent key** may make, and it is not a
+widening (GRPH-405). Every input it computes is already agent-readable — `get_code_map`
+returns each node's `fresh` flag and `get_backlog(fields="full")` returns `touchpoints` — so
+an agent could always join the two and reach these numbers. The gate withheld the
+convenience of the answer and charged two round trips for it, which is the wrong toll on an
+agent deciding whether the graph is worth trusting before a refactor. A key is scoped by
+`key_readable_ids`, so another project's health is a 404.
+
+**`/api/fleet/presence` stays JWT-only and this is not a precedent for it.** Presence names
+which *human* is editing which file, and its inputs are not already agent-readable — that
+pair of facts is what makes health different.
 
 `/api/agent/code` is the code-graph consumer: it grounds the configured ChatModel in the
 code structure the coding agent described via MCP (`search_code` + `code_neighbors`), so the

@@ -46,3 +46,31 @@ def get_agent_key(
     if key is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid api key")
     return key
+
+
+def get_user_or_agent_key(
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> User | ApiKey:
+    """Either credential, for a read that both a human and an agent legitimately make.
+
+    Deliberately narrow. Most routes want one or the other and saying so is the point —
+    a dependency that quietly accepts anything is how a surface widens without anybody
+    deciding to widen it. This exists for `graph_health` (GRPH-405), whose every input an
+    agent key can already read via `get_code_map` and `get_backlog`; the gate there
+    withheld the convenience of the answer, not the answer.
+
+    **`/api/fleet/presence` must not adopt this.** Presence names which HUMAN is editing
+    which file — `user_id`, `user_initials`, `user_color` — and its inputs are NOT already
+    agent-readable. That pair of facts is exactly what makes health different, and it is
+    the whole argument for the gate staying where it is there.
+
+    Tries the JWT first, because a browser session sends `Authorization: Bearer` too and a
+    user who holds both should be resolved as themselves.
+    """
+    if authorization and authorization.lower().startswith("bearer "):
+        candidate = authorization.split(" ", 1)[1]
+        if not is_api_key(candidate):
+            return get_current_user(authorization=authorization, db=db)
+    return get_agent_key(authorization=authorization, x_api_key=x_api_key, db=db)
