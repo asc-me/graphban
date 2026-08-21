@@ -250,12 +250,22 @@ joined by typed **edges** (`imports` / `calls` / `owns` / `tested_by` / `referen
   duplication detection has no other proof-grade signal at all, since the cloud holds
   summaries and structure but never source.
 
-  Hashes written before the rule are **unprefixed and stay valid** for staleness, where a
-  value only has to match itself. They are refused for any comparison across producers:
-  unprefixed, an unknown is indistinguishable from a specified value, and the system would
-  compare incomparable things and be confidently wrong. `app.hashing.same_content` returns
-  False for two *equal* legacy digests for exactly that reason — "probably the same rule"
-  is the guess the prefix exists to prevent.
+  Hashes written before the rule are **unprefixed and stay valid**. Nothing is rejected and
+  no migration runs: 498 of the live graph's nodes carry a bare hash today, and refusing
+  them would make a re-describe fail against the real graph rather than improve it.
+
+  What the rule buys is enforced at the one point the server controls. **A hash whose rule
+  is unknown never overwrites one whose rule is known**, so provenance can improve and never
+  degrade — and `describe_code` reports the paths it kept in `hash_retained`, the same
+  contract `kind_corrections` uses. An agent that learns its hashes are being refused can
+  adopt the rule; one that is never told cannot.
+
+  That is what removes the churn. Two agents describing one project is normal since PRD-17,
+  and before this an agent that had not adopted the spec destroyed the provenance one that
+  had just established — after which `code_sync.compute_diff` re-pushed every path it
+  touched. `compute_diff` itself is unchanged, deliberately: both sides of its comparison
+  come from the same local database, so once the stored hash cannot degrade, the diff is
+  consistent without consulting provenance itself.
 - **Reuses touchpoints for item↔code.** `code_neighbors(path)` intersects live item
   touchpoints rather than storing a second copy of the relation — "what work touches this
   module" and "what code this item affects" stay one source of truth.

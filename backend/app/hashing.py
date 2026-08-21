@@ -61,14 +61,3 @@ def comparable(value: str | None) -> bool:
     guess that it probably used the same algorithm.
     """
     return bool(value) and value.startswith(PREFIX)
-
-
-def same_content(a: str | None, b: str | None) -> bool:
-    """Whether two hashes from different producers prove the same content.
-
-    False when either is unspecified, INCLUDING when the two strings are equal. Two equal
-    legacy digests probably do mean the same content — but "probably" is what this function
-    exists to refuse, and a caller that wants same-producer equality should compare the
-    strings itself.
-    """
-    return comparable(a) and comparable(b) and a == b
