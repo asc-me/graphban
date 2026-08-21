@@ -4,6 +4,12 @@ __pycache__/
 backend/.venv/
 backend/*.db
 backend/.pytest.db
+# Bare too: pytest writes it to whatever directory it is invoked from, and a 0.7 MB
+# SQLite file reached main from the repo ROOT, where the backend-scoped line above
+# did not cover it (GRPH-428's branch, merged as #267). It fails
+# `test_no_tracked_control_bytes` on main and therefore on every PR built against it.
+.pytest.db
+.pytest.db-journal
 backend/.pytest_cache/
 # graphban-fleet is a separate distribution with its own venv (PRD-22 D-e). `uv` drops a
 # self-ignoring .gitignore inside .venv/, but naming it here means the repo does not
