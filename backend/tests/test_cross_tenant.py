@@ -326,3 +326,38 @@ def test_cross_org_sync_rest_ops_blocked(client, tenants):
         assert _blocked(r.status_code), f"{method} {path} leaked: {r.status_code} {r.text[:200]}"
     # And org B never received the import.
     assert client.get(f"/api/sync/export?project_id={pb}", headers=dana).json()["nodes"] == []
+
+
+# ---- the agent code reads were never covered here (review, 2026-08-20) ----------
+
+
+def test_cross_org_agent_code_reads_blocked(client, tenants):
+    """`/api/agent/code/*` names a project in a query parameter, exactly like the reads
+    above, and nothing in this file has ever tried it.
+
+    That matters more than an ordinary gap because of what the fixture does: it hands the
+    attacker a **direct write `Membership` on org B's project**. Per-project access is not
+    authority once orgs are in play, so `_readable_pid`'s `require_readable` is the only
+    thing standing between a named foreign project id and that project's data — and the
+    guard was load-bearing and unasserted.
+
+    Found by removing it and watching this file stay green.
+    """
+    for path in (
+        f"/api/agent/code/health?project_id={tenants['p_b']}",
+        f"/api/agent/code/map?project_id={tenants['p_b']}",
+        f"/api/agent/code/analysis?project_id={tenants['p_b']}",
+        f"/api/agent/code/neighbors?project_id={tenants['p_b']}&path=a.py",
+    ):
+        r = client.get(path, headers=tenants["alex"])
+        assert _blocked(r.status_code), f"{path} returned {r.status_code}"
+
+
+def test_cross_org_agent_code_health_blocked_for_an_api_key(client, tenants):
+    """The same boundary on the credential GRPH-405 widened this read to accept.
+
+    Widening *which* credentials may call it must not widen *what* any of them reach.
+    """
+    r = client.get(f"/api/agent/code/health?project_id={tenants['p_b']}",
+                   headers={"X-API-Key": tenants["alex_key"]})
+    assert _blocked(r.status_code), f"api key reached org B: {r.status_code}"
