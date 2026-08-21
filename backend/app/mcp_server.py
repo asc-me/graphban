@@ -462,6 +462,7 @@ TOOLS: list[dict[str, Any]] = [
                 "agent_id": {"type": "string", "description": "Who is claiming; defaults to this API key's name."},
                 "lease_seconds": {"type": "integer", "description": "Lease length; a claim with no heartbeat within this window is reclaimable (default 600)."},
                 "wait_seconds": {"type": "integer", "description": "Block up to N seconds (max 60) instead of returning empty. A directive wakes it early."},
+                "skip": {"type": "array", "items": {"type": "string"}, "description": "Ids to pass over."},
             },
         },
     },
@@ -471,8 +472,7 @@ TOOLS: list[dict[str, Any]] = [
             "What the fleet should look like given who is online and what is ready: how many "
             "workers and reviewers, and which cluster each worker takes. A PROPOSAL — nothing "
             "is assigned until a planner calls assign_role. Agents beyond the free clusters "
-            "are proposed as reviewers, because a worker with no non-colliding cluster is an "
-            "agent the divvy refuses every time it asks."
+            "are proposed as reviewers rather than left for the divvy to refuse."
         ),
         "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
     },
@@ -538,6 +538,7 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {"agent_id": {"type": "string"},
                 "wait_seconds": {"type": "integer", "description": "Block up to N seconds (max 60) instead of returning empty. A directive wakes it early."},
+                "skip": {"type": "array", "items": {"type": "string"}, "description": "Ids to pass over."},
             },
         },
     },
@@ -805,9 +806,7 @@ TOOLS: list[dict[str, Any]] = [
             "completeness (baselined sections with nothing delivered — the only pass that "
             "surfaces ABSENT work), drift, evidence, close_report (vs ORIGINAL intent, not "
             "the governing baseline), readiness, lineage, verdicts, baseline, "
-            "classifications, audit_brief (everything needed to audit this PRD in one "
-            "read — intent, linked work, receipts, open questions), audit_coverage (which "
-            "sections you have actually verdicted). None report "
+            "classifications, audit_brief, audit_coverage. None report "
             "'complete' — they describe what happened; the judgement is yours."
         ),
         "inputSchema": {
@@ -1955,7 +1954,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db,
             lambda s: items_svc.claim_next(
                 s, agent, project_id=pid,
-                lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS)),
+                lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS),
+                skip=args.get("skip")),
             agent_id=args.get("agent_id"), wait_seconds=args.get("wait_seconds"),
         )
         out = {"claimed": item is not None, "item": _item_dict(item) if item else None}
@@ -2021,7 +2021,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "claim_review":
         agent = args.get("agent_id") or key.name or key.id
         item = fleet_svc.park(
-            db, lambda s: fleet_svc.claim_review(s, agent_id=agent, project_id=pid),
+            db, lambda s: fleet_svc.claim_review(s, agent_id=agent, project_id=pid,
+                                                 skip=args.get("skip")),
             agent_id=args.get("agent_id"), wait_seconds=args.get("wait_seconds"))
         if item is None:
             # Not an error. With one agent in the fleet this is the CORRECT answer, and

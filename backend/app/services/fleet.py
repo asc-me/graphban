@@ -400,7 +400,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "claim_next": ("worker",),
     "next_cluster": ("worker",),
     "claim_cluster": ("worker",),
-    "release_item": ("worker",),
+    # A reviewer holds a REVIEW claim, which is a hold it must be able to hand back — the
+    # release verb is one verb for whichever hold you have, not one per role (GRPH-429).
+    "release_item": ("worker", "reviewer"),
     # `heartbeat` is NOT here, and was, which is the bug. It does two jobs: extend an item
     # LEASE and extend agent PRESENCE. Grouping it with the claiming tools gated both — so a
     # reviewer or planner was refused the only call that keeps it on the roster, registered
@@ -848,7 +850,8 @@ def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = 
 
 
 def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
-                 lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
+                 lease_seconds: int = DEFAULT_LEASE_SECONDS,
+                 skip: list[str] | None = None) -> Item | None:
     """Lease an item awaiting review that this agent did NOT build.
 
     **`WHERE built_by != caller` is the entire invariant** — authorship, not the lease. It was
@@ -868,8 +871,12 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
     stmt = select(Item).where(Item.status == "review")
     if project_id:
         stmt = stmt.where(Item.project_id == project_id)
+    declined = {s for s in (skip or [])}
     candidates = [
         it for it in db.scalars(stmt.order_by(Item.sort_order, Item.number)).all()
+        # Declined this round — see `claim_next`. A reviewer that must refuse the top item
+        # (its own work) otherwise gets it back on every call and never sees the rest.
+        if it.id not in declined and it.key not in declined
         # The ban, keyed on AUTHORSHIP rather than on role. The obvious attack on a dynamic
         # role system is to promote a worker to reviewer while it holds its own item; it does
         # not work, because an agent's id does not change when its role does.
