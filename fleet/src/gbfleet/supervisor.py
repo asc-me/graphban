@@ -31,9 +31,14 @@ from typing import Callable, Iterable, Sequence
 from . import worktree as wt_mod
 from .client import Graphban, ServerUnreachable
 from .lock import Acquired, hold
+from . import observe
 from . import seat as seat_mod
+from .observe import NEVER_REGISTERED, ChildRecord
 from .seat import Seat, instruction_for
-from .spawn import Child, Launch, LaunchFailed, Reason, await_registration, spawn, stop
+from .spawn import (
+    REGISTRATION_WINDOW, Child, Launch, LaunchFailed, Reason, await_registration,
+    spawn, stop,
+)
 from .worktree import Reaped, Worktree
 
 #: Defaults chosen to be boring. PRD-22's own risk table keeps `max_workers` at 4 on
@@ -54,6 +59,10 @@ class Limits:
     max_workers: int = DEFAULT_MAX_WORKERS
     max_children: int = 8
     child_wall_clock: float = 3600.0
+    #: How long a child gets to register before it is presumed broken (S2). A limit the
+    #: supervisor enforces because it can measure it, same as the two above — and the
+    #: only one of the three whose default is short enough to matter in a test.
+    registration_window: float = REGISTRATION_WINDOW
 
 
 @dataclass(frozen=True)
@@ -145,8 +154,14 @@ def up(
     wanted = min(len(seats), limits.max_workers, limits.max_children)
     wave.unused_seats = len(seats) - wanted
 
+    observe.configure(state)
+
     with hold(repo, state) as acquired:
         wave.lock = acquired
+        if acquired.takeover:
+            # A supervisor died here. Said before anything else happens, because
+            # everything after it may be running beside children nobody is watching.
+            observe.emit("takeover", detail=acquired.takeover.describe())
         wave.before = _read_allocation(client, wave)
         if wave.offline:
             # D-i: no new spawns while the server is unreachable. A child that cannot
@@ -155,7 +170,9 @@ def up(
             wave.unused_seats = len(seats)
             return wave
 
-        children = list(_start(wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client))
+        children = list(_start(
+            wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client, limits
+        ))
         _wait_out(wave, children, limits, poll=poll, sleep=sleep)
         _reap_all(wave, children)
 
@@ -172,6 +189,7 @@ def _start(
     workspace: Path,
     wave_name: str,
     client: Graphban,
+    limits: Limits,
 ) -> Iterable[Child]:
     """Create a worktree per seat, spawn into it, and wait for it to register.
 
@@ -200,7 +218,7 @@ def _start(
             child = spawn(launch, tree.path, tree.branch, _logs(workspace, agent_slot))
             started.append(child)
             wave.spawned.append(child)
-            await_registration(child, client.fleet_status)
+            await_registration(child, client.fleet_status, window=limits.registration_window)
         except (LaunchFailed, wt_mod.BranchExists, wt_mod.GitError) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
             if tree is not None and tree.path.exists() and not any(
@@ -278,14 +296,39 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
     credentials BEST is the one that leaves one behind.
     """
     for child in children:
-        wave.reaped.append(
-            wt_mod.reap(
-                Worktree(path=child.worktree, branch=child.branch, repo=_repo_of(child)),
-                message=f"WIP: salvaged by gbfleet ({child.adapter})",
-            )
+        reaped = wt_mod.reap(
+            Worktree(path=child.worktree, branch=child.branch, repo=_repo_of(child)),
+            message=f"WIP: salvaged by gbfleet ({child.adapter})",
         )
+        wave.reaped.append(reaped)
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
+
+        observe.child(ChildRecord(
+            adapter=child.adapter,
+            binary_version=child.binary_version,
+            worktree=str(child.worktree),
+            branch=child.branch,
+            pid=child.pid,
+            seat_id=child.seat_id,
+            agent_id=child.agent_id,
+            # None means it never registered, and that is the whole point of the field:
+            # a process that ran, spent money and produced nothing, while the roster
+            # showed one agent fewer. Omitting it would read as nothing to report;
+            # zeroing it would read as instant.
+            registration_latency=(
+                child.registration_latency
+                if child.registration_latency is not None
+                else NEVER_REGISTERED
+            ),
+            exit_code=child.process.returncode,
+            stopped_because=child.stopped_because.value if child.stopped_because else None,
+            reap=reaped.disposition.value,
+            salvage_commit=reaped.salvage.commit if reaped.salvage else None,
+            credential_in_history=(
+                list(reaped.salvage.credential_in_history) if reaped.salvage else []
+            ),
+        ))
 
 
 def _inside(path: Path, root: Path) -> bool:

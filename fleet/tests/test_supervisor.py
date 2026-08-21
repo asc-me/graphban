@@ -32,7 +32,12 @@ def _seats(n: int, server: str = "http://gb.invalid") -> list[Seat]:
     return [Seat(code=f"{CODE}-{i}", server_url=server, api_key=KEY) for i in range(n)]
 
 
-def _server(workspace: Path, allocation: dict | None = None, unreachable: bool = False) -> Graphban:
+def _server(
+    workspace: Path,
+    allocation: dict | None = None,
+    unreachable: bool = False,
+    blind: bool = False,
+) -> Graphban:
     """A Graphban that reports every worktree under `workspace` as a registered agent.
 
     Registration is matched on the worktree (see spawn.await_registration), so the
@@ -54,10 +59,23 @@ def _server(workspace: Path, allocation: dict | None = None, unreachable: bool =
                 "rationale": "no agents online — nothing to allocate",
             }
         else:
-            trees = sorted(p for p in workspace.glob("*") if p.is_dir() and p.name != "logs")
+            # `blind` is a server that is up and answering, and simply never sees the
+            # child — which is what a broken adapter looks like from here, and is a
+            # different thing from being unreachable.
+            trees = [] if blind else sorted(
+                p for p in workspace.glob("*") if p.is_dir() and p.name != "logs"
+            )
             payload = {
                 "agents": [
-                    {"id": f"GRPH-A{i + 1}", "worktree": str(p), "state": "idle"}
+                    {
+                        "id": f"GRPH-A{i + 1}",
+                        "worktree": str(p),
+                        "state": "idle",
+                        # The roster has carried this since GRPH-451; a fixture that
+                        # omits it lets anything reading it look like it works.
+                        "enrolled": True,
+                        "enrolment_id": f"seat-{i + 1}",
+                    }
                     for i, p in enumerate(trees)
                 ]
             }

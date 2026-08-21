@@ -79,6 +79,9 @@ class Launch:
     seat_path: Path
     config: dict
     instruction: str
+    #: What `--version` reported for the binary that will run. Carried so the child's
+    #: record can name the build (S6), not just the vendor.
+    binary_version: str = ""
     #: Fed to the child on stdin. This is how the enrolment CODE reaches a vendor whose
     #: only prompt channel is a command-line argument: argv is readable by every process
     #: on the machine, stdin is not. `grok` takes `--prompt-file` and needs neither.
@@ -96,6 +99,10 @@ class Child:
     started_at: float
     log_dir: Path
     agent_id: str | None = None
+    binary_version: str = ""
+    #: The enrolment's ROW id, read off the roster once the child registers. Never the
+    #: code: a code is single-use and short-lived, and a log file is neither.
+    seat_id: str | None = None
     #: **The load-bearing observability field** (S6). A child that never registers is a
     #: process that runs, burns money and produces nothing, while the roster simply
     #: shows one agent fewer than expected. This is what separates that from a slow
@@ -167,6 +174,7 @@ def spawn(launch: Launch, worktree: Path, branch: str, log_dir: Path) -> Child:
         process=process,
         started_at=started,
         log_dir=log_dir,
+        binary_version=launch.binary_version,
     )
 
 
@@ -202,6 +210,10 @@ def await_registration(
         for agent in roster().get("agents") or []:
             if agent.get("worktree") == target:
                 child.agent_id = agent.get("id")
+                # Available since GRPH-451 put the seat on the roster. Before that,
+                # `enrolled` was a bare boolean and a supervisor could not name the seat
+                # its own child had redeemed.
+                child.seat_id = agent.get("enrolment_id")
                 child.registration_latency = time.monotonic() - child.started_at
                 return agent
 

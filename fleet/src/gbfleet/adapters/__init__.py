@@ -32,6 +32,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+from typing import NamedTuple
 from pathlib import Path
 from typing import ClassVar
 
@@ -137,7 +138,21 @@ def _run_version(binary: Path, argv: tuple[str, ...]) -> str:
     return (proc.stdout or proc.stderr or "").strip()
 
 
-def resolve(name: str, *, binary: str | Path | None = None) -> tuple[Adapter, Path]:
+class Resolved(NamedTuple):
+    """A vendor, the binary that answered, and what it said its version was.
+
+    The version string is carried rather than discarded because S6 puts it in every
+    child's record: "adapter and resolved binary version" is the first line of the
+    observability field list. A record naming the adapter but not the build is one that
+    cannot answer "did this start failing when they shipped 2.2?".
+    """
+
+    adapter: "Adapter"
+    binary: Path
+    version: str
+
+
+def resolve(name: str, *, binary: str | Path | None = None) -> Resolved:
     """Find the NAMED vendor's binary and refuse if its version is out of range.
 
     Refusing here rather than after launch is the whole point: a version mismatch that
@@ -168,7 +183,7 @@ def resolve(name: str, *, binary: str | Path | None = None) -> tuple[Adapter, Pa
             f"adapter {name!r}: {found} reports {reported!r} (parsed {_fmt(version)}), "
             f"and this adapter supports {adapter.support.describe()}. Refusing to spawn."
         )
-    return adapter, found
+    return Resolved(adapter=adapter, binary=found, version=reported)
 
 
 from .claude import ClaudeCode  # noqa: E402
@@ -184,6 +199,6 @@ ADAPTERS: dict[str, Adapter] = {
 }
 
 __all__ = [
-    "ADAPTERS", "Adapter", "AdapterError", "AdapterUnavailable", "Support",
+    "ADAPTERS", "Adapter", "AdapterError", "AdapterUnavailable", "Resolved", "Support",
     "UnknownAdapter", "VersionUnsupported", "parse_version", "resolve",
 ]
