@@ -86,6 +86,26 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
 
     write("exits_immediately", "pass\n")
 
+    # Long enough for the supervisor's wait loop to poll several times, short enough
+    # that the wave ends on its own. `works_then_exits` is gone before the loop runs at
+    # all, which makes it useless for anything about what happens WHILE a child works.
+    write(
+        "works_then_waits",
+        "import pathlib, time\n"
+        "pathlib.Path('feature.py').write_text('print(1)\\n', encoding='utf-8')\n"
+        "time.sleep(1.5)\n",
+    )
+
+    # Leaves an uncommitted diff and keeps running, so a partition can interrupt it with
+    # work in the tree — the case where "the work survives, the claim does not" has
+    # something to survive.
+    write(
+        "writes_then_sleeps",
+        "import pathlib, time\n"
+        "pathlib.Path('half-done.py').write_text('half a thought\\n', encoding='utf-8')\n"
+        "time.sleep(300)\n",
+    )
+
     # Reports where it was actually started, so the cwd assertion is not a value
     # compared against itself. /proc does not exist on macOS.
     write(
