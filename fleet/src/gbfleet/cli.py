@@ -17,6 +17,8 @@ from .adapters import ADAPTERS, AdapterError, resolve
 from .client import Graphban
 from .lock import RepoLocked
 from .seat import Seat
+from dataclasses import replace
+
 from .spawn import Launch
 from .state import NotARepository
 from .supervisor import DEFAULT_MAX_WORKERS, Limits, Wave, up
@@ -108,10 +110,11 @@ def make_adapter_factory(name: str, binary: str | None):
     surfaces as a child which starts, misbehaves and never registers costs a full
     registration window and blames the wrong component.
     """
-    adapter, path = resolve(name, binary=binary)
+    found = resolve(name, binary=binary)
 
     def factory(seat: Seat, tree: Worktree, instruction_file: Path) -> Launch:
-        return adapter.launch(seat, tree, instruction_file, path)
+        launch = found.adapter.launch(seat, tree, instruction_file, found.binary)
+        return replace(launch, binary_version=found.version)
 
     return factory
 

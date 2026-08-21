@@ -121,9 +121,13 @@ def test_a_binary_inside_the_range_resolves(tmp_path: Path):
     fake = tmp_path / "claude"
     fake.write_text("#!/bin/sh\necho '2.1.233 (Claude Code)'\n", encoding="utf-8")
     fake.chmod(0o755)
-    adapter, path = resolve("claude", binary=fake)
-    assert adapter.name == "claude"
-    assert path == fake
+    found = resolve("claude", binary=fake)
+    assert found.adapter.name == "claude"
+    assert found.binary == fake
+    assert found.version == "2.1.233 (Claude Code)", (
+        "the reported version is carried, not just checked — S6 puts it in every "
+        "child's record so a failure can be tied to a build"
+    )
 
 
 # --- nothing carrying a credential goes on argv ------------------------------------
@@ -286,6 +290,7 @@ def test_a_real_installed_binary_resolves(name: str):
     if binary is None:
         pytest.skip(f"{ADAPTERS[name].binary} is not installed here")
 
-    adapter, path = resolve(name)
-    assert adapter.name == name
-    assert Path(path) == Path(binary)
+    found = resolve(name)
+    assert found.adapter.name == name
+    assert Path(found.binary) == Path(binary)
+    assert found.version, "a real binary reported no version at all"
