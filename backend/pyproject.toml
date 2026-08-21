@@ -39,6 +39,10 @@ dev = [
     # because the suite resets data between tests and workers sharing one would wipe each
     # other's rows mid-run.
     "pytest-xdist>=3.6",
+    # `tests/test_ci_shape.py` parses .github/workflows/ci.yml. uvicorn[standard] happens
+    # to install pyyaml today, but a test depending on a transitive of a runtime extra is
+    # a green suite waiting on someone else's dependency change.
+    "pyyaml>=6.0",
 ]
 
 [build-system]

@@ -26,11 +26,17 @@ DATABASE_URL="postgresql+psycopg://postgres:postgres@localhost:5544/graphban_tes
 # Frontend (from web/):
 pnpm test && pnpm typecheck              # build with `pnpm build`
 
+# Fleet supervisor (from fleet/) — a SEPARATE distribution with its own venv (PRD-22 D-e).
+# Only needed when touching fleet/ or backend dependencies, which its thin-install guard reads.
+uv venv --python 3.12 .venv && uv pip install -e ".[dev]"
+./.venv/bin/python -m pytest -q          # refuses to run against an uninstalled tree
+
 # Full stack:
 docker compose up --build                # web :8080, api :8000; starts EMPTY by design
 ```
 
-CI (`.github/workflows/ci.yml`) runs all three on every PR. A change is not done
+CI (`.github/workflows/ci.yml`) runs each of these on every PR, gated by
+`dorny/paths-filter` so a web-only PR does not pay for two backend suites. A change is not done
 until both database engines pass — SQLite and Postgres have separate vector-search
 implementations (`services/memory.py`, `services/code_graph.py`) and only the
 Postgres run executes the real `<=>` SQL and migrations.
@@ -162,6 +168,7 @@ that migrations 0001/0013 pin 384 in the column type — see AL-46.
 | Dev workflows | [`docs/development.md`](docs/development.md) |
 | Providers/AI | [`docs/ai-providers.md`](docs/ai-providers.md) |
 | Config/env | [`docs/configuration.md`](docs/configuration.md) |
+| Fleet supervisor (`fleet/`) | [`fleet/README.md`](fleet/README.md), [`docs/prd-22-fleet-supervisor.md`](docs/prd-22-fleet-supervisor.md) |
 
 ## Deploy
 

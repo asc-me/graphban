@@ -18,6 +18,7 @@ jobs:
     outputs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      fleet: ${{ steps.filter.outputs.fleet }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -30,6 +31,14 @@ jobs:
               - '.github/workflows/ci.yml'
             frontend:
               - 'web/**'
+              - '.github/workflows/ci.yml'
+            # graphban-fleet is a separate distribution (PRD-22 D-e) with its own
+            # pyproject and venv. Its suite reads backend/pyproject.toml to derive the
+            # dependencies it must NOT share, so a backend dependency change has to run
+            # it too — otherwise the thin-install guard goes stale without failing.
+            fleet:
+              - 'fleet/**'
+              - 'backend/pyproject.toml'
               - '.github/workflows/ci.yml'
 
   backend-sqlite:
@@ -117,15 +126,39 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm build
 
+  fleet:
+    name: Fleet supervisor tests
+    needs: changes
+    if: needs.changes.outputs.fleet == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fleet
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: fleet/pyproject.toml
+      - run: uv venv --python 3.12 .venv
+      # Installed, not just on the path: the suite asserts against the console script
+      # and the packaged version, and refuses to run against an uninstalled tree.
+      - run: uv pip install -e ".[dev]"
+      - run: .venv/bin/python -m pytest -q
+
   # A single required check, so branch protection has one name to point at whatever the
   # filters decided to run. Without it a skipped job reads as "pending" forever on a
   # protected branch — the filter would look like it had wedged CI rather than saved time.
   ci:
     name: CI
-    # `changes` is in here deliberately. Without it, a failure in the filter job skips all
-    # three suites, the gate sees nothing but skips, and CI reports GREEN having run no
+    # `changes` is in here deliberately. Without it, a failure in the filter job skips
+    # every suite, the gate sees nothing but skips, and CI reports GREEN having run no
     # tests at all — the filter breaking would look exactly like a PR that needed no work.
-    needs: [changes, backend-sqlite, backend-postgres, frontend]
+    #
+    # Every job defined above must appear here. A job that runs but is not needed by this
+    # gate is worse than no job: it burns the minutes and reports nowhere.
+    # `test_ci_gate_covers_every_job` in the backend suite is what enforces that.
+    needs: [changes, backend-sqlite, backend-postgres, frontend, fleet]
     if: always()
     runs-on: ubuntu-latest
     steps:
