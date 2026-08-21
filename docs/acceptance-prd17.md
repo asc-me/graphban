@@ -189,18 +189,29 @@ fallback.
 
 ### Defects
 
+Four of these were **never filed as items**. They were found and fixed inside one commit
+during the walk — `4446fe7`, "The role gate on update_item was unreachable, and non-workers
+could not stay alive" — and the walk-results commit says so plainly: *four defects found,
+four fixed, one filed.*
+
+An earlier version of this table put `GRPH-377` in the Item column for all four. That is a
+different defect (ending a wave erasing authorship), so the citation pointed at real work
+that was not this work — the kind of wrong reference that survives precisely because it
+looks like a reference. Corrected 2026-08-21; the commit is cited instead, because that is
+what exists.
+
 | Item | What it was |
 | --- | --- |
-| GRPH-377 | **`update_item` never advertised `agent_id`**, so its role gate was unreachable through the published schema and a worker wrote `done`. `WORKER_STATUS_CEILING` had never gated anything in production, leaving a hole under the self-review ban. My tests passed the parameter by hand — exercising a path no client could reach — and I cited those passes as evidence repeatedly. |
-| GRPH-377 | `heartbeat` was gated to `("worker",)`, so a reviewer and a planner were refused the only call that keeps them on the roster and died 150s after registering, terminals open. |
-| GRPH-377 | `heartbeat` **required an item id**, so presence was maintainable only while mid-work — a planner never holds an item at all. |
-| GRPH-377 | nginx set no `proxy_read_timeout`, defaulting to exactly `MAX_WAIT_SECONDS` (60s). A full-length park raced the proxy and lost about half the time; a real client hit the 504. |
+| *(not filed — fixed in `4446fe7`)* | **`update_item` never advertised `agent_id`**, so its role gate was unreachable through the published schema and a worker wrote `done`. `WORKER_STATUS_CEILING` had never gated anything in production, leaving a hole under the self-review ban. My tests passed the parameter by hand — exercising a path no client could reach — and I cited those passes as evidence repeatedly. |
+| *(not filed — fixed in `4446fe7`)* | `heartbeat` was gated to `("worker",)`, so a reviewer and a planner were refused the only call that keeps them on the roster and died 150s after registering, terminals open. |
+| *(not filed — fixed in `4446fe7`)* | `heartbeat` **required an item id**, so presence was maintainable only while mid-work — a planner never holds an item at all. |
+| *(not filed — fixed in `4446fe7`)* | nginx set no `proxy_read_timeout`, defaulting to exactly `MAX_WAIT_SECONDS` (60s). A full-length park raced the proxy and lost about half the time; a real client hit the 504. |
 | GRPH-378 | **`bounce` required a reason and discarded it.** No column held it, the event meta carried only the principal, and after a real bounce the string appeared in **no row of any table**. The author got the item back with nothing to act on — the exact failure the requirement was written to prevent. `test_a_bounce_needs_a_reason` asserts the refusal on a blank reason and stops there. |
 | GRPH-379 | **The pin was invisible.** `bounce_pinned_to`/`until` and `built_by` appeared on no read surface, and a refused `claim_next` returned `{"claimed": false, "item": null}` — byte-identical to an empty backlog. A worker that should idle and retry concludes the project is finished. |
 | GRPH-395 | **A review claim never expires.** `claim_review` leases by setting `reviewed_by`, and nothing ever clears it — no expiry, no sweep, and `release_item` refuses because a reviewer holds no `claimed_by`. A reviewer that dies strands the item in `review` forever, looking like ordinary queued work. Live example: `FA-9`, reviewer silent 2333s. Exactly what `bounce_pinned_until` exists to prevent, without the expiry. |
 | GRPH-397 | **`claim_cluster` never re-offered abandoned work.** Its pool was `backlog`/`next`, while `claim_next` used `_is_claimable`, which counts a stale lease. An item whose holder died stays `in_progress`, so it satisfied one definition of claimable and failed the other — and once GRPH-380 made `claim_cluster` what every posture is taught, a crashed agent's item was offered to nobody at all. Two definitions of one fact, which is what most of this walk found. |
 | GRPH-396 | **A dead agent's branch is never flagged.** `branch_orphaned` is written in one place — inside `quarantine()`, reachable only by an agent making three refused calls, i.e. one that is *demonstrably alive*. The agent that crashes holding a branch is recorded nowhere, and that is the common case. It also silently disables the dismissal guard built on it: Dismiss refuses on an orphaned branch, so it never refuses for the dead agents a cluttered roster is full of. |
-| GRPH-376 | `sign_off` clears `claimed_by`, so **the self-review ban is unprovable after the fact** — every done item reads `built_by: -`. Enforcement is fine; the audit trail is not. **Filed, not fixed.** |
+| GRPH-376 | `sign_off` clears `claimed_by`, so **the self-review ban is unprovable after the fact** — every done item reads `built_by: -`. Enforcement is fine; the audit trail is not. **Filed as GRPH-376; fixed since — the item is `done`.** |
 
 ### What the walk proved that tests could not
 
