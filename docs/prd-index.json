@@ -94,6 +94,21 @@
         "6. Phasing",
         "7. Risks"
       ]
+    },
+    "GRPH-P22": {
+      "file": "docs/prd-22-fleet-supervisor.md",
+      "status": "approved",
+      "sections": [
+        "1. Overview",
+        "2. Goals",
+        "3. Key decisions",
+        "4. Authority: what the supervisor may and may not do",
+        "5. Slices",
+        "6. The teardown asymmetry — mint, list and retire are one capability",
+        "7. Non-goals",
+        "8. Risks and open questions",
+        "9. Acceptance walk"
+      ]
     }
   },
   "unindexed": []
