@@ -193,3 +193,24 @@ def auth(client):
     )
     assert r.status_code == 200
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+@pytest.fixture()
+def decoy(client):
+    """A populated SECOND project, for any test asserting that a read is project-scoped.
+
+    Depends on `client` for the same reason every `db` fixture here does: the app's lifespan
+    seeds on startup, so a session opened before it has no user to own a project.
+
+    Opens its own session and commits, so a suite's own `db` fixture sees the rows without
+    the two sharing identity map state. See `tests/decoy.py` for why this exists (GRPH-436).
+    """
+    from app.db import SessionLocal
+
+    from tests.decoy import seed_decoy
+
+    s = SessionLocal()
+    try:
+        yield seed_decoy(s)
+    finally:
+        s.close()

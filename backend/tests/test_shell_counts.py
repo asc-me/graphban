@@ -19,6 +19,8 @@ import pytest
 from app.services import memory as mem_svc
 from app.services import projects as proj_svc
 
+from tests.decoy import assert_populated
+
 
 @pytest.fixture()
 def db(client):
@@ -47,7 +49,7 @@ def _seed(db, project_id="core", *, items=3, in_progress=1, requests=2, candidat
         mem_svc.add_memory(db, text_body=f"cand {i}", project_id=project_id, status="candidate")
 
 
-def test_counts_match_the_collections_they_replace(db):
+def test_counts_match_the_collections_they_replace(db, decoy):
     """The pin. Each number must equal `len()` of the list the shell used to fetch, including
     the expiry rule — otherwise the badge and the page it links to disagree, and the badge is
     the one people trust because it is always on screen."""
@@ -124,3 +126,52 @@ def test_shard_limit_caps_live_shards_not_rows_read(db):
     live = mem_svc.list_shards(db, project_id="core", status="candidate")
     assert len(mem_svc.list_shards(db, project_id="core", status="candidate", limit=3)) == 3
     assert len(mem_svc.list_shards(db, project_id="core", status="candidate", limit=99)) == len(live)
+
+
+def test_the_counts_are_pinned_to_their_project(db, decoy):
+    """Removing the WHERE must fail HERE, because it fails nowhere else (GRPH-436).
+
+    Every other test in this file seeds `core` alone, and with one project "count this
+    project" and "count the instance" return the same number — so deleting
+    `.where(model.project_id == project_id)` left all five of them green. Measured during the
+    review of GRPH-431, not supposed.
+
+    Note what the fix actually is: the FIXTURE, not the assertions. Once a second populated
+    project exists, `test_counts_match_the_collections_they_replace` above becomes able to
+    fail too — its `count == len(list)` comparison was always the right assertion and simply
+    had nothing to differ from. This test states the property directly so the reason survives
+    someone re-reading it later. `test_counts_match_the_collections_they_replace` above now
+    takes the same fixture and fails under the same mutation.
+
+    Seed-tolerant on purpose: `core` arrives with the prototype dataset already in it, so
+    every number here is compared against the collection it labels rather than a literal. A
+    literal was the first version and it failed at 12 == 3, which is the fixture talking, not
+    the code under test.
+    """
+    assert_populated(decoy)
+    _seed(db, items=3, in_progress=1, requests=2, candidates=2)
+
+    from app.services import items as items_svc
+    from app.services import requests as req_svc
+
+    did = decoy["project_id"]
+    core_items = items_svc.list_items(db, project_id="core")
+    decoy_items = items_svc.list_items(db, project_id=did)
+
+    # The control. If the decoy is empty, "excluded" and "never existed" are the same
+    # observation and everything below passes for the wrong reason.
+    assert len(decoy_items) >= decoy["items"], "the decoy has no items to leak"
+
+    core = proj_svc.shell_counts(db, "core")
+    other = proj_svc.shell_counts(db, did)
+
+    assert core["items"] == len(core_items), "core counted rows belonging to another project"
+    assert core["items_in_progress"] == len(
+        items_svc.list_items(db, project_id="core", status="in_progress"))
+    assert core["requests"] == len(req_svc.list_requests(db, project_id="core"))
+
+    # The other direction: each project sees its own. A count that returned the instance
+    # total would satisfy neither, but a count that returned ZERO would satisfy the first.
+    assert other["items"] == len(decoy_items), "the decoy cannot see its own rows"
+    assert other["requests"] == len(req_svc.list_requests(db, project_id=did))
+    assert core["items"] != len(core_items) + len(decoy_items)

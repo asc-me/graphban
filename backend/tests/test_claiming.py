@@ -78,7 +78,9 @@ def test_mcp_claim_heartbeat_release(client, auth):
     claim = _mcp(client, key, "claim_next", {})["structuredContent"]
     assert claim["claimed"] is True
     item = claim["item"]
-    assert item["status"] == "in_progress" and item["claimed_by"] == "loop-agent"  # agent_id = key name
+    # `key:` marks a row stamped by the CREDENTIAL rather than by a registered agent
+    # (GRPH-437). Before the mark, this column could hold either with nothing separating them.
+    assert item["status"] == "in_progress" and item["claimed_by"] == "key:loop-agent"
 
     hb = _mcp(client, key, "heartbeat", {"id": item["id"]})["structuredContent"]
     assert hb["id"] == item["id"]
