@@ -33,6 +33,7 @@ from .client import Graphban, ServerUnreachable
 from .lock import Acquired, hold
 from . import observe
 from . import seat as seat_mod
+from . import touchpoints as tp_mod
 from .observe import NEVER_REGISTERED, ChildRecord
 from .seat import Seat, instruction_for
 from .spawn import (
@@ -160,6 +161,10 @@ class Wave:
     unused_seats: int = 0
     offline: bool = False
     partition: Partition = field(default_factory=Partition)
+    #: Files each worker actually changed, by branch. MEASURED, not written back —
+    #: `touchpoints` on the item is the PREDICTION, and overwriting it would leave walk
+    #: step 17's comparison with one operand. See `touchpoints.py`.
+    touched: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -314,7 +319,9 @@ def _start(
         try:
             tree = wt_mod.create(repo, workspace / agent_slot, wave_name, slot)
             launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name))
-            child = spawn(launch, tree.path, tree.branch, _logs(workspace, agent_slot))
+            child = spawn(
+                launch, tree.path, tree.branch, _logs(workspace, agent_slot), base=tree.base
+            )
             started.append(child)
             wave.spawned.append(child)
             # Through `_roster`, not straight to the client: this is where the ceiling
@@ -458,11 +465,21 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
     credentials BEST is the one that leaves one behind.
     """
     for child in children:
-        reaped = wt_mod.reap(
-            Worktree(path=child.worktree, branch=child.branch, repo=_repo_of(child)),
-            message=f"WIP: salvaged by gbfleet ({child.adapter})",
+        tree = Worktree(
+            path=child.worktree, branch=child.branch, repo=_repo_of(child), base=child.base
         )
+        reaped = wt_mod.reap(tree, message=f"WIP: salvaged by gbfleet ({child.adapter})")
         wave.reaped.append(reaped)
+
+        # AFTER the reap, deliberately: salvage has just committed whatever the worker
+        # left uncommitted, so the branch now holds the whole of what it did. Measuring
+        # before would miss exactly the work that was most at risk.
+        try:
+            wave.touched[child.branch] = tp_mod.measure(tree)
+        except ValueError as exc:
+            # Not silently empty. "We could not measure" and "it changed nothing" are
+            # different answers and only one of them is reassuring.
+            wave.failures.append(f"{child.branch}: {exc}")
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
 
@@ -490,6 +507,7 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
             credential_in_history=(
                 list(reaped.salvage.credential_in_history) if reaped.salvage else []
             ),
+            touched=wave.touched.get(child.branch, []),
         ))
 
 

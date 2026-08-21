@@ -94,6 +94,9 @@ class Child:
     adapter: str
     worktree: Path
     branch: str
+    #: The commit the worktree was cut from, carried so what the child changed can be
+    #: measured after the worktree itself is gone.
+    base: str
     seat_path: Path
     process: subprocess.Popen
     started_at: float
@@ -125,7 +128,9 @@ class Child:
         return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
 
 
-def spawn(launch: Launch, worktree: Path, branch: str, log_dir: Path) -> Child:
+def spawn(
+    launch: Launch, worktree: Path, branch: str, log_dir: Path, base: str = ""
+) -> Child:
     """Start one child in its own worktree, holding its own seat.
 
     stdout and stderr go to FILES rather than pipes. A pipe nobody drains fills its
@@ -170,6 +175,7 @@ def spawn(launch: Launch, worktree: Path, branch: str, log_dir: Path) -> Child:
         adapter=launch.adapter,
         worktree=worktree,
         branch=branch,
+        base=base,
         seat_path=Path(launch.seat_path),
         process=process,
         started_at=started,
