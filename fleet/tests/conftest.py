@@ -76,6 +76,16 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
 
     write("sleeper", "import time\ntime.sleep(300)\n")
 
+    # A worker that behaves: does a bit of work in its worktree, then exits. Exiting on
+    # empty is the normal end of a run (D-c), not a failure.
+    write(
+        "works_then_exits",
+        "import pathlib\n"
+        "pathlib.Path('feature.py').write_text('print(1)\\n', encoding='utf-8')\n",
+    )
+
+    write("exits_immediately", "pass\n")
+
     # Reports where it was actually started, so the cwd assertion is not a value
     # compared against itself. /proc does not exist on macOS.
     write(
