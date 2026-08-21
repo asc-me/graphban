@@ -184,3 +184,20 @@ def test_the_fleet_licence_is_deliberately_not_the_repo_licence():
     assert licence.exists()
     assert "Apache License" in licence.read_text(encoding="utf-8")
     assert _toml(BACKEND_PYPROJECT)["project"]["license"] != "Apache-2.0"
+
+
+def test_the_readme_ships_and_none_of_its_links_are_repo_relative():
+    """Two failures that a successful publish hides.
+
+    Without `readme`, the PyPI project page for graphban-fleet is blank — the upload
+    succeeds, nothing errors, and the only symptom is somewhere nobody on this side
+    looks. And a `](../docs/...)` link resolves on GitHub and 404s from PyPI, so the
+    links are absolute even though that reads as needlessly verbose inside the repo.
+    """
+    assert _toml(FLEET_PYPROJECT)["project"].get("readme") == "README.md"
+
+    readme = (REPO / "fleet" / "README.md").read_text(encoding="utf-8")
+    relative = re.findall(r"\]\((\.\.?/[^)]+)\)", readme)
+    assert not relative, (
+        f"fleet/README.md ships to PyPI, where these resolve to nothing: {relative}"
+    )

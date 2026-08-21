@@ -4,7 +4,7 @@ The **fleet supervisor**: a thin local client that runs where the agents actuall
 It spawns vendor CLI processes holding seats the Graphban *server* issued, and it reaps
 them. Ships as `graphban-fleet`, with a `gbfleet` entry point.
 
-Specified by [PRD-22](../docs/prd-22-fleet-supervisor.md).
+Specified by [PRD-22](https://github.com/asc-me/graphban/blob/main/docs/prd-22-fleet-supervisor.md).
 
 ## Two servers, and only one of them has authority
 
@@ -43,7 +43,7 @@ backend's own list, so that separation is checked rather than asserted.
 
 ## Licence — Apache-2.0, deliberately not the repository's FSL-1.1
 
-The repository is [FSL-1.1-Apache-2.0](../LICENSE.md). This directory is
+The repository is [FSL-1.1-Apache-2.0](https://github.com/asc-me/graphban/blob/main/LICENSE.md). This directory is
 [Apache-2.0](LICENSE), and the divergence is a decision (PRD-22 §8), not an oversight:
 
 - **The supervisor is not the moat.** It is inert without a Graphban server and holds no

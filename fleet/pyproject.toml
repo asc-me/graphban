@@ -2,6 +2,9 @@
 name = "graphban-fleet"
 version = "0.1.0"
 description = "Fleet supervisor for Graphban — spawns and retires fleet members on the machine the agents actually run on"
+# Without this the PyPI project page is blank. The README's links are absolute for the
+# same reason: repo-relative paths render on GitHub and 404 on PyPI.
+readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
