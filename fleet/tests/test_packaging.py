@@ -37,8 +37,18 @@ def _dep_names(specs: list[str]) -> set[str]:
 
 
 def _console_script(name: str) -> Path:
-    """The installed entry point in whichever venv is running these tests."""
-    return Path(sys.executable).parent / name
+    """The installed entry point in whichever venv is running these tests.
+
+    Checks existence here rather than in each caller: a missing script otherwise
+    surfaces as a FileNotFoundError from inside subprocess, which names the path but
+    not the reason, and every caller would need the same guard to say so.
+    """
+    script = Path(sys.executable).parent / name
+    assert script.exists(), (
+        f"console script `{name}` is not installed at {script}. "
+        "Run: uv pip install -e '.[dev]' from fleet/"
+    )
+    return script
 
 
 # --- the version it reports -------------------------------------------------------
@@ -71,8 +81,6 @@ def test_the_reported_version_is_the_one_pyproject_declares():
 def test_the_entry_point_is_wired_and_reports_that_version():
     """Proves `[project.scripts]` resolves, which importing the module cannot."""
     script = _console_script("gbfleet")
-    assert script.exists(), f"console script not installed at {script}"
-
     result = subprocess.run(
         [str(script), "--version"], capture_output=True, text=True, timeout=30
     )
@@ -132,7 +140,9 @@ def test_importing_gbfleet_does_not_drag_in_the_backend_stack():
 
     loaded = set(json.loads(result.stdout))
     assert "gbfleet" in loaded, "probe did not import the package it was meant to test"
-    assert not loaded & forbidden, f"importing gbfleet loaded {sorted(loaded & forbidden)}"
+
+    leaked = sorted(loaded & forbidden)
+    assert not leaked, f"importing gbfleet pulled in {leaked}"
 
 
 # --- separation from the backend distribution -------------------------------------
