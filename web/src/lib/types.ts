@@ -1038,3 +1038,11 @@ export interface OrgOverview {
   usage: Record<string, number>;
   limits: Record<string, number>;
 }
+
+/** The integers the app shell renders as badges. See `api.counts` (GRPH-431). */
+export type ShellCounts = {
+  items: number;
+  items_in_progress: number;
+  requests: number;
+  review: number;
+};

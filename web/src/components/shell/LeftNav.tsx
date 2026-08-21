@@ -15,12 +15,9 @@ import { NewProjectDialog } from "@/features/onboarding/NewProjectDialog";
 import { SPECULATIVE_ENABLED } from "@/features/orgadmin/Speculative";
 import { cn } from "@/lib/cn";
 import {
-  useAutoActions,
-  useCandidateShards,
+  useCounts,
   useIsPlatformAdmin,
-  useItems,
   useOrgs,
-  useRequests,
 } from "@/lib/queries";
 import { ORG_BASE, adminPath, orgPath, projectPath } from "@/lib/routes";
 
@@ -54,16 +51,13 @@ const WORKSPACE = [
  */
 export function LeftNav({ hosted = false }: { hosted?: boolean }) {
   const { projects, active, activeId, setActiveId } = useProjectCtx();
-  const { data: items } = useItems(activeId);
-  const { data: requests } = useRequests(activeId);
-  const { data: candidates } = useCandidateShards(activeId);
-  // The reviewer's real backlog is candidates PLUS anything published without them
-  // (AL-287). Counting only candidates reads as "no work" on a project whose agents
-  // publish directly — which is exactly when there is most to look at.
-  const { data: autoActions } = useAutoActions(activeId);
-  const reviewCount =
-    (candidates?.length ?? 0) +
-    (autoActions ?? []).filter((s) => ["trusted", "agent"].includes(s.scoring_source)).length;
+  // Badge numbers only — never the collections. Fetching items, requests, candidates and
+  // auto-actions in full to call `.length` on them cost 2.1 MB on every route (GRPH-431).
+  // The review count still means what it did: candidates PLUS anything auto-published
+  // without them (AL-287), because counting only candidates reads as "no work" on a project
+  // whose agents publish directly — exactly when there is most to look at. That sum now
+  // happens server-side, next to the definition it depends on.
+  const { data: counts } = useCounts(activeId);
   const { data: orgs = [] } = useOrgs(hosted);
   const org = orgs[0] ?? null;
   const canAdminister = org?.role === "owner" || org?.role === "admin";
@@ -72,10 +66,10 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
   const isPlatformAdmin = !!adminMe?.is_platform_admin;
   const [newProjectOpen, setNewProjectOpen] = React.useState(false);
 
-  const counts: Record<string, number | undefined> = {
-    items: items?.length,
-    requests: requests?.length,
-    review: reviewCount || undefined,
+  const badges: Record<string, number | undefined> = {
+    items: counts?.items,
+    requests: counts?.requests,
+    review: counts?.review || undefined,
   };
   const viewPath = (view: string) =>
     hosted && active?.tag ? projectPath(active.tag, view) : `/${view}`;
@@ -151,7 +145,7 @@ export function LeftNav({ hosted = false }: { hosted?: boolean }) {
             to={viewPath(n.to)}
             icon={n.icon}
             label={n.label}
-            count={"count" in n && n.count ? counts[n.count] : undefined}
+            count={"count" in n && n.count ? badges[n.count] : undefined}
           />
         ))}
       </nav>

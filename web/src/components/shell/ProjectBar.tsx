@@ -3,7 +3,7 @@ import * as React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useProjectCtx } from "@/features/ProjectContext";
-import { useItems } from "@/lib/queries";
+import { useCounts } from "@/lib/queries";
 import { ORG_BASE, projectPath, viewFromPath } from "@/lib/routes";
 
 /**
@@ -26,11 +26,11 @@ export function ProjectBar() {
   // Scoped explicitly. Called bare, this asks the server for items with no project and
   // gets whatever it resolves by default — the bar then reports counts for a project the
   // user is not looking at, which is the ambient-project bug in a different costume.
-  const { data: items = [] } = useItems(active?.id);
+  const { data: counts } = useCounts(active?.id);
 
   if (!active) return null;
   const view = viewFromPath(pathname);
-  const inFlight = items.filter((i) => i.status === "in_progress").length;
+  const inFlight = counts?.items_in_progress ?? 0;
 
   return (
     <div className="relative z-30 flex flex-none items-center gap-3 border-b border-line bg-surface/60">
@@ -67,7 +67,7 @@ export function ProjectBar() {
       <div className="min-w-0 flex-1" />
 
       <div className="flex shrink-0 items-center gap-3.5 pr-5 font-mono text-[10px] uppercase tracking-[0.05em]">
-        <Stat label="items" value={items.length} />
+        <Stat label="items" value={counts?.items ?? 0} />
         <Stat label="in flight" value={inFlight} tone={inFlight ? "text-accent" : undefined} />
       </div>
 

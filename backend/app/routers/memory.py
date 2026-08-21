@@ -28,11 +28,14 @@ class ImportIn(BaseModel):
 def list_shards(
     project_id: str | None = None,
     status: str | None = None,
+    limit: int | None = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """`limit` caps live shards returned. The sidebar browses the newest few and searches for
+    the rest; it was pulling the entire corpus to render a scrolling list (GRPH-431)."""
     authz.require_readable(db, user.id, project_id)
-    return mem_svc.list_shards(db, project_id=project_id, status=status)
+    return mem_svc.list_shards(db, project_id=project_id, status=status, limit=limit)
 
 
 @router.get("/candidates", response_model=list[ShardOut])
