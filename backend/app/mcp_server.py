@@ -1918,7 +1918,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             for r in rel
         ]}
     if name == "next_cluster":
-        agent = args.get("agent_id") or key.name or key.id
+        agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         batch = cluster_svc.next_cluster(db, agent, project_id=pid, max_items=args.get("max_items", 3))
         return {"claimed": len(batch), "cluster": [
             {**_item_dict(b["item"]), "seed": b["seed"], "shared": b["shared"], "link_types": b["link_types"]}
@@ -1949,7 +1949,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         )
         return {"removed": removed}
     if name == "claim_next":
-        agent = args.get("agent_id") or key.name or key.id
+        agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         item = fleet_svc.park(
             db,
             lambda s: items_svc.claim_next(
@@ -1995,7 +1995,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             out.append({**c, "items": [r.key for r in rows if r is not None]})
         return {"clusters": out, "total": len(out)}
     if name == "claim_cluster":
-        agent = args.get("agent_id") or key.name or key.id
+        agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         # The last refusal, kept so it can be RETURNED. The park needs a falsy answer to keep
         # waiting, and translating the miss to None threw away the only thing the caller could
         # act on — the service names who holds the areas and when they free, and this handler
@@ -2019,7 +2019,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "claimed": False, "items": [], "areas": [], "predicted": False, "held_by": [],
             "reason": "nothing ready to claim"}
     if name == "claim_review":
-        agent = args.get("agent_id") or key.name or key.id
+        agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         item = fleet_svc.park(
             db, lambda s: fleet_svc.claim_review(s, agent_id=agent, project_id=pid,
                                                  skip=args.get("skip")),
@@ -2036,11 +2036,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 "worker_agent": item.claimed_by, "reason": ""}
     if name == "sign_off":
         _scoped_item(db, args["id"], allowed)
-        agent = args.get("agent_id") or key.name or key.id
+        agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         try:
             item = fleet_svc.sign_off(
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
-                agent_id=agent, evidence=args.get("evidence"))
+                agent_id=agent, evidence=args.get("evidence"), api_key=key)
         except fleet_svc.NotInReview as e:
             # Conflict, not unauthorized, for the same reason the evidence gate below is: the
             # caller is permitted to sign this off, the work simply has not been handed over.
@@ -2064,10 +2064,19 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.Conflict(str(e), hint=(
                 "dispatch two opposing-lens critics, or run the passes yourself, and record "
                 "each as evidence {kind: sabotage, claim, mutation, tests_failed}"))
-        return _item_dict(item)
+        out = _item_dict(item)
+        if fleet_svc.is_credential(agent):
+            # Say it in the response, not only in the column. A caller that never registered
+            # has no way to notice that the verdict it just recorded is attributed to a key
+            # rather than to it — and four items were signed off that way before anybody did.
+            out["signed_by"] = agent
+            out["attribution"] = (
+                "recorded against this CREDENTIAL, not an agent — no agent id was passed. "
+                "Call register_agent and pass agent_id so the verdict names who made it")
+        return out
     if name == "bounce":
         _scoped_item(db, args["id"], allowed)
-        agent = args.get("agent_id") or key.name or key.id
+        agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         try:
             item = fleet_svc.bounce(
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
@@ -2134,7 +2143,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "fleet_status":
         return fleet_svc.fleet_status(db, pid)
     if name == "heartbeat":
-        agent = args.get("agent_id") or key.name or key.id
+        agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         if not args.get("id"):
             # Presence only. The roster's question is "who is out there", and an agent between
             # tasks is still out there — it just has no lease to extend.
@@ -2160,7 +2169,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return _item_dict(item)
     if name == "release_item":
         _scoped_item(db, args["id"], allowed)
-        agent = args.get("agent_id") or key.name or key.id
+        agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         item = items_svc.release_item(db, args["id"], agent, to_status=args.get("to_status", "next"))
         if item is None:
             raise errors.Conflict(

@@ -108,6 +108,10 @@ def test_cross_org_reads_blocked(client, tenants):
         ("GET", f"/api/links?project_id={pb}", None),
         ("GET", f"/api/requests?project_id={pb}", None),
         ("GET", f"/api/events?project_id={pb}", None),
+        # Added 2026-08-21 (GRPH-436). Both were absent, and both are reads whose
+        # `require_readable` call could be deleted with the whole suite still green.
+        ("GET", f"/api/fleet/presence?project_id={pb}", None),
+        ("GET", f"/api/projects/{pb}/counts", None),
     ]
     for method, path, body in reads:
         r = client.request(method, path, json=body, headers=a)

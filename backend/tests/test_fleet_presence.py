@@ -7,6 +7,8 @@ from app.models import AreaReservation
 from app.services import code_graph as cg
 from app.services import fleet as fleet_svc
 
+from tests.decoy import assert_populated
+
 
 @pytest.fixture
 def db(client):
@@ -276,3 +278,28 @@ def test_a_predicted_hold_says_so_rather_than_reading_as_declared(db):
     rows = {r["area"]: r for r in fleet_svc.held_areas(db, "core")["held"]}
     assert rows["a.py"]["predicted"] is True
     assert rows["b.py"]["predicted"] is False
+
+
+def test_presence_is_pinned_to_its_project(db, decoy):
+    """Removing the project scope must fail HERE (GRPH-436).
+
+    Swapping `active_reservations(db, project_id, now=now)` for `active_reservations(db,
+    None, now=now)` inside `held_areas` left all twenty tests in this file green, because
+    every one of them seeds `core` alone and with one project the two calls return the same
+    rows. Measured during the review of this slice, not supposed.
+
+    The decoy holds real areas through a real agent on a real key — the same insistence
+    `_agent` already documents — so what is excluded here is a row that genuinely exists.
+    """
+    assert_populated(decoy)
+    mine = _agent(db, "core-agent")
+    _reserve(db, mine, "backend/app/services/items.py")
+
+    out = fleet_svc.held_areas(db, "core")
+
+    seen = {e["area"] for e in out["held"] + out["off_map"]}
+    holders = {e["agent_id"] for e in out["held"] + out["off_map"]}
+    assert "backend/app/services/items.py" in seen, "core cannot see its own reservation"
+    assert not (seen & set(decoy["areas"])), f"presence leaked another project's areas: {seen}"
+    assert decoy["agent_id"] not in holders, "presence leaked another project's agent"
+    assert out["total"] == 1, f"total counts rows outside the project: {out['total']}"

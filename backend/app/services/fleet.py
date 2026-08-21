@@ -40,6 +40,45 @@ DEFAULT_ROLE = "worker"
 # also the move that hides it from the roster. The incentive pointed exactly the wrong way.
 ALL_IN_ONE = "all-in-one"
 
+# ---- who is calling -------------------------------------------------------------------------
+#
+# Every fleet tool that stamps a name onto a row resolves it the same way: the `agent_id` the
+# caller sent, or — in the single-agent posture, where nobody has registered — the CREDENTIAL.
+# That fallback is deliberate and predates PRD-17: a solo agent must be able to work without
+# registering. What it lacked was a mark. `items.reviewed_by` could hold an agent id or an API
+# key's name with nothing to tell them apart, and on 2026-08-21 four items were signed off by
+# `wave-refetch-2` — the label on a key minted for an unrelated probe — which reads in the
+# ledger and the UI exactly like an agent that reviewed them. Nobody could have said otherwise
+# from the row (GRPH-437).
+#
+# `key:` is that mark. It is applied in ONE place because consistency is load-bearing rather
+# than cosmetic: the self-review ban is `item.built_by == agent_id`, and both sides get their
+# value from here. Prefixing where work is claimed but not where it is signed off would make
+# the two sides of that comparison stop matching, and the ban would pass silently — which is a
+# worse bug than the one being fixed.
+CREDENTIAL_PREFIX = "key:"
+
+
+def caller_identity(agent_id: str | None, api_key) -> str:
+    """The name to stamp on a row for this call.
+
+    A registered agent's id is used as-is. Everything else is the credential itself, marked so
+    a reader can tell which of the two they are looking at.
+    """
+    if agent_id:
+        return agent_id
+    return f"{CREDENTIAL_PREFIX}{getattr(api_key, 'name', None) or getattr(api_key, 'id', '')}"
+
+
+def is_credential(identity: str | None) -> bool:
+    """Was this row stamped by a credential rather than by a registered agent?
+
+    The question the ledger could not answer before: a `reviewed_by` that nobody can attribute
+    to an agent is a weaker record than one that can, and the difference should be visible
+    rather than inferred from whether the string happens to look like an agent id.
+    """
+    return bool(identity) and identity.startswith(CREDENTIAL_PREFIX)
+
 # Recorded on a credential when all-in-one was CHOSEN, as opposed to a key that simply never
 # set roles. Both resolve to all three, so without this the two are indistinguishable and a
 # client-supplied `role_hint` can silently narrow a posture a human picked in the UI.
@@ -773,13 +812,35 @@ NOT_INDEPENDENT = ("the only work in review was built by an agent you are not di
                    "so review means something")
 
 
-def _independent_of_author(db: Session, item: Item, agent_id: str) -> bool:
-    """Is this caller independent of whoever built the item? False when it built it itself."""
+def _independent_of_author(db: Session, item: Item, agent_id: str, *,
+                           api_key=None) -> bool:
+    """Is this caller independent of whoever built the item? False when it built it itself.
+
+    An UNREGISTERED caller used to be declared independent by fiat — `me is None or …` — and
+    that was a bypass rather than a lenience (GRPH-437). The route to it needed no privilege:
+    an agent builds an item, its heartbeat lapses (which is the ordinary end of every session),
+    the credential stops counting as "running a fleet", and the same process signs its own work
+    off unidentified. `built_by` held an agent id and `reviewed_by` the key's name, so the two
+    were different strings and every invariant test read it as reviewed by somebody else.
+
+    A bare credential cannot demonstrate independence from an agent that ran on THAT credential
+    — it is at best the same operator and at worst the same process. It stays independent of
+    everyone else, so a second person holding a different key can still review normally.
+
+    `api_key` is optional only because internal callers construct their own sessions; when it
+    is absent the credential half cannot be evaluated and this falls back to the old answer.
+    Every path a client can reach passes it.
+    """
     if item.built_by == agent_id:
         return False
     me = db.get(Agent, agent_id)
     author = db.get(Agent, item.built_by) if item.built_by else None
-    return me is None or independent(me, author)
+    if me is None:
+        key_id = getattr(api_key, "id", None)
+        if author is not None and key_id and author.api_key_id == key_id:
+            return False
+        return True
+    return independent(me, author)
 
 
 def could_review(db: Session, *, item: Item, exclude_agent_id: str,
@@ -945,7 +1006,8 @@ def needs_adversarial_evidence(item: Item) -> bool:
     return (item.effort or 0) >= ADVERSARIAL_EFFORT_THRESHOLD
 
 
-def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None = None) -> Item:
+def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None = None,
+             api_key=None) -> Item:
     """Take a reviewed item to `done`.
 
     The second of two independent gates on the invariant. `claim_review` already filters by
@@ -973,7 +1035,11 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # Danger mode is checked ONCE, here, and its answer is reused by the second gate below.
     # Asking twice would mean two chances to answer differently — and this is exactly the kind
     # of gate where a later refactor makes one of them read a weaker condition.
-    danger = (item.built_by == agent_id or not _independent_of_author(db, item, agent_id)) and \
+    # Asked ONCE and reused by both gates below. Two calls would be two chances to answer
+    # differently, and this is exactly the kind of gate where a later refactor makes one of
+    # them read the weaker condition.
+    indep = _independent_of_author(db, item, agent_id, api_key=api_key)
+    danger = (item.built_by == agent_id or not indep) and \
         self_review_allowed(db, item=item, agent_id=agent_id)
     if item.built_by and item.built_by == agent_id and not danger:
         raise SelfReview(
@@ -987,9 +1053,17 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # filters on it, so this is redundant on the happy path — same reasoning as the identity
     # check above: a single gate keyed on a query is one refactor away from being keyed on
     # something weaker, and the failure would be silent.
-    me, author = db.get(Agent, agent_id), (db.get(Agent, item.built_by)
-                                           if item.built_by else None)
-    if me is not None and not independent(me, author) and not danger:
+    if not indep and not danger:
+        if is_credential(agent_id):
+            # The unidentified caller. Named separately because the fix is different: there is
+            # no instance to distinguish and no seat to redeem — the caller has to say who it
+            # is, or somebody on another credential has to take it.
+            raise SelfReview(
+                f"this call is not identified as an agent, and {item.built_by} — which built "
+                f"{item.key} — runs on this same credential, so signing it off here would be "
+                "self-review by an anonymous caller. Pass agent_id (the value register_agent "
+                "returned), or let an agent on a different credential review it"
+            )
         raise SelfReview(
             f"{agent_id} is not independent of {item.built_by} — same call tree, or one "
             f"credential and one session — so signing off {item.key} would be self-review "
