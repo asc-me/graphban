@@ -601,7 +601,8 @@ def _ready_candidates(db: Session, project_id: str | None, lease_seconds: int) -
 
 
 def claim_next(
-    db: Session, agent_id: str, project_id: str | None = None, lease_seconds: int = DEFAULT_LEASE_SECONDS
+    db: Session, agent_id: str, project_id: str | None = None,
+    lease_seconds: int = DEFAULT_LEASE_SECONDS, skip: list[str] | None = None,
 ) -> Item | None:
     """Atomically assign the best ready item to `agent_id` and move it to in_progress.
 
@@ -614,7 +615,17 @@ def claim_next(
     LAPSES rather than binding forever — an author who never comes back is the common case,
     and a hard pin would strand the item.
     """
+    # What the caller has already declined this call-round (GRPH-429). Releasing an item does
+    # not advance the queue — the released item is top-scored again, so a claim/release loop
+    # returns it forever; measured at eight for eight. An agent that cannot take the head of
+    # the queue could reach nothing behind it, in either role.
+    #
+    # Caller-supplied rather than remembered server-side: a decline is a fact about this
+    # agent's turn, not about the item, and storing it would mean deciding when it expires.
+    declined = {s for s in (skip or [])}
     for cand in _ready_candidates(db, project_id, lease_seconds):
+        if cand.id in declined or cand.key in declined:
+            continue
         if pinned_elsewhere(cand, agent_id):
             continue
         claimed = _try_claim(db, cand, agent_id)
@@ -646,8 +657,13 @@ def _try_claim(db: Session, cand: Item, agent_id: str) -> Item | None:
     # current: `built_by` moves to the new holder while `bounce_pinned_to` still names the old
     # author, so `get_item_details` renders a live reservation for an agent that does not hold
     # the item — a wrong answer to the question the field exists to answer.
-    stmt = stmt.values(claimed_by=agent_id, claimed_at=utcnow(), assignee=agent_id,
-                       built_by=agent_id, status="in_progress",
+    # ONE timestamp for both, so "nothing has been written since the claim" is an equality
+    # rather than a race against the flush clock. `updated_at` is otherwise stamped by
+    # `onupdate` a few microseconds after `claimed_at` is computed here, which made the
+    # untouched case indistinguishable from a worked one (GRPH-434).
+    now = utcnow()
+    stmt = stmt.values(claimed_by=agent_id, claimed_at=now, assignee=agent_id,
+                       built_by=agent_id, status="in_progress", updated_at=now,
                        bounce_pinned_to=None, bounce_pinned_until=None)
     if db.execute(stmt).rowcount == 1:
         db.commit()
@@ -726,9 +742,37 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
     from app.services import fleet as fleet_svc
 
     item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
-    if item is None or item.claimed_by != agent_id:
+    if item is None:
+        return None
+
+    # A REVIEW claim is a hold too, and until now only a worker could hand one back — so a
+    # reviewer that correctly refused an item (its own work, say) was stuck holding it for a
+    # full lease while `claim_review` handed it the same item on every call (GRPH-429).
+    # Releasing whichever hold the caller actually has keeps one release verb instead of two.
+    if item.review_claimed_by == agent_id and item.claimed_by != agent_id:
+        item.review_claimed_by = None
+        item.review_claimed_at = None
+        db.commit()
+        db.refresh(item)
+        return item
+
+    if item.claimed_by != agent_id:
         return None
     fleet_svc.release_reservations(db, item_id=item.id)
+    # AUTHORSHIP IS NOT EARNED BY CLAIMING (GRPH-434). `built_by` is written at claim and never
+    # cleared, which is right — releasing a lease must not destroy the record of who made the
+    # thing (GRPH-376/377). But an agent that claimed, wrote nothing and handed the item back
+    # made nothing, and stamping it anyway had two costs: the item named an author who never
+    # opened it, and `independent()` then barred that agent from ever REVIEWING what it
+    # declined. With no way to claim a specific item, claim-and-release is the only way to see
+    # what the queue holds, so the mechanism punished the only available move.
+    #
+    # "Wrote nothing" is decided by the clock rather than by judgement: `updated_at` moves on
+    # any write to the row, so an untouched item still carries the timestamp it had when the
+    # lease was taken. A single substantive write — a status move, touchpoints, evidence —
+    # keeps the authorship, which is what the ban needs.
+    if item.built_by == agent_id and item.claimed_at and item.updated_at <= item.claimed_at:
+        item.built_by = None
     item.claimed_by = None
     item.claimed_at = None
     item.assignee = ""

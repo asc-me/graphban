@@ -68,8 +68,15 @@ def test_a_reviewer_key_is_not_shipped_the_worker_tools(client, auth, proj):
     names = _list(client, _fleet_key(client, auth, proj, "reviewer"))
 
     assert "claim_review" in names and "sign_off" in names
-    for worker_only in ("claim_next", "claim_cluster", "release_item"):
+    for worker_only in ("claim_next", "claim_cluster"):
         assert worker_only not in names
+    # `release_item` LEFT that list in GRPH-429, and this is the second time a tool has been
+    # wrongly filed under "worker" here — see `heartbeat` below. Both were classified by the
+    # job they do for a worker rather than by what they mean: heartbeat extends a lease AND
+    # presence; release hands back whatever hold you have, and a reviewer holds one too. A
+    # reviewer that could not release sat on an item it had refused for a full lease while
+    # `claim_review` handed it the same item on every call.
+    assert "release_item" in names, "a reviewer holds a claim, so it must be able to give it back"
     # `heartbeat` was in that list, and that is precisely how the bug shipped: it reads as a
     # worker tool because it extends an item lease, but it ALSO extends agent PRESENCE, which
     # every role needs. A reviewer was refused the only call keeping it on the roster and

@@ -287,7 +287,9 @@ An optimistic `claimed_by` guard means **two agents never claim the same item**.
 defaults to the API key's name, so one key = one agent. While working, call `heartbeat(id)` to
 keep the lease; if you go silent past `lease_seconds` (default 600) the item becomes
 reclaimable, so a crashed agent's work is automatically freed and picked up by another.
-`release_item(id)` hands it back.
+`release_item(id)` hands it back — and releases a REVIEW claim too, if that is the hold you have. Both claim calls take `skip`: a list of ids you have already declined, because releasing an item does not move you past it (it is top-scored again on the next call).
+
+Releasing an item you never wrote to also clears `built_by`. Claiming is how you SEE what the queue holds, so being recorded as the author of everything you declined would bar you from later reviewing it.
 
 Finished work goes to `review`, not straight to `done`: `update_item(id, status="review")`.
 Another agent takes it with `claim_review` and calls `sign_off` (which auto-extracts lessons to
