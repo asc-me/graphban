@@ -68,8 +68,8 @@ death at once, keep the half-finished work reserved in case the process is merel
 | # | Step | Expected | Result |
 | --- | --- | --- | --- |
 | 1 | Issue a wave of 4 seats | 4 seats, one per agent, 30-min expiry, each `unused` | ✅ (as keys, pre-PRD-19) |
-| 2 | Each terminal registers | Roster shows 4 distinct ids, correct roles, counts broken out by role |✅ roles + ids correct — **found 2 heartbeat defects** (GRPH-377) |
-| 3 | A worker calls `update_item(status="done")` | `unauthorized` naming `reviewer`; item stays `review`; refusal in Activity with the human principal |❌→✅ **FAILED: gate unreachable** (GRPH-377); fixed, re-run 03:39, first firing ever |
+| 2 | Each terminal registers | Roster shows 4 distinct ids, correct roles, counts broken out by role |✅ roles + ids correct — **found 2 heartbeat defects** (not filed — fixed in `4446fe7`) |
+| 3 | A worker calls `update_item(status="done")` | `unauthorized` naming `reviewer`; item stays `review`; refusal in Activity with the human principal |❌→✅ **FAILED: gate unreachable** (not filed — fixed in `4446fe7`); fixed, re-run 03:39, first firing ever |
 | 4 | Two workers `claim_cluster` concurrently | Zero shared touch-areas between the held clusters |✅ two workers, zero shared areas, real concurrent claims |
 | 5 | A worker tries `claim_review` on its own item | Refused — and a worker cannot call `claim_review` at all, which is stronger than the PRD's criterion |✅ refused at the role gate |
 | 6 | Reviewer signs off | `reviewed_by != claimed_by`; where the fleet has the diversity, reviewer vendor ≠ author vendor |✅ one credential, one host — independent by SEAT |
@@ -140,8 +140,19 @@ this guide. Note it.
 ## Results — 2026-08-13/14
 
 Run by a human driving real Grok agents through Cursor, against the isolated `gb-fleet` stack.
-**Eight steps run. Five defects found, four fixed, one filed.** Every one was invisible to a
-suite that was green throughout — 1748 passing at the time.
+**Fourteen steps recorded below. Ten defects found; all ten are now closed.** Every one was
+invisible to a suite that was green throughout — 1748 passing at the time.
+
+Eight steps (1, 2, 3, 4, 6, 6b, 8, 11) were driven by a human in four terminals on 08-13. Six
+(5, 7, 9, 10, 12, 14) were scripted over the real MCP HTTP surface on 08-14 — **weaker
+evidence, because they do not exercise client behaviour**, though step 9 found two defects
+anyway. Step 15 is recorded in the walk table above; step 13 is superseded, seats having
+replaced host as the independence discriminator.
+
+Of the ten defects, four were fixed inside `4446fe7` during the walk and never filed; the
+other six are GRPH-376, 378, 379, 395, 396 and 397, all `done`. The counts in this paragraph
+were `Eight steps run. Five defects found, four fixed, one filed.` until 2026-08-22 — a
+snapshot of the first day that the tables beneath it had already outgrown.
 
 ### Steps
 
