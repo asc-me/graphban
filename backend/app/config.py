@@ -74,10 +74,32 @@ class Settings(BaseSettings):
     # out. `resolved_git_sha` is what `/health` reports, so absence stays legible (GRPH-426).
     git_sha: str = "unknown"
 
+    # Railway injects this into the container for a repo-connected service. It is NOT in the
+    # service's referenceable variable set — `${{ RAILWAY_GIT_COMMIT_SHA }}` resolves to
+    # empty even on a push-triggered deploy, which is how `GIT_SHA` stayed blank after being
+    # pointed at it. Read directly instead of through the resolver. Empty everywhere else,
+    # which costs nothing: it is only ever a fallback.
+    railway_git_commit_sha: str = ""
+
     @property
     def resolved_git_sha(self) -> str:
-        """The revision, or `unknown` — never blank. See `git_sha` above."""
-        return (self.git_sha or "").strip() or "unknown"
+        """The revision, or `unknown` — never blank.
+
+        `GIT_SHA` first, because a self-host bakes it in at build time and that is the
+        deliberate answer. Railway's injected commit second, so the hosted instance can say
+        what it is without an operator remembering to set anything. `unknown` last, because
+        an absent identity must not read as a clean one (GRPH-426).
+        """
+        # `unknown` is a SENTINEL, not a revision, and it has to be treated as absence here
+        # or it shadows everything after it. The Dockerfile bakes `ARG GIT_SHA=unknown` into
+        # the image, so on Railway the container really does carry that literal — and a
+        # fallback placed after it would never be reached. Found by the case table below
+        # rather than in production, which is the only reason this reads correctly.
+        for candidate in (self.git_sha, self.railway_git_commit_sha):
+            value = (candidate or "").strip()
+            if value and value != "unknown":
+                return value
+        return "unknown"
 
     # Secret encryption at rest (AL-73). When set, BYOK provider API keys (and other
     # stored secrets) are Fernet-encrypted in the DB; unset means store as-is (fine for

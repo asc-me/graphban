@@ -166,3 +166,33 @@ def test_an_absent_revision_reads_as_unknown_rather_than_blank(client):
         assert client.get("/health").json()["git_sha"] == "b41944e"
     finally:
         settings.git_sha = original
+
+
+def test_the_platform_commit_is_used_when_nothing_was_baked_in(client):
+    """Railway injects `RAILWAY_GIT_COMMIT_SHA` into the container but does NOT put it in
+    the service's referenceable variable set — `${{ RAILWAY_GIT_COMMIT_SHA }}` resolves to
+    empty even on a push-triggered deploy, which is how `GIT_SHA` stayed blank after being
+    pointed at it. So it is read directly.
+
+    The trap this pins: `unknown` is a SENTINEL, not a revision. The Dockerfile bakes
+    `ARG GIT_SHA=unknown` into the image, so the container really does carry that literal —
+    and a fallback placed after a truthiness check would never be reached. The first version
+    of this resolution had exactly that bug.
+    """
+    from app.config import settings
+
+    was = (settings.git_sha, settings.railway_git_commit_sha)
+    try:
+        settings.railway_git_commit_sha = "ee55260"
+
+        for baked in ("", "   ", "unknown"):
+            settings.git_sha = baked
+            assert client.get("/health").json()["git_sha"] == "ee55260", (
+                f"{baked!r} shadowed the platform commit"
+            )
+
+        # A real baked value still wins — a self-host states its revision deliberately.
+        settings.git_sha = "deadbee"
+        assert client.get("/health").json()["git_sha"] == "deadbee"
+    finally:
+        settings.git_sha, settings.railway_git_commit_sha = was

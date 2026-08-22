@@ -259,7 +259,7 @@ account-touching step (the remaining `railway` items). What the code already han
 | `REDIS_URL` | Optional; shared rate-limit store across replicas (in-process fallback otherwise). |
 | `CORS_ORIGINS` | The web service's public origin(s). |
 | `TRUSTED_PROXY=true` | Behind Railway's edge, so `X-Forwarded-For` is trustworthy. |
-| `GIT_SHA=${{ RAILWAY_GIT_COMMIT_SHA }}` | Release identity. A **reference**, not a literal — Railway supplies the git variables **only for GitHub-triggered deploys**, so a redeploy started any other way resolves it to empty. `/health` reports `unknown` in that case rather than a blank, because `ok` with no revision is a check that cannot say what it is. |
+| *(nothing to set)* | Release identity is automatic on Railway. `RAILWAY_GIT_COMMIT_SHA` is injected into the container and read directly — it is **not** in the referenceable variable set, so `GIT_SHA=${{ RAILWAY_GIT_COMMIT_SHA }}` resolves to empty even on a push-triggered deploy. That was tried and measured. Leave `GIT_SHA` unset here; a value baked at build time still wins where one exists, and `/health` reports `unknown` rather than a blank when neither is available. |
 
 ### The first operator (hosted)
 
