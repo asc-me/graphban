@@ -128,7 +128,7 @@ def org(_clean_database):
     """An org with TWO administrators and one project — the smallest world these races need."""
     s = SessionLocal()
     try:
-        for uid, email in (("lk_a", "a@lock.test"), ("lk_b", "b@lock.test")):
+        for uid, email in (("lk_a", "a@lock.example.com"), ("lk_b", "b@lock.example.com")):
             s.add(User(id=uid, name=uid, handle=uid, email=email, password_hash="x"))
         s.add(Organization(id="lk_org", name="Locks", plan="free"))
         s.flush()

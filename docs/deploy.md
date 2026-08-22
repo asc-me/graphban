@@ -281,6 +281,13 @@ It creates the operator and their org, prints a generated password **once**, and
 API key and no project — everything past the first login goes through the product. It
 refuses on a second run, so it cannot create a rival operator.
 
+**The address must be one the login route accepts**, and provisioning checks that with the
+same validator before writing anything (GRPH-461). That rules out RFC 2606 reserved TLDs —
+`example.invalid`, anything under `.test` — which look like fine placeholders in a runbook
+and are not usable addresses. Before the check, `init` reported `provisioned: true` and
+handed over a password for an account the login route would refuse; the failure only
+surfaced at the sign-in screen, where it reads as a mistyped password.
+
 **The email must already be in `PLATFORM_ADMIN_EMAILS`**, or the command refuses. Platform
 admin is an env allowlist, not a flag on the row, so an account created with any other
 address signs in perfectly and can never open the operator console — which looks like a
