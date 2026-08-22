@@ -148,7 +148,7 @@ def test_the_counts_are_pinned_to_their_project(db, decoy):
     literal was the first version and it failed at 12 == 3, which is the fixture talking, not
     the code under test.
     """
-    assert_populated(decoy)
+    assert_populated(db, decoy)
     _seed(db, items=3, in_progress=1, requests=2, candidates=2)
 
     from app.services import items as items_svc

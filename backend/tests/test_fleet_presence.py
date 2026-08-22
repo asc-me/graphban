@@ -291,7 +291,7 @@ def test_presence_is_pinned_to_its_project(db, decoy):
     The decoy holds real areas through a real agent on a real key — the same insistence
     `_agent` already documents — so what is excluded here is a row that genuinely exists.
     """
-    assert_populated(decoy)
+    assert_populated(db, decoy)
     mine = _agent(db, "core-agent")
     _reserve(db, mine, "backend/app/services/items.py")
 
