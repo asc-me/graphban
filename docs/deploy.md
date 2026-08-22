@@ -259,6 +259,7 @@ account-touching step (the remaining `railway` items). What the code already han
 | `REDIS_URL` | Optional; shared rate-limit store across replicas (in-process fallback otherwise). |
 | `CORS_ORIGINS` | The web service's public origin(s). |
 | `TRUSTED_PROXY=true` | Behind Railway's edge, so `X-Forwarded-For` is trustworthy. |
+| `GIT_SHA=${{ RAILWAY_GIT_COMMIT_SHA }}` | Release identity. A **reference**, not a literal — Railway supplies the git variables **only for GitHub-triggered deploys**, so a redeploy started any other way resolves it to empty. `/health` reports `unknown` in that case rather than a blank, because `ok` with no revision is a check that cannot say what it is. |
 
 ### The first operator (hosted)
 
