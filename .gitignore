@@ -10,6 +10,10 @@ backend/.pytest.db
 # `test_no_tracked_control_bytes` on main and therefore on every PR built against it.
 .pytest.db
 .pytest.db-journal
+# Same trap, same fix: scripts/docs_completeness.py opens a throwaway SQLite
+# database in whatever directory it is run from (GRPH-475).
+.docscheck.db
+.docscheck.db-journal
 backend/.pytest_cache/
 # graphban-fleet is a separate distribution with its own venv (PRD-22 D-e). `uv` drops a
 # self-ignoring .gitignore inside .venv/, but naming it here means the repo does not
