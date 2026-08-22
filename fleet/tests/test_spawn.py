@@ -442,3 +442,53 @@ def test_stopping_a_child_does_not_kill_the_supervisor(tmp_path: Path, scripts, 
         f"(returncode {result.returncode}, negative means it was signalled)\n{result.stderr}"
     )
     assert "supervisor survived" in result.stdout
+
+
+def test_a_child_that_registered_and_exited_at_once_is_not_called_broken(
+    git_repo: Path, tmp_path: Path, scripts, log_dir: Path
+):
+    """The defect the acceptance walk found on its third step.
+
+    D-c says exiting on empty is the NORMAL end of a worker's life: it claims with
+    `wait_seconds=0`, works what it got, and leaves. A fast one — register, find nothing,
+    exit — can be gone before the supervisor's first poll. Checking liveness before the
+    roster reported that child as `exited 0 before registering`, which sends the operator
+    to look at the vendor for a fault that never happened.
+
+    No mock caught it: mocked children sleep, and mocked rosters always answer.
+    """
+    wt = create(git_repo, tmp_path / "w1", "wave-1", "GRPH-A1")
+    child = spawn(
+        _launch(scripts, "exits_immediately", tmp_path / "mcp.json"), wt.path, wt.branch, log_dir
+    )
+    child.process.wait(timeout=20)
+    assert not child.running, "the child has to be gone for this to test anything"
+
+    agent = await_registration(
+        child,
+        _roster({"id": "GRPH-A1", "worktree": str(wt.path), "enrolment_id": "seat-1"}),
+        window=5,
+        poll=0.05,
+    )
+
+    assert agent["id"] == "GRPH-A1"
+    assert child.agent_id == "GRPH-A1"
+    assert child.registration_latency is not None
+    assert child.stopped_because is None, "a worker that did its job was not stopped"
+
+
+def test_a_child_that_exited_without_registering_is_still_called_broken(
+    git_repo: Path, tmp_path: Path, scripts, log_dir: Path
+):
+    """The control. Asking the roster first must not turn the silent drop into a pass —
+    that is the failure S2 exists to make loud."""
+    wt = create(git_repo, tmp_path / "w1", "wave-1", "GRPH-A1")
+    child = spawn(
+        _launch(scripts, "exits_badly", tmp_path / "mcp.json", adapter="codex"),
+        wt.path, wt.branch, log_dir,
+    )
+    child.process.wait(timeout=20)
+
+    with pytest.raises(LaunchFailed) as exc:
+        await_registration(child, _roster(), window=5, poll=0.05)
+    assert "codex" in str(exc.value) and "3" in str(exc.value)

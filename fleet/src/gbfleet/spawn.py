@@ -204,15 +204,7 @@ def await_registration(
     target = str(child.worktree)
     deadline = child.started_at + window
 
-    while True:
-        if not child.running:
-            code = child.process.returncode
-            stop(child, Reason.NEVER_REGISTERED)
-            raise LaunchFailed(
-                f"adapter {child.adapter!r}: child exited {code} before registering.\n"
-                f"stderr tail:\n{child.tail()}"
-            )
-
+    def matched() -> dict | None:
         for agent in roster().get("agents") or []:
             if agent.get("worktree") == target:
                 child.agent_id = agent.get("id")
@@ -222,6 +214,31 @@ def await_registration(
                 child.seat_id = agent.get("enrolment_id")
                 child.registration_latency = time.monotonic() - child.started_at
                 return agent
+        return None
+
+    while True:
+        if not child.running:
+            # **Ask the roster before concluding it never registered.** A worker that
+            # registers, finds nothing to claim and exits is doing the normal thing —
+            # D-c says exiting on empty is the normal end of a worker's life, not a
+            # failure — and a fast one can be gone before the first poll. Checking
+            # liveness first reported exactly that child as a broken adapter, which is
+            # both wrong and the most expensive way to be wrong: the operator goes
+            # looking at the vendor.
+            #
+            # Found by the acceptance walk (PRD-22 §9) on its third step. No mock caught
+            # it because mocked children sleep and mocked rosters always answer.
+            if (agent := matched()) is not None:
+                return agent
+            code = child.process.returncode
+            stop(child, Reason.NEVER_REGISTERED)
+            raise LaunchFailed(
+                f"adapter {child.adapter!r}: child exited {code} before registering.\n"
+                f"stderr tail:\n{child.tail()}"
+            )
+
+        if (agent := matched()) is not None:
+            return agent
 
         if time.monotonic() >= deadline:
             stop(child, Reason.NEVER_REGISTERED)

@@ -51,6 +51,7 @@ jobs:
               # matrix matches the registry. Without this the matrix could drift with a
               # green tick, which is the exact failure that guard exists to prevent.
               - 'docs/fleet-adapters.md'
+              - 'docs/fleet-supervisor-walk.md'
               - '.github/workflows/ci.yml'
 
   backend-sqlite:
