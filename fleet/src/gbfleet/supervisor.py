@@ -83,6 +83,26 @@ class AllocationRead:
     #: describe its ignorance rather than the work.
     uninformative: bool
 
+    #: **For whoever builds the continuous scaling loop.** D-j's escape hatch is a pool
+    #: of seats minted up front, with the supervisor deciding how many to redeem rather
+    #: than waking an LLM planner for each one. That decision needs a count of
+    #: non-colliding work, and `propose_allocation` cannot give it before a child exists.
+    #:
+    #: The answer is `collision_clusters`, which is already an MCP tool and already
+    #: ungated, so it costs nothing against the manifest — but ONLY for the cold start.
+    #: It calls `clusters_for_project` directly and does NOT subtract active
+    #: reservations, which `propose_allocation` filters for itself. With no agents there
+    #: are no reservations and the two agree exactly; once agents hold reservations it
+    #: OVERCOUNTS, and a supervisor trusting it would start workers with nothing
+    #: non-colliding left to claim.
+    #:
+    #: So: `collision_clusters` while the roster is empty, `propose_allocation` the
+    #: moment it is not. Written down here because "use the other one once warm" is
+    #: exactly the kind of rule that gets simplified away by someone tidying.
+    #:
+    #: This is not needed by `gbfleet mcp`: there the PLANNER decides how many to run,
+    #: and it holds both servers, so it can read the clusters itself.
+
     @classmethod
     def of(cls, payload: dict) -> "AllocationRead":
         rationale = str(payload.get("rationale") or "")
@@ -285,6 +305,67 @@ def up(
     return wave
 
 
+def _tree_for(repo: Path, workspace: Path, wave_name: str, slot: str) -> Worktree:
+    """One worktree on its own branch.
+
+    D-g names the branch `gb/<wave>-<agent-short-id>`, and the agent id does not exist
+    yet: it is minted server-side at `register_agent`, which cannot happen until the
+    child is running, which cannot happen until it has a worktree on a branch. The slot
+    stands in — deterministic, collision-free within a wave, and the roster ties agent to
+    worktree once the child registers.
+    """
+    workspace.mkdir(parents=True, exist_ok=True)
+    return wt_mod.create(repo, workspace / f"{wave_name}-{slot}", wave_name, slot)
+
+
+def start_one(
+    tree: Worktree,
+    seat: Seat,
+    launch_factory: LaunchFactory,
+    client: Graphban,
+    limits: Limits,
+    partition: Partition,
+    *,
+    workspace: Path,
+    wave_name: str,
+    slot: str,
+    on_spawned: Callable[[Child], None] | None = None,
+) -> Child:
+    """Launch one child into one worktree and wait for it to appear on the roster.
+
+    Shared by the wave loop and the stdio `spawn` tool, so the two cannot drift: a
+    planner spawning a child by hand must get the same seat handling, the same
+    registration window and the same failure text as one the deterministic loop starts.
+
+    **`on_spawned` fires the moment the process exists, before registration is awaited**,
+    and that ordering is the point. A child that never registers still ran, still spent
+    money, and still needs reaping and a record — so the caller has to know about it
+    before the wait that may raise. Folding the two steps into one function without this
+    dropped exactly that child out of the wave, and the only symptom was one fewer line
+    in a log nobody was reading yet.
+    """
+    launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name))
+    child = spawn(
+        launch, tree.path, tree.branch, _logs(workspace, f"{wave_name}-{slot}"), base=tree.base
+    )
+    if on_spawned is not None:
+        on_spawned(child)
+    # Through `_roster`, not straight to the client: this is where the partition ceiling
+    # is first learned, and routing around it left it None for the whole wave — so the
+    # very first missed poll read as "no ceiling known" and stopped every child.
+    #
+    # An empty roster while unreachable means the registration window still applies, and
+    # a partition lasting the whole window is recorded as never-registered rather than
+    # lease-lapsed. Slightly the wrong word for the right outcome: a child with no
+    # identity has no claim either way (D-i).
+    await_registration(
+        child,
+        lambda: _roster(client, partition) or {},
+        window=limits.registration_window,
+    )
+    return child
+
+
 def _start(
     wave: Wave,
     seats: Sequence[Seat],
@@ -308,36 +389,19 @@ def _start(
     planned = len(seats)
 
     for index, seat in enumerate(seats):
-        # D-g names the branch `gb/<wave>-<agent-short-id>`, and the agent id does not
-        # exist yet: it is minted server-side at `register_agent`, which cannot happen
-        # until the child is running, which cannot happen until it has a worktree on a
-        # branch. The slot index stands in — still deterministic, still collision-free
-        # within a wave, and the roster ties agent to worktree once the child registers.
         slot = str(index + 1)
         agent_slot = f"{wave_name}-{slot}"
         tree: Worktree | None = None
         try:
-            tree = wt_mod.create(repo, workspace / agent_slot, wave_name, slot)
-            launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name))
-            child = spawn(
-                launch, tree.path, tree.branch, _logs(workspace, agent_slot), base=tree.base
-            )
-            started.append(child)
-            wave.spawned.append(child)
-            # Through `_roster`, not straight to the client: this is where the ceiling
-            # is first learned, and routing around it left `partition.ceiling` None for
-            # the whole wave — so the very first missed poll read as "no ceiling known"
-            # and stopped every child. `_roster`'s docstring said every read went
-            # through it; this is what makes that true.
-            #
-            # An empty roster while unreachable means the registration window still
-            # applies, and a partition lasting the whole window is recorded as
-            # never-registered rather than lease-lapsed. Slightly the wrong word for the
-            # right outcome: a child with no identity has no claim either way (D-i).
-            await_registration(
-                child,
-                lambda: _roster(client, wave.partition) or {},
-                window=limits.registration_window,
+            tree = _tree_for(repo, workspace, wave_name, slot)
+            def remember(child: Child) -> None:
+                started.append(child)
+                wave.spawned.append(child)
+
+            start_one(
+                tree, seat, launch_factory, client, limits, wave.partition,
+                workspace=workspace, wave_name=wave_name, slot=slot,
+                on_spawned=remember,
             )
         except (LaunchFailed, wt_mod.BranchExists, wt_mod.GitError) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
