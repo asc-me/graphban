@@ -92,24 +92,56 @@ def seed_decoy(db, *, items: int = 4, in_progress: int = 2, requests: int = 3,
 
     return {
         "project_id": project_id,
-        "items": items,
-        "items_in_progress": in_progress,
-        "requests": requests,
-        "candidates": candidates,
         "item_ids": item_ids,
         "agent_id": agent.id,
         "areas": areas,
+        # COUNTED FROM THE DATABASE, not copied from the arguments above (GRPH-466). The
+        # first version returned the parameters, so `assert_populated` reduced to
+        # `assert 4 > 0` and could not fail however little got written. Proved by making
+        # the shard loop a no-op: all 27 scoping tests stayed green, the guard included.
+        **live_counts(db, project_id, agent.id),
     }
 
 
-def assert_populated(manifest: dict) -> None:
+def live_counts(db, project_id: str, agent_id: str) -> dict:
+    """What is ACTUALLY in the decoy right now.
+
+    One function builds the manifest and checks it, so the two can never describe different
+    things. `AreaReservation` carries no `project_id` — it reaches a project through its
+    agent — which is why this needs the agent id as well as the project.
+    """
+    from sqlalchemy import func, select
+
+    from app.models import AreaReservation, Item, MemoryShard, Request
+
+    def n(model, *where) -> int:
+        return db.scalar(select(func.count()).select_from(model).where(*where)) or 0
+
+    return {
+        "items": n(Item, Item.project_id == project_id),
+        "items_in_progress": n(Item, Item.project_id == project_id,
+                               Item.status == "in_progress"),
+        "requests": n(Request, Request.project_id == project_id),
+        "candidates": n(MemoryShard, MemoryShard.project_id == project_id,
+                        MemoryShard.status == "candidate"),
+        "reservations": n(AreaReservation, AreaReservation.agent_id == agent_id),
+    }
+
+
+def assert_populated(db, manifest: dict) -> None:
     """The control every scoping assertion depends on.
 
     Call it before asserting that a `core` read excludes the decoy: if the decoy is empty,
     "excluded" and "never existed" are the same observation, and the test passes without
     being able to fail.
+
+    **Re-queries rather than reading the manifest** (GRPH-466). Trusting the manifest would
+    make this assert whatever seeding intended, which is exactly the failure it exists to
+    catch, and it would also miss rows removed after seeding. It asks the database at the
+    moment the guarantee is needed.
     """
-    assert manifest["items"] > 0, "no decoy items — a scoping assertion cannot fail"
-    assert manifest["requests"] > 0, "no decoy requests — a scoping assertion cannot fail"
-    assert manifest["candidates"] > 0, "no decoy shards — a scoping assertion cannot fail"
-    assert manifest["areas"], "no decoy reservations — a scoping assertion cannot fail"
+    live = live_counts(db, manifest["project_id"], manifest["agent_id"])
+    assert live["items"] > 0, "no decoy items — a scoping assertion cannot fail"
+    assert live["requests"] > 0, "no decoy requests — a scoping assertion cannot fail"
+    assert live["candidates"] > 0, "no decoy shards — a scoping assertion cannot fail"
+    assert live["reservations"] > 0, "no decoy reservations — a scoping assertion cannot fail"
