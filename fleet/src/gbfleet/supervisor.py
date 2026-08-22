@@ -462,7 +462,7 @@ def _wait_out(
     the item to somebody else and a second agent is already working it.
     """
     while any(child.running for child in children):
-        _roster(client, wave.partition)
+        roster = _roster(client, wave.partition)
 
         for child in children:
             if not child.running:
@@ -474,6 +474,8 @@ def _wait_out(
                 )
 
         _enforce_the_lease(wave, children)
+        if roster is not None:
+            _catch_the_disowned(wave, children, roster)
 
         if any(child.running for child in children):
             sleep(poll)
@@ -481,6 +483,50 @@ def _wait_out(
     # One last read, so a partition that ended just as the children did is still
     # reconciled rather than left as the last thing that happened.
     _roster(client, wave.partition)
+
+
+def _catch_the_disowned(wave: Wave, children: list[Child], roster: dict) -> None:
+    """Stop children the server has stopped counting. PRD-22 D-d, the backstop half.
+
+    `end_wave` and `retire_wave` revoke a seat while a child is still building, and there
+    is no push channel — §D-e, unchanged — so the child discovers it only on its next
+    server call, which a child deep in a build may not make for a long time.
+
+    **The planner is the primary path and it already exists**: it polls Graphban, sees a
+    seat revoked, and calls `stop` on the local surface (GRPH-450). This is the backstop,
+    because a planner that is idle, dead, or mid-turn notifies nobody — and "end wave is a
+    hard stop" is only true if something is watching. Two paths to the same transition is
+    fine here precisely because `stop` is idempotent; two paths to *deciding* it would not
+    be.
+
+    **What is actually observable.** The supervisor is not the minter, so it cannot read
+    seat state — `fleet_status` returns the seats you minted, and these were minted by the
+    planner. What it can see is the roster: a revoked seat stops the child's heartbeats
+    landing, so within the presence TTL the agent reads `offline` while its process is
+    still alive. A revoked credential shows the same way, immediately. So does a child
+    whose MCP client died. All three mean the claim is gone and the process is spending
+    money without one, which is why the reason is named for the observation rather than
+    for a cause the supervisor cannot prove.
+
+    Only called when the roster was actually READ. During a partition every agent looks
+    absent, and killing the fleet because the network dropped is D-i's job to prevent, not
+    this one's to cause.
+    """
+    live = {
+        a.get("id"): a for a in (roster.get("agents") or []) if a.get("id")
+    }
+    for child in children:
+        if not child.running or not child.agent_id:
+            continue
+        row = live.get(child.agent_id)
+        if row is None:
+            why = "the server no longer lists this agent"
+        elif row.get("state") == "offline":
+            why = "the server reads this agent offline while its process is alive"
+        else:
+            continue
+        stop(child, Reason.SEAT_GONE)
+        wave.failures.append(f"{child.adapter} pid {child.pid} ({child.agent_id}): {why}")
 
 
 def _enforce_the_lease(wave: Wave, children: list[Child]) -> None:
