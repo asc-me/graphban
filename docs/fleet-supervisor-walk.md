@@ -13,12 +13,19 @@ SEED_ON_START=false DATABASE_URL=... .venv/bin/python -m uvicorn app.main:app --
 # then, from fleet/
 GBFLEET_WALK_SERVER=http://127.0.0.1:8099 \
 GBFLEET_WALK_KEY=gb_sk_... \
-GBFLEET_WALK_PROJECT=walk \
-GBFLEET_WALK_JWT=<operator access token> \
+GBFLEET_WALK_PROJECT=<a SCRATCH project — the walk refuses a real one> \
+GBFLEET_WALK_SEATS="PLANNER-AAAAAA PLANNER-BBBBBB" \
 GBFLEET_WALK_DB=1 \
 GBFLEET_WALK_PSQL="docker exec -i <pg> psql -U postgres -d <db>" \
     .venv/bin/python -m pytest tests/test_acceptance_walk.py -s
 ```
+
+Two **planner** seats, because the walk needs a second minter to prove step 14's scope
+against. `GBFLEET_WALK_SEATS` takes codes a human issued from the Fleet view — the path
+that works against a deployed instance, where nobody has the operator's password on a
+command line. `GBFLEET_WALK_JWT=<access token>` does the same over REST if you hold a
+session. Issuing that first credential is a human's, by design (PRD-17 §D-e); the walk
+has no way to mint its own way in, and that is the point.
 
 The child is `fleet/tests/child_standin.py` — a genuine MCP client with the model
 removed. It redeems a real single-use seat, reports a real worktree and branch, claims
@@ -27,7 +34,7 @@ config placement, version pinning — is verified against real `claude`, `cursor
 and `grok` binaries in `test_adapters.py`, so nothing about a vendor is being assumed
 here; only the tokens are saved.
 
-## Result — 16 passed, 1 blocked, 0 findings
+## Result — 16 passed, 1 blocked, 0 findings in the supervisor (1 in the walk itself)
 
 Re-run 2026-08-22 against a fresh instance on `9d1936b`, the commit deployed to
 `ubuntu-srv`. The first run (2026-08-21) reported 14 passed, 3 blocked; GRPH-460 closed
@@ -86,6 +93,28 @@ own wave instead. Salvage keeping the branch alive is the whole point of salvage
 supervisor quietly reusing it would have been the bug.
 
 ## What the walk found
+
+**The walk was a loaded gun pointed at whichever project you named.** Step 6 has a worker
+call `claim_next`, and `claim_next` takes the highest-priority ready item in the project —
+not the one the walk created a moment earlier. Pointed at a real project it claims
+somebody's work, attaches a fabricated evidence note, moves it to `review`, and has a
+sibling sign it off as `done`. Step 6's assertion notices the wrong item afterwards, which
+is four writes too late.
+
+It was found the way these things are found — by using it. Two planner seats were issued
+by hand for a run against `ubuntu-srv` and arrived minted against `agentledger`: 348 items,
+53 of them ready to claim, `GRPH-466` at the head of the queue. The walk would have run.
+
+`_refuse_a_real_project` now runs FIRST, before a single write, and refuses anything
+holding an item the walk did not itself write. Verified by pointing it at a project with
+one stray item: it refuses in 0.12s, names the item, and the item count is unchanged
+afterwards — still `next`, still unclaimed. A second run against the walk's own scratch
+project still passes, which is the case the guard must not break.
+
+The near-miss is worth stating plainly: an acceptance walk is the most destructive test in
+the repository, because its whole value is that it does real things to a real server. That
+is an argument for a guard, not against the walk.
+
 
 **A worker that registered and exited immediately was reported as a broken adapter.**
 `await_registration` checked whether the process was still alive *before* it checked the

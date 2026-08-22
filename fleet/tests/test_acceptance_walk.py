@@ -12,8 +12,14 @@ that quietly passed by not running would be the worst possible version of this f
     DATABASE_URL=... uvicorn app.main:app --port 8099        # a real instance
     GBFLEET_WALK_SERVER=http://127.0.0.1:8099 \\
     GBFLEET_WALK_KEY=gb_sk_... \\
+    GBFLEET_WALK_PROJECT=<a scratch project, NOT a real one — see below> \\
+    GBFLEET_WALK_SEATS="PLANNER-AAAAAA PLANNER-BBBBBB" \\
     GBFLEET_WALK_DB="postgresql://..." \\
         .venv/bin/python -m pytest tests/test_acceptance_walk.py -v -s
+
+**Point it at a scratch project.** The walk claims from the backlog and signs work off
+as done; `_refuse_a_real_project` stops it before the first write if the project holds
+anything the walk did not itself create.
 
 The child is `child_standin.py`: a genuine MCP client with the model removed. It redeems
 a real seat, reports a real worktree, claims real work and exits. What it stands in for —
@@ -50,6 +56,16 @@ JWT = os.environ.get("GBFLEET_WALK_JWT")
 PSQL = os.environ.get("GBFLEET_WALK_PSQL", "")
 PROJECT = os.environ.get("GBFLEET_WALK_PROJECT", "")
 STANDIN = Path(__file__).parent / "child_standin.py"
+
+#: Planner seats an operator issued by hand and pasted in, consumed in order. The walk
+#: needs two: one to register with, and one for the second minter step 14 measures the
+#: retire scope against.
+SEATS = [c for c in os.environ.get("GBFLEET_WALK_SEATS", "").replace(",", " ").split()]
+SEATS_GIVEN = bool(SEATS)
+
+#: Every item this walk creates is titled with this. It is also the ONLY thing that
+#: tells a scratch project apart from a real one — see `_refuse_a_real_project`.
+WALK_ITEM = "acceptance walk:"
 
 pytestmark = pytest.mark.skipif(
     not (SERVER and KEY),
@@ -134,6 +150,35 @@ class Report:
         print(f"  ! {step:2}. FINDING — {what}", flush=True)
 
 
+def _refuse_a_real_project() -> None:
+    """Refuse to walk anything but a scratch project. FIRST, before a single write.
+
+    Step 6 has a worker call `claim_next`, and `claim_next` takes the highest-priority
+    ready item in the project — not the one the walk just created. Pointed at a real
+    project this walk claims somebody's work, attaches a fabricated evidence note,
+    moves it to `review`, and has a sibling sign it off as `done`. Step 6's assertion
+    catches the wrong item afterwards, which is far too late: the damage is four writes
+    old by then, and two of them are irreversible in any practical sense.
+
+    That was not hypothetical. On 2026-08-22 two planner seats arrived minted against
+    `agentledger` — 348 items, 53 of them ready to claim, `GRPH-466` at the head of the
+    queue. Nothing in the walk would have stopped it.
+
+    The test is "does this project hold anything the walk did not write", because a
+    scratch project re-run against itself is the normal case and must keep working.
+    """
+    found = rpc("search_items", project_id=PROJECT, limit=100)
+    strays = [f"{r['id']} {r.get('title', '')[:40]}" for r in found.get("results", [])
+              if not r.get("title", "").startswith(WALK_ITEM)]
+    total = found.get("total", 0)
+    if strays or total > 100:
+        raise AssertionError(
+            f"refusing to walk {PROJECT!r}: {len(strays)} of its {total} items were not "
+            f"written by this walk ({'; '.join(strays[:3])}). The walk CLAIMS from the "
+            "backlog and signs work off as done — give it a scratch project of its own."
+        )
+
+
 def _standin_launch(seat: Seat, tree, instruction_file: Path, *, extra=("--claim",)) -> Launch:
     return Launch(
         adapter="standin",
@@ -149,9 +194,10 @@ def _standin_launch(seat: Seat, tree, instruction_file: Path, *, extra=("--claim
 def test_the_acceptance_walk(git_repo: Path, tmp_path: Path, state: Path):
     report = Report()
     print(f"\nPRD-22 acceptance walk against {SERVER}\n", flush=True)
+    _refuse_a_real_project()
 
     # 1 ─ a planner registers, and cannot claim work.
-    planner_code = _seat_via_rest("planner")
+    planner_code = _first_seat("planner")
     planner = rpc("register_agent", label="walk planner", enrolment_code=planner_code)
     why = refused("claim_next", agent_id=planner["agent_id"], wait_seconds=0)
     assert "planner" in why or "role" in why.lower(), why
@@ -166,7 +212,7 @@ def test_the_acceptance_walk(git_repo: Path, tmp_path: Path, state: Path):
     # ── one real item, so steps 6 and 7 have work to do rather than a permission to
     #    inspect. An empty project would let both pass without a review ever happening.
     work_item = rpc(
-        "create_item", title="acceptance walk: something to build", project_id=PROJECT,
+        "create_item", title=f"{WALK_ITEM} something to build", project_id=PROJECT,
         status="next", touchpoints=["walk/predicted.py"],
     )["id"]
 
@@ -330,7 +376,7 @@ def test_the_acceptance_walk(git_repo: Path, tmp_path: Path, state: Path):
     #      spared, so the walk makes one. An isolation check with nothing on the other
     #      side passes for the wrong reason — it is the empty-set version of "absence
     #      reads as clean", and this repository has shipped that defect a dozen times.
-    other_code = _seat_via_rest("planner")
+    other_code = _first_seat("planner")
     other = rpc("register_agent", label="walk planner B", enrolment_code=other_code)
     other_seat = rpc("mint_enrolment", agent_id=other["agent_id"], role="worker")
     assert other_seat["enrolment_code"]
@@ -428,20 +474,43 @@ def test_the_acceptance_walk(git_repo: Path, tmp_path: Path, state: Path):
     assert not report.findings, report.findings
 
 
-def _seat_via_rest(role: str) -> str:
-    """Mint the FIRST seat the way a human does — over REST, behind user auth.
+def _first_seat(role: str) -> str:
+    """A seat NO agent could have minted. The bootstrap is a human's, by design.
 
     The walk starts with nobody registered, so there is no planner to mint from yet.
-    That bootstrap is the human's, by design: PRD-17 §D-e says issuing a credential and
-    admitting an agent should never be automatic, and `mint_enrolment_as` took only the
-    second half of that deliberately.
+    PRD-17 §D-e says issuing a credential and admitting an agent should never be
+    automatic, and `mint_enrolment_as` took only the second half of that deliberately.
+
+    Two ways in, both of them a person's:
+
+    - `GBFLEET_WALK_SEATS` — codes an operator issued from the Fleet view and pasted in.
+      This is the path that works against a DEPLOYED instance, where nobody has the
+      operator's password on a command line and minting one by reaching into the box is
+      the authority gate this very step exists to honour.
+    - `GBFLEET_WALK_JWT` — a session, minting over REST as the walk goes. Convenient on
+      an instance you just provisioned and hold the password for.
     """
     import urllib.parse
 
+    if SEATS_GIVEN:
+        assert role == "planner", (
+            f"pre-minted seats are planner seats; the walk asked for {role!r}, which "
+            "means a step changed and this bootstrap no longer matches it"
+        )
+        if not SEATS:
+            pytest.fail(
+                "GBFLEET_WALK_SEATS ran out. The walk needs TWO planner seats: one to "
+                "register with (step 1), one for the second minter step 14 measures the "
+                "retire scope against."
+            )
+        return SEATS.pop(0)
+
     if not JWT:
         pytest.skip(
-            "set GBFLEET_WALK_JWT: minting the FIRST seat is behind user auth, which is "
-            "PRD-22 §6's complaint stated as a precondition of its own acceptance walk"
+            "set GBFLEET_WALK_SEATS to two planner codes an operator issued, or "
+            "GBFLEET_WALK_JWT for a session that can mint them: the FIRST seat is behind "
+            "user auth, which is PRD-22 §6's complaint stated as a precondition of its "
+            "own acceptance walk"
         )
     body = json.dumps({"project_id": PROJECT, "roles": [role]}).encode()
     request = urllib.request.Request(
