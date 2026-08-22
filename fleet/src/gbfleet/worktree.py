@@ -124,6 +124,10 @@ class Worktree:
     path: Path
     branch: str
     repo: Path
+    #: The commit this worktree was cut from, resolved to a sha at creation. Kept
+    #: because "HEAD" stops meaning the same thing the moment anything else moves, and
+    #: measuring what a worker changed needs a fixed point to measure from.
+    base: str = ""
 
 
 def branch_exists(repo: Path, branch: str) -> bool:
@@ -146,8 +150,9 @@ def create(
             "attach this worker to somebody else's history, and auto-suffixing would "
             "make the branch stop identifying the agent. Reap or rename it first."
         )
-    _git(repo, "worktree", "add", "-q", "-b", branch, str(path), base)
-    return Worktree(path=Path(path), branch=branch, repo=Path(repo))
+    base_sha = _git(repo, "rev-parse", base).strip()
+    _git(repo, "worktree", "add", "-q", "-b", branch, str(path), base_sha)
+    return Worktree(path=Path(path), branch=branch, repo=Path(repo), base=base_sha)
 
 
 def porcelain(worktree: Path) -> list[str]:
