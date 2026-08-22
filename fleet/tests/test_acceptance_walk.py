@@ -56,14 +56,16 @@ pytestmark = pytest.mark.skipif(
     reason="set GBFLEET_WALK_SERVER and GBFLEET_WALK_KEY to run the acceptance walk",
 )
 
-#: Steps that cannot run until GRPH-460 puts `retire_wave`, `list_enrolments` and
-#: `reissue_enrolment` on the MCP surface. Recorded by number rather than skipped
-#: silently: a walk that reports 14 of 17 without saying which three is a walk that
-#: passed by omission.
+#: What still cannot run, recorded by number rather than skipped silently: a walk that
+#: reports "16 of 17" without saying which one is a walk that passed by omission.
+#:
+#: GRPH-460 put `retire_wave` on the MCP surface and folded seat listing into
+#: `fleet_status`, which unblocked 14 and 16. `reissue_enrolment` stayed off deliberately
+#: — replacing a dead seat is a different capability from retiring your own wave, and it
+#: had no caller asking for it. So 15 remains blocked on a decision, not on a budget.
 BLOCKED = {
-    14: "retire_wave is not an MCP tool yet (GRPH-460, blocked on the manifest budget)",
-    15: "reissue_enrolment is not an MCP tool yet (GRPH-460)",
-    16: "needs 14 and 15 — the planner cannot retire what it cannot reach",
+    15: "reissue_enrolment is not an MCP tool (GRPH-460 shipped retire_wave and the "
+        "fleet_status seat listing; reissue was deliberately left off the surface)",
 }
 
 
@@ -323,8 +325,91 @@ def test_the_acceptance_walk(git_repo: Path, tmp_path: Path, state: Path):
     assert wave.offline and wave.spawned == [] and wave.unused_seats == 1
     report.ok(13, "server unreachable: nothing spawned, the seat left unredeemed")
 
+    # 14 ─ a planner retires the seats IT minted, and cannot reach another planner's.
+    #      The scope claim is only worth something if a second minter exists to be
+    #      spared, so the walk makes one. An isolation check with nothing on the other
+    #      side passes for the wrong reason — it is the empty-set version of "absence
+    #      reads as clean", and this repository has shipped that defect a dozen times.
+    other_code = _seat_via_rest("planner")
+    other = rpc("register_agent", label="walk planner B", enrolment_code=other_code)
+    other_seat = rpc("mint_enrolment", agent_id=other["agent_id"], role="worker")
+    assert other_seat["enrolment_code"]
+
+    mine = rpc("fleet_status", agent_id=planner["agent_id"])["seats"]
+    theirs = rpc("fleet_status", agent_id=other["agent_id"])["seats"]
+    assert {s["minted_by"] for s in mine} == {planner["agent_id"]}, mine
+    assert {s["minted_by"] for s in theirs} == {other["agent_id"]}, theirs
+    # The planner's OWN seat came from a human over REST, so it is not the planner's to
+    # retire and must not appear in its list at all.
+    assert planner["agent_id"] not in {s["consumed_by"] for s in mine}, mine
+
+    retired = rpc("retire_wave", agent_id=planner["agent_id"])
+    assert retired["seats_revoked"] == len(mine), (retired, mine)
+
+    after_mine = rpc("fleet_status", agent_id=planner["agent_id"])["seats"]
+    after_theirs = rpc("fleet_status", agent_id=other["agent_id"])["seats"]
+    assert {s["state"] for s in after_mine} == {"revoked"}, after_mine
+    assert "revoked" not in {s["state"] for s in after_theirs}, after_theirs
+    still = rpc("get_item_details", id=work_item)
+    assert still["status"] == "done", f"retiring a wave disturbed finished work: {still}"
+    report.ok(
+        14,
+        f"{planner['agent_id']} retired its own {retired['seats_revoked']} seats; "
+        f"planner B's {len(after_theirs)} untouched",
+    )
+
     for step, why in sorted(BLOCKED.items()):
         report.skip(step, why)
+
+    # 16 ─ the fleet grows and shrinks to zero through TOOLS ONLY — no Fleet view, no
+    #      REST, nothing a human clicks. Every server call below is an MCP tool and every
+    #      local one is a supervisor tool, which is the whole of the §6 complaint: spin-up
+    #      was agent-callable and spin-down was not.
+    shrink = Fleet(
+        repo=git_repo, workspace=tmp_path / "ws-shrink", client=client,
+        launch_for=lambda name: (
+            lambda s, t, i: _standin_launch(s, t, i, extra=("--linger",))
+        ),
+    )
+    reply = handle(shrink, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        # A wave name of its own. The default is `wave`, and the branch guard refuses to
+        # reuse `gb/wave-1` — step 9's salvage branch still holds it, which is the point of
+        # salvage. The guard firing here is the correct behaviour, observed for free.
+        "params": {"name": "spawn", "arguments": {
+            "adapter": "standin", "wave": "shrink",
+            "enrolment_code": other_seat["enrolment_code"]}},
+    })
+    assert not reply["result"].get("isError"), reply["result"]["content"][0]["text"]
+    lingering = reply["result"]["structuredContent"]["agent_id"]
+
+    grown = rpc("fleet_status", agent_id=other["agent_id"])
+    assert lingering in {a["id"] for a in grown["agents"]}, grown["agents"]
+    assert "consumed" in {s["state"] for s in grown["seats"]}, grown["seats"]
+
+    shrunk = rpc("retire_wave", agent_id=other["agent_id"])
+    # The field that stops `{"seats_revoked": 1}` reading as "the wave is over". The child
+    # is still executing at this instant, against a seat that no longer authenticates.
+    assert lingering in shrunk["agents_still_running"], shrunk
+    assert {s["state"] for s in
+            rpc("fleet_status", agent_id=other["agent_id"])["seats"]} == {"revoked"}
+
+    stopped = handle(shrink, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "stop", "arguments": {
+            "agent_id": lingering, "reason": "scaled_down"}},
+    })["result"]["structuredContent"]
+    assert stopped["stopped"] is True, stopped
+    remaining = handle(shrink, {
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "ps", "arguments": {}},
+    })["result"]["structuredContent"]
+    assert remaining["running"] == 0, remaining
+    report.ok(
+        16,
+        f"grew to 1 and shrank to 0 through tools alone: {shrunk['seats_revoked']} seat "
+        f"revoked, {lingering} named as still running, then stopped",
+    )
 
     # 17 ─ what each worker actually touched.
     from gbfleet import touchpoints as tp
