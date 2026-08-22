@@ -138,3 +138,31 @@ def test_no_tracked_text_file_contains_control_bytes():
         "control bytes in tracked text files — git will treat these as BINARY and they cannot "
         f"be diffed or grepped: {offenders}"
     )
+
+
+def test_an_absent_revision_reads_as_unknown_rather_than_blank(client):
+    """`/health` must never answer `ok` with an empty revision (GRPH-426).
+
+    Railway resolves `GIT_SHA` from `RAILWAY_GIT_COMMIT_SHA`, which the platform supplies
+    **only for GitHub-triggered deploys**. A redeploy started any other way — a variable
+    change, a manual restart — sets it to the empty string, and an explicit empty value wins
+    over the `"unknown"` default. The hosted instance answered `"git_sha": ""` for weeks
+    because of exactly that.
+
+    A blank revision is the absence-reads-as-clean shape in ops form: `ok` with nothing to
+    say, where what happened is that it could not find out. Every question that starts "is
+    the fix live?" then ends in a guess.
+    """
+    from app.config import settings
+
+    original = settings.git_sha
+    try:
+        for blank in ("", "   "):
+            settings.git_sha = blank
+            body = client.get("/health").json()
+            assert body["git_sha"] == "unknown", f"{blank!r} leaked through as {body['git_sha']!r}"
+
+        settings.git_sha = "b41944e"
+        assert client.get("/health").json()["git_sha"] == "b41944e"
+    finally:
+        settings.git_sha = original

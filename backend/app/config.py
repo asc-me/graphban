@@ -62,7 +62,22 @@ class Settings(BaseSettings):
 
     # Release identity: the git revision this image was built from, baked in at
     # `docker compose build` time (see docs/deploy.md) and reported by /health.
+    #
+    # The default only applies when the variable is ABSENT. Railway defines `GIT_SHA` and
+    # resolves it from `RAILWAY_GIT_COMMIT_SHA`, which the platform supplies **only for
+    # GitHub-triggered deploys** — so a redeploy started any other way (a variable change,
+    # a manual restart) sets it to the empty string, which wins over this default and makes
+    # `/health` answer `"git_sha": ""`.
+    #
+    # An empty answer is worse than an honest "unknown": `ok` with a blank revision reads as
+    # a health check that has nothing to say, when what happened is that it could not find
+    # out. `resolved_git_sha` is what `/health` reports, so absence stays legible (GRPH-426).
     git_sha: str = "unknown"
+
+    @property
+    def resolved_git_sha(self) -> str:
+        """The revision, or `unknown` — never blank. See `git_sha` above."""
+        return (self.git_sha or "").strip() or "unknown"
 
     # Secret encryption at rest (AL-73). When set, BYOK provider API keys (and other
     # stored secrets) are Fernet-encrypted in the DB; unset means store as-is (fine for

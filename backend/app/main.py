@@ -156,7 +156,7 @@ def health():
         "status": "ok" if db_ok else "degraded",
         "service": "graphban-api",
         "version": __version__,
-        "git_sha": settings.git_sha,
+        "git_sha": settings.resolved_git_sha,
         "db": "ok" if db_ok else "down",
         # Embedding readiness (AL-248). The startup check already warns on a stub embedder
         # in hosted mode — but stdout is not a surface anyone watches, and the hosted
