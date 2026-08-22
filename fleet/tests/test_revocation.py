@@ -193,37 +193,56 @@ def test_fleet_idle_is_still_not_a_reason(git_repo: Path):
 
 
 def test_a_child_that_already_exited_is_not_recorded_as_disowned(
-    git_repo: Path, tmp_path: Path, scripts, state: Path
+    git_repo: Path, tmp_path: Path, scripts, log_dir: Path
 ):
     """Exiting on empty is the NORMAL end of a worker's life (D-c), and the roster drops
     it a moment later when presence lapses — so "gone from the roster" describes the
-    tidiest possible outcome just as accurately as it describes a revocation.
+    tidiest possible outcome just as accurately as it describes a revocation. Without the
+    `running` guard the finished worker is stopped and filed as SEAT_GONE, which is the
+    same mislabelling the acceptance walk found in `await_registration`.
 
-    Two children: one leaves immediately, one lingers to keep the loop running. When the
-    server disowns both, only the living one is a finding. Without the `running` guard the
-    finished worker is stopped and filed as SEAT_GONE, which is the same mislabelling the
-    acceptance walk found in `await_registration` — the most ordinary thing a worker does,
-    reported as a fault.
+    **Driven directly rather than through `up`, because the integration version raced.**
+    It ran one child that exits and one that lingers, and assumed the first was gone by
+    the time the server disowned them. Locally it was; on a slower CI runner it was
+    still alive, so the backstop stopped it — correctly — and the test failed for the one
+    reason it was not about. It asserted the right property and never guaranteed the
+    state it needed, which is the whole defect it was written to catch, one level up.
+
+    Here the exited child is waited on explicitly. There is no window.
     """
-    workspace = tmp_path / "ws"
-    seats = _seats(2)
+    from gbfleet.spawn import Launch, spawn
+    from gbfleet.supervisor import Wave, _catch_the_disowned
+    from gbfleet.worktree import create
 
-    def factory(seat, tree, instruction):
-        # slot 1 finishes and leaves; slot 2 stays, so the wait loop keeps polling.
-        which = "works_then_exits" if tree.branch.endswith("-1") else "sleeper"
-        return _factory(scripts, which)(seat, tree, instruction)
+    def _child(script: str, slot: str):
+        tree = create(git_repo, tmp_path / slot, "wave", slot)
+        return spawn(
+            Launch(adapter="fake", argv=[str(scripts["python"]), str(scripts[script])],
+                   seat_path=tree.path / "mcp.json", config={"mcpServers": {}},
+                   instruction=""),
+            tree.path, tree.branch, log_dir / slot, base=tree.base,
+        )
 
-    wave = up(
-        git_repo, seats, factory, _server(workspace, mode="offline", after=2),
-        limits=Limits(registration_window=5.0),
-        state=state, workspace=workspace, poll=0.05, sleep=_bounded(),
-    )
+    finished = _child("exits_immediately", "1")
+    lingering = _child("sleeper", "2")
+    finished.agent_id, lingering.agent_id = "GRPH-A1", "GRPH-A2"
 
-    finished, lingering = wave.spawned[0], wave.spawned[1]
-    assert lingering.stopped_because is Reason.SEAT_GONE, "the living child was not caught"
-    assert finished.stopped_because is None, (
-        "a worker that finished and exited was recorded as disowned"
-    )
-    assert not any(finished.agent_id in f for f in wave.failures if finished.agent_id), (
-        f"the finished worker was reported as a failure: {wave.failures}"
-    )
+    finished.process.wait(timeout=30)
+    assert not finished.running, "the premise: this child is genuinely gone"
+    assert lingering.running, "and this one is genuinely not"
+
+    try:
+        wave = Wave()
+        # The server counts neither of them any more — the shape a revocation takes.
+        _catch_the_disowned(wave, [finished, lingering], {"agents": []})
+
+        assert lingering.stopped_because is Reason.SEAT_GONE, "the living child was not caught"
+        assert finished.stopped_because is None, (
+            "a worker that finished and exited was recorded as disowned"
+        )
+        assert len(wave.failures) == 1, wave.failures
+        assert "GRPH-A2" in wave.failures[0]
+    finally:
+        from gbfleet.spawn import stop
+
+        stop(lingering, Reason.SHUTDOWN)
