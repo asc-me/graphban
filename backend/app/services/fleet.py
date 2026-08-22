@@ -70,6 +70,38 @@ def caller_identity(agent_id: str | None, api_key) -> str:
     return f"{CREDENTIAL_PREFIX}{getattr(api_key, 'name', None) or getattr(api_key, 'id', '')}"
 
 
+class NotYourAgent(Exception):
+    """The caller named an agent that is not on its credential."""
+
+
+def minter_for(db: Session, agent_id: str, api_key) -> str:
+    """Resolve a self-declared `agent_id` to a minter, refusing one that is not yours.
+
+    `caller_identity` takes the id as given, which is right for stamping provenance on a
+    row: a wrong name there is a bad record, recoverable. It is NOT right for scoping a
+    destructive call. §6 says `retire_wave` "cannot reach another planner's seats", and
+    a self-declared id makes that a promise rather than a property.
+
+    So this checks the named agent is on the calling credential. **Say exactly what that
+    buys and no more**: agents provisioned by one planner share its credential by
+    design (PRD-19 — one credential, many seats, which is the whole point), so this
+    stops a DIFFERENT credential's planner and does not separate siblings on the same
+    one. Between those, the role gate is what remains. That is a coordination scope, not
+    an authorization boundary, and PRD-22 D-k is explicit there is no security boundary
+    here to begin with.
+    """
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        raise NotYourAgent(f"no registered agent {agent_id!r}")
+    key_id = getattr(api_key, "id", None)
+    if key_id and agent.api_key_id and agent.api_key_id != key_id:
+        raise NotYourAgent(
+            f"agent {agent_id!r} was registered on a different credential; you can only "
+            "retire seats you minted"
+        )
+    return agent.id
+
+
 def is_credential(identity: str | None) -> bool:
     """Was this row stamped by a credential rather than by a registered agent?
 
@@ -407,12 +439,23 @@ def restore_on_work(db: Session, agent_id: str) -> None:
 
 
 def fleet_status(db: Session, project_id: str | None = None, *,
-                 lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
+                 lease_seconds: int = DEFAULT_LEASE_SECONDS,
+                 minted_by: str | None = None) -> dict:
     """The roster plus the clock every member must obey.
 
     The intervals travel WITH the roster on purpose: an agent that does not know the
     heartbeat cadence cannot stay alive, and making it read a constant out of documentation
     is how a fleet ends up with members that disagree about what alive means.
+
+    `minted_by` adds the SEATS that agent issued, and it lives here rather than on a
+    tool of its own for a reason that is not only budget: the roster's second question
+    has always been "what became of the one I sent", and a seat's state is half that
+    answer. §6's complaint is that `enrolled` reports "the consequences of revocation,
+    never the transition" — an agent vanishing from the roster and a seat being revoked
+    are the same event seen from two places, and separating them across two calls is
+    what made the transition invisible.
+
+    Omitted when not asked for, so nothing changes for an agent that does not mint.
     """
     agents = list_agents(db, project_id, lease_seconds=lease_seconds)
     live = [a for a in agents if a["state"] != "offline"]
@@ -423,8 +466,10 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     # DEFAULT posture and showing it as a worker would misdescribe the commonest deployment.
     by_role = {r: sum(1 for a in live if a["active_role"] == r) for r in ROLES}
     by_role[ALL_IN_ONE] = sum(1 for a in live if a["active_role"] == ALL_IN_ONE)
+    seats = list_enrolments(db, project_id, minted_by=minted_by) if minted_by else None
     return {
         "agents": agents,
+        **({"seats": seats} if seats is not None else {}),
         "online": len(live),
         "total": len(agents),
         "by_role": by_role,
@@ -445,6 +490,11 @@ def fleet_status(db: Session, project_id: str | None = None, *,
 # JSON with no SSE — so there is no channel to push `notifications/tools/list_changed` when a
 # role is later assigned. A manifest can only fail to mention a tool; the gate refuses it.
 TOOL_ROLES: dict[str, tuple[str, ...]] = {
+    # Mint, list and retire are ONE capability with one scope (PRD-22 §6), so retiring
+    # is gated exactly as minting is. The containment argument is the same and it is
+    # structural: a planner cannot build, so it has no authored work that revoking its
+    # own seats could launder.
+    "retire_wave": ("planner",),
     # The orchestrator plans; it does not quietly do the work.
     "claim_next": ("worker",),
     "next_cluster": ("worker",),

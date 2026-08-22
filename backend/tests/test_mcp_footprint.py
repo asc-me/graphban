@@ -289,10 +289,53 @@ Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT th
     the fix rather than a sixth raise.
 
     Kept at ~32 tokens of headroom, in line with the ~7 and ~16 the last two left, so the next
-    tool argues its own case rather than spending slack voted for something else."""
+    tool argues its own case rather than spending slack voted for something else.
+
+    Raised 13150 -> 13410 in GRPH-460, and this is the sixth. The paragraph above asked for
+    it not to be granted, so here is the argument, and the parts of it that are weak.
+
+    PRD-22 §6: a planner can mint a seat and cannot retire it — "it fails in the direction
+    that costs money: a fleet that can grow and not shrink". The service layer shipped and
+    was tested in GRPH-451; only the agent-facing surface was missing, so nothing could
+    reach it. Deferring it once was deliberate (GRPH-460 was filed blocked); shipping it
+    now was an explicit decision after the alternatives were costed.
+
+    The growth is 239 tokens in two parts, and they are not the same kind:
+
+    - `retire_wave`, one new tool, 214 tokens. This is the growth in tool COUNT the guard
+      explicitly permits. Subtract it and the manifest is 13164.
+    - 24 tokens on `fleet_status`: one input property, one output field, and eight words.
+      That is a new CAPABILITY folded into an existing tool rather than given its own —
+      chosen precisely because it is cheaper than a `list_enrolments` tool would have been
+      (~250 tokens), and because the roster's second question has always been "what became
+      of the one I sent". It is not prose.
+
+    **The 24 is why the subtraction argument does not clear on its own**, and pretending
+    otherwise would be the dishonest version of this bump. 13164 is 14 over the old ceiling.
+
+    A prose pass was attempted first and there is nothing left: a scan for parameter
+    descriptions whose content words are a subset of their own field name returns ZERO
+    across all 54 tools. The easy slack the earlier passes are described as harvesting was
+    genuinely harvested. What remains is the structural duplication measured in GRPH-451 —
+    outputSchema is 26% of the manifest and six tools carry an identical 654-char item
+    shape, already minimal, with nowhere in a flat `tools` list to share a definition.
+
+    **Who pays, measured rather than assumed** (the docstring above was stale about this;
+    E9b's session-role narrowing changed it):
+
+        full (unregistered / all-in-one)   13379   54 tools
+        session role = planner             11526   47 tools   retire_wave visible
+        session role = worker              11000   44 tools   not visible
+        session role = reviewer            11074   44 tools   not visible
+
+    `retire_wave` is planner-gated, so a worker or reviewer in a fleet pays 24 tokens of
+    this, not 239. The full number is what an all-in-one agent pays — the solo-developer
+    default — which is the awkward part of the trade and is stated rather than buried.
+
+    The structural fix is still GRPH-48/146 and this raise does not substitute for it."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 13150, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 13410, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
 
