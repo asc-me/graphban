@@ -19,6 +19,7 @@ from __future__ import annotations
 import secrets
 import uuid
 
+from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -76,6 +77,31 @@ def check_allowed(db: Session) -> None:
         )
 
 
+#: The SAME validator `LoginIn.email` uses, deliberately — not a regex that agrees with it
+#: today. `init` provisioning an operator the login route will refuse is the whole of
+#: GRPH-461, and any second implementation of "is this an email" is that bug waiting to
+#: come back. A `TypeAdapter` over `EmailStr` runs exactly what the schema runs.
+_EMAIL = TypeAdapter(EmailStr)
+
+
+def check_email(email: str) -> str:
+    """The address, or refuse. Called BEFORE anything is written.
+
+    `.invalid` and `.test` are RFC 2606 reserved and email-validator rejects them, which is
+    correct and is not loosened here — a walk provisioned with `walk@example.invalid` got an
+    operator it could not sign in as. The fix is `init` agreeing with login, not login
+    agreeing with `init`.
+    """
+    try:
+        return _EMAIL.validate_python(email)
+    except ValidationError as e:
+        reason = e.errors()[0].get("msg", "not a valid email address")
+        raise BootstrapRefused(
+            f"{email!r} is not an address this instance can sign in with — {reason}. "
+            "Nothing was provisioned; re-run with a real address."
+        ) from None
+
+
 def provision(
     db: Session,
     *,
@@ -91,6 +117,11 @@ def provision(
     are stored as a hash and cannot be recovered, so a caller that loses this dict has
     to mint a new one, which is a deliberate property rather than an oversight.
     """
+    # FIRST, before the virgin check and before any write. A half-provisioned instance with
+    # an operator nobody can sign in as is worse than a refused one: the second `init` then
+    # answers "this instance already has users; nothing was changed" and the human is stuck
+    # with a password for an account that cannot accept it (GRPH-461).
+    email = check_email(email)
     check_allowed(db)
     if not is_virgin(db):
         return {"provisioned": False,
@@ -193,6 +224,11 @@ def provision_hosted(
     email = email.strip().lower()
     if not email:
         raise BootstrapRefused("an operator email is required")
+    # Format before allowlist, and for the same reason `provision` checks it first: the
+    # allowlist would catch most malformed addresses by accident, but an operator who put
+    # the same typo in `PLATFORM_ADMIN_EMAILS` passes it and lands on an account the login
+    # route refuses (GRPH-461). Format is the more actionable message either way.
+    email = check_email(email)
     if email not in settings.platform_admin_email_set:
         # Not a security control — the allowlist is the control. This catches the mistake
         # that leaves you exactly where you started: an account that exists, can sign in,

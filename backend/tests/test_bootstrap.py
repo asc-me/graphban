@@ -195,3 +195,92 @@ def test_provisioning_does_not_change_an_existing_projects_write_mode(client, db
                                         owner_user_id=db.scalars(select(User)).first().id)
     assert other.memory_write_mode == "review"
     assert db.get(Project, out["project_id"]).memory_write_mode == "trusted"
+
+
+# ---- init must not provision an operator login will refuse (GRPH-461) -----------
+
+#: Addresses that look plausible in a runbook. `example.invalid` and `.test` are RFC 2606
+#: reserved and `email-validator` rejects them — correctly. The walk that found this was
+#: provisioned with `walk@example.invalid` and could not sign in.
+_ADDRESSES = [
+    "operator@example.com",
+    "alex@ascme-labs.com",
+    "walk@example.invalid",
+    "someone@host.test",
+    "not-an-email",
+    "@nohost.com",
+    "spaces in@example.com",
+    "",
+]
+
+
+def _login_accepts(email: str) -> bool:
+    from pydantic import ValidationError
+
+    from app.schemas import LoginIn
+
+    try:
+        LoginIn(email=email, password="x")
+        return True
+    except ValidationError:
+        return False
+
+
+def _init_accepts(email: str) -> bool:
+    from app.bootstrap import BootstrapRefused, check_email
+
+    try:
+        check_email(email)
+        return True
+    except BootstrapRefused:
+        return False
+
+
+def test_init_and_login_refuse_exactly_the_same_addresses():
+    """The assertion the item asked for, and the reason it asked.
+
+    A test that only checks `init` refuses `"not-an-email"` passes for the wrong reason the
+    moment the refusal comes from anywhere other than the validator login uses — a regex
+    that agrees today is the same bug waiting to come back. So this compares the two
+    directly, on addresses that include the one that looks fine and is not.
+    """
+    disagreements = [
+        (e, _init_accepts(e), _login_accepts(e))
+        for e in _ADDRESSES
+        if _init_accepts(e) != _login_accepts(e)
+    ]
+    assert not disagreements, (
+        "init and login disagree about these addresses, which is exactly how an instance "
+        f"gets an operator nobody can sign in as: {disagreements}"
+    )
+
+    # And the comparison must be over something, not two empty sets agreeing.
+    assert any(_login_accepts(e) for e in _ADDRESSES)
+    assert any(not _login_accepts(e) for e in _ADDRESSES)
+
+
+def test_a_refused_address_provisions_nothing(db, monkeypatch):
+    """'Refuse before writing' is the half that matters. A half-provisioned instance is
+    worse than a refused one: the second `init` answers "this instance already has users;
+    nothing was changed" and the human is stuck holding a password for an account that
+    cannot accept it."""
+    from app import bootstrap
+    from app.models import User
+
+    monkeypatch.setattr(bootstrap.settings, "seed_on_start", False)
+    before = db.query(User).count()
+    with pytest.raises(bootstrap.BootstrapRefused) as e:
+        bootstrap.provision(db, project_name="Walk", email="walk@example.invalid")
+
+    assert "sign in" in str(e.value), "the refusal must say what is wrong, not just refuse"
+    assert db.query(User).count() == before, "a refused init wrote a user anyway"
+
+
+def test_a_good_address_still_provisions(db, monkeypatch):
+    """The guard must not have closed the door it was protecting."""
+    from app import bootstrap
+
+    monkeypatch.setattr(bootstrap.settings, "seed_on_start", False)
+    out = bootstrap.provision(db, project_name="Walk", email="operator@example.com")
+    assert out["provisioned"] is True
+    assert out["email"] == "operator@example.com"
