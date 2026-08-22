@@ -21,6 +21,9 @@ from dataclasses import replace
 
 from .spawn import Launch
 from .state import NotARepository
+from .lock import hold
+from .mcp import Fleet, serve
+from .state import repo_root
 from .supervisor import DEFAULT_MAX_WORKERS, Limits, Wave, up
 from .worktree import Worktree
 
@@ -90,6 +93,24 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "argv", nargs=argparse.REMAINDER, help="-- followed by the command to run per child"
     )
+
+    stdio = sub.add_parser(
+        "mcp",
+        help="serve spawn/stop/ps/orphans over stdio, for a planner to drive",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Speaks JSON-RPC on stdin/stdout. There are no HTTP routes here and no\n"
+            "credential: authentication is process ownership — the planner speaks over a\n"
+            "pipe to a child it launched.\n\n"
+            "`spawn` starts ONE child and takes no count. Mint a seat per child and call\n"
+            "it once each; you already hold the Graphban server, so deciding how many is\n"
+            "yours."
+        ),
+    )
+    stdio.add_argument("--repo", default=".", help="repository to supervise (default: cwd)")
+    stdio.add_argument("--server", required=True, help="Graphban base URL")
+    stdio.add_argument("--workspace", default=None, help="where worktrees go")
+    stdio.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     return parser
 
 
@@ -190,6 +211,46 @@ def report(wave: Wave, out=sys.stdout) -> None:
         print(f"FAILED {failure}", file=out)
 
 
+def _serve_stdio(args) -> int:
+    """Hold the repository and serve the local surface until stdin closes.
+
+    The lock is held for the whole process (D-h): a second supervisor on this repository
+    refuses to start rather than exceeding --max-workers between them, which is what
+    makes that cap correct rather than approximate.
+    """
+    api_key = os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print(f"gbfleet mcp: ${API_KEY_ENV} is not set", file=sys.stderr)
+        return 2
+
+    repo = Path(args.repo)
+    client = Graphban(base_url=args.server, api_key=api_key)
+    try:
+        root = repo_root(repo)
+    except NotARepository as exc:
+        print(f"gbfleet mcp: {exc}", file=sys.stderr)
+        return 2
+
+    workspace = Path(args.workspace) if args.workspace else root.parent / f"{root.name}-gbfleet"
+    try:
+        with hold(root) as acquired:
+            fleet = Fleet(
+                repo=root,
+                workspace=workspace,
+                client=client,
+                launch_for=lambda name: make_adapter_factory(name, None),
+                lock=acquired,
+                limits=Limits(max_workers=args.max_workers),
+            )
+            serve(fleet)
+    except RepoLocked as exc:
+        print(f"gbfleet mcp: {exc}", file=sys.stderr)
+        return 3
+    finally:
+        client.close()
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -198,6 +259,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.print_usage(sys.stderr)
         print("gbfleet: no command given. Try `gbfleet up --help`.", file=sys.stderr)
         return 2
+
+    if args.command == "mcp":
+        return _serve_stdio(args)
 
     template = [a for a in (args.argv or []) if a != "--"]
     try:

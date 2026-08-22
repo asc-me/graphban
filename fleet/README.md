@@ -60,6 +60,27 @@ If this component is ever extracted to its own repository — the stated trigger
 contributors who should not hold commit access to the server — extract **the adapter
 interface only**, not the supervisor.
 
+## Running it
+
+One wave, deterministically — you mint the seats, it spawns and reaps:
+
+```bash
+GBFLEET_API_KEY=... gbfleet up \
+    --server https://cloud.agentldgr.dev --seats-file seats.txt --adapter claude
+```
+
+Or hand the local surface to a planner over stdio:
+
+```bash
+GBFLEET_API_KEY=... gbfleet mcp --server https://cloud.agentldgr.dev
+```
+
+`spawn` starts **one** child and takes no count. The planner decides how many to run —
+it holds both servers, so it can read `collision_clusters` and `get_backlog` itself, mint
+that many seats, and call `spawn` once each. The supervisor executes.
+
+Vendors and what each of them needs: [`docs/fleet-adapters.md`](https://github.com/asc-me/graphban/blob/main/docs/fleet-adapters.md).
+
 ## Development
 
 ```bash
