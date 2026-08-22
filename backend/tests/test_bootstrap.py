@@ -195,3 +195,84 @@ def test_provisioning_does_not_change_an_existing_projects_write_mode(client, db
                                         owner_user_id=db.scalars(select(User)).first().id)
     assert other.memory_write_mode == "review"
     assert db.get(Project, out["project_id"]).memory_write_mode == "trusted"
+
+
+# ---- what the PRD-22 acceptance walk caught (GRPH-461) -------------------------------
+#
+# The comment above `DEFAULT_EMAIL` already knew this: `operator@localhost` provisioned
+# happily and could not sign in, found by the AL-286 walk. The fix was to change the
+# DEFAULT — which repaired the one value the author controlled and left the dead end
+# reachable for every value a user supplies. `--email not-an-email` still reported
+# `provisioned: true` and handed back a password for an account the login route refuses.
+#
+# `test_the_operator_can_sign_in_with_what_was_printed` says "test the default, because
+# the default is what ships". True, and incomplete: `--email` is on the command line, so
+# what a user passes ships too.
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        "not-an-email",       # no @ at all
+        "operator@localhost", # the exact address AL-286 found, still accepted until now
+        "me@example.invalid", # looks like an address; RFC 2606 reserved, refused by login
+        "",                   # the empty string, which `handle` would have made "operator"
+    ],
+)
+def test_an_address_nobody_could_sign_in_with_is_refused(client, db, monkeypatch, email):
+    monkeypatch.setattr(bootstrap.settings, "seed_on_start", False)
+    with pytest.raises(bootstrap.BootstrapRefused) as exc:
+        bootstrap.provision(db, project_name="My Repo", email=email)
+    assert "sign in" in str(exc.value)
+
+
+@pytest.mark.parametrize("email", ["not-an-email", "operator@localhost"])
+def test_a_refused_address_leaves_the_instance_untouched(client, db, monkeypatch, email):
+    """Refused BEFORE anything is written, for the reason the existing refusal test
+    gives: a half-provisioned instance is worse than none, because the second run then
+    reports "this instance already has users; nothing was changed" and the human is left
+    with no account and no way forward."""
+    monkeypatch.setattr(bootstrap.settings, "seed_on_start", False)
+    with pytest.raises(bootstrap.BootstrapRefused):
+        bootstrap.provision(db, project_name="My Repo", email=email)
+    assert db.scalars(select(User)).all() == []
+    assert db.scalars(select(Project)).all() == []
+    assert db.scalars(select(ApiKey)).all() == []
+
+
+@pytest.mark.parametrize(
+    "email",
+    ["not-an-email", "operator@localhost", "me@example.invalid", "me@example.com",
+     bootstrap.DEFAULT_EMAIL],
+)
+def test_provisioning_and_login_refuse_exactly_the_same_addresses(
+    client, db, monkeypatch, email
+):
+    """The assertion that makes this non-vacuous.
+
+    A test that only checked "init refuses a bad address" would pass for a hand-rolled
+    check that agrees today and drifts tomorrow — and drift is the whole defect: the
+    users table takes a plain String, the login route takes `EmailStr`, and the gap
+    between them is where an unusable account lives. So this asserts they refuse the
+    SAME set, including the addresses that must still be ACCEPTED.
+
+    Driven through the real login endpoint rather than against the adapter, because the
+    adapter agreeing with itself proves nothing.
+    """
+    monkeypatch.setattr(bootstrap.settings, "seed_on_start", False)
+
+    try:
+        bootstrap.check_email(email)
+        init_refused = False
+    except bootstrap.BootstrapRefused:
+        init_refused = True
+
+    # 401 means the address parsed and the credentials were wrong; 422 means the address
+    # itself was refused. Only the second is the comparison being made here.
+    response = client.post("/api/auth/login", json={"email": email, "password": "x" * 12})
+    login_refused = response.status_code == 422
+
+    assert init_refused == login_refused, (
+        f"{email!r}: provisioning {'refused' if init_refused else 'accepted'} it and "
+        f"login {'refused' if login_refused else 'accepted'} it — the gap between those "
+        "two is exactly where an account nobody can sign into lives"
+    )

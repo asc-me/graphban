@@ -25,6 +25,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import User
 from app.security.apikey import generate_api_key
+from pydantic import EmailStr, TypeAdapter, ValidationError
+
 from app.security.passwords import hash_password
 from app.services import projects as projects_svc
 
@@ -34,6 +36,37 @@ from app.services import projects as projects_svc
 # then could not sign in — the exact "account nobody can log into" dead end this script
 # set out to avoid, arriving one layer down. Found by the AL-286 acceptance walk.
 DEFAULT_EMAIL = "operator@example.com"
+
+#: The SAME validator the login endpoint uses, not a second one that agrees today.
+#:
+#: The comment above recorded this constraint and then satisfied it by choosing a
+#: default that happens to pass — which fixed the one value the author controlled and
+#: left it open for every value a user supplies. `--email not-an-email` provisioned
+#: happily, reported `provisioned: true`, and produced an operator the login route
+#: refuses. Found again by the PRD-22 acceptance walk (GRPH-461), one layer up.
+#:
+#: Sharing the adapter rather than re-deriving the rule is the point: a hand-rolled
+#: check would be a second opinion that drifts, and the failure it protects against is
+#: exactly the two disagreeing.
+_EMAIL = TypeAdapter(EmailStr)
+
+
+def check_email(email: str) -> None:
+    """Refuse an address the login endpoint would, BEFORE anything is written.
+
+    Before, not after: a half-provisioned instance with an unusable operator is worse
+    than a refused one, because the second `init` then reports "this instance already
+    has users; nothing was changed" and the human is stuck with no way forward and no
+    account.
+    """
+    try:
+        _EMAIL.validate_python(email)
+    except ValidationError as exc:
+        reason = str(exc).splitlines()[-1].strip()
+        raise BootstrapRefused(
+            f"{email!r} is not an address anyone could sign in with: {reason}. "
+            "Nothing was written — pass a real address to --email."
+        ) from None
 
 
 class BootstrapRefused(Exception):
@@ -92,6 +125,7 @@ def provision(
     to mint a new one, which is a deliberate property rather than an oversight.
     """
     check_allowed(db)
+    check_email(email)
     if not is_virgin(db):
         return {"provisioned": False,
                 "reason": "this instance already has users; nothing was changed"}
@@ -193,6 +227,9 @@ def provision_hosted(
     email = email.strip().lower()
     if not email:
         raise BootstrapRefused("an operator email is required")
+    # Same guard as `provision`, for the same reason: the hosted path also hands back a
+    # password, and an address the login route refuses makes that password useless.
+    check_email(email)
     if email not in settings.platform_admin_email_set:
         # Not a security control — the allowlist is the control. This catches the mistake
         # that leaves you exactly where you started: an account that exists, can sign in,

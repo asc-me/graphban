@@ -171,3 +171,21 @@ def test_the_cli_wires_the_command(db, hosted, capsys):
     import json as _json
     out = _json.loads(capsys.readouterr().out)
     assert out["provisioned"] is True and out["org_name"] == "ascme-labs"
+
+
+def test_it_refuses_an_address_nobody_could_sign_in_with(db, hosted, monkeypatch):
+    """The hosted path hands back a password too, so an address the login route refuses
+    makes that password useless in exactly the same way (GRPH-461).
+
+    Allowlisted deliberately: the allowlist check would otherwise refuse this for a
+    different reason and the test would pass without the guard existing. A sabotage
+    removing the guard survived until this test allowlisted the bad address.
+    """
+    from app.config import settings
+    from app.models import User
+
+    monkeypatch.setattr(settings, "platform_admin_emails", "boss@localhost")
+    with pytest.raises(bootstrap.BootstrapRefused) as exc:
+        bootstrap.provision_hosted(db, email="boss@localhost", org_name="Acme")
+    assert "sign in" in str(exc.value)
+    assert db.query(User).count() == 0, "and it creates nothing"
