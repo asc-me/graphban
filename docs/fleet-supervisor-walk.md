@@ -27,9 +27,11 @@ config placement, version pinning — is verified against real `claude`, `cursor
 and `grok` binaries in `test_adapters.py`, so nothing about a vendor is being assumed
 here; only the tokens are saved.
 
-## Result — 14 passed, 3 blocked, 0 findings
+## Result — 16 passed, 1 blocked, 0 findings
 
-Run 2026-08-21 against a fresh instance on current `main`.
+Re-run 2026-08-22 against a fresh instance on `9d1936b`, the commit deployed to
+`ubuntu-srv`. The first run (2026-08-21) reported 14 passed, 3 blocked; GRPH-460 closed
+two of the three.
 
 | # | step | result |
 |---|---|---|
@@ -46,9 +48,9 @@ Run 2026-08-21 against a fresh instance on current `main`.
 | 11 | version mismatch refuses **at spawn** | naming the binary and the supported range |
 | 12 | a silent child is killed inside the window, adapter named | killed at 3s, adapter reported |
 | 13 | server unreachable: no spawns, seat unredeemed | nothing started |
-| 14 | `retire_wave` revokes only the caller's seats | **BLOCKED** — GRPH-460 |
-| 15 | `reissue_enrolment` replaces a dead seat | **BLOCKED** — GRPH-460 |
-| 16 | the fleet shrinks to zero without the Fleet view | **BLOCKED** — needs 14 and 15 |
+| 14 | `retire_wave` revokes only the caller's seats | planner A revoked its own 2; planner B's 1 untouched |
+| 15 | `reissue_enrolment` replaces a dead seat | **BLOCKED** — not on the MCP surface, deliberately |
+| 16 | the fleet shrinks to zero without the Fleet view | grew to 1, revoked the seat, named the survivor, stopped it |
 | 17 | which files each worker actually touched | measured off the branch: `['half-done.py']` |
 
 **Step 7 is the one that matters.** Two children of one supervisor, on one credential,
@@ -57,11 +59,31 @@ declared anywhere in the spawn path, `independent` would have refused there and 
 would be unable to review a single thing it built. That is D-b, observed rather than
 argued.
 
-**Steps 14–16 are blocked, not skipped.** A planner cannot retire the seats it minted
-because `retire_wave` and `list_enrolments` are not on the MCP surface yet — the service
-layer exists and is tested (GRPH-451), and exposing it is waiting on the manifest budget
-(GRPH-460). The walk names the three by number rather than reporting "14 of 17", because
-a walk that passes by omission is the failure this whole exercise exists to catch.
+**Step 14 needed a second planner before it meant anything.** "Revokes only the caller's
+seats" is a claim about what is *spared*, and the first draft had nothing on the other
+side of the boundary to spare — every seat in the project belonged to the one planner, so
+an unscoped `retire_wave` would have passed it. That is the empty-set form of *absence
+reads as clean*, and it is why the walk now registers a planner B, mints it a seat, and
+asserts that seat is still `unused` afterwards. Sabotaged both ways — dropping the
+`minted_by` filter from `retire_wave`, and again from `fleet_status` — the step fails.
+
+**Step 16 turns on one field.** `retire_wave` returns `agents_still_running`, and the walk
+asserts the lingering child is named in it. A server has no process control; the seat dies
+and the child keeps executing until something local stops it. Without that field
+`{"seats_revoked": 1}` reads as *the wave is over*, which is the misreading that leaves
+children building in the dark. Sabotaged to return an empty list, step 16 fails.
+
+**Step 15 is blocked on a decision, not a budget.** `reissue_enrolment` stayed off the MCP
+surface: replacing a dead seat is a different capability from retiring your own wave, and
+nothing was asking for it. The walk names it by number rather than reporting "16 of 17",
+because a walk that passes by omission is the failure this whole exercise exists to catch.
+
+**The branch guard fired for real, unprompted.** Step 16's second supervisor started its
+slot counter at 1 and tried to take `gb/wave-1`, which step 9's salvage branch still holds.
+It refused — *"forcing would attach this worker to somebody else's history, and
+auto-suffixing would make the branch stop identifying the agent"* — and the step names its
+own wave instead. Salvage keeping the branch alive is the whole point of salvage; a
+supervisor quietly reusing it would have been the bug.
 
 ## What the walk found
 
