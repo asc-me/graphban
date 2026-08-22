@@ -332,10 +332,21 @@ Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT th
     this, not 239. The full number is what an all-in-one agent pays — the solo-developer
     default — which is the awkward part of the trade and is stated rather than buried.
 
-    The structural fix is still GRPH-48/146 and this raise does not substitute for it."""
+    The structural fix is still GRPH-48/146 and this raise does not substitute for it.
+
+    RAISED 13410 -> 13600 on 2026-08-22 (GRPH-474), and the reason matters more than the
+    number. This is not prose creep, which is what the ceiling exists to catch — it is 178
+    tokens of CONTRACT: eight tools that read the dispatcher's resolved project while
+    advertising no `project_id`, so an agent could not pass what it could not see. A ceiling
+    that blocks a schema from telling the truth is measuring the wrong thing.
+
+    Measured per role, because the full manifest is a worst case nobody in a fleet receives:
+    worker 44 tools / ~11.0k, reviewer 44 / ~11.1k, planner 47 / ~11.5k. 13.6k is what an
+    all-in-one or an unregistered session pays. The 190-token allowance leaves 43 of headroom,
+    so the next raise still has to be argued for rather than absorbed."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 13410, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 13600, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
 
@@ -376,3 +387,63 @@ def test_a_session_scoped_manifest_actually_saves_the_tokens(client, auth):
     assert saved / len(json.dumps(full)) > 0.10, (
         f"only {saved} chars saved — O6 was decided on 15-19%, and below ~10% the session "
         "machinery is not paying for itself")
+
+
+# ---- the project parameter (GRPH-474) ------------------------------------------------------
+
+def _dispatch_blocks() -> dict[str, str]:
+    """Each tool's dispatch branch, from its `if name == "x"` to the next one."""
+    import pathlib
+    import re
+
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "app" / "mcp_server.py").read_text(encoding="utf-8")
+    starts = [(m.group(1), m.start()) for m in re.finditer(r'if name == "(\w+)"', src)]
+    assert len(starts) > 20, "found almost no dispatch branches — this test is reading nothing"
+    return {n: src[s:(starts[i + 1][1] if i + 1 < len(starts) else len(src))]
+            for i, (n, s) in enumerate(starts)}
+
+
+def test_a_tool_that_reads_the_resolved_project_declares_it():
+    """The manifest IS the contract: `tools/list` is the only thing an agent can read.
+
+    Eight tools used the dispatcher's `pid` while advertising no `project_id`, because the
+    manifest was driven by `_PROJECT_SCOPED` — a set that answers a DIFFERENT question
+    ("cannot run without a project") and was doing double duty (GRPH-474). Seven of them
+    choose what to act on by project, so an agent on a multi-project key silently got
+    `allowed[0]`.
+
+    Derived from the SOURCE rather than from a list, so the next tool to start reading `pid`
+    fails here instead of shipping undiscoverable. A list would have to be updated by the
+    same person who forgot to declare the parameter.
+    """
+    import re
+
+    blocks = _dispatch_blocks()
+    from app import mcp_server as m
+
+    offenders = []
+    for tool in m.TOOLS:
+        name = tool["name"]
+        body = blocks.get(name, "")
+        if not re.search(r"\bpid\b", body):
+            continue
+        if "project_id" not in tool["inputSchema"].get("properties", {}):
+            offenders.append(name)
+
+    assert not offenders, (
+        f"{offenders} read the resolved project but do not advertise `project_id`. An agent "
+        "cannot pass what the manifest does not declare, so these silently act on the key's "
+        "default project. Add them to `_TAKES_PROJECT`."
+    )
+
+
+def test_the_two_project_sets_are_not_the_same_question():
+    """`_PROJECT_SCOPED` (dispatch refuses without a project) is a subset of `_TAKES_PROJECT`
+    (manifest advertises one). Collapsing them back into one name is what caused this."""
+    from app import mcp_server as m
+
+    assert m._PROJECT_SCOPED <= m._TAKES_PROJECT
+    assert m._TAKES_PROJECT - m._PROJECT_SCOPED, (
+        "the sets are identical again — the distinction that fixed GRPH-474 has been lost"
+    )
