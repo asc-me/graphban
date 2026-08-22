@@ -123,6 +123,17 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # cannot build and has nothing to launder; and clamped by the minting credential's
         # own ceiling, so it reshuffles authority rather than manufacturing it.
         "mint_enrolment",
+        # PRD-22 §6 (GRPH-460). Also AUTHORITY, and deliberately the SAME gate as minting,
+        # because §6's whole argument is that mint, list and retire are one capability with
+        # one scope. Bounded three ways: planner-only, so it inherits E7's containment
+        # exactly; scoped to `minted_by` the caller, so it reaches only seats it issued; and
+        # it revokes CREDENTIALS, never processes — `agents_still_running` names the children
+        # still building against dead seats, because a result that read as "the wave is over"
+        # is what would leave them there.
+        #
+        # It exists because the asymmetry was the bug: spin-up was agent-callable and
+        # spin-down was not, which fails in the direction that costs money.
+        "retire_wave",
         # Quality gates, added deliberately by AL-282. `publish_memory` SUBMITS for
         # independent adjudication rather than publishing, so it is not self-approval.
         "publish_memory", "reject_memory",

@@ -625,13 +625,34 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "retire_wave",
+        "description": (
+            "PLANNER ONLY. Revoke the seats YOU minted and release what agents on them hold, "
+            "in one step. Does NOT stop any process — those keep building against dead seats "
+            "until something stops them, and `agents_still_running` names which."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "wave": {"type": "string", "description": "Narrow to one wave."},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
         "name": "fleet_status",
         "description": (
             "Who else is working this project: agents, roles, presence, and what each holds. "
             "Presence is derived from last contact, so a dead agent reads `offline` with nothing "
-            "having reported it."
+            "having reported it. `agent_id` adds the seats you minted."
         ),
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+            },
+        },
     },
     {
         "name": "heartbeat",
@@ -1246,10 +1267,23 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "presence_ttl_seconds": {"type": "integer"},
         },
     },
+    "retire_wave": {
+        "type": "object",
+        "properties": {
+            "seats_revoked": {"type": "integer"}, "agents": {"type": "integer"},
+            "leases_released": {"type": "integer"},
+            "reservations_released": {"type": "integer"},
+            # Never omitted. `{"seats_revoked": 4}` alone reads as "the wave is over",
+            # which is the misreading that leaves four children building in the dark.
+            "agents_still_running": {"type": "array"},
+            "stopped_no_processes": {"type": "boolean"},
+        },
+    },
     "fleet_status": {
         "type": "object",
         "properties": {
-            "agents": {"type": "array"}, "online": {"type": "integer"},
+            "agents": {"type": "array"}, "seats": {"type": "array"},
+            "online": {"type": "integer"},
             "total": {"type": "integer"}, "roles": {"type": "array"},
             "presence_ttl_seconds": {"type": "integer"},
             "heartbeat_interval_seconds": {"type": "integer"},
@@ -2150,7 +2184,20 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return {"enrolment_code": code, "role": row.role, "seat_id": row.id,
                 "expires_at": row.expires_at.isoformat() if row.expires_at else None}
     if name == "fleet_status":
-        return fleet_svc.fleet_status(db, pid)
+        minted_by = None
+        if args.get("agent_id"):
+            try:
+                minted_by = fleet_svc.minter_for(db, args["agent_id"], key)
+            except fleet_svc.NotYourAgent as e:
+                raise errors.Validation(str(e))
+        return fleet_svc.fleet_status(db, pid, minted_by=minted_by)
+    if name == "retire_wave":
+        try:
+            minter = fleet_svc.minter_for(db, args["agent_id"], key)
+        except fleet_svc.NotYourAgent as e:
+            raise errors.Validation(str(e))
+        return fleet_svc.retire_wave(db, minter_id=minter, project_id=pid,
+                                     wave=args.get("wave"))
     if name == "heartbeat":
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         if not args.get("id"):

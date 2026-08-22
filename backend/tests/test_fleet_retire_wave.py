@@ -241,3 +241,182 @@ def test_the_roster_carries_the_seat_not_just_whether_there_is_one(client, key, 
     assert roster[a["agent_id"]]["enrolment_id"] != roster[b["agent_id"]]["enrolment_id"]
     # The boolean stays: the Fleet view groups un-enrolled agents apart and reads it.
     assert roster[a["agent_id"]]["enrolled"] is True
+
+
+# ---- the agent-facing surface (GRPH-460) --------------------------------------------
+#
+# The service layer above shipped in GRPH-451 and a planner could not reach any of it.
+# §6's hole is not the logic, it is that spin-up was agent-callable and spin-down was not.
+
+import json as _json
+
+
+def _rpc(client, key, tool, args=None):
+    return client.post("/api/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": tool, "arguments": args or {}},
+    }, headers={"X-API-Key": key}).json()["result"]
+
+
+def _ok(client, key, tool, args=None):
+    res = _rpc(client, key, tool, args)
+    assert not res.get("isError"), res
+    return _json.loads(res["content"][0]["text"])
+
+
+def _planner(client, key, proj, db):
+    _, code = _seat(db, proj, "planner")
+    return _ok(client, key, "register_agent", {"label": "p", "enrolment_code": code})
+
+
+def test_a_planner_can_now_retire_the_seats_it_minted(client, key, proj, db):
+    """The whole of §6, end to end over MCP: mint, then retire."""
+    boss = _planner(client, key, proj, db)
+    _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
+    _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "reviewer"})
+
+    out = _ok(client, key, "retire_wave", {"agent_id": boss["agent_id"]})
+
+    assert out["seats_revoked"] == 2
+    assert out["stopped_no_processes"] is True
+    assert out["agents_still_running"] == []
+
+
+def test_the_roster_carries_the_seats_you_minted(client, key, proj, db):
+    """Folded into `fleet_status` rather than given a tool of its own.
+
+    Not only budget: the roster's second question has always been "what became of the one
+    I sent", and §6's complaint is that `enrolled` reports the consequences of revocation
+    and never the transition. An agent vanishing and its seat being revoked are one event
+    seen from two places, and splitting them across two calls is what made it invisible.
+    """
+    boss = _planner(client, key, proj, db)
+    minted = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
+
+    roster = _ok(client, key, "fleet_status", {"agent_id": boss["agent_id"]})
+    seats = roster["seats"]
+    assert [s["id"] for s in seats] == [minted["seat_id"]]
+    assert seats[0]["state"] == "unused"
+    assert seats[0]["minted_by"] == boss["agent_id"]
+
+    _ok(client, key, "retire_wave", {"agent_id": boss["agent_id"]})
+
+    after = _ok(client, key, "fleet_status", {"agent_id": boss["agent_id"]})
+    assert after["seats"][0]["state"] == "revoked", "the transition, not just its consequence"
+
+
+def test_the_roster_says_nothing_about_seats_unless_asked(client, key, proj, db):
+    """Omitted, not empty. An agent that never mints should see exactly what it saw
+    before, and `"seats": []` would invite it to conclude there are none anywhere."""
+    boss = _planner(client, key, proj, db)
+    _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
+
+    assert "seats" not in _ok(client, key, "fleet_status", {})
+
+
+def test_retiring_is_planner_only(client, key, proj, db):
+    """Gated exactly as minting is, because §6 says they are ONE capability. The
+    containment argument is structural: a planner cannot build, so it has no authored
+    work that revoking its own seats could launder."""
+    assert fleet.TOOL_ROLES["retire_wave"] == ("planner",)
+    assert fleet.TOOL_ROLES["retire_wave"] == fleet.TOOL_ROLES["mint_enrolment"]
+
+    _, wcode = _seat(db, proj, "worker")
+    worker = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": wcode})
+    res = _rpc(client, key, "retire_wave", {"agent_id": worker["agent_id"]})
+    assert res.get("isError"), "a worker retired a wave"
+
+
+def test_no_seat_code_reaches_the_roster(client, key, proj, db):
+    """The seats list is new surface, and new surface is a new chance to leak the code.
+    Pinned on the key set, not by hunting substrings — a two-character search collides
+    with a UUID and fails at random, which is worse than not checking."""
+    boss = _planner(client, key, proj, db)
+    minted = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
+
+    roster = _ok(client, key, "fleet_status", {"agent_id": boss["agent_id"]})
+    assert set(roster["seats"][0]) == {
+        "id", "role", "wave", "state", "consumed_by", "minted_by", "reissued_from",
+        "expires_at",
+    }
+    assert minted["enrolment_code"] not in _json.dumps(roster)
+
+
+def test_you_cannot_name_an_agent_from_another_credential(client, auth, key, proj, db):
+    """§6 says it "cannot reach another planner's seats", and `agent_id` is SELF-DECLARED
+    — `caller_identity` takes it as given, which is right for stamping provenance and
+    wrong for scoping a destructive call.
+
+    So the named agent must be on the calling credential. Say exactly what that buys:
+    agents provisioned by one planner share its credential by design (PRD-19), so this
+    stops a different credential's planner and does NOT separate siblings on the same
+    one. A coordination scope, not an authorization boundary — and PRD-22 D-k is explicit
+    there is no security boundary here at all.
+    """
+    other = client.post("/api/api-keys", json={"name": "other", "project_id": proj},
+                        headers=auth).json()["plaintext"]
+    _, code = _seat(db, proj, "planner")
+    theirs = _ok(client, other, "register_agent", {"label": "theirs", "enrolment_code": code})
+    _ok(client, other, "mint_enrolment", {"agent_id": theirs["agent_id"], "role": "worker"})
+
+    res = _rpc(client, key, "retire_wave", {"agent_id": theirs["agent_id"]})
+    assert res.get("isError"), "retired a wave minted on a credential we do not hold"
+    assert "different credential" in res["content"][0]["text"]
+
+    res = _rpc(client, key, "fleet_status", {"agent_id": theirs["agent_id"]})
+    assert res.get("isError"), "listed seats minted on a credential we do not hold"
+
+
+def test_two_planners_on_one_credential_see_only_their_own_seats(client, key, proj, db):
+    """The case the ownership check deliberately does NOT cover, and therefore the only
+    thing scoping the seats list here.
+
+    `minter_for` stops a different CREDENTIAL. Agents provisioned by one planner share
+    its credential by design (PRD-19 — one credential, many seats), so between siblings
+    the only thing separating them is the `minted_by` filter itself.
+
+    A sabotage dropping that filter survived until this existed: every other test asserts
+    a refusal, so the scoping never ran.
+    """
+    first = _planner(client, key, proj, db)
+    second = _planner(client, key, proj, db)
+    assert first["agent_id"] != second["agent_id"]
+
+    mine = _ok(client, key, "mint_enrolment", {"agent_id": first["agent_id"], "role": "worker"})
+    theirs = _ok(client, key, "mint_enrolment", {"agent_id": second["agent_id"], "role": "worker"})
+
+    seen = _ok(client, key, "fleet_status", {"agent_id": first["agent_id"]})["seats"]
+    assert [s["id"] for s in seen] == [mine["seat_id"]]
+    assert theirs["seat_id"] not in [s["id"] for s in seen]
+
+
+def test_retiring_does_not_reach_a_sibling_planners_wave(client, key, proj, db):
+    """The same boundary on the destructive half. One credential, two planners: retiring
+    is scoped by `minted_by` and nothing else, so if that filter goes, one planner ends
+    the other's fleet."""
+    first = _planner(client, key, proj, db)
+    second = _planner(client, key, proj, db)
+    _ok(client, key, "mint_enrolment", {"agent_id": first["agent_id"], "role": "worker"})
+    survivor = _ok(client, key, "mint_enrolment", {"agent_id": second["agent_id"], "role": "worker"})
+
+    out = _ok(client, key, "retire_wave", {"agent_id": first["agent_id"]})
+    assert out["seats_revoked"] == 1
+
+    still = _ok(client, key, "fleet_status", {"agent_id": second["agent_id"]})["seats"]
+    assert [s["state"] for s in still if s["id"] == survivor["seat_id"]] == ["unused"]
+
+
+@pytest.mark.parametrize("tool", ["retire_wave", "fleet_status"])
+def test_naming_an_agent_that_does_not_exist_is_refused_not_crashed(
+    client, key, proj, db, tool
+):
+    """A planner that typos its own id should get a sentence, not a 500.
+
+    Without the existence guard `minter_for` reaches `agent.api_key_id` on None and the
+    call dies inside the server — which the caller sees as the supervisor being broken
+    rather than as their own mistake, and which is the more expensive of the two to
+    diagnose.
+    """
+    res = _rpc(client, key, tool, {"agent_id": "GRPH-A-NOBODY"})
+    assert res.get("isError"), f"{tool} accepted an agent that does not exist"
+    assert "GRPH-A-NOBODY" in res["content"][0]["text"]
