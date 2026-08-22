@@ -78,16 +78,26 @@ def _public_project(db: Session, token: str | None, project_id: str | None) -> s
 
 
 @router.get("/roadmap")
-def public_roadmap(project_id: str | None = None, token: str | None = None, db: Session = Depends(get_db)):
-    """Read-only public roadmap for the shareable link (opted-in projects only)."""
+def public_roadmap(request: FastAPIRequest, project_id: str | None = None,
+                   token: str | None = None, db: Session = Depends(get_db)):
+    """Read-only public roadmap for the shareable link (opted-in projects only).
+
+    Rate limited like every other public route (GRPH-32). It was the one endpoint the
+    hardening checklist named by name and the only unauthenticated one without a limit:
+    a full roadmap query per request, reachable by anyone holding a share link, with
+    nothing bounding how fast it can be asked for.
+    """
     pid = _public_project(db, token, project_id)
+    _rate_or_429(db, request, pid)
     return roadmap_svc.list_roadmap(db, project_id=pid)
 
 
 @router.get("/widget-config")
-def widget_config(project_id: str | None = None, token: str | None = None, db: Session = Depends(get_db)):
+def widget_config(request: FastAPIRequest, project_id: str | None = None,
+                  token: str | None = None, db: Session = Depends(get_db)):
     """Public config the embedded widget needs (e.g. whether to render Turnstile)."""
     pid = _public_project(db, token, project_id)
+    _rate_or_429(db, request, pid)
     cfg = get_config(db, pid)
     return {"turnstile_sitekey": cfg.turnstile_sitekey}
 

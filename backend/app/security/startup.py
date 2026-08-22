@@ -58,6 +58,28 @@ def check_security() -> None:
     # The correct surface already exists: `PlatformConfigOut.effective_chat_provider`
     # resolves it per project and drives the UI's no-model banner (AL-248).
 
+    # A rate limit that cannot tell callers apart is not a rate limit (GRPH-32).
+    # `security.net.client_ip` honours X-Forwarded-For ONLY when TRUSTED_PROXY is set,
+    # because otherwise the header is client-spoofable. The cost of leaving it off behind
+    # a proxy is not "no limit" but something easier to miss: the socket peer is the
+    # proxy, so EVERY caller shares one bucket. The first abuser exhausts it and the
+    # limit then applies to everyone else — the endpoints look protected and the
+    # protection is aimed at the wrong thing.
+    #
+    # Warned, not refused: hosted mode without a proxy in front is a legitimate
+    # configuration, and turning this on for someone who has no proxy would let any
+    # caller forge their own bucket key.
+    if settings.hosted_mode and not settings.trusted_proxy:
+        print(
+            f"\n{_BANNER}\n  CONFIGURATION WARNING: HOSTED_MODE is on but TRUSTED_PROXY "
+            "is off. If a proxy or load balancer sits in front of this instance, every "
+            "caller shares ONE rate-limit bucket (the proxy's IP), so the limits on "
+            "/api/public/* and login are effectively global rather than per-client. "
+            f"Set TRUSTED_PROXY=true if — and only if — a trusted proxy terminates every "
+            f"request.\n{_BANNER}\n",
+            flush=True,
+        )
+
     if not settings.jwt_secret_is_weak:
         return
 
