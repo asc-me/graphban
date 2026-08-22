@@ -13,6 +13,7 @@ surface — plus positive controls, a self-host regression, and a hosted E2E loo
 Runs on both engines via the existing two-engine gate.
 """
 import pytest
+from sqlalchemy import select
 
 SEED_PW = "graphban"
 
@@ -469,3 +470,94 @@ def test_cross_org_agent_code_health_blocked_for_an_api_key(client, tenants):
     r = client.get(f"/api/agent/code/health?project_id={tenants['p_b']}",
                    headers={"X-API-Key": tenants["alex_key"]})
     assert _blocked(r.status_code), f"api key reached org B: {r.status_code}"
+
+
+# ---- an item cannot reference another project's PRD (GRPH-457) -------------------
+
+
+def _prd(client, auth, project_id, title="Spec"):
+    return client.post("/api/prds", json={"title": title, "body": "## D1\n\nwork",
+                                          "project_id": project_id}, headers=auth).json()
+
+
+def test_an_item_cannot_reference_a_prd_in_another_project(client, tenants):
+    """`resolve_prd` is global, so a cross-project key used to resolve cleanly and freeze
+    into the row. Worse than a dangling reference, because it RESOLVES — the item reads as
+    correctly linked on every surface while `prd_coverage`, which is project-scoped, never
+    counts it under the PRD it names.
+    """
+    theirs = _prd(client, tenants["dana"], tenants["p_b"], "Org B spec")
+    assert theirs.get("id"), theirs
+
+    r = client.post("/api/items", headers=tenants["alex"],
+                    json={"title": "borrowed", "project_id": tenants["p_a"],
+                          "prd_id": theirs["id"]})
+    assert r.status_code >= 400, f"cross-project PRD reference was accepted: {r.text}"
+
+
+def test_a_same_project_reference_still_resolves_and_freezes(client, tenants):
+    """The half that stops the refusal passing for the wrong reason.
+
+    Making resolution project-scoped in a way that renders the key UNRESOLVABLE would
+    also satisfy the test above — the value would fall through to the store-as-given
+    branch and the refusal would look like it worked. So this half has to prove
+    resolution still *does something*, which means the key it passes cannot equal the
+    stored id. At issue time those are the same string (``keys.mint`` renders the id),
+    so identity alone would prove nothing. Retagging is what separates them: after the
+    rename the PRD is addressed as ``NEW-P<n>`` while its frozen id stays ``OLD-P<n>``.
+
+    That is GRPH-319's write-resolution behaviour, and it must survive this change.
+    """
+    from app.db import SessionLocal
+    from app.models import Item, Prd
+    from app.services import projects as projects_svc
+
+    mine = _prd(client, tenants["alex"], tenants["p_a"], "Org A spec")
+    frozen = mine["id"]
+
+    db = SessionLocal()
+    try:
+        projects_svc.retag_project(db, tenants["p_a"], "ZQX")
+        number = db.scalar(select(Prd.number).where(Prd.id == frozen))
+    finally:
+        db.close()
+
+    renamed_key = f"ZQX-P{number}"
+    assert renamed_key != frozen, "retag did not separate the key from the stored id"
+
+    r = client.post("/api/items", headers=tenants["alex"],
+                    json={"title": "linked", "project_id": tenants["p_a"],
+                          "prd_id": renamed_key})
+    assert r.status_code == 201, r.text
+
+    db = SessionLocal()
+    try:
+        row = db.scalar(select(Item).where(Item.title == "linked"))
+        assert row is not None
+        assert row.prd_id == frozen, (
+            f"stored {row.prd_id!r}; the live key {renamed_key!r} must freeze to the "
+            f"issue-time id {frozen!r}, not be written through as given"
+        )
+    finally:
+        db.close()
+
+
+def test_an_unresolvable_reference_is_still_stored_as_given(client, tenants):
+    """GRPH-319's degradation, unchanged: a dangling reference is recoverable, a silently
+    discarded link is not. The new refusal must not have swallowed this branch."""
+    r = client.post("/api/items", headers=tenants["alex"],
+                    json={"title": "dangling", "project_id": tenants["p_a"],
+                          "prd_id": "NOPE-P999"})
+    assert r.status_code == 201, r.text
+
+
+def test_an_item_cannot_be_updated_to_reference_another_project_s_prd(client, tenants):
+    """The second door. `create_item` and `update_item` both freeze a prd_id, so a gate on
+    only the create path leaves the same bad row reachable in two moves instead of one."""
+    theirs = _prd(client, tenants["dana"], tenants["p_b"], "Org B spec")
+    mine = client.post("/api/items", headers=tenants["alex"],
+                       json={"title": "clean", "project_id": tenants["p_a"]}).json()
+
+    r = client.patch(f"/api/items/{mine['id']}", headers=tenants["alex"],
+                     json={"prd_id": theirs["id"]})
+    assert r.status_code >= 400, f"cross-project PRD reference accepted on update: {r.text}"

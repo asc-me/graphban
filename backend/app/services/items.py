@@ -8,7 +8,7 @@ from datetime import timedelta, timezone
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from app.models import Item, Project, utcnow
+from app.models import Item, Prd, Project, utcnow
 from app.services import keys
 
 logger = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ FIDELITIES = ["low", "high"]  # low = specifiable now; high = needs a prototype 
 DEFAULT_LEASE_SECONDS = 600  # a claim with no heartbeat within this window is reclaimable
 
 
-def _stored_prd_id(db: Session, prd_id: str | None) -> str | None:
+def _stored_prd_id(db: Session, prd_id: str | None, project_id: str | None = None) -> str | None:
     """The frozen id a caller's PRD key means, for storing in `Item.prd_id`.
 
     `keys` resolves the entity a call *addresses*; this covers the entity a call
@@ -30,10 +30,39 @@ def _stored_prd_id(db: Session, prd_id: str | None) -> str | None:
     Unresolvable values are stored as given rather than dropped, matching how the rest
     of the resolve path degrades: a dangling reference is recoverable, a silently
     discarded link is not.
+
+    **A key that resolves into ANOTHER project is refused** (GRPH-457). `resolve_prd` is
+    global, so `create_item(project_id="gliphy-board", prd_id="GRPH-P22")` resolved cleanly
+    against a PRD in `agentledger` and froze it into the row. That is worse than the dangling
+    case the paragraph above describes, because the reference resolves — so it looks *more*
+    correct, while `prd_coverage` is project-scoped and never counts the item under the PRD
+    it names. An item that reads as linked on every surface and contributes to no PRD's
+    coverage anywhere is an absence reading as clean, in the traceability surface PRD-12
+    exists to make trustworthy.
+
+    Loud rather than normalised, for the reason the store-as-given branch is loud in the
+    other direction: there is no supported meaning for a cross-project reference — numbering
+    and identity are per-project — so quietly dropping it would hide a caller's mistake
+    instead of correcting it.
+
+    `resolve_prd` itself stays global on purpose. It also resolves the entity a call
+    *addresses*, and `prd_coverage("GRPH-P22")` legitimately crosses projects because the
+    caller may not hold that project as their key's default.
     """
     if not prd_id:
         return prd_id
-    return keys.resolve_prd(db, prd_id) or prd_id
+    resolved = keys.resolve_prd(db, prd_id)
+    if resolved is None:
+        return prd_id
+    if project_id:
+        owner = db.scalar(select(Prd.project_id).where(Prd.id == resolved))
+        if owner and owner != project_id:
+            raise ValueError(
+                f"{prd_id} belongs to project {owner!r}, not {project_id!r} — an item "
+                "cannot reference a PRD in another project. PRD numbering is per-project, "
+                "so this key means a different document here or nothing at all."
+            )
+    return resolved
 
 
 def list_items(db: Session, project_id: str | None = None, status: str | None = None) -> list[Item]:
@@ -96,7 +125,7 @@ def create_item(
         sort_order=max_order + 1,
         reporter=reporter or {},
         date=date,
-        prd_id=_stored_prd_id(db, prd_id),
+        prd_id=_stored_prd_id(db, prd_id, project_id),
         prd_linked_at=utcnow() if prd_id else None,
         prd_section=prd_section or "",
         fidelity=fidelity,
@@ -222,7 +251,10 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         if fields.get("status") == "done" and prev_status != "done" else None
     )
     if fields.get("prd_id") is not None:
-        fields = {**fields, "prd_id": _stored_prd_id(db, fields["prd_id"])}
+        # The ITEM's project, not the caller's: an update must be scoped to where the
+        # row actually lives, or a caller whose key defaults elsewhere could re-open
+        # the cross-project reference this closes.
+        fields = {**fields, "prd_id": _stored_prd_id(db, fields["prd_id"], item.project_id)}
         # Stamped when the link CHANGES, never on an ordinary edit. Re-saving an item
         # already on this PRD must not restamp it, or every touch after approval would
         # look like freshly added scope and the drift number would climb on activity
