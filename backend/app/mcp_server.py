@@ -1038,6 +1038,26 @@ _PROJECT_SCOPED = {
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "create_prd",
 }
+# Tools that ACCEPT `project_id`, which is a different question from the one above.
+#
+# `_PROJECT_SCOPED` answers "cannot run at all without a project in scope" — the dispatcher
+# refuses those when `pid` is None. It was also driving the MANIFEST, so a tool that quietly
+# uses `pid` while not being in that set took a parameter it never advertised. Eight did
+# (GRPH-474), and seven of them CHOOSE WHAT TO ACT ON by project: `claim_review` picks work
+# from `pid`, `fleet_status` reports on it, `register_agent` registers into it. An agent
+# reading `tools/list` — the only contract it has — could not discover the parameter, so on a
+# key spanning several projects it fell through to `allowed[0]`, an arbitrary ordering.
+#
+# `sign_off` is here for a weaker reason, stated so it is not mistaken for the others: its
+# only use of `pid` is the audit event's attribution. The item itself comes from
+# `_scoped_item(..., allowed)` and lands where it was named.
+#
+# `test_manifest_declares_the_project_parameter` derives this from the source rather than
+# trusting the set, so a NEW tool that starts reading `pid` fails until it is declared.
+_TAKES_PROJECT = _PROJECT_SCOPED | {
+    "claim_cluster", "claim_review", "fleet_status", "get_context",
+    "mint_enrolment", "register_agent", "retire_wave", "sign_off",
+}
 # Creates accept an idempotency key so a retried call returns the original resource.
 _IDEMPOTENT_CREATES = {"create_item", "add_memory", "link_items"}
 # Writes that are idempotent by their own natural key (no idempotency token needed).
@@ -1378,7 +1398,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
 for _t in TOOLS:
     _name = _t["name"]
     props = _t["inputSchema"].setdefault("properties", {})
-    if _name in _PROJECT_SCOPED:
+    if _name in _TAKES_PROJECT:
         props["project_id"] = {
             "type": "string",
             "description": "Overrides the key's default project.",
