@@ -171,3 +171,35 @@ def test_the_cli_wires_the_command(db, hosted, capsys):
     import json as _json
     out = _json.loads(capsys.readouterr().out)
     assert out["provisioned"] is True and out["org_name"] == "ascme-labs"
+
+
+def test_it_refuses_an_address_nobody_could_sign_in_with(db, hosted, monkeypatch):
+    """GRPH-461's guard on the HOSTED path, which #283 added and nothing exercised.
+
+    Removing `check_email` from `provision_hosted` left all 24 bootstrap tests passing.
+    The hosted path hands back a password too, so an address the login route refuses
+    makes that password just as useless as it does on a self-host.
+
+    **The bad address is allowlisted deliberately, and that is the whole test.** The
+    obvious version — a malformed address, no allowlist change — passes without the
+    guard, because `PLATFORM_ADMIN_EMAILS` refuses an unknown address anyway for an
+    entirely different reason. It would assert the right thing and be unable to fail.
+    Allowlisting it removes the other refusal, so the guard is the only thing left that
+    can say no.
+
+    That also covers the realistic shape of this mistake: an operator who put the same
+    typo in `PLATFORM_ADMIN_EMAILS` as in `--email` sails past the allowlist and lands
+    on an account the login route will not accept.
+    """
+    from app.config import settings
+    from app.models import User
+
+    monkeypatch.setattr(settings, "platform_admin_emails", "boss@localhost")
+
+    with pytest.raises(bootstrap.BootstrapRefused) as e:
+        bootstrap.provision_hosted(db, email="boss@localhost", org_name="ascme-labs")
+
+    assert "sign in" in str(e.value), (
+        f"refused for the wrong reason — the allowlist, not the address: {e.value}"
+    )
+    assert db.query(User).count() == 0, "and it creates nothing"
