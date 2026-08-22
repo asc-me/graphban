@@ -59,6 +59,16 @@ class Reason(str, Enum):
     #: point it argues is that a limit people rely on which silently does not bind is
     #: worse than no limit at all, and a wall-clock cap that never fires is exactly that.
     WALL_CLOCK = "wall_clock"
+    #: The server is reachable, answering, and no longer counts this child — while its
+    #: process is still alive. D-d's backstop (GRPH-452).
+    #:
+    #: Deliberately NOT named `seat_revoked`, because the supervisor cannot prove that.
+    #: A revoked seat, a revoked credential and a child whose MCP client died all look
+    #: identical from here: the roster stops listing it, or lists it `offline`. What is
+    #: observable is that the server has stopped counting it, and all three mean the same
+    #: thing operationally — the claim is gone and the process is spending money without
+    #: one. Naming it for the cause would be asserting something unmeasured.
+    SEAT_GONE = "seat_gone"
 
 
 class LaunchFailed(RuntimeError):
