@@ -46,12 +46,20 @@ def _tracked_prds() -> list[pathlib.Path]:
     in a clean worktree, where two PRDs the fleet had not committed simply were not there and
     the test died on a missing file instead of reporting drift.
     """
-    # The `prd-<n>-` shape selects which FILES are PRD docs. It no longer selects which ROW
-    # each one is compared against — see `_declared_id`.
     out = subprocess.run(["git", "-C", str(ROOT), "ls-files", "docs/prd-*.md"],
                          capture_output=True, text=True, check=True).stdout.split()
-    return sorted(ROOT / f for f in out if re.match(r"prd-\d+", pathlib.Path(f).name))
+    return sorted(ROOT / f for f in out if PRD_FILE.match(pathlib.Path(f).name))
 
+
+#: Which FILES are PRD docs. NOT which row each is compared against — that is `_declared_id`.
+#:
+#: `draft` sits where the number goes, for a document whose row does not exist yet. The
+#: selector used to require digits, which meant an unnumbered draft was not a PRD doc as far
+#: as this tool was concerned: it would not be indexed, would not be recorded as unindexed,
+#: and `test_the_snapshot_accounts_for_every_repo_prd` would pass without ever having seen
+#: it. Renaming `prd-22-org-administration-plane.md` to stop it claiming a number the ledger
+#: issued elsewhere would have bought a visible collision for an invisible gap.
+PRD_FILE = re.compile(r"prd-(\d+|draft)-")
 
 LEDGER_ID = re.compile(r"^\*\*Ledger id:\*\*\s*([A-Za-z][A-Za-z0-9]*-P\d+)", re.M)
 

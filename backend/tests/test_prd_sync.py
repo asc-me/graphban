@@ -108,7 +108,7 @@ def test_the_snapshot_accounts_for_every_repo_prd():
     committed, so in a clean checkout the file it named was simply absent."""
     repo = set(subprocess.run(["git", "-C", str(REPO), "ls-files", "docs/prd-*.md"],
                               capture_output=True, text=True, check=True).stdout.split())
-    repo = {f for f in repo if re.match(r"prd-\d+", pathlib.Path(f).name)}
+    repo = {f for f in repo if gen_prd_index.PRD_FILE.match(pathlib.Path(f).name)}
     accounted = {v["file"] for v in INDEX.values()} | set(SNAPSHOT["unindexed"])
 
     assert repo == accounted, (
@@ -197,6 +197,37 @@ def test_the_pairing_asks_the_document_not_the_filename():
 
     assert asked == ["GRPH-P17"], f"the ledger was asked for {asked}, so the filename decided it"
     assert set(index) == {"GRPH-P17"} and not unindexed
+
+
+def test_an_unnumbered_draft_is_still_a_prd_doc():
+    """A draft whose number the ledger has not issued must still be SELECTED, or renaming it
+    to stop claiming a number quietly removes it from every check in this file.
+
+    `docs/prd-22-org-administration-plane.md` claimed 22 while the ledger issued 22 to the
+    fleet supervisor. The honest name carries no number — PRD-21 D9 has already reserved 23
+    for integrations and 24 for analytics, so this document's number is whatever `create_prd`
+    returns and not a digit sooner. Under a digits-only selector that rename would have made
+    the file invisible: not indexed, not recorded as unindexed, and
+    `test_the_snapshot_accounts_for_every_repo_prd` green either way.
+
+    So the selector takes `draft` where the number goes, and a document that names no row
+    lands in `unindexed` where a human is asked about it."""
+    assert gen_prd_index.PRD_FILE.match("prd-draft-org-administration-plane.md")
+    assert gen_prd_index.PRD_FILE.match("prd-22-fleet-supervisor.md")
+    assert not gen_prd_index.PRD_FILE.match("prd-index.json")
+    assert not gen_prd_index.PRD_FILE.match("prd-notes.md"), (
+        "the slot is for a number or the literal `draft`, not for any word at all — "
+        "otherwise every prd-*.md becomes a PRD document"
+    )
+
+    with tempfile.TemporaryDirectory() as d:
+        doc = pathlib.Path(d) / "prd-draft-org-administration-plane.md"
+        doc.write_text("# PRD — not filed yet\n\n**Status:** draft\n", encoding="utf-8")
+
+        index, unindexed = gen_prd_index.build([doc], lambda _: pytest.fail(
+            "the ledger was asked about a document that declares no row"))
+
+    assert index == {} and unindexed == ["docs/prd-draft-org-administration-plane.md"]
 
 
 def test_a_declared_id_the_ledger_does_not_have_is_recorded_not_paired():
