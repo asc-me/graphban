@@ -4,7 +4,7 @@ import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
 import { useGraphFind } from "@/lib/graph/useGraphFind";
-import { useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
+import { NODE_TAB_INDEX, useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
 import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
@@ -274,7 +274,8 @@ export function LinksGraphView() {
                   className={cn("focus:outline-none", pinned ? "cursor-grab" : "cursor-pointer")}
                   opacity={active ? 1 : 0.25}
                   role="button"
-                  tabIndex={kb.tabIndexFor(id)}
+                  ref={kb.registerNode(id)}
+                  tabIndex={NODE_TAB_INDEX}
                   aria-label={
                     `${kind} ${id}, ${degree[id] ?? 0} connections` + (pinned ? ", pinned" : "")
                   }

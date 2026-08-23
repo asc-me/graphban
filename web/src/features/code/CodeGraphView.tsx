@@ -25,7 +25,7 @@ import {
   secondsRemaining,
 } from "@/lib/graph/presence";
 import { useGraphFind } from "@/lib/graph/useGraphFind";
-import { useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
+import { NODE_TAB_INDEX, useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
 import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
@@ -611,7 +611,8 @@ export function CodeGraphView() {
                     )}
                     opacity={active ? 1 : 0.22}
                     role="button"
-                    tabIndex={kb.tabIndexFor(id)}
+                    ref={kb.registerNode(id)}
+                    tabIndex={NODE_TAB_INDEX}
                     aria-label={
                       `${meta.label} ${id}, ${degree[id] ?? 0} connections` +
                       (described ? (stale ? ", stale" : "") : ", not described") +
