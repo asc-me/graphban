@@ -413,7 +413,7 @@ inspector.
 
 ## D8 — Asking the graph (G5)
 
-Three functions in `services/code_graph.py`, each exposed on `GET /api/code/analysis` and as
+Three functions in `services/code_graph.py`, each exposed on `GET /api/agent/code/analysis` and as
 one MCP tool (`graph_query`) so agents get them too — an agent about to refactor should be
 able to ask what depends on it:
 

@@ -29,7 +29,7 @@ fully offline with `docker compose up`.
 
 | Doc | What it covers |
 | --- | --- |
-| [MCP tools](mcp.md) | The 30 MCP tools, JSON-RPC endpoint, API-key auth, error taxonomy, call metering |
+| [MCP tools](mcp.md) | The 54 MCP tools, JSON-RPC endpoint, API-key auth, error taxonomy, call metering |
 | [Grok Build](grok-build.md) | Connect Grok Build (xAI's coding CLI) to Graphban's MCP + prime it on the loop |
 | [Cursor](cursor.md) | Connect Cursor to Graphban's MCP (user + Cursor 3 Team scope) + the sub-agent fleet |
 | [AI providers](ai-providers.md) | The provider abstraction — stub / Ollama / Anthropic / OpenAI |
@@ -38,7 +38,7 @@ fully offline with `docker compose up`.
 | [Configuration](configuration.md) | Environment variables |
 | [Development](development.md) | Local dev, tests, migrations |
 | [Deploy](deploy.md) | Self-host deploy runbook — release identity, verification, recovery, rollback |
-| [Implementation plan](IMPLEMENTATION_PLAN.md) | Phase-by-phase build status |
+| [Implementation plan](IMPLEMENTATION_PLAN.md) | The original phase plan, kept as a record — see the roadmap for current status |
 
 ## Conventions used in these docs
 
