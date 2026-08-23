@@ -6,7 +6,13 @@ increment. Sequence is a recommendation —
 phases 1–5 can be reordered; the **cross-cutting foundations** below should land first
 or be woven into whichever phase needs them.
 
-## Status (updated)
+## Original plan, as written
+
+**This table is the plan as it stood when it was written, kept as a record. It is not
+current status** — it said Phase 6 "not started" for as long as the hosted plane was
+live and deployed. For what has actually shipped, read [the roadmap](roadmap.md), which
+computes `x / y shipped` from milestones instead of restating it by hand, and is why it
+has not drifted.
 
 | Item | State |
 | --- | --- |

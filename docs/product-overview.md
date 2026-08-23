@@ -52,7 +52,7 @@ A dark-only, keyboard-friendly web app with these areas (each has its own guide)
   user that made it.
 - **Settings / Profile** — switch AI providers, connect integrations, configure the project,
   manage members and API keys.
-- **Native MCP** — 27 tools over a JSON-RPC endpoint, authenticated by scoped API keys, with
+- **Native MCP** — 54 tools over a JSON-RPC endpoint, authenticated by scoped API keys, with
   a typed error taxonomy (every failure carries a machine code + repair hint).
 
 ## Non-goals (current)

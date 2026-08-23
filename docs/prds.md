@@ -16,7 +16,7 @@ the same path a future Google Drive sync uses for files dropped into the `PRDs/`
 | Field | Notes |
 | --- | --- |
 | `id` | e.g. `PRD-1` |
-| `status` | `draft` · `review` · `approved` |
+| `status` | `draft` · `review` · `approved` · `closed` — the first two are SETTABLE, the last two are EARNED (see below) |
 | `version` | e.g. `v1.0` |
 | `body` | Markdown |
 | `linked` | List of tracker item ids |
@@ -28,6 +28,11 @@ the same path a future Google Drive sync uses for files dropped into the `PRDs/`
 - **Blank** — just the title heading.
 
 ## PRD editor (`/prds/:id`)
+
+**`approved` is reached, never set.** It is earned by finishing the grill; a PATCH that
+tries to set it directly is refused (`services/prds.py` — "approved is reached by
+finishing the grill, not set directly"). `closed` is reached by closing the PRD out.
+That is why the status dropdown offers two states and the table above lists four.
 
 A split view: a raw **markdown editor** on the left, a **live rendered preview** on the
 right (a dependency-free renderer handling headings, lists, code, bold/italic/inline-code,
@@ -78,7 +83,7 @@ as chips on the list view.
 | GET | `/api/prds` | List (summaries) |
 | POST | `/api/prds` | Create (`{title, template}`) |
 | GET | `/api/prds/{id}` | Fetch one (with body) |
-| PATCH | `/api/prds/{id}` | Update title / status / body |
+| PATCH | `/api/prds/{id}` | Update title / body, and status **to `draft` or `review` only** |
 | GET | `/api/prds/{id}/versions` | Version history (newest first) |
 | POST | `/api/prds/{id}/versions` | Snapshot + bump version (`{note}`) |
 | POST | `/api/prds/{id}/link` | Link/unlink an item (`{item_id, add}`) |

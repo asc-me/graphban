@@ -126,15 +126,16 @@ backend/app/
   providers/         base protocols + stub · ollama · openai · anthropic + registry
   services/          business logic shared by REST + MCP
   routers/           auth · projects · items · requests · memory · agent · apikeys ·
-                     prds · analytics · platform · reports · public
-  mcp_server.py      JSON-RPC MCP endpoint (27 tools) + metering
+                     prds · analytics · platform · reports · public · admin ·
+                     artifacts · assistant · fleet · learning · orgs · sync
+  mcp_server.py      JSON-RPC MCP endpoint (54 tools) + metering
   seed.py            the design dataset
 alembic/             migration chain (0001 → head)
 
 web/src/
   lib/               api · publicApi · queries · types · meta · cn · markdown · diff
   components/ui/     shadcn-style primitives
-  components/shell/  TopBar · LeftNav · AgentSidebar · AppFrame
+  components/shell/  TopBar · ProjectBar · LeftNav · AgentSidebar · AppFrame
   features/          auth · tracker · requests · memory(sidebar) · prds · links ·
                      dashboard · roadmap · mcp · feedback · settings · profile
 ```
@@ -144,8 +145,12 @@ web/src/
 - **No live GitHub/Drive OAuth or outbound sync.** Connection config is real and
   persisted; the inbound GitHub webhook is fully implemented; outbound push requires a
   connected token and is out of scope offline (the API says so honestly).
-- **Single-tenant.** Multi-tenancy, usage tiers/billing, and productionization
-  (observability, backups, SQLite-first packaging) are Phase 6 — the "managed service"
-  layer that sits additively on top of this decoupled core.
+- **Multi-tenancy is built and gated, not absent.** `services/orgs.py`, `services/quotas.py`
+  and `routers/admin.py` are in the tree; the operator plane is hidden behind
+  `settings.hosted_mode` plus a platform-admin allowlist, and `require_platform_admin`
+  answers 404 rather than 403 so a tenant cannot see that it exists. A self-hosted
+  instance runs single-tenant because the flag is off, not because the code is missing.
+  See [PRD-21](prd-21-cloud-org-plane.md). Remaining Phase 6 work is productionization —
+  observability, backups, SQLite-first packaging.
 - **In-memory rate limiting** on public endpoints (per-process) — fine for local/single
   instance; a shared store is needed for multi-instance.
