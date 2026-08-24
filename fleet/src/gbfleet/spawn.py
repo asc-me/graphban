@@ -92,6 +92,10 @@ class Launch:
     #: What `--version` reported for the binary that will run. Carried so the child's
     #: record can name the build (S6), not just the vendor.
     binary_version: str = ""
+    #: The model the CALLER named, or "" for the vendor default. Carried for the same
+    #: reason as `binary_version`: a record naming the vendor but not the model cannot
+    #: answer "was this the cheap one?" — which is the whole point of naming it.
+    model: str = ""
     #: Fed to the child on stdin. This is how the enrolment CODE reaches a vendor whose
     #: only prompt channel is a command-line argument: argv is readable by every process
     #: on the machine, stdin is not. `grok` takes `--prompt-file` and needs neither.

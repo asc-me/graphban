@@ -21,6 +21,33 @@ on PATH is a different act; `--binary` overrides it.
 
 Every row above was read off a binary that was actually run on macOS, except `codex`.
 
+## Naming a model (GRPH-483)
+
+Every vendor takes one and spells it differently. The supervisor **carries** the value and
+chooses nothing — PRD-22 §1 is explicit that it "does not choose models for subagents", and
+it could not if it wanted to: a seat's role is fixed server-side at mint and opaque until
+redeemed (D-j). The caller names the model exactly as it names the vendor.
+
+Omit it and the argv is byte-identical to before this existed.
+
+| vendor | flag | can the model be checked before spawning? |
+| --- | --- | --- |
+| `claude` | `--model <model>` — alias (`opus`, `sonnet`, `fable`) or full name | **no.** No listing flag exists, so a named model is passed through UNCHECKED and the vendor is what refuses it |
+| `cursor-agent` | `--model <model>` | **sometimes.** `--list-models` works, but an account with no entitlements answers *"No models available for this account"* — a fact about the account, not the model, so that case passes through too |
+| `grok` | `-m <MODEL>` (also `--model`) | **yes.** `grok models` enumerated `grok-4.6` (default) and `grok-4.5` on the machine this was written on |
+
+**Checked and unchecked must not read the same.** A validated model and one nobody could
+verify are different states, and collapsing them would let `claude` look as guarded as
+`grok`. Where the vendor can be asked, an unknown model refuses at `resolve()` — beside the
+version check, and for the same reason: a model the vendor rejects produces a child that
+starts, fails and never registers, which is indistinguishable from a broken adapter until
+`await_registration` gives up, and blames the wrong component meanwhile.
+
+**An empty listing is not a listing of zero valid models.** `known_models()` returns `None`
+for "cannot be asked" and a non-empty set for "asked and answered". Treating an empty result
+as an exhaustive list would refuse every spawn on an account that simply has no entitlements
+yet — which is a working setup, broken by a check that was supposed to help.
+
 ## Versions do not share a scheme
 
 Measured, not assumed. `claude` is semver, `cursor-agent` is **CalVer with a git hash**,

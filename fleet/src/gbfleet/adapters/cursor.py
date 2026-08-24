@@ -36,17 +36,40 @@ class CursorAgent(Adapter):
         "CalVer, not semver."
     )
 
+    def known_models(self, binary: Path) -> frozenset[str] | None:
+        """`cursor-agent --list-models`, or None when the account cannot enumerate.
+
+        Measured 2026-08-24: an account with no entitlements answers "No models available
+        for this account". That is a statement about the ACCOUNT, not about the model
+        being asked for, and treating it as an empty listing would refuse every spawn on
+        a setup that works. So anything that does not parse as a model list returns None
+        and the model is passed through unchecked.
+        """
+        from . import _run_version
+
+        out = _run_version(binary, ("--list-models",))
+        names = {
+            line.strip().lstrip("*-").strip().split()[0]
+            for line in out.splitlines()
+            if line.strip() and not line.strip().lower().startswith("no models")
+        }
+        names = {n for n in names if n and not n.endswith(":")}
+        return frozenset(names) or None
+
     def seat_path(self, worktree: Path) -> Path:
         return Path(worktree) / ".cursor" / "mcp.json"
 
     def launch(
-        self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path
+        self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
+        model: str = "",
     ) -> Launch:
         return Launch(
             adapter=self.name,
+            model=model,
             argv=[
                 str(binary),
                 "--print",
+                *self.model_argv(model),
                 "--force",         # nobody is there to approve a command
                 "--approve-mcps",  # ...or to approve the seat we just handed it
                 "--trust",         # ...or to trust the worktree it is standing in

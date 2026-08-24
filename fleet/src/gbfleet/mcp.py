@@ -69,6 +69,14 @@ TOOLS: list[dict[str, Any]] = [
                 "adapter": {"type": "string", "description": "Vendor to run. Named, never inferred."},
                 "enrolment_code": {"type": "string", "description": "The seat. Single-use."},
                 "wave": {"type": "string", "description": "Names the branch: gb/<wave>-<n>."},
+                "model": {
+                    "type": "string",
+                    "description": (
+                        "Vendor model for this child, e.g. 'sonnet' or 'grok-4.5'. Omit "
+                        "for the vendor default. NAMED, never inferred — the supervisor "
+                        "carries it and chooses nothing."
+                    ),
+                },
             },
             "required": ["adapter", "enrolment_code"],
         },
@@ -115,7 +123,7 @@ class Fleet:
     repo: Path
     workspace: Path
     client: Graphban
-    launch_for: Callable[[str], LaunchFactory]
+    launch_for: Callable[..., LaunchFactory]
     lock: Acquired | None = None
     limits: Limits = field(default_factory=Limits)
     partition: Partition = field(default_factory=Partition)
@@ -186,7 +194,8 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
         tree = _tree_for(fleet.repo, fleet.workspace, wave, str(fleet.started))
         seat = Seat(code=code, server_url=fleet.client.base_url, api_key=fleet.client.api_key)
         child = start_one(
-            tree, seat, fleet.launch_for(adapter), fleet.client, fleet.limits,
+            tree, seat, fleet.launch_for(adapter, args.get("model") or ""),
+            fleet.client, fleet.limits,
             fleet.partition, workspace=fleet.workspace, wave_name=wave,
             slot=str(fleet.started), on_spawned=fleet.children.append,
         )

@@ -221,7 +221,7 @@ def test_the_acceptance_walk(git_repo: Path, tmp_path: Path, state: Path):
     client = Graphban(base_url=SERVER, api_key=KEY)
     fleet = Fleet(
         repo=git_repo, workspace=workspace, client=client,
-        launch_for=lambda name: (lambda s, t, i: _standin_launch(s, t, i)),
+        launch_for=lambda name, model="": (lambda s, t, i: _standin_launch(s, t, i)),
     )
     spawned = []
     for code in (worker_seat["enrolment_code"], reviewer_seat["enrolment_code"]):
@@ -413,7 +413,7 @@ def test_the_acceptance_walk(git_repo: Path, tmp_path: Path, state: Path):
     #      was agent-callable and spin-down was not.
     shrink = Fleet(
         repo=git_repo, workspace=tmp_path / "ws-shrink", client=client,
-        launch_for=lambda name: (
+        launch_for=lambda name, model="": (
             lambda s, t, i: _standin_launch(s, t, i, extra=("--linger",))
         ),
     )

@@ -46,16 +46,23 @@ class ClaudeCode(Adapter):
         handle.close()
         return Path(handle.name)
 
+    # No listing flag exists on this CLI, so a named model is passed through UNCHECKED and
+    # the support matrix says so. Inherits `known_models` -> None deliberately rather than
+    # returning an empty set, which would refuse every model instead of checking none.
+
     def launch(
-        self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path
+        self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
+        model: str = "",
     ) -> Launch:
         seat_file = self.seat_path(tree.path)
         return Launch(
             adapter=self.name,
+            model=model,
             argv=[
                 str(binary),
                 "--print",
                 "--mcp-config", str(seat_file),
+                *self.model_argv(model),
                 # Headless means nobody is there to answer a permission prompt. PRD-22's
                 # risk table names this and answers it with the worktree boundary plus
                 # per-child config — explicitly NOT a sandbox (D-k, §7).
