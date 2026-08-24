@@ -31,7 +31,7 @@ def fleet(git_repo: Path, tmp_path: Path, scripts, state: Path) -> Fleet:
         repo=git_repo,
         workspace=workspace,
         client=_server(workspace),
-        launch_for=lambda name: _factory(scripts, "works_then_waits", adapter=name),
+        launch_for=lambda name, model="": _factory(scripts, "works_then_waits", adapter=name),
     )
 
 
@@ -99,7 +99,7 @@ def test_a_failing_tool_is_a_successful_exchange_carrying_isError(
 ):
     """D-a. A transport failure says "the supervisor is gone" when it means "your
     adapter is broken", and the planner acts very differently on those two."""
-    fleet.launch_for = lambda name: (_ for _ in ()).throw(
+    fleet.launch_for = lambda name, model="": (_ for _ in ()).throw(
         __import__("gbfleet.adapters", fromlist=["AdapterError"]).AdapterError(
             "adapter 'codex' is not implemented"
         )

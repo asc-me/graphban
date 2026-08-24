@@ -41,15 +41,43 @@ class Grok(Adapter):
         # the child failing to register is what surfaces that, inside the bounded window.
         return Path(worktree) / ".grok" / "mcp.json"
 
+    def model_argv(self, model: str) -> list[str]:
+        """`-m`, not `--model`. Both are accepted by the binary; the short form is what
+        `--help` puts first (`-m, --model <MODEL>`) and is what the matrix documents."""
+        return ["-m", model] if model else []
+
+    def known_models(self, binary: Path) -> frozenset[str] | None:
+        """`grok models`, which really does enumerate — the only one of the three that
+        answered on this machine (`grok-4.6` default, `grok-4.5`).
+
+        Parsed from the bullet list rather than the whole output, which also carries a
+        login line and a "Default model:" line that are not model names.
+        """
+        from . import _run_version
+
+        out = _run_version(binary, ("models",))
+        names = set()
+        for line in out.splitlines():
+            bare = line.strip()
+            if not bare.startswith(("*", "-")):
+                continue
+            token = bare.lstrip("*-").strip().split()[0] if bare.lstrip("*-").strip() else ""
+            if token:
+                names.add(token)
+        return frozenset(names) or None
+
     def launch(
-        self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path
+        self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
+        model: str = "",
     ) -> Launch:
         return Launch(
             adapter=self.name,
+            model=model,
             argv=[
                 str(binary),
                 "--prompt-file", str(instruction_file),
                 "--cwd", str(tree.path),
+                *self.model_argv(model),
             ],
             seat_path=self.seat_path(tree.path),
             config=seat.mcp_config(),

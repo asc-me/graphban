@@ -124,17 +124,17 @@ def read_seats(source: str, server: str, api_key: str) -> list[Seat]:
     return [Seat(code=c, server_url=server, api_key=api_key) for c in codes]
 
 
-def make_adapter_factory(name: str, binary: str | None):
+def make_adapter_factory(name: str, binary: str | None, model: str = ""):
     """Resolve the named vendor NOW, so a bad one refuses before any worktree exists.
 
     The version check happens here rather than after launch, because a mismatch that
     surfaces as a child which starts, misbehaves and never registers costs a full
     registration window and blames the wrong component.
     """
-    found = resolve(name, binary=binary)
+    found = resolve(name, binary=binary, model=model)
 
     def factory(seat: Seat, tree: Worktree, instruction_file: Path) -> Launch:
-        launch = found.adapter.launch(seat, tree, instruction_file, found.binary)
+        launch = found.adapter.launch(seat, tree, instruction_file, found.binary, model)
         return replace(launch, binary_version=found.version)
 
     return factory
@@ -238,7 +238,7 @@ def _serve_stdio(args) -> int:
                 repo=root,
                 workspace=workspace,
                 client=client,
-                launch_for=lambda name: make_adapter_factory(name, None),
+                launch_for=lambda name, model="": make_adapter_factory(name, None, model),
                 lock=acquired,
                 limits=Limits(max_workers=args.max_workers),
             )

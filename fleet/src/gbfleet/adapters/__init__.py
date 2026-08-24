@@ -59,6 +59,17 @@ class VersionUnsupported(AdapterError):
     pass
 
 
+class ModelUnsupported(AdapterError):
+    """A model this vendor says it does not have.
+
+    Separate from `AdapterUnavailable` because the binary is fine and the operator's
+    mistake is one word. Raised BEFORE a process starts, for the reason the version check
+    is: a model the vendor rejects produces a child that starts, fails, and never
+    registers — indistinguishable from a broken adapter until `await_registration` gives
+    up, and blamed on the wrong component in the meantime.
+    """
+
+
 def parse_version(text: str) -> tuple[int, ...]:
     """The first run of dotted numbers, as ints. Empty tuple when there is none."""
     match = _NUMERIC.search(text or "")
@@ -105,6 +116,37 @@ class Adapter:
     #: vendor, because every one of them is odd in a different way.
     notes: ClassVar[str] = ""
 
+    def model_argv(self, model: str) -> list[str]:
+        """The flag this vendor spells `--model`, or nothing when none was named.
+
+        Per-adapter for the same reason `seat_path` and `exit_meaning` are: three CLIs,
+        three spellings (`--model`, `--model`, `-m`). Returning [] for an empty model is
+        what keeps the default path byte-identical to not having this feature at all.
+
+        The supervisor does NOT choose the value. PRD-22 §1 is explicit that it "does not
+        choose models for subagents", and it could not if it wanted to — a seat's role is
+        fixed server-side at mint and opaque until redeemed (D-j), so there is nothing
+        locally to key a policy on. The caller names the model exactly as it names the
+        vendor: "Named, never inferred".
+        """
+        return ["--model", model] if model else []
+
+    def known_models(self, binary: Path) -> frozenset[str] | None:
+        """What this binary says it can run, or None when it cannot be asked.
+
+        **None and an empty set are different answers and must stay different.** `claude`
+        has no listing flag at all, so nothing can be checked and a named model has to be
+        passed through. `cursor-agent --list-models` answers "No models available for this
+        account" for an account with no entitlements — which is not the same claim as
+        "every model you could name is wrong", and refusing a spawn on it would break a
+        working setup over an unrelated entitlement.
+
+        So: None means "unchecked, passed through"; a non-empty set means "checked". The
+        support matrix prints which, because an unvalidated pass-through must not read the
+        same as a verified one.
+        """
+        return None
+
     def seat_path(self, worktree: Path) -> Path:
         """Where this vendor's MCP config must be written.
 
@@ -115,7 +157,8 @@ class Adapter:
         raise NotImplementedError
 
     def launch(
-        self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path
+        self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
+        model: str = "",
     ) -> Launch:
         raise NotImplementedError
 
@@ -152,7 +195,7 @@ class Resolved(NamedTuple):
     version: str
 
 
-def resolve(name: str, *, binary: str | Path | None = None) -> Resolved:
+def resolve(name: str, *, binary: str | Path | None = None, model: str = "") -> Resolved:
     """Find the NAMED vendor's binary and refuse if its version is out of range.
 
     Refusing here rather than after launch is the whole point: a version mismatch that
@@ -183,6 +226,19 @@ def resolve(name: str, *, binary: str | Path | None = None) -> Resolved:
             f"adapter {name!r}: {found} reports {reported!r} (parsed {_fmt(version)}), "
             f"and this adapter supports {adapter.support.describe()}. Refusing to spawn."
         )
+
+    if model:
+        known = adapter.known_models(found)
+        # `known` is None when the vendor cannot be asked, and that is NOT the same as an
+        # empty set — see `known_models`. Only a non-empty listing can refuse anything.
+        if known and model not in known:
+            raise ModelUnsupported(
+                f"adapter {name!r}: {found} does not list a model named {model!r}. "
+                f"It offers: {', '.join(sorted(known))}. Refusing to spawn, because a "
+                "model the vendor rejects costs a registration window and reads as a "
+                "broken adapter rather than as a typo."
+            )
+
     return Resolved(adapter=adapter, binary=found, version=reported)
 
 
