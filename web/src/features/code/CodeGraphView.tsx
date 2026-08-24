@@ -25,8 +25,10 @@ import {
   secondsRemaining,
 } from "@/lib/graph/presence";
 import { useGraphFind } from "@/lib/graph/useGraphFind";
+import { pathHighlight } from "@/lib/graph/pathHighlight";
 import { NODE_TAB_INDEX, useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
 import { HubsPanel, type HubSort } from "./HubsPanel";
+import { PathTrace } from "./PathTrace";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
 import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
@@ -79,6 +81,10 @@ export function CodeGraphView() {
   });
   const [selPath, setSelPath] = React.useState<string | null>(null);
   const [hubsOpen, setHubsOpen] = React.useState(false);
+  // AC-19. `armed` is the discoverable way in: alt-click is the PRD's gesture and is invisible,
+  // and on some window managers alt-drag never reaches the page at all.
+  const [pathTo, setPathTo] = React.useState<string | null>(null);
+  const [armed, setArmed] = React.useState(false);
   const [hubSort, setHubSort] = React.useState<HubSort>("inbound");
   const [nb, setNb] = React.useState<CodeNeighbors | null>(null);
   const [hoverId, setHoverId] = React.useState<string | null>(null);
@@ -248,10 +254,21 @@ export function CodeGraphView() {
     () => [...ids].sort((a, b) => degree[b] - degree[a] || (a < b ? -1 : a > b ? 1 : 0)),
     [ids, degree],
   );
-  const selectNode = React.useCallback((id: string) => {
-    setSelPath(id);
-    setDepth(1);
-  }, []);
+  const selectNode = React.useCallback(
+    (id: string) => {
+      // Armed: the next pick is the far end of a path, not a new selection. Routing click,
+      // Enter and the toolbar through here is what keeps the keyboard equal to the mouse.
+      if (armed && selPath && id !== selPath) {
+        setPathTo(id);
+        setArmed(false);
+        return;
+      }
+      setSelPath(id);
+      setDepth(1);
+      setPathTo(null);
+    },
+    [armed, selPath],
+  );
 
   // AC-18. Scoped to the edge types currently drawn: a ranking computed over edges the canvas
   // is not showing would quietly disagree with the picture beside it.
@@ -260,10 +277,32 @@ export function CodeGraphView() {
     { projectId: activeId, edgeTypes: activeTypes, limit: 10 },
     hubsOpen,
   );
+  // Separate query from the hubs one: it is keyed on the endpoints and must not refetch the
+  // whole ranking every time you trace a different pair.
+  const { data: trace } = useCodeAnalysis(
+    {
+      projectId: activeId,
+      edgeTypes: activeTypes,
+      a: selPath ?? undefined,
+      b: pathTo ?? undefined,
+    },
+    !!(selPath && pathTo),
+  );
+  const walk = pathTo ? (trace?.path ?? null) : null;
+
+  const pathHl = React.useMemo(() => pathHighlight(walk, edges), [walk, edges]);
+
+  /** What the canvas dims against: a live path wins, otherwise the reach ring. */
+  const shown = pathHl ?? hl;
+
   const kb = useGraphKeyboard({
     order: tabOrder,
     onSelect: selectNode,
-    onClear: () => setSelPath(null),
+    onClear: () => {
+      setSelPath(null);
+      setPathTo(null);
+      setArmed(false);
+    },
     onExpand: () => setDepth((d) => Math.min(4, d + 1)),
     setViewport: view.setViewport,
   });
@@ -299,8 +338,8 @@ export function CodeGraphView() {
     if (find.active) return find.matches;
     if (hovered) return hovered;
     if (soloUser) return soloed;
-    return hl?.hlNodes ?? null;
-  }, [find.active, find.matches, hovered, soloUser, soloed, hl]);
+    return shown?.hlNodes ?? null;
+  }, [find.active, find.matches, hovered, soloUser, soloed, shown]);
 
   // Ease the viewport onto the hits, once per query — not on every keystroke's re-render.
   const fitRef = React.useRef(view.fitTo);
@@ -398,6 +437,21 @@ export function CodeGraphView() {
                 className="mr-1 inline-flex items-center gap-1.5 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg disabled:opacity-50"
               >
                 {pending ? "Laying out…" : "Re-layout to visible"}
+              </button>
+            )}
+            {selPath && (
+              <button
+                onClick={() => setArmed((a) => !a)}
+                aria-pressed={armed}
+                title="Trace the shortest route from the selected node — or Alt-click one"
+                className={cn(
+                  "mr-1 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
+                  armed
+                    ? "border-accent/60 bg-surface-3 text-accent"
+                    : "border-line-2 bg-surface-2 text-muted hover:border-line-hover hover:text-fg",
+                )}
+              >
+                {armed ? "Pick the far end…" : "Path from here"}
               </button>
             )}
             <button
@@ -611,7 +665,7 @@ export function CodeGraphView() {
                 const a = pos[e.src];
                 const b = pos[e.dst];
                 if (!a || !b) return null;
-                const active = !hl || hl.hlEdges.has(String(i));
+                const active = !shown || shown.hlEdges.has(String(i));
                 // Trim the endpoint back so the arrowhead sits at the node edge, not under it.
                 const dx = b.x - a.x;
                 const dy = b.y - a.y;
@@ -685,8 +739,14 @@ export function CodeGraphView() {
                       ev.stopPropagation();
                       // A drag ends with a click on the same node; do not also select it.
                       if (pinsApi.consumedDrag()) return;
+                      // Alt-click traces a path from the current selection (AC-19). Kept as
+                      // the PRD specified it, and NOT the only way in — see the Path control.
+                      if (ev.altKey && selPath && selPath !== id) {
+                        setPathTo(id);
+                        setArmed(false);
+                      }
                       // Shift-click widens the reach by a ring instead of starting over.
-                      if (ev.shiftKey && selPath === id) setDepth((d) => Math.min(4, d + 1));
+                      else if (ev.shiftKey && selPath === id) setDepth((d) => Math.min(4, d + 1));
                       else selectNode(id);
                     }}
                   >
@@ -771,10 +831,11 @@ export function CodeGraphView() {
             </svg>
           )}
 
-          {hubsOpen && (
-            // Top-right: the inspector owns the left, and the two must be readable together —
-            // picking a hub opens the inspector on it.
-            <div className="pointer-events-auto absolute right-3 top-3 z-10">
+          {(hubsOpen || walk) && (
+            // Top-right, ONE column: the inspector owns the left, and hubs and a path must be
+            // readable together — you trace a route from a hub you just picked.
+            <div className="pointer-events-auto absolute right-3 top-3 z-10 flex max-h-[calc(100%-1.5rem)] flex-col gap-2 overflow-y-auto">
+              {hubsOpen && (
               <HubsPanel
                 hubs={analysis?.hubs ?? []}
                 sort={hubSort}
@@ -787,6 +848,16 @@ export function CodeGraphView() {
                 allEdgeTypes={EDGE_TYPES}
                 kindColour={(k) => kindMeta(k).color}
               />
+              )}
+              {walk && (
+                <PathTrace
+                  path={walk}
+                  onClear={() => setPathTo(null)}
+                  onPick={pickHub}
+                  edgeTypes={activeTypes}
+                  allEdgeTypes={EDGE_TYPES}
+                />
+              )}
             </div>
           )}
 
