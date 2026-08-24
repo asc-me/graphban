@@ -759,6 +759,48 @@ export interface CodeNeighbors {
   linked_requests: CodeLinkedRequest[];
 }
 
+/**
+ * One hub row. Both directions are returned, and both are shown — PRD-20 AC-18 turns on the
+ * distinction between them, and a single "degree" number hides it. `backend/app/mcp_server.py`
+ * is inbound 5 / outbound 18 on the live graph: it imports the most and is not a hub.
+ */
+export interface CodeHub {
+  path: string;
+  inbound: number;
+  outbound: number;
+  kind: string;
+  described: boolean;
+}
+
+export interface CodeComponent {
+  anchor: string;
+  size: number;
+  members: string[];
+}
+
+/** One step of a shortest path. `forward` is whether the edge points the way you walked it. */
+export interface CodePathHop {
+  src: string;
+  dst: string;
+  type: CodeEdgeType;
+  forward: boolean;
+}
+
+export interface CodePath {
+  a: string;
+  b: string;
+  found: boolean;
+  /** Endpoints the graph has never heard of, so "not found" and "not described" stay apart. */
+  missing: string[];
+  hops: CodePathHop[];
+}
+
+export interface CodeAnalysis {
+  hubs: CodeHub[];
+  components: CodeComponent[];
+  path: CodePath | null;
+}
+
 export type CodeRelation = "affects" | "implements" | "fixes" | "tests" | "references";
 
 export interface CodeRef {

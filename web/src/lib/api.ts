@@ -7,6 +7,7 @@ import type {
  */
 import type {
   AdminActivity,
+  CodeAnalysis,
   Deployment,
   Team,
   Galaxy,
@@ -746,6 +747,28 @@ export const api = {
     request<CodeNeighbors>(
       `/agent/code/neighbors?path=${encodeURIComponent(path)}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ""}`,
     ),
+  /**
+   * Hubs, components and (given `a` and `b`) a shortest path — one read, because the service
+   * was written to answer all three for this view. `edgeTypes` scopes every answer to the
+   * edge kinds currently shown, so the panel cannot contradict the canvas beside it.
+   */
+  codeAnalysis: (opts: {
+    projectId?: string;
+    edgeTypes?: string[];
+    limit?: number;
+    a?: string;
+    b?: string;
+  } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.projectId) q.set("project_id", opts.projectId);
+    // Omitted, never sent empty: `edge_types=` would ask for nothing and read as everything.
+    if (opts.edgeTypes?.length) q.set("edge_types", opts.edgeTypes.join(","));
+    if (opts.limit) q.set("limit", String(opts.limit));
+    if (opts.a) q.set("a", opts.a);
+    if (opts.b) q.set("b", opts.b);
+    return request<CodeAnalysis>(`/agent/code/analysis?${q.toString()}`);
+  },
+
   codeChat: (message: string, projectId?: string) =>
     request<CodeAnswer>("/agent/code", {
       method: "POST",

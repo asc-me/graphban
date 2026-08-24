@@ -361,6 +361,27 @@ export function useCodeMap(projectId?: string) {
   return useQuery({ queryKey: ["code-map", projectId], queryFn: () => api.codeMap(projectId) });
 }
 
+/**
+ * Hubs / components / path for the graph overlay.
+ *
+ * Keyed on the edge types so toggling a chip refetches rather than serving a ranking computed
+ * over edges the canvas is no longer drawing (PRD-20 AC-18). `enabled` keeps the request off
+ * the wire until something actually opens the panel — this is the graph view's third query and
+ * the heaviest of them.
+ */
+export function useCodeAnalysis(
+  opts: { projectId?: string; edgeTypes?: string[]; limit?: number; a?: string; b?: string },
+  enabled = true,
+) {
+  const { projectId, edgeTypes, limit, a, b } = opts;
+  const types = [...(edgeTypes ?? [])].sort();
+  return useQuery({
+    queryKey: ["code-analysis", projectId, types.join(","), limit, a, b],
+    queryFn: () => api.codeAnalysis({ projectId, edgeTypes: types, limit, a, b }),
+    enabled,
+  });
+}
+
 export function usePlatform(projectId: string) {
   return useQuery({
     queryKey: ["platform", projectId],
