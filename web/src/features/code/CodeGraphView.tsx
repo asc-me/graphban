@@ -26,10 +26,11 @@ import {
 } from "@/lib/graph/presence";
 import { useGraphFind } from "@/lib/graph/useGraphFind";
 import { NODE_TAB_INDEX, useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
+import { HubsPanel, type HubSort } from "./HubsPanel";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
 import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
-import { useCodeMap, useFleetPresence } from "@/lib/queries";
+import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
 import { CodeChat } from "./CodeChat";
@@ -77,6 +78,8 @@ export function CodeGraphView() {
     imports: true, calls: true, owns: true, tested_by: true, references: true,
   });
   const [selPath, setSelPath] = React.useState<string | null>(null);
+  const [hubsOpen, setHubsOpen] = React.useState(false);
+  const [hubSort, setHubSort] = React.useState<HubSort>("inbound");
   const [nb, setNb] = React.useState<CodeNeighbors | null>(null);
   const [hoverId, setHoverId] = React.useState<string | null>(null);
   // How many rings the selection lights. Shift-click (or Shift+Enter) widens it; a fresh
@@ -249,6 +252,14 @@ export function CodeGraphView() {
     setSelPath(id);
     setDepth(1);
   }, []);
+
+  // AC-18. Scoped to the edge types currently drawn: a ranking computed over edges the canvas
+  // is not showing would quietly disagree with the picture beside it.
+  const activeTypes = React.useMemo(() => EDGE_TYPES.filter((t) => enabled[t]), [enabled]);
+  const { data: analysis, isLoading: hubsLoading } = useCodeAnalysis(
+    { projectId: activeId, edgeTypes: activeTypes, limit: 10 },
+    hubsOpen,
+  );
   const kb = useGraphKeyboard({
     order: tabOrder,
     onSelect: selectNode,
@@ -256,6 +267,27 @@ export function CodeGraphView() {
     onExpand: () => setDepth((d) => Math.min(4, d + 1)),
     setViewport: view.setViewport,
   });
+
+  /**
+   * Picking a hub: select it, then ease the viewport onto it — the same path the find box
+   * takes, rather than a fourth way for this view to move.
+   *
+   * In galaxy mode the node is not drawn at all: only super-nodes are. So enter the component
+   * holding it FIRST and let the position effect below frame it once the flat layout exists.
+   * Without that, clicking the top hub while collapsed selects something invisible.
+   */
+  const [pendingFocus, setPendingFocus] = React.useState<string | null>(null);
+  const pickHub = React.useCallback(
+    (path: string) => {
+      selectNode(path);
+      if (!ids.includes(path)) {
+        const holder = galaxy.superNodes.find((sn) => sn.members.includes(path));
+        if (holder) setEntered(holder.id);
+      }
+      setPendingFocus(path);
+    },
+    [ids, galaxy, selectNode],
+  );
 
   // Find is highlight-by-another-name: it feeds the same dim path as selection rather than
   // introducing a second visual language for "these are the interesting ones".
@@ -281,6 +313,16 @@ export function CodeGraphView() {
     const points = matchKey.split(",").map((id) => posRef.current[id]).filter(Boolean);
     if (points.length) fitRef.current(points);
   }, [matchKey]);
+
+  // Deferred rather than done in the click: after entering a component the layout has not run
+  // yet, so `pos[path]` is undefined for a frame or three.
+  React.useEffect(() => {
+    if (!pendingFocus) return;
+    const at = posRef.current[pendingFocus];
+    if (!at) return;
+    fitRef.current([at]);
+    setPendingFocus(null);
+  }, [pendingFocus, pos]);
 
   const empty = !isLoading && nodes.length === 0;
 
@@ -358,6 +400,19 @@ export function CodeGraphView() {
                 {pending ? "Laying out…" : "Re-layout to visible"}
               </button>
             )}
+            <button
+              onClick={() => setHubsOpen((o) => !o)}
+              aria-pressed={hubsOpen}
+              title="Rank nodes by what depends on them"
+              className={cn(
+                "mr-1 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
+                hubsOpen
+                  ? "border-line-hover bg-surface-3 text-fg"
+                  : "border-line-2 bg-surface-2 text-muted hover:border-line-hover hover:text-fg",
+              )}
+            >
+              Hubs
+            </button>
             {EDGE_TYPES.map((t) => (
               <button
                 key={t}
@@ -714,6 +769,25 @@ export function CodeGraphView() {
               {!galaxyMode && <ArrowsOut stubs={outbound} pos={pos} onHover={setStubHover} />}
               </g>
             </svg>
+          )}
+
+          {hubsOpen && (
+            // Top-right: the inspector owns the left, and the two must be readable together —
+            // picking a hub opens the inspector on it.
+            <div className="pointer-events-auto absolute right-3 top-3 z-10">
+              <HubsPanel
+                hubs={analysis?.hubs ?? []}
+                sort={hubSort}
+                onSort={setHubSort}
+                onPick={pickHub}
+                onClose={() => setHubsOpen(false)}
+                selected={selPath}
+                loading={hubsLoading}
+                edgeTypes={activeTypes}
+                allEdgeTypes={EDGE_TYPES}
+                kindColour={(k) => kindMeta(k).color}
+              />
+            </div>
           )}
 
           {stubHover && <StubEvidence stub={stubHover} />}
