@@ -160,7 +160,7 @@ def test_the_planner_path_and_the_backstop_reach_the_same_place(
 
     fleet = Fleet(
         repo=git_repo, workspace=workspace, client=ok_server(workspace),
-        launch_for=lambda name, model="": _factory(scripts, "works_then_waits", adapter=name),
+        launch_for=lambda name, model="", tuning=None: _factory(scripts, "works_then_waits", adapter=name),
     )
     spawned = handle(fleet, {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",

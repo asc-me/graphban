@@ -59,6 +59,16 @@ class VersionUnsupported(AdapterError):
     pass
 
 
+class TuningUnsupported(AdapterError):
+    """A knob this vendor does not have.
+
+    Refused rather than ignored. Silently dropping `effort` on a vendor with no such flag
+    would let a caller believe it asked for something it did not get — and the bill would
+    arrive as if it had. An unsupported knob is a mistake worth one clear error, not a
+    setting that quietly evaporates.
+    """
+
+
 class ModelUnsupported(AdapterError):
     """A model this vendor says it does not have.
 
@@ -80,6 +90,27 @@ def parse_version(text: str) -> tuple[int, ...]:
 
 def _fmt(version: tuple[int, ...]) -> str:
     return ".".join(str(p) for p in version) or "unknown"
+
+
+@dataclass(frozen=True)
+class Tuning:
+    """Per-vendor knobs beyond the model. All optional, all empty by default.
+
+    These are NOT uniform across vendors and deliberately are not pretended to be: only
+    `claude` takes a fallback list, only `grok` takes a reasoning effort. An adapter
+    declares which it accepts and `resolve` refuses the rest by name.
+
+    Both exist because a spawned child is UNATTENDED. Nobody is there to notice an
+    overloaded model and retry, or to raise the effort when an answer comes back thin.
+    """
+
+    #: claude: comma-separated models to try when the primary is overloaded.
+    fallback_model: str = ""
+    #: grok: `--reasoning-effort`, free-form (see `Grok.tuning_argv`).
+    effort: str = ""
+
+    def named(self) -> set[str]:
+        return {k for k, v in (("fallback_model", self.fallback_model), ("effort", self.effort)) if v}
 
 
 @dataclass(frozen=True)
@@ -115,6 +146,9 @@ class Adapter:
     #: Human-readable, and printed in the support matrix. Says what is odd about this
     #: vendor, because every one of them is odd in a different way.
     notes: ClassVar[str] = ""
+    #: Which `Tuning` fields this vendor actually has. Anything else is refused, never
+    #: ignored — see `TuningUnsupported`.
+    tuning: ClassVar[frozenset[str]] = frozenset()
 
     def model_argv(self, model: str) -> list[str]:
         """The flag this vendor spells `--model`, or nothing when none was named.
@@ -130,6 +164,10 @@ class Adapter:
         vendor: "Named, never inferred".
         """
         return ["--model", model] if model else []
+
+    def tuning_argv(self, tuning: "Tuning") -> list[str]:
+        """Vendor flags for the knobs this adapter declares. Empty unless overridden."""
+        return []
 
     def known_models(self, binary: Path) -> frozenset[str] | None:
         """What this binary says it can run, or None when it cannot be asked.
@@ -158,7 +196,7 @@ class Adapter:
 
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
-        model: str = "",
+        model: str = "", tuning: "Tuning | None" = None,
     ) -> Launch:
         raise NotImplementedError
 
@@ -195,7 +233,10 @@ class Resolved(NamedTuple):
     version: str
 
 
-def resolve(name: str, *, binary: str | Path | None = None, model: str = "") -> Resolved:
+def resolve(
+    name: str, *, binary: str | Path | None = None, model: str = "",
+    tuning: "Tuning | None" = None,
+) -> Resolved:
     """Find the NAMED vendor's binary and refuse if its version is out of range.
 
     Refusing here rather than after launch is the whole point: a version mismatch that
@@ -225,6 +266,15 @@ def resolve(name: str, *, binary: str | Path | None = None, model: str = "") -> 
         raise VersionUnsupported(
             f"adapter {name!r}: {found} reports {reported!r} (parsed {_fmt(version)}), "
             f"and this adapter supports {adapter.support.describe()}. Refusing to spawn."
+        )
+
+    asked = (tuning or Tuning()).named()
+    if unsupported := asked - adapter.tuning:
+        raise TuningUnsupported(
+            f"adapter {name!r} has no {', '.join(sorted(unsupported))}. "
+            f"It accepts: {', '.join(sorted(adapter.tuning)) or 'no tuning knobs'}. "
+            "Refusing rather than ignoring it, so a caller cannot believe it asked for "
+            "something it did not get."
         )
 
     if model:
