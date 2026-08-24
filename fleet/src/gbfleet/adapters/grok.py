@@ -17,7 +17,7 @@ from pathlib import Path
 from ..seat import Seat
 from ..spawn import Launch
 from ..worktree import Worktree
-from . import Adapter, Support
+from . import Adapter, Support, Tuning
 
 
 class Grok(Adapter):
@@ -40,6 +40,21 @@ class Grok(Adapter):
         # it. Whether grok READS it there is the unresolved question in the docstring;
         # the child failing to register is what surfaces that, inside the bounded window.
         return Path(worktree) / ".grok" / "mcp.json"
+
+    tuning = frozenset({"effort"})
+
+    def tuning_argv(self, tuning: Tuning) -> list[str]:
+        """`--reasoning-effort` (alias `--effort`), passed through UNVALIDATED.
+
+        Measured 2026-08-24 rather than assumed: `--help` says only "Reasoning effort for
+        reasoning models" and enumerates no values, and `grok --reasoning-effort
+        bogus-value models` is accepted without complaint — so the CLI does not validate it
+        as an enum and the accepted set is not discoverable from the binary.
+
+        Declaring a list here would be exactly the fabrication `codex.py` refuses to make.
+        So it passes through, and the support matrix says it is unchecked.
+        """
+        return ["--reasoning-effort", tuning.effort] if tuning.effort else []
 
     def model_argv(self, model: str) -> list[str]:
         """`-m`, not `--model`. Both are accepted by the binary; the short form is what
@@ -68,7 +83,7 @@ class Grok(Adapter):
 
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
-        model: str = "",
+        model: str = "", tuning: Tuning | None = None,
     ) -> Launch:
         return Launch(
             adapter=self.name,
@@ -78,6 +93,7 @@ class Grok(Adapter):
                 "--prompt-file", str(instruction_file),
                 "--cwd", str(tree.path),
                 *self.model_argv(model),
+                *self.tuning_argv(tuning or Tuning()),
             ],
             seat_path=self.seat_path(tree.path),
             config=seat.mcp_config(),

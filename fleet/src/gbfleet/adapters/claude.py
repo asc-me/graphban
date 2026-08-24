@@ -13,7 +13,7 @@ from pathlib import Path
 from ..seat import Seat
 from ..spawn import Launch
 from ..worktree import Worktree
-from . import Adapter, Support
+from . import Adapter, Support, Tuning
 
 #: What goes on argv. Deliberately says nothing and carries nothing: the real
 #: instruction, including the enrolment code, arrives on stdin.
@@ -46,13 +46,34 @@ class ClaudeCode(Adapter):
         handle.close()
         return Path(handle.name)
 
+    tuning = frozenset({"fallback_model"})
+
+    def tuning_argv(self, tuning: Tuning) -> list[str]:
+        """`--fallback-model`, the one knob that matters most for an UNATTENDED child.
+
+        > "Enable automatic fallback to specified model(s) when the default model is
+        > overloaded or not available. Accepts a comma-separated list to try each in
+        > order. Re-tries the primary at the start..."
+
+        On an interactive session an overloaded model is a wait. On a spawned child it is a
+        dead registration window: the process starts, cannot get a model, never registers,
+        and `await_registration` kills it — after which the supervisor reports the ADAPTER
+        as broken, which is precisely the misattribution this package exists to avoid.
+
+        Fallback converts that failure into a slower child. No other vendor here offers it.
+
+        Unvalidated, for the same reason `--model` is: this CLI has no listing flag, so
+        there is nothing to check a name against.
+        """
+        return ["--fallback-model", tuning.fallback_model] if tuning.fallback_model else []
+
     # No listing flag exists on this CLI, so a named model is passed through UNCHECKED and
     # the support matrix says so. Inherits `known_models` -> None deliberately rather than
     # returning an empty set, which would refuse every model instead of checking none.
 
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
-        model: str = "",
+        model: str = "", tuning: Tuning | None = None,
     ) -> Launch:
         seat_file = self.seat_path(tree.path)
         return Launch(
@@ -63,6 +84,7 @@ class ClaudeCode(Adapter):
                 "--print",
                 "--mcp-config", str(seat_file),
                 *self.model_argv(model),
+                *self.tuning_argv(tuning or Tuning()),
                 # Headless means nobody is there to answer a permission prompt. PRD-22's
                 # risk table names this and answers it with the worktree boundary plus
                 # per-child config — explicitly NOT a sandbox (D-k, §7).

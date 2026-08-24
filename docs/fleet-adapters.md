@@ -48,6 +48,31 @@ for "cannot be asked" and a non-empty set for "asked and answered". Treating an 
 as an exhaustive list would refuse every spawn on an account that simply has no entitlements
 yet — which is a working setup, broken by a check that was supposed to help.
 
+## Per-vendor tuning (GRPH-484)
+
+Beyond the model, two vendors expose one knob each. These are **not** uniform and are not
+pretended to be — an adapter declares what it has, and `resolve()` refuses anything else
+**by name rather than ignoring it**. A silently dropped knob lets a caller believe it asked
+for cheap reasoning and pay for expensive: the setting evaporates, the bill does not.
+
+| vendor | knob | validated? |
+| --- | --- | --- |
+| `claude` | `--fallback-model <a,b>` | no — no listing flag exists to check a name against |
+| `grok` | `--reasoning-effort <effort>` (alias `--effort`) | no — see below |
+| `cursor-agent` | none | n/a; either knob is refused |
+
+**Both exist because a spawned child is unattended.** An overloaded model on an interactive
+session is a wait; on a child it is a dead registration window — the process starts, cannot
+get a model, never registers, and `await_registration` kills it, after which the supervisor
+reports the *adapter* as broken. `--fallback-model` turns that into a slower child.
+
+**`--reasoning-effort` accepts anything the CLI is concerned with.** Measured 2026-08-24
+rather than assumed: `--help` says only *"Reasoning effort for reasoning models"* and
+enumerates nothing, and `grok --reasoning-effort bogus-value models` is accepted without
+complaint. So the accepted set is not discoverable from the binary, and declaring one here
+would be exactly the fabrication `codex.py` refuses to make. It passes through unchecked and
+this table says so.
+
 ## Versions do not share a scheme
 
 Measured, not assumed. `claude` is semver, `cursor-agent` is **CalVer with a git hash**,

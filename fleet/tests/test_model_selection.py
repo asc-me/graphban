@@ -236,3 +236,85 @@ def test_a_real_binary_lists_or_says_it_cannot(name):
 
     # Either it enumerated something real, or it said it could not. Never an empty set.
     assert known is None or (known and all(known)), known
+
+
+# ---- per-vendor tuning (GRPH-484) ---------------------------------------------------
+#
+# Unlike the model, these are NOT uniform: only claude takes a fallback list, only grok
+# takes a reasoning effort. Both exist because a spawned child is UNATTENDED — nobody is
+# there to notice an overloaded model, or to raise the effort when an answer comes back
+# thin. An adapter declares which it has and `resolve` refuses the rest BY NAME.
+
+
+def test_claude_carries_a_fallback_list(tmp_path):
+    """The knob that turns a dead spawn into a slow one.
+
+    An overloaded model on an interactive session is a wait. On an unattended child it is a
+    dead registration window: the process starts, cannot get a model, never registers, and
+    the supervisor reports the ADAPTER as broken.
+    """
+    from gbfleet.adapters import Tuning
+
+    launch = ClaudeCode().launch(
+        SEAT, _tree(tmp_path), tmp_path / "i", Path("/bin/true"),
+        "opus", Tuning(fallback_model="sonnet,haiku"),
+    )
+
+    assert "--fallback-model" in launch.argv
+    assert launch.argv[launch.argv.index("--fallback-model") + 1] == "sonnet,haiku"
+
+
+def test_grok_carries_a_reasoning_effort(tmp_path):
+    from gbfleet.adapters import Tuning
+
+    launch = Grok().launch(
+        SEAT, _tree(tmp_path), tmp_path / "i", Path("/bin/true"), "", Tuning(effort="high"),
+    )
+
+    assert "--reasoning-effort" in launch.argv
+    assert launch.argv[launch.argv.index("--reasoning-effort") + 1] == "high"
+
+
+@pytest.mark.parametrize("adapter", [ClaudeCode(), CursorAgent(), Grok()])
+def test_tuning_nothing_changes_nothing(adapter, tmp_path):
+    """Same trap as the model: a knob appended unconditionally with an empty value would
+    rewrite the command line of every existing caller for a feature they did not ask for."""
+    from gbfleet.adapters import Tuning
+
+    tree, instr, binary = _tree(tmp_path), tmp_path / "i", Path("/bin/true")
+    plain = adapter.launch(SEAT, tree, instr, binary)
+    empty = adapter.launch(SEAT, tree, instr, binary, "", Tuning())
+
+    def shape(l):
+        return [a.replace(str(l.seat_path), "<seat>") for a in l.argv]
+
+    assert shape(plain) == shape(empty)
+    assert not any(a in ("--fallback-model", "--reasoning-effort") for a in plain.argv)
+
+
+@pytest.mark.parametrize("vendor,knob,offers", [
+    ("silent", "effort", "no tuning knobs"),
+    ("listing", "fallback_model", "no tuning knobs"),
+])
+def test_a_knob_the_vendor_lacks_is_refused_not_ignored(registered, fake_binary, vendor, knob, offers):
+    """Refused, never silently dropped.
+
+    Ignoring it would let a caller believe it asked for cheap reasoning and pay for
+    expensive — the setting evaporates and the bill does not. One clear error is cheaper
+    than a wrong invoice nobody can explain afterwards.
+    """
+    from gbfleet.adapters import Tuning, TuningUnsupported
+
+    with pytest.raises(TuningUnsupported) as exc:
+        resolve(vendor, binary=fake_binary, tuning=Tuning(**{knob: "x"}))
+
+    assert knob in str(exc.value)
+    assert offers in str(exc.value), "the refusal must say what this vendor DOES accept"
+
+
+def test_the_shipped_adapters_declare_what_they_really_have():
+    """Pins the split against the binaries' own --help, so a knob cannot be quietly moved
+    onto a vendor that has no such flag."""
+    assert ClaudeCode.tuning == frozenset({"fallback_model"})
+    assert Grok.tuning == frozenset({"effort"})
+    assert CursorAgent.tuning == frozenset(), "cursor-agent has neither flag"

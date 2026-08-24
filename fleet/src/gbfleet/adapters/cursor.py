@@ -22,7 +22,7 @@ from pathlib import Path
 from ..seat import Seat
 from ..spawn import Launch
 from ..worktree import Worktree
-from . import Adapter, Support
+from . import Adapter, Support, Tuning
 from .claude import POINTER
 
 
@@ -35,6 +35,9 @@ class CursorAgent(Adapter):
         "the worktree — a tracked path in this repo, which is why it is in SEAT_FILES. "
         "CalVer, not semver."
     )
+
+    # No fallback list, no effort flag: `tuning` stays empty and `resolve` refuses either
+    # by name rather than accepting a setting this binary would ignore.
 
     def known_models(self, binary: Path) -> frozenset[str] | None:
         """`cursor-agent --list-models`, or None when the account cannot enumerate.
@@ -61,7 +64,7 @@ class CursorAgent(Adapter):
 
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
-        model: str = "",
+        model: str = "", tuning: Tuning | None = None,
     ) -> Launch:
         return Launch(
             adapter=self.name,

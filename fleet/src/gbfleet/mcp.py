@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 
 from . import worktree as wt_mod
-from .adapters import AdapterError
+from .adapters import AdapterError, Tuning
 from .client import Graphban
 from .lock import Acquired
 from .seat import Seat
@@ -69,6 +69,18 @@ TOOLS: list[dict[str, Any]] = [
                 "adapter": {"type": "string", "description": "Vendor to run. Named, never inferred."},
                 "enrolment_code": {"type": "string", "description": "The seat. Single-use."},
                 "wave": {"type": "string", "description": "Names the branch: gb/<wave>-<n>."},
+                "fallback_model": {
+                    "type": "string",
+                    "description": (
+                        "claude only. Comma-separated models to try when the primary is "
+                        "overloaded. An unattended child that cannot get a model never "
+                        "registers, so this turns a dead spawn into a slower one."
+                    ),
+                },
+                "effort": {
+                    "type": "string",
+                    "description": "grok only. Reasoning effort, passed through unvalidated.",
+                },
                 "model": {
                     "type": "string",
                     "description": (
@@ -194,7 +206,15 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
         tree = _tree_for(fleet.repo, fleet.workspace, wave, str(fleet.started))
         seat = Seat(code=code, server_url=fleet.client.base_url, api_key=fleet.client.api_key)
         child = start_one(
-            tree, seat, fleet.launch_for(adapter, args.get("model") or ""),
+            tree, seat,
+            fleet.launch_for(
+                adapter,
+                args.get("model") or "",
+                Tuning(
+                    fallback_model=args.get("fallback_model") or "",
+                    effort=args.get("effort") or "",
+                ),
+            ),
             fleet.client, fleet.limits,
             fleet.partition, workspace=fleet.workspace, wave_name=wave,
             slot=str(fleet.started), on_spawned=fleet.children.append,
