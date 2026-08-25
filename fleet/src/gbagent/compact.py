@@ -4,7 +4,15 @@
 to call it, call it wrongly, or spend a 30-second turn deciding to. The trigger is checked after
 every turn and acted on before the next one.
 
-**Nothing is deleted — old tool RESULTS are shortened in place.** That is not a stylistic
+**Two things get shortened, and the second one is most of the bytes.** Old tool RESULTS, and
+the ARGUMENTS of old tool calls. The second was missing at first and it is where an agent's
+own output lives: `write_file` carries the whole file body in the assistant message's
+`tool_calls`, and the result that comes back is a short `{path, created, bytes}`. So the
+receipt was summarised and the payload could not be reached, while `_text_of` counted both.
+Ten ordinary 9 KB modules put the conversation over the threshold with `summarised=0` and
+nothing compactable (GRPH-490).
+
+**Nothing is deleted — both kinds are shortened in place.** That is not a stylistic
 choice. Every `tool` message answers a `tool_call` in the assistant message before it, and an
 endpoint that receives a call with no answer rejects the conversation. Removing messages means
 tracking that pairing and getting it right on every path; rewriting a result's `content` leaves
@@ -150,12 +158,75 @@ def _summarise(label: str, content: str) -> str:
     return f"[compacted] {label} -> {lines} lines, {len(content)} chars, dropped from context"
 
 
+def _shrink_arguments(message: dict, labels: dict[str, str]) -> tuple[dict, int]:
+    """Summarise the ARGUMENTS of old tool calls. Returns the message and how many (GRPH-490).
+
+    **The biggest thing in an agent's context is the code it wrote, and it is not a tool
+    result.** `write_file` and `edit_file` carry the whole file body in the assistant
+    message's `tool_calls[].function.arguments`; what comes back is a short
+    `{path, created, bytes}`. So the original compaction summarised the receipt and could
+    not touch the payload — `_text_of` counted those arguments (its comment says "arguments
+    carry whole file bodies") while `compact` had no way to reach them. Measured on ten
+    ordinary 9 KB modules: over the threshold, `summarised=0`, `freed=0 of 94,607 chars`.
+
+    **Safe for exactly the reason it is worth doing.** A `write_file` argument is the one
+    thing in the context that is definitionally recoverable: the content is on disk in the
+    agent's own worktree, and it is there BECAUSE this call put it there. One `read_file`
+    gets it back. That is a stronger guarantee than a `read_file` RESULT carries, since the
+    file may have changed since.
+
+    The call keeps its id, its name and its structure, so the assistant/tool pairing the
+    endpoint validates is untouched — the same reason results are rewritten in place rather
+    than deleted. Only the value of a long argument is replaced.
+    """
+    calls = message.get("tool_calls") or []
+    if not calls:
+        return message, 0
+
+    shrunk, new_calls = 0, []
+    for call in calls:
+        fn = dict(call.get("function") or {})
+        raw = str(fn.get("arguments") or "")
+        if len(raw) <= MIN_SUMMARISE_CHARS:
+            new_calls.append(call)
+            continue
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            decoded = None
+        if not isinstance(decoded, dict):
+            # Not something we can shorten field-by-field without changing its meaning.
+            # Left alone: an unparseable argument is rare, and mangling one is worse than
+            # carrying it.
+            new_calls.append(call)
+            continue
+        kept = {
+            k: (v if not isinstance(v, str) or len(v) <= MIN_SUMMARISE_CHARS
+                else f"[compacted] {len(v)} chars, re-read the file if you need it")
+            for k, v in decoded.items()
+        }
+        if kept == decoded:
+            new_calls.append(call)
+            continue
+        fn["arguments"] = json.dumps(kept)
+        new_calls.append({**call, "function": fn})
+        shrunk += 1
+
+    if not shrunk:
+        return message, 0
+    return {**message, "tool_calls": new_calls}, shrunk
+
+
 def compact(messages: list[dict], *, keep_last_turns: int = KEEP_LAST_TURNS) -> Compaction:
-    """Shorten old tool results. Returns a NEW list; the input is not mutated.
+    """Shorten old tool results AND the arguments of old tool calls. Returns a NEW list.
 
     Not mutating matters more than it looks: the session hands over its own history, and a
     compaction that half-applied before hitting a bad message would leave a conversation that
     is neither the old one nor the new one.
+
+    Both halves obey the same boundary — nothing inside the last five turns is touched, and
+    nothing that is not a tool result or a tool call is touched at all. The instruction, the
+    item and the plan still survive by construction rather than by a condition.
     """
     boundary = _keep_boundary(messages, keep_last_turns)
     labels = _call_names(messages)
@@ -173,6 +244,9 @@ def compact(messages: list[dict], *, keep_last_turns: int = KEEP_LAST_TURNS) -> 
                 label = labels.get(str(message.get("tool_call_id") or ""), "tool result")
                 message = {**message, "content": _summarise(label, content)}
                 result.summarised += 1
+        elif message.get("role") == "assistant" and not protected:
+            message, shrunk = _shrink_arguments(message, labels)
+            result.summarised += shrunk
         out.append(message)
         result.chars_after += len(_text_of(message))
     return result

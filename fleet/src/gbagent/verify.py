@@ -95,12 +95,34 @@ def git_diff(root: Path, *, path: str = ".") -> dict:
 
     Scoped through the same boundary as every other path (S1): `git_diff` on `../..` would
     otherwise report a neighbouring worktree's work as this agent's.
+
+    **New files count, and they are most of the work** (GRPH-488). `git diff` reports
+    tracked, unstaged changes only — and every file this agent creates is untracked, so a
+    plain diff cannot see the output of `write_file`, the tool the agent uses most. Worse
+    than the empty answer was the mixed one: create a module, edit a tracked file, and you
+    got a confident, well-formed diff that silently omitted the new module. A tool that says
+    "nothing" is obviously wrong; one that shows you most of your work reads as complete.
+
+    That is the answer this module's own docstring rejects for test counts — "confident,
+    structured, and false" — so it should not have been acceptable one function below it.
+
+    `git add -N` (intent-to-add) is what makes them visible: it records the path in the index
+    without staging content, so the diff includes them while `git diff --cached` stays empty.
+    Nothing becomes staged for commit and D9's dirty-worktree salvage is untouched — asserted
+    by a test, because "it does not stage anything" is exactly the kind of claim that rots.
     """
     target = safe_path(root, path)
+    base = str(safe_path(root, "."))
+    # Intent-to-add first, so new files reach the diff below. Failure is deliberately
+    # ignored rather than raised: a tree that is not a git repository, or a path git
+    # declines to add, must still produce whatever diff it can. The diff call below is the
+    # one that reports trouble, and it already does.
+    subprocess.run(["git", "add", "-N", "--", str(target)],
+                   cwd=base, capture_output=True, text=True, timeout=120)
     try:
         proc = subprocess.run(
             ["git", "diff", "--", str(target)],
-            cwd=str(safe_path(root, ".")), capture_output=True, text=True, timeout=120,
+            cwd=base, capture_output=True, text=True, timeout=120,
         )
     except (OSError, subprocess.SubprocessError) as e:
         raise ToolError(f"git diff failed: {e}") from None
