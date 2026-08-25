@@ -154,8 +154,12 @@ TOOLS: list[dict[str, Any]] = [
                 "prd_section": {"type": "string"},
                 "evidence": {
                     "type": "array",
-                    "description": "Proof-on-done receipts, matched to the completion claim: a "
-                                   "test run, URL, screenshot, health check, or `sabotage`.",
+                    # The kind list that used to live here is dropped, not squeezed: the
+                    # `kind` enum below already carries it, and paying manifest tokens twice
+                    # for one fact is what the footprint guard exists to catch. Net +1 char
+                    # against main, so the ceiling stays exactly as tight as it was.
+                    "description": "Proof-on-done receipts matched to the completion claim; "
+                                   "kinds below. APPENDS — sending some never removes the rest.",
                     "items": {
                         "type": "object",
                         "properties": {
