@@ -105,6 +105,23 @@ def test_a_summary_names_the_tool_and_its_argument():
     assert "4000 chars" in first["content"]
 
 
+def test_a_label_is_parsed_from_the_arguments_not_matched_in_them():
+    """A `write_file` whose CONTENT contains the characters `"path":` would otherwise have that
+    read as its path. Compaction runs on the path a long run depends on, so a malformed
+    argument degrades to the bare tool name rather than raising."""
+    messages = _conversation(pairs=12)
+    messages[3]["tool_calls"][0]["function"] = {
+        "name": "write_file",
+        "arguments": '{"path":"real.py","content":"cfg = {\\"path\\": 1}"}',
+    }
+    messages[5]["tool_calls"][0]["function"] = {"name": "grep", "arguments": "not json at all"}
+
+    result = compact.compact(messages)
+
+    assert "write_file real.py" in result.messages[4]["content"]
+    assert "grep" in result.messages[6]["content"]
+
+
 def test_nothing_is_removed_so_no_tool_call_is_left_unanswered():
     """THE FAILURE MODE THAT DELETION WOULD HAVE. Every `tool` message answers a `tool_call`,
     and an endpoint that receives a call with no answer rejects the whole conversation."""

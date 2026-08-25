@@ -26,6 +26,7 @@ about a refusal makes the context bigger and the run worse.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 #: D7. Measured in tokens rather than turns, because turns vary by three orders of magnitude:
@@ -128,12 +129,17 @@ def _call_names(messages: list[dict]) -> dict[str, str]:
     for message in messages:
         for call in message.get("tool_calls") or []:
             fn = call.get("function") or {}
+            # Parsed, not string-matched. The arguments are JSON and a `content` holding the
+            # word `"path":` would otherwise be read as the path. Malformed arguments are a
+            # label problem only, so they degrade to the bare tool name rather than raising
+            # inside compaction — which runs on the one path a long run depends on.
             argument = ""
-            raw = str(fn.get("arguments") or "")
-            for key in ('"path":', '"pattern":'):
-                if key in raw:
-                    argument = raw.split(key, 1)[1].split(",", 1)[0].strip().strip('}"')
-                    break
+            try:
+                decoded = json.loads(str(fn.get("arguments") or "{}"))
+            except json.JSONDecodeError:
+                decoded = {}
+            if isinstance(decoded, dict):
+                argument = str(decoded.get("path") or decoded.get("pattern") or "")
             names[call.get("id") or ""] = f"{fn.get('name') or 'tool'} {argument}".strip()
     return names
 
