@@ -64,6 +64,18 @@ class Limits:
     #: supervisor enforces because it can measure it, same as the two above — and the
     #: only one of the three whose default is short enough to matter in a test.
     registration_window: float = REGISTRATION_WINDOW
+    #: How long a child may read `offline` on the roster before the backstop stops it
+    #: (GRPH-452). NOT the presence TTL, and the difference is the whole point: `offline`
+    #: means "no heartbeat within the TTL", which a revoked child and a BUSY one produce
+    #: identically. The presence TTL is 150s by default and one run of this repository's
+    #: own backend suite is ~9 minutes of silence, so acting on the first reading stops
+    #: healthy children for working.
+    #:
+    #: 1800s is the longest single blocking call this fleet ships — `gbagent`'s run_tests
+    #: timeout — so a child cannot legitimately be quieter than this inside one tool call.
+    #: Deliberately generous: a revoked child costs extra spend, a killed healthy one
+    #: costs the work AND the spend, and only one of those is recoverable.
+    disowned_after: float = 1800.0
 
 
 @dataclass(frozen=True)
@@ -185,6 +197,13 @@ class Wave:
     #: `touchpoints` on the item is the PREDICTION, and overwriting it would leave walk
     #: step 17's comparison with one operand. See `touchpoints.py`.
     touched: dict[str, list[str]] = field(default_factory=dict)
+    #: Children the roster currently reads `offline` that have NOT been stopped, by agent
+    #: id, with how long they have been quiet. Reported rather than acted on: a quiet
+    #: child is usually one in a long tool call, and the previous version's mistake was
+    #: treating that state as a verdict (GRPH-452). Surfacing it means a wave that ends
+    #: with a child quiet for twenty minutes says so, instead of the operator learning it
+    #: from a kill that named the wrong cause.
+    quiet: dict[str, float] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -475,7 +494,7 @@ def _wait_out(
 
         _enforce_the_lease(wave, children)
         if roster is not None:
-            _catch_the_disowned(wave, children, roster)
+            _catch_the_disowned(wave, children, roster, limits)
 
         if any(child.running for child in children):
             sleep(poll)
@@ -485,7 +504,8 @@ def _wait_out(
     _roster(client, wave.partition)
 
 
-def _catch_the_disowned(wave: Wave, children: list[Child], roster: dict) -> None:
+def _catch_the_disowned(wave: Wave, children: list[Child], roster: dict,
+                        limits: Limits) -> None:
     """Stop children the server has stopped counting. PRD-22 D-d, the backstop half.
 
     `end_wave` and `retire_wave` revoke a seat while a child is still building, and there
@@ -499,14 +519,28 @@ def _catch_the_disowned(wave: Wave, children: list[Child], roster: dict) -> None
     fine here precisely because `stop` is idempotent; two paths to *deciding* it would not
     be.
 
-    **What is actually observable.** The supervisor is not the minter, so it cannot read
-    seat state — `fleet_status` returns the seats you minted, and these were minted by the
-    planner. What it can see is the roster: a revoked seat stops the child's heartbeats
-    landing, so within the presence TTL the agent reads `offline` while its process is
-    still alive. A revoked credential shows the same way, immediately. So does a child
-    whose MCP client died. All three mean the claim is gone and the process is spending
-    money without one, which is why the reason is named for the observation rather than
-    for a cause the supervisor cannot prove.
+    **What is actually observable, and the two observations are NOT equally strong.**
+    The supervisor is not the minter, so it cannot read seat state — `fleet_status`
+    returns the seats you minted, and these were minted by the planner. It sees the
+    roster, and the roster says one of two things:
+
+    - **The agent is gone from it.** Unambiguous. The server is answering and does not
+      list this id, so it has been dismissed. Stopped at once.
+    - **The agent reads `offline`.** Ambiguous, and this is the correction in GRPH-452.
+      `offline` is derived purely from `last_seen_at`, which only `heartbeat` refreshes —
+      so it means *no heartbeat within the presence TTL* and nothing more. A revoked seat
+      looks like that. So does a child whose MCP client died. **So does a perfectly
+      healthy child that is simply busy**, because a blocking tool call makes no server
+      calls: the presence TTL is one quarter of the lease (150s by default) and one run
+      of this repository's own backend suite is ~9 minutes of silence. Treating the first
+      `offline` reading as proof would stop a child for running the tests it was spawned
+      to run, and file it as disowned.
+
+    So `offline` has to be SUSTAINED past `limits.disowned_after` before it is acted on,
+    and the failure says how long it was quiet rather than asserting a cause. Getting
+    this wrong in the safe direction costs a revoked child some extra minutes of spend;
+    getting it wrong in the other direction destroys work and misattributes it. Those are
+    not symmetric, which is why the bound is generous and configurable rather than clever.
 
     Only called when the roster was actually READ. During a partition every agent looks
     absent, and killing the fleet because the network dropped is D-i's job to prevent, not
@@ -515,17 +549,41 @@ def _catch_the_disowned(wave: Wave, children: list[Child], roster: dict) -> None
     live = {
         a.get("id"): a for a in (roster.get("agents") or []) if a.get("id")
     }
+    now = time.monotonic()
     for child in children:
         if not child.running or not child.agent_id:
             continue
         row = live.get(child.agent_id)
+
+        if row is not None and row.get("state") != "offline":
+            # It came back, or never left. Forget any quiet spell so a child that goes
+            # quiet twice is not stopped on the sum of two unrelated silences — and drop
+            # it from the report too, or the wave ends claiming a child is quiet that has
+            # been heartbeating for twenty minutes.
+            child.offline_since = None
+            wave.quiet.pop(child.agent_id, None)
+            continue
+
         if row is None:
             why = "the server no longer lists this agent"
-        elif row.get("state") == "offline":
-            why = "the server reads this agent offline while its process is alive"
         else:
-            continue
+            if child.offline_since is None:
+                child.offline_since = now
+                wave.quiet[child.agent_id] = 0.0
+                continue
+            quiet = now - child.offline_since
+            wave.quiet[child.agent_id] = quiet
+            if quiet < limits.disowned_after:
+                continue
+            why = (
+                f"no heartbeat reached the server for {quiet:.0f}s, past the "
+                f"{limits.disowned_after:.0f}s allowed. Its claim is gone or its client "
+                "is dead; the supervisor cannot tell which, and cannot rule out a very "
+                "long tool call either"
+            )
+
         stop(child, Reason.SEAT_GONE)
+        wave.quiet.pop(child.agent_id, None)
         wave.failures.append(f"{child.adapter} pid {child.pid} ({child.agent_id}): {why}")
 
 

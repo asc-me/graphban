@@ -125,6 +125,12 @@ class Child:
     #: shows one agent fewer than expected. This is what separates that from a slow
     #: start; without it the two are indistinguishable from outside.
     registration_latency: float | None = None
+    #: When the roster first read this child `offline`, or None while the server still
+    #: counts it. The backstop needs SUSTAINED silence rather than one reading, because
+    #: `offline` is derived from `last_seen_at` and a busy child produces it exactly as a
+    #: revoked one does (GRPH-452). Cleared when the child reappears, so two unrelated
+    #: quiet spells are never summed into one.
+    offline_since: float | None = None
     stopped_because: Reason | None = None
 
     @property
