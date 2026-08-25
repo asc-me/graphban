@@ -60,3 +60,13 @@ def is_openai_compat(pid: str) -> bool:
 def kind(pid: str) -> str:
     p = _BY_ID.get(pid)
     return p["kind"] if p else "stub"
+
+
+# ---- Can this provider be ASKED what models it has? (GRPH-485) -------------------------
+#
+# `kind` decides. Ollama lists at `/api/tags`; every OpenAI-compatible endpoint lists at
+# `/v1/models`. Anthropic has no listing endpoint and the stub has no models, so both
+# answer "cannot be asked" rather than "has none" — a distinction the caller must keep,
+# because refusing every model on a provider that simply cannot enumerate would make the
+# check worse than its absence.
+LISTS_MODELS = {p["id"] for p in PROVIDERS if p["kind"] in ("ollama", "openai")}

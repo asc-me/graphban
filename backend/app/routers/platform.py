@@ -51,7 +51,12 @@ def update_platform(body: PlatformUpdate, project_id: str = "core", db: Session 
         raise HTTPException(422, "llm_mode must be stub | local | cloud")
     if body.active_chat_provider and body.active_chat_provider not in provider_registry.IDS:
         raise HTTPException(422, f"unknown provider: {body.active_chat_provider}")
-    return platform_svc.update_config(db, project_id, body.model_dump(exclude_unset=True))
+    try:
+        return platform_svc.update_config(db, project_id, body.model_dump(exclude_unset=True))
+    except platform_svc.UnknownModel as e:
+        # 422, not 500: the config is wrong, not the server. The message names what the
+        # provider does have, so fixing it is one edit rather than a hunt (GRPH-485).
+        raise HTTPException(422, str(e))
 
 
 @router.post("/github/connect", response_model=PlatformConfigOut)
