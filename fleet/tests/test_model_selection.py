@@ -220,19 +220,39 @@ def test_no_model_named_asks_the_vendor_nothing(registered, fake_binary, monkeyp
 # ---- the real binaries, where they are installed ------------------------------------
 
 
+def _installed(name: str) -> Path | None:
+    """Where this adapter's binary is, if anywhere.
+
+    `gbagent` ships in this distribution, and CI runs `.venv/bin/python -m pytest` WITHOUT
+    activating the venv — so `shutil.which("gbagent")` is None on the very machine where it
+    is definitely installed. Looking beside the interpreter finds it, and is why the
+    first-party row below is never skipped.
+    """
+    import shutil
+    import sys
+
+    if name == "gbagent":
+        candidate = Path(sys.executable).parent / ADAPTERS[name].binary
+        return candidate if candidate.exists() else None
+    found = shutil.which(ADAPTERS[name].binary)
+    return Path(found) if found else None
+
+
 @pytest.mark.parametrize("name", sorted(ADAPTERS))
 def test_a_real_binary_lists_or_says_it_cannot(name):
     """Against the installed CLI, because a listing parser written from a docstring is a
-    guess. Skips where the vendor is absent, the same as `test_a_real_installed_binary_resolves`.
+    guess. Skips where a VENDOR is absent, the same as `test_a_real_installed_binary_resolves`
+    — but never for `gbagent`, where absent means a broken build rather than a missing vendor.
     """
-    import shutil
-
-    adapter = ADAPTERS[name]
-    found = shutil.which(adapter.binary)
+    found = _installed(name)
     if not found:
-        pytest.skip(f"{adapter.binary} is not installed on this machine")
+        assert name != "gbagent", (
+            "gbagent ships in this distribution; a missing console script means the install "
+            "is broken. Run: uv pip install -e '.[dev]'"
+        )
+        pytest.skip(f"{ADAPTERS[name].binary} is not installed on this machine")
 
-    known = adapter.known_models(Path(found))
+    known = ADAPTERS[name].known_models(found)
 
     # Either it enumerated something real, or it said it could not. Never an empty set.
     assert known is None or (known and all(known)), known

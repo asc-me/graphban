@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import re
 import shutil
+import sys
 import subprocess
 from pathlib import Path
 
 import pytest
 
+import gbfleet
 from gbfleet.adapters import (
     ADAPTERS,
     AdapterUnavailable,
@@ -212,18 +214,31 @@ def test_claude_keeps_its_seat_out_of_the_repository_entirely(git_repo: Path, tm
 # --- the support matrix ------------------------------------------------------------
 
 
+MATRIX_HEADING = "## The matrix"
+
+
 def _matrix_rows() -> dict[str, str]:
-    """The vendor rows of the table, keyed by name.
+    """The vendor rows of THE matrix, keyed by name.
 
     Parsed rather than searched for. Both of these tests first checked whether the name
     appeared ANYWHERE in the document, and both survived a sabotage that deleted the
     table row — because every vendor is also discussed in the prose underneath. A docs
     guard that a paragraph can satisfy is the absence-reads-clean defect pointed at
     documentation.
+
+    **Scoped to one section**, which it was not at first. It read every table in the file
+    and got away with it because the model table and the tuning table also happen to have
+    vendor names in their first column. The moment a table appeared whose first column was
+    something else — `gbagent`'s exit codes — the guard started reporting `75` and `other`
+    as unregistered vendors. It was reading the right rows by luck.
     """
     rows: dict[str, str] = {}
+    inside = False
     for line in MATRIX.read_text(encoding="utf-8").splitlines():
-        if not line.startswith("|"):
+        if line.startswith("## "):
+            inside = line.strip() == MATRIX_HEADING
+            continue
+        if not inside or not line.startswith("|"):
             continue
         cells = [c.strip() for c in line.strip("|").split("|")]
         name = cells[0].strip("`")
@@ -231,6 +246,13 @@ def _matrix_rows() -> dict[str, str]:
             continue
         rows[name] = line
     return rows
+
+
+def test_the_matrix_section_is_where_this_thinks_it_is():
+    """The scoping above is only as good as the heading it keys on. A renamed section would
+    leave every guard below parsing nothing and passing."""
+    assert MATRIX_HEADING in MATRIX.read_text(encoding="utf-8")
+    assert len(_matrix_rows()) >= 4, "the matrix section parsed almost nothing"
 
 
 def test_the_matrix_lists_exactly_the_registered_adapters():
@@ -278,13 +300,15 @@ def test_the_matrix_quotes_the_version_that_was_actually_run(name: str):
 # --- against the binaries that are actually here -----------------------------------
 
 
-@pytest.mark.parametrize("name", sorted(ADAPTERS))
+@pytest.mark.parametrize("name", sorted(set(ADAPTERS) - {"gbagent"}))
 def test_a_real_installed_binary_resolves(name: str):
     """Run against real data, not a fixture.
 
     Skipped where the vendor is not installed rather than mocked, because a mocked
     `--version` proves the parser and nothing about the vendor. Where the binary IS
     here, this is the only test that would notice a vendor changing its version format.
+
+    `gbagent` is excluded because for it a skip would be wrong — see below.
     """
     binary = shutil.which(ADAPTERS[name].binary)
     if binary is None:
@@ -294,3 +318,37 @@ def test_a_real_installed_binary_resolves(name: str):
     assert found.adapter.name == name
     assert Path(found.binary) == Path(binary)
     assert found.version, "a real binary reported no version at all"
+
+
+def test_the_first_party_binary_resolves_and_is_never_skipped():
+    """`gbagent` absent is a broken build, not an absent vendor (PRD-24 D8).
+
+    It ships in this same wheel, so "not installed here" cannot be a legitimate outcome the
+    way it is for `grok`. This test also has to find it WITHOUT `PATH`: CI runs
+    `.venv/bin/python -m pytest` without activating the venv, so `shutil.which("gbagent")`
+    is None on the very machine where the package is definitely installed. Skipping on that
+    would leave the support matrix claiming a row that CI never actually exercises — the
+    docstring in `adapters/gbagent.py` says this is re-verified on every run, and this is
+    what makes that sentence true rather than decorative.
+    """
+    binary = Path(sys.executable).parent / "gbagent"
+    assert binary.exists(), (
+        f"gbagent is not installed at {binary}. It ships in this distribution; a missing "
+        "console script means the install is broken. Run: uv pip install -e '.[dev]'"
+    )
+
+    found = resolve("gbagent", binary=binary)
+
+    assert found.adapter.name == "gbagent"
+    assert found.version == f"gbagent {gbfleet.__version__}"
+    assert found.adapter.support.exact == parse_version(gbfleet.__version__)
+
+
+def test_a_gbagent_from_another_install_is_refused():
+    """The only version mismatch that can actually happen here, and the reason the pin is
+    exact rather than a range. A range wide enough to be useful would accept it."""
+    other = parse_version(gbfleet.__version__)
+
+    assert not ADAPTERS["gbagent"].support.permits(other[:-1] + (other[-1] + 1,))
+    assert ADAPTERS["gbagent"].support.permits(other)
+    assert "exactly" in ADAPTERS["gbagent"].support.describe()

@@ -214,6 +214,27 @@ class OllamaSession:
             },
         )
 
+    def list_models(self) -> list[str]:
+        """What this endpoint says it serves, or an empty list when it cannot be asked.
+
+        Here rather than in the CLI because this module is one of the two the package
+        permits to open a socket (`test_client.py` pins that list), and because a caller
+        reaching into `_client()` to make its own request is how a second door gets built
+        without anyone deciding to.
+
+        Every failure collapses to "cannot be asked" on purpose. The caller is a
+        pre-spawn check, and the distinction it needs is between a listing and no listing
+        — not between the six ways a listing can fail to arrive.
+        """
+        try:
+            response = self._client().get(f"{self.base_url}/models")
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return []
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        return sorted(str(r.get("id")) for r in (rows or []) if isinstance(r, dict) and r.get("id"))
+
     def add_results(self, results: list[ToolResult]) -> None:
         """Append tool results in the shape the endpoint expects for the next turn."""
         for result in results:

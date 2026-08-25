@@ -31,7 +31,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as dc_fields
 from typing import NamedTuple
 from pathlib import Path
 from typing import ClassVar
@@ -108,9 +108,23 @@ class Tuning:
     fallback_model: str = ""
     #: grok: `--reasoning-effort`, free-form (see `Grok.tuning_argv`).
     effort: str = ""
+    #: gbagent: the turn budget (PRD-24 D6). One turn is 22-45s against a local model.
+    turns: str = ""
+    #: gbagent: the model's context window in tokens, which compaction takes 70% of (D7).
+    #: No default anywhere: assume too large and a run dies of an overflow compaction could
+    #: have prevented; too small and it compacts constantly and throws away the 262k that
+    #: made a local model worth using.
+    window: str = ""
 
     def named(self) -> set[str]:
-        return {k for k, v in (("fallback_model", self.fallback_model), ("effort", self.effort)) if v}
+        """Which knobs were actually asked for.
+
+        Derived from the dataclass rather than listed again here. The list was written out
+        twice when there were two fields, which is one place to forget a third — and
+        forgetting means `resolve` stops refusing an unsupported knob and starts silently
+        dropping it, which is the exact failure `TuningUnsupported` exists to prevent.
+        """
+        return {f.name for f in dc_fields(self) if getattr(self, f.name)}
 
 
 @dataclass(frozen=True)
@@ -122,16 +136,28 @@ class Support:
     should not read the same as one that has. The support matrix prints both.
     """
 
-    minimum: tuple[int, ...]
+    minimum: tuple[int, ...] = ()
     maximum: tuple[int, ...] | None = None
     verified_against: str | None = None
+    #: An EXACT version, for an adapter whose binary ships in this same distribution.
+    #:
+    #: The range machinery exists because three vendors release on their own schedules and
+    #: we find out afterwards. `gbagent` is the one adapter where that problem does not
+    #: arise — it is the same wheel as the supervisor — so a range would be ceremony, and
+    #: worse than ceremony: it would accept a `gbagent` from a DIFFERENT install, which is
+    #: the only version mismatch that can actually happen here (PRD-24 D8).
+    exact: tuple[int, ...] | None = None
 
     def permits(self, version: tuple[int, ...]) -> bool:
+        if self.exact is not None:
+            return version == self.exact
         if not version or version < self.minimum:
             return False
         return self.maximum is None or version < self.maximum
 
     def describe(self) -> str:
+        if self.exact is not None:
+            return f"exactly {_fmt(self.exact)}"
         upper = f" and below {_fmt(self.maximum)}" if self.maximum else " or newer"
         return f"{_fmt(self.minimum)}{upper}"
 
@@ -294,14 +320,18 @@ def resolve(
 
 from .claude import ClaudeCode  # noqa: E402
 from .cursor import CursorAgent  # noqa: E402
+from .gbagent import GbAgent  # noqa: E402
 from .grok import Grok  # noqa: E402
 
 #: Only vendors whose flags and version strings were read off a real binary. `codex` is
 #: absent on purpose — see `adapters/codex.py`. A fabricated adapter fails as a child
 #: that starts and never registers, which costs a registration window and blames the
 #: vendor for the supervisor's mistake.
+#: `gbagent` is the first-party one (PRD-24 D8). It is in this list on the same terms as
+#: the rest and gets no special handling anywhere in `resolve` — G4 says deleting it must
+#: change nothing about how the fleet is arbitrated.
 ADAPTERS: dict[str, Adapter] = {
-    a.name: a for a in (ClaudeCode(), CursorAgent(), Grok())
+    a.name: a for a in (ClaudeCode(), CursorAgent(), GbAgent(), Grok())
 }
 
 __all__ = [
