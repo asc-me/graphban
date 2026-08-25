@@ -483,7 +483,7 @@ def test_the_worker_set_is_pinned_and_is_not_the_supervisors():
     """A test that only asserts `sign_off not in WORKER_TOOLS` passes for every widening."""
     from gbfleet.client import ALLOWED_TOOLS
 
-    assert WORKER_TOOLS == frozenset({"get_item_details", "update_item", "release_item"})
+    assert WORKER_TOOLS == frozenset({"update_item", "release_item"})
     assert not WORKER_TOOLS & ALLOWED_TOOLS, "a worker is not a supervisor"
 
 
@@ -496,47 +496,30 @@ def test_the_agent_cannot_sign_off_its_own_work_at_the_client_either():
     assert "sign_off" in str(exc.value)
 
 
-def test_the_handoff_carries_the_evidence_that_was_already_there(wt):
-    """`update_item` REPLACES evidence — `item.evidence = normalize_evidence(...)` is an
-    assignment. A second stuck agent would otherwise erase the first one's note, which is
-    exactly the chain D6 is built for."""
+def test_the_handoff_sends_only_its_own_note(wt):
+    """GRPH-494 made the server the one that keeps the record: `append_evidence` never removes,
+    and an identical receipt is a retry rather than a second one. This used to read the item and
+    re-send everything on it, back when `update_item` assigned over the stored list — carrying
+    that forward would be a round trip to re-send rows the server already keeps, and a second
+    way for the one call that must not fail to fail."""
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        sent.append(body)
-        name = body["params"]["name"]
-        if name == "get_item_details":
-            return _mcp({"evidence": [{"kind": "note", "detail": "first agent stopped here"}]},
-                        id_=body["id"])
+        sent.append(body["params"])
         return _mcp({"id": "GRPH-1"}, id_=body["id"])
 
     Coordinator(client=_graphban(handler), item_id="GRPH-1").write_handoff("second agent")
 
-    written = sent[-1]["params"]["arguments"]["evidence"]
-    assert [e["detail"] for e in written] == ["first agent stopped here", "second agent"]
+    assert [p["name"] for p in sent] == ["update_item"], "one call, no read"
+    assert sent[0]["arguments"]["evidence"] == [{"kind": "note", "detail": "second agent"}]
 
 
-def test_a_handoff_that_cannot_read_the_item_refuses_rather_than_overwriting(wt):
-    """Writing a note that destroys the previous one is worse than not writing it.
-
-    Only the READ fails here, and the write is left working on purpose. A handler that failed
-    both would let this pass on the write's failure while the read branch quietly carried on
-    with an empty list — which is the sabotage that survived the first time this was written.
-    """
-    attempted: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        attempted.append(body["params"]["name"])
-        if body["params"]["name"] == "get_item_details":
-            return httpx.Response(503, text="down")
-        return _mcp({"id": "GRPH-1"}, id_=body["id"])
-
+def test_a_handoff_the_server_refuses_does_not_pretend_it_was_written(wt):
+    """`HandoffFailed` is what stops `_give_up` reaching the release."""
     with pytest.raises(HandoffFailed):
-        Coordinator(client=_graphban(handler), item_id="GRPH-1").write_handoff("mine")
-
-    assert "update_item" not in attempted, "it must not have written anything at all"
+        Coordinator(client=_graphban(lambda r: httpx.Response(503, text="down")),
+                    item_id="GRPH-1").write_handoff("mine")
 
 
 def test_release_names_the_agent_so_the_server_can_check_the_lease():

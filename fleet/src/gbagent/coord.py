@@ -18,11 +18,11 @@ from gbfleet.client import Graphban
 
 #: Every Graphban tool `gbagent` may call, pinned by `test_gbagent_loop.py`.
 #:
-#: This is S3's set and it is small on purpose: the give-up path (D6) reads the item, writes a
-#: note and releases, and that is all the loop itself initiates. The tools the MODEL calls to
+#: This is S3's set and it is small on purpose: the give-up path (D6) writes a note and
+#: releases, and that is all the loop itself initiates. The tools the MODEL calls to
 #: claim work and move an item to review arrive with the slice that wires the coordination
 #: layer — and they should arrive by editing this line, which is the point of having it.
-WORKER_TOOLS: frozenset[str] = frozenset({"get_item_details", "update_item", "release_item"})
+WORKER_TOOLS: frozenset[str] = frozenset({"update_item", "release_item"})
 
 
 class HandoffFailed(RuntimeError):
@@ -63,30 +63,25 @@ class Coordinator:
         does not touch the row — so without this a release would clear authorship and leave a
         salvage branch nobody is recorded as having made.
 
-        **Existing evidence is read and carried, because `update_item` REPLACES it.**
-        `item.evidence = normalize_evidence(fields["evidence"])` is an assignment, not an
-        append. A stuck agent handing off to a second one that also gets stuck would otherwise
-        erase the first one's note — which is precisely the chain D6 is built for. The read is
-        not racy in any way that matters: we hold the lease.
+        **It sends only its own note.** This first read the item and re-sent the existing
+        evidence with it, because `update_item` assigned the incoming list straight over the
+        stored one — so a stuck agent handing off to a second one that also got stuck would
+        have erased the first note, which is the chain D6 is built for. GRPH-494 fixed that at
+        the source: `append_evidence` is now the one appender and the record only grows, with
+        an identical receipt treated as a retry rather than a second one. Carrying the read
+        forward would now be a round trip on the give-up path to re-send rows the server
+        already keeps, and a second failure mode on the one call that must not fail.
 
-        Raises `HandoffFailed` rather than degrading. Writing a note that destroys the previous
-        one is worse than not writing it, and a release that follows a failed write is worse
-        than both.
+        Raises `HandoffFailed` rather than degrading: a release that follows a failed write is
+        the outcome D6 exists to prevent.
         """
-        try:
-            existing = self.client.call("get_item_details", id=self.item_id).get("evidence") or []
-        except Exception as exc:  # noqa: BLE001 — every failure here has the same consequence
-            raise HandoffFailed(
-                f"could not read {self.item_id} to preserve its evidence: {exc}"
-            ) from exc
-
         try:
             return self.client.call(
                 "update_item",
                 id=self.item_id,
-                evidence=[*existing, {"kind": "note", "detail": note}],
+                evidence=[{"kind": "note", "detail": note}],
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 — every failure here has the same consequence
             raise HandoffFailed(f"could not write the handoff note to {self.item_id}: {exc}") from exc
 
     def release(self) -> dict:
