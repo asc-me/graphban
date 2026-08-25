@@ -102,7 +102,7 @@ beneath it. One `*.dc.html` per screen.
 19 Operator home · 20 Operator orgs · 21 Operator users · 22 Operator licensing
 
 **Speculative — draw, but label.** 23 Integrations · 24 Analytics. These ship *hidden* until
-PRD-23 / PRD-24 land. They are designed now so the rail composes once and never needs re-cutting.
+the integrations and analytics PRDs land. They are designed now so the rail composes once and never needs re-cutting.
 **Mark each with a mono `SPECULATIVE — NOT BACKED` chip in the page header** so no one mistakes a
 mockup for a specification.
 
@@ -364,12 +364,12 @@ beautiful mockups nobody can wire.
 > tracker raises a question of authority (which system owns an item's status) that PRD-23 settles.
 > **States:** none connected; GitHub connected; a connector mid-auth.
 
-### 24 · Analytics  *(SPECULATIVE — PRD-24)*
+### 24 · Analytics  *(SPECULATIVE — a later PRD)*
 > **Screen: Analytics.** Header carries the same `SPECULATIVE — NOT BACKED` chip; ships hidden
-> until PRD-24. Sections sketching what a program manager needs: **usage** across projects, **model
+> until that PRD lands. Sections sketching what a program manager needs: **usage** across projects, **model
 > usage** by project, **burndown against PRDs**, and a **standup** digest of what each agent and
 > person moved. Draw it as the target shape, not as a spec — the metering behind model usage does
-> not exist yet and PRD-24 has to decide whether to build it.
+> not exist yet and the analytics PRD has to decide whether to build it.
 > **States:** populated; a project with no data.
 
 ---

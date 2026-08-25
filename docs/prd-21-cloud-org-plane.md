@@ -46,10 +46,10 @@ It is a new relation, and the whole of its difficulty is deciding what makes one
   the org rail — the same `hosted_mode` conditional that already gates `/organization`.
 - **Not a re-theme.** The token set stands. `docs/design/cloud-tenant-design-prompts.md` Part 1
   remains the visual contract.
-- **Not the integrations PRD.** Jira / Confluence / Linear / Trello are PRD-23. The screen is
+- **Not the integrations PRD.** Jira / Confluence / Linear / Trello are a later PRD (now GRPH-P23). The screen is
   *designed* here so the rail composes once, and *hidden* until that PRD lands (D9).
 - **Not the analytics / program-management PRD.** Standup, burndown, model metering and billing
-  are PRD-24. Same treatment: designed, hidden, not built.
+  are a later PRD. Same treatment: designed, hidden, not built.
 - **Not custom org domains.** `acme.graphban.dev` is a later thing. D1.2 keeps the seam open by
   refusing to hardcode `/org`; it builds nothing.
 - **Not billing self-serve.** Plans stay operator-assigned until GRPH-82.
@@ -197,8 +197,8 @@ Two levels, both addressable.
 /org/teams                    teams + grants             (D5)
 /org/projects                 projects list
 /org/deployments              linked instances           (D6)
-/org/integrations             ── reserved, PRD-23        (D9)
-/org/analytics                ── reserved, PRD-24        (D9)
+/org/integrations             ── reserved, a later PRD   (D9)
+/org/analytics                ── reserved, a later PRD   (D9)
 
 /p/:tag                       project home
 /p/:tag/code                  code graph (+ arrows out)  (D4)
@@ -582,8 +582,8 @@ the team — the drift D5 accepted, made visible rather than silent.
 design so Claude Design composes the full rail once and the layout never needs re-cutting. The
 shipped build renders **neither the nav item nor the route** until the backing PRD lands.
 
-This reverses the first draft, which specified disabled entries carrying a "coming in PRD-23 /
-PRD-24" note. §7's own risk is the reason: the danger is the plane reading as chrome, and two
+This reverses the first draft, which specified disabled entries carrying a "coming in a later
+PRD" note. §7's own risk is the reason: the danger is the plane reading as chrome, and two
 permanently-greyed items in a six-item rail make that worse rather than better. Design once,
 ship no promises.
 
