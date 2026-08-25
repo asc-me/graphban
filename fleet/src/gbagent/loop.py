@@ -15,6 +15,10 @@ leaving a salvage branch nobody is recorded as having made. So: write, then rele
 If the write fails we do NOT release — a claimed item with a diff is recoverable when the lease
 expires, and a released one with cleared authorship is not.
 
+**Compaction is the loop's job, not the model's** (D7, S4). There is no `compact` tool, so
+the agent cannot forget to call it or spend a 30-second turn deciding to. The check runs after
+every turn on the token count the endpoint itself reported, and acts before the next one.
+
 **The handoff note is assembled from what actually ran**, not from what the model said about it.
 `Toolset` watched the dispatch: which files were written, what the last `run_tests` returned,
 how many calls were refused. A model that reports "all tests pass" in prose having never called
@@ -25,6 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from . import compact as compaction
 from .coord import Coordinator, HandoffFailed
 from .llm import ToolTurn
 from .toolset import Toolset
@@ -75,6 +80,8 @@ class Outcome:
     text: str = ""
     #: The note that was written to the item, when one was.
     handoff: str = ""
+    #: How many times the context was compacted (D7). Zero on a run that never came close.
+    compactions: int = 0
     usage: dict = field(default_factory=dict)
 
     @property
@@ -87,26 +94,38 @@ def run(
     toolset: Toolset,
     *,
     coordinator: Coordinator,
+    window: int,
     budget: int = DEFAULT_BUDGET,
+    threshold: float = compaction.DEFAULT_THRESHOLD,
 ) -> Outcome:
     """Drive the loop until the model stops asking for tools, or the budget is spent.
 
     `session` is anything with `run_turn(specs) -> ToolTurn` and `add_results(results)` —
     `llm.OllamaSession` in production, a scripted stand-in in the tests. The driver never
-    touches a message, which is what keeps this provider-neutral and the give-up path provable
-    without a network.
+    touches a message except to compact it, which is what keeps this provider-neutral and the
+    give-up path provable without a network.
+
+    **`window` has no default on purpose.** It is the model's context size in tokens, and the
+    two failures of guessing it are not symmetric: assume too large and the run dies of an
+    overflow compaction could have prevented; assume too small and it compacts constantly and
+    throws away the 262k that made a local model worth using. A default would pick one of those
+    silently, so the caller states it — the same argument D3 makes about the test command.
     """
     if budget < 1:
         raise ValueError(f"budget must be at least one turn, got {budget}")
+    if window < 1:
+        raise ValueError(f"window must be a positive number of tokens, got {window}")
 
     specs = toolset.specs
     turn: ToolTurn = session.run_turn(specs)
     turns = 1
+    compactions = 0
 
     while turn.wants_tools and turn.tool_calls:
         if turns >= budget:
-            return _give_up(coordinator, toolset, turns, budget, turn)
+            return _give_up(coordinator, toolset, turns, budget, turn, compactions)
         session.add_results([toolset.execute(call) for call in turn.tool_calls])
+        compactions += _maybe_compact(session, turn, window, threshold)
         turn = session.run_turn(specs)
         turns += 1
 
@@ -116,14 +135,42 @@ def run(
         turns=turns,
         text=turn.text,
         usage=turn.usage or {},
+        compactions=compactions,
     )
 
 
+def _maybe_compact(session, turn: ToolTurn, window: int, threshold: float) -> int:
+    """Compact if the last turn crossed the threshold. Returns 1 if it did, 0 otherwise.
+
+    The count comes from the endpoint's own `prompt_tokens`, which is the model's tokenizer
+    rather than ours. When it reports nothing, `compact.should_compact` estimates instead of
+    reading silence as room to spare.
+
+    A session with no `messages` — every stand-in in the tests that is not exercising this —
+    simply never compacts, and says so by returning 0 rather than by raising.
+    """
+    messages = getattr(session, "messages", None)
+    if messages is None:
+        return 0
+    reported = (turn.usage or {}).get("input")
+    if not compaction.should_compact(reported, messages, window, threshold):
+        return 0
+    result = compaction.compact(messages)
+    if not result.summarised:
+        # Over the threshold with nothing compactable: everything large is the plan or the last
+        # five turns, which D7 says survive. Saying so beats reporting a compaction that freed
+        # nothing, and beats looping to try again on an unchanged conversation.
+        return 0
+    session.messages = result.messages
+    return 1
+
+
 def _give_up(
-    coordinator: Coordinator, toolset: Toolset, turns: int, budget: int, turn: ToolTurn
+    coordinator: Coordinator, toolset: Toolset, turns: int, budget: int, turn: ToolTurn,
+    compactions: int = 0,
 ) -> Outcome:
     """D6, in the one order that preserves the record: write, release, exit 75."""
-    note = handoff_note(toolset, turns, budget, turn)
+    note = handoff_note(toolset, turns, budget, turn, compactions)
     try:
         coordinator.write_handoff(note)
     except HandoffFailed as exc:
@@ -136,6 +183,7 @@ def _give_up(
             text=str(exc),
             handoff=note,
             usage=turn.usage or {},
+            compactions=compactions,
         )
     coordinator.release()
     return Outcome(
@@ -145,10 +193,12 @@ def _give_up(
         text=turn.text,
         handoff=note,
         usage=turn.usage or {},
+        compactions=compactions,
     )
 
 
-def handoff_note(toolset: Toolset, turns: int, budget: int, turn: ToolTurn) -> str:
+def handoff_note(toolset: Toolset, turns: int, budget: int, turn: ToolTurn,
+                 compactions: int = 0) -> str:
     """Turns spent, what changed, where the tests stand, what to try next (D6).
 
     Written for the agent that picks this up next, so every line is something that agent would
@@ -162,6 +212,11 @@ def handoff_note(toolset: Toolset, turns: int, budget: int, turn: ToolTurn) -> s
         f"Files changed: {', '.join(toolset.written) if toolset.written else 'none'}",
         f"Tests: {_tests_line(toolset.last_tests)}",
     ]
+    if compactions:
+        lines.append(
+            f"Context was compacted {compactions} time(s) — this run was long enough that old "
+            "tool output was summarised away, so its early reasoning is no longer verbatim."
+        )
     if toolset.refusals:
         lines.append(
             f"Tool calls refused: {toolset.refusals} — check whether it was fighting the "

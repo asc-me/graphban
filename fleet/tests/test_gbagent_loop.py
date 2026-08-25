@@ -40,6 +40,10 @@ from gbfleet.client import Graphban, NotPermitted
 
 SPEC = ToolSpec(name="read_file", description="read", input_schema={"type": "object"})
 
+#: `qwen3-coder:30b`'s measured context. Stated rather than defaulted, for the reason `run`
+#: refuses to guess it — see S4's suite for what the threshold does when it is crossed.
+WINDOW = 262_144
+
 
 # ---- the wire ---------------------------------------------------------------------------
 
@@ -316,7 +320,7 @@ def _done(text: str = "all done") -> ToolTurn:
 
 
 def test_a_run_that_finishes_exits_zero(wt):
-    outcome = loop.run(FakeSession([_done()]), _toolset(wt), coordinator=FakeCoordinator())
+    outcome = loop.run(FakeSession([_done()]), _toolset(wt), coordinator=FakeCoordinator(), window=WINDOW)
 
     assert outcome.status == "finished"
     assert outcome.exit_code == loop.EXIT_OK and outcome.turns == 1
@@ -326,7 +330,7 @@ def test_a_run_that_finishes_exits_zero(wt):
 def test_tools_are_executed_and_fed_back_before_the_next_turn(wt):
     session = FakeSession([_wants(path="README.md"), _done()])
 
-    loop.run(session, _toolset(wt), coordinator=FakeCoordinator())
+    loop.run(session, _toolset(wt), coordinator=FakeCoordinator(), window=WINDOW)
 
     assert session.calls == 2
     assert len(session.results) == 1 and "# repo" in session.results[0][0].content
@@ -343,7 +347,7 @@ def test_exhausting_the_budget_writes_evidence_BEFORE_it_releases(wt):
     coordinator = FakeCoordinator()
 
     outcome = loop.run(FakeSession([_wants(path="README.md")]), _toolset(wt),
-                       coordinator=coordinator, budget=3)
+                       coordinator=coordinator, window=WINDOW, budget=3)
 
     assert coordinator.order == ["write_handoff", "release"]
     assert outcome.status == "stuck" and outcome.exit_code == 75
@@ -353,7 +357,7 @@ def test_exhausting_the_budget_writes_evidence_BEFORE_it_releases(wt):
 def test_the_budget_is_counted_in_model_turns(wt):
     session = FakeSession([_wants(path="README.md")])
 
-    loop.run(session, _toolset(wt), coordinator=FakeCoordinator(), budget=5)
+    loop.run(session, _toolset(wt), coordinator=FakeCoordinator(), window=WINDOW, budget=5)
 
     assert session.calls == 5, "five round trips is what five turns buys"
 
@@ -364,7 +368,7 @@ def test_a_budget_of_one_buys_exactly_one_turn(wt):
     session = FakeSession([_wants(path="README.md")])
     coordinator = FakeCoordinator()
 
-    outcome = loop.run(session, _toolset(wt), coordinator=coordinator, budget=1)
+    outcome = loop.run(session, _toolset(wt), coordinator=coordinator, window=WINDOW, budget=1)
 
     assert session.calls == 1
     assert outcome.exit_code == 75 and coordinator.order == ["write_handoff", "release"]
@@ -372,7 +376,7 @@ def test_a_budget_of_one_buys_exactly_one_turn(wt):
 
 def test_a_budget_below_one_is_refused_rather_than_looping_or_no_opping(wt):
     with pytest.raises(ValueError):
-        loop.run(FakeSession([_done()]), _toolset(wt), coordinator=FakeCoordinator(), budget=0)
+        loop.run(FakeSession([_done()]), _toolset(wt), coordinator=FakeCoordinator(), window=WINDOW, budget=0)
 
 
 def test_a_failed_handoff_does_NOT_release_the_item(wt):
@@ -382,7 +386,7 @@ def test_a_failed_handoff_does_NOT_release_the_item(wt):
     coordinator = FakeCoordinator(fail_handoff=True)
 
     outcome = loop.run(FakeSession([_wants(path="README.md")]), _toolset(wt),
-                       coordinator=coordinator, budget=1)
+                       coordinator=coordinator, window=WINDOW, budget=1)
 
     assert coordinator.order == ["write_handoff"], "release must not have been reached"
     assert outcome.status == "handoff_failed"
@@ -399,7 +403,7 @@ def test_the_handoff_note_says_what_ran_where_the_tests_stand_and_what_is_next(w
     ])
     coordinator = FakeCoordinator()
 
-    loop.run(session, ts, coordinator=coordinator, budget=3)
+    loop.run(session, ts, coordinator=coordinator, window=WINDOW, budget=3)
 
     note = coordinator.note
     assert "3 of 3 turns" in note
@@ -415,7 +419,7 @@ def test_a_note_for_a_run_that_never_tested_says_so_rather_than_going_quiet(wt):
     coordinator = FakeCoordinator()
 
     loop.run(FakeSession([_wants(path="README.md")]), _toolset(wt),
-             coordinator=coordinator, budget=1)
+             coordinator=coordinator, window=WINDOW, budget=1)
 
     assert "NEVER RUN" in coordinator.note
     assert "not the same as passing" in coordinator.note
@@ -427,7 +431,7 @@ def test_a_note_for_a_failing_run_names_the_failing_tests(wt):
         "echo '1 failed, 2 passed in 1.0s'\nexit 1\n"))
     coordinator = FakeCoordinator()
 
-    loop.run(FakeSession([_wants("run_tests")]), ts, coordinator=coordinator, budget=2)
+    loop.run(FakeSession([_wants("run_tests")]), ts, coordinator=coordinator, window=WINDOW, budget=2)
 
     assert "FAILING" in coordinator.note
     assert "tests/test_a.py::test_boundary" in coordinator.note
@@ -437,7 +441,7 @@ def test_refusals_are_counted_in_the_note_because_they_are_a_different_failure(w
     coordinator = FakeCoordinator()
 
     loop.run(FakeSession([_wants(path="../../etc/passwd")]), _toolset(wt),
-             coordinator=coordinator, budget=2)
+             coordinator=coordinator, window=WINDOW, budget=2)
 
     assert "refused: 1" in coordinator.note
 
