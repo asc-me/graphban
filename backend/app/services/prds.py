@@ -426,7 +426,7 @@ def set_dimension(
     return row
 
 
-def completion(db: Session, prd_id: str) -> dict:
+def completion(db: Session, prd_id: str, *, graded: bool = True, ungraded_reason: str = "") -> dict:
     """Is this PRD's grill finished, and if not, what is outstanding?
 
     Two rules, both deliberate:
@@ -435,6 +435,13 @@ def completion(db: Session, prd_id: str) -> dict:
     - **A grill with no recorded answers is never complete**, whatever any model claims.
       Without this floor an empty conversation could be graded straight to approved,
       which is the one outcome that would make the whole standard theatre.
+
+    `graded=False` says THIS ROUND WAS NOT GRADED — the grader was unreachable or returned
+    something unusable — and the outcomes below are therefore the previous round's, not a
+    verdict on the answer just given. Before GRPH-485 that case returned this payload
+    unchanged, so "the grader is down" and "your answer was too thin" were the same
+    response: an author answered three times against a chat model whose name did not exist
+    on the host, was told `outstanding` each time, and nothing moved for an hour.
     """
     rows = {
         d.dimension: d
@@ -466,6 +473,11 @@ def completion(db: Session, prd_id: str) -> dict:
         "deferred": sorted(n for n, d in dimensions.items() if d["outcome"] == "deferred"),
         "answers": answered,
         "complete": bool(answered) and not outstanding,
+        # FALSE means the outcomes above are stale — the grader could not be asked this
+        # round, so nothing was re-judged. A caller that cannot tell this from a thin
+        # answer will keep answering into a void (GRPH-485).
+        "graded": graded,
+        "ungraded_reason": ungraded_reason,
     }
 
 
@@ -681,7 +693,15 @@ def classify_grill(db: Session, prd: Prd) -> dict:
         if _grader_id(db, prd) != "stub":
             logger.warning("grill classify: unusable verdict for %s; leaving dimensions "
                            "unchanged rather than applying the offline bar", prd.id)
-            return completion(db, prd.id)
+            return completion(
+                db, prd.id, graded=False,
+                ungraded_reason=(
+                    f"the {_grader_id(db, prd)} grader could not be asked, or returned "
+                    "something unusable. The outcomes below are the previous round's — "
+                    "this answer has NOT been judged. Check the project's chat model "
+                    "before answering again."
+                ),
+            )
         graded, grader = _stub_classification(answers), "stub"
     else:
         graded, grader = verdicts, _grader_id(db, prd)

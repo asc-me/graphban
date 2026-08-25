@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
 from app import providers
+from app.providers import probe
 from app.providers import registry as provider_registry
 from app.providers.base import ChatModel, Extractor
 from app.models import PlatformConfig
@@ -165,6 +166,42 @@ _LLM_FIELDS = {
 }
 
 
+class UnknownModel(ValueError):
+    """A model name the provider says it does not have (GRPH-485)."""
+
+
+def _check_models(provider_id: str, conf: dict, incoming: dict) -> None:
+    """Refuse a model name the provider can be asked about and does not have.
+
+    Checked HERE rather than at the call site, because a bad name saves cleanly and then
+    fails at every consumer — and the consumers report it badly. The incident: a chat_model
+    of `qwen3.6:35b-a3b-coding-mtp` (a tag the host did not have) broke every chat call for
+    an hour while the PRD grill it took down reported "your answers are still outstanding".
+    One edit from correct, and nothing said so.
+
+    **Only a provider that answered can refuse anything.** `known_models` returns None for a
+    provider with no listing endpoint and for one that could not be reached, and both mean
+    unchecked. A network blip must not block a correct edit.
+    """
+    fields = {k: v for k, v in (("chat_model", incoming.get("chat_model")),
+                                ("embed_model", incoming.get("embed_model"))) if v}
+    if not fields:
+        return
+    known = probe.known_models(provider_id, conf.get("base_url") or "",
+                               secrets.decrypt(conf.get("api_key") or "") or "")
+    if not known:  # None (unchecked) or empty (nothing to check against)
+        return
+    for field, name in fields.items():
+        if name not in known:
+            close = sorted(k for k in known if name.split(":")[0] in k)[:3]
+            hint = f" Did you mean: {', '.join(close)}?" if close else ""
+            raise UnknownModel(
+                f"{provider_id} has no model named {name!r}.{hint} "
+                f"It offers {len(known)} models; refusing to save a name that would fail "
+                "at every call rather than once, here."
+            )
+
+
 def update_config(db: Session, project_id: str, fields: dict) -> PlatformConfig:
     cfg = get_config(db, project_id)
     touched = set(fields.keys())
@@ -183,6 +220,7 @@ def update_config(db: Session, project_id: str, fields: dict) -> PlatformConfig:
                         cur["api_key"] = secrets.encrypt(v)
                 elif v is not None:
                     cur[k] = v
+            _check_models(pid, cur, incoming or {})
             merged[pid] = cur
         cfg.providers = merged  # reassign so SQLAlchemy tracks the JSON change
 

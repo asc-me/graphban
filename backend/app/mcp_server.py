@@ -401,7 +401,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Relay the author's answer to a grill question. Ask them first and record what they "
             "actually said — do NOT answer on their behalf. Returns `outstanding` (dimensions "
-            "still unanswered) and `complete`; call grill_prd for the next questions. Recorded "
+            "still unanswered) and `complete`. **`graded: false` means the grader could not be "
+            "asked and this answer was NOT judged.** Call grill_prd for the next questions. Recorded "
             "as agent-relayed and visible to whoever reviews later."
         ),
         "inputSchema": {
@@ -1338,6 +1339,12 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "outstanding": {"type": "array", "items": _STR},
             "deferred": {"type": "array", "items": _STR},
             "answers": {"type": "integer"},
+            # FALSE means this answer was NOT judged — the grader could not be asked — and
+            # `outstanding` is therefore the previous round's. Without this an agent
+            # relaying answers cannot tell a grader outage from a thin answer, and keeps
+            # answering into a void (GRPH-485).
+            "graded": {"type": "boolean"},
+            "ungraded_reason": _STR,
         },
     },
     "grill_prd": {
