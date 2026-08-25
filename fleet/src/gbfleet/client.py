@@ -15,6 +15,11 @@ site somebody adds while doing something else.
 
 The chokepoint pays for itself anyway — auth, timeouts, offline detection and the D-a
 error shape all want one place to live.
+
+**The allowlist is per-holder, not per-package.** `allowed` defaults to the supervisor's set;
+`gbagent` (PRD-24 S3) is a worker in the same distribution with a different job, and passes
+its own. Widening `ALLOWED_TOOLS` to cover both would have given the supervisor a worker's
+reach for no reason but sharing a transport.
 """
 
 from __future__ import annotations
@@ -79,6 +84,11 @@ class Graphban:
     #: Injected by tests via `httpx.MockTransport`. Production leaves it None and gets
     #: httpx's default — there is no second code path, which is the point.
     transport: httpx.BaseTransport | None = None
+    #: Which tools THIS holder may call. Defaults to the supervisor's set; `gbagent` passes a
+    #: worker's instead (PRD-24 S3). One checked call, two different keys — the alternative was
+    #: widening `ALLOWED_TOOLS` to cover a worker, which would hand the supervisor authority
+    #: PRD-22 §4 says it must not have, for no reason but sharing a transport.
+    allowed: frozenset[str] = ALLOWED_TOOLS
     _ids: Iterator[int] = field(default_factory=lambda: itertools.count(1), repr=False)
     _http: httpx.Client | None = field(default=None, repr=False)
 
@@ -103,18 +113,21 @@ class Graphban:
             self._http = None
 
     def call(self, tool: str, /, **arguments: Any) -> dict:
-        """The single outbound call site. Everything else in this package goes through here.
+        """The single outbound call site. Every Graphban call in this package goes through here.
 
-        `test_client.py` asserts that structurally — one function in the whole package
-        makes an HTTP request — because an allowlist with a second door is decoration.
+        `test_client.py` asserts that structurally, because an allowlist with a second door
+        is decoration. The package has exactly one other module that opens a socket —
+        `gbagent/llm.py`, which talks to a model endpoint and holds no authority over
+        anything — and the same test pins that list so a third door fails rather than passes
+        review.
         """
-        if tool not in ALLOWED_TOOLS:
+        if tool not in self.allowed:
             raise NotPermitted(
-                f"gbfleet may not call {tool!r}. Permitted: {sorted(ALLOWED_TOOLS)}. "
-                "PRD-22 §4: the supervisor decides how many children of an "
-                "already-authorised kind to run, and nothing else. If this call is "
-                "genuinely the supervisor's to make, add it to ALLOWED_TOOLS and say "
-                "why in the same commit."
+                f"this credential may not call {tool!r}. Permitted: {sorted(self.allowed)}. "
+                "Widening is a deliberate edit to whichever set this holder was given: "
+                "`ALLOWED_TOOLS` for the supervisor — PRD-22 §4, it decides how many "
+                "children of an already-authorised kind to run and nothing else — or "
+                "`gbagent.coord.WORKER_TOOLS` for the agent. Say why in the same commit."
             )
 
         request_id = next(self._ids)
