@@ -239,13 +239,39 @@ def test_git_diff_refuses_a_path_outside_the_worktree(tmp_path):
         verify.git_diff(_repo(tmp_path, None), path="../..")
 
 
-def test_this_repository_declares_a_config_that_loads():
-    """Dogfood. The repo `gbagent` was written for must satisfy its own refusal, and this is
-    where a change to AGENTS.md's loop or to `.venv` shows up as a failing test rather than as
-    an agent that refuses to spawn a week later."""
-    from gbagent.config import load
+REPO = Path(__file__).resolve().parents[2]
 
-    cfg = load(Path(__file__).resolve().parents[2])
+
+def test_this_repository_declares_the_loop_agents_md_documents():
+    """Dogfood, and environment-independent on purpose.
+
+    This asserts the FILE, not the machine: that `.gbagent.toml` exists and names the command
+    AGENTS.md documents. It catches the drift that matters — someone changing the loop in one
+    place and not the other — and it runs everywhere, including a CI job that never builds a
+    backend virtualenv.
+    """
+    import tomllib
+
+    data = tomllib.loads((REPO / CONFIG_NAME).read_text(encoding="utf-8"))
+
+    assert data["tests"]["command"] == "./.venv/bin/python -m pytest -q"
+    assert data["tests"]["cwd"] == "backend"
+    assert data["tests"]["command"] in (REPO / "AGENTS.md").read_text(encoding="utf-8"), \
+        "the declared command and the documented loop have drifted apart"
+
+
+def test_this_repository_loads_where_its_interpreter_is_installed():
+    """The other half, and it can only run where the tree is actually built.
+
+    The CI fleet job does not create `backend/.venv`, and `load` correctly REFUSES there —
+    that refusal is the feature, not a failure. Skipping loudly rather than weakening the
+    check: a suite that skips silently reads as green when it ran nothing (GRPH-432).
+    """
+    if not (REPO / "backend" / ".venv" / "bin" / "python").exists():
+        pytest.skip("backend/.venv is not built here; the executable check has nothing to "
+                    "find, and refusing is the correct behaviour")
+
+    cfg = load(REPO)
 
     assert cfg.argv[:2] == ["./.venv/bin/python", "-m"], cfg.argv
     assert cfg.cwd.name == "backend"
