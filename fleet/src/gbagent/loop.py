@@ -83,7 +83,7 @@ class Outcome:
     #: How many times the context was compacted (D7). Zero on a run that never came close.
     compactions: int = 0
     #: The turn on which this run first CHANGED something. `None` means it never did, which
-    #: is not turn zero — see `docs/prd-24-orientation-metric.md`. This is the orientation
+    #: is not turn zero — see `docs/orientation-metric-prd24.md`. This is the orientation
     #: number: how many 22-45 second turns went by before the work started.
     turns_to_first_write: int | None = None
     usage: dict = field(default_factory=dict)

@@ -388,7 +388,7 @@ def test_the_metric_is_not_a_count_of_graph_calls(wt):
 def test_the_metric_is_written_down_where_it_can_be_argued_with():
     """A metric that lives only in a docstring is one nobody can disagree with before the
     number is claimed."""
-    doc = (Path(__file__).resolve().parents[2] / "docs" / "prd-24-orientation-metric.md")
+    doc = (Path(__file__).resolve().parents[2] / "docs" / "orientation-metric-prd24.md")
 
     # Whitespace-normalised: prose gets rewrapped, and a guard that fails when a sentence
     # moves across a line break is noise that teaches people to weaken it.

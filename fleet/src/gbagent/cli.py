@@ -129,7 +129,7 @@ def _run(args: argparse.Namespace) -> int:
     finally:
         session.close()
 
-    # `None`, not 0, when it never wrote — see docs/prd-24-orientation-metric.md. A run that
+    # `None`, not 0, when it never wrote — see docs/orientation-metric-prd24.md. A run that
     # read for forty turns and changed nothing must not average in as the best one.
     first = outcome.turns_to_first_write
     print(f"gbagent: {outcome.status} after {outcome.turns} turns "

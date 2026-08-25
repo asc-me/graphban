@@ -91,7 +91,7 @@ class Orientation:
     client: Graphban
     specs: list[ToolSpec] = field(default_factory=list)
     #: How many orientation calls this run made. Reported, never used as a score — see
-    #: `docs/prd-24-orientation-metric.md` for why counting calls is the wrong metric.
+    #: `docs/orientation-metric-prd24.md` for why counting calls is the wrong metric.
     calls: int = 0
 
     def handles(self, name: str) -> bool:
