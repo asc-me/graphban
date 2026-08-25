@@ -69,11 +69,18 @@ def _server(workspace: Path, mode: str, after: int = 2, ttl: float = 600.0):
 
 
 @pytest.mark.parametrize(
-    "mode, expected",
-    [("offline", "offline while its process is alive"), ("vanished", "no longer lists this agent")],
+    "mode, expected, limits",
+    [
+        # `offline` is only acted on once it is SUSTAINED, so this drives the bound to
+        # zero. The tests below are the ones that prove the bound exists (GRPH-452).
+        ("offline", "no heartbeat reached the server", Limits(registration_window=5.0,
+                                                              disowned_after=0.0)),
+        ("vanished", "no longer lists this agent", Limits(registration_window=5.0)),
+    ],
 )
 def test_a_child_the_server_stopped_counting_is_stopped(
-    git_repo: Path, tmp_path: Path, scripts, state: Path, mode: str, expected: str
+    git_repo: Path, tmp_path: Path, scripts, state: Path, mode: str, expected: str,
+    limits: "Limits",
 ):
     """Both shapes of the same observation.
 
@@ -85,7 +92,7 @@ def test_a_child_the_server_stopped_counting_is_stopped(
     workspace = tmp_path / "ws"
     wave = up(
         git_repo, _seats(1), _factory(scripts, "sleeper"), _server(workspace, mode),
-        limits=Limits(registration_window=5.0),
+        limits=limits,
         state=state, workspace=workspace, poll=0.05, sleep=_bounded(),
     )
 
@@ -211,7 +218,7 @@ def test_a_child_that_already_exited_is_not_recorded_as_disowned(
     Here the exited child is waited on explicitly. There is no window.
     """
     from gbfleet.spawn import Launch, spawn
-    from gbfleet.supervisor import Wave, _catch_the_disowned
+    from gbfleet.supervisor import Limits, Wave, _catch_the_disowned
     from gbfleet.worktree import create
 
     def _child(script: str, slot: str):
@@ -234,7 +241,7 @@ def test_a_child_that_already_exited_is_not_recorded_as_disowned(
     try:
         wave = Wave()
         # The server counts neither of them any more — the shape a revocation takes.
-        _catch_the_disowned(wave, [finished, lingering], {"agents": []})
+        _catch_the_disowned(wave, [finished, lingering], {"agents": []}, Limits())
 
         assert lingering.stopped_because is Reason.SEAT_GONE, "the living child was not caught"
         assert finished.stopped_because is None, (
@@ -246,3 +253,114 @@ def test_a_child_that_already_exited_is_not_recorded_as_disowned(
         from gbfleet.spawn import stop
 
         stop(lingering, Reason.SHUTDOWN)
+
+
+# ---- the bound on `offline` (GRPH-452) --------------------------------------------------
+#
+# `offline` is derived purely from `last_seen_at`, and only `heartbeat` refreshes it. So it
+# means "no heartbeat within the presence TTL" and nothing more — which a revoked child and a
+# BUSY child produce identically, because a blocking tool call makes no server calls. The
+# presence TTL is 150s by default and one run of this repository's own backend suite is ~9
+# minutes of silence. Acting on the first reading stops healthy children for working, and
+# files them as disowned.
+#
+# These drive `_catch_the_disowned` directly and set `offline_since` by hand, because the
+# property is about elapsed time and an integration test that waited for it would take half
+# an hour. The clock is the thing under test, so it is the thing supplied.
+
+
+@pytest.fixture()
+def quiet_child(git_repo: Path, tmp_path: Path, scripts, log_dir: Path):
+    """One live child, registered, that the server has stopped counting."""
+    from gbfleet.spawn import Launch, spawn, stop
+    from gbfleet.worktree import create
+
+    tree = create(git_repo, tmp_path / "q", "wave", "q")
+    child = spawn(
+        Launch(adapter="fake", argv=[str(scripts["python"]), str(scripts["sleeper"])],
+               seat_path=tree.path / "mcp.json", config={"mcpServers": {}}, instruction=""),
+        tree.path, tree.branch, log_dir / "q", base=tree.base,
+    )
+    child.agent_id = "GRPH-A7"
+    assert child.running, "the premise: this child is alive"
+    try:
+        yield child
+    finally:
+        stop(child, Reason.SHUTDOWN)
+
+
+OFFLINE = {"agents": [{"id": "GRPH-A7", "state": "offline"}]}
+WORKING = {"agents": [{"id": "GRPH-A7", "state": "working"}]}
+
+
+def test_a_busy_child_is_not_stopped_for_being_quiet(quiet_child):
+    """THE DEFECT THIS FIXES. A healthy child holding a valid seat, quiet because it is
+    running the test suite, read `offline` and was stopped as disowned on the first poll."""
+    from gbfleet.supervisor import Limits, Wave, _catch_the_disowned
+
+    wave = Wave()
+    _catch_the_disowned(wave, [quiet_child], OFFLINE, Limits())
+
+    assert quiet_child.stopped_because is None, "a busy child was stopped for being quiet"
+    assert quiet_child.running
+    assert wave.failures == []
+    assert wave.quiet == {"GRPH-A7": 0.0}, "it should be REPORTED as quiet, not acted on"
+
+
+def test_a_child_quiet_past_the_bound_is_stopped(quiet_child):
+    """The control. Without it the fix above is indistinguishable from deleting the
+    backstop, which would lose the revocation case D-d exists for."""
+    from gbfleet.supervisor import Limits, Wave, _catch_the_disowned
+
+    wave = Wave()
+    limits = Limits(disowned_after=60.0)
+    _catch_the_disowned(wave, [quiet_child], OFFLINE, limits)      # starts the clock
+    quiet_child.offline_since = time.monotonic() - 61.0            # ...and it runs out
+    _catch_the_disowned(wave, [quiet_child], OFFLINE, limits)
+
+    assert quiet_child.stopped_because is Reason.SEAT_GONE
+    assert len(wave.failures) == 1, wave.failures
+    assert "61s" in wave.failures[0], f"the failure must say how long it was quiet: {wave.failures[0]}"
+    assert "60s allowed" in wave.failures[0]
+    assert "cannot tell which" in wave.failures[0], (
+        "the message must not assert a cause the supervisor cannot prove"
+    )
+    assert "GRPH-A7" not in wave.quiet, "a stopped child should not still be listed as quiet"
+
+
+def test_a_child_that_comes_back_forgets_its_quiet_spell(quiet_child):
+    """Two unrelated silences must not be summed. A child that goes quiet for a long test
+    run, reports in, then goes quiet again is not approaching a deadline."""
+    from gbfleet.supervisor import Limits, Wave, _catch_the_disowned
+
+    limits = Limits(disowned_after=60.0)
+    wave = Wave()
+    _catch_the_disowned(wave, [quiet_child], OFFLINE, limits)
+    quiet_child.offline_since = time.monotonic() - 59.0    # nearly out of time
+
+    _catch_the_disowned(wave, [quiet_child], WORKING, limits)      # ...then it heartbeats
+
+    assert quiet_child.offline_since is None, "the quiet spell was not forgotten"
+    assert "GRPH-A7" not in wave.quiet, (
+        "the wave still reports a child as quiet after it started heartbeating again"
+    )
+
+    _catch_the_disowned(wave, [quiet_child], OFFLINE, limits)      # quiet again, from zero
+    assert quiet_child.stopped_because is None, (
+        "two unrelated quiet spells were summed into one deadline"
+    )
+
+
+def test_a_vanished_agent_is_stopped_at_once_with_no_grace(quiet_child):
+    """The unambiguous half keeps its old behaviour, and must not inherit the bound.
+
+    A server that is answering and does not list the id has dismissed it — there is no
+    other reading, so waiting would only spend money to reach the same conclusion.
+    """
+    from gbfleet.supervisor import Limits, Wave, _catch_the_disowned
+
+    wave = Wave()
+    _catch_the_disowned(wave, [quiet_child], {"agents": []}, Limits(disowned_after=99_999.0))
+
+    assert quiet_child.stopped_because is Reason.SEAT_GONE
+    assert "no longer lists this agent" in wave.failures[0]
