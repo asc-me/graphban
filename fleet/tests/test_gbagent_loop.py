@@ -227,6 +227,22 @@ def test_bad_arguments_name_the_schema_rather_than_crashing(wt):
     assert "bad arguments" in result.content and "path" in result.content
 
 
+def test_a_defect_INSIDE_a_tool_is_not_reported_as_the_models_mistake(wt):
+    """A TypeError from binding and a TypeError from a bug in the tool are the same type.
+
+    Reporting the second as "bad arguments" sends the model round the loop trying different
+    arguments until the budget runs out, and hides a real defect behind a plausible refusal.
+    An adapter fault should read as one.
+    """
+    ts = _toolset(wt)
+    ts._do_read_file = lambda path, start=1, count=0: None + 1  # type: ignore[assignment]
+
+    with pytest.raises(TypeError):
+        ts.execute(ToolCall(id="c", name="read_file", input={"path": "README.md"}))
+
+    assert ts.refusals == 0, "this was not a refusal, and must not be counted as one"
+
+
 def test_a_successful_call_is_not_marked_an_error(wt):
     result = _toolset(wt).execute(ToolCall(id="c", name="read_file", input={"path": "README.md"}))
 

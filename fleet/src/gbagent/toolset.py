@@ -20,6 +20,7 @@ actually ran — not what the model claimed in prose.
 """
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -129,11 +130,14 @@ class Toolset:
                 ),
                 is_error=True,
             )
+        # Arguments are bound BEFORE the call, so a TypeError raised *inside* a tool is not
+        # laundered into "you passed bad arguments". Those two are indistinguishable by type,
+        # and reporting our own defect as the model's mistake would send it round the loop
+        # trying different arguments until the budget ran out. A tool that raises TypeError
+        # internally is an adapter fault and should read as one — a crash (D6).
         try:
-            return ToolResult(id=call.id, content=handler(**call.input))
+            bound = inspect.signature(handler).bind(**call.input)
         except TypeError as exc:
-            # Wrong or missing arguments. Naming the schema again is cheaper than a turn spent
-            # guessing which argument was wrong.
             self.refusals += 1
             return ToolResult(
                 id=call.id,
@@ -141,6 +145,8 @@ class Toolset:
                         f"{sorted(next(s for s in SPECS if s.name == call.name).input_schema['properties'])}",
                 is_error=True,
             )
+        try:
+            return ToolResult(id=call.id, content=handler(*bound.args, **bound.kwargs))
         except ToolError as exc:
             # Includes OutsideWorktree, which subclasses it. This is the refusal D2 promises
             # reaches the model as something it can correct.
