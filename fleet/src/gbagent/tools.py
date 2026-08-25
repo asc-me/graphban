@@ -10,9 +10,15 @@ budget. This module is the third: read, list, grep, write, edit.
 shell at all (D4). The rule for changing that: somebody names a task that genuinely cannot be
 done without one, and records it. Not "it would be convenient".
 
-**Every path goes through `safe_path`.** A tool that takes a path and does not is a hole in the
-one property this agent has over a vendor child, so there is exactly one way in and it is the
-first line of every function here.
+**Every path goes through `safe_path` — including the ones nobody passed in.** A tool that
+takes a path and does not check it is a hole in the one property this agent has over a vendor
+child, so there is exactly one way in and it is the first line of every function here.
+
+That sentence used to be the whole story and it was not enough (GRPH-487). `grep` checked its
+argument and then walked to files nobody named, one of which was a symlink out of the tree —
+so the boundary held for the path the model asked about and not for the path it got back.
+**A tool that REACHES a path it was not given has to check that one too**, which is why the
+walk in `grep` re-checks every entry rather than trusting where it started.
 
 **Refusals are results.** Each raises `ToolError`, which the loop turns into a tool result the
 model reads and can correct — a wrong path should cost a turn, not the run.
@@ -22,7 +28,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .workspace import ToolError, safe_path
+from .workspace import OutsideWorktree, ToolError, safe_path
 
 #: Read caps. A model that asks for a 40 MB file has made a mistake, and answering it would
 #: blow the context window that D7's compaction is trying to protect.
@@ -100,6 +106,18 @@ def grep(root: Path, pattern: str, *, path: str = ".", glob: str = "*") -> dict:
 
     Skips `.git` and anything unreadable rather than failing the call: a search that dies on
     one binary blob has spent a turn to tell the model nothing.
+
+    **Every file the walk REACHES is checked, not just the path it was given** (GRPH-487).
+    `safe_path` on the argument only proves where the search STARTS. `rglob` then yields
+    whatever is under there, and a symlink to a file outside the worktree is an ordinary
+    entry: it is not a directory, so nothing skipped it, and `read_text` followed it happily.
+    The result was that `read_file` refused a path and `grep` printed the contents of the
+    same file, which is a boundary in one tool and a suggestion in the other.
+
+    Directories were never the hole — `rglob` does not descend into symlinked directories and
+    the `is_dir()` skip drops them anyway. It was symlinks to FILES, which is the one shape
+    the original fixture did not build. pnpm stores, bazel-* convenience links and venv links
+    are all exactly that shape in ordinary trees.
     """
     base = safe_path(root, path)
     try:
@@ -115,6 +133,13 @@ def grep(root: Path, pattern: str, *, path: str = ".", glob: str = "*") -> dict:
         if len(hits) >= MAX_GREP_HITS:
             break
         if f.is_dir() or ".git" in f.parts:
+            continue
+        try:
+            safe_path(root, str(f))
+        except OutsideWorktree:
+            # Reached through a symlink that leaves the worktree. Skipped rather than
+            # raised: one stray link in a tree must not fail an otherwise good search,
+            # for the same reason an unreadable blob does not.
             continue
         try:
             content = f.read_text(encoding="utf-8")

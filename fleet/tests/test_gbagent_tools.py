@@ -226,3 +226,76 @@ def test_every_tool_goes_through_the_boundary(wt, fn, args):
     kwargs = {"path": "../../etc"} if fn is tools.grep else {}
     with pytest.raises(OutsideWorktree):
         fn(wt, *args, **kwargs)
+
+
+# ---- the walk, not just the argument (GRPH-487) ----------------------------------------
+#
+# `safe_path` on grep's `path` argument proves where the search STARTS. It says nothing
+# about what `rglob` then reaches. A symlink to a FILE outside the worktree is an ordinary
+# entry — not a directory, so nothing skips it — and it was read and printed.
+#
+# The original fixture's `escape` symlink points at a DIRECTORY, which is why 27 tests and
+# a 7-mutation sabotage all passed over this: rglob does not descend into symlinked
+# directories and `is_dir()` drops them, so the outward target was never reached. The one
+# shape that escapes was the one shape not built.
+
+
+@pytest.fixture()
+def linked(tmp_path: Path) -> Path:
+    """A worktree with a symlink to a FILE outside it — the shape that escapes."""
+    root = tmp_path / "wt"
+    root.mkdir()
+    (root / "ok.py").write_text("nothing to see\n")
+    (tmp_path / "secret.txt").write_text("SUPER_SECRET_TOKEN=hunter2\n")
+    os.symlink(tmp_path / "secret.txt", root / "leak.txt")
+    return root
+
+
+def test_read_file_refuses_a_symlink_that_leaves_the_worktree(linked):
+    """The control, and the reason the gap was visible at all: the boundary DOES hold for
+    the tool that takes the path as an argument. Two tools disagreeing about one path is
+    what makes this a defect rather than a design choice."""
+    with pytest.raises(OutsideWorktree):
+        tools.read_file(linked, "leak.txt")
+
+
+def test_grep_does_not_return_the_contents_of_a_file_outside_the_worktree(linked):
+    """The same worktree, the same path, the other tool."""
+    hits = tools.grep(linked, "SUPER_SECRET_TOKEN")["hits"]
+
+    assert hits == [], f"grep read outside the worktree: {hits}"
+
+
+def test_grep_still_finds_what_is_genuinely_inside(linked):
+    """The control for the control. Without it the fix above is satisfied by a grep that
+    returns nothing at all, which would pass every assertion and break the tool."""
+    (linked / "inside.py").write_text("SUPER_SECRET_TOKEN=mine\n")
+
+    hits = tools.grep(linked, "SUPER_SECRET_TOKEN")["hits"]
+
+    assert [h["path"] for h in hits] == ["inside.py"]
+
+
+def test_a_symlinked_directory_pointing_out_is_still_not_walked(wt):
+    """Directories were never the hole, and this pins that they stay closed. `escape` in the
+    shared fixture points at a directory holding secret.txt; rglob does not descend into
+    symlinked directories, so it was never reached even before the fix."""
+    hits = tools.grep(wt, "not yours")["hits"]
+
+    assert hits == []
+
+
+def test_the_escape_is_caught_in_a_SUBDIRECTORY_too(tmp_path: Path):
+    """A sabotage found this missing. Checking `f.name` instead of the full path passes
+    every test above, because at the worktree root the two are the same string.
+
+    One level down they are not: `f.name` for `sub/leak.txt` is `leak.txt`, which resolves
+    against the ROOT to a path that is comfortably inside — so the check says yes and the
+    symlink is read. The boundary has to be judged on where the file actually is.
+    """
+    root = tmp_path / "wt"
+    (root / "sub" / "deep").mkdir(parents=True)
+    (tmp_path / "secret.txt").write_text("SUPER_SECRET_TOKEN=hunter2\n")
+    os.symlink(tmp_path / "secret.txt", root / "sub" / "deep" / "leak.txt")
+
+    assert tools.grep(root, "SUPER_SECRET_TOKEN")["hits"] == []
