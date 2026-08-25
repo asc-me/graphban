@@ -2341,6 +2341,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "answers": done["answers"],
             "body_absorbed": absorption["absorbed"],
             "answers_body_has_not_absorbed": absorption["answers_behind"],
+            # Declared in this tool's outputSchema and promised by its description since
+            # GRPH-485, and dropped here until the conformance ratchet (GRPH-495) noticed.
+            # Without them a relaying agent still cannot tell a grader outage from a thin
+            # answer — the incident GRPH-485 exists to end.
+            "graded": done["graded"],
+            "ungraded_reason": done["ungraded_reason"],
         }
     if name == "grill_prd":
         prd = prd_svc.get_prd(db, args["prd_id"])
