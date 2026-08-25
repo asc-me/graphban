@@ -130,12 +130,46 @@ class Graphban:
                 "`gbagent.coord.WORKER_TOOLS` for the agent. Say why in the same commit."
             )
 
+        result = self._rpc("tools/call", {"name": tool, "arguments": arguments}, label=tool)
+
+        if result.get("isError"):
+            err = (result.get("structuredContent") or {}).get("error") or {}
+            raise ToolFailed(
+                tool,
+                code=str(err.get("code") or "error"),
+                message=str(err.get("message") or _text_of(result)),
+                hint=str(err.get("hint") or ""),
+            )
+
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            return structured
+        raise ProtocolError(f"{tool}: reply carried no structuredContent")
+
+    def list_tools(self) -> list[dict]:
+        """The server's own tool manifest — name, description and input schema.
+
+        **Listing is not calling**, which is why this does not consult `allowed`. The
+        allowlist governs what this credential may DO; the manifest is the same document
+        every MCP client fetches at connect, before it has a role at all (PRD-17 D-b: the
+        manifest is not trimmed by role, the call gate refuses instead).
+
+        `gbagent` fetches it so the orientation tools it advertises to a model carry the
+        SERVER's schemas rather than a second copy that goes stale. A declared duplicate of
+        eight tool schemas is a thing that drifts silently and is discovered as a model
+        calling with arguments nobody accepts.
+        """
+        tools = self._rpc("tools/list", {}, label="tools/list").get("tools")
+        return list(tools) if isinstance(tools, list) else []
+
+    def _rpc(self, method: str, params: dict, *, label: str) -> dict:
+        """The single outbound request. `call` checks the allowlist before reaching here."""
         request_id = next(self._ids)
         body = {
             "jsonrpc": "2.0",
             "id": request_id,
-            "method": "tools/call",
-            "params": {"name": tool, "arguments": arguments},
+            "method": method,
+            "params": params,
         }
         try:
             response = self._client().post(self.endpoint, json=body)
@@ -164,25 +198,12 @@ class Graphban:
             )
         if "error" in payload:
             err = payload["error"]
-            raise ProtocolError(f"{tool}: {err.get('code')}: {err.get('message')}")
+            raise ProtocolError(f"{label}: {err.get('code')}: {err.get('message')}")
 
         result = payload.get("result")
         if not isinstance(result, dict):
-            raise ProtocolError(f"{tool}: reply had no result object")
-
-        if result.get("isError"):
-            err = (result.get("structuredContent") or {}).get("error") or {}
-            raise ToolFailed(
-                tool,
-                code=str(err.get("code") or "error"),
-                message=str(err.get("message") or _text_of(result)),
-                hint=str(err.get("hint") or ""),
-            )
-
-        structured = result.get("structuredContent")
-        if isinstance(structured, dict):
-            return structured
-        raise ProtocolError(f"{tool}: reply carried no structuredContent")
+            raise ProtocolError(f"{label}: reply had no result object")
+        return result
 
     # Named conveniences. Each is one line through `call` — they exist so call sites
     # read well, and must never grow a request of their own.

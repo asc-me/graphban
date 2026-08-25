@@ -118,10 +118,10 @@ The supervisor tells surrender from failure by reading that, rather than by pars
 Exiting `0` on a give-up was rejected in D6: `ps` and the supervisor's record would show a
 clean finish for a run that achieved nothing.
 
-**What is not wired yet.** `gbagent run` cannot claim its own work — the coordination tools
-the model calls are not advertised, and `coord.WORKER_TOOLS` holds only what the loop itself
-initiates. It refuses at startup with exit 78 naming the slice that owns the gap, rather than
-starting, doing nothing useful and exiting 0.
+**What is not wired yet.** `gbagent run` can orient itself — the seven graph reads of PRD-24 S6
+are advertised from the server's own manifest — but it cannot CLAIM its own work: `claim_next`
+is deliberately absent from `coord.WORKER_TOOLS`. It refuses at startup with exit 78 naming the
+slice that owns the gap, rather than starting, doing nothing useful and exiting 0.
 
 ## Versions do not share a scheme
 

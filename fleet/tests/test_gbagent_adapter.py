@@ -229,8 +229,8 @@ def test_run_refuses_rather_than_starting_with_no_item(tmp_path, monkeypatch):
     )
 
     assert result.returncode == 78
-    assert "cannot claim its own work yet" in result.stderr
-    assert "GRPH-492" in result.stderr, "say which slice owns it"
+    assert "cannot yet " in result.stderr and "CLAIM" in result.stderr
+    assert "GRPH-493" in result.stderr, "say which slice owns it"
 
 
 def test_run_refuses_a_repository_it_cannot_verify(tmp_path):

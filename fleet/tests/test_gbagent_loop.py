@@ -484,11 +484,27 @@ def _mcp(payload: dict, id_: int = 1) -> httpx.Response:
 
 
 def test_the_worker_set_is_pinned_and_is_not_the_supervisors():
-    """A test that only asserts `sign_off not in WORKER_TOOLS` passes for every widening."""
+    """A test that only asserts `sign_off not in WORKER_TOOLS` passes for every widening.
+
+    Pinned as two halves rather than one flat list, because the halves mean different things:
+    the WRITES are what the loop itself initiates, and the READS are the orientation layer the
+    model calls. A new write appearing among the reads is the change worth noticing.
+    """
+    from gbagent.orient import ORIENTATION_TOOLS
     from gbfleet.client import ALLOWED_TOOLS
 
-    assert WORKER_TOOLS == frozenset({"update_item", "release_item"})
+    assert WORKER_TOOLS - set(ORIENTATION_TOOLS) == {"update_item", "release_item"}
+    assert set(ORIENTATION_TOOLS) <= WORKER_TOOLS
     assert not WORKER_TOOLS & ALLOWED_TOOLS, "a worker is not a supervisor"
+
+
+def test_the_agent_still_cannot_claim_or_judge_its_own_work():
+    """The set grew by eight in S6, and this is the assertion that says what it did NOT grow
+    by. The server refuses these anyway; the point of the allowlist is that widening is an
+    edit somebody has to explain."""
+    for forbidden in ("claim_next", "claim_review", "sign_off", "bounce", "mint_enrolment",
+                      "assign_role", "retire_wave"):
+        assert forbidden not in WORKER_TOOLS
 
 
 def test_the_agent_cannot_sign_off_its_own_work_at_the_client_either():

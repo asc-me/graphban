@@ -16,13 +16,24 @@ from dataclasses import dataclass
 
 from gbfleet.client import Graphban
 
+from .orient import ORIENTATION_TOOLS
+
 #: Every Graphban tool `gbagent` may call, pinned by `test_gbagent_loop.py`.
 #:
-#: This is S3's set and it is small on purpose: the give-up path (D6) writes a note and
-#: releases, and that is all the loop itself initiates. The tools the MODEL calls to
-#: claim work and move an item to review arrive with the slice that wires the coordination
-#: layer — and they should arrive by editing this line, which is the point of having it.
-WORKER_TOOLS: frozenset[str] = frozenset({"update_item", "release_item"})
+#: Two writes and eight reads, and the split is the point.
+#:
+#: The WRITES are what the loop itself initiates: the give-up path writes a note and releases
+#: (D6). The READS are S6's orientation layer, which the MODEL calls — every one of them
+#: answers "what is this code and what touches it" and none of them changes server state, so
+#: handing them to a weak model needs no further argument.
+#:
+#: Still absent, deliberately: `claim_next`, `sign_off`, `bounce`, `mint_enrolment`. The
+#: server refuses those to this credential anyway (`TOOL_ROLES` and `independent()`), and
+#: this set exists so that widening is an edit somebody has to explain rather than a call
+#: site added while doing something else.
+WORKER_TOOLS: frozenset[str] = frozenset(
+    {"update_item", "release_item", *ORIENTATION_TOOLS}
+)
 
 
 class HandoffFailed(RuntimeError):
