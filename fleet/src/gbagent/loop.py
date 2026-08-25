@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from . import compact as compaction
 from .coord import Coordinator, HandoffFailed
+from .heartbeat import Heartbeat
 from .llm import ToolTurn
 from .toolset import Toolset
 
@@ -101,6 +102,7 @@ def run(
     window: int,
     budget: int = DEFAULT_BUDGET,
     threshold: float = compaction.DEFAULT_THRESHOLD,
+    heartbeat: "Heartbeat | None" = None,
 ) -> Outcome:
     """Drive the loop until the model stops asking for tools, or the budget is spent.
 
@@ -130,6 +132,15 @@ def run(
     while turn.wants_tools and turn.tool_calls:
         if turns >= budget:
             return _give_up(coordinator, toolset, turns, budget, turn, compactions, first_write)
+        if heartbeat is not None and heartbeat.gone:
+            # The heartbeat thread heard the server say this agent's claim is gone
+            # (GRPH-496). Checked at the TURN BOUNDARY rather than acted on from the thread:
+            # interrupting a blocked subprocess from a daemon thread is a much larger
+            # decision, and the supervisor already stops disowned children. What this buys
+            # is that the child stops before spending ANOTHER 22-45 second turn, and leaves
+            # a note saying why instead of dying without one.
+            return _give_up(coordinator, toolset, turns, budget, turn, compactions,
+                            first_write, why=heartbeat.gone)
         session.add_results([toolset.execute(call) for call in turn.tool_calls])
         if first_write is None and toolset.written:
             # The turn the work started on. Recorded here rather than counted afterwards
