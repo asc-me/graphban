@@ -553,3 +553,74 @@ def test_release_names_the_agent_so_the_server_can_check_the_lease():
     Coordinator(client=_graphban(handler), item_id="GRPH-1", agent_id="agt_9").release()
 
     assert sent[0]["arguments"] == {"id": "GRPH-1", "agent_id": "agt_9"}
+
+
+# ---- a malformed turn is not a finish (GRPH-489) ----------------------------------------
+#
+# `wants_tools` is `finish_reason == "tool_calls" or bool(calls)`. That `or` exists because
+# local models stop with finish_reason "stop" while carrying tool calls — a disagreement
+# between the two fields that really happens. The mirror case is a finish_reason of
+# "tool_calls" carrying none, and the loop condition `wants_tools and turn.tool_calls` is
+# False for it, so it fell through and returned exit 0.
+#
+# Which is the outcome `exit_meaning`'s own docstring says D6 rejected: "ps and the
+# supervisor's record would show a clean finish for a run that achieved nothing."
+
+
+def _malformed() -> ToolTurn:
+    """finish_reason "tool_calls", no tool_calls carried. Empty closing text is the tell."""
+    return ToolTurn(text="", tool_calls=[], wants_tools=True)
+
+
+def test_a_turn_that_wants_tools_and_carries_none_is_not_a_finish(wt):
+    outcome = loop.run(FakeSession([_malformed()]), _toolset(wt),
+                       coordinator=FakeCoordinator(), window=100_000)
+
+    assert outcome.status != "finished", "a malformed turn was reported as a clean finish"
+    assert outcome.exit_code != loop.EXIT_OK
+    assert outcome.exit_code == loop.EXIT_STUCK
+
+
+def test_the_malformed_turn_still_writes_a_handoff_before_releasing(wt):
+    """It is a give-up, so it owes the same record any other give-up owes — and in the same
+    order, because release_item clears built_by on an untouched row (GRPH-434)."""
+    coord = FakeCoordinator()
+
+    outcome = loop.run(FakeSession([_malformed()]), _toolset(wt),
+                       coordinator=coord, window=100_000)
+
+    assert coord.order == ["write_handoff", "release"]
+    assert outcome.handoff, "no handoff note was written"
+
+
+def test_the_note_says_the_turn_was_malformed_rather_than_the_budget(wt):
+    """'gave up after 1 of 40 turns' with no explanation reads as a crash to whoever picks
+    the item up. The budget was nowhere near spent, and the note has to say so."""
+    outcome = loop.run(FakeSession([_malformed()]), _toolset(wt),
+                       coordinator=FakeCoordinator(), window=100_000)
+
+    assert "carried none" in outcome.handoff
+    assert "malformed turn" in outcome.handoff
+
+
+def test_a_real_finish_is_still_a_finish(wt):
+    """The control. Without it, 'never report finished' satisfies every assertion above and
+    the agent could never complete anything."""
+    outcome = loop.run(FakeSession([_done("all done")]), _toolset(wt),
+                       coordinator=FakeCoordinator(), window=100_000)
+
+    assert outcome.status == "finished"
+    assert outcome.exit_code == loop.EXIT_OK
+    assert outcome.handoff == ""
+
+
+def test_a_malformed_turn_AFTER_real_work_still_gives_up(wt):
+    """The realistic shape: the model works for a few turns, then emits a truncated tool
+    call. The turns it spent are real and the note must count them."""
+    session = FakeSession([_wants("read_file", path="a.py"), _malformed()])
+
+    outcome = loop.run(session, _toolset(wt), coordinator=FakeCoordinator(), window=100_000)
+
+    assert outcome.exit_code == loop.EXIT_STUCK
+    assert outcome.turns == 2
+    assert "2 of" in outcome.handoff
