@@ -85,6 +85,57 @@ _database_per_worker()
 import pytest
 from fastapi.testclient import TestClient
 
+from tests import schema_probe
+
+
+# ---- outputSchema conformance (GRPH-495) ---------------------------------------------
+#
+# Split across three hooks because the observation happens in workers and the verdict has to
+# be reached in the controller — the same shape pytest-cov uses to combine coverage data.
+# See tests/schema_probe.py for what is being checked and why it is observed rather than
+# read statically.
+
+
+def pytest_configure(config):
+    # The controller mints the directory; xdist workers inherit it through the environment
+    # when execnet spawns them. `setdefault` is what makes the worker keep the inherited
+    # value instead of minting a second one nobody reads.
+    os.environ.setdefault(schema_probe.ENV_DIR, schema_probe.make_dir())
+    schema_probe.install()
+
+
+def _is_full_run(config) -> bool:
+    """Was this the whole suite, or a selection?
+
+    Only a full run can demand that every tool was exercised. Running one file must not
+    fail because the other fifty tools did not happen — that would make the ratchet
+    something people learn to ignore, which is worse than not having it.
+    """
+    if config.option.keyword or config.option.markexpr:
+        return False
+    ini = config.getini("testpaths") or []
+    return all(arg in ("", ".", *ini) for arg in config.args)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    config = session.config
+    if hasattr(config, "workerinput"):   # an xdist worker: record and let the controller judge
+        schema_probe.dump()
+        return
+    schema_probe.dump()                  # serial run: this process is both halves
+    failures = schema_probe.report(_is_full_run(config))
+    if failures:
+        config._gb_schema_failures = failures
+        session.exitstatus = 1
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    failures = getattr(config, "_gb_schema_failures", None)
+    if failures:
+        terminalreporter.section("outputSchema conformance (GRPH-495)", red=True, bold=True)
+        for line in failures:
+            terminalreporter.write_line(line)
+
 
 @pytest.fixture(autouse=True)
 def _reset_rate_limit():

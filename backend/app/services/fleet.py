@@ -1143,7 +1143,10 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # adversarial evidence, and making the reviewer re-run what is already recorded would be
     # tax rather than rigour.
     fresh = items_svc.normalize_evidence(evidence or [])
-    merged = list(item.evidence or []) + fresh
+    # One appender for the whole codebase (GRPH-494). This path already appended; routing it
+    # through the shared helper is what makes "the record only grows" a property of the field
+    # rather than a habit each writer has to remember.
+    merged = items_svc.append_evidence(item.evidence, evidence or [])
     if needs_adversarial_evidence(item) and not items_svc.has_effective_sabotage(merged):
         vacuous = items_svc.vacuous_sabotages(merged)
         raise MissingAdversarialEvidence(

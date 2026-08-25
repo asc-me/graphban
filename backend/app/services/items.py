@@ -205,6 +205,41 @@ def normalize_evidence(raw) -> list[dict]:
     return out
 
 
+def append_evidence(existing, incoming) -> list[dict]:
+    """Add receipts to an item's record without removing any already there (GRPH-494).
+
+    **The record only grows.** `update_item(evidence=[...])` used to assign the incoming list
+    straight over the stored one, while `sign_off` and the superseded-intent receipt both
+    appended — one field, three writers, two meanings. The destructive one was the widest:
+    every agent has it. Recording an independent review verdict on GRPH-487 silently deleted
+    the author's test summary and 7-mutation sabotage receipt, and the item still read as
+    fully evidenced afterwards, because a populated array says nothing about what used to be
+    in it.
+
+    That is not merely a lost note. `fleet.sign_off` gates on `has_effective_sabotage` over
+    the STORED array, so deleting a builder's receipts can leave an item unsignable by its
+    own proof — and asks them to re-run sabotages to replace evidence nobody can see was
+    removed. There is no audit trail: `evidence` has no history.
+
+    So there is no way to remove a receipt through this path, deliberately. A wrong one is
+    corrected by adding a correcting receipt, which is what this repo already does in prose
+    (the GRPH-437 attribution notes, GRPH-340 keeping superseded counts in view) and which
+    leaves both the error and the correction readable. If a genuine need to delete ever
+    turns up, it wants an explicit destructive operation that says so — not the default
+    behaviour of the verb every agent calls to add a note.
+
+    **An identical receipt is a retry, not a second receipt.** `update_item` has no
+    idempotency key, so a call that times out after committing gets sent again; appending
+    blindly would double every receipt on a flaky link. Equality is on the normalised dict,
+    so two genuinely different receipts of the same kind both survive.
+    """
+    out = list(existing or [])
+    for row in normalize_evidence(incoming):
+        if row not in out:
+            out.append(row)
+    return out
+
+
 def sabotage_receipts(evidence) -> list[dict]:
     """Every well-formed sabotage receipt on an item."""
     return [e for e in (evidence or [])
@@ -266,7 +301,9 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
     if fields.get("evidence") is not None:
-        item.evidence = normalize_evidence(fields["evidence"])
+        # Appends. See `append_evidence` — a write here must never remove a receipt somebody
+        # else left, because `sign_off` gates on the stored ones (GRPH-494).
+        item.evidence = append_evidence(item.evidence, fields["evidence"])
     db.commit()
     db.refresh(item)
 
@@ -369,7 +406,7 @@ def _record_superseded_intent(db: Session, item: Item, hold: dict | None) -> Non
     """
     if hold is None:
         return
-    item.evidence = (item.evidence or []) + normalize_evidence([{
+    item.evidence = append_evidence(item.evidence, [{
         "kind": "note",
         "detail": (f"Completed against superseded intent: work started under "
                    f"{hold['started_against']}, the governing baseline is now "
