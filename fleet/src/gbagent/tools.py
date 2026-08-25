@@ -33,7 +33,13 @@ MAX_LIST_ENTRIES = 500
 
 def _text(path: Path, label: str) -> str:
     if not path.exists():
-        raise ToolError(f"{label}: no such file")
+        # The hint is not decoration: a live run against `qwen3-coder:30b` asked for `calc.py`
+        # when the file was `backend/calc.py`, having taken the test command's `cwd` for the
+        # root. A refusal the model can act on costs one turn; one it cannot costs the run.
+        raise ToolError(
+            f"{label}: no such file. Paths are relative to the WORKTREE ROOT, not to the "
+            "test command's working directory — use list_dir to see what is there."
+        )
     if path.is_dir():
         raise ToolError(f"{label}: is a directory — use list_dir")
     size = path.stat().st_size

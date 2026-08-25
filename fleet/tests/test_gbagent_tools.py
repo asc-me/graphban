@@ -155,6 +155,17 @@ def test_reading_something_enormous_refuses_rather_than_answering(wt, monkeypatc
     assert "grep" in str(exc.value), "the refusal should say what to do instead"
 
 
+def test_a_missing_file_says_what_paths_are_relative_TO(wt):
+    """From a live run: `qwen3-coder:30b` asked for `calc.py` when the file was
+    `backend/calc.py`, having taken the declared test command's `cwd` for the worktree root.
+    A refusal the model can act on costs one turn; one it cannot costs the run."""
+    with pytest.raises(ToolError) as exc:
+        tools.read_file(wt, "items.py")
+
+    assert "WORKTREE ROOT" in str(exc.value)
+    assert "list_dir" in str(exc.value), "say what to do next"
+
+
 def test_list_dir_names_kinds(wt):
     names = {e["name"]: e["kind"] for e in tools.list_dir(wt, ".")["entries"]}
 

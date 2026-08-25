@@ -100,7 +100,21 @@ def test_the_refusal_says_what_to_do_about_it():
 # --- no second door ---------------------------------------------------------------
 
 
-def test_only_one_function_in_the_package_makes_a_request():
+#: Every module permitted to open a socket, and the counterpart it may reach. Pinned by exact
+#: equality below, so a third door fails a test rather than passing review.
+#:
+#: There are two because the distribution holds two programs. The supervisor talks to Graphban
+#: holding a credential with authority, and every such call is checked against an allowlist.
+#: `gbagent` (PRD-24 S3) talks to a model endpoint, which has authority over nothing: it cannot
+#: claim work, sign off, or move an item. When `gbagent` needs Graphban it goes through
+#: `client.py` like everything else, with a worker's allowlist rather than the supervisor's.
+NETWORK_DOORS = {
+    "gbfleet/client.py": "Graphban, through the checked allowlist",
+    "gbagent/llm.py": "a local model endpoint, which holds no authority",
+}
+
+
+def test_only_the_named_doors_make_requests():
     """The structural half of the guarantee.
 
     An allowlist is decoration if any other module can reach httpx directly, and that
@@ -109,15 +123,41 @@ def test_only_one_function_in_the_package_makes_a_request():
     """
     offenders: list[str] = []
     for path in sorted(FLEET_SRC.rglob("*.py")):
-        if path.name == "client.py":
+        if path.relative_to(FLEET_SRC).as_posix() in NETWORK_DOORS:
             continue
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if re.search(r"\bhttpx\b|\brequests\b|\burllib\b|\bhttp\.client\b", line):
                 offenders.append(f"{path.relative_to(FLEET_SRC)}:{lineno}: {line.strip()}")
     assert not offenders, (
-        "only gbfleet/client.py may talk to the network, so the allowlist has one door:\n"
+        "only these modules may talk to the network:\n"
+        + "\n".join(f"  {k} -> {v}" for k, v in NETWORK_DOORS.items())
+        + "\n\noffenders:\n"
         + "\n".join(offenders)
     )
+
+
+def test_the_set_of_doors_is_exactly_two():
+    """`not in NETWORK_DOORS` passes for every widening of NETWORK_DOORS, so the set itself is
+    pinned. Adding a door should be an edit somebody has to explain, which is the same argument
+    `ALLOWED_TOOLS` is pinned by exact equality above."""
+    assert set(NETWORK_DOORS) == {"gbfleet/client.py", "gbagent/llm.py"}
+    for door in NETWORK_DOORS:
+        assert (FLEET_SRC / door).is_file(), f"{door} is named as a door but does not exist"
+
+
+def test_the_model_door_cannot_reach_graphban():
+    """What keeps the second door narrow.
+
+    The Graphban allowlist would be worth nothing if the module exempted from the httpx guard
+    could also post to `/api/mcp`. It talks to a model endpoint and nothing else, and this is
+    the assertion rather than the docstring that says so.
+    """
+    source = (FLEET_SRC / "gbagent" / "llm.py").read_text(encoding="utf-8").lower()
+
+    for forbidden in ("api/mcp", "x-api-key", "tools/call", "graphban.call"):
+        assert forbidden not in source, (
+            f"gbagent/llm.py mentions {forbidden!r} — the model door must not reach Graphban"
+        )
 
 
 def test_every_named_helper_goes_through_the_checked_call():
