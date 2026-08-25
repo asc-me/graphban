@@ -1,0 +1,12 @@
+# How this repository is verified, for PRD-24's local coding agent (gbagent).
+#
+# Declared, never discovered. `gbagent` refuses to spawn without this file rather than
+# guessing a test command — guessing is the same class of mistake as guessing a vendor flag,
+# and the failure mode is a child that runs, does the wrong thing, and blames the vendor.
+#
+# Written as a PATH, not a bare name: AGENTS.md says outright that pytest is NOT on the host
+# PATH here. A `which`-only check would refuse this repository.
+
+[tests]
+command = "./.venv/bin/python -m pytest -q"
+cwd = "backend"
