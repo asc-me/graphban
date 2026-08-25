@@ -22,6 +22,10 @@ dependencies = [
 # `graphban` and `agentledger` are both already claimed by backend/pyproject.toml, so a
 # distinct entry point is required regardless of where this package lives (PRD-22 D-e).
 gbfleet = "gbfleet.cli:main"
+# The first-party coding agent (PRD-24 D8). A separate entry point rather than a
+# `gbfleet` subcommand because the supervisor RESOLVES it like any other vendor binary:
+# `adapters/gbagent.py` looks it up on PATH and checks its version before spawning.
+gbagent = "gbagent.cli:main"
 
 [project.optional-dependencies]
 dev = [

@@ -15,11 +15,14 @@ on PATH is a different act; `--binary` overrides it.
 | vendor | version seen | range | MCP config | prompt reaches the child by | seat inside the worktree? |
 |---|---|---|---|---|---|
 | `claude` | `2.1.233 (Claude Code)` | 2.0 – 3.0 | `--mcp-config <path>` | stdin | **no** — private temp file |
+| `gbagent` | `gbagent 0.1.0` | **exactly `0.1.0`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
 | `cursor-agent` | `2026.04.17-787b533` | 2026.1 – 2027.1 | none; reads `.cursor/mcp.json` from the project dir | stdin | **yes** — forced |
 | `grok` | `grok 1.0.5 (5115b46bc909) [stable]` | 1.0 – 2.0 | user-level `~/.grok/config.toml`; **unresolved** | `--prompt-file <path>` | yes — `.grok/mcp.json`, see below |
 | `codex` | — | — | — | — | **not implemented** |
 
 Every row above was read off a binary that was actually run on macOS, except `codex`.
+`gbagent` is the one first-party row — see below for why its version column looks different
+from the rest.
 
 ## Naming a model (GRPH-483)
 
@@ -35,6 +38,7 @@ Omit it and the argv is byte-identical to before this existed.
 | `claude` | `--model <model>` — alias (`opus`, `sonnet`, `fable`) or full name | **no.** No listing flag exists, so a named model is passed through UNCHECKED and the vendor is what refuses it |
 | `cursor-agent` | `--model <model>` | **sometimes.** `--list-models` works, but an account with no entitlements answers *"No models available for this account"* — a fact about the account, not the model, so that case passes through too |
 | `grok` | `-m <MODEL>` (also `--model`) | **yes.** `grok models` enumerated `grok-4.6` (default) and `grok-4.5` on the machine this was written on |
+| `gbagent` | `--model <model>` | **when an endpoint is configured.** `gbagent models` asks it what it serves; with no `GBAGENT_BASE_URL` there is nothing to ask and the model passes through |
 
 **Checked and unchecked must not read the same.** A validated model and one nobody could
 verify are different states, and collapsing them would let `claude` look as guarded as
@@ -60,6 +64,7 @@ for cheap reasoning and pay for expensive: the setting evaporates, the bill does
 | `claude` | `--fallback-model <a,b>` | no — no listing flag exists to check a name against |
 | `grok` | `--reasoning-effort <effort>` (alias `--effort`) | no — see below |
 | `cursor-agent` | none | n/a; either knob is refused |
+| `gbagent` | `--turns <n>` and `--window <tokens>` | n/a — neither is a name to validate, and neither has a default anywhere |
 
 **Both exist because a spawned child is unattended.** An overloaded model on an interactive
 session is a wait; on a child it is a dead registration window — the process starts, cannot
@@ -72,6 +77,51 @@ enumerates nothing, and `grok --reasoning-effort bogus-value models` is accepted
 complaint. So the accepted set is not discoverable from the binary, and declaring one here
 would be exactly the fabrication `codex.py` refuses to make. It passes through unchecked and
 this table says so.
+
+## `gbagent` — the first-party adapter (PRD-24 D8)
+
+It sits in the registry on the same terms as the rest and gets no special handling in
+`resolve()`. G4: deleting it must change nothing about how the fleet is arbitrated. Being
+ours buys better flags, not authority.
+
+**Its version is an exact pin rather than a range, and that is not tidiness.** The range
+machinery exists because three vendors release on their own schedules and we find out
+afterwards. `gbagent` ships in this same wheel as the supervisor, so the only mismatch that
+can occur is a `gbagent` on `PATH` from a **different install** — and a range would accept
+exactly that. The pin is read from `gbfleet.__version__` rather than written out, because a
+literal would refuse the next release the moment somebody bumped one file and not the other.
+
+*Releasing bumps this table.* `verified_against` is the version the suite actually resolved,
+and for this row it is re-verified on every CI run rather than observed once on a laptop —
+`test_adapters.py` runs the real binary. When the package version changes, the `0.1.0` above
+changes with it, and a test says so rather than letting the matrix go quietly stale.
+
+**Two knobs, neither of them a name to check.** `--turns` is the budget from D6 (one turn is
+22–45s against a local model) and `--window` is the model's context size, of which compaction
+takes 70% (D7). Neither has a default in `loop.run` and neither gets one here: assume the
+window too large and a run dies of an overflow compaction could have prevented; assume it too
+small and it compacts constantly and throws away the 262k that made a local model worth using.
+
+**Exit codes mean something here, because they are ours to define.** `exit_meaning()` reads
+them out of `gbagent.loop` so there is one definition rather than two that drift:
+
+| code | meaning |
+| --- | --- |
+| `0` | finished — the normal end of a worker's life (D-c) |
+| `75` | stuck: turn budget spent, evidence written, item released, worktree salvaged |
+| `70` | the handoff note could not be written, so the item was **not** released |
+| `78` | refused before starting — no `.gbagent.toml`, no endpoint, unreadable seat |
+| `69` | the model endpoint could not be reached |
+| other | crash |
+
+The supervisor tells surrender from failure by reading that, rather than by parsing stderr.
+Exiting `0` on a give-up was rejected in D6: `ps` and the supervisor's record would show a
+clean finish for a run that achieved nothing.
+
+**What is not wired yet.** `gbagent run` cannot claim its own work — the coordination tools
+the model calls are not advertised, and `coord.WORKER_TOOLS` holds only what the loop itself
+initiates. It refuses at startup with exit 78 naming the slice that owns the gap, rather than
+starting, doing nothing useful and exiting 0.
 
 ## Versions do not share a scheme
 
@@ -90,7 +140,8 @@ different thing from publishing a live seat to `ps`.
 
 - The **API key** lives in the MCP config file, written 0600.
 - The **enrolment code** lives in the instruction file, written 0600, and reaches the
-  child on **stdin** (`claude`, `cursor-agent`) or by **path** (`grok --prompt-file`).
+  child on **stdin** (`claude`, `cursor-agent`) or by **path** (`grok --prompt-file`,
+  `gbagent --instruction-file`).
 - argv carries only paths and a generic pointer sentence that says "follow the
   instructions on standard input".
 
