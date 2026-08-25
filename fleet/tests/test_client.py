@@ -160,6 +160,17 @@ def test_the_model_door_cannot_reach_graphban():
         )
 
 
+#: Public methods that legitimately do NOT route through the allowlist-checked `call`.
+#: Pinned by exact equality, so a second one is an edit somebody has to justify.
+#:
+#: `list_tools` fetches `tools/list`, and **listing is not calling**. The allowlist governs
+#: what a credential may DO; the manifest is the same document every MCP client fetches at
+#: connect, before it has a role at all (PRD-17 D-b — the manifest is not trimmed by role,
+#: the call gate refuses instead). Routing it through `call` would mean putting a
+#: pseudo-tool name in every allowlist to permit reading a public document.
+NOT_TOOL_CALLS = {"list_tools"}
+
+
 def test_every_named_helper_goes_through_the_checked_call():
     """The other way round the allowlist: a helper that built its own request would be
     unchecked while looking exactly like the ones that are not."""
@@ -172,7 +183,7 @@ def test_every_named_helper_goes_through_the_checked_call():
         for n in cls.body
         if isinstance(n, ast.FunctionDef)
         and not n.name.startswith("_")
-        and n.name not in {"call", "close", "endpoint"}
+        and n.name not in {"call", "close", "endpoint"} | NOT_TOOL_CALLS
     ]
     assert helpers, "no helpers found — this test would pass vacuously"
 
@@ -184,6 +195,39 @@ def test_every_named_helper_goes_through_the_checked_call():
         ]
         assert "call" in calls, f"{helper.name} does not route through call()"
         assert "post" not in calls, f"{helper.name} makes its own request"
+
+
+def test_the_exemptions_from_the_allowlist_are_exactly_one():
+    """`not in NOT_TOOL_CALLS` passes for every widening of NOT_TOOL_CALLS, so the set is
+    pinned. The next method that skips the check should be an edit with a reason attached."""
+    assert NOT_TOOL_CALLS == {"list_tools"}
+
+
+def test_listing_the_manifest_cannot_invoke_anything():
+    """The reason the exemption is safe. `tools/list` takes no tool name, so there is no
+    argument through which it could become a call — this asserts that rather than trusting
+    the method name."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": seen["id"],
+                                         "result": {"tools": [{"name": "search_code"}]}})
+
+    tools = _server(handler).list_tools()
+
+    assert seen["method"] == "tools/list"
+    assert seen["params"] == {}, "no name, no arguments, nothing to invoke"
+    assert [t["name"] for t in tools] == ["search_code"]
+
+
+def test_a_manifest_reply_without_tools_is_empty_rather_than_a_crash():
+    """A server that answers something unexpected must not take down a run before it starts;
+    `orient.build` is what decides an empty manifest is fatal, and it says so by name."""
+    empty = _server(lambda r: httpx.Response(
+        200, json={"jsonrpc": "2.0", "id": 1, "result": {}}))
+
+    assert empty.list_tools() == []
 
 
 def test_the_helpers_cover_the_permitted_set():

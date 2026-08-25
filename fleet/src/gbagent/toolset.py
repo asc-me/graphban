@@ -104,6 +104,10 @@ class Toolset:
 
     root: Path
     cfg: VerifyConfig
+    #: The graph layer (S6), or None when this agent has no server to ask. Advertised BEFORE
+    #: the execution tools, because the order a model reads a tool list in is the cheapest
+    #: nudge available and the whole point of D1 is that it reaches for the graph first.
+    orientation: object | None = None
     #: The last `run_tests` outcome, as returned by `verify.run_tests`. `None` means the tests
     #: were never run — which is NOT the same as a clean run, and the handoff note says so.
     last_tests: dict | None = None
@@ -115,10 +119,14 @@ class Toolset:
 
     @property
     def specs(self) -> list[ToolSpec]:
-        return SPECS
+        if self.orientation is None:
+            return SPECS
+        return [*self.orientation.specs, *SPECS]
 
     def execute(self, call: ToolCall) -> ToolResult:
         """Run one tool call. Never raises for anything the model did wrong."""
+        if self.orientation is not None and self.orientation.handles(call.name):
+            return self.orientation.execute(call)
         handler = getattr(self, f"_do_{call.name}", None)
         if handler is None or not call.name:
             self.refusals += 1
@@ -126,7 +134,7 @@ class Toolset:
                 id=call.id,
                 content=(
                     f"no tool named {call.name!r}. Available: "
-                    + ", ".join(s.name for s in SPECS)
+                    + ", ".join(spec.name for spec in self.specs)
                 ),
                 is_error=True,
             )

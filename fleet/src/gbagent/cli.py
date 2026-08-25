@@ -9,10 +9,10 @@ round — a model name that did not exist, found days later as a grill that woul
 The adapter cannot ask an endpoint itself (only two modules in this package may open a socket),
 so it shells out to here.
 
-**`run` refuses when it has no item.** Claiming work is coordination, and the coordination
-tools the MODEL calls are not wired yet — `coord.WORKER_TOOLS` holds only what the loop itself
-initiates. Rather than start, do nothing useful and exit 0, it says which slice owns the gap.
-A child that starts and quietly achieves nothing is the failure PRD-22 keeps naming.
+**`run` refuses when it has no item.** It can orient itself — S6 advertises the graph reads —
+but `claim_next` is deliberately absent from `coord.WORKER_TOOLS`, so it cannot pick up its own
+work. Rather than start, do nothing useful and exit 0, it says which slice owns the gap. A
+child that starts and quietly achieves nothing is the failure PRD-22 keeps naming.
 """
 from __future__ import annotations
 
@@ -28,18 +28,22 @@ from . import loop
 from .config import ConfigRefused, load
 from .coord import Coordinator
 from .llm import ModelUnreachable, OllamaSession
+from .orient import INSTRUCTION as ORIENT_INSTRUCTION, OrientationUnavailable, build as build_orientation
 from .toolset import Toolset
 
 #: Where the model endpoint lives. Named, never discovered — the same argument D3 makes
 #: about the test command.
 BASE_URL_ENV = "GBAGENT_BASE_URL"
 
+#: What the model is told before anything else. Two jobs: say what it cannot do, so it does
+#: not spend 30-second turns finding out, and say what to reach for FIRST (S6).
 SYSTEM = (
     "You are gbagent, an unattended coding agent working inside one git worktree.\n"
     "Use the tools. Do not narrate what you are about to do — do it.\n"
     "Paths are relative to the worktree root. You cannot write outside it and you have no "
     "shell; run_tests runs the command this repository declares.\n"
-    "When the tests pass, say DONE and stop calling tools."
+    "\n" + ORIENT_INSTRUCTION + "\n"
+    "\nWhen the tests pass, say DONE and stop calling tools."
 )
 
 
@@ -88,9 +92,10 @@ def _run(args: argparse.Namespace) -> int:
 
     if not args.item:
         print(
-            "gbagent: no item to work on. This agent cannot claim its own work yet — the "
-            "coordination tools the model calls are not wired (GRPH-492/493). Pass --item "
-            "with an id somebody already claimed for it.",
+            "gbagent: no item to work on. This agent can ORIENT itself (S6) but cannot yet "
+            "CLAIM — `claim_next` is deliberately absent from coord.WORKER_TOOLS, and making "
+            "it work end to end is the acceptance walk (GRPH-493). Pass --item with an id "
+            "somebody already claimed for it.",
             file=sys.stderr,
         )
         return 78
@@ -102,14 +107,19 @@ def _run(args: argparse.Namespace) -> int:
         return 78
 
     task = Path(args.instruction_file).read_text(encoding="utf-8") if args.instruction_file else ""
-    toolset = Toolset(root=root, cfg=cfg)
+    coordinator = Coordinator.connect(base_url, api_key, item_id=args.item,
+                                      agent_id=args.agent_id)
+    try:
+        orientation = build_orientation(coordinator.client)
+    except OrientationUnavailable as exc:
+        print(f"gbagent: {exc}", file=sys.stderr)
+        return 78
+    toolset = Toolset(root=root, cfg=cfg, orientation=orientation)
     session = OllamaSession(
         args.base_url, args.model,
         system=SYSTEM,
         task=f"{task}\n\nYou are working on {args.item}.".strip(),
     )
-    coordinator = Coordinator.connect(base_url, api_key, item_id=args.item,
-                                      agent_id=args.agent_id)
     try:
         outcome = loop.run(session, toolset, coordinator=coordinator,
                            window=args.window, budget=args.turns)
@@ -119,8 +129,13 @@ def _run(args: argparse.Namespace) -> int:
     finally:
         session.close()
 
+    # `None`, not 0, when it never wrote — see docs/prd-24-orientation-metric.md. A run that
+    # read for forty turns and changed nothing must not average in as the best one.
+    first = outcome.turns_to_first_write
     print(f"gbagent: {outcome.status} after {outcome.turns} turns "
-          f"({outcome.compactions} compaction(s)) — {outcome.meaning}", file=sys.stderr)
+          f"({outcome.compactions} compaction(s), {orientation.calls} graph call(s), "
+          f"first write on turn {first if first is not None else 'NEVER'}) — {outcome.meaning}",
+          file=sys.stderr)
     return outcome.exit_code
 
 

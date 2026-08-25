@@ -82,6 +82,10 @@ class Outcome:
     handoff: str = ""
     #: How many times the context was compacted (D7). Zero on a run that never came close.
     compactions: int = 0
+    #: The turn on which this run first CHANGED something. `None` means it never did, which
+    #: is not turn zero — see `docs/prd-24-orientation-metric.md`. This is the orientation
+    #: number: how many 22-45 second turns went by before the work started.
+    turns_to_first_write: int | None = None
     usage: dict = field(default_factory=dict)
 
     @property
@@ -121,10 +125,16 @@ def run(
     turns = 1
     compactions = 0
 
+    first_write: int | None = None
+
     while turn.wants_tools and turn.tool_calls:
         if turns >= budget:
-            return _give_up(coordinator, toolset, turns, budget, turn, compactions)
+            return _give_up(coordinator, toolset, turns, budget, turn, compactions, first_write)
         session.add_results([toolset.execute(call) for call in turn.tool_calls])
+        if first_write is None and toolset.written:
+            # The turn the work started on. Recorded here rather than counted afterwards
+            # because the toolset only knows THAT a write happened, not when.
+            first_write = turns
         compactions += _maybe_compact(session, turn, window, threshold)
         turn = session.run_turn(specs)
         turns += 1
@@ -136,6 +146,7 @@ def run(
         text=turn.text,
         usage=turn.usage or {},
         compactions=compactions,
+        turns_to_first_write=first_write,
     )
 
 
@@ -167,7 +178,7 @@ def _maybe_compact(session, turn: ToolTurn, window: int, threshold: float) -> in
 
 def _give_up(
     coordinator: Coordinator, toolset: Toolset, turns: int, budget: int, turn: ToolTurn,
-    compactions: int = 0,
+    compactions: int = 0, first_write: int | None = None,
 ) -> Outcome:
     """D6, in the one order that preserves the record: write, release, exit 75."""
     note = handoff_note(toolset, turns, budget, turn, compactions)
@@ -184,6 +195,7 @@ def _give_up(
             handoff=note,
             usage=turn.usage or {},
             compactions=compactions,
+            turns_to_first_write=first_write,
         )
     coordinator.release()
     return Outcome(
@@ -194,6 +206,7 @@ def _give_up(
         handoff=note,
         usage=turn.usage or {},
         compactions=compactions,
+        turns_to_first_write=first_write,
     )
 
 
