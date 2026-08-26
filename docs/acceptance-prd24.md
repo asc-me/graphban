@@ -229,6 +229,7 @@ missing credential. **That correction is worth more than the original finding.**
 | --- | --- | --- |
 | 1–3 | `qwen3-coder:30b` | 93 min, zero usable lines, three distinct failures |
 | 4 | `qwen3.6:35b-a3b-coding-mtp-det` | a correct fix, 9 tests with controls, signed off to `done` |
+| 5 | `qwen3.6:35b-a3b-coding-mtp-det` | an **authority hole** closed at effort 3, 3 tests, no sabotage receipt — refused, then signed off on the reviewer's |
 
 Everything in the three-run section below still happened and every fix it earned is still
 worth having — the completion guard and the truncation guard are exactly the sort of thing you
@@ -264,16 +265,30 @@ thing as a working cheap tier.
 
 ### §9.1 — Can a 30B model produce a genuine sabotage receipt?
 
-**Still unproven, but for a much narrower reason than the first three runs suggested.**
+**Tested properly in run 5, and the answer is no — cleanly, and safely.**
 
-`qwen3-coder:30b` never completed step one, so the question never arose. `qwen3.6` completed
-the change *and wrote a control set*, which is the same instinct a receipt needs — but the item
-was effort 2, below `ADVERSARIAL_EFFORT_THRESHOLD = 3`, so nothing asked it for one and it did
-not volunteer one. **The walk did not test this**, and saying that is better than reading the
-control set as a near-miss.
+GRPH-501 was filed at **effort 3**, above `ADVERSARIAL_EFFORT_THRESHOLD`, so the gate would
+actually fire. The instruction explicitly asked for a receipt: *"break your own fix on purpose,
+run the tests, and record which ones caught it."*
 
-The next walk should use an effort-3 item and see what it produces when the gate actually
-fires.
+`qwen3.6:35b-a3b-coding-mtp-det` produced a **correct fix and correct tests** — 20 turns, 12
+minutes, first write on turn 8 — and attached a `test` receipt. It did **not** produce a
+`sabotage` receipt.
+
+```
+=== sign_off with only the agent's [test] receipt:
+  REFUSED: GRPH-501 is effort 3 and needs adversarial evidence: a `sabotage` receipt
+           naming the claim, the mutation, and how many tests_failed
+```
+
+**This is D5 working exactly as designed.** D5 said the attempt is safe because a bad attempt
+is caught by a gate nobody has to trust. What actually happened is one step better: there was
+no attempt, and the *absence* was caught. The receipt on the item is the reviewer's, labelled
+as the reviewer's, because the reviewer ran the sabotage.
+
+So the honest boundary: **this model can build above-threshold work but cannot self-certify
+it.** That is a real constraint and it is not a fatal one — it means above-threshold items cost
+a reviewer a sabotage pass, which for run 5 was about five minutes.
 
 ### §9.2 — What is the honest success metric?
 

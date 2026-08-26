@@ -629,7 +629,9 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
 
     required = TOOL_ROLES.get(tool)
     if role == "unidentified" and (required or (tool == "update_item"
-                                                and (args or {}).get("status") in _BEYOND_WORKER)):
+                                                and (args or {}).get("status") in _BEYOND_WORKER)
+                                  or (tool == "release_item"
+                                      and (args or {}).get("to_status", "next") in _BEYOND_WORKER)):
         raise authz.Forbidden(
             f"{tool} needs to know which agent is calling: this credential is running a fleet, "
             "so an unidentified caller cannot be assumed to be unrestricted",
@@ -659,6 +661,18 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
                 f"update_item(status={status!r}) requires role 'reviewer'; "
                 f"{who} is registered as 'worker'",
                 hint="move it to 'review'; a reviewer takes it from there",
+            )
+
+    # `release_item` is how a worker hands work back — the release verb is shared across
+    # holds, not a second peer to `sign_off`. A worker may release to `next`/`backlog`;
+    # but not to anything beyond the review ceiling, or it undoes that ceiling entirely.
+    if tool == "release_item" and role == "worker":
+        to_status = (args or {}).get("to_status", "next")
+        if to_status in _BEYOND_WORKER:
+            raise authz.Forbidden(
+                f"release_item(to_status={to_status!r}) requires role 'reviewer'; "
+                f"{who} is registered as 'worker'",
+                hint="release_item does not write `done`; a reviewer takes it from there",
             )
 
 
