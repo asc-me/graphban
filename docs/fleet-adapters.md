@@ -118,6 +118,36 @@ The supervisor tells surrender from failure by reading that, rather than by pars
 Exiting `0` on a give-up was rejected in D6: `ps` and the supervisor's record would show a
 clean finish for a run that achieved nothing.
 
+### Which model can actually build something
+
+`--model` takes any string and `gbagent models` lists what the endpoint serves. Neither says
+which of them can *build an item*, and the PRD-24 S7 walk measured a difference large enough to
+decide whether this adapter is worth running at all.
+
+| model | runs | outcome |
+| --- | --- | --- |
+| `qwen3.6:35b-a3b-coding-mtp-det` | 2 | built GRPH-497 and GRPH-501, **both signed off**, ~12 min each |
+| `qwen3-coder:30b` | 3 | 93 minutes, **zero usable lines** |
+
+Same harness, same items, same budget, same afternoon. The three `qwen3-coder` runs failed three
+different ways: a fabricated completion (moved an item to `review` with a `test` receipt having
+changed nothing), an 850-line file replaced by a six-line placeholder, and a 55-minute run ended
+by a single turn exceeding the request timeout.
+
+**This is thin evidence and should be read as thin.** Two models, five runs, one repository.
+`gpt-oss:20b` and `qwen3:30b-a3b` have never been tried against an item. `qwen3.6` was never
+re-run, so the determinism its `-det` build claims is untested. What the table supports is "one
+of these worked twice and one failed three times" — not a ranking, and not a prediction about a
+model that is not on it.
+
+**A coding-specialised build mattered more than parameter count.** 35B beat 30B, but they also
+differ in training; nothing here separates those two variables, and the walk did not try.
+
+**Nothing owns the routing question.** PRD-24 §4 declares model routing a non-goal and defers
+"which model suits which role" to PRD-11 — and PRD-11 has no approved baseline. So the variable
+the arc's value rests on is currently assigned to a document that has not been approved. Worth
+knowing before anybody plans around it.
+
 **What is not wired yet.** `gbagent run` can orient itself — the seven graph reads of PRD-24 S6
 are advertised from the server's own manifest — but it cannot CLAIM its own work: `claim_next`
 is deliberately absent from `coord.WORKER_TOOLS`. It refuses at startup with exit 78 naming the
