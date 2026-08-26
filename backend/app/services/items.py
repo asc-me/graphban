@@ -109,6 +109,9 @@ def create_item(
         raise ValueError(f"invalid fidelity: {fidelity}")
     if db.get(Project, project_id) is None:
         raise ValueError(f"unknown project: {project_id!r}")
+    effort_val = int(effort or 0)
+    if effort_val < 0:
+        raise ValueError(f"negative effort: {effort_val}")
     max_order = db.scalar(select(func.max(Item.sort_order))) or 0
     # The id is frozen identity; `number` is what the key renders from (PRD-13).
     item_id, number = keys.mint(db, project_id, "item")
@@ -120,7 +123,7 @@ def create_item(
         description=description or "",
         tags=tags or [],
         touchpoints=touchpoints or [],
-        effort=int(effort or 0),
+        effort=effort_val,
         status=status,
         sort_order=max_order + 1,
         reporter=reporter or {},
@@ -277,6 +280,10 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
             raise ValueError(f"invalid status: {fields['status']}")
     if fields.get("fidelity") is not None and fields["fidelity"] not in FIDELITIES:
         raise ValueError(f"invalid fidelity: {fields['fidelity']}")
+    if fields.get("effort") is not None:
+        effort_update = int(fields["effort"])
+        if effort_update < 0:
+            raise ValueError(f"negative effort: {effort_update}")
     prev_status = item.status
     # Captured BEFORE the status moves. `intent_hold` is about work in flight and goes
     # quiet once an item is done, so asking after the transition always answers None —
