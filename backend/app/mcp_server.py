@@ -2025,6 +2025,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return {"removed": removed}
     if name == "claim_next":
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
+        # A caller already holding something gets a refusal it can act on rather than a second
+        # item to abandon (GRPH-504). Conflict, not internal: the call was well-formed and the
+        # remedy is a verb the agent already has.
+        held = items_svc.live_claim(
+            db, agent, lease_seconds=args.get("lease_seconds", items_svc.DEFAULT_LEASE_SECONDS))
+        if held is not None:
+            raise errors.Conflict(
+                f"you already hold {held.key} — one worker, one worktree (PRD-17 D-g)",
+                hint=f"release_item({held.key}) if you are not working it, then claim again",
+            )
         item = fleet_svc.park(
             db,
             lambda s: items_svc.claim_next(
