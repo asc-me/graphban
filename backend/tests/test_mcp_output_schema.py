@@ -72,6 +72,17 @@ def test_extra_keys_beyond_the_schema_are_not_a_failure(probe_dir):
 # ---- failing closed -------------------------------------------------------------------
 
 
+def test_no_probe_data_on_a_PARTIAL_run_is_not_a_failure(probe_dir):
+    """Found by using it: `pytest tests/test_prd_sync.py` exited 1 on a green suite, because
+    those tests make no MCP calls and the empty aggregate was failed unconditionally.
+
+    A selection that records nothing has learned nothing — it has not learned that the
+    manifest is clean. Only a FULL run can distinguish "the probe is broken" from "you ran
+    two doc tests", and a ratchet that goes red on every subset run is one people switch off.
+    """
+    assert schema_probe.report(full_run=False) == []
+
+
 def test_no_probe_data_at_all_is_a_failure_not_a_pass(probe_dir):
     """THE ONE THAT MATTERS MOST. If the probe fails to install, or no MCP call happens, the
     aggregate is empty — and an empty aggregate has no drift in it. Reporting that as a clean

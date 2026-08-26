@@ -101,9 +101,15 @@ def report(full_run: bool) -> list[str]:
                     "because unreadable evidence is not evidence of conformance"]
 
     if not emitted:
-        return ["schema probe: recorded nothing at all. Either no MCP tool ran or the probe "
-                "failed to install — both are failures here, because a probe with no data "
-                "would otherwise report a clean manifest."]
+        if not full_run:
+            # A SELECTION that happens to call no MCP tool records nothing, and that means
+            # nothing. Failing here made `pytest tests/test_prd_sync.py` exit 1 on a green
+            # suite — a ratchet that cries on every subset run is one people switch off,
+            # which is the failure this ratchet was written to prevent, committed by it.
+            return []
+        return ["schema probe: recorded nothing at all on a FULL run. Either no MCP tool ran "
+                "or the probe failed to install — both are failures here, because a probe "
+                "with no data would otherwise report a clean manifest."]
 
     declared = _declared()
     lines: list[str] = []

@@ -1,6 +1,10 @@
 """The repo's PRDs must agree with the ledger's (GRPH-424).
 
-A PRD lives twice — in the ledger and in `docs/prd-*.md` — and nothing compared them. Measured
+**The ledger is where a PRD lives. A `docs/prd-*.md` copy is optional** — AGENTS.md, "PRDs
+live in the ledger", settles that and GRPH-465 is the decision. So this file checks ONE
+direction: a repo copy must exist in the ledger and agree with it.
+
+That is the direction where drift is silent and expensive, and nothing compared them. Measured
 2026-08-20 across ten: ONE agreed, and only because it had been repaired by hand a week before.
 
 - PRD-17 said `draft` in the repo for eleven days while the ledger had it `approved` — through
@@ -15,8 +19,13 @@ Every one of those was found by accident, weeks later, by somebody doing somethi
 in `docs/prd-index.json` is only as fresh as the last `scripts/gen_prd_index.py` run. If the
 ledger moves and nobody regenerates, these tests pass while repo and ledger disagree. What they
 catch is the repo drifting from the last known ledger state, which is the failure that actually
-happened three times — not the ledger moving underneath. A ledger-only PRD (there are four) has
-no repo copy to disagree with and is invisible here by construction.
+happened three times — not the ledger moving underneath.
+
+A ledger-only PRD has no repo copy to disagree with and is invisible here BY DESIGN rather than
+by omission — that is the rule, not a gap in it. There are fourteen, eight of them past `draft`
+(measured 2026-08-25). The previous version of this sentence said "there are four", which was
+true on 2026-08-22 and is the exact species of drift this file exists to catch, in the one
+place it cannot: a count written in prose.
 """
 import json
 import pathlib

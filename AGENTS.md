@@ -173,6 +173,34 @@ that migrations 0001/0013 pin 384 in the column type — see AL-46.
 | Does the fleet actually work? | [`docs/fleet-supervisor-walk.md`](docs/fleet-supervisor-walk.md) |
 | Where an agent's tokens go | [`docs/token-census.md`](docs/token-census.md), `scripts/token_census.py` |
 
+## PRDs live in the ledger
+
+**The ledger is the source of truth for a PRD. A `docs/prd-*.md` copy is optional.**
+
+Nineteen PRDs exist; five have a repo document. Eight of the fourteen without one are past
+`draft`, including PRD-24 — approved, six slices built — and three finished specs (PRD-16,
+PRD-18, and PRD-13, whose project-tag invariants GRPH-319, GRPH-457 and GRPH-459 all turn on).
+
+An earlier expectation that a PRD past `draft` should exist in both was never written down and
+never held. Stating it now would make a rule nobody follows, and enforcing it would fail on
+eight documents in the one direction a test cannot fix — which trains people to ignore the
+test. So it is dropped, deliberately, and this paragraph is the record of that (GRPH-465).
+
+There is no rule about WHEN a repo copy appears, and no honest one available: the five that
+have docs look like recent implementation work until you notice PRD-24 is newer than all of
+them and has none. Write one when a spec is worth reviewing in a diff.
+
+What IS enforced, by `backend/tests/test_prd_sync.py`: **a repo PRD must exist in the ledger
+and agree with it.** That is the direction where drift is silent and expensive — PRD-17 read
+`draft` in the repo for eleven days while the ledger had it `approved`, through the whole
+build and the acceptance walk.
+
+Two consequences worth knowing before you build on either:
+
+- `docs/prd-index.json` indexes only PRDs that have a repo doc, so it is **5 of 19** and is
+  not the list of PRDs. Reading it as one produces a confident undercount (GRPH-486).
+- `prd_coverage` and `prd_acceptance` answer from the ledger, which is complete. Prefer them.
+
 ## Deploy
 
 Full runbook: **[`docs/deploy.md`](docs/deploy.md)** — the proven `rsync` +
