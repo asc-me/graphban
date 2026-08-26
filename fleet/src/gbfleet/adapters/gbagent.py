@@ -121,6 +121,9 @@ class GbAgent(Adapter):
                 # By PATH, not on argv: the instruction carries the enrolment code, and argv
                 # is readable by every process on this machine.
                 "--instruction-file", str(instruction_file),
+                # `await_registration` matches on worktree, and D-g is one worker one
+                # worktree; the branch goes with it so the roster row names the diff.
+                "--branch", tree.branch,
                 *self.model_argv(model),
                 *self.tuning_argv(tuning or Tuning()),
             ],
