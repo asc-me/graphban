@@ -352,3 +352,27 @@ def test_a_gbagent_from_another_install_is_refused():
     assert not ADAPTERS["gbagent"].support.permits(other[:-1] + (other[-1] + 1,))
     assert ADAPTERS["gbagent"].support.permits(other)
     assert "exactly" in ADAPTERS["gbagent"].support.describe()
+
+
+def test_the_model_table_keeps_its_caveats():
+    """A measurement table without its limits reads as a recommendation (GRPH-518).
+
+    Two models, five runs, one repository is thin evidence, and the two sentences most likely
+    to be tidied away are exactly the two that stop a reader over-reading it: how thin it is,
+    and that nobody owns the routing question it points at.
+
+    Whitespace-normalised, because prose gets rewrapped and a guard that fails when a sentence
+    moves across a line break is noise that teaches people to weaken it.
+    """
+    text = " ".join(MATRIX.read_text(encoding="utf-8").split())
+
+    assert "qwen3.6:35b-a3b-coding-mtp-det" in text and "qwen3-coder:30b" in text, (
+        "the table has lost the models it was measured on"
+    )
+    assert "thin evidence and should be read as thin" in text, (
+        "the limits of five runs on two models have gone, so this now reads as a ranking"
+    )
+    assert "Nothing owns the routing question" in text, (
+        "PRD-24 §4 defers model routing to PRD-11, which has no approved baseline — dropping "
+        "that leaves the arc's load-bearing variable looking owned when it is not"
+    )
