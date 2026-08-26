@@ -208,7 +208,20 @@ function AgentRow({ a, onDismiss, dismissed }: {
       <div className="w-40 text-right text-[11px] text-muted">
         {a.holdings.length === 0
           ? <span className="text-faint">holding nothing</span>
-          : a.holdings.map((h) => <div key={h.id} className="truncate">{h.id}</div>)}
+          : a.holdings.map((h) => (
+              <div key={h.id} className="truncate">
+                {h.id}{" "}
+                {/* The phase is an INFERENCE, so the title carries the signal that produced
+                    it — a derived label nobody can check is one they have to trust. `stale`
+                    is dimmed rather than coloured: it means the agent is gone and these
+                    signals are frozen, which must not read like work in flight. */}
+                <span className={h.phase === "stale" || h.phase === "unknown"
+                                   ? "text-faint italic" : "text-faint-2"}
+                      title={h.phase_basis}>
+                  {h.phase}{h.bounced ? " · rework" : ""}
+                </span>
+              </div>
+            ))}
       </div>
       {onDismiss && (
         <button onClick={() => onDismiss(a.id, dismissed)}

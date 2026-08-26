@@ -966,7 +966,11 @@ export interface FleetAgent {
   branch: string;
   branch_orphaned: boolean;
   last_seen_at: string | null;
-  holdings: { id: string; title: string; status: string }[];
+  /** `phase` is DERIVED server-side from signals every vendor already writes — no adapter
+   *  reports it (GRPH-522). `stale` and `unknown` are admissions, not activities: render
+   *  them as such, never as an idle or healthy row. */
+  holdings: { id: string; title: string; status: string;
+              phase: string; phase_basis: string; bounced: boolean }[];
 }
 
 /** One live reservation, resolved to the agent and the human behind it (PRD-20 D4). */

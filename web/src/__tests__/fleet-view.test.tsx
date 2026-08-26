@@ -132,6 +132,48 @@ describe("Fleet view", () => {
     expect(screen.getByText("3h ago")).toBeInTheDocument();
   });
 
+  it("shows what an agent is DOING with its item, not only which item", () => {
+    // The status alone cannot separate writing code from waiting on CI from reworking a
+    // bounce — all three are `in_progress`. The phase is derived server-side (GRPH-522)
+    // precisely so it works for vendor children that report nothing.
+    fleet.data = { ...BASE, total: 1, online: 1,
+                   agents: [{ ...AGENT, state: "working", last_seen_at: new Date().toISOString(),
+                              holdings: [{ id: "GB-1", title: "held work", status: "in_progress",
+                                           phase: "integrating", phase_basis: "pr recorded",
+                                           bounced: false }] }] };
+    renderView();
+    expect(screen.getByText("integrating")).toBeInTheDocument();
+    // The basis rides along, so the inference can be checked rather than trusted.
+    expect(screen.getByTitle("pr recorded")).toBeInTheDocument();
+  });
+
+  it("marks rework beside the phase instead of replacing it", () => {
+    // Both facts survive: a bounced item being tested is `verifying` AND rework. Folding
+    // one into the other would drop the bounce the moment the agent ran a test.
+    fleet.data = { ...BASE, total: 1, online: 1,
+                   agents: [{ ...AGENT, state: "working", last_seen_at: new Date().toISOString(),
+                              holdings: [{ id: "GB-1", title: "held work", status: "in_progress",
+                                           phase: "verifying", phase_basis: "test receipt",
+                                           bounced: true }] }] };
+    renderView();
+    expect(screen.getByText("verifying · rework")).toBeInTheDocument();
+  });
+
+  it("does not render a dead agent's frozen item as work in flight", () => {
+    // The absence-reads-as-clean case, at the last place it can still mislead: the server
+    // says `stale`, and the row must not present that like an activity.
+    fleet.data = { ...BASE, total: 1, online: 0,
+                   agents: [{ ...AGENT, state: "offline", last_seen_at: null,
+                              holdings: [{ id: "GB-1", title: "held work", status: "in_progress",
+                                           phase: "stale", phase_basis: "agent offline",
+                                           bounced: false }] }] };
+    renderView();
+    const label = screen.getByText("stale");
+    expect(label).toBeInTheDocument();
+    expect(label.className).toContain("italic");
+    expect(screen.queryByText("building")).not.toBeInTheDocument();
+  });
+
   it("distinguishes an agent that never reported from one that stopped", () => {
     // A registered agent with no heartbeat has not run yet. Rendering that as silence,
     // identically to one that ran and died, loses the only difference that matters.
