@@ -49,6 +49,24 @@ class Unavailable(AppError):
     code = "unavailable"
 
 
+class ModelTimedOut(AppError):
+    """The configured chat model did not answer inside its budget (GRPH-505).
+
+    Its own code, because the whole point is that a caller can tell it apart from the two it
+    used to be indistinguishable from. `unavailable` says an operator must change something
+    before a retry can help; `internal` says nothing at all. This one says: the call was
+    well-formed, the provider is configured, and **trying again may simply work** — which is
+    what was measured. `grill_prd` timed out twice against a 46k-character PRD and succeeded
+    twenty minutes later with nothing changed.
+
+    Not to be widened into "any provider failure". A refused key, a wrong base_url and a model
+    that does not exist are all permanent until somebody edits something, and collapsing them
+    into a code that invites retrying is how a caller ends up retrying forever.
+    """
+
+    code = "model_timeout"
+
+
 class QuotaExceeded(AppError):
     """A hosted plan limit was hit (projects/seats/shards/monthly calls). AL-75.
     Mapped to a ``quota_exceeded`` MCP tool error and, in REST, to HTTP 402."""
