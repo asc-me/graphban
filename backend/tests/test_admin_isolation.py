@@ -132,8 +132,21 @@ def _populated_admin_gets(client, operator) -> int:
 
 
 def test_content_sweep_actually_inspects_populated_responses(client, operator, tenant_with_content):
-    """Guard against a vacuous sweep: every admin GET must return data to inspect."""
-    assert _populated_admin_gets(client, operator) == 6
+    """Guard against a vacuous sweep: every admin GET must return data to inspect.
+
+    Counted from the live schema rather than pinned to a literal, for the reason
+    `admin_routes` already gives one function above — a new admin route should be swept the
+    moment it exists. The literal was `6`, and adding a seventh GET failed this test while
+    the route it was meant to protect was in fact swept correctly. A control that has to be
+    hand-edited every time the thing it counts changes eventually gets hand-edited without
+    being read.
+    """
+    gets = [p for method, p in admin_routes() if method == "GET"]
+    assert gets, "no admin GET routes found — the sweep would inspect nothing"
+    assert _populated_admin_gets(client, operator) == len(gets), (
+        "an admin GET did not return 200 with content, so the content sweep has a route "
+        "it cannot actually inspect"
+    )
     for path in ("/api/admin/orgs", "/api/admin/users", "/api/admin/invites",
                  "/api/admin/activity", "/api/admin/org-requests"):
         assert len(client.get(path, headers=operator).json()) > 0, f"{path} was empty"

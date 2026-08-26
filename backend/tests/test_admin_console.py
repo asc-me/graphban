@@ -27,7 +27,8 @@ def operator(client, monkeypatch):
 
 # ---- gating --------------------------------------------------------------------
 ADMIN_GETS = ["/api/admin/me", "/api/admin/orgs", "/api/admin/users",
-              "/api/admin/invites", "/api/admin/org-requests"]
+              "/api/admin/invites", "/api/admin/org-requests",
+              "/api/admin/forwarded-chain"]
 
 
 def test_every_admin_route_404s_for_non_admin(client, monkeypatch):

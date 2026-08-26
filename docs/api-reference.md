@@ -346,6 +346,7 @@ which is what keeps the cross-tenant isolation guarantee honest.
 | POST | `/api/admin/invites` | Issue a platform invite (new customer founds their own org) |
 | DELETE | `/api/admin/invites/{id}` | Revoke a **pending** invite |
 | GET | `/api/admin/activity` | Operator ledger — actions taken from this plane, newest first |
+| GET | `/api/admin/forwarded-chain` | What the proxies in front actually sent: the `X-Forwarded-For` chain, which hop `client_ip` resolved to, and whether the app's scheme matches `X-Forwarded-Proto`. Reflects only the caller's own request |
 | GET | `/api/admin/org-requests` | Pending additional-org requests |
 | POST | `/api/admin/org-requests/{id}` | Approve or deny one |
 

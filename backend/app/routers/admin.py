@@ -12,7 +12,7 @@ from becoming the isolation hole that Phase 6 (AL-76) exists to prevent:
 
 Every mutation is recorded to the event ledger, attributed to the acting operator.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -64,6 +64,69 @@ def _invite_out(db: Session, invite: OrgInvite) -> AdminInviteOut:
     if org is not None:
         out.redeemed_org_id, out.redeemed_org_name = org.id, org.name
     return out
+
+
+@router.get("/forwarded-chain")
+def forwarded_chain(request: Request):
+    """What this instance actually received from the proxies in front of it (GRPH-517).
+
+    `security.net.client_ip` picks the caller's rate-limit bucket out of the
+    `X-Forwarded-For` chain, and which POSITION is the real caller depends on how many
+    proxies append to that header. On this deployment there are two — Railway's edge, then
+    nginx — and Railway does not document whether its edge overwrites the header or appends
+    to it. That single fact decides whether taking `[0]` reads the true client or a value
+    the caller wrote, and it cannot be settled by reading code on either side.
+
+    It also cannot responsibly be settled by experiment against the rate limiter, which is
+    the only other observable: that means sending forged-header traffic until a bucket
+    breaks, which is DoS-shaped whatever the intent. So the missing thing was never
+    analysis, it was **a way to look**. This is the way to look.
+
+    Send one authenticated request from a real client and read `xff_hops`. Its length and
+    the position of your own address give the hop count that `client_ip` should be counting
+    from the right.
+
+    Also answers GRPH-477 in the same response: `scheme` is what the app believes it is
+    serving and `header_x_forwarded_proto` is what nginx said. If they disagree, uvicorn is
+    discarding the forwarded scheme — `--forwarded-allow-ips` does not cover the peer — and
+    any URL built from the request would carry `http` on an HTTPS-only origin.
+
+    Reflects only the caller's OWN request headers, so it discloses nothing about anyone
+    else. Platform-admin gated like every route on this router, which 404s for everyone
+    else so the console's existence is never disclosed.
+    """
+    from app.security.net import client_ip
+
+    raw = request.headers.get("x-forwarded-for")
+    hops = [h.strip() for h in raw.split(",")] if raw else []
+    resolved = client_ip(request)
+
+    return {
+        "resolved_client_ip": resolved,
+        # Which entry `client_ip` returned. `from_left` 0 is the position a caller can
+        # write; the useful number is `from_right`, because that is what a hop count has
+        # to be expressed in to survive a chain of a different length.
+        "resolved_position": (
+            {"from_left": hops.index(resolved), "from_right": len(hops) - hops.index(resolved)}
+            if resolved in hops else None
+        ),
+        "xff_raw": raw,
+        "xff_hops": hops,
+        "xff_hop_count": len(hops),
+        # The socket peer. Behind a proxy this is the proxy, never the caller — it is here
+        # as the fail-closed fallback `client_ip` uses when nothing is asserted.
+        "socket_peer": request.client.host if request.client else None,
+        "header_x_real_ip": request.headers.get("x-real-ip"),
+        "header_x_forwarded_proto": request.headers.get("x-forwarded-proto"),
+        "header_x_forwarded_host": request.headers.get("x-forwarded-host"),
+        "header_host": request.headers.get("host"),
+        "scheme": request.url.scheme,
+        "scheme_matches_forwarded": (
+            request.headers.get("x-forwarded-proto") is None
+            or request.url.scheme == request.headers.get("x-forwarded-proto")
+        ),
+        "trusted_proxy": settings.trusted_proxy,
+    }
 
 
 @router.get("/me", response_model=AdminWhoamiOut)
