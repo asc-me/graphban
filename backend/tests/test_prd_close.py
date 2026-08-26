@@ -17,6 +17,7 @@ import pytest
 
 from app.services import items as items_svc
 from app.services import prds as prd_svc
+from app.services.platform import Resolved
 
 BODY = (
     "# Spec\n\n"
@@ -237,7 +238,7 @@ def test_a_configured_judge_that_is_not_answering_blocks_the_close(db, approved,
     from app.services import platform as platform_svc
 
     real = platform_svc.resolve_chat
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("openai", real(db, pid)[1]))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("openai", real(db, pid).chat))
 
     with pytest.raises(prd_svc.CloseRefused, match="not answering"):
         prd_svc.close_prd(db, approved, dispositions=_defer_all(db, approved),

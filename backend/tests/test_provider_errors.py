@@ -19,6 +19,7 @@ import pytest
 
 from app import errors
 from app.providers.base import provider_errors
+from app.services.platform import Resolved
 
 
 def _raise(exc):
@@ -109,7 +110,7 @@ def test_the_mcp_error_is_unavailable_not_internal(client, auth, monkeypatch):
             with provider_errors("ollama", model=self.model, endpoint=self.base_url):
                 raise httpx.ConnectError("Connection refused")
 
-    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: ("ollama", _Dead()))
+    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: Resolved("ollama", _Dead()))
     key = client.post("/api/api-keys", json={"name": "a", "scopes": ["read"]},
                       headers=auth).json()["plaintext"]
 

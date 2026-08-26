@@ -21,6 +21,7 @@ import pytest
 
 from app.models import ArtifactRecommendation, ArtifactTombstone, Project
 from app.services import artifacts as art_svc
+from app.services.platform import Resolved
 
 
 @pytest.fixture()
@@ -137,7 +138,7 @@ def test_a_generated_hook_is_instrumented(db, proj, monkeypatch):
         def chat(self, **kw):
             return "#!/bin/sh\necho hello"
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("openai", Chat()))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("openai", Chat()))
     rec = art_svc.draft(db, _artifact(db, proj, tier="hook", title="A hook", status="queued"))
 
     assert f"/api/artifacts/{rec.id}/used" in rec.draft
@@ -154,7 +155,7 @@ def test_the_hook_telemetry_cannot_break_the_hook(db, proj, monkeypatch):
         def chat(self, **kw):
             return "#!/bin/sh\necho hello"
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("openai", Chat()))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("openai", Chat()))
     rec = art_svc.draft(db, _artifact(db, proj, tier="hook", title="A hook", status="queued"))
 
     assert "|| true" in rec.draft, "telemetry failure must not fail the hook"
@@ -170,7 +171,7 @@ def test_a_skill_is_not_instrumented(db, proj, monkeypatch):
         def chat(self, **kw):
             return "# Skill"
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("openai", Chat()))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("openai", Chat()))
     rec = art_svc.draft(db, _artifact(db, proj, tier="skill", title="A skill",
                                       status="queued"))
 

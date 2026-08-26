@@ -20,6 +20,7 @@ import pytest
 from app.services import items as items_svc
 from app.services import links as links_svc
 from app.services import prds as prd_svc
+from app.services.platform import Resolved
 
 BODY = (
     "# Spec\n\n"
@@ -76,7 +77,7 @@ def judge(monkeypatch):
                 "outcome": state["outcome"], "confidence": state["confidence"],
                 "reasoning": state["reasoning"]})
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("openai", Chat()))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("openai", Chat()))
     return state
 
 

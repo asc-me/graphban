@@ -14,6 +14,7 @@ import json
 import pytest
 
 from app.services import prds as prd_svc
+from app.services.platform import Resolved
 
 
 @pytest.fixture()
@@ -85,7 +86,7 @@ def _fake_model(monkeypatch, payload: str):
             return payload
 
     monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat",
-                        lambda db, pid: ("anthropic", _Chat()))
+                        lambda db, pid: Resolved("anthropic", _Chat()))
 
 
 def test_a_real_model_verdict_is_recorded(client, auth, prd, monkeypatch):
@@ -147,7 +148,7 @@ def test_a_model_outage_does_not_break_classification(client, auth, prd, monkeyp
         def chat(self, **kw):
             raise RuntimeError("provider down")
 
-    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: ("anthropic", _Boom()))
+    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: Resolved("anthropic", _Boom()))
     db = SessionLocal()
     try:
         prd_svc.record_grill_turns(db, prd, _qa(1))

@@ -164,6 +164,7 @@ def test_read_only_member_cannot_undo(client):
 # ---- LLM judge (AL-227) ----
 
 from app.services import memory as mem  # noqa: E402
+from app.services.platform import Resolved
 
 
 def test_parse_judge_variants():
@@ -190,7 +191,7 @@ class _FakeChat:
 def _patch_judge(monkeypatch, reply: str):
     """Point the project's chat resolution at a fake non-stub model returning `reply`."""
     from app.services import platform as platform_svc
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("anthropic", _FakeChat(reply)))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("anthropic", _FakeChat(reply)))
 
 
 def test_llm_judge_auto_rejects_low_quality(client, auth, monkeypatch):
@@ -283,7 +284,7 @@ class _SeqChat:
 
 def _patch_seq(monkeypatch, chat):
     from app.services import platform as platform_svc
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("anthropic", chat))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("anthropic", chat))
     return chat
 
 
@@ -457,7 +458,7 @@ def test_a_missing_model_still_says_so(client, sdb, monkeypatch):
     operator can go and fix."""
     from app.services import platform as platform_svc
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("stub", None))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("stub", None))
     msg = _adjudicate(sdb, monkeypatch)
 
     assert msg is not None and "no independent chat model is configured" in msg

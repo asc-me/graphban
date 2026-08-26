@@ -286,7 +286,8 @@ def ai_command_detail(db: Session, prd_id: str, command: str) -> tuple[str, bool
     if command not in _COMMANDS:
         raise ValueError(f"unknown command: {command}")
 
-    provider, chat = platform_svc.resolve_chat(db, prd.project_id)
+    _r = platform_svc.resolve_chat(db, prd.project_id)
+    provider, chat = _r.provider_id, _r.chat
     if provider == "stub":
         return _stub_command(command, prd), False
 
@@ -663,7 +664,8 @@ def _classify_dimensions(db: Session, prd: Prd, history: list[dict]) -> dict | N
     {dimension: {outcome, note, ...}}, or None when no real model is configured or the
     reply can't be parsed — the caller then falls back to the stub rule rather than
     guessing."""
-    provider, chat = platform_svc.resolve_chat(db, prd.project_id)
+    _r = platform_svc.resolve_chat(db, prd.project_id)
+    provider, chat = _r.provider_id, _r.chat
     if provider == "stub":
         return None
     answers = _numbered_answers(history)
@@ -707,7 +709,7 @@ def _classify_dimensions(db: Session, prd: Prd, history: list[dict]) -> dict | N
 def _grader_id(db: Session, prd: Prd) -> str:
     """Which provider is standing behind these verdicts."""
     try:
-        return platform_svc.resolve_chat(db, prd.project_id)[0] or "stub"
+        return platform_svc.resolve_chat(db, prd.project_id).provider_id or "stub"
     except Exception:  # noqa: BLE001 — provenance must never break a grill
         return "unknown"
 
@@ -1363,7 +1365,8 @@ def classify_work(db: Session, item: Item, *, force: bool = False) -> "WorkClass
             and row.baseline_version == base.version:
         return row
 
-    provider, chat = platform_svc.resolve_chat(db, prd.project_id)
+    _r = platform_svc.resolve_chat(db, prd.project_id)
+    provider, chat = _r.provider_id, _r.chat
     if provider == "stub":
         outcome, confidence, reasoning, grader = (
             UNDECIDABLE, 0.0,
@@ -2023,7 +2026,8 @@ def judge_status(db: Session, project_id: str, *, reachable: bool = True) -> str
     network round trip to a read and still prove nothing, since it can succeed a second
     before the call that matters fails.
     """
-    provider, _chat = platform_svc.resolve_chat(db, project_id)
+    _r = platform_svc.resolve_chat(db, project_id)
+    provider, _chat = _r.provider_id, _r.chat
     if provider == "stub":
         return JUDGE_ABSENT
     return JUDGE_READY if reachable else JUDGE_DOWN
@@ -2722,7 +2726,8 @@ def grill_apply(db: Session, prd_id: str, history: list[dict]) -> str:
         db.add(PrdVersion(prd_id=prd.id, version=prd.version, date="just now",
                           note="Before folding in grill decisions.", body=prd.body))
         db.commit()
-    provider, chat = platform_svc.resolve_chat(db, prd.project_id)
+    _r = platform_svc.resolve_chat(db, prd.project_id)
+    provider, chat = _r.provider_id, _r.chat
     if provider == "stub":
         answers = [m.get("text", "").strip() for m in history if m.get("role") == "user"]
         answers = [a for a in answers if a]

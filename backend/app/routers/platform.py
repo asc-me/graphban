@@ -35,6 +35,22 @@ def list_providers(_: User = Depends(get_current_user)):
     return {"providers": provider_registry.PROVIDERS}
 
 
+@router.get("/credentials")
+def list_credentials(project_id: str = "core", db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Every credential configured on this deployment, with state and derived `used-by`.
+
+    Scoped through a PROJECT the caller can read rather than taking a scope directly: the
+    scope is an org id under hosted multi-tenancy, and letting a caller name one would be a
+    cross-tenant read with extra steps. Resolving it from a project the authz layer already
+    vetted means the existing guard is the only guard, and there is no second path to keep
+    in step with the first.
+    """
+    authz.require_readable(db, user.id, project_id)
+    return {"credentials": platform_svc.list_credentials(
+        db, platform_svc.scope_for(db, project_id))}
+
+
 @router.get("", response_model=PlatformConfigOut)
 def get_platform(project_id: str = "core", db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     authz.require_readable(db, user.id, project_id)

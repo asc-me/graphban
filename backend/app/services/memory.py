@@ -607,7 +607,8 @@ def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
     from app.services import platform as platform_svc  # lazy: avoid import cycle
 
     try:
-        provider, model = platform_svc.resolve_chat(db, shard.project_id or "core")
+        _resolved = platform_svc.resolve_chat(db, shard.project_id or "core")
+        provider, model = _resolved.provider_id, _resolved.chat
     except Exception:  # noqa: BLE001 — never let provider resolution break a write
         logger.exception("llm judge: provider resolution failed")
         return None, "error"
