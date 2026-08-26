@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from gbagent import tools, verify
+from gbagent import config, tools, verify
 from gbagent.config import CONFIG_NAME, ConfigRefused, VerifyConfig, load
 from gbagent.workspace import ToolError
 
@@ -260,6 +260,34 @@ def test_this_repository_declares_the_loop_agents_md_documents():
         "the declared command and the documented loop have drifted apart"
 
 
+def test_this_repository_declares_how_a_fresh_worktree_is_built():
+    """The drift that would put us straight back where GRPH-502 started.
+
+    `[tests].command` names an interpreter inside `backend/.venv`, and `[setup]` is what
+    creates it. If somebody moves the venv in one of those and not the other, a fresh worktree
+    builds something the test command cannot find — and the symptom is `load` refusing a
+    repository that looks perfectly built to a human standing in the primary checkout.
+
+    Asserts the FILE, not the machine: running `uv venv` here would make the suite take a
+    minute to prove something a string comparison proves exactly.
+    """
+    import tomllib
+
+    data = tomllib.loads((REPO / CONFIG_NAME).read_text(encoding="utf-8"))
+    commands = data["setup"]["commands"]
+
+    assert isinstance(commands, list), "a list, because D4 means there is no shell"
+    assert any("uv venv" in c for c in commands), "nothing here creates the interpreter"
+
+    # The path the test command needs, resolved the way `load` resolves it: relative to
+    # `[tests].cwd`. `./.venv/bin/python` under `backend` is `backend/.venv`.
+    venv = (Path(data["tests"]["cwd"]) / data["tests"]["command"].split()[0]).parts[:2]
+    needed = "/".join(venv)
+    assert any(needed in c for c in commands), (
+        f"[tests].command needs {needed!r} but no [setup] command builds it"
+    )
+
+
 def test_this_repository_loads_where_its_interpreter_is_installed():
     """The other half, and it can only run where the tree is actually built.
 
@@ -363,3 +391,99 @@ def test_git_diff_outside_a_git_repo_still_answers(tmp_path):
         verify.git_diff(root)
 
     assert "git diff failed" in str(exc.value), "the failure should come from the diff, not the add"
+
+
+# ---- [setup]: building the tree before anything checks it (GRPH-502) -----------------------
+#
+# FOUND BY THE S7 WALK. `.gbagent.toml` declares `./.venv/bin/python -m pytest -q`, and a fresh
+# `git worktree` — what PRD-22 hands every fleet child — has no `backend/.venv`. `load` refused
+# a repository that was merely unbuilt, and nothing anywhere built it. The walk symlinked a venv
+# in, which was the workaround that named the gap.
+
+
+def test_a_repository_declaring_no_setup_needs_none(tmp_path):
+    """Absent `[setup]` is legal and is not an absence reading as clean: if the tree really did
+    need building, `load`'s executable check refuses on the next line."""
+    assert config.prepare(_repo(tmp_path, '[tests]\ncommand = "echo hi"\n')) == []
+
+
+def test_setup_commands_run_in_the_worktree(tmp_path):
+    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
+                           '\n[setup]\ncommands = ["touch built.txt"]\n')
+
+    ran = config.prepare(root)
+
+    assert ran == ["touch built.txt"]
+    assert (root / "built.txt").exists(), "it ran somewhere else"
+
+
+def test_setup_runs_every_command_in_order(tmp_path):
+    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
+                           '\n[setup]\ncommands = ["touch one", "touch two"]\n')
+
+    config.prepare(root)
+
+    assert (root / "one").exists() and (root / "two").exists()
+
+
+def test_a_setup_that_fails_refuses_the_spawn(tmp_path):
+    """The whole point. An agent in a tree that did not build cannot verify anything, and
+    discovering that at the first `run_tests` costs the run."""
+    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
+                           '\n[setup]\ncommands = ["false"]\n')
+
+    with pytest.raises(config.SetupFailed) as exc:
+        config.prepare(root)
+
+    assert "did not build" in str(exc.value)
+
+
+def test_a_failing_setup_stops_before_the_commands_after_it(tmp_path):
+    """Continuing past a failed build would run the rest against a tree that is not there."""
+    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
+                           '\n[setup]\ncommands = ["false", "touch after.txt"]\n')
+
+    with pytest.raises(config.SetupFailed):
+        config.prepare(root)
+
+    assert not (root / "after.txt").exists()
+
+
+def test_a_setup_naming_a_missing_program_says_so(tmp_path):
+    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
+                           '\n[setup]\ncommands = ["definitely-not-a-real-binary-xyz"]\n')
+
+    with pytest.raises(config.SetupFailed) as exc:
+        config.prepare(root)
+
+    assert "not installed here" in str(exc.value)
+
+
+def test_setup_is_a_list_because_there_is_no_shell(tmp_path):
+    """D4: `a && b` as one string would make `&&` a literal argument to `a`."""
+    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
+                           '\n[setup]\ncommands = "touch one && touch two"\n')
+
+    with pytest.raises(config.SetupFailed) as exc:
+        config.prepare(root)
+
+    assert "list" in str(exc.value)
+
+
+def test_setup_refusal_is_a_ConfigRefused_so_every_caller_already_handles_it(tmp_path):
+    """A second exception type would mean every `except ConfigRefused` site had to learn about
+    it, and the consequence is identical: no spawn."""
+    assert issubclass(config.SetupFailed, ConfigRefused)
+
+
+def test_prepare_leaves_a_missing_config_for_load_to_refuse(tmp_path):
+    """Two refusals for one fault would be two messages to keep honest. `load` names the
+    missing file better than `prepare` could."""
+    root = _repo(tmp_path, None)
+
+    assert config.prepare(root) == []
+
+    with pytest.raises(ConfigRefused) as exc:
+        load(root)
+
+    assert CONFIG_NAME in str(exc.value)

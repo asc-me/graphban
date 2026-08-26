@@ -10,3 +10,15 @@
 [tests]
 command = "./.venv/bin/python -m pytest -q"
 cwd = "backend"
+
+# How a FRESH WORKTREE is built (GRPH-502). PRD-22 hands every fleet child a new
+# `git worktree`, which has no `backend/.venv` — so the command above names an interpreter
+# that is not there yet and `config.load` refuses a repository that is merely unbuilt.
+#
+# A list, not one string: D4 means there is no shell, so `a && b` would make `&&` a literal
+# argument. Each runs in turn and the first failure refuses the spawn.
+[setup]
+commands = [
+    "uv venv --python 3.12 backend/.venv",
+    "uv pip install --python backend/.venv/bin/python -e backend[dev]",
+]
