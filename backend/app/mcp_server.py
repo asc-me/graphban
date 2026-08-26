@@ -378,9 +378,31 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_prd",
+        "description": (
+            "The full PRD including its markdown `body`. Read before update_prd, which "
+            "REPLACES the body whole — editing without reading deletes what you did not "
+            "reproduce."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"prd_id": {"type": "string"}},
+            "required": ["prd_id"],
+        },
+        "outputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "project_id": {"type": "string"},
+                           "title": {"type": "string"}, "status": {"type": "string"},
+                           "version": {"type": "integer"}, "body": {"type": "string"}},
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False,
+                        "idempotentHint": True, "openWorldHint": False},
+    },
+    {
         "name": "update_prd",
         "description": (
-            "Patch a PRD's title, status (draft|review), or body (full markdown replace). "
+            "Patch a PRD's title, status (draft|review), or body (full markdown replace) — "
+            "call get_prd FIRST, because a replace deletes what you did not reproduce. "
             "Returns the updated PRD. To keep a history checkpoint, the UI snapshots versions; edits here "
             "update the working draft."
         ),
@@ -2304,6 +2326,26 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             project_id=pid, body=args.get("body"),
         )
         return _prd_dict(prd)
+    if name == "get_prd":
+        # The read that was missing (GRPH-519). `answer_grill` reports `body_absorbed: false`,
+        # and the only tool that could fix it replaces the body WHOLE — so without this an
+        # agent's sole route to absorbing its own answers was to rewrite the document from
+        # memory. That is the defect GRPH-515 fixed for `write_file`, and here no guard existed
+        # at all: it would have silently succeeded and dropped every unreproduced section.
+        prd = prd_svc.get_prd(db, args["prd_id"])
+        if prd is None:
+            raise errors.NotFound(f"prd not found: {args['prd_id']}")
+        if prd.project_id not in allowed:
+            raise authz.Forbidden(f"prd {args['prd_id']!r} is outside this key's project scope")
+        return {
+            "id": prd.key,
+            "project_id": prd.project_id,
+            "title": prd.title,
+            "status": prd.status,
+            "version": prd.version,
+            "body": prd.body or "",
+        }
+
     if name == "update_prd":
         prd = prd_svc.get_prd(db, args["prd_id"])
         if prd is None:

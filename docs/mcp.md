@@ -76,7 +76,7 @@ mcp_servers:
 Every client authenticates the same way: the key in an `X-API-Key` header (or
 `Authorization: Bearer`), against a URL reachable **from where the agent runs**.
 
-## The 54 tools
+## The 55 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -133,6 +133,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `prd_coverage` | `prd_id` | Spec-to-task rollup: per-section counts, coverage %, gaps (read-only) |
 | `decompose_prd` | `prd_id`, `create` | Propose (or create) one task per un-covered PRD section, each carrying the PRD's framing prose |
 | `create_prd` | `title`, `body`, `template`, `project_id` | **Author a PRD** (the handoff artifact) — `## ` sections drive decompose/coverage |
+| `get_prd` | `prd_id` | The full PRD including its markdown `body`. **Read before `update_prd`** — that tool replaces the body whole, so editing without reading deletes what you did not reproduce (GRPH-519) |
 | `update_prd` | `prd_id`, `title`, `status`, `body` | Patch a PRD's title, status (`draft`/`review`) or body. **`approved` is not settable** — it is reached by finishing the grill; setting it returns `conflict` naming what is still outstanding (AL-300) |
 | `answer_grill` | `prd_id`, `answer` | Relay the author's answer to a grill question — recorded as **agent-relayed**, visible to whoever reviews later. Returns `outstanding` + `complete` (AL-299) |
 | `grill_prd` | `prd_id` | **Grill** — next clarifying questions to sharpen a PRD before building (read-only) |
