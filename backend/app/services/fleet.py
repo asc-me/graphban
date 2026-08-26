@@ -382,13 +382,10 @@ def list_agents(db: Session, project_id: str | None = None, *,
             "last_seen_at": a.last_seen_at.isoformat() if a.last_seen_at else None,
             # What it is holding right now. The roster's second question after "who is out
             # there" is "what is stuck with them".
-            # `id` is the RENDERED key, matching `_item_dict` and every other item the MCP
-            # surface emits (PRD-13). The stored id is frozen and internal; emitting it here
-            # would hand an agent a string it cannot quote back, and would leak a retired tag
-            # into agent memory after a rename. `stored_id` is kept for the web UI, which
-            # addresses rows directly.
-            "holdings": [{"id": i.key, "stored_id": i.id, "title": i.title, "status": i.status}
-                         for i in held.get(a.id, [])],
+            # `phase` and `phase_basis` are DERIVED server-side rather than reported by the child,
+            # because three of the four adapters are vendors we do not control — see
+            # `holding_phase`. They cost no extra query: `held` already loaded the full rows.
+            "holdings": [_holding_dict(i, state) for i in held.get(a.id, [])],
         })
     return out
 
@@ -1248,6 +1245,101 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     db.commit()
     db.refresh(item)
     return item
+
+
+#: The phases a holding can be in, most specific first. `stale` and `unknown` are not
+#: activities — they are the two admissions, and they exist so that "we cannot tell" can
+#: never be rendered as "nothing is wrong".
+PHASES = ("stale", "blocked", "review", "integrating", "verifying", "building",
+          "claimed", "unknown")
+
+#: Evidence kinds that mean the agent has RUN something, as opposed to described it.
+#: `note`/`url`/`screenshot` are narration and prove no verification happened.
+_VERIFYING_EVIDENCE = ("test", "sabotage")
+
+#: Presence states in which the item's signals are frozen rather than current.
+_ABSENT = ("offline", "quarantined")
+
+
+def holding_phase(item: Item, state: str) -> tuple[str, str]:
+    """What is this agent DOING with the item it holds? Returns `(phase, basis)`.
+
+    DERIVED, and derived HERE, for one reason: we own `gbagent`'s loop and none of
+    `claude`, `cursor-agent` or `grok`. A phase the child reports would be populated by one
+    adapter and blank for the other three, and a blank column reads as an idle agent. Every
+    signal below is one that any vendor already writes through the ordinary MCP surface, so
+    the fleet is legible without asking a single child for anything new.
+
+    Not computed in the supervisor either. `ALLOWED_TOOLS` is pinned to
+    `{fleet_status, propose_allocation}`, so it cannot fetch an item's detail — and widening
+    that allowlist to feed a DISPLAY field would hand the supervisor a worker's authority.
+    The roster row carries more truth instead; the supervisor's reach does not change.
+
+    `basis` is the point of the pair. An inference nobody can check is one they have to
+    trust, so every phase says which signal produced it — including `unknown`, whose basis
+    is the admission that none matched.
+    """
+    # FIRST, and the only rule here that is about the AGENT rather than the item.
+    #
+    # Phase is displayed on an agent row, so it reads as a claim about that agent. An agent
+    # that died mid-item leaves an item that still says `in_progress` forever: derive from
+    # the item alone and a dead worker is rendered as busy, indefinitely, which is this
+    # repo's recurring defect class — the absence reads as clean. `stale` is the honest
+    # answer, and it says the signals below are frozen, not that they are false.
+    if state in _ABSENT:
+        return "stale", f"agent {state}"
+    if item.blocker:
+        # The blocker text, not the status: `update_item(blocker=...)` sets the field
+        # without requiring the status move, so an agent can be stuck while still
+        # `in_progress`. Checking status alone would miss exactly the agent that said so.
+        return "blocked", "blocker set"
+    if item.status == "blocked":
+        return "blocked", "status blocked"
+    if item.status == "review":
+        return "review", "status review"
+    if item.pr:
+        # A recorded PR means the push already happened, so what is outstanding is CI and a
+        # reviewer — not this agent's typing. Above `verifying` because it is later in the
+        # same pass: the tests that produced the receipt ran before the branch went up.
+        return "integrating", "pr recorded"
+    # `.get` without an isinstance check on purpose: every writer of `item.evidence` goes
+    # through `append_evidence`/`normalize_evidence`, which drops non-dicts and coerces an
+    # unknown kind to `note`. A defensive guard here could not fire, and this repo has a
+    # habit of adding guards that can never fail and then trusting them.
+    if any(e.get("kind") in _VERIFYING_EVIDENCE for e in (item.evidence or [])):
+        return "verifying", "test receipt"
+    if item.status == "in_progress":
+        return "building", "status in_progress"
+    if item.status in ("next", "backlog"):
+        # Claimed — `claimed_by` is what put this item in `held` — but not yet started. A
+        # real window: `claim_cluster` reserves work before the agent moves any of it.
+        return "claimed", f"claimed, status {item.status}"
+    return "unknown", f"no signal matched (status {item.status})"
+
+
+def _holding_dict(item: Item, state: str) -> dict:
+    """One roster holding: what it is, and what is being done with it.
+
+    `id` is the RENDERED key, matching `_item_dict` and every other item the MCP surface
+    emits (PRD-13). The stored id is frozen and internal; emitting it as `id` would hand an
+    agent a string it cannot quote back, and would leak a retired tag into agent memory
+    after a rename. `stored_id` is kept for the web UI, which addresses rows directly.
+    """
+    phase, basis = holding_phase(item, state)
+    return {"id": item.key, "stored_id": item.id, "title": item.title, "status": item.status,
+            "phase": phase, "phase_basis": basis, "bounced": was_bounced(item)}
+
+
+def was_bounced(item: Item) -> bool:
+    """Has this item come back at least once? (GRPH-378 keeps the reason, so we can ask.)
+
+    Deliberately NOT a rung on the ladder above. Rework and current activity are independent
+    facts: folding "fix" into the phase would force an arbitrary precedence against
+    `verifying`, and the bounce would vanish from the row the moment the agent ran a test.
+    `building + bounced` and `verifying + bounced` are both worth telling apart, and the
+    caller can cross them freely.
+    """
+    return bool(item.bounce_reason)
 
 
 def has_orphaned_branch(agent: Agent, state: str) -> bool:

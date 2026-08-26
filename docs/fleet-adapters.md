@@ -175,6 +175,56 @@ different thing from publishing a live seat to `ps`.
 - argv carries only paths and a generic pointer sentence that says "follow the
   instructions on standard input".
 
+## The work phase is derived, never reported (GRPH-522)
+
+The roster answers "who is out there" and "what is stuck with them". It now also answers
+"what are they DOING with it" — but the phase does **not** come from the adapter, and no
+adapter is asked to send it.
+
+That is the whole design constraint. We own `gbagent`'s loop and can make it report
+anything; we own none of `claude`, `cursor-agent` or `grok`, and `codex` is not
+implemented. A reported phase would be populated for one adapter out of four, and a blank
+column reads as an idle agent — the failure would look like the fleet working.
+
+So the server derives it in `holding_phase()` from signals every vendor already writes
+through the ordinary MCP surface: the item's status, its `blocker`, its `pr`, its evidence
+receipts, and `bounce_reason`. Adding an adapter requires nothing; the phase works for a
+vendor child on the day it first registers.
+
+| phase | derived from |
+|---|---|
+| `stale` | the AGENT is offline or quarantined |
+| `blocked` | `blocker` set, or status `blocked` |
+| `review` | status `review` |
+| `integrating` | a `pr` is recorded — pushed, so CI and a reviewer are what is outstanding |
+| `verifying` | a `test` or `sabotage` evidence receipt exists |
+| `building` | status `in_progress` |
+| `claimed` | held, but still `next`/`backlog` |
+| `unknown` | nothing matched — an admission, and its basis says so |
+
+`stale` is checked first and outranks everything. An agent that dies mid-item leaves an
+item that says `in_progress` forever, so a phase derived from the item alone would render
+a dead worker as busy, indefinitely. Phase is displayed on an AGENT row, which makes it a
+claim about the agent — this is the repo's recurring defect class, where the absence reads
+as clean.
+
+Rework is reported as a separate `bounced` flag rather than a `fixing` rung, because
+activity and rework are independent: folding them together forces an arbitrary precedence
+against `verifying`, and the bounce would vanish from the row the moment the agent ran a
+test. Every holding also carries `phase_basis`, the literal signal that produced the
+phase, because an inference nobody can check is one they have to trust.
+
+None of this widened the supervisor. Deriving it supervisor-side would have needed
+`get_item_details`, and `ALLOWED_TOOLS` is pinned to `{fleet_status, propose_allocation}`
+by exact equality — a display feature must not hand the supervisor a worker's authority.
+The roster row carries more truth instead.
+
+**What it still cannot tell you.** These are lifecycle positions, not activity. `building`
+covers reading the codebase, editing, and thinking; a child compiling for ten minutes and
+one stuck in a loop look identical. The only finer signal that exists is `gbagent`'s
+per-turn trace (GRPH-506), which is unstructured, local to the spawn log, and first-party
+only — which is exactly why it was not made the source.
+
 ## Two things that are not solved
 
 **`grok`'s per-child seat.** Its MCP configuration is user-level
