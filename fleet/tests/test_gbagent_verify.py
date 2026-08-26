@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from gbagent import verify
+from gbagent import tools, verify
 from gbagent.config import CONFIG_NAME, ConfigRefused, VerifyConfig, load
 from gbagent.workspace import ToolError
 
@@ -275,3 +275,91 @@ def test_this_repository_loads_where_its_interpreter_is_installed():
 
     assert cfg.argv[:2] == ["./.venv/bin/python", "-m"], cfg.argv
     assert cfg.cwd.name == "backend"
+
+
+# ---- git_diff and the files write_file makes (GRPH-488) ---------------------------------
+#
+# `git diff` reports tracked, unstaged changes only. Everything this agent CREATES is
+# untracked, so the tool whose description says "Show what you have changed in the worktree
+# so far" could not see the output of the tool the agent uses most.
+#
+# The shipped test modified a committed file, which is the one case a plain diff handles.
+
+
+def _repo_with_history(tmp_path: Path) -> Path:
+    """A worktree with one committed file, so 'tracked' and 'untracked' both exist."""
+    import subprocess
+
+    root = _repo(tmp_path, None)
+    for cmd in (["git", "init", "-q"], ["git", "config", "user.email", "t@t.io"],
+                ["git", "config", "user.name", "t"]):
+        subprocess.run(cmd, cwd=root, check=True)
+    (root / "existing.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)
+    return root
+
+
+def test_git_diff_sees_a_file_the_agent_just_created(tmp_path):
+    """THE DEFECT. write_file creates untracked files; a plain `git diff` cannot see them,
+    so an agent that had just written three modules was told it had changed nothing."""
+    root = _repo_with_history(tmp_path)
+    tools.write_file(root, "app/brand_new.py", "def feature():\n    return 42\n")
+
+    out = verify.git_diff(root)
+
+    assert out["empty"] is False, "a newly written file left the diff empty"
+    assert "brand_new.py" in out["diff"]
+
+
+def test_a_new_file_is_not_lost_beside_an_edited_one(tmp_path):
+    """THE WORSE CASE, and the reason this is a defect rather than a gap. With both kinds of
+    change the answer was no longer empty — it was a confident, well-formed diff that
+    silently omitted the new module. Obvious wrongness is survivable; plausible wrongness is
+    what gets believed."""
+    root = _repo_with_history(tmp_path)
+    tools.write_file(root, "app/brand_new.py", "def feature():\n    return 42\n")
+    tools.edit_file(root, "existing.py", "x = 1", "x = 2")
+
+    diff = verify.git_diff(root)["diff"]
+
+    assert "existing.py" in diff, "the tracked edit vanished"
+    assert "brand_new.py" in diff, "the new file was silently omitted from a diff that looked complete"
+
+
+def test_git_diff_stages_nothing_for_commit(tmp_path):
+    """`git add -N` records intent, not content. If that were ever to become a real `add`,
+    the agent would be quietly staging its own work and D9's salvage — which commits the
+    dirty worktree onto the child's branch — would start committing a curated subset."""
+    import subprocess
+
+    root = _repo_with_history(tmp_path)
+    tools.write_file(root, "app/brand_new.py", "x = 1\n")
+
+    verify.git_diff(root)
+
+    staged = subprocess.run(["git", "diff", "--cached", "--name-only"],
+                            cwd=root, capture_output=True, text=True).stdout.strip()
+    assert staged == "", f"git_diff staged something for commit: {staged!r}"
+
+
+def test_git_diff_on_a_clean_tree_is_still_empty(tmp_path):
+    """The control. Without it, 'always report something' satisfies every assertion above
+    and the tool stops being able to say the agent has done nothing yet — which is a real
+    answer and a useful one."""
+    root = _repo_with_history(tmp_path)
+
+    out = verify.git_diff(root)
+
+    assert out["empty"] is True and out["lines"] == 0
+
+
+def test_git_diff_outside_a_git_repo_still_answers(tmp_path):
+    """The intent-to-add is best-effort. A worktree that is not a repository must not turn
+    into a raised error just because the new first step had nothing to talk to."""
+    root = _repo(tmp_path, None)
+
+    with pytest.raises(ToolError) as exc:
+        verify.git_diff(root)
+
+    assert "git diff failed" in str(exc.value), "the failure should come from the diff, not the add"

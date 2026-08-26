@@ -492,6 +492,12 @@ def test_the_worker_set_is_pinned_and_is_not_the_supervisors():
     Pinned as two halves rather than one flat list, because the halves mean different things:
     the WRITES are what the loop itself initiates, and the READS are the orientation layer the
     model calls. A new write appearing among the reads is the change worth noticing.
+
+    `heartbeat` was added deliberately in GRPH-496 and this assertion is where that had to be
+    said out loud, which is the point of pinning it. It is the one write made on a TIMER
+    rather than at a decision point: presence is derived from `last_seen_at`, only `heartbeat`
+    refreshes it, and without it a working agent read `offline` to the whole fleet 150 seconds
+    after registering while its item lease quietly expired.
     """
     from gbagent.orient import COORDINATION_TOOLS, ORIENTATION_TOOLS
     from gbfleet.client import ALLOWED_TOOLS
@@ -503,9 +509,11 @@ def test_the_worker_set_is_pinned_and_is_not_the_supervisors():
     # `release_item` is the only verb NEITHER layer advertises: the give-up path calls it and
     # the model never should, because releasing is what a harness does when it runs out of
     # turns, not a move a model makes. `update_item` is deliberately in both — the loop writes
-    # the handoff note with it and the model moves the item to review with it.
+    # the handoff note with it and the model moves the item to review with it. `heartbeat` is
+    # likewise both: the loop beats on a timer (GRPH-496) and the model may call it too.
     assert WORKER_TOOLS - reads - writes == {"release_item"}
     assert "update_item" in writes and "release_item" not in writes
+    assert "heartbeat" in WORKER_TOOLS, "GRPH-496: presence is only refreshed by heartbeat"
     assert not WORKER_TOOLS & ALLOWED_TOOLS, "a worker is not a supervisor"
 
 
@@ -568,3 +576,168 @@ def test_release_names_the_agent_so_the_server_can_check_the_lease():
     Coordinator(client=_graphban(handler), item_id="GRPH-1", agent_id="agt_9").release()
 
     assert sent[0]["arguments"] == {"id": "GRPH-1", "agent_id": "agt_9"}
+
+
+def test_a_beat_carries_the_item_id_so_the_LEASE_is_extended_too(wt):
+    """A sabotage found this missing, and it is half of what GRPH-496 is about.
+
+    `heartbeat` with no `id` is presence-only. With an `id` the server extends the item lease
+    and stamps `working` in the same write, and its comment says why: "an agent that
+    heartbeats its item lease but not its presence would be declared dead while visibly
+    working, and the roster would then be reporting the opposite of what is happening".
+
+    So dropping the id would still keep the agent VISIBLE while its lease quietly expired and
+    another agent was handed the work — the failure looks fixed and the worse half remains.
+    Asserted on the wire, because a stub coordinator cannot tell the two calls apart.
+    """
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sent.append(body["params"])
+        return _mcp({"id": "GRPH-1"}, id_=body["id"])
+
+    Coordinator(client=_graphban(handler), item_id="GRPH-1", agent_id="agt_9").beat()
+
+    assert sent[0]["name"] == "heartbeat"
+    assert sent[0]["arguments"] == {"id": "GRPH-1", "agent_id": "agt_9"}
+
+
+def test_the_cadence_call_is_presence_only(wt):
+    """The mirror. Asking for the cadence must NOT carry an item id — that call is made at
+    start-up before any work, and `idle` is what this agent honestly is at that moment. It is
+    also the only shape that answers with `heartbeat_interval_seconds` at all."""
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sent.append(body["params"])
+        return _mcp({"heartbeat_interval_seconds": 50}, id_=body["id"])
+
+    out = Coordinator(client=_graphban(handler), item_id="GRPH-1",
+                      agent_id="agt_9").cadence()
+
+    assert "id" not in sent[0]["arguments"], "the cadence call extended a lease by accident"
+    assert sent[0]["arguments"] == {"agent_id": "agt_9"}
+    assert out["heartbeat_interval_seconds"] == 50
+
+
+# ---- a malformed turn is not a finish (GRPH-489) ----------------------------------------
+#
+# `wants_tools` is `finish_reason == "tool_calls" or bool(calls)`. That `or` exists because
+# local models stop with finish_reason "stop" while carrying tool calls — a disagreement
+# between the two fields that really happens. The mirror case is a finish_reason of
+# "tool_calls" carrying none, and the loop condition `wants_tools and turn.tool_calls` is
+# False for it, so it fell through and returned exit 0.
+#
+# Which is the outcome `exit_meaning`'s own docstring says D6 rejected: "ps and the
+# supervisor's record would show a clean finish for a run that achieved nothing."
+
+
+def _malformed() -> ToolTurn:
+    """finish_reason "tool_calls", no tool_calls carried. Empty closing text is the tell."""
+    return ToolTurn(text="", tool_calls=[], wants_tools=True)
+
+
+def test_a_turn_that_wants_tools_and_carries_none_is_not_a_finish(wt):
+    outcome = loop.run(FakeSession([_malformed()]), _toolset(wt),
+                       coordinator=FakeCoordinator(), window=100_000)
+
+    assert outcome.status != "finished", "a malformed turn was reported as a clean finish"
+    assert outcome.exit_code != loop.EXIT_OK
+    assert outcome.exit_code == loop.EXIT_STUCK
+
+
+def test_the_malformed_turn_still_writes_a_handoff_before_releasing(wt):
+    """It is a give-up, so it owes the same record any other give-up owes — and in the same
+    order, because release_item clears built_by on an untouched row (GRPH-434)."""
+    coord = FakeCoordinator()
+
+    outcome = loop.run(FakeSession([_malformed()]), _toolset(wt),
+                       coordinator=coord, window=100_000)
+
+    assert coord.order == ["write_handoff", "release"]
+    assert outcome.handoff, "no handoff note was written"
+
+
+def test_the_note_says_the_turn_was_malformed_rather_than_the_budget(wt):
+    """'gave up after 1 of 40 turns' with no explanation reads as a crash to whoever picks
+    the item up. The budget was nowhere near spent, and the note has to say so."""
+    outcome = loop.run(FakeSession([_malformed()]), _toolset(wt),
+                       coordinator=FakeCoordinator(), window=100_000)
+
+    assert "carried none" in outcome.handoff
+    assert "malformed turn" in outcome.handoff
+
+
+def test_a_real_finish_is_still_a_finish(wt):
+    """The control. Without it, 'never report finished' satisfies every assertion above and
+    the agent could never complete anything."""
+    outcome = loop.run(FakeSession([_done("all done")]), _toolset(wt),
+                       coordinator=FakeCoordinator(), window=100_000)
+
+    assert outcome.status == "finished"
+    assert outcome.exit_code == loop.EXIT_OK
+    assert outcome.handoff == ""
+
+
+def test_a_malformed_turn_AFTER_real_work_still_gives_up(wt):
+    """The realistic shape: the model works for a few turns, then emits a truncated tool
+    call. The turns it spent are real and the note must count them."""
+    session = FakeSession([_wants("read_file", path="a.py"), _malformed()])
+
+    outcome = loop.run(session, _toolset(wt), coordinator=FakeCoordinator(), window=100_000)
+
+    assert outcome.exit_code == loop.EXIT_STUCK
+    assert outcome.turns == 2
+    assert "2 of" in outcome.handoff
+
+
+# ---- a lost claim reaches the loop (GRPH-496) -------------------------------------------
+
+
+class _Gone:
+    """A heartbeat that has already heard the server say the claim is gone."""
+
+    gone = "the server no longer accepts this credential: HTTP 401"
+    beats = 0
+    misses = 0
+
+
+def test_a_lost_claim_stops_the_run_at_the_next_turn_boundary(wt):
+    """The heartbeat thread records it; the LOOP acts on it. Checked at the boundary rather
+    than from the thread because interrupting a blocked subprocess from a daemon thread is a
+    much larger decision — what this buys is that the child stops before spending another
+    22-45 second turn."""
+    session = FakeSession([_wants("read_file", path="a.py"), _done()])
+    coord = FakeCoordinator()
+
+    outcome = loop.run(session, _toolset(wt), coordinator=coord, window=100_000,
+                       heartbeat=_Gone())
+
+    assert outcome.exit_code == loop.EXIT_STUCK
+    assert coord.order == ["write_handoff", "release"], "a lost claim skipped the record"
+    assert "no longer accepts this credential" in outcome.handoff
+
+
+def test_a_healthy_heartbeat_does_not_interrupt_anything(wt):
+    """The control. Without it, 'always give up' satisfies the assertion above and no run
+    could ever finish."""
+    class _Fine:
+        gone = ""
+        beats = 7
+        misses = 0
+
+    outcome = loop.run(FakeSession([_done("all done")]), _toolset(wt),
+                       coordinator=FakeCoordinator(), window=100_000, heartbeat=_Fine())
+
+    assert outcome.status == "finished" and outcome.exit_code == loop.EXIT_OK
+
+
+def test_no_heartbeat_at_all_is_still_a_valid_run(wt):
+    """`heartbeat=None` is how every existing caller and test invokes this. It must stay a
+    run that works, not a run that crashes on an attribute nobody passed."""
+    outcome = loop.run(FakeSession([_done()]), _toolset(wt),
+                       coordinator=FakeCoordinator(), window=100_000)
+
+    assert outcome.status == "finished"

@@ -109,6 +109,26 @@ export function CodeGraphView() {
     return [...s].sort();
   }, [nodes, allEdges]);
 
+  /**
+   * ONE definition of "how big is this graph", because there were two and they disagreed
+   * (GRPH-479). The caption read `map.node_count` — the server's count of DESCRIBED nodes —
+   * while the canvas drew `allIds`, which is that set plus every edge endpoint nobody has
+   * described yet. On the live graph those were 193 and 228, so a sighted reader and a
+   * screen-reader user were told different things about the same picture, and the accessible
+   * name was the accurate one.
+   *
+   * `drawn` is the honest headline: it is what is on screen, what is focusable, and what the
+   * arrow keys move through. `undescribed` is surfaced rather than folded in, because "35 of
+   * these are only names an edge pointed at" is the interesting half — it is the outstanding
+   * `describe_code` work, and burying it in a total is how it stays invisible.
+   */
+  const counts = React.useMemo(() => ({
+    drawn: allIds.length,
+    described: nodes.length,
+    undescribed: Math.max(0, allIds.length - nodes.length),
+    edges: allEdges.length,
+  }), [allIds, nodes, allEdges]);
+
   // ── D9: the galaxy view ────────────────────────────────────────────────────
   // Past the detail budget the graph changes WHAT it draws rather than drawing the same thing
   // slower. `entered` is the component we are inside, or null for the whole map.
@@ -387,8 +407,8 @@ export function CodeGraphView() {
             ) : (
               <p className="mt-0.5 text-[12.5px] text-muted">
                 {galaxyMode
-                  ? `${allIds.length} nodes in ${galaxy.superNodes.length} components — too many to draw at once. Click a component to enter it.`
-                  : `The codebase as agents described it — modules, files, and symbols with typed relations. ${map ? `${map.node_count} nodes · ${map.edge_count} edges.` : ""}`}
+                  ? `${counts.drawn} nodes in ${galaxy.superNodes.length} components — too many to draw at once. Click a component to enter it.`
+                  : `The codebase as agents described it — modules, files, and symbols with typed relations. ${map ? `${counts.drawn} nodes · ${counts.edges} edges${counts.undescribed ? ` · ${counts.undescribed} referenced but not yet described` : ""}.` : ""}`}
               </p>
             )}
           </div>
@@ -517,7 +537,15 @@ export function CodeGraphView() {
               role="application"
               tabIndex={0}
               aria-label={
-                `Code graph: ${ids.length} nodes, ${edges.length} of ${allEdges.length} edges shown. ` +
+                // Carries the same facts as the visible caption, including the undescribed
+                // count — a11y parity is the point, and it was the caption that was wrong
+                // (GRPH-479). `ids` rather than `counts.drawn` because inside a component
+                // this describes what is on screen NOW, which is what the arrow keys move
+                // through; the two are the same set on the whole map.
+                `Code graph: ${ids.length} nodes, ${edges.length} of ${allEdges.length} edges shown` +
+                (counts.undescribed
+                  ? `, ${counts.undescribed} referenced but not yet described. `
+                  : `. `) +
                 `Arrow keys move between nodes, Enter selects, Shift+Enter widens by one ring, ` +
                 `Shift+arrows pan, Escape clears.`
               }

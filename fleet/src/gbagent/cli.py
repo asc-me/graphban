@@ -27,6 +27,7 @@ import gbfleet
 from . import loop
 from .config import ConfigRefused, load
 from .coord import Coordinator
+from .heartbeat import Heartbeat
 from .llm import ModelUnreachable, OllamaSession
 from .orient import (
     COORDINATION_TOOLS,
@@ -137,13 +138,20 @@ def _run(args: argparse.Namespace) -> int:
         system=SYSTEM,
         task=f"{task}\n\n{assignment}".strip(),
     )
+    # Started BEFORE the loop and stopped in the same `finally` as the session, because the
+    # window it exists to cover opens on the first blocking tool call (GRPH-496). Nothing
+    # else refreshes `last_seen_at`, so without this the agent reads `offline` to the whole
+    # fleet one presence TTL in — 150s by default — while its item lease quietly expires.
+    heartbeat = Heartbeat(coordinator)
+    heartbeat.start()
     try:
         outcome = loop.run(session, toolset, coordinator=coordinator,
-                           window=args.window, budget=args.turns)
+                           window=args.window, budget=args.turns, heartbeat=heartbeat)
     except ModelUnreachable as exc:
         print(f"gbagent: {exc}", file=sys.stderr)
         return 69  # EX_UNAVAILABLE. The endpoint, not this agent, and not a give-up.
     finally:
+        heartbeat.stop()
         session.close()
 
     # `None`, not 0, when it never wrote — see docs/orientation-metric-prd24.md. A run that
@@ -151,6 +159,7 @@ def _run(args: argparse.Namespace) -> int:
     first = outcome.turns_to_first_write
     print(f"gbagent: {outcome.status} after {outcome.turns} turns "
           f"({outcome.compactions} compaction(s), {orientation.calls} graph call(s), "
+          f"{heartbeat.beats} heartbeat(s), "
           f"first write on turn {first if first is not None else 'NEVER'}) — {outcome.meaning}",
           file=sys.stderr)
     return outcome.exit_code

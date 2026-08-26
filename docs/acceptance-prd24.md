@@ -293,20 +293,42 @@ children never exposed this because they do not run the test suite.
 **worktree's** copy, not the editable install's target. The agent's edits are what gets tested.
 That much is sound.
 
-### One verification consumes 89% of the lease
+### What else changed underneath this walk
+
+Two things merged into `main` while these runs were in flight, and both touch what is described
+above:
+
+- **GRPH-496** — the heartbeat timer, above.
+- **GRPH-488's bounce** — `git_diff` could not see files `write_file` creates, because
+  `git diff` reports tracked changes only and everything this agent creates is untracked. It
+  did not affect these runs (run 1 and run 3 created nothing, run 2 modified a tracked file),
+  but it means the `git_diff` the model was offered during the walk would have under-reported
+  its own work in the mixed case.
+
+**The walk was not re-run against the merged tree.** The failures here are about model
+capability rather than harness plumbing, and re-running would cost another hour to reach the
+same verdict — but that is a judgement, not a measurement, and it is stated as one.
+
+### One verification consumes 89% of the lease — **fixed while this walk was running**
 
 | | |
 | --- | --- |
 | declared test command, measured | **533s (8m53s)**, 2217 passed |
 | item lease (`DEFAULT_LEASE_SECONDS`) | **600s** |
 
-A single `run_tests` spends 8m53s of a 10-minute lease, and the agent **cannot heartbeat while
-it runs** — it is blocked in a subprocess. Two verifications and the lease is gone; the item
-requeues while the agent is still working on it, and another agent can take it.
+A single `run_tests` spends 8m53s of a 10-minute lease, and during it the agent is blocked in a
+subprocess with no turn available — so `heartbeat` being advertised to the model does not help.
+Two verifications and the lease is gone; the item requeues while the agent is still working on
+it.
 
-`heartbeat` is advertised to the model, which does not help: there is no turn available during
-a blocking call. This is a structural mismatch between PRD-22's lease and PRD-24's declared
-verification, and neither PRD names it.
+**GRPH-496 shipped `gbagent/heartbeat.py` between run 2 and this write-up**, beating on a timer
+rather than at a decision point, precisely because presence is derived from `last_seen_at` and
+only `heartbeat` refreshes it. All three runs here predate that fix and were affected by it.
+
+This is recorded as *found and already fixed* rather than as an open finding, because the
+alternative — a walk document naming a problem somebody solved yesterday — is the fact-drift
+this repository keeps catching. The underlying mismatch is still worth stating: **a 533s
+verification against a 600s lease has very little margin even with a timer.**
 
 ### D3 declares one test command for a repository with three suites
 
@@ -347,8 +369,9 @@ Not decisions — the evidence for decisions somebody else should make.
    primitive that cannot destroy what it did not read.
 2. **Compaction needs a time trigger, not only a token one.** D7 protects the window; run 3
    died with the window 80% empty.
-3. **The lease and the declared test command are incompatible as they stand** — 533s of
-   verification against a 600s lease, with no way to heartbeat through it.
+3. **The lease and the declared test command have almost no margin** — 533s of verification
+   against a 600s lease. GRPH-496's timer keeps the child alive through it; the numbers are
+   still close enough to be worth a second look.
 4. **Something has to build a child's environment.** A fresh worktree cannot run the declared
    command, and no step anywhere creates one.
 5. **`claim_next` should be bounded per agent**, or a confused model will hold items it never

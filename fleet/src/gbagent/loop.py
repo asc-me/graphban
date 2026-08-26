@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 
 from . import compact as compaction
 from .coord import Coordinator, HandoffFailed
+from .heartbeat import Heartbeat
 from .llm import ToolTurn
 from .toolset import Toolset
 
@@ -101,6 +102,7 @@ def run(
     window: int,
     budget: int = DEFAULT_BUDGET,
     threshold: float = compaction.DEFAULT_THRESHOLD,
+    heartbeat: "Heartbeat | None" = None,
 ) -> Outcome:
     """Drive the loop until the model stops asking for tools, or the budget is spent.
 
@@ -130,6 +132,15 @@ def run(
     while turn.wants_tools and turn.tool_calls:
         if turns >= budget:
             return _give_up(coordinator, toolset, turns, budget, turn, compactions, first_write)
+        if heartbeat is not None and heartbeat.gone:
+            # The heartbeat thread heard the server say this agent's claim is gone
+            # (GRPH-496). Checked at the TURN BOUNDARY rather than acted on from the thread:
+            # interrupting a blocked subprocess from a daemon thread is a much larger
+            # decision, and the supervisor already stops disowned children. What this buys
+            # is that the child stops before spending ANOTHER 22-45 second turn, and leaves
+            # a note saying why instead of dying without one.
+            return _give_up(coordinator, toolset, turns, budget, turn, compactions,
+                            first_write, why=heartbeat.gone)
         session.add_results([toolset.execute(call) for call in turn.tool_calls])
         if first_write is None and toolset.written:
             # The turn the work started on. Recorded here rather than counted afterwards
@@ -138,6 +149,23 @@ def run(
         compactions += _maybe_compact(session, turn, window, threshold)
         turn = session.run_turn(specs)
         turns += 1
+
+    if turn.wants_tools and not turn.tool_calls:
+        # **A turn that asked for tools and carried none is not a finish** (GRPH-489).
+        # `wants_tools` is `finish_reason == "tool_calls" or bool(calls)`, and that `or` is
+        # there because local models stop with `finish_reason: "stop"` while carrying tool
+        # calls. This is the same disagreement in the other direction — a truncated or
+        # malformed `tool_calls` array on a finish_reason of `tool_calls` — and the loop
+        # condition above is False for it, so it used to fall straight through and return
+        # exit 0 with an empty closing message and no record.
+        #
+        # `exit_meaning` already names why that is wrong: "Exiting 0 on a give-up was
+        # rejected in D6 — ps and the supervisor's record would show a clean finish for a
+        # run that achieved nothing." A turn was spent and nothing came of it, which is
+        # what EXIT_STUCK means, so it gives up rather than claiming success.
+        return _give_up(coordinator, toolset, turns, budget, turn, compactions, first_write,
+                        why="the model asked for tools and carried none — a malformed turn, "
+                            "not a finish")
 
     return Outcome(
         status="finished",
@@ -168,9 +196,15 @@ def _maybe_compact(session, turn: ToolTurn, window: int, threshold: float) -> in
         return 0
     result = compaction.compact(messages)
     if not result.summarised:
-        # Over the threshold with nothing compactable: everything large is the plan or the last
-        # five turns, which D7 says survive. Saying so beats reporting a compaction that freed
-        # nothing, and beats looping to try again on an unchanged conversation.
+        # Over the threshold with nothing compactable. This branch used to explain itself as
+        # "everything large is the plan or the last five turns, which D7 says survive" — and
+        # that described the COMMON case as an edge case: tool-call arguments were
+        # unreachable, so an agent that had written a few modules landed here with
+        # `protected` at zero and no remedy at all (GRPH-490). Arguments are compacted now,
+        # so reaching this really does mean everything large is protected.
+        #
+        # Saying so beats reporting a compaction that freed nothing, and beats looping on an
+        # unchanged conversation.
         return 0
     session.messages = result.messages
     return 1
@@ -178,13 +212,18 @@ def _maybe_compact(session, turn: ToolTurn, window: int, threshold: float) -> in
 
 def _give_up(
     coordinator: Coordinator, toolset: Toolset, turns: int, budget: int, turn: ToolTurn,
-    compactions: int = 0, first_write: int | None = None,
+    compactions: int = 0, first_write: int | None = None, why: str = "",
 ) -> Outcome:
-    """D6, in the one order that preserves the record: write, release, exit 75."""
+    """D6, in the one order that preserves the record: write, release, exit 75.
+
+    `why` names a give-up that is NOT the budget running out — currently only the malformed
+    turn of GRPH-489. It reaches the handoff note, because "gave up after 3 of 40 turns"
+    with no explanation reads as a crash to whoever picks the item up.
+    """
     # The model may have claimed its own item, in which case this is the first the coordinator
     # hears of it (S7 walk finding). `adopt` only ever fills a blank.
     coordinator.adopt(toolset.claimed_item)
-    note = handoff_note(toolset, turns, budget, turn, compactions)
+    note = handoff_note(toolset, turns, budget, turn, compactions, why)
     try:
         coordinator.write_handoff(note)
     except HandoffFailed as exc:
@@ -214,7 +253,7 @@ def _give_up(
 
 
 def handoff_note(toolset: Toolset, turns: int, budget: int, turn: ToolTurn,
-                 compactions: int = 0) -> str:
+                 compactions: int = 0, why: str = "") -> str:
     """Turns spent, what changed, where the tests stand, what to try next (D6).
 
     Written for the agent that picks this up next, so every line is something that agent would
@@ -223,7 +262,9 @@ def handoff_note(toolset: Toolset, turns: int, budget: int, turn: ToolTurn,
     the second is how a half-finished item gets signed off.
     """
     lines = [
-        f"gbagent gave up after {turns} of {budget} turns (PRD-24 D6).",
+        (f"gbagent gave up after {turns} of {budget} turns (PRD-24 D6)."
+         if not why else
+         f"gbagent stopped after {turns} of {budget} turns: {why} (PRD-24 D6)."),
         "",
         f"Files changed: {', '.join(toolset.written) if toolset.written else 'none'}",
         f"Tests: {_tests_line(toolset.last_tests)}",

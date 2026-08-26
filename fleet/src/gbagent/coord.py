@@ -30,13 +30,19 @@ from .orient import COORDINATION_TOOLS, ORIENTATION_TOOLS
 #: S7 adds `COORDINATION_TOOLS` — claim, move to review, heartbeat — because an agent that
 #: cannot claim its own work is not a fleet member.
 #:
+#: `heartbeat` is the one the LOOP makes on a timer rather than at a decision point
+#: (GRPH-496). Presence is derived from `last_seen_at` and only `heartbeat` refreshes it, so
+#: without it the agent read `offline` to the whole fleet 150 seconds after registering, while
+#: working, and its item lease was not being extended either. It is in `COORDINATION_TOOLS` as
+#: well, because the model may reasonably call it too.
+#:
 #: Still absent, deliberately: `sign_off`, `bounce`, `claim_review`, `mint_enrolment`,
 #: `assign_role`. The server refuses those to this credential anyway (`TOOL_ROLES` and
 #: `independent()` on authorship), and this set exists so that widening is an edit somebody
 #: has to explain rather than a call site added while doing something else. D5: done is not
 #: the agent's word, and the server clamps a worker at `review` regardless.
 WORKER_TOOLS: frozenset[str] = frozenset(
-    {"update_item", "release_item", *ORIENTATION_TOOLS, *COORDINATION_TOOLS}
+    {"update_item", "release_item", "heartbeat", *ORIENTATION_TOOLS, *COORDINATION_TOOLS}
 )
 
 
@@ -119,3 +125,38 @@ class Coordinator:
         if self.agent_id:
             arguments["agent_id"] = self.agent_id
         return self.client.call("release_item", **arguments)
+
+    def cadence(self) -> dict:
+        """Ask the server how often to heartbeat, rather than hardcoding it (GRPH-496).
+
+        `heartbeat` with no `id` is presence-only and answers with
+        `heartbeat_interval_seconds` and `presence_ttl_seconds`. That is the whole reason
+        this is a separate call: the server's own roster docstring says the intervals travel
+        with the answer because "an agent that does not know the heartbeat cadence cannot
+        stay alive, and making it read a constant out of documentation is how a fleet ends up
+        with members that disagree about what alive means".
+
+        `fleet_status` carries the same two numbers and is NOT used, because it is a roster
+        read this credential has no business making — it would widen WORKER_TOOLS to answer a
+        question the call we already have to make already answers.
+
+        Called once at start-up, when `idle` is what this agent honestly is.
+        """
+        return self.client.call("heartbeat", **({"agent_id": self.agent_id}
+                                                if self.agent_id else {}))
+
+    def beat(self) -> dict:
+        """Keep presence AND the item lease alive, in one call.
+
+        Passing `id` is what makes it both: the server extends the lease and stamps
+        `working` in the same write, and its comment says why — "an agent that heartbeats its
+        item lease but not its presence would be declared dead while visibly working, and the
+        roster would then be reporting the opposite of what is happening".
+
+        So this is not only about being seen. Without it the lease expires mid-build and
+        another agent can be handed work this one is actively doing.
+        """
+        arguments = {"id": self.item_id}
+        if self.agent_id:
+            arguments["agent_id"] = self.agent_id
+        return self.client.call("heartbeat", **arguments)

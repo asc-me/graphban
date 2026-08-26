@@ -12,6 +12,7 @@ and its own task forgotten has compacted successfully and failed completely.
 """
 from __future__ import annotations
 
+import json
 import stat
 from pathlib import Path
 
@@ -418,3 +419,143 @@ def test_a_compacted_run_says_so_in_its_handoff_note(wt):
 
     assert "compacted" in coordinator.note
     assert "no longer verbatim" in coordinator.note
+
+
+# ---- the agent's own output (GRPH-490) --------------------------------------------------
+#
+# The biggest thing in a coding agent's context is the code it wrote, and it is not a tool
+# result. `write_file` carries the whole file body in the assistant message's
+# `tool_calls[].function.arguments`; what comes back is a short {path, created, bytes}.
+#
+# So compaction summarised the receipt and could not reach the payload. `_text_of` counted
+# those arguments — its comment says "arguments carry whole file bodies" — which is the
+# whole defect: the measurement saw them and the remedy could not.
+
+
+def _write_call(i: int, body: str) -> list[dict]:
+    """One assistant turn asking to write a file, and the short result that comes back."""
+    return [
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": f"c{i}",
+            "function": {"name": "write_file",
+                         "arguments": json.dumps({"path": f"app/m{i}.py", "content": body})},
+        }]},
+        {"role": "tool", "tool_call_id": f"c{i}",
+         "content": json.dumps({"path": f"app/m{i}.py", "created": True, "bytes": len(body)})},
+    ]
+
+
+def _write_heavy(n: int = 10) -> list[dict]:
+    body = "def feature():\n    return 42\n" * 300           # ~9 KB, an ordinary module
+    msgs = [
+        {"role": "system", "content": "You are gbagent. Do not stop until tests pass."},
+        {"role": "user", "content": "GRPH-999: build the thing. " + "x" * 500},
+        {"role": "assistant", "content": "Plan: write the modules, then run the tests."},
+    ]
+    for i in range(n):
+        msgs += _write_call(i, body)
+    return msgs
+
+
+def test_a_conversation_of_written_files_is_compactable():
+    """THE DEFECT. Ten ordinary modules put the context over the threshold, and compaction
+    freed nothing at all: summarised=0, protected=0, 0 of 94,607 chars."""
+    msgs = _write_heavy()
+
+    result = compact.compact(msgs)
+
+    assert result.summarised > 0, "the agent's own file bodies were unreachable"
+    # Five of the ten writes are inside the last-five-turns boundary and MUST survive, so
+    # freeing about half is the right answer rather than a shortfall.
+    assert result.summarised == 5, f"summarised {result.summarised}, expected the five outside the boundary"
+    assert result.freed_chars > 40_000, f"only freed {result.freed_chars} of {result.chars_before}"
+
+
+def test_the_written_path_survives_so_the_model_can_read_it_back():
+    """What makes shortening an argument SAFE, and it is a stronger guarantee than the one
+    a read_file RESULT carries: the content is on disk in the agent's own worktree, put
+    there by this very call. The path has to survive for `read_file` to get it back."""
+    # n=10, because with fewer than five assistant turns `_keep_boundary` protects
+    # everything and this test would pass without compacting anything at all.
+    msgs = _write_heavy()
+
+    out = compact.compact(msgs).messages
+
+    args = json.loads(out[3]["tool_calls"][0]["function"]["arguments"])
+    assert args["path"] == "app/m0.py", "the path was compacted away with the body"
+    assert "[compacted]" in args["content"]
+    assert "read the file" in args["content"], "the summary must say how to get it back"
+
+
+def test_the_call_keeps_its_id_and_name():
+    """The assistant/tool pairing is what the endpoint validates. Rewriting an argument must
+    leave the structure exactly as the model built it — the same reason results are shortened
+    in place rather than deleted."""
+    msgs = _write_heavy()
+
+    out = compact.compact(msgs).messages
+
+    call = out[3]["tool_calls"][0]
+    assert call["id"] == "c0"
+    assert call["function"]["name"] == "write_file"
+    assert [m.get("tool_call_id") for m in out if m.get("role") == "tool"] == [f"c{i}" for i in range(10)]
+
+
+def test_arguments_in_the_last_five_turns_are_left_alone():
+    """The boundary applies to both halves. A model still working on the file it just wrote
+    must be able to see what it wrote."""
+    msgs = _write_heavy()
+
+    out = compact.compact(msgs).messages
+
+    last = json.loads(out[-2]["tool_calls"][0]["function"]["arguments"])
+    assert "[compacted]" not in last["content"], "the most recent write was summarised away"
+    early = json.loads(out[3]["tool_calls"][0]["function"]["arguments"])
+    assert "[compacted]" in early["content"], (
+        "nothing was compacted at all, so this proves nothing about the boundary"
+    )
+
+
+def test_a_short_argument_is_not_summarised():
+    """Same rule as short results: turning a 40-character argument into a 60-character note
+    about an argument makes the context bigger and the run worse."""
+    msgs = _write_heavy(n=1) + [
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "short", "function": {"name": "read_file",
+                                        "arguments": json.dumps({"path": "a.py"})}}]},
+        {"role": "tool", "tool_call_id": "short", "content": "x = 1"},
+    ]
+
+    out = compact.compact(msgs, keep_last_turns=1).messages
+
+    kept = [m for m in out if (m.get("tool_calls") or [{}])[0].get("id") == "short"][0]
+    assert json.loads(kept["tool_calls"][0]["function"]["arguments"]) == {"path": "a.py"}
+
+
+def test_an_unparseable_argument_is_carried_rather_than_mangled():
+    """A malformed argument is rare and mangling one is worse than carrying it — the same
+    call `_call_names` makes when it degrades to the bare tool name."""
+    msgs = [
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "bad", "function": {"name": "write_file", "arguments": "not json " + "y" * 400}}]},
+        {"role": "tool", "tool_call_id": "bad", "content": "ok"},
+        {"role": "assistant", "content": "a"}, {"role": "assistant", "content": "b"},
+        {"role": "assistant", "content": "c"}, {"role": "assistant", "content": "d"},
+        {"role": "assistant", "content": "e"},
+    ]
+
+    out = compact.compact(msgs).messages
+
+    assert out[0]["tool_calls"][0]["function"]["arguments"].startswith("not json ")
+
+
+def test_the_instruction_and_the_plan_still_survive():
+    """Restated against the new code path. Neither is a tool result nor a tool call, so both
+    survive by construction — but 'by construction' is a claim, and this is the assertion."""
+    msgs = _write_heavy()
+
+    out = compact.compact(msgs).messages
+
+    assert out[0]["content"].startswith("You are gbagent")
+    assert out[1]["content"].startswith("GRPH-999")
+    assert out[2]["content"] == "Plan: write the modules, then run the tests."
