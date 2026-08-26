@@ -311,3 +311,60 @@ def test_a_worker_can_still_release_to_backlog(client, agent_key):
                    {"id": item_key, "to_status": "backlog", "agent_id": me["agent_id"]})
 
     assert released["status"] == "backlog"
+
+
+# ---- authoring a PRD is planner work, and answer_grill is authoring (GRPH-514) ----------
+#
+# `create_prd`, `update_prd`, `decompose_prd` and `grill_prd` have been planner-only since
+# PRD-17. `answer_grill` was not, so a worker mid-build could relay an answer into an
+# interrogation it is not part of — and the grill is where a PRD earns `approved`.
+#
+# This is a ROLE gate and says nothing about whether an agent may call it at all. AL-299
+# decided that separately and `test_authority_gates.py` still holds it: the tool relays an
+# author's answer and records it as agent-supplied. Both are true of `create_prd` too.
+
+
+def test_a_worker_does_not_answer_the_grill(client, agent_key):
+    me = _register(client, agent_key, "worker")
+
+    err = _refused(client, agent_key, "answer_grill",
+                   {"prd_id": "GRPH-P1", "answer": "relayed from the author",
+                    "agent_id": me["agent_id"]})
+
+    assert err["code"] == "unauthorized" and "planner" in err["message"]
+
+
+def test_a_reviewer_does_not_answer_the_grill(client, agent_key):
+    me = _register(client, agent_key, "reviewer")
+
+    err = _refused(client, agent_key, "answer_grill",
+                   {"prd_id": "GRPH-P1", "answer": "relayed from the author",
+                    "agent_id": me["agent_id"]})
+
+    assert err["code"] == "unauthorized"
+
+
+def test_a_planner_still_answers_the_grill(client, agent_key):
+    """THE CONTROL. Without it, 'refuse everybody' satisfies both tests above and the grill
+    becomes unfinishable — which is worse than the gap this closes."""
+    me = _register(client, agent_key, "planner")
+    # Created through the real path, as the same planner — which also proves the two
+    # authoring verbs agree about who may call them.
+    prd = _ok(client, agent_key, "create_prd",
+              {"title": "Spec", "body": "## D1\n\nwork", "agent_id": me["agent_id"]})
+
+    res = _rpc(client, agent_key, "answer_grill",
+               {"prd_id": prd["id"], "answer": "the author says: it is bounded by the lease",
+                "agent_id": me["agent_id"]})
+
+    assert not res.get("isError"), res
+
+
+def test_the_whole_prd_authoring_set_is_gated_the_same_way():
+    """Pinned as a SET rather than one entry at a time, because the defect was an odd one
+    out. A fifth authoring verb added later should have to join this line or argue with it."""
+    from app.services.fleet import TOOL_ROLES
+
+    authoring = {"create_prd", "update_prd", "decompose_prd", "grill_prd", "answer_grill"}
+
+    assert {t: TOOL_ROLES.get(t) for t in authoring} == {t: ("planner",) for t in authoring}
