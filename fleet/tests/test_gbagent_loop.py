@@ -744,3 +744,94 @@ def test_no_heartbeat_at_all_is_still_a_valid_run(wt):
                        coordinator=FakeCoordinator(), window=100_000)
 
     assert outcome.status == "finished"
+
+
+# ---- the trace (GRPH-506) -------------------------------------------------------------------
+#
+# Two supervisor-spawned runs burned thirty turns each, claimed nothing, and left stderr
+# carrying setup, registration and a one-line summary. No record of which tools were called,
+# what came back, or what was refused — so the failure could not be diagnosed without attaching
+# a debugger, which an unattended fleet child does not have.
+
+
+def test_every_turn_and_every_tool_call_is_reported(wt):
+    seen: list = []
+    session = FakeSession([_wants("read_file", path="README.md"), _done("all done")])
+
+    loop.run(session, _toolset(wt), coordinator=FakeCoordinator(), window=WINDOW,
+             trace=seen.append)
+
+    assert [(e.turn, e.kind, e.name) for e in seen] == [
+        (1, "turn", ""), (1, "tool", "read_file"), (2, "turn", ""),
+    ], "a run with a hole in it is one nobody can read"
+
+
+def test_a_refused_tool_is_marked_as_one(wt):
+    """THE THING THE SPAWNED RUNS NEEDED. A run that is being refused every turn looks
+    identical, from the outside, to a run that is thinking."""
+    seen: list = []
+
+    loop.run(FakeSession([_wants(path="../../etc/passwd")]), _toolset(wt),
+             coordinator=FakeCoordinator(), window=WINDOW, budget=2, trace=seen.append)
+
+    refusals = [e for e in seen if e.kind == "tool" and not e.ok]
+    assert refusals, "the refusal was invisible"
+    assert "outside the worktree" in refusals[0].text
+
+
+def test_a_successful_tool_is_not_marked_a_refusal(wt):
+    """The control. A trace that called everything an error would be as useless as silence."""
+    seen: list = []
+
+    loop.run(FakeSession([_wants(path="README.md"), _done()]), _toolset(wt),
+             coordinator=FakeCoordinator(), window=WINDOW, trace=seen.append)
+
+    assert all(e.ok for e in seen if e.kind == "tool")
+
+
+def test_what_the_model_said_is_carried(wt):
+    """Which tools ran says what it did; the prose says what it thought it was doing."""
+    seen: list = []
+
+    loop.run(FakeSession([_done("I could not find the file")]), _toolset(wt),
+             coordinator=FakeCoordinator(), window=WINDOW, trace=seen.append)
+
+    assert seen[0].text == "I could not find the file"
+
+
+def test_the_trace_is_bounded_to_one_short_line(wt):
+    """A trace that can reproduce a 40 MB read is not a trace, and a newline turns a log into
+    a transcript."""
+    (wt / "big.txt").write_text("line one is long: " + "x" * 5000 + "\nline two\n")
+    seen: list = []
+
+    loop.run(FakeSession([_wants(path="big.txt"), _done()]), _toolset(wt),
+             coordinator=FakeCoordinator(), window=WINDOW, trace=seen.append)
+
+    read = next(e for e in seen if e.name == "read_file")
+    assert "\n" not in read.text
+    assert len(read.text) <= loop.TRACE_CHARS + 1, len(read.text)
+
+
+def test_a_run_with_no_trace_is_silent_rather_than_broken(wt):
+    """Every caller before this passed nothing, and the tests that already existed are the
+    assertion that it stayed optional."""
+    outcome = loop.run(FakeSession([_done()]), _toolset(wt), coordinator=FakeCoordinator(),
+                       window=WINDOW)
+
+    assert outcome.status == "finished"
+
+
+def test_the_cli_marks_a_refusal_differently_from_a_result(capsys):
+    """The formatting is the CLI's, so the loop stays testable without capturing stdout — but
+    a formatter that rendered both the same would undo the point."""
+    from gbagent import cli
+
+    cli._trace(loop.Trace(turn=3, kind="tool", name="write_file", ok=False, text="refused: x"))
+    cli._trace(loop.Trace(turn=4, kind="tool", name="read_file", ok=True, text="hello"))
+    cli._trace(loop.Trace(turn=5, kind="turn", text="thinking"))
+
+    err = capsys.readouterr().err
+    assert "ERR write_file" in err
+    assert "ok  read_file" in err
+    assert "model: thinking" in err

@@ -19,6 +19,13 @@ expires, and a released one with cleared authorship is not.
 the agent cannot forget to call it or spend a 30-second turn deciding to. The check runs after
 every turn on the token count the endpoint itself reported, and acts before the next one.
 
+**A run leaves a trace of what it did** (GRPH-506). Two supervisor-spawned runs burned thirty
+turns each, claimed nothing, and left stderr carrying setup, registration and a one-line
+summary — no record of which tools were called, what came back, or what was refused. Nobody
+could diagnose that without attaching a debugger, which is not available to an unattended
+fleet child. The loop reports FACTS to a `trace` callable and the caller decides presentation:
+a library that formatted its own log lines would be untestable except by capturing stdout.
+
 **The handoff note is assembled from what actually ran**, not from what the model said about it.
 `Toolset` watched the dispatch: which files were written, what the last `run_tests` returned,
 how many calls were refused. A model that reports "all tests pass" in prose having never called
@@ -28,6 +35,7 @@ clean.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 from . import compact as compaction
 from .coord import Coordinator, HandoffFailed
@@ -70,6 +78,37 @@ def exit_meaning(code: int) -> str:
     return f"crashed (exit {code})"
 
 
+@dataclass(frozen=True)
+class Trace:
+    """One thing that happened, in the order it happened.
+
+    Facts, not prose. The CLI formats these; tests assert on the fields, which is why this is
+    a record rather than a preformatted string.
+    """
+
+    turn: int
+    #: "turn" — the model answered. "tool" — a tool ran.
+    kind: str
+    #: The tool's name, for `kind == "tool"`.
+    name: str = ""
+    #: False when a tool came back a refusal or an error. Always True for a turn.
+    ok: bool = True
+    #: Bounded, single line. A trace that could reproduce a 40 MB read is not a trace.
+    text: str = ""
+
+
+#: Characters kept from any one traced string. The point is to know WHAT happened and roughly
+#: how it went, not to re-read the run.
+TRACE_CHARS = 200
+
+
+def _clip(value: str) -> str:
+    """First line, bounded. Newlines are what turns a log into a transcript."""
+    first = (value or "").strip().splitlines()
+    line = first[0] if first else ""
+    return line[:TRACE_CHARS] + ("…" if len(line) > TRACE_CHARS else "")
+
+
 @dataclass
 class Outcome:
     """What happened, and what the process should exit with."""
@@ -103,6 +142,10 @@ def run(
     budget: int = DEFAULT_BUDGET,
     threshold: float = compaction.DEFAULT_THRESHOLD,
     heartbeat: "Heartbeat | None" = None,
+    #: Called with a `Trace` for every turn and every tool call (GRPH-506). The loop reports
+    #: facts; the caller decides presentation. None means a silent run, which is what two
+    #: supervisor-spawned failures had and is exactly what made them undiagnosable.
+    trace: "Callable[[Trace], None] | None" = None,
 ) -> Outcome:
     """Drive the loop until the model stops asking for tools, or the budget is spent.
 
@@ -122,10 +165,15 @@ def run(
     if window < 1:
         raise ValueError(f"window must be a positive number of tokens, got {window}")
 
+    def report(event: Trace) -> None:
+        if trace is not None:
+            trace(event)
+
     specs = toolset.specs
     turn: ToolTurn = session.run_turn(specs)
     turns = 1
     compactions = 0
+    report(Trace(turn=turns, kind="turn", text=_clip(turn.text)))
 
     first_write: int | None = None
 
@@ -141,7 +189,13 @@ def run(
             # a note saying why instead of dying without one.
             return _give_up(coordinator, toolset, turns, budget, turn, compactions,
                             first_write, why=heartbeat.gone)
-        session.add_results([toolset.execute(call) for call in turn.tool_calls])
+        results = []
+        for call in turn.tool_calls:
+            result = toolset.execute(call)
+            results.append(result)
+            report(Trace(turn=turns, kind="tool", name=call.name, ok=not result.is_error,
+                         text=_clip(result.content)))
+        session.add_results(results)
         if first_write is None and toolset.written:
             # The turn the work started on. Recorded here rather than counted afterwards
             # because the toolset only knows THAT a write happened, not when.
@@ -149,6 +203,7 @@ def run(
         compactions += _maybe_compact(session, turn, window, threshold)
         turn = session.run_turn(specs)
         turns += 1
+        report(Trace(turn=turns, kind="turn", text=_clip(turn.text)))
 
     if turn.wants_tools and not turn.tool_calls:
         # **A turn that asked for tools and carried none is not a finish** (GRPH-489).

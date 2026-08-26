@@ -71,10 +71,17 @@ NOT_ORIENTATION: tuple[str, ...] = ("describe_code",)
 #: `mint_enrolment`. D5 — done is not the agent's word.
 COORDINATION_TOOLS: tuple[str, ...] = ("claim_next", "update_item", "heartbeat")
 
-#: Arguments the AGENT owns and the model does not get to invent. Injected when the tool's
-#: schema has the field and the model left it out: an agent that names a different agent_id
-#: is claiming work as somebody else, and a model that omits it gets a refusal it cannot act
-#: on because the right value was never in its context.
+#: Arguments the AGENT owns and the model does not get to invent. **Overwritten, not
+#: defaulted**, wherever the tool's schema has the field.
+#:
+#: Filling only a BLANK was the first version and it was wrong, which the GRPH-506 trace showed
+#: on turn 1 of a spawned run: `claim_next` came back "needs to know which agent is calling"
+#: because the model had supplied an `agent_id` of its own — plausible, truthy, and not this
+#: agent. Truthy meant the real one was never substituted. It recovered by reading the refusal
+#: and spent two of twelve turns doing it.
+#:
+#: An agent's identity is not a field a model gets an opinion about: naming a different one is
+#: claiming work as somebody else, and naming a made-up one is a refusal it cannot act on.
 INJECTED = ("agent_id",)
 
 #: What the model is told, in the system prompt. Deliberately concrete: "orient first" is
@@ -138,7 +145,7 @@ class Orientation:
         arguments = dict(call.input)
         if self.agent_id:
             for field in INJECTED:
-                if field in (self._schema(call.name) or {}) and not arguments.get(field):
+                if field in (self._schema(call.name) or {}):
                     arguments[field] = self.agent_id
         try:
             payload = self.client.call(call.name, **arguments)
