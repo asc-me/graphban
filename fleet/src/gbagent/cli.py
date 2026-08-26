@@ -126,6 +126,28 @@ def enrolment_code(instruction: str) -> str:
     return found.group(1) if found else ""
 
 
+def task_from(instruction: str) -> str:
+    """The instruction with the REGISTRATION sentence removed.
+
+    **FOUND BY THE FIRST SUPERVISOR-SPAWNED BUILD.** `spawn` writes one instruction for every
+    adapter and it opens by telling the child to call `register_agent` — correct for a vendor
+    harness, which registers by being prompted to. gbagent registers in `_run` before the model
+    exists, and `register_agent` is deliberately not among the tools it advertises. So the
+    model was being told, as its first instruction, to call a tool it does not have. It spent
+    thirty turns on it and claimed nothing.
+
+    Only that sentence goes. Everything after it is still exactly right for this agent: it IS a
+    separate process, it must NOT declare parentage, and exiting on an empty queue is the
+    normal end of its run (D-b, D-c).
+
+    Keyed on the sentence rather than on line 1, so a reordered instruction loses the right
+    line — and a test renders `seat.INSTRUCTION` and asserts what survives.
+    """
+    kept = [line for line in (instruction or "").splitlines()
+            if "register_agent" not in line]
+    return "\n".join(kept).strip()
+
+
 class SeatUnreadable(RuntimeError):
     """The MCP config the supervisor wrote is not one this agent can use."""
 
@@ -180,7 +202,9 @@ def _run(args: argparse.Namespace) -> int:
         print(f"gbagent: {exc}", file=sys.stderr)
         return 78
 
-    task = Path(args.instruction_file).read_text(encoding="utf-8") if args.instruction_file else ""
+    written = Path(args.instruction_file).read_text(encoding="utf-8") if args.instruction_file else ""
+    # The registration sentence is the harness's job and names a tool the model does not have.
+    task = task_from(written)
 
     # REGISTER FIRST (GRPH-503). `spawn.await_registration` polls the roster for an agent whose
     # `worktree` matches this child and kills it when none appears, blaming the adapter. Every
@@ -188,7 +212,7 @@ def _run(args: argparse.Namespace) -> int:
     # verified and the thing the argv is FOR never was.
     agent_id = args.agent_id
     if not agent_id:
-        code = enrolment_code(task)
+        code = enrolment_code(written)
         if not code:
             print(
                 "gbagent: no enrolment code in the instruction file and no --agent-id. A child "

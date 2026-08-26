@@ -442,3 +442,47 @@ def test_a_registration_returning_no_id_is_refused_rather_than_used_empty():
 
     with pytest.raises(cli.NotRegistered):
         cli.register(_client(handler), code="W", model="m", worktree="/w", branch="b")
+
+
+def test_the_registration_sentence_is_not_given_to_the_model():
+    """FOUND BY THE FIRST SUPERVISOR-SPAWNED BUILD, and it cost that run everything.
+
+    `spawn` writes one instruction for every adapter, opening with "Register with
+    `register_agent`". A vendor harness registers by being prompted to; gbagent registers in
+    `_run` before the model exists, and `register_agent` is deliberately not advertised. So the
+    model's first instruction was to call a tool it does not have. Thirty turns, nothing
+    claimed.
+    """
+    from gbfleet.seat import Seat, instruction_for
+
+    written = instruction_for(Seat(code="W-1", server_url="https://x", api_key="k"),
+                              Path("/w"), "b")
+
+    task = cli.task_from(written)
+
+    assert "register_agent" not in task
+    assert "W-1" not in task, "the seat is spent; it has no business in the model's context"
+
+
+def test_everything_else_in_the_instruction_survives():
+    """The rest is exactly right for this agent, and dropping it would lose D-b and D-c."""
+    from gbfleet.seat import Seat, instruction_for
+
+    task = cli.task_from(instruction_for(
+        Seat(code="W-1", server_url="https://x", api_key="k"), Path("/w"), "b"))
+
+    assert "SEPARATE PROCESS" in task, "D-b: it must not declare parentage"
+    assert "parent_agent_id" in task
+    assert "EXIT when there is nothing to claim" in task, "D-c: exiting on empty is normal"
+
+
+def test_the_code_is_still_read_from_what_the_supervisor_WROTE():
+    """The strip happens for the model, not for the harness — read the code from the original
+    or the child registers with nothing."""
+    from gbfleet.seat import Seat, instruction_for
+
+    written = instruction_for(Seat(code="W-XYZ", server_url="https://x", api_key="k"),
+                              Path("/w"), "b")
+
+    assert cli.enrolment_code(written) == "W-XYZ"
+    assert cli.enrolment_code(cli.task_from(written)) == "", "stripped, as it should be"

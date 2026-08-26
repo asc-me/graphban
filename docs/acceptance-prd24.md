@@ -380,15 +380,19 @@ And the control matters: without it, the refusal above could have been refusing 
 
 These are not about the model. They are about whether this agent can exist in the fleet at all.
 
-### A fresh worktree cannot verify anything
+### A fresh worktree cannot verify anything — **fixed, GRPH-502**
 
 `.gbagent.toml` declares `./.venv/bin/python -m pytest -q` in `backend/`. **A fresh
 `git worktree` has no `backend/.venv`**, so `config.load` refuses at spawn — correctly, and
 fatally. Every PRD-22 fleet child gets a fresh worktree.
 
-This walk worked around it with a symlink to the primary checkout's venv, and that workaround is
-the finding: **there is no step anywhere that builds a child's environment.** The vendor
-children never exposed this because they do not run the test suite.
+This walk worked around it with a symlink to the primary checkout's venv, and that workaround
+was the finding: **there was no step anywhere that built a child's environment.** The vendor
+children never exposed it because they do not run the test suite.
+
+`.gbagent.toml` now carries a `[setup]` table, declared the same way D3 declares the test
+command, and `config.prepare` runs it before `load` checks anything. A list of commands rather
+than one string, because D4 means there is no shell.
 
 *Verified, not assumed:* with `cwd=backend` inside the worktree, `import app` resolves to the
 **worktree's** copy, not the editable install's target. The agent's edits are what gets tested.
@@ -464,20 +468,33 @@ keeps finding.
 
 ## What to do about it
 
-Not decisions — the evidence for decisions somebody else should make.
+Not decisions — the evidence for decisions somebody else should make. **Three of the five have
+since been done**, and this list says which rather than reading as a standing indictment.
 
-1. **`write_file` should probably not be offered on existing files at all.** The truncation
-   guard is a threshold, and thresholds get tuned until they stop firing. `edit_file` is the
-   primitive that cannot destroy what it did not read.
-2. **Compaction needs a time trigger, not only a token one.** D7 protects the window; run 3
-   died with the window 80% empty.
-3. **The lease and the declared test command have almost no margin** — 533s of verification
-   against a 600s lease. GRPH-496's timer keeps the child alive through it; the numbers are
-   still close enough to be worth a second look.
-4. **Something has to build a child's environment.** A fresh worktree cannot run the declared
-   command, and no step anywhere creates one.
-5. **`claim_next` should be bounded per agent**, or a confused model will hold items it never
-   touches.
+| | | |
+| --- | --- | --- |
+| 1 | **`write_file` should probably not be offered on existing files at all.** The truncation guard is a threshold, and thresholds get tuned until they stop firing. `edit_file` cannot destroy what it did not read. | open |
+| 2 | **Compaction needs a time trigger, not only a token one.** D7 protects the window; run 3 died with the window 80% empty. | open |
+| 3 | **The lease and the declared test command have almost no margin** — 533s against a 600s lease. GRPH-496's timer keeps the child alive; the numbers are still close. | mitigated |
+| 4 | **Something has to build a child's environment.** | **done — GRPH-502** |
+| 5 | **`claim_next` should be bounded per agent**, or a confused model holds items it never touches. | filed — GRPH-504 |
 
-None of these are reasons to delete `gbagent`. Four of the five are things a *vendor* child
-would also hit the moment it ran the test suite — it just never does.
+**And one the walk could not have found, because it never spawned anything.** Every run here
+invoked the CLI directly with `--agent-id`. `gbagent` had no `register_agent` call at all, so a
+real supervisor spawn would have polled the roster, found nothing, killed the child and blamed
+the adapter. Closed by **GRPH-503**, and proven by the first real supervisor spawn of any
+adapter — PRD-22's own walk uses a stand-in script, so no adapter had ever gone down that path:
+
+```
+REGISTERED as GRPH-A35 in 1.1s   roster row: role=worker
+  setup ran 'uv venv --python 3.12 backend/.venv'
+  setup ran 'uv pip install --python backend/.venv/bin/python -e backend[dev]'
+  registered GRPH-A35 as 'worker'
+```
+
+That is GRPH-502 and GRPH-503 in sequence: the tree built, then the child registered into it.
+Together they were the difference between an agent that works in a hand-staged walk and one the
+fleet can actually spawn.
+
+None of this is a reason to delete `gbagent`. Most of it is what a *vendor* child would hit the
+moment it ran a test suite — it just never does.
