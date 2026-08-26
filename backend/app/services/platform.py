@@ -137,14 +137,22 @@ def _credential(db: Session, credential_id: str | None, scope: str) -> Credentia
     return cred
 
 
-def _from_credential(cred: Credential, source: str) -> Resolved:
+def _from_credential(cred: Credential, source: str, model_override: str = "") -> Resolved:
+    """Build the adapter from a credential row, honouring a project's model override.
+
+    The override reaches `build_chat` and not just the returned `model` field. Reporting an
+    override that the adapter did not receive would be worse than not having the feature: the
+    UI would show the cheap model, the bill would show the expensive one, and nothing in
+    between would disagree.
+    """
+    model = model_override or cred.model
     return Resolved(
         provider_id=cred.kind,
         chat=providers.build_chat(
             cred.kind, base_url=cred.base_url,
-            api_key=secrets.decrypt(cred.api_key), model=cred.model,
+            api_key=secrets.decrypt(cred.api_key), model=model,
         ),
-        model=cred.model,
+        model=model,
         credential_id=cred.id,
         source=source,
     )
@@ -187,7 +195,8 @@ def resolve_chat(db: Session, project_id: str) -> Resolved:
 
     cred = _credential(db, pointer, scope)
     if cred is not None:
-        return _from_credential(cred, "project")
+        return _from_credential(cred, "project",
+                                getattr(project, "model_override", "") or "")
 
     row = db.get(DeploymentConfig, scope)
     default = _credential(db, row.default_credential_id if row else None, scope)
@@ -444,3 +453,212 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
         }
         for c in creds
     ]
+
+
+# ---- Choosing a credential, and refusing to strand one (PRD-25 S2) -----------------------
+
+#: A credential that has never been proven to work cannot be made the default or the fallback.
+#:
+#: **`unreachable` is deliberately NOT in this set**, and the asymmetry is the point (grill,
+#: D-f). `pending_validation` means nobody has ever established that this credential works —
+#: selecting it would assert something no one has checked. `unreachable` means it WAS asked and
+#: did not answer, which is a fact about the world right now, and an operator who points at it
+#: anyway has said something. The system's job there is to show the state, not to overrule the
+#: choice; at runtime an unreachable fallback is skipped and the primary failure is terminal.
+UNPROVEN = "pending_validation"
+
+
+class CredentialInUse(Exception):
+    """Deleting would strand a pointer. Carries WHO, because "in use" that does not say by
+    what leaves the operator hunting through seven projects by hand."""
+
+    def __init__(self, projects: list[str], roles: list[str]) -> None:
+        self.projects = projects
+        self.roles = roles
+        parts = []
+        if projects:
+            parts.append("used by " + ", ".join(projects))
+        if roles:
+            parts.append("set as " + ", ".join(roles))
+        super().__init__("; ".join(parts) or "in use")
+
+
+def _probe_state(kind: str, base_url: str, api_key: str, model: str) -> str:
+    """The state a credential should be saved in, from one probe.
+
+    Three outcomes, and only two of them are states — the third is a refusal:
+
+    - the provider answered and has the model  -> `valid`
+    - the provider answered and does NOT       -> ValueError, and the caller turns it into the
+                                                  422 GRPH-485 established. Unchanged: retry is
+                                                  for *could not be asked*, never for *asked and
+                                                  told no*.
+    - the provider could not be asked          -> `pending_validation`, and S2b retries it
+
+    `known_models` already draws exactly this line and says why — `None` covers both "no listing
+    endpoint" and "unreachable", because refusing a save over a briefly-down host would break a
+    correct edit for a reason that has nothing to do with the edit.
+    """
+    known = probe.known_models(kind, base_url or "", api_key or "")
+    if known is None:
+        return UNPROVEN
+    if model and model not in known:
+        raise ValueError(
+            f"{kind} answered and does not have model {model!r}. It offers: "
+            + ", ".join(sorted(known)[:10])
+        )
+    return "valid"
+
+
+def create_credential(db: Session, scope: str, *, kind: str, label: str = "",
+                      base_url: str = "", api_key: str = "", model: str = "") -> Credential:
+    """Add a credential to a scope, probing once to decide its state.
+
+    A row per credential, so adding a second key for a provider that already has one is an
+    ordinary insert rather than a collision anybody has to resolve (D-a).
+    """
+    from secrets import token_urlsafe as _tok
+
+    state = _probe_state(kind, base_url, api_key, model)
+    cred = Credential(
+        id=f"cred_{_tok(8)}", org_id=scope or None, kind=kind, label=label,
+        base_url=base_url, api_key=secrets.encrypt(api_key) if api_key else "",
+        model=model, state=state,
+    )
+    db.add(cred)
+    db.commit()
+    db.refresh(cred)
+    return cred
+
+
+def update_credential(db: Session, credential_id: str, scope: str, **fields) -> Credential:
+    """Edit a credential in place and re-probe.
+
+    **Editing is how rotation happens** — the key, endpoint and model are all editable and the
+    row id never changes, so every pointer at this credential keeps pointing at it. Rotation as
+    create-and-repoint would mean finding every project that referenced the old row.
+
+    The retry budget resets here because a resave is new information: the thing that could not
+    be asked may now be answerable, and a row that stayed `unreachable` after being corrected
+    would be reporting the old failure.
+    """
+    cred = _credential(db, credential_id, scope)
+    if cred is None:
+        raise LookupError(credential_id)
+    for key in ("kind", "label", "base_url", "model"):
+        if key in fields and fields[key] is not None:
+            setattr(cred, key, fields[key])
+    if fields.get("api_key"):
+        cred.api_key = secrets.encrypt(fields["api_key"])
+    cred.state = _probe_state(cred.kind, cred.base_url, secrets.decrypt(cred.api_key), cred.model)
+    cred.validation_attempts = 0
+    cred.next_attempt_at = None
+    cred.last_error = ""
+    db.commit()
+    db.refresh(cred)
+    return cred
+
+
+def _references(db: Session, credential_id: str, scope: str) -> tuple[list[str], list[str]]:
+    """Every pointer at this credential: projects that use it, and roles it fills."""
+    projects = [
+        pid for (pid,) in db.query(Project.id)
+        .filter(Project.credential_id == credential_id).all()
+    ]
+    row = db.get(DeploymentConfig, scope or "")
+    roles = []
+    if row is not None:
+        if row.default_credential_id == credential_id:
+            roles.append("the deployment default")
+        if row.fallback_credential_id == credential_id:
+            roles.append("the fallback")
+        if row.embed_credential_id == credential_id:
+            roles.append("the embedding credential")
+    return sorted(projects), roles
+
+
+def delete_credential(db: Session, credential_id: str, scope: str) -> None:
+    """Remove a credential, refusing while anything still points at it.
+
+    The refusal NAMES every referencing project and role. A bare "in use" makes the operator
+    open seven projects to find the one holding it, and the `used_by` tags in the listing exist
+    precisely so this refusal is predictable before it happens rather than a surprise after.
+    """
+    cred = _credential(db, credential_id, scope)
+    if cred is None:
+        raise LookupError(credential_id)
+    projects, roles = _references(db, credential_id, scope)
+    if projects or roles:
+        raise CredentialInUse(projects, roles)
+    db.delete(cred)
+    db.commit()
+
+
+def set_scope_defaults(db: Session, scope: str, *, default_credential_id: str | None = ...,
+                       fallback_credential_id: str | None = ...,
+                       embed_credential_id: str | None = ...) -> DeploymentConfig:
+    """Point a scope's default / fallback / embedding at credentials it owns.
+
+    `...` means "leave alone" and `None` means "clear", which are different intentions and
+    would be indistinguishable if absence meant clear.
+
+    Every id is checked for scope AND for proof: a credential nobody has established works
+    cannot be made the thing everything falls back to. That check is here rather than only in
+    the UI because an unusable credential that can still be chosen is the same defect one layer
+    along — the UI merely stops being the place it is noticed.
+    """
+    row = db.get(DeploymentConfig, scope or "")
+    if row is None:
+        row = DeploymentConfig(scope=scope or "")
+        db.add(row)
+
+    for field, value, what in (
+        ("default_credential_id", default_credential_id, "default"),
+        ("fallback_credential_id", fallback_credential_id, "fallback"),
+        ("embed_credential_id", embed_credential_id, "embedding credential"),
+    ):
+        if value is ...:
+            continue
+        if value is None:
+            setattr(row, field, None)
+            continue
+        cred = _credential(db, value, scope)
+        if cred is None:
+            raise LookupError(value)
+        if cred.state == UNPROVEN:
+            raise ValueError(
+                f"{value} has never been validated, so it cannot be the {what}. Use "
+                "Test connection, or correct and resave it, first."
+            )
+        setattr(row, field, value)
+
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def set_project_credential(db: Session, project_id: str, *,
+                           credential_id: str | None = ..., model_override: str | None = ...):
+    """Point one project at a credential, optionally on a different model.
+
+    The credential must belong to the project's own scope. Checked on the way in as well as at
+    resolution — resolution re-checks because a pointer outlives the row it names, and this
+    checks because an error at save is one the operator can act on, where a silent fallback at
+    resolution is one they discover from a model answering in the wrong voice.
+    """
+    project = db.get(Project, project_id)
+    if project is None:
+        raise LookupError(project_id)
+    if credential_id is not ...:
+        if credential_id is None:
+            project.credential_id = None
+        else:
+            cred = _credential(db, credential_id, (project.org_id or ""))
+            if cred is None:
+                raise LookupError(credential_id)
+            project.credential_id = credential_id
+    if model_override is not ...:
+        project.model_override = model_override or ""
+    db.commit()
+    db.refresh(project)
+    return project

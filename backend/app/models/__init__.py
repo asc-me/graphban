@@ -130,6 +130,10 @@ class Project(Base):
     credential_id: Mapped[str | None] = mapped_column(
         ForeignKey("credentials.id"), nullable=True, index=True
     )
+    # "The shared key, on a cheaper model" (PRD-25 S2). Without this, wanting a different
+    # model meant a second credential row holding the same secret — storing one key twice so
+    # that rotating it becomes two edits, one of which gets forgotten.
+    model_override: Mapped[str] = mapped_column(String, default="", server_default="")
     # Memory auto-triage (AL-227): let the AL-151 scorer ACT on agent candidates
     # instead of only advising, so the review queue stays small. Every auto-action
     # is audited and undoable.
