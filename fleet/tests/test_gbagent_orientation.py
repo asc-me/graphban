@@ -372,11 +372,11 @@ def test_the_metric_is_not_a_count_of_graph_calls(wt):
     often they were used."""
     orientation = orient.build(_server(_listing(ORIENTATION_TOOLS)))
     grepper = Session([_wants("grep", pattern="claim"),
-                       _wants("write_file", path="a.py", content="x = 1\n"),
+                       _wants("write_file", path="fast.py", content="x = 1\n"),
                        ToolTurn(text="DONE", wants_tools=False)])
     asker = Session([_wants("search_code", query="claim"), _wants("code_neighbors", query="c"),
                      _wants("get_context"),
-                     _wants("write_file", path="a.py", content="x = 1\n"),
+                     _wants("write_file", path="slow.py", content="x = 1\n"),
                      ToolTurn(text="DONE", wants_tools=False)])
 
     fast = loop.run(grepper, _toolset(wt, orientation), coordinator=Coord(),

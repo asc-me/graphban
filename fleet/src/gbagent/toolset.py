@@ -113,6 +113,9 @@ class Toolset:
     last_tests: dict | None = None
     #: Paths the model wrote or edited, in order, deduplicated.
     written: list[str] = field(default_factory=list)
+    #: Files this run has read IN FULL, path -> content hash at the time (GRPH-515).
+    #: A ranged read is deliberately absent: seeing lines 1-50 of 856 is not seeing the file.
+    seen: dict = field(default_factory=dict)
     #: Tool calls that came back as errors. Counted for the handoff note: a run that spent
     #: thirty turns being refused failed differently from one that ran out of ideas.
     refusals: int = 0
@@ -177,6 +180,11 @@ class Toolset:
 
     def _do_read_file(self, path: str, start: int = 1, count: int = 0) -> str:
         out = tools.read_file(self.root, path, start=start, count=count)
+        # Recorded only for a WHOLE read. `write_file` may replace a file this run has seen,
+        # and a range is not seeing it (GRPH-515) — the whole point is that nothing gets
+        # deleted that nobody looked at.
+        if out["start"] == 1 and out["lines"] == out["total_lines"]:
+            self.seen[path] = out["hash"]
         header = f"{path} lines {out['start']}-{out['start'] + out['lines'] - 1} of {out['total_lines']}"
         return f"{header}\n{out['text']}"
 
@@ -193,12 +201,20 @@ class Toolset:
         return "\n".join(rows) + ("\n... truncated" if out["truncated"] else "")
 
     def _do_write_file(self, path: str, content: str) -> str:
-        out = tools.write_file(self.root, path, content)
+        out = tools.write_file(self.root, path, content, seen=self.seen.get(path))
+        # What it now holds is what it just wrote, so a second replacement in the same run is
+        # not blocked by a hash it made stale itself.
+        self.seen[path] = tools.content_hash(content)
         self._record(path)
         return f"wrote {path} ({out['bytes']} bytes, {'created' if out['created'] else 'replaced'})"
 
     def _do_edit_file(self, path: str, old: str, new: str) -> str:
         out = tools.edit_file(self.root, path, old, new)
+        # NOTHING forgotten here on purpose. An edit moves the file underneath whatever was
+        # read, and the HASH is what notices — a `seen.pop` alongside it was a second way of
+        # saying the same thing, and sabotage showed it could not fail. If the edit happened
+        # to produce identical content the memory is still accurate, which the hash gets
+        # right and a pop would get wrong.
         self._record(path)
         return f"edited {path} ({out['replaced']} replacement)"
 
