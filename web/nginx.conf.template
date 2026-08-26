@@ -19,13 +19,38 @@ server {
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header Content-Security-Policy "frame-ancestors 'self' https:" always;
 
-    # Proxy API + health to the FastAPI service. ${API_SCHEME}/${API_UPSTREAM} default
-    # to http/api:8000 for docker-compose; on a managed host with only private-network
-    # DNS (which nginx can't resolve at startup), point them at the backend's public
-    # HTTPS domain instead — e.g. API_SCHEME=https, API_UPSTREAM=<backend>.up.railway.app.
+    # RE-RESOLVE THE UPSTREAM ON EVERY REQUEST (GRPH-523). A `proxy_pass` holding a literal
+    # is resolved ONCE at config load and the address is cached for the worker's life. That
+    # took the site down on 2026-08-26: both services redeployed together, nginx pinned the
+    # address of the backend container that was going away, and every proxied request hung
+    # once it died — while Railway reported SUCCESS and its healthcheck on `/`, served by
+    # nginx itself, stayed 200 throughout.
+    #
+    # Naming the upstream in a VARIABLE forces nginx to consult `resolver` per request
+    # instead, so a redeployed backend is followed without restarting this container. The
+    # resolver address comes from the image's own 15-local-resolvers.envsh (enabled by
+    # NGINX_ENTRYPOINT_LOCAL_RESOLVERS in the Dockerfile), which reads /etc/resolv.conf —
+    # so this works unchanged against Docker's embedded DNS and Railway's private DNS.
+    #
+    # `ipv6=off` is deliberate, not caution: uvicorn is started with `--host 0.0.0.0`,
+    # which is IPv4-ONLY, so an AAAA answer would give nginx an address nothing is
+    # listening on. Whoever changes that bind should change this in the same commit.
+    #
+    # `valid=10s` bounds how long a stale address can survive. Longer reopens the outage
+    # in miniature; shorter buys little and pays a lookup per request.
+    #
+    # NOTE ON URI SEMANTICS: neither proxy_pass below carries a URI part (no trailing path),
+    # so nginx forwards the original request URI unchanged — with a literal AND with a
+    # variable. That equivalence is why this change is safe; a URI part on either form
+    # would rewrite the path and silently change routing. `test_nginx_upstream.py` pins it.
+    #
+    # ${API_SCHEME}/${API_UPSTREAM} default to http/api:8000 for docker-compose; Railway
+    # sets them to http/backend.railway.internal:8000 over the private network.
     # Host is set to the upstream so an edge router can route by it; SNI is sent for https.
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
     location /api/ {
-        proxy_pass ${API_SCHEME}://${API_UPSTREAM};
+        set $api_upstream ${API_UPSTREAM};
+        proxy_pass ${API_SCHEME}://$api_upstream;
         proxy_http_version 1.1;
         # MUST exceed fleet.MAX_WAIT_SECONDS (60). `claim_cluster(wait_seconds=60)` parks for
         # up to a minute by design, and nginx's DEFAULT proxy_read_timeout is also 60s — so a
@@ -43,7 +68,8 @@ server {
     }
 
     location /health {
-        proxy_pass ${API_SCHEME}://${API_UPSTREAM};
+        set $api_upstream ${API_UPSTREAM};
+        proxy_pass ${API_SCHEME}://$api_upstream;
         proxy_ssl_server_name on;
         proxy_set_header Host ${API_UPSTREAM};
     }
