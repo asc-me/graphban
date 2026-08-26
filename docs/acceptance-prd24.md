@@ -164,7 +164,85 @@ neither had been written to, which is GRPH-434 working exactly as designed.
 
 ---
 
-## The verdict
+## Run 4 — a different model built it
+
+**The verdict below was written after three runs on one model. It was wrong, and this section
+is the correction rather than a hedge added to it.**
+
+`qwen3.6:35b-a3b-coding-mtp-det` — a newer, coding-specialised model that was sitting on the
+same box, unused, the whole time — was given the same item, the same worktree, the same 25-turn
+budget.
+
+| | |
+| --- | --- |
+| items.py | **9 lines**, validating before any side effect |
+| tests written | `backend/tests/test_items.py`, **90 lines, 9 tests** |
+| evidence it attached | *"Ran all 2227 tests; added 8 new tests … for negative effort refusal on both create_item and update_item paths—all passed."* |
+| item afterwards | `review`, then **`done`** |
+
+```python
++    effort_val = int(effort or 0)
++    if effort_val < 0:
++        raise ValueError(f"negative effort: {effort_val}")
+```
+
+It validated in `create_item` *after* the other validations and *before* minting, reused
+`effort_val` instead of recomputing `int(effort or 0)` further down, and put the `update_item`
+check alongside the existing `status` and `fidelity` ones — which is where the item pointed.
+
+### The tests are real, and I checked rather than believing the receipt
+
+Run 1's whole lesson is that a receipt is not evidence. So the reviewer reverted the fix and
+re-ran the agent's own tests:
+
+```
+WITH the fix:      9 passed
+fix reverted:      4 failed, 5 passed
+```
+
+The four that fail are the negative-effort cases on both paths. **The five that still pass are
+its own controls** — zero effort is legal, positive effort is legal. It wrote a control set
+without being asked to.
+
+### AC-5, completed
+
+```
+reviewer: GRPH-A28 (capabilities.instance = walk-reviewer-1)
+claim_review: True
+SIGNED OFF: done  reviewed_by=GRPH-A28
+```
+
+A local model claimed a real item, edited it, verified it, and moved it to `review`; a
+**different, independent** agent claimed the review and signed it off. The whole chain.
+
+Independence was unlocked by declaring a distinct `capabilities.instance`, which is exactly
+what AC-6's refusal message said to do — the earlier finding was a missing argument, not a
+missing credential. **That correction is worth more than the original finding.**
+
+---
+
+## The verdict, corrected
+
+**The cheap tier is not a false economy. The wrong model is.**
+
+| run | model | outcome |
+| --- | --- | --- |
+| 1–3 | `qwen3-coder:30b` | 93 min, zero usable lines, three distinct failures |
+| 4 | `qwen3.6:35b-a3b-coding-mtp-det` | a correct fix, 9 tests with controls, signed off to `done` |
+
+Everything in the three-run section below still happened and every fix it earned is still
+worth having — the completion guard and the truncation guard are exactly the sort of thing you
+only find with a model bad enough to need them. But the conclusion drawn from them, that the
+arc was a false economy, was drawn from **one model** and was wrong.
+
+The honest statement of what this walk measured: **`qwen3-coder:30b` cannot build an item in
+this repository, and a newer coding-specialised model of similar size can.** Model choice is
+the variable, and PRD-24's §4 non-goal — *"not a model router… which model suits which role is
+PRD-11's question"* — turns out to be the question the whole arc's value rests on.
+
+---
+
+## What the first three runs found
 
 **Three runs. 93 minutes of local inference. Zero usable lines of code.**
 
@@ -186,13 +264,16 @@ thing as a working cheap tier.
 
 ### §9.1 — Can a 30B model produce a genuine sabotage receipt?
 
-**No, and the question turns out to have been two steps ahead of where it failed.** A receipt
-requires: make the change, break it deliberately, run the suite, report which test caught it.
-Across three runs it never completed step one.
+**Still unproven, but for a much narrower reason than the first three runs suggested.**
 
-The honest position is worse than D5 assumed. D5 confined `gbagent` to work below
-`ADVERSARIAL_EFFORT_THRESHOLD = 3` and made attempting a receipt safe. On this evidence it is
-confined to work it has not yet been shown capable of at all.
+`qwen3-coder:30b` never completed step one, so the question never arose. `qwen3.6` completed
+the change *and wrote a control set*, which is the same instinct a receipt needs — but the item
+was effort 2, below `ADVERSARIAL_EFFORT_THRESHOLD = 3`, so nothing asked it for one and it did
+not volunteer one. **The walk did not test this**, and saying that is better than reading the
+control set as a near-miss.
+
+The next walk should use an effort-3 item and see what it produces when the gate actually
+fires.
 
 ### §9.2 — What is the honest success metric?
 
@@ -203,18 +284,23 @@ An item reached `review`, with evidence, having had nothing done to it.
 The metric has to be **signed off without a bounce**, and it must be paired with
 `turns_to_first_write`, because that is the number that made this visible at all.
 
-And that number is not measurable yet: **the walk could not produce a sign-off at all** — see
-the independence finding below.
+**The first measurement exists: one item, one model, signed off without a bounce** (run 4).
+That is n=1 and should be read as such.
 
 ### §8 — Is the cheap tier a false economy?
 
-**On this evidence, yes, and not marginally.** §8 predicted "the gates catch it at review; the
-cost is a reviewer's time, which is the thing the cheap tier was meant to save". The walk did
-not even reach that trade: nothing arrived at review worth reviewing, and 93 minutes of
-inference produced work that had to be `git checkout --`'d.
+**Not on this evidence — but it is entirely a question of which model.**
 
-This is one item, one model, one repository, and it should not be over-read. But it is the
-first real evidence the arc has, and it points one way.
+On `qwen3-coder:30b`, catastrophically so: 93 minutes to produce work that had to be
+`git checkout --`'d. On `qwen3.6:35b-a3b-coding-mtp-det`, a correct fix with its own controls,
+signed off first time. Same harness, same item, same budget, same afternoon.
+
+§8 predicted the cost would be a reviewer's time. In run 4 the reviewer's time was ~5 minutes:
+read the diff, revert the fix, re-run the agent's own tests. That is a good trade. In runs 1–3
+it was an hour and a half for nothing.
+
+**The variable that decides whether this arc pays for itself is model selection**, which
+PRD-24 §4 explicitly declares a non-goal and defers to PRD-11.
 
 ### §9.3 — How is orientation cost measured?
 
@@ -352,11 +438,12 @@ keeps finding.
 - **AC-8 ran on a probe item** (GRPH-498), not on real work, because proving it means submitting
   a deliberately fabricated receipt.
 - **`describe_code` was excluded from orientation in S6** and so was not exercised here.
-- **No second model was tried.** `gpt-oss:20b` and `qwen3:30b-a3b` are installed and were not
-  run against this item. One model is one data point, and `qwen3:30b-a3b` is the *slower* of
-  the three measured, so run 3's timeout would likely arrive sooner rather than later.
-- **AC-5 did not complete.** The item was never built, so there was nothing to sign off — and
-  the sign-off half could not have run anyway without a second credential (see AC-6's control).
+- **`gpt-oss:20b` and `qwen3:30b-a3b` were never run** against this item. Four runs across two
+  models is still a small sample, and nothing here says where the boundary between them lies.
+- **Run 4 was not repeated.** One success is one success; determinism was not tested, despite
+  the model being the `-det` build.
+- **No effort-3 item was tried**, so the sabotage-receipt question (§9.1) remains untested
+  rather than answered.
 - **One item, one repository.** The item was deliberately small and mechanical. A harder item
   would not have produced a different verdict; an easier one might have, and was not tried.
 
