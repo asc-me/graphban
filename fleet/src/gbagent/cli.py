@@ -25,7 +25,7 @@ from pathlib import Path
 import gbfleet
 
 from . import loop
-from .config import ConfigRefused, load
+from .config import ConfigRefused, load, prepare
 from .coord import Coordinator
 from .heartbeat import Heartbeat
 from .llm import ModelUnreachable, OllamaSession
@@ -111,6 +111,11 @@ def _models(base_url: str) -> list[str]:
 def _run(args: argparse.Namespace) -> int:
     root = Path(args.worktree).resolve()
     try:
+        # BEFORE `load`, because the executable check inside it is exactly what an unbuilt
+        # worktree fails. A fresh `git worktree` is what PRD-22 hands every child (GRPH-502).
+        built = prepare(root)
+        for command in built:
+            print(f"gbagent: setup ran {command!r}", file=sys.stderr)
         cfg = load(root)
     except ConfigRefused as exc:
         print(f"gbagent: {exc}", file=sys.stderr)
