@@ -102,6 +102,18 @@ def _survivors(eng):
             "SELECT access, origin FROM memberships WHERE user_id='u1' ORDER BY id")).all()
 
 
+def _ids(eng):
+    """The membership ids, in the DATABASE's ordering — which is the ordering 0080 ranks by.
+
+    Asked of Postgres rather than sorted in Python: the migration's tie-break is `ORDER BY …,
+    id`, and reproducing that with `min()` here would be a second implementation of the
+    collation, quietly right until the id type or the collation changed.
+    """
+    with eng.connect() as c:
+        return [r[0] for r in c.execute(text(
+            "SELECT id FROM memberships WHERE user_id='u1' ORDER BY id")).all()]
+
+
 @postgres_only
 def test_direct_survives_a_team_row_even_at_lower_access(scratch):
     """Rule 1, and the counter-intuitive one.
@@ -136,15 +148,30 @@ def test_the_highest_access_wins_within_one_origin_tier(scratch):
 
 @postgres_only
 def test_identical_rows_collapse_deterministically(scratch):
-    """Rule 3. With nothing to choose between them the lowest id survives, so a re-run is a
-    no-op rather than a coin flip."""
+    """Rule 3, and this test could not fail until it looked at the ID.
+
+    It asserted `len(_survivors(eng)) == 1` — and `_survivors` selects `(access, origin)`,
+    which are identical across all three seeded rows. Nothing observed WHICH row survived, so
+    the docstring's claim that the lowest id wins was never checked: replacing the `id`
+    tie-break in 0080 with `random()` left the whole file green.
+
+    Which is precisely the shape this ticket was filed about — *"a sweep that keeps a row
+    looks correct while keeping the wrong one"* — landing on its own fix.
+
+    Determinism is the point rather than tidiness: without a stable tie-break, two runs of the
+    same migration against the same data can keep different rows, and a migration that is not
+    a function of its input cannot be reasoned about after the fact.
+    """
     from alembic import command
 
     eng, cfg = scratch
     _seed(eng, [("write", "team"), ("write", "team"), ("write", "team")])
+    before = _ids(eng)
+    assert len(before) == 3, "the seed did not produce three rows to choose between"
+
     command.upgrade(cfg, "0080")
 
-    assert len(_survivors(eng)) == 1
+    assert _ids(eng) == [before[0]], "the LOWEST id survives, not merely one of the three"
 
 
 @postgres_only
