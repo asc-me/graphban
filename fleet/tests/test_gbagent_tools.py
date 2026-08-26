@@ -312,10 +312,13 @@ def test_replacing_an_established_file_with_a_stub_is_refused(wt):
     placeholder file to simulate the fix". `write_file` writes what it is given, and nothing
     objected.
     """
-    tools.write_file(wt, "big.py", "\n".join(f"line {i}" for i in range(200)))
+    body = "\n".join(f"line {i}" for i in range(200))
+    tools.write_file(wt, "big.py", body)
 
+    # Having READ it, so the unread guard is satisfied and the shape guard is what answers.
     with pytest.raises(ToolError) as exc:
-        tools.write_file(wt, "big.py", "# placeholder\nx = 1\n")
+        tools.write_file(wt, "big.py", "# placeholder\nx = 1\n",
+                         seen=tools.content_hash(body))
 
     assert "refusing to replace 200 lines with 2" in str(exc.value)
     assert "edit_file" in str(exc.value), "name the tool it should have used"
@@ -325,9 +328,11 @@ def test_replacing_an_established_file_with_a_stub_is_refused(wt):
 def test_a_genuine_rewrite_that_halves_a_file_still_goes_through(wt):
     """The control. A guard that refused every shrink would make write_file useless for the
     legitimate case, and the model would have no way to replace a file at all."""
-    tools.write_file(wt, "mid.py", "\n".join(f"line {i}" for i in range(200)))
+    body = "\n".join(f"line {i}" for i in range(200))
+    tools.write_file(wt, "mid.py", body)
 
-    tools.write_file(wt, "mid.py", "\n".join(f"kept {i}" for i in range(100)))
+    tools.write_file(wt, "mid.py", "\n".join(f"kept {i}" for i in range(100)),
+                     seen=tools.content_hash(body))
 
     assert (wt / "mid.py").read_text().startswith("kept 0")
 
@@ -336,7 +341,7 @@ def test_a_small_file_can_be_replaced_freely(wt):
     """Below SHRINK_MIN_LINES there is nothing to lose by rewriting from memory."""
     tools.write_file(wt, "small.py", "a\nb\nc\n")
 
-    tools.write_file(wt, "small.py", "x\n")
+    tools.write_file(wt, "small.py", "x\n", seen=tools.content_hash("a\nb\nc\n"))
 
     assert (wt / "small.py").read_text() == "x\n"
 
@@ -353,6 +358,76 @@ def test_the_guard_has_no_opinion_on_a_file_it_cannot_read(wt):
     legitimate overwrite for a reason nobody could act on."""
     (wt / "blob.bin").write_bytes(b"\xff\xfe" * 500)
 
-    tools.write_file(wt, "blob.bin", "now it is text\n")
+    tools.write_file(wt, "blob.bin", "now it is text\n")  # unreadable: no guard has an opinion
 
     assert (wt / "blob.bin").read_text() == "now it is text\n"
+
+
+# ---- you may not replace what you have not read (GRPH-515) ---------------------------------
+#
+# `_refuse_truncation` is a threshold, and thresholds get tuned until they stop firing. Worse,
+# it catches only the obvious shape: a model rewriting 856 lines as 800 and silently dropping
+# 56 sails straight through, and that is the more dangerous failure precisely because nobody
+# notices it. The property that actually matters is knowledge, not shape.
+
+
+def test_replacing_a_file_this_run_never_read_is_refused(wt):
+    tools.write_file(wt, "existing.py", "def real():\n    return 1\n")
+
+    with pytest.raises(tools.Unread) as exc:
+        tools.write_file(wt, "existing.py", "def real():\n    return 2\n")
+
+    assert "not read this file" in str(exc.value)
+    assert "edit_file" in str(exc.value), "name the tool that cannot destroy what it did not read"
+    assert "return 1" in (wt / "existing.py").read_text(), "nothing was written"
+
+
+def test_replacing_a_file_you_have_read_is_allowed(wt):
+    """The control. A rule that refused every overwrite would make write_file useless for the
+    case it exists for, and leave a model with no way to replace a file at all."""
+    body = "def real():\n    return 1\n"
+    tools.write_file(wt, "existing.py", body)
+
+    tools.write_file(wt, "existing.py", "def real():\n    return 2\n",
+                     seen=tools.content_hash(body))
+
+    assert "return 2" in (wt / "existing.py").read_text()
+
+
+def test_a_file_that_moved_since_you_read_it_is_refused_differently(wt):
+    """The two remedies differ, so the two refusals must. 'Read it' is wrong advice for a file
+    you already read — the right advice is 'read it AGAIN, something moved underneath you'."""
+    tools.write_file(wt, "shared.py", "first\n")
+    stale = tools.content_hash("first\n")
+    tools.write_file(wt, "shared.py", "second\n", seen=stale)  # somebody else's edit
+
+    with pytest.raises(tools.Unread) as exc:
+        tools.write_file(wt, "shared.py", "mine\n", seen=stale)
+
+    assert "changed since you read it" in str(exc.value)
+    assert "not read this file" not in str(exc.value)
+
+
+def test_a_new_file_needs_no_reading(wt):
+    """There is nothing to destroy, and requiring a read of a file that does not exist would
+    be a rule nobody could satisfy.
+
+    It holds because each guard declines to have an opinion on a file it cannot read, rather
+    than because the call site skips them — an `if not created` gate around both was here and
+    sabotage showed it could not fail.
+    """
+    out = tools.write_file(wt, "brand_new.py", "x = 1\n")
+
+    assert out["created"] is True
+
+
+def test_both_guards_stay_and_catch_different_things(wt):
+    """A model that reads a file and THEN writes a stub over it defeats the knowledge guard
+    and not the shape one. Run 2 of the S7 walk may well have done exactly that."""
+    body = "\n".join(f"line {i}" for i in range(200))
+    tools.write_file(wt, "big.py", body)
+
+    with pytest.raises(ToolError) as exc:
+        tools.write_file(wt, "big.py", "# placeholder\n", seen=tools.content_hash(body))
+
+    assert "refusing to replace" in str(exc.value), "read it, and the SHAPE guard still answers"

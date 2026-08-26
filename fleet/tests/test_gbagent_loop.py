@@ -835,3 +835,65 @@ def test_the_cli_marks_a_refusal_differently_from_a_result(capsys):
     assert "ERR write_file" in err
     assert "ok  read_file" in err
     assert "model: thinking" in err
+
+
+# ---- the toolset's memory of what it has read (GRPH-515) -----------------------------------
+
+
+def test_a_whole_read_licenses_a_replacement(wt):
+    ts = _toolset(wt)
+    ts.execute(ToolCall(id="1", name="read_file", input={"path": "README.md"}))
+
+    result = ts.execute(ToolCall(id="2", name="write_file",
+                                 input={"path": "README.md", "content": "# replaced\n"}))
+
+    assert result.is_error is False
+    assert (wt / "README.md").read_text() == "# replaced\n"
+
+
+def test_a_RANGED_read_does_not(wt):
+    """Seeing lines 1-50 of 856 is not seeing the file, and licensing an overwrite on it
+    would be worse than the threshold this replaced."""
+    ts = _toolset(wt)
+    ts.execute(ToolCall(id="0", name="write_file",
+                        input={"path": "many.py", "content": "\n".join(str(i) for i in range(30))}))
+    ts.seen.clear()
+    ts.execute(ToolCall(id="1", name="read_file",
+                        input={"path": "many.py", "start": 1, "count": 5}))
+
+    result = ts.execute(ToolCall(id="2", name="write_file",
+                                 input={"path": "many.py", "content": "gone\n"}))
+
+    assert result.is_error is True
+    assert "not read this file" in result.content
+
+
+def test_an_edit_makes_the_earlier_read_stale(wt):
+    """An edit moves the file underneath whatever was read, and the HASH is what notices.
+
+    An explicit `seen.pop` on edit was here too, and sabotage showed it could not fail — the
+    hash comparison already covers it. Worse, a pop would be WRONG for an edit that produced
+    identical content: the memory is still accurate there, and the hash says so.
+    """
+    ts = _toolset(wt)
+    ts.execute(ToolCall(id="1", name="read_file", input={"path": "README.md"}))
+    ts.execute(ToolCall(id="2", name="edit_file",
+                        input={"path": "README.md", "old": "# repo", "new": "# changed"}))
+
+    result = ts.execute(ToolCall(id="3", name="write_file",
+                                 input={"path": "README.md", "content": "wiped\n"}))
+
+    assert result.is_error is True
+
+
+def test_writing_twice_in_one_run_is_not_blocked_by_its_own_first_write(wt):
+    """The control for that: what the file now holds is what the agent just wrote, so a
+    second replacement must not be refused by a hash it made stale itself."""
+    ts = _toolset(wt)
+    ts.execute(ToolCall(id="1", name="write_file",
+                        input={"path": "new.py", "content": "first\n"}))
+
+    result = ts.execute(ToolCall(id="2", name="write_file",
+                                 input={"path": "new.py", "content": "second\n"}))
+
+    assert result.is_error is False

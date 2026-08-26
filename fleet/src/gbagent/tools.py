@@ -25,6 +25,7 @@ model reads and can correct — a wrong path should cost a turn, not the run.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -48,6 +49,24 @@ MAX_READ_BYTES = 400_000
 #: whole-file rewrite that halves a file still goes through.
 SHRINK_MIN_LINES = 40
 SHRINK_MAX_RATIO = 0.3
+
+
+class Unread(ToolError):
+    """A whole-file write over a file this run has not read (GRPH-515).
+
+    Its own type because the caller needs to tell it from every other refusal: the remedy is
+    `read_file`, and a `Toolset` that could not distinguish it could not say so.
+    """
+
+
+def content_hash(text: str) -> str:
+    """What "you have seen this file" means, exactly.
+
+    A hash rather than a timestamp or a turn number: it answers the real question — is the
+    file still what you read? — without any argument about staleness. Somebody else's edit,
+    or the model's own, moves it and the hash says so.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 MAX_GREP_HITS = 200
 MAX_LIST_ENTRIES = 500
 
@@ -82,7 +101,8 @@ def read_file(root: Path, path: str, *, start: int = 1, count: int = 0) -> dict:
     than one turn plus a context window.
     """
     target = safe_path(root, path)
-    lines = _text(target, path).splitlines()
+    raw = _text(target, path)
+    lines = raw.splitlines()
     if start < 1:
         raise ToolError(f"start must be 1 or greater, got {start}")
     chunk = lines[start - 1: (start - 1 + count) if count else None]
@@ -93,6 +113,11 @@ def read_file(root: Path, path: str, *, start: int = 1, count: int = 0) -> dict:
         "total_lines": len(lines),
         "truncated": bool(count) and (start - 1 + count) < len(lines),
         "text": "\n".join(chunk),
+        # Of the RAW file, not of `text` (GRPH-515). `splitlines()` drops the trailing
+        # newline, so hashing the reconstruction never matches the file on disk — every
+        # whole-file write would have been refused as "changed since you read it", which is
+        # a guard that refuses everything and therefore guards nothing.
+        "hash": content_hash(raw),
     }
 
 
@@ -172,7 +197,7 @@ def grep(root: Path, pattern: str, *, path: str = ".", glob: str = "*") -> dict:
     return {"pattern": pattern, "hits": hits, "truncated": len(hits) >= MAX_GREP_HITS}
 
 
-def write_file(root: Path, path: str, content: str) -> dict:
+def write_file(root: Path, path: str, content: str, *, seen: str | None = None) -> dict:
     """Write a file whole, creating any missing directories along the way.
 
     **The boundary is checked before any `mkdir`** — `safe_path` runs first, so a directory can
@@ -185,11 +210,50 @@ def write_file(root: Path, path: str, content: str) -> dict:
     if target.is_dir():
         raise ToolError(f"{path}: is a directory")
     created = not target.exists()
-    if not created:
-        _refuse_truncation(target, path, content)
+    # Both guards are asked unconditionally. Gating them on `not created` read as the obvious
+    # optimisation and was untestable: each one already returns without an opinion when the
+    # file cannot be read, so a new file passes by that route anyway, and the gate was a
+    # branch that could not fail. One mechanism, not two.
+    _refuse_unread(target, path, seen)
+    _refuse_truncation(target, path, content)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return {"path": path, "created": created, "bytes": len(content.encode("utf-8"))}
+
+
+def _refuse_unread(target: Path, path: str, seen: str | None) -> None:
+    """You may not replace a file you have not read (GRPH-515).
+
+    **The property that matters is knowledge, not shape.** `_refuse_truncation` below is a
+    threshold, and thresholds get tuned until they stop firing; worse, it catches only the
+    obvious case. A model rewriting 856 lines as 800 and silently dropping 56 sails straight
+    through it, and that is the more dangerous failure precisely because nobody notices.
+
+    Both guards stay. This one is about knowledge and that one is about shape, and a model
+    that reads a file and then writes a stub over it defeats only this one.
+
+    A RANGED read does not count, and the caller is what enforces that: seeing lines 1-50 of
+    856 is not seeing the file, and licensing an overwrite on it would be worse than the
+    threshold it replaced.
+    """
+    try:
+        current = content_hash(target.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, OSError):
+        return  # not text; this guard has no opinion, and truncation has none either
+    if seen == current:
+        return
+    if seen is None:
+        raise Unread(
+            f"{path}: you have not read this file, so you cannot replace it whole. "
+            "write_file rewrites a file ENTIRELY — everything you do not reproduce is "
+            "deleted. Use edit_file to change part of it, or read_file first if you really "
+            "mean to replace all of it."
+        )
+    raise Unread(
+        f"{path}: this file has changed since you read it, so replacing it whole would "
+        "discard whatever moved. read_file it again, or use edit_file to change the part "
+        "you mean."
+    )
 
 
 def _refuse_truncation(target: Path, path: str, content: str) -> None:
