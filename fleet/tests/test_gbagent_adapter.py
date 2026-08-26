@@ -486,3 +486,17 @@ def test_the_code_is_still_read_from_what_the_supervisor_WROTE():
 
     assert cli.enrolment_code(written) == "W-XYZ"
     assert cli.enrolment_code(cli.task_from(written)) == "", "stripped, as it should be"
+
+
+def test_the_cli_actually_passes_a_trace_to_the_loop():
+    """THE WIRING, and it is the part that silently did not happen.
+
+    `_trace` existed, `loop.run` accepted a `trace`, every unit test passed — and the spawned
+    child still wrote no trace, because the call site was never updated. A helper nobody calls
+    is indistinguishable from one that does not exist, and only a real spawn showed it.
+    """
+    import inspect
+
+    source = inspect.getsource(cli._run)
+
+    assert "trace=_trace" in source, "loop.run is called without a trace"

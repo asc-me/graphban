@@ -550,3 +550,60 @@ def test_a_handoff_with_no_item_at_all_says_so():
         Coordinator(client=None, item_id="").write_handoff("note")
 
     assert "nothing was claimed" in str(exc.value).lower()
+
+
+def test_an_agent_id_the_model_made_up_is_overwritten_not_kept():
+    """FOUND BY THE GRPH-506 TRACE, on turn 1 of a spawned run.
+
+    `claim_next` came back "needs to know which agent is calling" because the model had
+    supplied an agent_id of its own. It was truthy, so the fill-a-blank version left it alone,
+    and the server saw a caller it could not identify. Two of twelve turns went on recovering
+    from it.
+
+    Identity is not a field a model gets an opinion about.
+    """
+    sent: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "tools/list":
+            from gbagent.orient import COORDINATION_TOOLS
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "tools": [{"name": n, "description": n, "inputSchema": {
+                    "type": "object", "properties": {"agent_id": {"type": "string"}}}}
+                    for n in (*ORIENTATION_TOOLS, *COORDINATION_TOOLS)]}})
+        sent.append(body["params"]["arguments"])
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
+                                         "result": {"structuredContent": {"claimed": False}}})
+
+    from gbagent.orient import COORDINATION_TOOLS
+    orientation = orient.build(_server(handler), extra=COORDINATION_TOOLS, agent_id="GRPH-A99")
+
+    orientation.execute(ToolCall(id="c", name="claim_next", input={"agent_id": "gbagent"}))
+
+    assert sent[0]["agent_id"] == "GRPH-A99", "the model's guess must not survive"
+
+
+def test_an_agent_with_no_identity_does_not_inject_an_empty_one():
+    """The control. Overwriting with "" would turn every call into the same refusal, for the
+    direct-invocation path that legitimately has no registered id."""
+    sent: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "tools/list":
+            from gbagent.orient import COORDINATION_TOOLS
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "tools": [{"name": n, "description": n, "inputSchema": {
+                    "type": "object", "properties": {"agent_id": {"type": "string"}}}}
+                    for n in (*ORIENTATION_TOOLS, *COORDINATION_TOOLS)]}})
+        sent.append(body["params"]["arguments"])
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
+                                         "result": {"structuredContent": {}}})
+
+    from gbagent.orient import COORDINATION_TOOLS
+    orientation = orient.build(_server(handler), extra=COORDINATION_TOOLS)
+
+    orientation.execute(ToolCall(id="c", name="claim_next", input={"agent_id": "mine"}))
+
+    assert sent[0]["agent_id"] == "mine", "nothing to substitute, so nothing is taken away"

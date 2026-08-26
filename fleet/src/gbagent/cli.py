@@ -183,6 +183,22 @@ def _models(base_url: str) -> list[str]:
         session.close()
 
 
+def _trace(event: "loop.Trace") -> None:
+    """One line per thing that happened, to the child's own stderr (GRPH-506).
+
+    stderr because that is what `spawn` captures to a file the supervisor can read, and
+    because a fleet child has nowhere else to say anything. One line each, bounded upstream —
+    a forty-turn run should be readable, not re-livable.
+    """
+    if event.kind == "turn":
+        said = f" {event.text}" if event.text else ""
+        print(f"gbagent: [{event.turn:>2}] model:{said}", file=sys.stderr, flush=True)
+    else:
+        mark = "ok " if event.ok else "ERR"
+        print(f"gbagent: [{event.turn:>2}] {mark} {event.name}: {event.text}",
+              file=sys.stderr, flush=True)
+
+
 def _run(args: argparse.Namespace) -> int:
     root = Path(args.worktree).resolve()
     try:
@@ -253,7 +269,8 @@ def _run(args: argparse.Namespace) -> int:
     heartbeat.start()
     try:
         outcome = loop.run(session, toolset, coordinator=coordinator,
-                           window=args.window, budget=args.turns, heartbeat=heartbeat)
+                           window=args.window, budget=args.turns, heartbeat=heartbeat,
+                           trace=_trace)
     except ModelUnreachable as exc:
         print(f"gbagent: {exc}", file=sys.stderr)
         return 69  # EX_UNAVAILABLE. The endpoint, not this agent, and not a give-up.
