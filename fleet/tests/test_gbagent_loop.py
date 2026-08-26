@@ -299,6 +299,9 @@ class FakeCoordinator:
         self.note = ""
         self._fail = fail_handoff
 
+    def adopt(self, item_id):
+        self.adopted = item_id
+
     def write_handoff(self, note: str):
         self.order.append("write_handoff")
         self.note = note
@@ -490,20 +493,32 @@ def test_the_worker_set_is_pinned_and_is_not_the_supervisors():
     the WRITES are what the loop itself initiates, and the READS are the orientation layer the
     model calls. A new write appearing among the reads is the change worth noticing.
     """
-    from gbagent.orient import ORIENTATION_TOOLS
+    from gbagent.orient import COORDINATION_TOOLS, ORIENTATION_TOOLS
     from gbfleet.client import ALLOWED_TOOLS
 
-    assert WORKER_TOOLS - set(ORIENTATION_TOOLS) == {"update_item", "release_item"}
-    assert set(ORIENTATION_TOOLS) <= WORKER_TOOLS
+    reads, writes = set(ORIENTATION_TOOLS), set(COORDINATION_TOOLS)
+
+    assert reads <= WORKER_TOOLS and writes <= WORKER_TOOLS
+    assert not reads & writes, "the reads-only claim depends on these staying separate"
+    # `release_item` is the only verb NEITHER layer advertises: the give-up path calls it and
+    # the model never should, because releasing is what a harness does when it runs out of
+    # turns, not a move a model makes. `update_item` is deliberately in both — the loop writes
+    # the handoff note with it and the model moves the item to review with it.
+    assert WORKER_TOOLS - reads - writes == {"release_item"}
+    assert "update_item" in writes and "release_item" not in writes
     assert not WORKER_TOOLS & ALLOWED_TOOLS, "a worker is not a supervisor"
 
 
 def test_the_agent_still_cannot_claim_or_judge_its_own_work():
-    """The set grew by eight in S6, and this is the assertion that says what it did NOT grow
-    by. The server refuses these anyway; the point of the allowlist is that widening is an
-    edit somebody has to explain."""
-    for forbidden in ("claim_next", "claim_review", "sign_off", "bounce", "mint_enrolment",
-                      "assign_role", "retire_wave"):
+    """The set grew by seven reads in S6 and three writes in S7, and this is the assertion
+    that says what it did NOT grow by.
+
+    `claim_next` is here now — an agent that cannot take its own work is not a fleet member.
+    What is still absent is every verb that JUDGES: done is not the agent's word (D5), and the
+    server enforces that on authorship regardless of what this set says.
+    """
+    for forbidden in ("claim_review", "sign_off", "bounce", "mint_enrolment",
+                      "assign_role", "retire_wave", "close_prd"):
         assert forbidden not in WORKER_TOOLS
 
 

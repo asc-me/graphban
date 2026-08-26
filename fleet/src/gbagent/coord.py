@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 from gbfleet.client import Graphban
 
-from .orient import ORIENTATION_TOOLS
+from .orient import COORDINATION_TOOLS, ORIENTATION_TOOLS
 
 #: Every Graphban tool `gbagent` may call, pinned by `test_gbagent_loop.py`.
 #:
@@ -27,12 +27,16 @@ from .orient import ORIENTATION_TOOLS
 #: answers "what is this code and what touches it" and none of them changes server state, so
 #: handing them to a weak model needs no further argument.
 #:
-#: Still absent, deliberately: `claim_next`, `sign_off`, `bounce`, `mint_enrolment`. The
-#: server refuses those to this credential anyway (`TOOL_ROLES` and `independent()`), and
-#: this set exists so that widening is an edit somebody has to explain rather than a call
-#: site added while doing something else.
+#: S7 adds `COORDINATION_TOOLS` — claim, move to review, heartbeat — because an agent that
+#: cannot claim its own work is not a fleet member.
+#:
+#: Still absent, deliberately: `sign_off`, `bounce`, `claim_review`, `mint_enrolment`,
+#: `assign_role`. The server refuses those to this credential anyway (`TOOL_ROLES` and
+#: `independent()` on authorship), and this set exists so that widening is an edit somebody
+#: has to explain rather than a call site added while doing something else. D5: done is not
+#: the agent's word, and the server clamps a worker at `review` regardless.
 WORKER_TOOLS: frozenset[str] = frozenset(
-    {"update_item", "release_item", *ORIENTATION_TOOLS}
+    {"update_item", "release_item", *ORIENTATION_TOOLS, *COORDINATION_TOOLS}
 )
 
 
@@ -66,6 +70,15 @@ class Coordinator:
             agent_id=agent_id,
         )
 
+    def adopt(self, item_id: str | None) -> None:
+        """Learn the item the MODEL claimed, when the harness was not given one.
+
+        Only ever fills a blank: a coordinator constructed with `--item` is working that item,
+        and a `claim_next` the model made anyway must not silently redirect the handoff.
+        """
+        if item_id and not self.item_id:
+            self.item_id = item_id
+
     def write_handoff(self, note: str) -> dict:
         """Record what happened, as a substantive write to the ITEM ROW.
 
@@ -86,6 +99,11 @@ class Coordinator:
         Raises `HandoffFailed` rather than degrading: a release that follows a failed write is
         the outcome D6 exists to prevent.
         """
+        if not self.item_id:
+            raise HandoffFailed(
+                "there is no item to write a handoff to. Nothing was claimed, so there is no "
+                "row to record this run against."
+            )
         try:
             return self.client.call(
                 "update_item",

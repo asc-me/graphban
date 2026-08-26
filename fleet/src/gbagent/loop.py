@@ -181,6 +181,9 @@ def _give_up(
     compactions: int = 0, first_write: int | None = None,
 ) -> Outcome:
     """D6, in the one order that preserves the record: write, release, exit 75."""
+    # The model may have claimed its own item, in which case this is the first the coordinator
+    # hears of it (S7 walk finding). `adopt` only ever fills a blank.
+    coordinator.adopt(toolset.claimed_item)
     note = handoff_note(toolset, turns, budget, turn, compactions)
     try:
         coordinator.write_handoff(note)

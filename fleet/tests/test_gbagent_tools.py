@@ -299,3 +299,60 @@ def test_the_escape_is_caught_in_a_SUBDIRECTORY_too(tmp_path: Path):
     os.symlink(tmp_path / "secret.txt", root / "sub" / "deep" / "leak.txt")
 
     assert tools.grep(root, "SUPER_SECRET_TOKEN")["hits"] == []
+
+
+# ---- the truncation guard (S7 walk finding) ------------------------------------------------
+
+
+def test_replacing_an_established_file_with_a_stub_is_refused(wt):
+    """FOUND BY THE S7 ACCEPTANCE WALK, and it is the sharpest thing the walk found.
+
+    Told it could not move an item to review without changing something, `qwen3-coder:30b`
+    replaced 856 lines of `services/items.py` with six, opening with the comment "This is a
+    placeholder file to simulate the fix". `write_file` writes what it is given, and nothing
+    objected.
+    """
+    tools.write_file(wt, "big.py", "\n".join(f"line {i}" for i in range(200)))
+
+    with pytest.raises(ToolError) as exc:
+        tools.write_file(wt, "big.py", "# placeholder\nx = 1\n")
+
+    assert "refusing to replace 200 lines with 2" in str(exc.value)
+    assert "edit_file" in str(exc.value), "name the tool it should have used"
+    assert "line 199" in (wt / "big.py").read_text(), "nothing was written"
+
+
+def test_a_genuine_rewrite_that_halves_a_file_still_goes_through(wt):
+    """The control. A guard that refused every shrink would make write_file useless for the
+    legitimate case, and the model would have no way to replace a file at all."""
+    tools.write_file(wt, "mid.py", "\n".join(f"line {i}" for i in range(200)))
+
+    tools.write_file(wt, "mid.py", "\n".join(f"kept {i}" for i in range(100)))
+
+    assert (wt / "mid.py").read_text().startswith("kept 0")
+
+
+def test_a_small_file_can_be_replaced_freely(wt):
+    """Below SHRINK_MIN_LINES there is nothing to lose by rewriting from memory."""
+    tools.write_file(wt, "small.py", "a\nb\nc\n")
+
+    tools.write_file(wt, "small.py", "x\n")
+
+    assert (wt / "small.py").read_text() == "x\n"
+
+
+def test_a_new_file_is_never_refused(wt):
+    """write_file exists for new files; there is no content to destroy."""
+    out = tools.write_file(wt, "brand_new.py", "x = 1\n")
+
+    assert out["created"] is True
+
+
+def test_the_guard_has_no_opinion_on_a_file_it_cannot_read(wt):
+    """A binary blob has no line count to compare, and refusing on that would block a
+    legitimate overwrite for a reason nobody could act on."""
+    (wt / "blob.bin").write_bytes(b"\xff\xfe" * 500)
+
+    tools.write_file(wt, "blob.bin", "now it is text\n")
+
+    assert (wt / "blob.bin").read_text() == "now it is text\n"

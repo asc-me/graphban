@@ -28,7 +28,12 @@ from . import loop
 from .config import ConfigRefused, load
 from .coord import Coordinator
 from .llm import ModelUnreachable, OllamaSession
-from .orient import INSTRUCTION as ORIENT_INSTRUCTION, OrientationUnavailable, build as build_orientation
+from .orient import (
+    COORDINATION_TOOLS,
+    INSTRUCTION as ORIENT_INSTRUCTION,
+    OrientationUnavailable,
+    build as build_orientation,
+)
 from .toolset import Toolset
 
 #: Where the model endpoint lives. Named, never discovered — the same argument D3 makes
@@ -45,6 +50,26 @@ SYSTEM = (
     "\n" + ORIENT_INSTRUCTION + "\n"
     "\nWhen the tests pass, say DONE and stop calling tools."
 )
+
+
+def assignment_for(item: str) -> str:
+    """What the model is told to work on.
+
+    `--item` is optional from S7 on. Without one the model calls `claim_next` itself, which is
+    what AC-5 asks for — an agent that cannot take its own work is not a fleet member. With one
+    it works the item it was handed, which is what a re-run of a stuck item needs.
+
+    The claim instruction says `wait_seconds=0` and what to do with nothing: PRD-22 D-c makes
+    exiting on an empty queue the normal end of a worker's life, and a model that waits instead
+    is a process nobody will notice is idle.
+    """
+    if item:
+        return f"You are working on {item}. Do not claim anything else."
+    return (
+        "Call claim_next with wait_seconds=0 to take the next ready item, then build it. "
+        "If there is nothing to claim, say DONE and stop — exiting on an empty queue is the "
+        "normal end of your run, not a failure."
+    )
 
 
 class SeatUnreadable(RuntimeError):
@@ -90,16 +115,6 @@ def _run(args: argparse.Namespace) -> int:
         print(f"gbagent: {exc}", file=sys.stderr)
         return 78  # EX_CONFIG. Distinct from a crash, and from giving up.
 
-    if not args.item:
-        print(
-            "gbagent: no item to work on. This agent can ORIENT itself (S6) but cannot yet "
-            "CLAIM — `claim_next` is deliberately absent from coord.WORKER_TOOLS, and making "
-            "it work end to end is the acceptance walk (GRPH-493). Pass --item with an id "
-            "somebody already claimed for it.",
-            file=sys.stderr,
-        )
-        return 78
-
     try:
         base_url, api_key = read_seat(Path(args.mcp_config))
     except SeatUnreadable as exc:
@@ -107,10 +122,12 @@ def _run(args: argparse.Namespace) -> int:
         return 78
 
     task = Path(args.instruction_file).read_text(encoding="utf-8") if args.instruction_file else ""
+    assignment = assignment_for(args.item)
     coordinator = Coordinator.connect(base_url, api_key, item_id=args.item,
                                       agent_id=args.agent_id)
     try:
-        orientation = build_orientation(coordinator.client)
+        orientation = build_orientation(coordinator.client, extra=COORDINATION_TOOLS,
+                                        agent_id=args.agent_id)
     except OrientationUnavailable as exc:
         print(f"gbagent: {exc}", file=sys.stderr)
         return 78
@@ -118,7 +135,7 @@ def _run(args: argparse.Namespace) -> int:
     session = OllamaSession(
         args.base_url, args.model,
         system=SYSTEM,
-        task=f"{task}\n\nYou are working on {args.item}.".strip(),
+        task=f"{task}\n\n{assignment}".strip(),
     )
     try:
         outcome = loop.run(session, toolset, coordinator=coordinator,

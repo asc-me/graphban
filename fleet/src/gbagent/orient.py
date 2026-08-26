@@ -59,6 +59,24 @@ ORIENTATION_TOOLS: tuple[str, ...] = (
 #: seven-item list nobody notices used to be eight.
 NOT_ORIENTATION: tuple[str, ...] = ("describe_code",)
 
+#: The WRITES a fleet member needs to do its job (S7). Kept in a separate tuple from the
+#: reads above, because the argument that makes orientation safe to hand to a weak model —
+#: nothing here changes server state — stops being true the moment these are mixed in.
+#:
+#: `claim_next` takes the work. `update_item` moves it to `review` with evidence, and the
+#: server clamps a worker at `review`: `done` is the reviewer's word (WORKER_STATUS_CEILING).
+#: `heartbeat` keeps the lease alive across a `run_tests` that takes minutes.
+#:
+#: Absent, and the server would refuse them anyway: `sign_off`, `bounce`, `claim_review`,
+#: `mint_enrolment`. D5 — done is not the agent's word.
+COORDINATION_TOOLS: tuple[str, ...] = ("claim_next", "update_item", "heartbeat")
+
+#: Arguments the AGENT owns and the model does not get to invent. Injected when the tool's
+#: schema has the field and the model left it out: an agent that names a different agent_id
+#: is claiming work as somebody else, and a model that omits it gets a refusal it cannot act
+#: on because the right value was never in its context.
+INJECTED = ("agent_id",)
+
 #: What the model is told, in the system prompt. Deliberately concrete: "orient first" is
 #: advice nobody can follow, and a model that does not know `code_neighbors` exists will grep.
 INSTRUCTION = (
@@ -94,8 +112,21 @@ class Orientation:
     #: `docs/orientation-metric-prd24.md` for why counting calls is the wrong metric.
     calls: int = 0
 
+    #: Every name this layer answers for. Set by `build`.
+    names: tuple[str, ...] = ORIENTATION_TOOLS
+    #: This agent's server-side identity, injected into calls that take one.
+    agent_id: str = ""
+    #: The item a successful `claim_next` handed back, or None.
+    #:
+    #: **FOUND BY THE S7 WALK.** When the model claims its own work, the harness was never
+    #: told what it claimed — so the give-up path had no item id, `write_handoff` called
+    #: `update_item(id="")`, the server refused, and the run exited 70 with the item stuck
+    #: claimed until its lease expired. The loop's refusal to release without a handoff was
+    #: correct and protected the record; it was protecting it from a hole in this wiring.
+    claimed_item: str | None = None
+
     def handles(self, name: str) -> bool:
-        return name in ORIENTATION_TOOLS
+        return name in self.names
 
     def execute(self, call: ToolCall) -> ToolResult:
         """Forward to the server and hand back what it said.
@@ -104,12 +135,30 @@ class Orientation:
         wrong argument should cost a turn, not the run.
         """
         self.calls += 1
+        arguments = dict(call.input)
+        if self.agent_id:
+            for field in INJECTED:
+                if field in (self._schema(call.name) or {}) and not arguments.get(field):
+                    arguments[field] = self.agent_id
         try:
-            payload = self.client.call(call.name, **call.input)
+            payload = self.client.call(call.name, **arguments)
         except Exception as exc:  # noqa: BLE001 — refusals, tool errors and outages all read back
             return ToolResult(id=call.id, content=f"{call.name}: {exc}", is_error=True)
-        text = _render(payload)
-        return ToolResult(id=call.id, content=text)
+        if call.name == "claim_next":
+            self._remember_claim(payload)
+        return ToolResult(id=call.id, content=_render(payload))
+
+    def _remember_claim(self, payload: dict) -> None:
+        """`claim_next` answers with the item, or with nothing when the queue is empty."""
+        item = payload.get("item") if isinstance(payload.get("item"), dict) else payload
+        key = item.get("id") if isinstance(item, dict) else None
+        if key:
+            self.claimed_item = str(key)
+
+
+    def _schema(self, name: str) -> dict:
+        spec = next((s for s in self.specs if s.name == name), None)
+        return (spec.input_schema.get("properties") or {}) if spec else {}
 
 
 def _render(payload: dict) -> str:
@@ -121,8 +170,12 @@ def _render(payload: dict) -> str:
     return text
 
 
-def build(client: Graphban) -> Orientation:
-    """Fetch the manifest, keep the eight, refuse if any of them is gone.
+def build(client: Graphban, *, extra: tuple[str, ...] = (), agent_id: str = "") -> Orientation:
+    """Fetch the manifest, keep what was asked for, refuse if any of it is gone.
+
+    `extra` is how S7 adds `COORDINATION_TOOLS` without them becoming orientation: the reads
+    stay a separately-named tuple, so "nothing in the orientation layer changes server state"
+    remains a checkable claim rather than a sentence that used to be true.
 
     Refusing on a missing name rather than quietly advertising seven: the instruction names
     these tools, so a rename that goes unnoticed here becomes a model being told to call
@@ -135,7 +188,8 @@ def build(client: Graphban) -> Orientation:
             "agent is cheaper than a vendor child (PRD-24 D1); starting without it means "
             "spending the whole budget crawling the filesystem."
         )
-    missing = [name for name in ORIENTATION_TOOLS if name not in manifest]
+    wanted = (*ORIENTATION_TOOLS, *extra)
+    missing = [name for name in wanted if name not in manifest]
     if missing:
         raise OrientationUnavailable(
             f"the server's manifest has no {', '.join(missing)}. These are named in the "
@@ -148,6 +202,6 @@ def build(client: Graphban) -> Orientation:
             description=str(manifest[name].get("description") or ""),
             input_schema=dict(manifest[name].get("inputSchema") or {"type": "object"}),
         )
-        for name in ORIENTATION_TOOLS
+        for name in wanted
     ]
-    return Orientation(client=client, specs=specs)
+    return Orientation(client=client, specs=specs, names=wanted, agent_id=agent_id)
