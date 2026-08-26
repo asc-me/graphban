@@ -33,6 +33,21 @@ from .workspace import OutsideWorktree, ToolError, safe_path
 #: Read caps. A model that asks for a 40 MB file has made a mistake, and answering it would
 #: blow the context window that D7's compaction is trying to protect.
 MAX_READ_BYTES = 400_000
+
+#: A whole-file write that replaces an established file with a fraction of itself.
+#:
+#: **FOUND BY THE S7 ACCEPTANCE WALK.** Told it could not move an item to review without
+#: changing something, `qwen3-coder:30b` replaced 856 lines of `services/items.py` with six,
+#: opening with the comment "This is a placeholder file to simulate the fix". `write_file`
+#: writes what it is given; nothing objected.
+#:
+#: `edit_file` is the safe primitive for changing part of a file and it already refuses an
+#: ambiguous anchor. `write_file` exists for NEW files, and using it on a large existing one
+#: means the model is rewriting from memory — which is exactly where a weak model loses
+#: everything it did not remember. The thresholds are deliberately conservative: a genuine
+#: whole-file rewrite that halves a file still goes through.
+SHRINK_MIN_LINES = 40
+SHRINK_MAX_RATIO = 0.3
 MAX_GREP_HITS = 200
 MAX_LIST_ENTRIES = 500
 
@@ -170,9 +185,36 @@ def write_file(root: Path, path: str, content: str) -> dict:
     if target.is_dir():
         raise ToolError(f"{path}: is a directory")
     created = not target.exists()
+    if not created:
+        _refuse_truncation(target, path, content)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     return {"path": path, "created": created, "bytes": len(content.encode("utf-8"))}
+
+
+def _refuse_truncation(target: Path, path: str, content: str) -> None:
+    """Refuse to replace an established file with a fraction of itself — see the constants.
+
+    A refusal rather than a warning, because the model is unattended and there is nobody to
+    read a warning. It names `edit_file` because a refusal the model cannot act on costs the
+    run, and because `edit_file` is the tool it should have reached for.
+    """
+    try:
+        existing = target.read_text(encoding="utf-8").splitlines()
+    except (UnicodeDecodeError, OSError):
+        return  # not text, or unreadable: this guard has no opinion
+    if len(existing) < SHRINK_MIN_LINES:
+        return
+    incoming = content.splitlines()
+    if len(incoming) >= len(existing) * SHRINK_MAX_RATIO:
+        return
+    raise ToolError(
+        f"{path}: refusing to replace {len(existing)} lines with {len(incoming)}. "
+        "write_file rewrites a file WHOLE, so this would delete everything you did not "
+        "reproduce — and rewriting a large file from memory is how that happens by accident. "
+        "Use edit_file to change the part you mean, or read_file first if you genuinely "
+        "intend to replace all of it."
+    )
 
 
 def edit_file(root: Path, path: str, old: str, new: str, *, count: int = 1) -> dict:

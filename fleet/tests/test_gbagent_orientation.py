@@ -51,9 +51,12 @@ def _listing(names, calls: list | None = None):
         if body["method"] == "tools/list":
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
                                              "result": {"tools": _manifest(names)}})
-        return httpx.Response(200, json={
-            "jsonrpc": "2.0", "id": body["id"],
-            "result": {"structuredContent": {"hits": [{"path": "app/items.py", "line": 12}]}}})
+        # `claim_next` answers with the ITEM, which is what the harness has to remember.
+        payload = ({"id": "GRPH-1", "title": "a claimed item", "status": "in_progress"}
+                   if body["params"]["name"] == "claim_next"
+                   else {"hits": [{"path": "app/items.py", "line": 12}]})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
+                                         "result": {"structuredContent": payload}})
     return handler
 
 
@@ -312,6 +315,7 @@ class Session:
 
 
 class Coord:
+    def adopt(self, item_id): self.adopted = item_id
     def write_handoff(self, note): return {}
     def release(self): return {}
 
@@ -397,3 +401,152 @@ def test_the_metric_is_written_down_where_it_can_be_argued_with():
     assert "not the arc's success metric" in text.lower()
     assert "allowed to fail" in text, "the walk must be allowed to disprove this"
     assert "obvious proxy is rejected" in text.lower(), "say what was NOT chosen, and why"
+
+
+def _with_coordination():
+    """A layer carrying the coordination WRITES as well as the reads, which is what S7 wires."""
+    from gbagent.orient import COORDINATION_TOOLS
+    return orient.build(_server(_listing([*ORIENTATION_TOOLS, *COORDINATION_TOOLS])),
+                        extra=COORDINATION_TOOLS)
+
+
+# ---- the completion guard (S7 walk finding) ------------------------------------------------
+
+
+def test_moving_to_review_having_written_nothing_is_refused(wt):
+    """THE FINDING OF THE S7 WALK, and the reason a walk exists.
+
+    qwen3-coder:30b claimed a real item, ran the suite — which passed, because it had changed
+    nothing — and moved the item to `review` with a `test` receipt reading "Ran all tests and
+    verified the fix". `git diff` was empty. Seven turns and a false completion in the ledger.
+
+    The server cannot catch this: it does not know worktrees exist, and an item arriving in
+    review with evidence looks exactly like finished work. This agent owns the write tool.
+    """
+    orientation = _with_coordination()
+    toolset = _toolset(wt, orientation)
+
+    result = toolset.execute(ToolCall(id="c", name="update_item",
+                                      input={"id": "GRPH-1", "status": "review",
+                                             "evidence": [{"kind": "test", "detail": "all pass"}]}))
+
+    assert result.is_error is True
+    assert "not changed any file" in result.content
+    assert orientation.calls == 0, "the call must not have reached the server at all"
+
+
+def test_the_refusal_says_what_to_do_next(wt):
+    """At 22-45 seconds a turn, a refusal the model cannot act on costs the run."""
+    orientation = _with_coordination()
+
+    result = _toolset(wt, orientation).execute(
+        ToolCall(id="c", name="update_item", input={"id": "GRPH-1", "status": "review"}))
+
+    for hint in ("write_file", "edit_file", "run_tests", "git_diff"):
+        assert hint in result.content
+
+
+def test_moving_to_review_after_writing_is_allowed(wt):
+    """The control. Without it the guard above could be refusing every review move, which
+    would be a different and equally broken agent."""
+    orientation = _with_coordination()
+    toolset = _toolset(wt, orientation)
+    toolset.execute(ToolCall(id="1", name="write_file",
+                             input={"path": "a.py", "content": "x = 1\n"}))
+
+    result = toolset.execute(ToolCall(id="2", name="update_item",
+                                      input={"id": "GRPH-1", "status": "review"}))
+
+    assert result.is_error is False
+    assert orientation.calls == 1
+
+
+def test_the_guard_does_not_block_ordinary_updates(wt):
+    """A note, a blocker, touchpoints — none of those claim the work is finished, and an agent
+    that could not record a blocker until it had edited something would be worse."""
+    orientation = _with_coordination()
+
+    result = _toolset(wt, orientation).execute(ToolCall(
+        id="c", name="update_item",
+        input={"id": "GRPH-1", "blocker": "the endpoint is down"}))
+
+    assert result.is_error is False
+
+
+def test_the_guard_covers_done_as_well_as_review(wt):
+    """`done` is the reviewer's word and the server clamps a worker at `review` anyway — but a
+    guard that named only one of the two would be relying on that clamp to hold forever."""
+    orientation = _with_coordination()
+
+    result = _toolset(wt, orientation).execute(
+        ToolCall(id="c", name="update_item", input={"id": "GRPH-1", "status": "done"}))
+
+    assert result.is_error is True
+
+
+# ---- the give-up path learns what the model claimed (S7 walk finding) ----------------------
+
+
+def test_a_successful_claim_is_remembered():
+    """FOUND BY THE S7 WALK. When the model claims its own work the harness was never told
+    what it claimed, so the give-up path called `update_item(id="")`, the server refused, and
+    the run exited 70 with the item stuck claimed until its lease expired."""
+    orientation = _with_coordination()
+
+    orientation.execute(ToolCall(id="c", name="claim_next", input={"wait_seconds": 0}))
+
+    assert orientation.claimed_item == "GRPH-1"
+
+
+def test_an_empty_queue_leaves_nothing_claimed():
+    """`claim_next` on an empty queue answers with no item, and remembering a phantom would
+    send the handoff to a row that does not exist."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "tools/list":
+            from gbagent.orient import COORDINATION_TOOLS
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "tools": _manifest([*ORIENTATION_TOOLS, *COORDINATION_TOOLS])}})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
+                                         "result": {"structuredContent": {"claimed": False}}})
+
+    from gbagent.orient import COORDINATION_TOOLS
+    orientation = orient.build(_server(handler), extra=COORDINATION_TOOLS)
+
+    orientation.execute(ToolCall(id="c", name="claim_next", input={}))
+
+    assert orientation.claimed_item is None
+
+
+def test_the_give_up_path_adopts_the_claimed_item(wt):
+    """The whole point: a run that claimed its own work can still write a handoff."""
+    orientation = _with_coordination()
+    toolset = _toolset(wt, orientation)
+    toolset.execute(ToolCall(id="c", name="claim_next", input={}))
+    coordinator = Coord()
+
+    loop.run(Session([_wants("read_file", path="README.md")]), toolset,
+             coordinator=coordinator, window=100_000, budget=1)
+
+    assert coordinator.adopted == "GRPH-1"
+
+
+def test_adopt_never_overrides_an_item_the_harness_was_given():
+    """A coordinator constructed with `--item` is working that item, and a `claim_next` the
+    model made anyway must not silently redirect the handoff to somewhere else."""
+    from gbagent.coord import Coordinator
+
+    c = Coordinator(client=None, item_id="GRPH-9")
+    c.adopt("GRPH-1")
+
+    assert c.item_id == "GRPH-9"
+
+
+def test_a_handoff_with_no_item_at_all_says_so():
+    """Rather than calling update_item with an empty id and reading the server's confusion."""
+    from gbagent.coord import Coordinator, HandoffFailed
+
+    with pytest.raises(HandoffFailed) as exc:
+        Coordinator(client=None, item_id="").write_handoff("note")
+
+    assert "nothing was claimed" in str(exc.value).lower()

@@ -220,6 +220,9 @@ def _give_up(
     turn of GRPH-489. It reaches the handoff note, because "gave up after 3 of 40 turns"
     with no explanation reads as a crash to whoever picks the item up.
     """
+    # The model may have claimed its own item, in which case this is the first the coordinator
+    # hears of it (S7 walk finding). `adopt` only ever fills a blank.
+    coordinator.adopt(toolset.claimed_item)
     note = handoff_note(toolset, turns, budget, turn, compactions, why)
     try:
         coordinator.write_handoff(note)

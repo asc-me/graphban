@@ -118,14 +118,26 @@ class Toolset:
     refusals: int = 0
 
     @property
+    def claimed_item(self) -> str | None:
+        """What the model claimed, so the give-up path can write a handoff about it."""
+        return getattr(self.orientation, "claimed_item", None)
+
+    @property
     def specs(self) -> list[ToolSpec]:
         if self.orientation is None:
             return SPECS
         return [*self.orientation.specs, *SPECS]
 
+    #: Statuses that CLAIM the work is finished. Moving to either without having written
+    #: anything is the failure the S7 walk found — see `_completion_guard`.
+    COMPLETION_STATUSES = ("review", "done")
+
     def execute(self, call: ToolCall) -> ToolResult:
         """Run one tool call. Never raises for anything the model did wrong."""
         if self.orientation is not None and self.orientation.handles(call.name):
+            refusal = self._completion_guard(call)
+            if refusal is not None:
+                return refusal
             return self.orientation.execute(call)
         handler = getattr(self, f"_do_{call.name}", None)
         if handler is None or not call.name:
@@ -207,6 +219,46 @@ class Toolset:
         if out["empty"]:
             return f"no changes under {path}"
         return out["diff"] + ("\n... truncated" if out["truncated"] else "")
+
+    def _completion_guard(self, call: ToolCall) -> ToolResult | None:
+        """Refuse to hand work over as finished when nothing was changed.
+
+        **FOUND BY THE S7 ACCEPTANCE WALK, and it is the reason that walk exists.**
+        `qwen3-coder:30b` claimed a real item, ran the suite — which passed, because it had
+        changed nothing — and moved the item to `review` with a `test` receipt reading "Ran all
+        tests and verified the fix". `git diff` was empty. Seven turns, 9.8 minutes, and a
+        false completion in the ledger.
+
+        The server cannot catch this: it does not know worktrees exist, and an item arriving in
+        `review` with evidence looks exactly like finished work. But this agent owns the write
+        tool, which is the same argument D2 makes about the worktree boundary — the one
+        property we have that a vendor child does not.
+
+        A refusal, not a crash: the model reads it and can go and do the work. The message says
+        what is missing rather than that it was naughty, because the next turn costs 22-45
+        seconds and a refusal it cannot act on costs the run.
+
+        This does not make the agent honest. It makes ONE specific lie impossible to tell
+        through this tool — a model can still write something irrelevant and claim it. That is
+        what review is for, and `sign_off` still refuses the author.
+        """
+        if call.name != "update_item":
+            return None
+        if str(call.input.get("status") or "") not in self.COMPLETION_STATUSES:
+            return None
+        if self.written:
+            return None
+        self.refusals += 1
+        return ToolResult(
+            id=call.id,
+            content=(
+                "refused: you have not changed any file in this worktree, so this item is not "
+                "ready for review. `git_diff` will show you the same thing. Make the change "
+                "with write_file or edit_file, run_tests to check it, and then move it. "
+                "Passing tests on an unchanged repository are not evidence of a fix."
+            ),
+            is_error=True,
+        )
 
     def _record(self, path: str) -> None:
         if path not in self.written:

@@ -215,22 +215,24 @@ def test_a_bare_invocation_says_what_is_wrong(tmp_path):
     assert "no command given" in result.stderr
 
 
-def test_run_refuses_rather_than_starting_with_no_item(tmp_path, monkeypatch):
-    """A child that starts, achieves nothing and exits 0 is the failure PRD-22 keeps naming.
-    This one names the slice that owns the gap instead."""
-    (tmp_path / "backend").mkdir()
-    (tmp_path / ".gbagent.toml").write_text('[tests]\ncommand = "echo hi"\n')
+def test_with_no_item_the_model_is_told_to_claim_one(tmp_path):
+    """AC-5. Through S5 this refused with exit 78, because `claim_next` was not in
+    `WORKER_TOOLS` and an agent that starts, achieves nothing and exits 0 is the failure
+    PRD-22 keeps naming. S7 wired the claim, so the refusal became the instruction."""
+    from gbagent.cli import assignment_for
 
-    result = subprocess.run(
-        [str(BINARY), "run", "--worktree", str(tmp_path), "--mcp-config", "/nope.json",
-         "--model", "m", "--turns", "5", "--window", "1000",
-         "--base-url", "http://model.invalid/v1"],
-        capture_output=True, text=True, timeout=60,
-    )
+    claim = assignment_for("")
 
-    assert result.returncode == 78
-    assert "cannot yet " in result.stderr and "CLAIM" in result.stderr
-    assert "GRPH-493" in result.stderr, "say which slice owns it"
+    assert "claim_next" in claim
+    assert "wait_seconds=0" in claim, "waiting is how a worker becomes an idle process"
+    assert "not a failure" in claim, "D-c: exiting on empty is the normal end of a run"
+
+
+def test_with_an_item_the_model_is_told_not_to_claim_anything_else(tmp_path):
+    from gbagent.cli import assignment_for
+
+    assert "GRPH-1" in assignment_for("GRPH-1")
+    assert "claim_next" not in assignment_for("GRPH-1")
 
 
 def test_run_refuses_a_repository_it_cannot_verify(tmp_path):
