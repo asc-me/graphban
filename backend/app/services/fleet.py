@@ -530,6 +530,16 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "update_prd": ("planner",),
     "decompose_prd": ("planner",),
     "grill_prd": ("planner",),
+    # `answer_grill` joins its four siblings (GRPH-514). Authoring a PRD is planner work and
+    # the other four verbs that do it — create, update, decompose, grill — have said so since
+    # PRD-17. This one was ungated, which meant a worker mid-build could relay an answer into
+    # an interrogation it is not part of.
+    #
+    # It does NOT change whether an AGENT may call it. AL-299 decided that deliberately —
+    # `test_authority_gates.py` records the reason, "relays an author's answer into the grill;
+    # recorded as agent-supplied" — and that stays true. Agent-callable and planner-only are
+    # different axes, which is why `create_prd` has always been both.
+    "answer_grill": ("planner",),
 }
 
 # `update_item` is special: the tool is a worker's, but ONE argument on it is not. A worker
