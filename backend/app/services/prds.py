@@ -18,6 +18,8 @@ from app.models import (
     WorkClassification, utcnow,
 )
 from app.services import items as items_svc
+from app import errors
+from app.config import settings
 from app.services import keys
 from app.services import events as events_svc
 from app.services import platform as platform_svc
@@ -208,7 +210,76 @@ _COMMANDS = {
 }
 
 
-def ai_command(db: Session, prd_id: str, command: str) -> str:
+#: A timeout gets exactly one more go (GRPH-505).
+#:
+#: MEASURED, and the first diagnosis was wrong. "The PRD is too long" was falsified: 80k
+#: characters answer in 57s against the same host and model, and 46k — the size that failed —
+#: answered in 51s. Latency here is dominated by output generation, not input length. The
+#: surviving hypothesis is contention on a shared single-GPU box where the model occupies
+#: 22.3 GB, and it is a hypothesis rather than a finding.
+#:
+#: One retry, not a loop with backoff. The failure that was observed resolved on a manual
+#: retry, and a loop turns "slow" into "hangs for five minutes" — the caller has a budget too.
+#:
+#: NOT a raised `llm_timeout_seconds`. 90s is ample for a warm model at any realistic PRD size,
+#: so raising it would slow the detection of every genuinely broken call to paper over an
+#: intermittent one.
+CHAT_ATTEMPTS = 2
+
+_TIMEOUT_SIGNS = ("timeout", "timed out")
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """Whether this failure is worth one more attempt.
+
+    Matched on the exception's NAME as well as its text, because the provider layer is plain
+    httpx for some vendors and an SDK for others, and importing every vendor's timeout type
+    here to isinstance against would tie this function to the set of providers that exist
+    today.
+    """
+    name = type(exc).__name__.lower()
+    return any(sign in name for sign in ("timeout",)) or any(
+        sign in str(exc).lower() for sign in _TIMEOUT_SIGNS
+    )
+
+
+def chat_with_retry(chat, *, provider: str, model: str, **kwargs) -> tuple[str, bool]:
+    """Ask the model, retrying ONCE on a timeout. Returns (answer, retried).
+
+    Raises `errors.ModelTimedOut` when both attempts time out, naming the provider, the model
+    and the budget — enough for a caller to tell "try again" from "your provider is wrong",
+    which is the whole defect. Anything that is not a timeout is re-raised untouched: a refused
+    key does not become true by waiting.
+    """
+    budget = settings.llm_timeout_seconds
+    last: BaseException | None = None
+    for attempt in range(1, CHAT_ATTEMPTS + 1):
+        try:
+            return chat.chat(**kwargs), attempt > 1
+        except Exception as exc:  # noqa: BLE001 — re-raised below unless it is a timeout
+            if not _is_timeout(exc):
+                raise
+            last = exc
+            logger.warning(
+                "chat timed out on attempt %d/%d (provider=%s model=%s budget=%ss): %s",
+                attempt, CHAT_ATTEMPTS, provider, model, budget, exc,
+            )
+    raise errors.ModelTimedOut(
+        f"the chat model did not answer within {budget}s, twice "
+        f"(provider={provider!r}, model={model!r}). This is often transient — the host may "
+        "have been loading or evicting a model — so trying again may simply work. If it "
+        "keeps happening, check that the provider and model are reachable.",
+        hint="retry once; if it persists, check the project's chat provider settings",
+    ) from last
+
+
+def ai_command_detail(db: Session, prd_id: str, command: str) -> tuple[str, bool]:
+    """`ai_command`, plus whether it took a second attempt (GRPH-505).
+
+    Split rather than changing `ai_command`'s return type, because the REST router wants the
+    string and only the MCP surface reports the retry. A caller seeing `retried` knows its
+    slow call was contention rather than a hung server.
+    """
     prd = db.get(Prd, keys.resolve_prd(db, prd_id) or prd_id)
     if prd is None:
         raise ValueError(f"prd not found: {prd_id}")
@@ -217,13 +288,20 @@ def ai_command(db: Session, prd_id: str, command: str) -> str:
 
     provider, chat = platform_svc.resolve_chat(db, prd.project_id)
     if provider == "stub":
-        return _stub_command(command, prd)
+        return _stub_command(command, prd), False
 
-    return chat.chat(
+    return chat_with_retry(
+        chat,
+        provider=provider,
+        model=getattr(chat, "model", ""),
         system="You are a precise PRD writing assistant. Return only the requested markdown snippet.",
         context=prd.body,
         question=_COMMANDS[command],
     )
+
+
+def ai_command(db: Session, prd_id: str, command: str) -> str:
+    return ai_command_detail(db, prd_id, command)[0]
 
 
 # ---- Interactive grill mode (AL-67) ----

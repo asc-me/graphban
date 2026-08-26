@@ -422,8 +422,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "grill_prd",
         "description": (
             "Next batch of clarifying questions to sharpen a PRD before building (the 'grill' "
-            "technique) — surfaces unstated assumptions, scope boundaries, and failure modes, "
-            "favoring questions answerable in words. Returns a markdown list; author answers via update_prd."
+            "technique) — surfaces unstated assumptions, scope edges and failure modes, "
+            "favoring ones answerable in words. Markdown list; answer via update_prd."
         ),
         "inputSchema": {
             "type": "object",
@@ -1353,7 +1353,8 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
     "grill_prd": {
         "type": "object",
-        "properties": {"prd_id": _STR, "questions": _STR},
+        "properties": {"prd_id": _STR, "questions": _STR,
+                       "retried": {"type": "boolean"}},
     },
     "describe_code": {
         "type": "object",
@@ -2354,7 +2355,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.NotFound(f"prd not found: {args['prd_id']}")
         if prd.project_id not in readable:
             raise authz.Forbidden(f"prd {args['prd_id']!r} is outside this key's project scope")
-        return {"prd_id": prd.key, "questions": prd_svc.ai_command(db, prd.id, "grill")}
+        questions, retried = prd_svc.ai_command_detail(db, prd.id, "grill")
+        # `retried` is reported rather than logged only: a caller whose grill was slow can
+        # tell contention from a hung server without reading the server's logs (GRPH-505).
+        return {"prd_id": prd.key, "questions": questions, "retried": retried}
     if name == "prd_acceptance":
         prd = _readable_prd(db, args["prd_id"], readable)
         view = args["view"]
