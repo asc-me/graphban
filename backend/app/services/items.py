@@ -676,6 +676,38 @@ def _ready_candidates(db: Session, project_id: str | None, lease_seconds: int) -
     return out
 
 
+class AlreadyHolding(Exception):
+    """This agent already holds a live claim, so it may not take a second (GRPH-504).
+
+    PRD-17 D-g is one worker, one worktree. Two items in one worktree is two lots of work on
+    one branch, which is the shape the whole cluster model exists to prevent — and it happens
+    without anybody choosing it: `claim_next` stamped `built_by` every time it was called, and
+    nothing looked at whether the caller was already holding something.
+
+    FOUND BY CLEANING UP AFTER THE PRD-24 S7 WALK, where a confused local model was holding two
+    items: the one it was working and a second it had claimed and never opened. The second was
+    `in_progress`, invisible to the divvy, and stamped with an author who did nothing.
+    """
+
+
+def live_claim(db: Session, agent_id: str, *, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
+    """The item this agent is holding right now, or None.
+
+    "Live" means exactly what the reclaim path means by it — a lease inside `lease_seconds` —
+    and it is computed with the same comparison rather than a second one that could drift. An
+    agent whose lease lapsed is holding nothing and must be able to claim again without an
+    operator intervening, which is the whole reason the cutoff is not simply `claimed_by`.
+
+    The reviewer's hold is `review_claimed_by`, a different column, and is deliberately not
+    this: a reviewer holding a review claim may still be a worker elsewhere (GRPH-429).
+    """
+    cutoff = utcnow() - timedelta(seconds=lease_seconds)
+    for item in db.scalars(select(Item).where(Item.claimed_by == agent_id)).all():
+        if item.claimed_at is not None and _aware(item.claimed_at) >= cutoff:
+            return item
+    return None
+
+
 def claim_next(
     db: Session, agent_id: str, project_id: str | None = None,
     lease_seconds: int = DEFAULT_LEASE_SECONDS, skip: list[str] | None = None,
@@ -699,6 +731,15 @@ def claim_next(
     # Caller-supplied rather than remembered server-side: a decline is a fact about this
     # agent's turn, not about the item, and storing it would mean deciding when it expires.
     declined = {s for s in (skip or [])}
+    # ONE AT A TIME (GRPH-504). Checked before any candidate is considered, so a caller that
+    # already holds something is refused rather than quietly given a second item to abandon.
+    held = live_claim(db, agent_id, lease_seconds=lease_seconds)
+    if held is not None:
+        raise AlreadyHolding(
+            f"{agent_id} already holds {held.key} — release it before claiming another. "
+            "One worker, one worktree (PRD-17 D-g): a second item claimed into the same tree "
+            "is two lots of work on one branch."
+        )
     for cand in _ready_candidates(db, project_id, lease_seconds):
         if cand.id in declined or cand.key in declined:
             continue
