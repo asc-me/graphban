@@ -69,39 +69,53 @@ old constant to prove the extraction moved no node. The checkable forms are
 | 6 | Press `/`, type a symbol name | Matches lit, rest dimmed, viewport eases to fit; count shown. **Zero hits must dim the graph and show `0`**, not look like no search | ✅ count `1`, viewport eased; **zero hits → badge `0`, all 228 nodes dimmed to 0.22** |
 | 7 | Tab into the graph, then arrow-key around | ONE tab stop into the SVG, then arrows move node to node; Enter selects; Esc clears. Shift+arrows pan | ✅ **after GRPH-479** (was two stops, and arrows never moved DOM focus). svg `tabindex=0`, **0 focusable inside**; 3× ArrowRight → `activeElement` = `File backend/app/models/__init__.py, 22 connections` |
 | 8 | Shift-click a selected node twice | Reach widens a ring each time; inspector reads `3 hops · N nodes`; edges light only when BOTH ends are in reach | ✅ 2 hops · 45 nodes → **3 hops · 81**; 88 lit / 66 dim, **zero violations either way** |
-| 9 | Start an all-in-one agent; let it `claim_cluster` | Its held nodes glow in **your** avatar colour within one heartbeat (~50s) | |
-| 10 | Read the node it is holding | Still shows its kind colour and described/stale stroke — the cloud never tints the node itself | |
-| 11 | Open the inspector on a held node | Names the agent, the role, and **time-remaining** counted from `served_at` | |
-| 12 | Let the lease lapse without killing the agent | Glow disappears with **no sweeper running** — purely the lease clock | |
-| 13 | Have an agent claim an item whose touchpoints include `docs/` or `AGENTS.md` | Legend reads "N held areas not on this map"; tray lists the **raw area text** and the holder | |
+| 9 | Start an all-in-one agent; let it `claim_cluster` | Its held nodes glow in **your** avatar colour within one heartbeat (~50s) | ✅ **167 nodes ringed within one poll.** `hold-pulse` stroke `#a78bfa`; the legend avatar swatch is `rgb(167,139,250)` — **the same colour, exactly**. Footer read `1a · 167n` |
+| 10 | Read the node it is holding | Still shows its kind colour and described/stale stroke — the cloud never tints the node itself | ✅ the ring is a SEPARATE `r=13` circle with `fill:none`. The node keeps its own kind fill (`#9aa3ab` config, `#7ca2ff` file) and its `#0a0c0e` stroke — **the cloud never touches the node** |
+| 11 | Open the inspector on a held node | Names the agent, the role, and **time-remaining** counted from `served_at` | ✅ `HELD BY 1 AGENT · A · walk/presence-A · ALL-IN-ONE · 9m 43s`. Names the agent, the role and time-remaining. Also volunteers **“PREDICTED AREA — THE LEASE IS REAL, WHERE IT LANDS IS A GUESS”** |
+| 12 | Let the lease lapse without killing the agent | Glow disappears with **no sweeper running** — purely the lease clock | ✅ **167 rings → 0** at lease expiry (claimed 21:02Z, `lease_seconds=600`, checked 21:13Z). Agent still registered, nothing killed. `active_reservations` filters at READ time and no sweeper exists anywhere |
+| 13 | Have an agent claim an item whose touchpoints include `docs/` or `AGENTS.md` | Legend reads "N held areas not on this map"; tray lists the **raw area text** and the holder | ✅ tray reads **“HELD, BUT NOT ON THIS MAP”** and lists the **raw area text** with holder: `../ascme-labs/**`, `.cursor/rules/*`, `backend/app/providers/probe.py` … 12 rows, each `UNDESCRIBED A` |
 | 14 | Second human's agent claims a colliding area | Contention ring in red; inspector leads with "held by 2 agents across 2 users" | |
-| 15 | Run two of YOUR OWN agents on one node | **No ring.** Same colour, one denser cloud. If this rings, the alarm is worthless | |
-| 16 | Click a legend chip | Solos that human — their clouds stay, others fade to 4%; their held nodes light | |
-| 17 | Turn on `prefers-reduced-motion` | Ring stays at mean opacity, stops pulsing. Presence must not vanish for someone who asked for less motion | |
+| 15 | Run two of YOUR OWN agents on one node | **No ring.** Same colour, one denser cloud. If this rings, the alarm is worthless | ✅ **no ring.** 107 nodes read `held by A and A`; their circle structure is **identical** to the 60 single-held ones — one `hold-pulse`, same `#a78bfa`, same `stroke-width`. (“Denser” is not distinguishable in the DOM; the load-bearing half is that it does not ring) |
+| 16 | Click a legend chip | Solos that human — their clouds stay, others fade to 4%; their held nodes light | ⚠️ **half.** Solo lit all **167 held → opacity 1.0** and dimmed all **61 unheld → 0.22**, restoring exactly on toggle-off. “Others fade to 4%” needs a SECOND human and could not be observed — see step 14 |
+| 17 | Turn on `prefers-reduced-motion` | Ring stays at mean opacity, stops pulsing. Presence must not vanish for someone who asked for less motion | ⚠️ **rule verified, not observed.** `.hold-pulse` keyframes are `0.85`/`0.3`; the `prefers-reduced-motion: reduce` rule sets `animation:none; opacity:0.575` — **exactly their mean**, and non-zero so presence does not vanish. Browser was not in reduced-motion mode |
 | 18 | Open the Hubs panel | Ranks by **inbound** degree. A file importing forty things must not outrank one forty things import | ✅ **after GRPH-480.** `config.py` 9←/0→ ranks 3rd; `mcp_server.py` 5←/18→ ranks 6th, with the inversion callout. Undirected degree would swap them |
 | 19 | `⌥`-click a second node | Shortest path; hops report which way each edge actually points; off-path dimmed | ✅ **after GRPH-481.** `mcp_server.py → AGENTS.md → queries.ts`: `↑ references points back`, then `↓ points this way`. **2 of 303 edges lit** |
 | 20 | Ask `graph_query` from an agent terminal | `hubs`/`components`/`path` answer; an unknown `edge_types` is **refused**, not silently narrowed | ✅ `hubs`/`components`/`path` all answer; `edge_types: [summons]` **refused by name**, listing the valid five |
 | 21 | Synthesise >800 nodes in several components | Collapses to super-nodes labelled by anchor; clicking one enters it; breadcrumb offers the way back | |
 | 22 | With the galaxy collapsed, search for a node inside one | Find sees it and **enters** the component holding it | |
 
-## Result — 11 of 22 measured, all passing; 4 defects found and fixed
+## Result — 19 of 22 measured; 4 defects found and fixed
 
-Driven 2026-08-22 and 2026-08-24 against **`ubuntu-srv`**, the live instance — first on
-`9d1936b`, then again on `ace2cd0` once the fixes it produced had shipped.
+Driven 2026-08-22, 2026-08-24 and 2026-08-26 against **`ubuntu-srv`**, the live instance — on
+`9d1936b`, then `ace2cd0` once the fixes it produced had shipped, then `be397cf` for the
+presence half.
 
-**Eleven steps have results. Three of them FAILED when first run, and all three now pass on the
-deployed build** — steps 7, 18 and 19. The other eleven are not passing; they have not been run,
-and the section below says why for each, because eleven empty cells and eleven passing ones look
-identical in a summary.
+**Nineteen steps have results. Three of them FAILED when first run, and all three now pass on
+the deployed build** — steps 7, 18 and 19. Two more pass only in half, and say which half. The
+remaining three have not been run at all, and the section below says why for each, because an
+empty cell and a passing one look identical in a summary.
+
+The presence block (9–17) was driven on 2026-08-26 by registering a real agent, letting
+`claim_cluster` take a real cluster of three items, and reading the DOM rather than eyeballing
+a screenshot — 167 held nodes, measured. The claimed items were released afterwards and their
+`built_by` cleared by the same GRPH-434 rule that clears it for any untouched release.
 
 ## What has not run, and why
 
-**Steps 9–17, the presence half.** These need a real `claim_cluster` writing real
-`AreaReservation` rows, a lease clock left to lapse in real time, and — for step 14 — a SECOND
-human's agent, which means a second user account on the instance. The first two are only tedious.
-The third is not something an agent can provision for itself.
+**Step 14, two-human contention.** The only one of the presence block still unrun, and the only
+one that cannot be self-provisioned: it needs a SECOND HUMAN'S agent, which means a second user
+account on the instance. Everything reachable with one account has now been driven.
 
-**Steps 21–22, the galaxy.** These need a graph past the 800-node detail budget. The live graph is
+Its absence also caps **step 16**: soloing a legend chip demonstrably lights that human's held
+nodes (167 → opacity 1.0) and dims the rest (61 → 0.22), but "others fade to 4%" has no *others*
+to fade with one account.
+
+**Step 17 is a rule check, not an observation.** The `prefers-reduced-motion` rule is verified
+to set `animation: none; opacity: 0.575` — exactly the mean of the `0.85`/`0.3` keyframes, and
+non-zero so presence does not vanish. The browser driving the walk was not in reduced-motion
+mode, so the *rendered* result was not seen. Recorded as ⚠️ rather than ✅ for that reason.
+
+**Steps 21–22, the galaxy.** Still unrun. These need a graph past the 800-node detail budget. The live graph is
 193. Synthesising 800 nodes means writing 800 descriptions nobody wrote into the live code graph —
 corrupting the thing being measured in order to measure it. This wants a scratch instance.
 
