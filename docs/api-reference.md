@@ -199,6 +199,10 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | --- | --- | --- |
 | GET / PATCH | `/api/platform` | JWT |
 | GET | `/api/platform/credentials` | JWT | Every credential in the caller's scope with `state` and derived `used_by`; never returns a key, only `key_set` |
+| POST | `/api/platform/credentials` | JWT |
+| PATCH / DELETE | `/api/platform/credentials/{id}` | JWT | Add, edit (rotation is an edit — the row id never moves) or remove a credential. `409` naming every referencing project and role while anything points at it |
+| PUT | `/api/platform/credentials/defaults` | JWT | Set the scope's default / fallback / embedding credential. `422` for one that has never been validated |
+| PUT | `/api/platform/credentials/project` | JWT | Point a project at a credential, with an optional `model_override` |
 | POST | `/api/platform/github/connect` · `/disconnect` · `/create-issue` | JWT |
 | POST | `/api/platform/gdrive/connect` · `/disconnect` | JWT |
 
