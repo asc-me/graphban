@@ -18,6 +18,7 @@ import pytest
 from app.models import CodeNode
 from app.services import items as items_svc
 from app.services import prds as prd_svc
+from app.services.platform import Resolved
 
 BODY = (
     "# Spec\n\n"
@@ -79,7 +80,7 @@ def with_a_judge(monkeypatch):
 
     real = platform_svc.resolve_chat
     monkeypatch.setattr(platform_svc, "resolve_chat",
-                        lambda db, pid: ("openai", real(db, pid)[1]))
+                        lambda db, pid: Resolved("openai", real(db, pid).chat))
 
 
 def test_a_configured_judge_that_is_not_answering_still_blocks(db, approved, with_a_judge):

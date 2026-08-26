@@ -418,7 +418,8 @@ def grill_stream(prd_id: str, body: GrillIn, db: Session = Depends(get_db), user
     question = body.message or "Begin — ask your opening clarifying questions about this PRD."
 
     # Resolve the project's provider eagerly, while the request DB session is open.
-    provider, chat = platform_svc.resolve_chat(db, prd.project_id)
+    resolved = platform_svc.resolve_chat(db, prd.project_id)
+    provider, chat = resolved.provider_id, resolved.chat
 
     def gen():
         # Accumulate the reply as it streams so the questions the grill ASKED are

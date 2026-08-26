@@ -21,6 +21,7 @@ import pytest
 from app.models import ArtifactRecommendation, IngestWatermark, MemoryShard
 from app.services import learning as learning_svc
 from app.services.ingest.claude_code import ClaudeCodeAdapter
+from app.services.platform import Resolved
 
 
 @pytest.fixture()
@@ -108,7 +109,7 @@ def model(monkeypatch):
                                    for n, i in enumerate(ids)])
             return "Always run the migration guard as part of the standard loop."
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("openai", Chat()))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("openai", Chat()))
     return state
 
 

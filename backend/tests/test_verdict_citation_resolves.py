@@ -25,6 +25,7 @@ stored index resolves.
 import pytest
 
 from app.services import prds as prd_svc
+from app.services.platform import Resolved
 
 BODY = "# Spec\n\n## Problem\n\nNothing checks delivery.\n\n## Judging\n\nClassify it.\n"
 
@@ -75,7 +76,7 @@ def _fake_grader(monkeypatch, mapping: dict[str, int]):
                 for name, idx in mapping.items()
             })
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("openai", Chat()))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("openai", Chat()))
 
 
 # ---- the defect ------------------------------------------------------------------------
@@ -147,7 +148,7 @@ def test_an_unanswered_dimension_carries_no_citation(db, prd, monkeypatch):
         def chat(self, *, system, context, question, temperature=None):
             return json.dumps({"scope_edges": {"outcome": "unanswered", "note": "nothing said"}})
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("openai", Chat()))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("openai", Chat()))
 
     dims = prd_svc.classify_grill(db, prd)["dimensions"]
     assert dims["scope_edges"]["outcome"] == "unanswered"

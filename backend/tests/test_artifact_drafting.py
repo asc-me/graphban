@@ -19,6 +19,7 @@ import pytest
 from app.models import ArtifactRecommendation, Project
 from app.services import artifacts as art_svc
 from app.services import memory as mem_svc
+from app.services.platform import Resolved
 
 
 @pytest.fixture()
@@ -54,7 +55,7 @@ def model(monkeypatch):
                 raise RuntimeError("drafter down")
             return state["body"]
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("openai", Chat()))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("openai", Chat()))
     return state
 
 
@@ -205,7 +206,7 @@ def test_with_no_provider_nothing_is_drafted(db, proj, monkeypatch):
             calls["n"] += 1
             return "whatever"
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("stub", Stub()))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("stub", Stub()))
     rec = art_svc.draft(db, _rec(db, proj))
 
     assert rec.draft == "" and calls["n"] == 0

@@ -135,7 +135,8 @@ def classify(db: Session, project_id: str | None = None, *,
     if not lessons:
         return []
 
-    provider, chat = platform_svc.resolve_chat(db, project_id or "core")
+    _r = platform_svc.resolve_chat(db, project_id or "core")
+    provider, chat = _r.provider_id, _r.chat
     if provider == "stub":
         # No guessing. A tier assigned without a model would put a fabricated verdict in
         # front of a human as though something had assessed it.
@@ -325,7 +326,8 @@ def draft(db: Session, rec: ArtifactRecommendation) -> ArtifactRecommendation:
         return rec
 
     path_tpl, install_class = TIER_TARGETS.get(rec.tier, ("", "shared_surgery"))
-    provider, chat = platform_svc.resolve_chat(db, rec.project_id or "core")
+    _r = platform_svc.resolve_chat(db, rec.project_id or "core")
+    provider, chat = _r.provider_id, _r.chat
     if provider == "stub":
         # No guessing. A drafted artifact is a file someone may install; producing one
         # without a model would put fabricated content behind a real install button.

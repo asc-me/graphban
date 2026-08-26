@@ -16,6 +16,7 @@ import pytest
 from app.models import ArtifactRecommendation
 from app.services import artifacts as art_svc
 from app.services import memory as mem_svc
+from app.services.platform import Resolved
 
 
 @pytest.fixture()
@@ -54,7 +55,7 @@ def model(monkeypatch):
                 out.append(v)
             return json.dumps(out)
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("openai", Chat()))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("openai", Chat()))
     return state
 
 
@@ -232,7 +233,7 @@ def test_a_failed_batch_does_not_cost_the_others_their_work(db, model, proj):
                                for i in ids])
 
     import pytest as _p
-    _p.MonkeyPatch().setattr(platform_svc, "resolve_chat", lambda db, pid: ("openai", Flaky()))
+    _p.MonkeyPatch().setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("openai", Flaky()))
     art_svc.classify(db, proj)
 
     assert calls["n"] == 2 and len(art_svc.pending(db, proj)) >= 1
@@ -275,7 +276,7 @@ def test_with_no_provider_the_model_is_never_called(db, proj, monkeypatch):
             calls["n"] += 1
             return "{}"
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("stub", Stub()))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("stub", Stub()))
     _lesson(db, "One", 1)
 
     assert art_svc.classify(db, proj) == [] and calls["n"] == 0

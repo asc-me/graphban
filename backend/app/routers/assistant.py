@@ -118,7 +118,7 @@ def _run_turn(session, tools):
 def create_thread(body: ThreadCreateIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     authz.require_readable(db, user.id, body.project_id)
     # default the thread to the project's active provider when the caller doesn't pick one
-    provider = body.provider or platform_svc.resolve_chat(db, body.project_id)[0]
+    provider = body.provider or platform_svc.resolve_chat(db, body.project_id).provider_id
     try:
         t = asst_svc.create_thread(db, project_id=body.project_id, entity_type=body.entity_type,
                                    entity_id=body.entity_id, provider=provider, title=body.title)

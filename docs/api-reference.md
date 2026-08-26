@@ -198,6 +198,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | Method | Path | Auth |
 | --- | --- | --- |
 | GET / PATCH | `/api/platform` | JWT |
+| GET | `/api/platform/credentials` | JWT | Every credential in the caller's scope with `state` and derived `used_by`; never returns a key, only `key_set` |
 | POST | `/api/platform/github/connect` · `/disconnect` · `/create-issue` | JWT |
 | POST | `/api/platform/gdrive/connect` · `/disconnect` | JWT |
 

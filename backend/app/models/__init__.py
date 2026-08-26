@@ -123,6 +123,13 @@ class Project(Base):
     share_global_memory: Mapped[bool] = mapped_column(Boolean, default=True)
     auto_extract: Mapped[bool] = mapped_column(Boolean, default=True)
     mcp_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # The credential this project uses for chat, overriding the deployment default (PRD-25).
+    # S1 creates the column and never writes it: the resolver honours it so the ordering is
+    # under test from the first slice, and S2 adds the surface that sets it.
+    credential_id: Mapped[str | None] = mapped_column(
+        ForeignKey("credentials.id"), nullable=True, index=True
+    )
     # Memory auto-triage (AL-227): let the AL-151 scorer ACT on agent candidates
     # instead of only advising, so the review queue stays small. Every auto-action
     # is audited and undoable.
@@ -1645,3 +1652,96 @@ class AssistantProposedAction(Base):
     provider: Mapped[str] = mapped_column(String, default="")  # origin attribution: assistant:<provider>
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Credential(Base):
+    """One LLM provider credential, owned by the deployment rather than by a project (PRD-25).
+
+    **Keyed by ROW, not by provider kind**, and that is the decision the whole design rests on
+    (D-a). The old shape was `PlatformConfig.providers`, a JSON blob keyed by provider id, which
+    made "two Anthropic keys" unrepresentable: a second key could only overwrite the first. Two
+    rows are simply two rows here, which dissolves collision detection, a needs-attention list,
+    and the risk that such a list never empties.
+
+    **`org_id` is what keeps "deployment-scoped" from meaning "shared across tenants."** The PRD
+    says these belong to the deployment, which is exactly right for the self-hosted single-dev
+    posture this was written for — but the hosted service is multi-org, and a table with no owner
+    column would let one org's project point at another org's key. It mirrors `Project.org_id`
+    deliberately: NULL on a self-hosted install, where every project is also NULL, so "the
+    deployment" and "the null org" are the same set and the PRD's resolution order is unchanged.
+    Hosted installs get isolation by construction rather than by a filter somebody must remember.
+
+    `api_key` is encrypted at rest exactly as the legacy blob's was — same `security.secrets`
+    helpers, no new mechanism and no new guarantee claimed.
+
+    The `state` / `validation_attempts` / `next_attempt_at` / `last_error` columns are written by
+    S2's bounded retry. S1 creates them and leaves them at their defaults so the migration that
+    introduces the table is the only one that touches its shape.
+    """
+
+    __tablename__ = "credentials"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # cred_...
+    org_id: Mapped[str | None] = mapped_column(
+        ForeignKey("organizations.id"), nullable=True, index=True
+    )
+    kind: Mapped[str] = mapped_column(String, index=True)      # anthropic | openai | ollama | ...
+    label: Mapped[str] = mapped_column(String, default="")     # what the operator called it
+    base_url: Mapped[str] = mapped_column(String, default="")
+    api_key: Mapped[str] = mapped_column(String, default="")   # encrypted at rest; never returned
+    model: Mapped[str] = mapped_column(String, default="")
+
+    #: `valid` once probed; `pending_validation` while retries remain; `unreachable` when they
+    #: are exhausted (D-f). S1 never moves a row off the default — S2 owns the transitions.
+    state: Mapped[str] = mapped_column(String, default="pending_validation", index=True)
+    validation_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str] = mapped_column(String, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    @property
+    def key_set(self) -> bool:
+        """Whether a key is configured — surfaced to the UI without leaking it, the same way
+        `PlatformConfig.provider_config` reduces the legacy blob's keys to a bool."""
+        return bool(self.api_key)
+
+
+class DeploymentConfig(Base):
+    """Where the default and fallback credentials are named, one row per scope (PRD-25).
+
+    **`scope` is `""` for the deployment itself and an org id under hosted multi-tenancy.** A
+    nullable column would have been the obvious mirror of `Project.org_id`, but it cannot carry a
+    primary key and `NULL` defeats uniqueness in Postgres — two "the deployment" rows would be
+    legal and the second would be invisible. An empty string is a real value: it is unique, it is
+    a usable primary key, and "the deployment's own scope" is a thing that exists exactly once.
+
+    S1 creates this table and writes nothing to it. The default is REQUIRED in the sense D-b
+    means — resolution always lands somewhere — but that is achieved by resolving onward to the
+    stub when no row exists, not by a NOT NULL constraint on a table nobody has populated yet.
+    S2 owns writing it, along with the delete-integrity rules that keep these pointers live.
+    """
+
+    __tablename__ = "deployment_config"
+
+    scope: Mapped[str] = mapped_column(String, primary_key=True)  # "" = the deployment
+    default_credential_id: Mapped[str | None] = mapped_column(
+        ForeignKey("credentials.id"), nullable=True
+    )
+    fallback_credential_id: Mapped[str | None] = mapped_column(
+        ForeignKey("credentials.id"), nullable=True
+    )
+    #: The one embedding credential (D-c). Chat has a default and a fallback; embedding has
+    #: neither, because switching embedders rewrites every vector and a silent failover between
+    #: two embedding spaces would return neighbours computed in a space nobody chose.
+    embed_credential_id: Mapped[str | None] = mapped_column(
+        ForeignKey("credentials.id"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

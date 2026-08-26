@@ -32,6 +32,7 @@ import json
 import pytest
 
 from app.services import prds as prd_svc
+from app.services.platform import Resolved
 
 
 @pytest.fixture()
@@ -65,7 +66,7 @@ def _model(monkeypatch, payload):
         def chat(self, **kw):
             return payload if isinstance(payload, str) else json.dumps(payload)
 
-    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: ("ollama", _Chat()))
+    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: Resolved("ollama", _Chat()))
 
 
 def _answer(db, prd, text):
@@ -167,7 +168,7 @@ def test_no_answers_means_the_model_is_not_even_asked(db, prd, monkeypatch):
             called.append(1)
             return "{}"
 
-    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: ("ollama", _Chat()))
+    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: Resolved("ollama", _Chat()))
     prd_svc.classify_grill(db, prd)
     assert called == []
     assert prd_svc.completion(db, prd.id)["complete"] is False

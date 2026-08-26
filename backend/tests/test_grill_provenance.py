@@ -18,6 +18,7 @@ import json
 import pytest
 
 from app.services import prds as prd_svc
+from app.services.platform import Resolved
 
 
 @pytest.fixture()
@@ -122,7 +123,7 @@ def test_a_model_graded_dimension_names_the_provider(client, auth, agent_key, pr
                                    "answered_by": 1}
                                for n in prd_svc.DIMENSIONS})
 
-    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: ("anthropic", _Chat()))
+    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: Resolved("anthropic", _Chat()))
     _mcp(client, agent_key, "answer_grill", {"prd_id": prd, "answer": "A real answer."})
     dims = _state(client, auth, prd)["dimensions"]
     assert dims["scope_edges"]["graded_by"] == "anthropic"
@@ -140,7 +141,7 @@ def test_a_failed_model_verdict_is_credited_to_nothing(
         def chat(self, **kw):
             return "I think it's probably fine?"
 
-    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: ("anthropic", _Garbage()))
+    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: Resolved("anthropic", _Garbage()))
     _mcp(client, agent_key, "answer_grill", {"prd_id": prd, "answer": "An answer."})
 
     d = _state(client, auth, prd)["dimensions"]["scope_edges"]
@@ -178,7 +179,7 @@ def test_a_stub_and_a_model_baseline_are_distinguishable(client, auth, agent_key
                                    "answered_by": 1}
                                for n in prd_svc.DIMENSIONS})
 
-    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: ("ollama", _Chat()))
+    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: Resolved("ollama", _Chat()))
     _mcp(client, agent_key, "answer_grill", {"prd_id": judged, "answer": "A real answer."})
     judged_state = _state(client, auth, judged)
     assert judged_state["complete"] is True

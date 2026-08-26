@@ -17,6 +17,7 @@ import pytest
 
 from app.services import memory as mem_svc
 from app.services import prds as prd_svc
+from app.services.platform import Resolved
 
 
 class _Recorder:
@@ -49,7 +50,7 @@ def test_the_grill_classifier_asks_for_temperature_zero(db, monkeypatch):
     prd = prd_svc.create_prd(db, title="T", project_id="core", body="# T\n")
     prd_svc.record_grill_turns(db, prd.id, [{"role": "user", "text": "An answer with substance."}])
     rec = _Recorder()
-    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: ("ollama", rec))
+    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: Resolved("ollama", rec))
 
     prd_svc._classify_dimensions(db, prd, prd_svc.grill_history(db, prd.id))
     assert rec.calls and rec.calls[0]["temperature"] == 0
@@ -63,7 +64,7 @@ def test_the_memory_judge_asks_for_temperature_zero(db, monkeypatch):
     monkeypatch.setattr(mem_svc, "_llm_judge", mem_svc._llm_judge)  # keep the real one
     import app.services.platform as platform_svc
 
-    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: ("ollama", rec))
+    monkeypatch.setattr(platform_svc, "resolve_chat", lambda db, pid: Resolved("ollama", rec))
     shard = MemoryShard(id="m_x", text="A durable fact.", scope="global", project_id="core",
                         status="candidate", origin="agent:t")
     db.add(shard)
@@ -79,7 +80,7 @@ def test_the_grill_conversation_does_not_force_determinism(db, monkeypatch):
     four questions forever stops finding anything. Only the verdict must be reproducible."""
     prd = prd_svc.create_prd(db, title="T", project_id="core", body="# T\n")
     rec = _Recorder("- a question?")
-    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: ("ollama", rec))
+    monkeypatch.setattr(prd_svc.platform_svc, "resolve_chat", lambda db, pid: Resolved("ollama", rec))
 
     prd_svc.ai_command(db, prd.id, "grill")
     assert rec.calls and rec.calls[0].get("temperature") is None

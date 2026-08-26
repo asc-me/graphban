@@ -2,6 +2,7 @@
 No network: we assert on the constructed adapter, never call .chat()."""
 import app.providers as providers
 from app.providers.openai_compat import OpenAICompatChat
+from app.services.platform import Resolved
 
 
 def test_provider_registry_endpoint(client, auth):
@@ -80,7 +81,8 @@ def test_configured_provider_reaches_prd_ai(client, auth, monkeypatch):
         def chat(self, *, system, context, question, temperature=None):
             return "REAL-MODEL-OUTPUT"
 
-    monkeypatch.setattr("app.services.platform.resolve_chat", lambda db, pid: ("openai", FakeChat()))
+    monkeypatch.setattr("app.services.platform.resolve_chat",
+                        lambda db, pid: Resolved("openai", FakeChat()))
     r = client.post("/api/prds/PRD-1/ai", json={"command": "risks"}, headers=auth).json()
     assert r["text"] == "REAL-MODEL-OUTPUT"  # real model, not _stub_command()
 

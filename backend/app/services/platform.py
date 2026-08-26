@@ -10,6 +10,7 @@ credentials); the inbound GitHub webhook (routers/public.py) is fully implemente
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from secrets import token_urlsafe
 
 from sqlalchemy.orm import Session
@@ -19,7 +20,7 @@ from app import providers
 from app.providers import probe
 from app.providers import registry as provider_registry
 from app.providers.base import ChatModel, Extractor
-from app.models import PlatformConfig
+from app.models import Credential, DeploymentConfig, PlatformConfig, Project
 from app.security import secrets
 
 
@@ -91,16 +92,116 @@ def _chat_params(cfg: PlatformConfig) -> tuple[str, str, str, str]:
     return ("stub", "", "", "")
 
 
-def resolve_chat(db: Session, project_id: str) -> tuple[str, ChatModel]:
-    """(provider_id, chat model) for a specific project. Callers gate on the provider id
-    (== "stub" → offline placeholder) and otherwise use the model. Per-project, so one
-    project's provider never leaks into another's AI calls."""
-    provider, base_url, api_key, model = _chat_params(get_config(db, project_id))
-    return provider, providers.build_chat(provider, base_url=base_url, api_key=api_key, model=model)
+@dataclass(frozen=True)
+class Resolved:
+    """What a project's chat resolution actually landed on, and by which route (PRD-25 D-g).
+
+    Returning a bare `(provider_id, model)` pair could not answer the one question §4 needs
+    asked: a provider id of `"stub"` means both *this deployment has no provider configured*
+    and *this project points at a credential that no longer exists*, and those want opposite
+    responses from an operator. `source` separates them.
+    """
+
+    provider_id: str
+    chat: ChatModel
+    model: str = ""
+    credential_id: str = ""
+    #: `legacy` the project's own `providers` blob (step 0, removed by S6) · `project` its
+    #: credential pointer · `deployment` the scope default · `stub` nothing is configured ·
+    #: `dangling` a pointer was set and did not resolve, and nothing downstream caught it.
+    source: str = "stub"
+
+
+def scope_for(db: Session, project_id: str) -> str:
+    """The `deployment_config.scope` a project reads its default from.
+
+    `""` is the deployment itself — the self-hosted posture, where `projects.org_id` is NULL
+    for everything. Under hosted multi-tenancy it is the project's org, so one org's default
+    can never be handed to another org's project.
+    """
+    project = db.get(Project, project_id)
+    return (project.org_id or "") if project is not None else ""
+
+
+def _credential(db: Session, credential_id: str | None, scope: str) -> Credential | None:
+    """A credential, but only if it belongs to the scope asking for it.
+
+    The scope check is not decoration. Without it a stale or hand-edited pointer would reach
+    across tenants, and the pointer is exactly the thing that outlives the row it names.
+    """
+    if not credential_id:
+        return None
+    cred = db.get(Credential, credential_id)
+    if cred is None or (cred.org_id or "") != scope:
+        return None
+    return cred
+
+
+def _from_credential(cred: Credential, source: str) -> Resolved:
+    return Resolved(
+        provider_id=cred.kind,
+        chat=providers.build_chat(
+            cred.kind, base_url=cred.base_url,
+            api_key=secrets.decrypt(cred.api_key), model=cred.model,
+        ),
+        model=cred.model,
+        credential_id=cred.id,
+        source=source,
+    )
+
+
+def resolve_chat(db: Session, project_id: str) -> Resolved:
+    """Which chat provider a project gets, in the transitional order of PRD-25 S1.
+
+    ```
+    0. the project's legacy `providers` blob     ← S1-S5 ONLY, removed by S6
+    1. the project's `credential_id`             ← nothing sets this yet
+    2. the scope's default credential            ← nothing sets this yet
+    3. the stub
+    ```
+
+    **Step 0 is what makes "S1 changes no behaviour" true rather than hoped.** Every project
+    that has configured its own provider today is holding it in that blob, and if the new
+    pointers were consulted first they would all be unset — so every one of those projects
+    would silently drop to a deployment default nobody has configured, which is the stub. A
+    slice advertised as additive would have turned off everyone's LLM.
+
+    Steps 1 and 2 read storage that no product code writes yet. They are implemented here, and
+    tested, because a branch that ships unexercised is a branch nobody has checked: S2 adds the
+    surface that sets these pointers, and finds the ordering already proven rather than
+    discovering it against live data.
+    """
+    cfg = get_config(db, project_id)
+    provider, base_url, api_key, model = _chat_params(cfg)
+    if provider and provider != "stub":
+        return Resolved(
+            provider_id=provider,
+            chat=providers.build_chat(provider, base_url=base_url, api_key=api_key, model=model),
+            model=model,
+            source="legacy",
+        )
+
+    scope = scope_for(db, project_id)
+    project = db.get(Project, project_id)
+    pointer = getattr(project, "credential_id", None) if project is not None else None
+
+    cred = _credential(db, pointer, scope)
+    if cred is not None:
+        return _from_credential(cred, "project")
+
+    row = db.get(DeploymentConfig, scope)
+    default = _credential(db, row.default_credential_id if row else None, scope)
+    if default is not None:
+        return _from_credential(default, "deployment")
+
+    # Nothing resolved. `dangling` when a pointer was SET and did not survive — the operator
+    # has something to fix, and it is not the same situation as never having configured one.
+    return Resolved(provider_id="stub", chat=providers.build_chat("stub"),
+                    source="dangling" if pointer else "stub")
 
 
 def chat_model_for(db: Session, project_id: str) -> ChatModel:
-    return resolve_chat(db, project_id)[1]
+    return resolve_chat(db, project_id).chat
 
 
 def extractor_for(db: Session, project_id: str) -> Extractor:
@@ -282,3 +383,64 @@ def disconnect_gdrive(db: Session, project_id: str) -> PlatformConfig:
     db.commit()
     db.refresh(cfg)
     return cfg
+
+
+# ---- The deployment credential registry (PRD-25 S1) --------------------------------------
+
+
+def list_credentials(db: Session, scope: str = "") -> list[dict]:
+    """Every credential in one scope, with its state and which projects point at it.
+
+    **`used-by` is derived, never stored.** A stored count is a second copy of a fact the
+    pointers already hold, and the two disagree the first time a project is deleted by any path
+    that forgets to decrement it — which is how a credential becomes undeletable for a project
+    that no longer exists.
+
+    One grouped query regardless of how many projects exist, rather than a lookup per
+    credential. At this deployment's size either would be imperceptible; the shape matters
+    because S2 refuses to delete a referenced credential and names every referencing project in
+    the 409, so this is the query behind an operator-facing error message.
+
+    The api_key is never returned in any form — only `key_set`, exactly as the legacy blob's
+    `provider_config` does it.
+    """
+    creds = (
+        db.query(Credential)
+        .filter(Credential.org_id == (scope or None))
+        .order_by(Credential.created_at, Credential.id)
+        .all()
+    )
+    if not creds:
+        return []
+
+    used: dict[str, list[str]] = {}
+    rows = (
+        db.query(Project.credential_id, Project.id)
+        .filter(Project.credential_id.isnot(None))
+        .all()
+    )
+    for credential_id, pid in rows:
+        used.setdefault(credential_id, []).append(pid)
+
+    row = db.get(DeploymentConfig, scope or "")
+    default_id = row.default_credential_id if row else None
+    fallback_id = row.fallback_credential_id if row else None
+    embed_id = row.embed_credential_id if row else None
+
+    return [
+        {
+            "id": c.id,
+            "kind": c.kind,
+            "label": c.label,
+            "base_url": c.base_url,
+            "model": c.model,
+            "key_set": c.key_set,
+            "state": c.state,
+            "last_error": c.last_error,
+            "used_by": sorted(used.get(c.id, [])),
+            "is_default": c.id == default_id,
+            "is_fallback": c.id == fallback_id,
+            "is_embed": c.id == embed_id,
+        }
+        for c in creds
+    ]
