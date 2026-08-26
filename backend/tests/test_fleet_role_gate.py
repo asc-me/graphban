@@ -263,3 +263,51 @@ def test_quarantine_flags_an_orphaned_branch(client, agent_key, db):
     assert out["branch_orphaned"] is True
     rows = {a["id"]: a for a in fleet.list_agents(db)}
     assert rows[me["agent_id"]]["branch_orphaned"] is True
+
+
+# ---- the release_item ceiling ----------------------------------------------------------------
+
+def test_a_worker_cannot_release_to_done_through_release_item(client, agent_key, db):
+    """The second door: `release_item` was a sibling of `update_item` with its own key, and
+    workers could set `to_status="done"` on it — bypassing update_item's ceiling entirely.
+    When `claimed_by` and `built_by` both point to the worker, the item goes `done` with
+    `reviewed_by=None`, and every post-review invariant is empty."""
+    me = _register(client, agent_key, "worker")
+    claimed = _ok(client, agent_key, "claim_next", {"agent_id": me["agent_id"]})
+    item_key = claimed["item"]["id"]
+    _ok(client, agent_key, "update_item",
+        {"id": item_key, "status": "review", "agent_id": me["agent_id"]})
+
+    err = _refused(client, agent_key, "release_item",
+                   {"id": item_key, "to_status": "done", "agent_id": me["agent_id"]})
+
+    assert err["code"] == "unauthorized"
+    assert "reviewer" in err["message"] and "worker" in err["message"]
+    assert err["hint"], "a refusal must carry the machine-readable next step (AL-47)"
+    after = _ok(client, agent_key, "get_item_details", {"id": item_key})
+    assert after["status"] == "review", "the item did not move"
+
+
+def test_a_worker_can_still_release_to_next(client, agent_key):
+    """A gate that refused `release_item` outright would strand every worker holding an item.
+    Releasing to `next` (handing work back) is the intended use."""
+    me = _register(client, agent_key, "worker")
+    claimed = _ok(client, agent_key, "claim_next", {"agent_id": me["agent_id"]})
+    item_key = claimed["item"]["id"]
+
+    released = _ok(client, agent_key, "release_item",
+                   {"id": item_key, "to_status": "next", "agent_id": me["agent_id"]})
+
+    assert released["status"] == "next"
+
+
+def test_a_worker_can_still_release_to_backlog(client, agent_key):
+    """Releasing to `backlog` is also a valid hand-back — same path, different status."""
+    me = _register(client, agent_key, "worker")
+    claimed = _ok(client, agent_key, "claim_next", {"agent_id": me["agent_id"]})
+    item_key = claimed["item"]["id"]
+
+    released = _ok(client, agent_key, "release_item",
+                   {"id": item_key, "to_status": "backlog", "agent_id": me["agent_id"]})
+
+    assert released["status"] == "backlog"
