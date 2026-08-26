@@ -307,3 +307,138 @@ def test_the_system_prompt_tells_it_what_it_cannot_do(tmp_path):
     know there is no shell spends turns discovering it."""
     assert "worktree root" in cli.SYSTEM
     assert "no shell" in cli.SYSTEM
+
+
+# ---- registering, which is how a child gets onto the roster at all (GRPH-503) --------------
+#
+# PRD-24 G4 says gbagent "spawns as an adapter under PRD-22's supervisor". It could not:
+# there was no `register_agent` call anywhere in the package. `await_registration` polls the
+# roster for an agent whose worktree matches and kills the child when none appears, blaming
+# the ADAPTER — the misattribution PRD-22 S2 exists to prevent. Every walk invoked the CLI
+# directly with --agent-id, so the argv was verified and the thing the argv is FOR was not.
+
+
+def test_the_enrolment_code_is_read_out_of_the_instruction_the_supervisor_wrote():
+    from gbfleet.seat import Seat, instruction_for
+
+    seat = Seat(code="WORKER-7F3K2Q", server_url="https://x", api_key="k")
+    written = instruction_for(seat, Path("/tmp/wt"), "wave/1")
+
+    assert cli.enrolment_code(written) == "WORKER-7F3K2Q"
+
+
+def test_the_parse_is_pinned_against_the_instruction_it_parses():
+    """THE DRIFT THAT WOULD BE INVISIBLE. `seat.INSTRUCTION` is prose, and reword it and this
+    regex silently stops matching — producing a child that never registers, which looks
+    exactly like a broken adapter. A test that only checked a hand-written sample string
+    would keep passing through that change."""
+    from gbfleet import seat as seat_mod
+
+    assert "enrolment_code=" in seat_mod.INSTRUCTION, (
+        "the instruction no longer names the code the way cli.ENROLMENT looks for it"
+    )
+    rendered = seat_mod.INSTRUCTION.format(code="ABC-123", worktree="/w", branch="b")
+    assert cli.enrolment_code(rendered) == "ABC-123"
+
+
+def test_an_instruction_with_no_code_yields_nothing_rather_than_a_guess():
+    assert cli.enrolment_code("just do the work") == ""
+    assert cli.enrolment_code("") == ""
+
+
+def test_the_adapter_passes_the_branch_so_the_roster_row_names_the_diff(tree, seat, tmp_path):
+    """`await_registration` matches on worktree; the branch goes with it because a roster row
+    naming neither cannot answer "where is the work"."""
+    launch = _launch(tree, seat, tmp_path)
+
+    assert launch.argv[launch.argv.index("--branch") + 1] == tree.branch
+
+
+def test_register_agent_is_in_the_worker_set_and_grants_nothing():
+    """It gets the child onto the roster. The SEAT decides the role, and the server refuses
+    whatever the credential may not do regardless of what this set says."""
+    from gbagent.coord import WORKER_TOOLS
+
+    assert "register_agent" in WORKER_TOOLS
+    assert not {"sign_off", "bounce", "mint_enrolment", "assign_role"} & WORKER_TOOLS
+
+
+def test_a_run_with_no_code_and_no_agent_id_refuses_rather_than_going_unregistered(tmp_path):
+    """An unregistered child is one the supervisor kills for looking like a broken adapter.
+    Refusing here names which it actually was."""
+    (tmp_path / "backend").mkdir()
+    (tmp_path / ".gbagent.toml").write_text('[tests]\ncommand = "echo hi"\n')
+    (tmp_path / "instr.txt").write_text("no seat in here at all\n")
+    seat_file = tmp_path / "seat.json"
+    seat_file.write_text(json.dumps({"mcpServers": {"graphban": {
+        "url": "https://graphban.invalid/api/mcp", "headers": {"X-API-Key": "k"}}}}))
+
+    result = subprocess.run(
+        [str(BINARY), "run", "--worktree", str(tmp_path), "--mcp-config", str(seat_file),
+         "--instruction-file", str(tmp_path / "instr.txt"),
+         "--model", "m", "--turns", "5", "--window", "1000",
+         "--base-url", "http://model.invalid/v1"],
+        capture_output=True, text=True, timeout=60,
+    )
+
+    assert result.returncode == 78
+    assert "no enrolment code" in result.stderr
+    assert "broken adapter" in result.stderr, "say which failure this actually is"
+
+
+def _client(handler):
+    import httpx
+    from gbagent.coord import WORKER_TOOLS
+    from gbfleet.client import Graphban
+    return Graphban("http://graphban.invalid", "k", allowed=WORKER_TOOLS,
+                    transport=httpx.MockTransport(handler))
+
+
+def test_the_id_the_server_returned_is_the_one_the_run_uses():
+    """The wiring, not the call. A helper that built its own connection could only be checked
+    by reading the source, which is how a registered id gets quietly ignored."""
+    import httpx
+    sent: list = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        sent.append(body["params"]["arguments"])
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+            "structuredContent": {"agent_id": "GRPH-A99", "active_role": "worker"}}})
+
+    agent_id, role = cli.register(_client(handler), code="WORKER-1", model="qwen",
+                                  worktree="/w", branch="wave/1")
+
+    assert agent_id == "GRPH-A99" and role == "worker"
+    assert sent[0]["enrolment_code"] == "WORKER-1"
+    assert sent[0]["worktree"] == "/w", "await_registration matches on this"
+    assert sent[0]["branch"] == "wave/1"
+    assert sent[0]["capabilities"]["vendor"] == "gbagent", "vendor drives review diversity"
+    assert sent[0]["capabilities"]["model"] == "qwen"
+
+
+def test_a_registration_the_server_refuses_is_not_papered_over():
+    import httpx
+
+    def handler(request):
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {
+            "isError": True,
+            "structuredContent": {"error": {"code": "conflict", "message": "seat spent"}}}})
+
+    with pytest.raises(cli.NotRegistered) as exc:
+        cli.register(_client(handler), code="WORKER-1", model="m", worktree="/w", branch="b")
+
+    assert "seat spent" in str(exc.value)
+
+
+def test_a_registration_returning_no_id_is_refused_rather_than_used_empty():
+    """An empty agent_id would reach `claim_next` as a caller nobody can identify."""
+    import httpx
+
+    def handler(request):
+        body = json.loads(request.content)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
+                                         "result": {"structuredContent": {"active_role": "worker"}}})
+
+    with pytest.raises(cli.NotRegistered):
+        cli.register(_client(handler), code="W", model="m", worktree="/w", branch="b")

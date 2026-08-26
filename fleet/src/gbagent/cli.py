@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -71,6 +72,58 @@ def assignment_for(item: str) -> str:
         "If there is nothing to claim, say DONE and stop — exiting on an empty queue is the "
         "normal end of your run, not a failure."
     )
+
+
+#: How the enrolment code is read back out of the instruction file.
+#:
+#: `spawn` writes the code there and deliberately never into the MCP config — the code is an
+#: argument to `register_agent`, not a config value (`seat.mcp_config`). The format is OURS
+#: (`seat.INSTRUCTION`), and a test pins this pattern against that constant, so a reworded
+#: instruction fails a test rather than producing a child that silently never registers.
+ENROLMENT = re.compile(r"enrolment_code=['\"]([^'\"]+)['\"]")
+
+
+class NotRegistered(RuntimeError):
+    """Registration failed, so the supervisor is going to kill this child anyway.
+
+    Refusing here names the cause. `await_registration` can only report that nothing appeared
+    on the roster, which reads as a broken adapter — the misattribution PRD-22 S2 exists to
+    prevent.
+    """
+
+
+def register(client, *, code: str, model: str, worktree: str, branch: str) -> tuple[str, str]:
+    """Redeem the seat and come back with this child's server-side identity.
+
+    Takes the client rather than building one, so the wiring is testable without a server —
+    the property that matters is that the id the SERVER returned is the one the run uses, and
+    a helper that made its own connection could only be checked by reading the source.
+
+    `worktree` is what `spawn.await_registration` matches on (D-g: one worker, one worktree).
+    `capabilities.vendor` is what drives review diversity, so a local tier is distinguishable
+    from a frontier one on the roster.
+    """
+    try:
+        me = client.call(
+            "register_agent",
+            enrolment_code=code,
+            label=f"gbagent/{model}",
+            worktree=worktree,
+            branch=branch,
+            capabilities={"vendor": "gbagent", "model": model, "tier": "local"},
+        )
+    except Exception as exc:  # noqa: BLE001 — every failure here has the same consequence
+        raise NotRegistered(f"could not register: {exc}") from None
+    agent_id = str(me.get("agent_id") or "")
+    if not agent_id:
+        raise NotRegistered("register_agent returned no agent_id")
+    return agent_id, str(me.get("active_role") or "")
+
+
+def enrolment_code(instruction: str) -> str:
+    """The seat out of the instruction the supervisor wrote. "" when there is none."""
+    found = ENROLMENT.search(instruction or "")
+    return found.group(1) if found else ""
 
 
 class SeatUnreadable(RuntimeError):
@@ -128,12 +181,37 @@ def _run(args: argparse.Namespace) -> int:
         return 78
 
     task = Path(args.instruction_file).read_text(encoding="utf-8") if args.instruction_file else ""
+
+    # REGISTER FIRST (GRPH-503). `spawn.await_registration` polls the roster for an agent whose
+    # `worktree` matches this child and kills it when none appears, blaming the adapter. Every
+    # walk before this invoked the CLI directly with `--agent-id`, so the adapter's argv was
+    # verified and the thing the argv is FOR never was.
+    agent_id = args.agent_id
+    if not agent_id:
+        code = enrolment_code(task)
+        if not code:
+            print(
+                "gbagent: no enrolment code in the instruction file and no --agent-id. A child "
+                "that does not register is one the supervisor kills for looking like a broken "
+                "adapter, so this refuses instead and says which it was.",
+                file=sys.stderr,
+            )
+            return 78
+        try:
+            agent_id, role = register(
+                Coordinator.connect(base_url, api_key, item_id="").client,
+                code=code, model=args.model, worktree=str(root), branch=args.branch,
+            )
+        except NotRegistered as exc:
+            print(f"gbagent: {exc}", file=sys.stderr)
+            return 78
+        print(f"gbagent: registered {agent_id} as {role!r}", file=sys.stderr)
     assignment = assignment_for(args.item)
     coordinator = Coordinator.connect(base_url, api_key, item_id=args.item,
-                                      agent_id=args.agent_id)
+                                      agent_id=agent_id)
     try:
         orientation = build_orientation(coordinator.client, extra=COORDINATION_TOOLS,
-                                        agent_id=args.agent_id)
+                                        agent_id=agent_id)
     except OrientationUnavailable as exc:
         print(f"gbagent: {exc}", file=sys.stderr)
         return 78
@@ -181,7 +259,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--mcp-config", required=True)
     run.add_argument("--instruction-file", default="")
     run.add_argument("--item", default="")
+    # An OVERRIDE, not the normal path: a walk re-running a stuck item should not have to mint
+    # a seat. Given one, registration is skipped entirely.
     run.add_argument("--agent-id", default="")
+    run.add_argument("--branch", default="")
     run.add_argument("--model", required=True)
     # No defaults. `loop.run` refuses to guess either of these and so does this.
     run.add_argument("--turns", type=int, required=True)

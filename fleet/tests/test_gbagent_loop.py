@@ -511,7 +511,10 @@ def test_the_worker_set_is_pinned_and_is_not_the_supervisors():
     # turns, not a move a model makes. `update_item` is deliberately in both — the loop writes
     # the handoff note with it and the model moves the item to review with it. `heartbeat` is
     # likewise both: the loop beats on a timer (GRPH-496) and the model may call it too.
-    assert WORKER_TOOLS - reads - writes == {"release_item"}
+    # Neither layer advertises these two, and for opposite reasons. `release_item` is the
+    # give-up path's, and the model should never call it — releasing is what a harness does
+    # when it runs out of turns. `register_agent` happens once, before the model exists.
+    assert WORKER_TOOLS - reads - writes == {"release_item", "register_agent"}
     assert "update_item" in writes and "release_item" not in writes
     assert "heartbeat" in WORKER_TOOLS, "GRPH-496: presence is only refreshed by heartbeat"
     assert not WORKER_TOOLS & ALLOWED_TOOLS, "a worker is not a supervisor"

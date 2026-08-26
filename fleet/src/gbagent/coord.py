@@ -41,8 +41,12 @@ from .orient import COORDINATION_TOOLS, ORIENTATION_TOOLS
 #: `independent()` on authorship), and this set exists so that widening is an edit somebody
 #: has to explain rather than a call site added while doing something else. D5: done is not
 #: the agent's word, and the server clamps a worker at `review` regardless.
+#: `register_agent` is how the child gets onto the roster at all (GRPH-503). It grants
+#: nothing: the SEAT decides the role, and the server refuses whatever the credential may not
+#: do regardless of what this set says.
 WORKER_TOOLS: frozenset[str] = frozenset(
-    {"update_item", "release_item", "heartbeat", *ORIENTATION_TOOLS, *COORDINATION_TOOLS}
+    {"register_agent", "update_item", "release_item", "heartbeat",
+     *ORIENTATION_TOOLS, *COORDINATION_TOOLS}
 )
 
 
