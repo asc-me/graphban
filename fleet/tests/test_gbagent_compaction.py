@@ -559,3 +559,101 @@ def test_the_instruction_and_the_plan_still_survive():
     assert out[0]["content"].startswith("You are gbagent")
     assert out[1]["content"].startswith("GRPH-999")
     assert out[2]["content"] == "Plan: write the modules, then run the tests."
+
+
+# ---- the clock, not just the window (GRPH-514) ---------------------------------------------
+#
+# D7 triggers at 70% of the context window. S7's run 3 died after 55 minutes with that window
+# 80% EMPTY — one turn simply exceeded the 600s request timeout. PRD-24 §2 says the latency
+# number is the design constraint, and D7 protects a different quantity.
+
+
+def test_a_turn_several_times_the_baseline_is_degradation():
+    assert compact.slow_turn(seconds=150.0, fastest=30.0) is True
+
+
+def test_a_uniformly_slow_model_is_not_a_degrading_one():
+    """THE CONTROL, and the reason the trigger is relative. `qwen3:30b-a3b` answers in 44.8s
+    when healthy and `qwen3-coder:30b` in 22.2s — both measured. A fixed threshold would fire
+    every turn on the slow one and never on the fast one, and compacting every turn spends the
+    context it was trying to save."""
+    assert compact.slow_turn(seconds=60.0, fastest=50.0) is False
+
+
+def test_a_fast_run_that_doubles_is_still_fast():
+    """Below the floor a ratio means nothing: three times 0.1s is 0.3s, which is noise."""
+    assert compact.slow_turn(seconds=0.4, fastest=0.1) is False
+    assert compact.slow_turn(seconds=44.0, fastest=1.0) is False, "still under the floor"
+
+
+def test_the_floor_and_the_ratio_must_BOTH_hold():
+    """Either alone is wrong: the floor alone fires on a healthy slow model, the ratio alone
+    fires on sub-second noise."""
+    assert compact.slow_turn(seconds=compact.SLOW_TURN_FLOOR + 1, fastest=100.0) is False
+    assert compact.slow_turn(seconds=compact.SLOW_TURN_FLOOR - 1, fastest=0.1) is False
+
+
+def test_no_baseline_yet_is_not_degradation():
+    """Guards the division. A zero baseline would make every turn infinitely slower."""
+    assert compact.slow_turn(seconds=999.0, fastest=0.0) is False
+
+
+def _clock(monkeypatch, per_turn):
+    """A fake monotonic clock: `per_turn` seconds for each turn, in order.
+
+    Two readings per turn — the loop times around `run_turn` — so this yields start/end pairs.
+    """
+    marks = []
+    now = 0.0
+    for seconds in per_turn:
+        marks += [now, now + seconds]
+        now += seconds
+    steps = iter(marks)
+    monkeypatch.setattr(loop.time, "monotonic", lambda: next(steps, now + 1000.0))
+
+
+def test_a_run_that_slows_down_compacts_even_with_an_empty_window(wt, monkeypatch):
+    """The failure this exists for. Run 3 never came near its window and died anyway.
+
+    SEVEN turns, not three: compaction keeps the last five verbatim, so a short run has
+    nothing outside the protected region and `_compact_now` correctly does nothing. The first
+    version of this test used three turns and asserted a compaction that could never happen —
+    it was asserting against a state the run never entered.
+    """
+    _clock(monkeypatch, [10.0] * 6 + [200.0, 10.0, 10.0])
+    session = ScriptedSession([_reading()] * 7 + [ToolTurn(text="DONE", wants_tools=False)])
+    seen: list = []
+
+    outcome = loop.run(session, _toolset(wt), coordinator=FakeCoordinator(),
+                       window=100_000_000, budget=9, trace=seen.append)
+
+    assert outcome.compactions > 0, "the window was empty and it still had to compact"
+    reason = next(e for e in seen if e.kind == "compact")
+    assert "baseline" in reason.text, "the trace must say WHICH reason fired"
+
+
+def test_a_run_at_a_steady_pace_does_not_compact_on_time(wt, monkeypatch):
+    """The control, and it runs LONG ENOUGH TO COMPACT so its silence means something.
+
+    Same seven turns as the test above — so the protected region is not what is keeping this
+    at zero — but every turn takes the same 60s. Slow throughout is not degrading.
+    """
+    _clock(monkeypatch, [60.0] * 9)
+    session = ScriptedSession([_reading()] * 7 + [ToolTurn(text="DONE", wants_tools=False)])
+
+    outcome = loop.run(session, _toolset(wt), coordinator=FakeCoordinator(),
+                       window=100_000_000, budget=9)
+
+    assert outcome.compactions == 0, "60s turns throughout is slow, not degrading"
+    assert outcome.slowest_turn == 60.0
+
+
+def test_the_slowest_turn_is_reported(wt, monkeypatch):
+    """PRD-24 §2 calls this the design constraint, so a run should be judgeable on it."""
+    _clock(monkeypatch, [5.0, 90.0, 5.0])
+    session = ScriptedSession([_reading(), ToolTurn(text="DONE", wants_tools=False)])
+
+    outcome = loop.run(session, _toolset(wt), coordinator=FakeCoordinator(),
+                       window=100_000_000, budget=4)
+
+    assert outcome.slowest_turn == 90.0

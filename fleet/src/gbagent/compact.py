@@ -47,6 +47,21 @@ KEEP_LAST_TURNS = 5
 #: Only results longer than this are summarised.
 MIN_SUMMARISE_CHARS = 240
 
+#: A turn this many times slower than the fastest one this run has seen counts as
+#: degradation (GRPH-514).
+#:
+#: RELATIVE, because an absolute seconds threshold cannot work across models whose healthy
+#: turns differ by 2x — 22.2s for `qwen3-coder:30b` against 44.8s for `qwen3:30b-a3b`, both
+#: measured. A fixed 60s would fire immediately on the slow one and never on the fast one.
+#: The fastest turn THIS RUN has seen is a baseline that calibrates itself to the model, the
+#: machine and the hour.
+SLOW_TURN_RATIO = 3.0
+
+#: …and below this, a turn is too short for a ratio to mean anything. Three times 0.1s is
+#: 0.3s, which is noise, not degradation. Above it, three times the baseline is a run whose
+#: turns have genuinely stopped being cheap.
+SLOW_TURN_FLOOR = 45.0
+
 #: Characters per token, MEASURED rather than assumed — 3.47 to 4.03 against `qwen3-coder:30b`
 #: and `gpt-oss:20b` on this repository's own Python, Markdown and tool results. 3.5 is the low
 #: end of that range, chosen deliberately: this is only the fallback for an endpoint that reports
@@ -108,6 +123,23 @@ def should_compact(reported: int | None, messages: list[dict], window: int,
         raise ValueError(f"window must be a positive number of tokens, got {window}")
     used = reported if reported else estimate_tokens(messages)
     return used >= int(window * threshold)
+
+
+def slow_turn(seconds: float, fastest: float) -> bool:
+    """Has this turn degraded far enough to be worth compacting for?
+
+    **The window is not the binding constraint on a local model; time per turn is.** D7
+    triggers at 70% of the context window, and S7's run 3 died after 55 minutes with that
+    window 80% EMPTY — one turn simply exceeded the 600s request timeout. PRD-24 §2 says the
+    latency number is the design constraint, and then D7 protects a different quantity.
+
+    Both conditions must hold: past the floor, and several times the run's own baseline. A
+    uniformly slow model is not a degrading one, and compacting it every turn would spend the
+    context it was trying to save.
+    """
+    if seconds < SLOW_TURN_FLOOR or fastest <= 0:
+        return False
+    return seconds >= fastest * SLOW_TURN_RATIO
 
 
 def _keep_boundary(messages: list[dict], keep_last_turns: int) -> int:

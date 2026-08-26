@@ -34,6 +34,7 @@ clean.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -122,6 +123,9 @@ class Outcome:
     handoff: str = ""
     #: How many times the context was compacted (D7). Zero on a run that never came close.
     compactions: int = 0
+    #: The slowest single turn, in seconds. The number PRD-24 §2 calls the design constraint,
+    #: and the one that ended S7's run 3 — reported so a run can be judged on it (GRPH-514).
+    slowest_turn: float = 0.0
     #: The turn on which this run first CHANGED something. `None` means it never did, which
     #: is not turn zero — see `docs/orientation-metric-prd24.md`. This is the orientation
     #: number: how many 22-45 second turns went by before the work started.
@@ -169,10 +173,18 @@ def run(
         if trace is not None:
             trace(event)
 
+    def timed_turn() -> tuple[ToolTurn, float]:
+        """One round trip, and what it cost in seconds — the unit PRD-24 §2 is written in."""
+        started = time.monotonic()
+        answered = session.run_turn(specs)
+        return answered, time.monotonic() - started
+
     specs = toolset.specs
-    turn: ToolTurn = session.run_turn(specs)
+    turn, elapsed = timed_turn()
     turns = 1
     compactions = 0
+    fastest = elapsed
+    slowest = elapsed
     report(Trace(turn=turns, kind="turn", text=_clip(turn.text)))
 
     first_write: int | None = None
@@ -200,9 +212,25 @@ def run(
             # The turn the work started on. Recorded here rather than counted afterwards
             # because the toolset only knows THAT a write happened, not when.
             first_write = turns
-        compactions += _maybe_compact(session, turn, window, threshold)
-        turn = session.run_turn(specs)
+        # Two reasons to compact, and the trace says which (GRPH-506, GRPH-514). A run can
+        # fill a window without slowing down, and — as S7's run 3 showed — it can slow to a
+        # standstill without filling one.
+        why = ""
+        if compaction.should_compact((turn.usage or {}).get("input"),
+                                     getattr(session, "messages", None) or [],
+                                     window, threshold):
+            why = "context past the threshold"
+        elif compaction.slow_turn(elapsed, fastest):
+            why = f"turn took {elapsed:.0f}s against a {fastest:.0f}s baseline"
+        if why:
+            done = _compact_now(session)
+            if done:
+                compactions += 1
+                report(Trace(turn=turns, kind="compact", name="compact", text=why))
+        turn, elapsed = timed_turn()
         turns += 1
+        fastest = min(fastest, elapsed)
+        slowest = max(slowest, elapsed)
         report(Trace(turn=turns, kind="turn", text=_clip(turn.text)))
 
     if turn.wants_tools and not turn.tool_calls:
@@ -230,39 +258,37 @@ def run(
         usage=turn.usage or {},
         compactions=compactions,
         turns_to_first_write=first_write,
+        slowest_turn=slowest,
     )
 
 
-def _maybe_compact(session, turn: ToolTurn, window: int, threshold: float) -> int:
-    """Compact if the last turn crossed the threshold. Returns 1 if it did, 0 otherwise.
+def _compact_now(session) -> bool:
+    """Compact this session's history. True when something was actually shortened.
 
-    The count comes from the endpoint's own `prompt_tokens`, which is the model's tokenizer
-    rather than ours. When it reports nothing, `compact.should_compact` estimates instead of
-    reading silence as room to spare.
+    The DECISION lives in `run`, which knows both reasons — the context threshold and a turn
+    that has slowed against its own baseline (GRPH-514). This function only carries it out, so
+    the trace can name which reason fired rather than reporting a bare "compacted".
 
     A session with no `messages` — every stand-in in the tests that is not exercising this —
-    simply never compacts, and says so by returning 0 rather than by raising.
+    simply never compacts, and says so by returning False rather than by raising.
     """
     messages = getattr(session, "messages", None)
     if messages is None:
-        return 0
-    reported = (turn.usage or {}).get("input")
-    if not compaction.should_compact(reported, messages, window, threshold):
-        return 0
+        return False
     result = compaction.compact(messages)
     if not result.summarised:
-        # Over the threshold with nothing compactable. This branch used to explain itself as
-        # "everything large is the plan or the last five turns, which D7 says survive" — and
-        # that described the COMMON case as an edge case: tool-call arguments were
-        # unreachable, so an agent that had written a few modules landed here with
-        # `protected` at zero and no remedy at all (GRPH-490). Arguments are compacted now,
-        # so reaching this really does mean everything large is protected.
+        # Nothing compactable. This branch used to explain itself as "everything large is the
+        # plan or the last five turns, which D7 says survive" — and that described the COMMON
+        # case as an edge case: tool-call arguments were unreachable, so an agent that had
+        # written a few modules landed here with `protected` at zero and no remedy at all
+        # (GRPH-490). Arguments are compacted now, so reaching this really does mean
+        # everything large is protected.
         #
         # Saying so beats reporting a compaction that freed nothing, and beats looping on an
         # unchanged conversation.
-        return 0
+        return False
     session.messages = result.messages
-    return 1
+    return True
 
 
 def _give_up(
