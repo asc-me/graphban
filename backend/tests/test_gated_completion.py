@@ -594,3 +594,105 @@ def test_a_refusal_that_changes_updates_its_shard_rather_than_adding_one(db):
             "the shard still describes a failure that has since changed"
     finally:
         other.close()
+
+
+# ---- an attestation goes stale (GRPH-555) --------------------------------------------
+
+HEAD_A = "a" * 40
+HEAD_B = "b" * 40
+
+
+def test_an_attestation_for_an_older_commit_no_longer_opens_the_gate(db):
+    """The hole this closes. Attest at A, push B, complete — and A's receipt used to be
+    enough, because the gate never read the commit it names."""
+    it = _item(db)
+    items_svc.update_item(db, it.id, evidence=[_attestation(commit=HEAD_A)],
+                          head_commit=HEAD_A)
+    items_svc.update_item(db, it.id, head_commit=HEAD_B)          # a push happened
+
+    with pytest.raises(items_svc.MissingAttestation) as e:
+        items_svc.update_item(db, it.id, status="done")
+
+    assert HEAD_A[:12] in str(e.value) and HEAD_B[:12] in str(e.value), \
+        f"the refusal does not say which commit was attested vs which is current: {e.value}"
+
+
+def test_the_same_commit_still_completes(db):
+    """The control. A check that refused every commit would satisfy the test above and make
+    completion impossible."""
+    it = _item(db)
+    items_svc.update_item(db, it.id, evidence=[_attestation(commit=HEAD_A)],
+                          head_commit=HEAD_A)
+
+    assert items_svc.update_item(db, it.id, status="done").status == "done"
+
+
+def test_a_failing_run_that_writes_no_receipt_still_expires_the_old_one(db):
+    """THE case, and the reason the head is reported whether or not the run passed.
+
+    A passing run writes a receipt for the new head, so staleness never arises. The
+    dangerous sequence is: attested at A, push B, CI FAILS on B, no receipt for B is
+    written — and without a head move, A's receipt goes on vouching for code that has since
+    broken.
+    """
+    it = _item(db)
+    items_svc.update_item(db, it.id, evidence=[_attestation(commit=HEAD_A)],
+                          head_commit=HEAD_A)
+    items_svc.update_item(db, it.id, head_commit=HEAD_B)   # what a FAILED run records
+
+    with pytest.raises(items_svc.MissingAttestation):
+        items_svc.update_item(db, it.id, status="done")
+
+    [shard] = [s for s in _shards_for(db, it) if "stale" in s.source]
+    assert HEAD_B[:12] in shard.text, "the lesson does not name the commit that moved"
+
+
+def test_with_no_head_reported_the_weaker_check_still_applies(db):
+    """The fallback, argued rather than defaulted. Refusing here would make completion
+    impossible for every install without a head-reporting adapter — including the offline
+    one this product promises, and `fleet.sign_off` reports no head either.
+
+    The guarantee is opt-in, and not silently: an item completed under the weak check is
+    exactly one whose `head_commit` is empty, which is a query.
+    """
+    it = _item(db)
+    items_svc.update_item(db, it.id, evidence=[_attestation(commit=HEAD_A)])
+
+    out = items_svc.update_item(db, it.id, status="done")
+
+    assert out.status == "done"
+    assert out.head_commit == "", "precondition: no adapter reported a head"
+
+
+def test_a_building_agent_cannot_move_the_head(client, auth):
+    """`head_commit` is gate-scoped for the same reason the receipt is: an agent that could
+    set it to the commit its stale attestation names would walk straight through the check
+    this item adds."""
+    item = client.post("/api/items", json={"title": "gated"}, headers=auth).json()
+    key = _mint(client, auth, ["read", "write"])
+
+    err = _error(_rpc(client, key, "update_item",
+                      {"id": item["id"], "head_commit": HEAD_B}))
+
+    assert err, "a write-scoped key moved the head"
+    assert "head_commit" in err["message"], \
+        f"the refusal does not name what was refused: {err}"
+
+
+def test_two_commits_sharing_a_prefix_are_not_the_same_commit(db):
+    """Prefix matching is the tempting shortcut — short SHAs are everywhere, so comparing
+    with `startswith` feels tolerant. It is not: two distinct commits routinely share a
+    leading run of characters, and a receipt for one would then vouch for the other.
+
+    Written with SHAs that share 12 characters because the earlier staleness tests use
+    `aaa…` and `bbb…`, which cannot fail under a prefix comparison — the mutation passed
+    against them and this is what caught it.
+    """
+    shared = "c0ffee123456"
+    old, new = shared + "1" * 28, shared + "2" * 28
+    it = _item(db)
+    items_svc.update_item(db, it.id, evidence=[_attestation(commit=old)],
+                          head_commit=new)
+
+    with pytest.raises(items_svc.MissingAttestation):
+        items_svc.update_item(db, it.id, status="done")

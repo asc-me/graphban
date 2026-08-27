@@ -225,3 +225,37 @@ def test_the_attestation_step_still_receives_what_it_needs():
         f"the step lost the inputs it needs to identify and bind an attestation: {sorted(env)}"
     for var in ("HEAD_SHA", "HEAD_REF", "PR_TITLE", "PR_BODY"):
         assert f"${var}" in step["run"], f"{var} is set but never read"
+
+
+def test_the_head_is_recorded_even_when_ci_failed():
+    """The load-bearing half of GRPH-555, and it lives in step ordering rather than code.
+
+    A passing run writes a receipt for the new head, so staleness never arises there. The
+    dangerous sequence is: attested at A, push B, CI FAILS on B, no receipt written — and
+    unless the head still moves, A's receipt goes on vouching for code that has since
+    broken.
+
+    A step without `if: always()` is skipped once an earlier step has failed, so dropping
+    that one line silently restores the hole while every other test here still passes.
+    """
+    steps = _gate_steps()
+    head = next(s for s in steps if "--mode head" in (s.get("run") or ""))
+    checkout = next(s for s in steps if "checkout" in str(s.get("uses", "")))
+
+    assert head.get("if") == "always()", (
+        "the head-recording step is conditional, so a failed run would skip it and leave "
+        "the previous passing attestation valid — the exact case GRPH-555 exists for")
+    assert checkout.get("if") == "always()", \
+        "the checkout it depends on is conditional, so the step above cannot run either"
+
+
+def test_the_attestation_step_is_not_unconditional():
+    """The mirror, and the control. Making everything `always()` would satisfy the test
+    above and attest failing runs — which is the defect GRPH-551 was written against."""
+    steps = _gate_steps()
+    attest = next(s for s in steps
+                  if "attest_ci.py" in (s.get("run") or "") and "--mode head" not in s["run"])
+
+    assert "if" not in attest, (
+        "the attestation step is conditional; it must inherit the default, which is 'only "
+        "if nothing before it failed'")

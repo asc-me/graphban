@@ -204,7 +204,27 @@ jobs:
       # satisfy `test_ci_gate_covers_every_job`, and a job that runs after the gate cannot
       # be one of its dependencies.
       - name: Check out (the gate job has no source yet)
+        if: always()
         uses: actions/checkout@v4
+      # BEFORE the attestation and unconditionally, which is the whole point (GRPH-555).
+      # A failing run writes no receipt — but it must still move the head, or the last
+      # PASSING attestation goes on opening the gate for code that has since broken. That is
+      # the case the staleness check exists for, and it is only reachable if this step runs
+      # when the one above it failed.
+      - name: Record the commit this run observed
+        if: always()
+        env:
+          GRAPHBAN_URL: ${{ vars.GRAPHBAN_URL }}
+          GRAPHBAN_GATE_KEY: ${{ secrets.GRAPHBAN_GATE_KEY }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 scripts/attest_ci.py --mode head \
+            --commit "$HEAD_SHA" \
+            --branch "$HEAD_REF" \
+            --text "$PR_TITLE $PR_BODY"
       - name: Attest the items this green run vouches for
         # EVERY value crosses into this step through `env`, never through `${{ }}` inside
         # `run`. Actions substitutes an expression into the script TEXT before any shell
