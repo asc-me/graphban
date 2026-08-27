@@ -153,3 +153,83 @@ def test_the_plugin_readme_states_what_it_does_not_guarantee():
     assert "not an adversarial boundary" in readme
     assert "two codes" in readme, "name the residual risk, not a retired one"
     assert "cannot scope" not in readme, "that caveat described the three-server config"
+
+
+# ---- the Cursor rules file (GRPH-147) -----------------------------------------------------
+
+RULE = ".cursor/rules/agentledger.mdc"
+
+
+def test_the_rule_is_mdc_because_cursor_ignores_md_here():
+    """THE FAILURE THIS FILE MOST HAS TO AVOID, and it is silent.
+
+    Cursor's rules system reads `.mdc` files in `.cursor/rules` and **ignores plain `.md`**
+    there. A rule committed as `.md` looks installed, reviews fine, sits in the right
+    directory, and does nothing at all — there is no error and no warning, so the only
+    symptom is agents continuing to behave exactly as they did before.
+
+    Asserted on the generator's own output rather than on disk alone, so renaming the
+    committed file is not enough to make this pass.
+    """
+    files = _load_generator().render_files()
+
+    assert RULE in files, "the generator no longer emits the Cursor rule"
+    assert not any(p.startswith(".cursor/rules/") and p.endswith(".md") for p in files), (
+        "a rule is being emitted as .md in .cursor/rules — Cursor ignores those entirely, "
+        "so it would ship as a no-op"
+    )
+    assert (REPO / RULE).exists(), f"{RULE} missing — run scripts/gen_subagents.py"
+
+
+def test_the_rule_applies_unconditionally():
+    """`alwaysApply: true` is the only frontmatter combination that fits this rule.
+
+    Cursor's rule anatomy: `true` includes it always; `false` + `globs` auto-attaches on
+    matching files; `false` + `description` lets the agent pull it in when it judges it
+    relevant; neither means it arrives only on an explicit @-mention. A rule whose first
+    instruction is *claim the item before you start* cannot wait for a glob to match — by
+    the time a file is open, the agent has already started.
+    """
+    body = _load_generator().render_files()[RULE]
+    head = body.split("---")[1]
+
+    assert "alwaysApply: true" in head, (
+        "the ledger-loop rule is no longer applied unconditionally; if that is deliberate, "
+        "note that globs attach only after work has already begun"
+    )
+    assert "description:" in head, "no description — a human reading the rules list sees nothing"
+
+
+def test_the_rule_is_the_agents_md_section_verbatim():
+    """Generated, not written, so it cannot drift. The item asked for a thin pointer to
+    AGENTS.md rather than a second copy of the guidance, and a paraphrase here is exactly
+    the drift that GRPH-424 and GRPH-528 were both filed for."""
+    gen = _load_generator()
+    loop = gen.extract_section((REPO / "AGENTS.md").read_text(), "Ledger loop")
+
+    assert loop, "AGENTS.md lost its '## Ledger loop' section — the rule has no source"
+    assert loop in gen.render_files()[RULE], \
+        "the rule's body is no longer AGENTS.md's Ledger loop verbatim"
+
+
+def test_the_rule_points_at_agents_md_instead_of_restating_it():
+    """It rides on every request, so its length is a running cost — the same reason the MCP
+    manifest has a token budget. It carries the loop and defers the rest."""
+    body = _load_generator().render_files()[RULE]
+
+    # The PROSE pointer, not the bare string. `AGENTS.md` also appears in the generated-by
+    # comment at the top of every rendering, so `"AGENTS.md" in body` is true even when the
+    # sentence telling a reader where to go has been deleted — it passes for the wrong
+    # reason. Same trap as GRPH-524: anchor on the phrase that carries the meaning.
+    pointer = "is in `AGENTS.md` at the repo root"
+    assert pointer in body, (
+        "the rule no longer tells a reader where the rest of the guidance lives; the "
+        "generated-by comment mentions AGENTS.md but is not an instruction"
+    )
+    invariants = _load_generator().extract_section((REPO / "AGENTS.md").read_text(), "Invariants")
+    first_invariant = invariants.strip().splitlines()[0].strip()
+    assert first_invariant not in body, (
+        "the rule has started restating AGENTS.md's invariants; two copies drift and this "
+        "one is paid for on every request"
+    )
+    assert len(body) < 4000, f"the always-applied rule has grown to {len(body)} chars"
