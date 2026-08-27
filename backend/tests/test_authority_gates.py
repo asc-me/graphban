@@ -211,3 +211,102 @@ def test_the_human_review_endpoints_delegate_to_the_service():
     router = (APP / "routers" / "memory.py").read_text()
     assert "mem_svc.set_status" in router or "set_status(" in router
     assert not _STATUS_ASSIGN.search(router)
+
+
+# ---- every tool argues its role gate (GRPH-516) ---------------------------------------------
+
+def _tool_names():
+    from app.mcp_server import TOOLS
+
+    return {t["name"] for t in TOOLS}
+
+
+def test_every_tool_is_classified_by_role():
+    """THE guard, and the reason this ticket exists.
+
+    `TOOLS` has had a completeness check for a long time — the assertion above, which forces
+    a new tool to be classified as a quality gate or an authority one. `TOOL_ROLES` had no
+    equivalent, so "no role gate" was a DEFAULT rather than a decision, and forty tools
+    reached it without anyone arguing for one of them.
+
+    The two axes are independent — `create_prd` is both agent-callable and planner-only — so
+    the existing guard never covered this one, not even by accident.
+    """
+    from app.services.fleet import OPEN_TOOLS, TOOL_ROLES
+
+    names = _tool_names()
+    classified = set(TOOL_ROLES) | set(OPEN_TOOLS)
+    assert names - classified == set(), (
+        f"unclassified: {sorted(names - classified)} — gate the tool in TOOL_ROLES, or put it "
+        "in OPEN_TOOLS with the reason it is open to every role")
+    assert classified - names == set(), (
+        f"classified but gone: {sorted(classified - names)} — a stale entry argues about a "
+        "tool nobody can call")
+
+
+def test_a_tool_is_gated_or_open_and_never_both():
+    """Two answers to one question is the state this map exists to remove."""
+    from app.services.fleet import OPEN_TOOLS, TOOL_ROLES
+
+    assert set(TOOL_ROLES) & set(OPEN_TOOLS) == set()
+
+
+def test_every_open_tool_gives_a_reason():
+    """An empty reason is the default wearing a disguise. It has to say something, and the
+    threshold is deliberately low — the guard is that somebody wrote a sentence, not that a
+    grader liked it."""
+    from app.services.fleet import OPEN_TOOLS
+
+    thin = {n: r for n, r in OPEN_TOOLS.items() if len(r.strip()) < 30}
+    assert not thin, f"no real reason given: {sorted(thin)}"
+
+
+def test_the_unargued_list_can_shrink_and_not_grow():
+    """A RATCHET, because the honest map has debt in it and debt that can grow is not debt.
+
+    Seven tools are open because nobody has argued them, not because someone decided they
+    should be. Writing a plausible-sounding rationale for each would have closed those
+    questions wrongly and looked identical to having answered them. So they are marked, and
+    a new tool cannot join them: this number may only go down.
+    """
+    from app.services.fleet import OPEN_TOOLS, UNARGUED
+
+    unargued = sorted(n for n, r in OPEN_TOOLS.items() if r.startswith(UNARGUED))
+    assert len(unargued) <= 7, (
+        f"{len(unargued)} tools are open without an argument: {unargued}. A new tool must be "
+        "gated or argued — it may not join this list.")
+
+
+def test_register_agent_stays_open_and_says_why():
+    """The one entry whose ABSENCE from TOOL_ROLES is load-bearing: a caller cannot hold a
+    role before it registers, so gating this deadlocks every agent at its first call. Left
+    implicit, a later tidy-up would gate it and the failure would look like a broken client."""
+    from app.services.fleet import OPEN_TOOLS, TOOL_ROLES
+
+    assert "register_agent" not in TOOL_ROLES
+    assert "deadlock" in OPEN_TOOLS["register_agent"]
+
+
+def test_heartbeat_stays_open_and_says_why():
+    """It was gated, that was the bug, and it took reviewers and planners off the roster 150s
+    after they registered — found on the PRD-17 walk. The reason belongs where the next person
+    to tidy this file will read it."""
+    from app.services.fleet import OPEN_TOOLS, TOOL_ROLES
+
+    assert "heartbeat" not in TOOL_ROLES
+    assert "presence" in OPEN_TOOLS["heartbeat"].lower()
+
+
+def test_the_gates_that_exist_are_unchanged_by_this():
+    """This ticket adds a guard, NOT a sweep. Gating four more tools today would be four more
+    chances to repeat the heartbeat mistake, so the classification records what is true and
+    changes no refusal."""
+    from app.services.fleet import TOOL_ROLES
+
+    assert TOOL_ROLES["claim_next"] == ("worker",)
+    assert TOOL_ROLES["sign_off"] == ("reviewer",)
+    assert TOOL_ROLES["mint_enrolment"] == ("planner",)
+    assert set(TOOL_ROLES) >= {"claim_next", "claim_cluster", "next_cluster", "claim_review",
+                               "sign_off", "bounce", "release_item", "assign_role",
+                               "mint_enrolment", "retire_wave", "create_prd", "update_prd",
+                               "decompose_prd", "grill_prd", "answer_grill"}
