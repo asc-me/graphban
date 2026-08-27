@@ -142,6 +142,11 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         "get_backlog", "get_item_details", "suggest_next", "link_items",
         "unlink_items", "extract_lessons", "generate_digest", "prd_coverage",
         "decompose_prd", "create_prd", "update_prd", "grill_prd",
+        # GRPH-519. QUALITY, not authority: it reads a PRD already inside the key's project
+        # scope and writes nothing. It grants no new reach — `prd_coverage` and `decompose_prd`
+        # both already read the same row — and it is what makes `update_prd`'s whole-body
+        # replace survivable, because you cannot safely replace a document you have not read.
+        "get_prd",
         "related_work", "next_cluster", "claim_next", "heartbeat",
         "release_item", "describe_code", "get_code_map", "code_neighbors",
         "search_code", "link_code", "unlink_code", "report_graphban_issue",

@@ -343,10 +343,30 @@ Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT th
     Measured per role, because the full manifest is a worst case nobody in a fleet receives:
     worker 44 tools / ~11.0k, reviewer 44 / ~11.1k, planner 47 / ~11.5k. 13.6k is what an
     all-in-one or an unregistered session pays. The 190-token allowance leaves 43 of headroom,
-    so the next raise still has to be argued for rather than absorbed."""
+    so the next raise still has to be argued for rather than absorbed.
+
+    RAISED 13600 -> 14000 on 2026-08-26 (GRPH-519), and the first thing to record is that the
+    "43 of headroom" above had become ONE. Measured on `main` immediately before this change:
+    13599 against a 13600 ceiling. Tools were added after GRPH-474 without anyone re-running
+    the arithmetic — the third time this docstring has had to say that about itself, and the
+    reason the number is written down here each time rather than only in a commit message.
+
+    A ceiling with one token of slack is not a budget, it is a tripwire that fires on whoever
+    happens to add the next tool regardless of what it costs. It caught `get_prd` at 163
+    tokens; it would equally have caught a four-token one.
+
+    What the 163 buys: an agent could not READ a PRD body. `update_prd` replaces the body
+    whole, so the only route to absorbing a grill's own answers was to rewrite the document
+    from memory — the GRPH-515 defect with no guard in front of it. A ceiling that blocks the
+    read which makes an existing write survivable is measuring the wrong thing, the same
+    argument GRPH-474 made about schemas that could not tell the truth.
+
+    `get_prd` is UNGATED, so every role pays the 163 — that is the honest worst case and it is
+    stated rather than buried. 14000 leaves ~218 of headroom, roughly what the previous raise
+    intended before it eroded. The structural fix is still GRPH-48/146."""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 13600, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 14000, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
 

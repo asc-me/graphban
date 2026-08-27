@@ -2,7 +2,7 @@
 
 Graphban is an agent-native dev tool: linear tracker + pgvector agent memory +
 request triage + a code-structure graph, all operable by coding agents through
-54 MCP tools (`POST /api/mcp`, JSON-RPC) that share one service layer with the
+55 MCP tools (`POST /api/mcp`, JSON-RPC) that share one service layer with the
 REST API and web UI. Local-Docker-first; stays fully offline by default (stub
 embeddings/chat — real providers are opt-in env config).
 
@@ -124,8 +124,10 @@ stop that, and a failure there is never a naming bug.
    invariants, and return shape — match `claim_next`/`describe_code` style) +
    handler branch in `_call_tool` calling a service function.
 2. **Every tool needs an `outputSchema`** (asserted by `test_api.py`).
-3. Update the count assertions: `tests/test_api.py` (`len(names)`, `tool_count`
-   ×2) and `tests/test_phase4.py` (`data["live"]`, `len(data["tools"])`).
+3. No count assertions to update — `LIVE_TOOL_COUNT` is `len(TOOLS)`, so
+   `test_api.py` and `test_phase4.py` follow automatically. The prose counts in
+   `docs/mcp.md`, `docs/README.md`, `docs/ARCHITECTURE.md`, `docs/product-overview.md`
+   and this file are NOT derived, and nothing fails when they drift — update them.
 4. Update the tool table in `docs/mcp.md`.
 5. MCP round-trip test: POST a JSON-RPC `tools/call` envelope with an `X-API-Key`
    (see `test_api.py` for the pattern).

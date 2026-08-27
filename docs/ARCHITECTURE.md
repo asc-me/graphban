@@ -128,7 +128,7 @@ backend/app/
   routers/           auth · projects · items · requests · memory · agent · apikeys ·
                      prds · analytics · platform · reports · public · admin ·
                      artifacts · assistant · fleet · learning · orgs · sync
-  mcp_server.py      JSON-RPC MCP endpoint (54 tools) + metering
+  mcp_server.py      JSON-RPC MCP endpoint (55 tools) + metering
   seed.py            the design dataset
 alembic/             migration chain (0001 → head)
 
