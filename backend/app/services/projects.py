@@ -146,16 +146,33 @@ def default_project_id(db: Session, allowed_ids: list[str] | None = None) -> str
 def resolve_project_id(
     db: Session, project_id: str | None, allowed_ids: list[str] | None = None
 ) -> str | None:
-    """Return ``project_id`` if it names an existing project, else the default.
+    """Return ``project_id`` if it names an existing project, the default if it was
+    OMITTED, and ``None`` if it was named and does not exist.
 
     A named-but-existing project is returned as-is; authorization is the caller's
     job (``require_readable``/``require_writable``) so a named-but-forbidden id is
     rejected there, not silently swapped. Only the *fallback* is bounded by
-    ``allowed_ids`` — the caller's own projects — so an omitted/unknown id never
-    resolves to another tenant's first-by-name project (AL-71)."""
-    if project_id and db.get(Project, project_id) is not None:
-        return project_id
-    return default_project_id(db, allowed_ids)
+    ``allowed_ids`` — the caller's own projects — so an omitted id never resolves to
+    another tenant's first-by-name project (AL-71).
+
+    **A named-but-nonexistent id is not a fallback** (GRPH-427). It used to be, and the
+    result was that ``?project_id=does-not-exist`` returned HTTP 200 carrying the caller's
+    default project's health — an authoritative-looking answer about unrelated data, with
+    nothing to tell the caller a substitution had happened. The caller said which project
+    they meant; a typo must not become a confident answer about another one.
+
+    ``None`` rather than an exception, because every caller already treats it as not-found
+    and does so with the right status: ``require_readable`` documents that it fails closed
+    on ``None``, the key path's ``pid not in readable`` catches it, and the public route
+    falls through to its 404. Raising here would have to be caught in five places, one of
+    which (``routers/public``) has no handler and would have turned a typo into a 500.
+
+    Empty string counts as OMITTED, not named: ``?project_id=`` is how a client with no
+    project selected actually calls these routes, and 404-ing it would break the commonest
+    request in the product."""
+    if not project_id:
+        return default_project_id(db, allowed_ids)
+    return project_id if db.get(Project, project_id) is not None else None
 
 
 def retag_project(db: Session, project_id: str, new_tag: str) -> Project:
