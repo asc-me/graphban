@@ -103,6 +103,8 @@ constrains what we can build.
 
 ## 3. Key decisions
 
+<!-- framing --> <!-- records why decisions were settled; the work they imply is in D1-D9 -->
+
 ### D-a. Roles are dynamic; keys are the ceiling
 
 The obvious tension: role enforcement wants roles pinned to a credential, and fleet
@@ -266,6 +268,8 @@ revoke every fleet key, mark every agent `offline`, release outstanding leases a
 reservations.
 
 ## 4. Roles
+
+<!-- framing --> <!-- defines the vocabulary the D-sections build against -->
 
 | Role | Can | Cannot |
 |---|---|---|
@@ -509,6 +513,8 @@ naming what is missing. A reviewer that dispatches two opposing-lens critics and
 receipts passes. A below-threshold item signs off without one. The refusal is in the ledger.
 
 ## 9. Relationship to in-session orchestrators
+
+<!-- framing --> <!-- states constraints on D6/D7 and one non-goal -->
 
 Cursor 3 ships an **orchestrator pattern** of its own: a parent agent coordinating specialist
 subagents — planner → implementer → verifier — each with its own context window, handing off

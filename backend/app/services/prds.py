@@ -1050,6 +1050,9 @@ def completeness(db: Session, prd: Prd) -> dict:
         by_section.setdefault(it.prd_section or "", []).append(it)
 
     per, claimed = [], set()
+    # The BASELINE's bodies, matching the titles being walked — a section is classified from
+    # the text the baseline froze, not from whatever the working draft says now (GRPH-247).
+    _bodies = section_bodies(base.body)
     for title in parse_sections(base.body):
         aliases = [title] + ([renames[title]] if title in renames else [])
         its = [it for a in aliases for it in by_section.get(a, [])]
@@ -1066,7 +1069,7 @@ def completeness(db: Session, prd: Prd) -> dict:
         per.append({
             "section": title,
             "renamed_to": renames.get(title),
-            "framing": not is_implementable_section(title),
+            "framing": not is_implementable_section(title, _bodies.get(title, "")),
             "state": state,
             "planned": len(its),
             "delivered": delivered,
@@ -1600,6 +1603,9 @@ def close_report(db: Session, prd: Prd) -> dict:
     drift = scope_drift(db, prd)
     dispositions = {d["section"]: d for d in (prd.close_record or {}).get("dispositions", [])}
 
+    # Bodies from the CURRENT text, since a closed PRD's origin sections may have been
+    # renamed; `.get` falls back to "" and the name-based rule still decides (GRPH-247).
+    _close_bodies = section_bodies(prd.body or "")
     sections, dropped, expanded = [], [], []
     for origin_title, h in histories.items():
         # Work filed under ANY name this section has held — a rename must not orphan the
@@ -1609,6 +1615,10 @@ def close_report(db: Session, prd: Prd) -> dict:
         titles.update(e["to"] for e in h["events"] if e["change"] == "renamed")
         linked = [it for t in titles for it in by_section.get(t, [])]
         delivered = [it for it in linked if it.status == "done"]
+        # Classified once, from the ORIGIN title's own text, and reused for both fields
+        # below — they must never disagree about whether a section was framing.
+        _origin_buildable = is_implementable_section(
+            origin_title, _close_bodies.get(origin_title, ""))
 
         row = {
             "section": origin_title,
@@ -1627,9 +1637,9 @@ def close_report(db: Session, prd: Prd) -> dict:
             # "Goals", "Non-goals" and "Success criteria" were never delivered — six of
             # fourteen entries in the headline finding were sections that can never have
             # work, which is the AL-96 failure in the one artifact a PM acts on.
-            "framing": not is_implementable_section(origin_title),
+            "framing": not _origin_buildable,
             "fate": ("dropped" if h["dropped_at"]
-                     else "framing" if not is_implementable_section(origin_title)
+                     else "framing" if not _origin_buildable
                      else "delivered" if delivered
                      else "undelivered"),
             "disposition": dispositions.get(origin_title),
@@ -1755,7 +1765,9 @@ def audit_coverage(db: Session, prd: Prd) -> dict:
     base = baseline_of(db, prd.id)
     if base is None:
         return {"governed": False, "covered": [], "uncovered": []}
-    demanded = [t for t in parse_sections(base.body) if is_implementable_section(t)]
+    _base_bodies = section_bodies(base.body)
+    demanded = [t for t in parse_sections(base.body)
+                if is_implementable_section(t, _base_bodies.get(t, ""))]
     covered = {v.section for v in verdicts(db, prd) if v.section}
     return {
         "governed": True,
@@ -3038,9 +3050,52 @@ def _section_key(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", re.sub(r"\(.*?\)", " ", cleaned).lower())
 
 
-def is_implementable_section(title: str) -> bool:
+#: An explicit declaration a PRD author can put anywhere inside a section's body. It BEATS
+#: the name-based guess in both directions, which is the whole point — see
+#: `classify_section`.
+_FRAMING_MARKER = re.compile(r"<!--\s*framing\s*-->", re.IGNORECASE)
+_BUILDABLE_MARKER = re.compile(r"<!--\s*buildable\s*-->", re.IGNORECASE)
+
+
+def classify_section(title: str, body: str = "") -> tuple[bool, str]:
+    """Is this section work to build? Returns `(implementable, basis)`.
+
+    `basis` names which rule decided, because this classification is not cosmetic: a
+    framing section read as buildable is a coverage gap that can never close, and a
+    buildable section read as framing is work that silently stops being counted. Anyone
+    disbelieving a coverage report should be able to see WHY, rather than reading the
+    allowlist and guessing.
+
+    **The marker wins over the name** (GRPH-247). An allowlist of exact headings cannot keep
+    up with prose sections people invent — three approved PRDs already carry framing
+    sections it misses, each one a false gap that stays a gap forever — and the failure is
+    quiet, surfacing only when somebody reads a coverage report and disbelieves it.
+
+    **The obvious alternative was measured and rejected.** Inverting the default — treat a
+    section with no acceptance markers as framing unless it says otherwise — was proposed on
+    the ticket. Run against this repo's own PRDs it reclassifies 30 sections, and most of
+    them (`D2 — Pan, zoom, drag, find`, `E1`..`E8` of PRD-19) are genuinely buildable work.
+    That trades a visible false gap for an invisible missing one, which is strictly worse:
+    a gap nobody can close is annoying, and work that stopped being counted is the defect
+    this repo keeps rediscovering.
+
+    `<!-- buildable -->` exists for the same reason in reverse. `decisionsfromgrilling` is on
+    the allowlist and a section called plain "Decisions" deliberately is not, because it may
+    be design decisions that do need building — so an author whose framing-named section
+    holds real work needs a way to say so that does not require editing this file.
+    """
+    if _FRAMING_MARKER.search(body or ""):
+        return False, "marked <!-- framing -->"
+    if _BUILDABLE_MARKER.search(body or ""):
+        return True, "marked <!-- buildable -->"
+    if _section_key(title) in _PROSE_SECTIONS:
+        return False, "a conventional framing heading"
+    return True, "no framing marker and not a conventional framing heading"
+
+
+def is_implementable_section(title: str, body: str = "") -> bool:
     """Whether a section describes work to build (vs. framing prose)."""
-    return _section_key(title) not in _PROSE_SECTIONS
+    return classify_section(title, body)[0]
 
 
 def section_bodies(body: str) -> dict[str, str]:
@@ -3066,6 +3121,9 @@ def section_bodies(body: str) -> dict[str, str]:
 def coverage(db: Session, prd: Prd) -> dict:
     """Per-section task rollup + gaps for a PRD."""
     sections = parse_sections(prd.body)
+    # Needed for classification: a section can declare `<!-- framing -->` in its own body
+    # and override the name-based guess (GRPH-247).
+    bodies = section_bodies(prd.body)
     items = [it for it in items_svc.list_items(db, project_id=prd.project_id) if it.prd_id == prd.id]
     by_section: dict[str, list] = {}
     for it in items:
@@ -3077,10 +3135,14 @@ def coverage(db: Session, prd: Prd) -> dict:
         # High-fidelity work still open in this section = prototype-first questions
         # a spec can't close in words yet (AL-68).
         open_high = sum(1 for it in its if it.fidelity == "high" and it.status != "done")
-        implementable = is_implementable_section(s)
+        implementable, basis = classify_section(s, bodies.get(s, ""))
         per.append({
             "section": s,
             "implementable": implementable,
+            # WHY, not just what (GRPH-247). A false gap is discovered by somebody reading a
+            # coverage report and disbelieving it, and the next question is always "why does
+            # it think that" — which previously meant opening `_PROSE_SECTIONS` and guessing.
+            "implementable_basis": basis,
             "item_count": len(its),
             "done": counts.get("done", 0),
             "by_status": dict(counts),
@@ -3200,7 +3262,7 @@ def framing_context(prd: Prd) -> str:
     dropped: list[str] = []
     spent = 0
     for title, body in bodies.items():
-        if is_implementable_section(title):
+        if is_implementable_section(title, body):
             continue
         text = (body or "").strip()
         if not text:
