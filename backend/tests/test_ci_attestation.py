@@ -169,3 +169,59 @@ def test_every_item_is_attempted_before_anything_is_reported(monkeypatch, capsys
 
     assert tried == ["GRPH-1", "GRPH-2"], f"it gave up after the first failure: {tried}"
     assert rc == 1
+
+
+# ---- a PR body is not a shell script -------------------------------------------------
+
+UNTRUSTED = ("github.event", "github.head_ref")
+
+
+def test_no_workflow_interpolates_untrusted_input_into_a_shell_script():
+    """Script injection, and the reason it is asserted rather than remembered.
+
+    GitHub Actions substitutes a `${{ }}` expression into the script TEXT before any shell
+    sees it. A pull request title, body or branch name is writable by whoever opened the
+    pull request — so interpolating one into `run:` makes it shell source. The gate job
+    holds `GRAPHBAN_GATE_KEY`, so a payload would run with the credential that certifies
+    completion, and exfiltrating it is one `curl` away.
+
+    This is not a theoretical class. The first version of the attestation step interpolated
+    the PR body directly; the PR that exposed it was an ordinary one whose markdown carried
+    backticks and quotes, and CI reported a shell syntax error — the harmless end of exactly
+    the same defect.
+
+    The fix is to pass values through `env`, where they are handed to the process rather
+    than pasted into the program. `needs.*.result` stays permitted: it is a fixed set of
+    runner-produced words, not anything a contributor can write.
+    """
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[2] / ".github/workflows"
+    offenders = []
+    for wf in sorted(root.glob("*.yml")):
+        spec = yaml.safe_load(wf.read_text())
+        for job_name, job in (spec.get("jobs") or {}).items():
+            for step in job.get("steps") or []:
+                for expr in re.findall(r"\$\{\{([^}]*)\}\}", step.get("run") or ""):
+                    if any(u in expr for u in UNTRUSTED):
+                        offenders.append(
+                            f"{wf.name}:{job_name}: `${{{{{expr.strip()}}}}}` in a run: block")
+
+    assert not offenders, (
+        "attacker-controllable values are interpolated into shell scripts: "
+        + "; ".join(offenders)
+        + " — pass them through `env:` and read them as shell variables instead"
+    )
+
+
+def test_the_attestation_step_still_receives_what_it_needs():
+    """The control. Deleting the interpolation entirely would satisfy the test above and
+    leave the step attesting nothing, with no item keys and no commit to bind to."""
+    steps = _gate_steps()
+    step = next(s for s in steps if "attest_ci.py" in (s.get("run") or ""))
+    env = step.get("env") or {}
+
+    assert {"HEAD_SHA", "HEAD_REF", "PR_TITLE", "PR_BODY"} <= set(env), \
+        f"the step lost the inputs it needs to identify and bind an attestation: {sorted(env)}"
+    for var in ("HEAD_SHA", "HEAD_REF", "PR_TITLE", "PR_BODY"):
+        assert f"${var}" in step["run"], f"{var} is set but never read"

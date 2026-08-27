@@ -206,12 +206,29 @@ jobs:
       - name: Check out (the gate job has no source yet)
         uses: actions/checkout@v4
       - name: Attest the items this green run vouches for
+        # EVERY value crosses into this step through `env`, never through `${{ }}` inside
+        # `run`. Actions substitutes an expression into the script TEXT before any shell
+        # sees it, so a pull request title, body or branch name — all writable by whoever
+        # opened it — becomes shell source. This step is where the gate key lives, so the
+        # payload would run with the credential that certifies completion.
+        #
+        # It is not hypothetical: the first version interpolated the body directly, and the
+        # PR that exposed it was an ordinary one whose markdown contained backticks and
+        # quotes. CI reported a syntax error, which is the harmless end of the same defect.
+        #
+        # An `env` value is passed to the process, not pasted into the program, so a body
+        # full of `$(...)` arrives at Python as characters.
         env:
           GRAPHBAN_URL: ${{ vars.GRAPHBAN_URL }}
           GRAPHBAN_GATE_KEY: ${{ secrets.GRAPHBAN_GATE_KEY }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           python3 scripts/attest_ci.py \
-            --commit "${{ github.event.pull_request.head.sha || github.sha }}" \
-            --branch "${{ github.event.pull_request.head.ref || github.ref_name }}" \
-            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --text "${{ github.event.pull_request.title }} ${{ github.event.pull_request.body }}"
+            --commit "$HEAD_SHA" \
+            --branch "$HEAD_REF" \
+            --run-url "$RUN_URL" \
+            --text "$PR_TITLE $PR_BODY"
