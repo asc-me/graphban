@@ -260,3 +260,86 @@ def test_the_listing_is_scoped(db, project):
     rows = platform_svc.list_credentials(db, "")
 
     assert [r["id"] for r in rows] == ["cred_mine"]
+
+
+# ---- the SHAPE of the registry read, not just its output (GRPH-526) ------------------------
+
+
+def _count_selects(db, fn):
+    """The SELECTs one call issues. Same idiom as `test_fleet_holding_phase`, kept local
+    because a test module importing another test module breaks whenever either is run alone.
+
+    `expire_all` first: `db.get(DeploymentConfig, ...)` is served from the identity map when
+    the row is already loaded, so a second measurement in the same session would emit one
+    fewer query than the first for a reason that has nothing to do with the derivation —
+    and one query of drift is exactly the size of the signal being measured.
+    """
+    from sqlalchemy import event
+
+    db.expire_all()
+    seen: list[str] = []
+    engine = db.get_bind()
+    hook = lambda conn, cur, stmt, *a: seen.append(stmt)  # noqa: E731
+    event.listen(engine, "before_cursor_execute", hook)
+    try:
+        fn()
+    finally:
+        event.remove(engine, "before_cursor_execute", hook)
+    return [s for s in seen if s.lstrip().upper().startswith("SELECT")]
+
+
+def test_the_listing_costs_the_same_queries_for_thirty_credentials_as_for_three(db, project):
+    """GRPH-507 named this property — "the query count does not scale with the number of
+    credentials" — and nothing asserted it. Replacing the grouped `used_by` query with one
+    lookup per credential produces byte-identical output and 2288 passed.
+
+    The docstring on `list_credentials` already answers "who cares at this size": S2 refuses
+    to delete a referenced credential and names every referencing project in the 409, so this
+    is the query behind an operator-facing error message. That reasoning was prose, and prose
+    does not fail.
+
+    Asserted as two sizes rather than one constant, deliberately. A `<= 3` bound passes the
+    N+1 version outright whenever the fixture holds three or fewer credentials — which is what
+    a hand-written fixture holds — so the obvious form of this test re-creates the defect it
+    guards. Thirty is far enough above three that the two shapes cannot be confused for noise.
+    """
+    for i in range(3):
+        _credential(db, f"cred_{i:03d}")
+    three = _count_selects(db, lambda: platform_svc.list_credentials(db, ""))
+    assert len(platform_svc.list_credentials(db, "")) == 3, \
+        "fixture did not seed three credentials; the comparison below has no small side"
+
+    for i in range(3, 30):
+        _credential(db, f"cred_{i:03d}")
+    thirty = _count_selects(db, lambda: platform_svc.list_credentials(db, ""))
+    assert len(platform_svc.list_credentials(db, "")) == 30, \
+        "fixture did not grow to thirty credentials; both measurements are the same call"
+
+    assert three, "no SELECTs were observed at all — the event hook is not attached"
+    assert len(thirty) == len(three), (
+        f"{len(three)} selects for 3 credentials, {len(thirty)} for 30 — the listing queries "
+        f"per credential, and the count grows with the registry"
+    )
+
+
+def test_used_by_stays_correct_at_thirty_credentials(db, project):
+    """The control on the test above. A count that does not grow is trivially satisfiable by
+    a derivation that stops deriving — dropping the `used_by` query entirely holds the query
+    count constant at every size, and would sail through a test that only counts.
+
+    So the shape assertion needs a partner asserting the answer is still right at the size
+    where the shape is observable.
+    """
+    for i in range(30):
+        _credential(db, f"cred_{i:03d}")
+    other = Project(id="p2", name="P2", tag="P2")
+    db.add(other)
+    project.credential_id = "cred_007"
+    other.credential_id = "cred_007"
+    db.commit()
+
+    rows = {r["id"]: r for r in platform_svc.list_credentials(db, "")}
+
+    assert rows["cred_007"]["used_by"] == ["p1", "p2"]
+    assert rows["cred_008"]["used_by"] == [], \
+        "a credential nothing points at reports users — used_by is not keyed per credential"
