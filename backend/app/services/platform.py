@@ -10,6 +10,7 @@ credentials); the inbound GitHub webhook (routers/public.py) is fully implemente
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from secrets import token_urlsafe
 
@@ -22,6 +23,9 @@ from app.providers import registry as provider_registry
 from app.providers.base import ChatModel, Extractor
 from app.models import Credential, DeploymentConfig, PlatformConfig, Project
 from app.security import secrets
+
+
+logger = logging.getLogger("graphban.platform")
 
 
 def get_config(db: Session, project_id: str = "core") -> PlatformConfig:
@@ -110,6 +114,21 @@ class Resolved:
     #: credential pointer · `deployment` the scope default · `stub` nothing is configured ·
     #: `dangling` a pointer was set and did not resolve, and nothing downstream caught it.
     source: str = "stub"
+    #: The credential this project ASKED for and did not get, when resolution fell past it
+    #: (GRPH-525). Empty on every ordinary resolution.
+    #:
+    #: **This is the warning, and it is a field rather than only a log line for a reason.**
+    #: §4 settled that a failing project credential falls back rather than stopping — and that
+    #: the objection to falling back was never the fallback, it was the SILENCE. A caller that
+    #: cannot tell it was substituted has no way to say so, and `source` does not carry it:
+    #: `source="deployment"` looks identical whether the project asked for that credential or
+    #: was quietly moved onto it.
+    fell_back_from: str = ""
+
+    @property
+    def substituted(self) -> bool:
+        """Whether this project got something other than what it pointed at."""
+        return bool(self.fell_back_from)
 
 
 def scope_for(db: Session, project_id: str) -> str:
@@ -137,7 +156,27 @@ def credential_in_scope(db: Session, credential_id: str | None, scope: str) -> C
     return cred
 
 
-def _from_credential(cred: Credential, source: str, model_override: str = "") -> Resolved:
+def usable(cred: "Credential | None") -> bool:
+    """Whether a PROJECT pointer at this credential can be honoured (GRPH-525).
+
+    Shared by `resolve_chat` and `list_credentials` deliberately. The console has to show the
+    same set of projects that resolution actually falls past, and two implementations of "is
+    this usable" is how the view and the behaviour drift into disagreeing — the console saying
+    a project is fine while its calls go somewhere else.
+
+    `unreachable` is not usable: it was asked and did not answer. `pending_validation` IS —
+    nobody has asked yet, and treating unproven as broken would drop a project onto the
+    default the moment it was configured, before a single probe ran.
+
+    This is about a PROJECT pointer. The deployment default is deliberately returned even when
+    unreachable: there is nothing below it but the stub, so routing around it would hide a
+    broken default forever.
+    """
+    return cred is not None and cred.state != UNREACHABLE
+
+
+def _from_credential(cred: Credential, source: str, model_override: str = "",
+                     *, fell_back_from: str = "") -> Resolved:
     """Build the adapter from a credential row, honouring a project's model override.
 
     The override reaches `build_chat` and not just the returned `model` field. Reporting an
@@ -155,6 +194,7 @@ def _from_credential(cred: Credential, source: str, model_override: str = "") ->
         model=model,
         credential_id=cred.id,
         source=source,
+        fell_back_from=fell_back_from,
     )
 
 
@@ -194,19 +234,36 @@ def resolve_chat(db: Session, project_id: str) -> Resolved:
     pointer = getattr(project, "credential_id", None) if project is not None else None
 
     cred = credential_in_scope(db, pointer, scope)
-    if cred is not None:
+    if usable(cred):
         return _from_credential(cred, "project",
                                 getattr(project, "model_override", "") or "")
+
+    # The project asked for something it is not getting. `fell_back_from` carries that the
+    # whole way down, so every outcome below reports the substitution rather than looking
+    # like an ordinary resolution (GRPH-525).
+    wanted = pointer or ""
+    if wanted:
+        why = ("is unreachable" if cred is not None
+               else "does not resolve in this scope")
+        logger.warning(
+            "project %s asked for credential %s, which %s; falling back",
+            project_id, wanted, why,
+        )
 
     row = db.get(DeploymentConfig, scope)
     default = credential_in_scope(db, row.default_credential_id if row else None, scope)
     if default is not None:
-        return _from_credential(default, "deployment")
+        # **An unreachable DEFAULT is still returned** — deliberately asymmetric with the
+        # project credential above. There is nothing below the default but the stub, so
+        # routing around it would hide a broken default forever; a project credential has
+        # somewhere to fall to, so it falls.
+        return _from_credential(default, "deployment", fell_back_from=wanted)
 
     # Nothing resolved. `dangling` when a pointer was SET and did not survive — the operator
     # has something to fix, and it is not the same situation as never having configured one.
     return Resolved(provider_id="stub", chat=providers.build_chat("stub"),
-                    source="dangling" if pointer else "stub")
+                    source="dangling" if pointer else "stub",
+                    fell_back_from=wanted)
 
 
 def chat_model_for(db: Session, project_id: str) -> ChatModel:
@@ -431,6 +488,18 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
     for credential_id, pid in rows:
         used.setdefault(credential_id, []).append(pid)
 
+    # Which of those pointers are being fallen past, computed from rows ALREADY LOADED.
+    #
+    # The first version called `resolve_chat` once per pointing project, which was correct and
+    # quietly made this function's own docstring false — "one grouped query regardless of how
+    # many projects exist" is not true of a function with an N+1 inside it. Sharing `usable`
+    # keeps one definition of the rule without paying that.
+    in_scope = {c.id: c for c in creds}
+    fallen: dict[str, list[str]] = {}
+    for credential_id, pids in used.items():
+        if not usable(in_scope.get(credential_id)):
+            fallen[credential_id] = sorted(pids)
+
     row = db.get(DeploymentConfig, scope or "")
     default_id = row.default_credential_id if row else None
     fallback_id = row.fallback_credential_id if row else None
@@ -447,6 +516,11 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
             "state": c.state,
             "last_error": c.last_error,
             "used_by": sorted(used.get(c.id, [])),
+            # Projects pointing here that are NOT actually getting it (GRPH-525). §4 says a
+            # warning nobody is shown is the same defect as no warning one layer along, and
+            # the console is the only surface an operator sees without reading logs. Derived
+            # from live resolution rather than stored, for the same reason `used_by` is.
+            "falling_back": sorted(fallen.get(c.id, [])),
             "is_default": c.id == default_id,
             "is_fallback": c.id == fallback_id,
             "is_embed": c.id == embed_id,
@@ -466,6 +540,10 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
 #: anyway has said something. The system's job there is to show the state, not to overrule the
 #: choice; at runtime an unreachable fallback is skipped and the primary failure is terminal.
 UNPROVEN = "pending_validation"
+
+#: Asked, and did not answer. A PROJECT credential in this state is fallen past (GRPH-525);
+#: the deployment default in this state is still returned. See the asymmetry in `resolve_chat`.
+UNREACHABLE = "unreachable"
 
 
 class CredentialInUse(Exception):
