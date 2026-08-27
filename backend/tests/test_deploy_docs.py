@@ -98,3 +98,113 @@ def test_the_readme_and_the_runbook_name_the_same_start_command():
     for doc in ("docs/deploy-railway.md", "README.md"):
         assert "uvicorn --port" not in _read(doc), \
             f"{doc} documents the old uvicorn CLI invocation the image stopped using"
+
+
+def _smoke_against(tmp_path, health_body: str) -> str:
+    """Run the smoke script against a stub serving `health_body` at /health, return its output.
+
+    RUN rather than read. Every other assertion in this file is a source-read, which the
+    docstring above argues for on the grounds that the claim genuinely is "the file says X".
+    The claim here is different — *the script fails on this input* — and a source-read of the
+    `case` arm would pass against an arm that printed a failure and counted a pass, which is
+    precisely the bug class this script exists to prevent. So it is driven.
+
+    Everything after the identity check fails against the stub, which is fine and deliberate:
+    the assertions read the identity line only.
+    """
+    import http.server
+    import socket
+    import subprocess
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            body = health_body.encode() if self.path.startswith("/health") else b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        do_POST = do_GET  # noqa: N815
+        def log_message(self, *a):  # noqa: D102 — keep the test output readable
+            pass
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        return subprocess.run(
+            ["sh", str(REPO / "scripts" / "smoke-deployment.sh"), f"http://127.0.0.1:{port}"],
+            capture_output=True, text=True, timeout=120,
+        ).stdout
+    finally:
+        server.shutdown()
+
+
+def test_the_smoke_script_refuses_an_instance_that_cannot_state_its_revision(tmp_path):
+    """`unknown` is a SENTINEL, not a revision (GRPH-426).
+
+    The check was `[ -n "$sha" ]`, and `unknown` is not empty — so an instance that could not
+    work out what it was running reported a green `release identity: git_sha=unknown`. The
+    API returns that value *deliberately*, so absence stays legible rather than answering
+    blank; the smoke script then read the admission as a pass.
+
+    That is the same shape as `skip()` counting toward the pass total, one input over: a
+    report that overstates what it saw. And it defeats the check's own stated purpose —
+    Railway reports SUCCESS for a deploy serving stale code, and `git_sha` is how you tell.
+    With `unknown` there is nothing to compare against `origin/main` at all.
+    """
+    out = _smoke_against(tmp_path, '{"status":"ok","git_sha":"unknown","db":"ok"}')
+    identity = [ln for ln in out.splitlines() if "git_sha" in ln or "release identity" in ln]
+    assert identity, f"the release-identity check did not run at all:\n{out}"
+    assert any("FAIL" in ln for ln in identity), (
+        f"git_sha=unknown was not reported as a failure: {identity}")
+    assert not any("ok " in ln and "release identity" in ln for ln in identity), (
+        f"git_sha=unknown was counted as a pass: {identity}")
+
+
+def test_the_smoke_script_still_accepts_a_real_revision(tmp_path):
+    """The complement, and the reason it is here: failing on every value would satisfy the
+    test above while making the check useless. A real sha must still read as a pass."""
+    out = _smoke_against(tmp_path, '{"status":"ok","git_sha":"26427c4","db":"ok"}')
+    identity = [ln for ln in out.splitlines() if "release identity" in ln]
+    assert identity, f"the release-identity check did not run at all:\n{out}"
+    assert any("26427c4" in ln and "FAIL" not in ln for ln in identity), (
+        f"a real revision was not accepted: {identity}")
+
+
+def test_the_release_identity_check_covers_the_hosted_instance(tmp_path):
+    """GRPH-426's fourth acceptance point. The runbook said release identity "applies to
+    Railway as well" while the only command in the section was
+    `ssh ubuntu-srv 'curl … localhost:8001/health'` — which cannot run there.
+
+    A runbook that claims coverage it does not have is worse than one that admits a gap: the
+    hosted instance is the one an operator cannot check by hand, so it is exactly where the
+    unrunnable instruction costs the most. Either the section covers both, or it names what
+    it does not cover.
+    """
+    verify = _read("docs/deploy.md")
+    start = verify.index("## Verify (release identity)")
+    section = verify[start:verify.index("\n## ", start + 1)]
+
+    # The hosted HEALTH command specifically, not merely the domain appearing somewhere in
+    # the section. Sabotage caught this: deleting the hosted `curl` line left the domain
+    # present in the smoke-script example below it, and a bare substring check passed while
+    # the direct check it is asserting about was gone.
+    assert "https://cloud.graphban.dev/health" in section, (
+        "the Verify section has no health check against the hosted endpoint — it verifies "
+        "the self-host only, while deploy.md tells the reader this section applies to "
+        "Railway too")
+    assert "smoke-deployment.sh https://cloud.graphban.dev" in section, (
+        "the section no longer points at the smoke script for the hosted instance, which is "
+        "the check that fails on an unidentifiable build")
+    assert "unknown" in section, (
+        "the section does not say that git_sha=unknown is a failed verification rather than "
+        "an acceptable default")
+    assert "does not cover the hosted instance" in section, (
+        "the alembic check is self-host-only (no ssh, no docker compose on Railway) and the "
+        "section no longer says so — an inapplicable step that reads as universal")

@@ -189,12 +189,32 @@ server the deploy path, the Postgres role, the database, and the volume all stay
 
 ## Verify (release identity)
 
-`/health` reports the exact running revision — always check it after a deploy:
+`/health` reports the exact running revision — always check it after a deploy. **Both
+instances, because the hosted one is where it matters most:** it serves tenants and there is
+no box to SSH into and check by hand (GRPH-426).
 
 ```bash
+# self-host
 ssh ubuntu-srv 'curl -s http://localhost:8001/health'
+
+# hosted (Railway) — no ssh; the public endpoint IS the check
+curl -s https://cloud.graphban.dev/health
+
 # {"status":"ok","service":"graphban-api","version":"0.1.0","git_sha":"<sha>","db":"ok"}
 ```
+
+Or run the whole smoke suite against either one, which checks this and more:
+
+```bash
+scripts/smoke-deployment.sh https://cloud.graphban.dev
+```
+
+**`git_sha: "unknown"` is a FAILED verification, not a quiet default.** It is the sentinel the
+API returns when it could not find out — no revision baked in at build time and none supplied
+by the platform — so the deploy cannot be compared against `origin/main` at all. The smoke
+script fails on it for that reason. On Railway nothing needs setting for this to work
+(`RAILWAY_GIT_COMMIT_SHA` is injected and read directly); see
+[deploy-railway.md](deploy-railway.md).
 
 - `git_sha` must match **`git rev-parse --short origin/main`**, not merely "what you
   deployed". Checking it against your own `HEAD` compares the deploy to itself and
@@ -203,14 +223,24 @@ ssh ubuntu-srv 'curl -s http://localhost:8001/health'
 - `db: "ok"` confirms the API reached Postgres (readiness). `status` is `degraded`
   if the DB is unreachable — the API still answers 200 (liveness), so the
   container healthcheck tracks the process, not a DB blip.
-- The web bundle's revision is at `http://localhost:8080/version.txt`.
+- The web bundle's revision is at `http://localhost:8080/version.txt` on the self-host, and
+  at `https://<web-domain>/version.txt` on Railway — the two services deploy separately, so
+  an API on the new revision does not mean the bundle is.
 
 Confirm the migration chain landed:
 
 ```bash
+# self-host
 ssh ubuntu-srv 'cd ~/agentledger && docker compose exec -T db \
   psql -U agentledger -d agentledger -tc "SELECT version_num FROM alembic_version;"'
 ```
+
+**This one does not cover the hosted instance**, said out loud rather than left to be
+discovered at 3am: there is no `ssh` and no `docker compose` there. Use `railway connect
+Postgres` (or the database's own console) and run the same `SELECT`. The migrations
+themselves do run — the API applies them at startup on both instances — so what this check
+tells you is *which* revision landed, which is exactly what you cannot infer from a deploy
+platform reporting SUCCESS.
 
 **Post-deploy note:** for the first few seconds after restart the API is warming;
 an MCP/REST call may transient-fail once with an `internal` error whose hint says
