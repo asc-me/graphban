@@ -10,6 +10,35 @@ because that produces a fleet whose composition nobody chose — quietly defeati
 thing the supervisor is uniquely able to enforce. Resolving the *named* vendor's binary
 on PATH is a different act; `--binary` overrides it.
 
+## Getting from the Fleet view to a running supervisor (GRPH-556)
+
+The Fleet view's Wave tab mints **seats** — one per agent, each granting a role for one
+session. Those are the input `gbfleet` consumes, and the panel now hands you the file and the
+command directly, under *Run these seats under a supervisor (advanced)*.
+
+**Two credentials, and mixing them up is the usual first failure.**
+
+| | what it is | where it comes from |
+|---|---|---|
+| `GBFLEET_API_KEY` | the supervisor's own credential | Settings → API Keys |
+| a seat | one child's role for one session | the Wave tab |
+
+The supervisor authenticates with an ordinary API key; the seats are what it gives its
+children. Its own reach is deliberately narrow — `fleet_status` and `propose_allocation`,
+nothing that claims work — so a supervisor cannot quietly become a worker.
+
+Neither travels on argv. The key comes from the environment and the seats from a file,
+because argv is world-readable.
+
+**Seat mode is still the normal way to run a fleet**: paste a prompt into a terminal and the
+agent registers itself. The supervisor is the advanced path — it cuts a worktree per child and
+reaps them when the wave ends, which is worth it once you are running several at once and not
+before.
+
+**A wave** is one round of work. Its name becomes the branch prefix, and ending it revokes
+every seat and releases every lease that wave issued. Two waves exist so you can end one
+without stopping the other.
+
 ## The matrix
 
 | vendor | version seen | range | MCP config | prompt reaches the child by | seat inside the worktree? |

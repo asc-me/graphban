@@ -687,6 +687,95 @@ describe("Fleet view", () => {
       .toBeInTheDocument();
   });
 
+  // ---- handing the seats to a supervisor (GRPH-556) -----------------------------------
+
+  async function _issueTwo(user: ReturnType<typeof userEvent.setup>) {
+    api.issueSeats.mockResolvedValue({ wave: "wave-7", seats: [
+      { id: 1, role: "worker", code: "WORKER-AAA111" },
+      { id: 2, role: "reviewer", code: "REVIEWER-BBB222" },
+    ] });
+    fleet.data = { ...BASE, seats: [], keys: [] };
+    renderView();
+    await user.click(screen.getByRole("button", { name: /^Wave/ }));
+    await user.click(screen.getByRole("button", { name: "+ worker" }));
+    await user.click(screen.getByRole("button", { name: /Issue the seats into/ }));
+    await screen.findByText(/worker for core/);
+  }
+
+  it("offers nothing about supervisors until seats exist", async () => {
+    // An empty advanced panel is noise on the flow that is still primary. Seat mode — paste a
+    // prompt into a terminal — remains the normal way to run a fleet.
+    const user = userEvent.setup();
+    fleet.data = { ...BASE, seats: [], keys: [] };
+    renderView();
+    await user.click(screen.getByRole("button", { name: /^Wave/ }));
+    expect(screen.queryByText(/under a supervisor/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the supervisor path collapsed", async () => {
+    const user = userEvent.setup();
+    await _issueTwo(user);
+    expect(screen.getByText(/under a supervisor/)).toBeInTheDocument();
+    expect(screen.queryByText(/seats\.txt/)).not.toBeInTheDocument();
+  });
+
+  it("hands over a seats file gbfleet can read unmodified", async () => {
+    // THE point. `gbfleet up --seats-file` splits on lines and redeems each one, so the file
+    // must be codes and nothing else — a role label or a comment is a code it would try to
+    // consume. Before this, the codes existed only inside prose prompts.
+    const user = userEvent.setup();
+    await _issueTwo(user);
+    await user.click(screen.getByText(/under a supervisor/));
+
+    const block = screen.getByText((_, el) =>
+      el?.tagName === "PRE" && el.textContent === "WORKER-AAA111\nREVIEWER-BBB222");
+    expect(block).toBeInTheDocument();
+  });
+
+  it("fills the command in with the real wave and adapter", async () => {
+    const user = userEvent.setup();
+    await _issueTwo(user);
+    await user.click(screen.getByText(/under a supervisor/));
+
+    const cmd = screen.getByText((_, el) =>
+      el?.tagName === "PRE" && (el.textContent ?? "").includes("gbfleet up"));
+    expect(cmd.textContent).toContain("--seats-file seats.txt");
+    expect(cmd.textContent).toContain("--adapter claude");
+    expect(cmd.textContent).toContain("--wave wave-7");
+  });
+
+  it("only offers adapters the supervisor can resolve", async () => {
+    // The UI must not advertise a vendor `gbfleet up` would refuse at startup. `codex` is
+    // declared-and-unimplemented there, so it is absent here too.
+    const user = userEvent.setup();
+    await _issueTwo(user);
+    await user.click(screen.getByText(/under a supervisor/));
+
+    for (const a of ["claude", "cursor-agent", "gbagent", "grok"]) {
+      expect(screen.getByRole("button", { name: a })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole("button", { name: "codex" })).not.toBeInTheDocument();
+  });
+
+  it("says the supervisor needs an API key rather than a seat", async () => {
+    // The first thing an operator gets wrong: seats are for the CHILDREN. Handing the
+    // supervisor a seat, or a child the key, both fail confusingly.
+    const user = userEvent.setup();
+    await _issueTwo(user);
+    await user.click(screen.getByText(/under a supervisor/));
+
+    const note = screen.getByText(/not\s+a seat/);
+    expect(note.textContent).toMatch(/API key/);
+  });
+
+  it("says what a wave is where the wave is named", async () => {
+    const user = userEvent.setup();
+    fleet.data = { ...BASE, seats: [], keys: [] };
+    renderView();
+    await user.click(screen.getByRole("button", { name: /^Wave/ }));
+    expect(screen.getByText(/branch prefix/)).toBeInTheDocument();
+  });
+
   it("declares the project in the heading, so every control below it is scoped", () => {
     // The two sweep buttons act on the active project too. Naming it on each would be noise;
     // declaring it once above them is not.

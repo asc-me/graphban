@@ -124,6 +124,88 @@ function primeSnippet(role: string, seat?: string, project?: string) {
   return `You are a ${role} in a Graphban fleet.\nCall ${call} first, then heartbeat on the interval it returns.\nIt returns tools_off_limits — the tools your role will be refused. Your tool list was fetched before you had a role, so it still shows them; do not call them.\n${duty}${scope}`;
 }
 
+/** Adapters the supervisor can actually resolve — `gbfleet.adapters.ADAPTERS`.
+ *
+ * Listed rather than free-typed so the UI cannot advertise a vendor `gbfleet up` would refuse
+ * at startup. `codex` is deliberately absent there and so is absent here.
+ */
+const ADAPTERS = ["claude", "cursor-agent", "gbagent", "grok"] as const;
+
+/**
+ * Handing the seats to a supervisor (GRPH-556, PRD-22).
+ *
+ * `gbfleet` is built and tested and appeared NOWHERE in this product — while this very panel
+ * mints the one artefact it consumes. `gbfleet up --seats-file` wants one enrolment code per
+ * line, and the codes above are only ever rendered inside a prose prompt, so assembling that
+ * file meant hand-extracting them from text that says "shown once".
+ *
+ * **A handoff, not a control.** The supervisor cuts worktrees and spawns processes on the
+ * operator's machine; a web page cannot start one and should not pretend to. So the whole job
+ * here is to hand over the exact thing to run, with the values already filled in.
+ *
+ * Collapsed, and only present once seats exist. Seat mode — paste a prompt into a terminal —
+ * is still the normal way to run a fleet; this is the advanced path.
+ */
+function SupervisorHandoff({ seats, wave }: { seats: { role: string; code: string }[]; wave: string }) {
+  const [open, setOpen] = React.useState(false);
+  const [adapter, setAdapter] = React.useState<string>(ADAPTERS[0]);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  // Exactly the file format: one code per line and nothing else. No roles, no comments —
+  // `read_seats` splits on lines, so anything decorative here is a code it would try to redeem.
+  const seatsFile = seats.map((s) => s.code).join("\n");
+  const command =
+    `export GBFLEET_API_KEY=gb_sk_…\n` +
+    `gbfleet up --server ${origin} --seats-file seats.txt \\\n` +
+    `  --adapter ${adapter} --wave ${wave} -- ${adapter} --mcp-config {seat_file} -p {instruction_file}`;
+
+  return (
+    <div className="mt-3 rounded-[11px] border border-line-2 bg-surface-2/40 p-3">
+      <button onClick={() => setOpen((v) => !v)}
+              className="text-[11.5px] text-muted transition-colors hover:text-fg-2">
+        {open ? "▾" : "▸"} Run these seats under a supervisor (advanced)
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <p className="px-1 text-[11px] text-faint">
+            <span className="font-mono">gbfleet</span> spawns one agent per seat, each in its own
+            git worktree, and reaps them when the wave ends. It runs on <em>your</em> machine —
+            this page can only hand you the pieces.
+          </p>
+          {/* THE SECOND CREDENTIAL, named because it is the first thing to get wrong. The
+              supervisor authenticates with an ordinary API key; the seats are for its CHILDREN.
+              Handing it a seat, or handing a child the key, both fail in confusing ways. */}
+          <p className="px-1 text-[11px] text-faint">
+            The supervisor needs its own <strong>API key</strong> from Settings → API Keys — not
+            a seat. Seats are what it gives its children. Its own reach is deliberately narrow:{" "}
+            <span className="font-mono">fleet_status</span> and{" "}
+            <span className="font-mono">propose_allocation</span>, nothing that claims work.
+          </p>
+          <div className="flex flex-wrap items-center gap-1.5 px-1">
+            <span className="text-[11px] text-faint">Adapter:</span>
+            {ADAPTERS.map((a) => (
+              <button key={a} onClick={() => setAdapter(a)} aria-pressed={adapter === a}
+                      className={cn("rounded-md border px-2 py-0.5 font-mono text-[10.5px] transition-colors",
+                                    adapter === a ? "border-accent/50 bg-surface-3 text-fg"
+                                                  : "border-line-2 text-muted hover:text-fg-2")}>
+                {a}
+              </button>
+            ))}
+          </div>
+          <CopyRow label={`seats.txt — ${seats.length} code${seats.length === 1 ? "" : "s"}, one per line`}
+                   value={seatsFile} />
+          <CopyRow label="Then run" value={command} />
+          <p className="px-1 text-[11px] text-faint">
+            Which adapter and which model are not the same question, and the model decides
+            whether this works at all — see{" "}
+            <span className="font-mono">docs/fleet-adapters.md</span>.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function CopyRow({ label, value }: { label: string; value: string }) {
   const [done, setDone] = React.useState(false);
   return (
@@ -641,7 +723,7 @@ export function FleetView() {
           <>
         <Section
           title="Provision a whole wave"
-          desc="One seat per agent. A seat grants a role for one session and expires — paste it into the prompt, not the config."
+          desc="One seat per agent. A seat grants a role for one session and expires — paste it into the prompt, not the config. A WAVE is one round of work: its name becomes the branch prefix, and ending it revokes every seat and releases every lease it issued."
         >
           {/* Seats, not credentials. The credential goes into the client config ONCE and
               stays; a seat is what makes an agent a worker or a reviewer for this run. That
@@ -684,6 +766,7 @@ export function FleetView() {
                 workers need two seats: agents sharing a seat share a session and cannot review
                 each other.
               </p>
+              <SupervisorHandoff seats={issued} wave={wave ?? "wave-1"} />
             </div>
           )}
           {(data?.seats ?? []).length > 0 && (
