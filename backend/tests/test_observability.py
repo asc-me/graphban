@@ -329,11 +329,17 @@ def test_the_runbook_names_the_start_command_the_image_actually_uses():
     """
     import pathlib
 
-    doc = (pathlib.Path(__file__).resolve().parents[2] / "docs" / "deploy.md").read_text()
+    docs = pathlib.Path(__file__).resolve().parents[2] / "docs"
+    # The Railway section moved to its own file in GRPH-36, and THIS TEST IS HOW THAT WAS
+    # NOTICED — it was pinned to deploy.md, the fact moved out, and the assertion fired on a
+    # green-looking refactor. Left pointing at wherever the start command actually lives.
+    railway = (docs / "deploy-railway.md").read_text()
+    deploy = (docs / "deploy.md").read_text()
 
-    assert "app.serve" in doc, "the runbook no longer names the image's actual start command"
-    assert "uvicorn --port" not in doc, \
-        "the runbook still documents the old uvicorn CLI invocation"
+    assert "app.serve" in railway, "the runbook no longer names the image's actual start command"
+    for name, body in (("deploy-railway.md", railway), ("deploy.md", deploy)):
+        assert "uvicorn --port" not in body, \
+            f"{name} still documents the old uvicorn CLI invocation"
 
 
 # ---- alembic must not silence the app on the boot path that runs it -----------------------
