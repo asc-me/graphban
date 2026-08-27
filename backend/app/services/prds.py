@@ -3118,13 +3118,67 @@ def section_bodies(body: str) -> dict[str, str]:
     return {title: body[start:end].strip() for title, start, end in section_spans(body)}
 
 
+#: Slice and criterion labels as this repo actually writes them — `D8`, `AC-18`, `E3`, `S7`,
+#: `G5`. Anchored at a word boundary and required to end in a digit, because the failure to
+#: avoid is matching a bare word in prose.
+_SLICE_LABEL = re.compile(r"\b((?:AC|PRD)-\d{1,3}|[DEGS]-?\d{1,2})\b")
+
+
+def unlinked_work(db: Session, prd: Prd, items: list) -> dict:
+    """Work that names this PRD and is not linked to it (GRPH-486).
+
+    `coverage` joins items to sections over the items carrying this `prd_id`, and NOTHING
+    measured what that set omits. PRD-20 showed both failures at once: `D8` read delivered
+    while two items implementing it sat in review unclaimed, and `5. Acceptance criteria`
+    read undelivered while three items were literally building AC-18 and AC-19 of it. One
+    document, over-reporting one section and under-reporting another, from one cause.
+
+    That matters past the number: `prd_acceptance(view=readiness)` answers `can_close` over
+    the same subset, so a PRD can read closeable because the check cannot see the work rather
+    than because the work is done.
+
+    **Reported, never linked.** "Link every item to a PRD" is the wrong instruction — most
+    items should not be. What was missing is that the gap was unmeasurable.
+
+    Two signals, kept apart because they are not equally reliable:
+
+    * `names_prd` — the item's title or description contains this PRD's key. Exact, and
+      therefore quiet: on the PRD-20 case above it finds nothing, because those items cite
+      `AC-18` and never name the PRD at all.
+    * `cites_slice` — the item's title cites a label that appears in THIS PRD's body:
+      `D8`, `AC-19`, `E3`. Grounded in the document's own text rather than guessed, which is
+      what makes it worth having; it is still the softer of the two and is labelled so.
+
+    Both are drawn from the item list the caller already loaded, so this costs no query.
+    """
+    key = (prd.key or "").lower()
+    labels = {m.group(1).upper() for m in _SLICE_LABEL.finditer(prd.body or "")}
+    named, cited = [], []
+    for it in items:
+        if it.prd_id == prd.id:
+            continue
+        haystack = f"{it.title or ''}\n{it.description or ''}".lower()
+        if key and key in haystack:
+            named.append(it)
+            continue
+        if labels and {m.group(1).upper() for m in _SLICE_LABEL.finditer(it.title or "")} & labels:
+            cited.append(it)
+    return {
+        "names_prd": [{"id": i.key, "title": i.title, "status": i.status} for i in named],
+        "cites_slice": [{"id": i.key, "title": i.title, "status": i.status} for i in cited],
+    }
+
+
 def coverage(db: Session, prd: Prd) -> dict:
     """Per-section task rollup + gaps for a PRD."""
     sections = parse_sections(prd.body)
     # Needed for classification: a section can declare `<!-- framing -->` in its own body
     # and override the name-based guess (GRPH-247).
     bodies = section_bodies(prd.body)
-    items = [it for it in items_svc.list_items(db, project_id=prd.project_id) if it.prd_id == prd.id]
+    # Loaded whole, then split: the linked set is what coverage is ABOUT, and the rest is
+    # what it was silently computed against the absence of (GRPH-486). One query, both.
+    all_items = items_svc.list_items(db, project_id=prd.project_id)
+    items = [it for it in all_items if it.prd_id == prd.id]
     by_section: dict[str, list] = {}
     for it in items:
         by_section.setdefault(it.prd_section or "", []).append(it)
@@ -3171,6 +3225,10 @@ def coverage(db: Session, prd: Prd) -> dict:
         # with the reason spelled out, and these two fields in the same dict were missed.
         # Safe to round-trip: `keys.resolve_prd` accepts a rendered key and a frozen id.
         "prd_id": prd.key, "title": prd.title, "status": prd.status,
+        # THE DENOMINATOR (GRPH-486). Every number below is computed over the items this PRD
+        # claims; this says what that set left out, so a section reading delivered while
+        # unclaimed work names it is visible rather than inferred.
+        "unlinked": unlinked_work(db, prd, all_items),
         "sections": per,
         # Items pointing at a section this PRD no longer has (GRPH-360). They are NOT in
         # `sections` above, which iterates the PRD's own headings — so a rename silently

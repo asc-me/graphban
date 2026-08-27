@@ -151,12 +151,33 @@ def main() -> int:
 
     # The repo's own files decide which PRDs to check. A ledger-only PRD has no repo copy to
     # disagree with, so it is out of this tool's reach by construction — noted rather than
-    # silently skipped, because four of them exist.
+    # silently skipped. Measured for GRPH-486 on 2026-08-25: 19 PRDs in the ledger, 5 with a
+    # repo document, so this file has never been more than a quarter of them.
     index, unindexed = build(_tracked_prds(),
                              lambda pid: call("prd_coverage", {"prd_id": pid}))
 
     INDEX.write_text(
-        json.dumps({"prds": index, "unindexed": unindexed}, indent=2, ensure_ascii=False) + "\n",
+        json.dumps({
+            # THE ARTEFACT SAYS WHAT IT COVERS (GRPH-486). The docstring above has always been
+            # clear that a ledger-only PRD is invisible here by construction — and a consumer
+            # reads the JSON, not the generator. A changelog tool built its PRD map from this
+            # file and reported "166 of 200 PRs reference a ticket no PRD claims"; measured
+            # across all the PRDs the real figure was 46 of 114. The inflated number was
+            # nearly filed.
+            #
+            # No ledger total is stated because this tool cannot obtain one — there is no
+            # list-PRDs call on the MCP surface — and a number it cannot check is exactly the
+            # kind of confident wrong answer this note exists to prevent.
+            "scope": {
+                "covers": "PRDs with a document in docs/ that names its ledger row",
+                "indexed": len(index),
+                "note": "NOT the list of PRDs. A ledger-only PRD has no repo copy to compare "
+                        "and is absent here by construction; anything reading `prds` as "
+                        "complete is seeing a fraction of them.",
+            },
+            "prds": index,
+            "unindexed": unindexed,
+        }, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8")
     print(f"wrote {INDEX.relative_to(ROOT)} ({len(index)} indexed, {len(unindexed)} unindexed)")
     return 0
