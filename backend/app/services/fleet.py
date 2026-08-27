@@ -539,6 +539,96 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "answer_grill": ("planner",),
 }
 
+#: Prefix marking a tool that is open because NOBODY HAS ARGUED IT, as opposed to one that is
+#: open for a stated reason. Both are entries in `OPEN_TOOLS`; only these are debt, and
+#: `test_authority_gates.py` pins how many there may be so the list can shrink and not grow.
+UNARGUED = "NOT ARGUED"
+
+#: Why a tool carries NO role gate (GRPH-516).
+#:
+#: `TOOLS` already has a completeness guard: add a tool and you must classify it as a quality
+#: gate or an authority one or the suite goes red. `TOOL_ROLES` had no equivalent, so the
+#: default was silently "every role may call this", and forty tools reached that default
+#: without anyone arguing for it. Some are certainly right; nobody could tell which from the
+#: file. Every tool now appears in exactly one of these two maps, so a new one forces the
+#: question rather than inheriting an answer.
+#:
+#: This records what is TRUE TODAY. It deliberately gates nothing new: `heartbeat` is the
+#: warning — it was gated, that was the bug, and it broke presence for every reviewer and
+#: planner, which registered fine and vanished 150s later. Four more gates today would be
+#: four more chances to repeat that. The guard makes the next forty arrive already argued.
+#:
+#: The saving is not only about permissions. Role narrowing can only remove GATED tools, so
+#: how complete `TOOL_ROLES` is bounds how much the session manifest can ever shrink — an
+#: unargued list is also why the narrowing saves less than it looks like it should.
+OPEN_TOOLS: dict[str, str] = {
+    # ---- reads: the gate exists to stop ACTIONS, not sight -------------------------------
+    # Every role has to be able to see the board it works on, and a role that could not read
+    # would have to be told what it holds by another agent — which is a worse property than
+    # anything reading could cost. None of these mutate.
+    **{name: "a read; every role must be able to see the board it works on" for name in (
+        "code_neighbors", "fleet_status", "generate_digest", "get_backlog", "get_code_map",
+        "get_context", "get_item_details", "get_prd", "graph_query", "learning_loop",
+        "list_projects", "prd_acceptance", "prd_coverage", "related_work", "search_code",
+        "search_items", "search_memory", "suggest_next",
+    )},
+    "setup_project": "a read despite the name — returns a checklist, changes nothing",
+    "collision_clusters": "the divvy a planner allocates FROM; seeing the partition is not "
+                          "taking from it, and a worker that could not see it would have to "
+                          "be told which files are safe",
+
+    # ---- the two whose absence is load-bearing -------------------------------------------
+    "register_agent": "MUST stay open: a caller cannot hold a role before it registers, so "
+                      "gating this deadlocks every agent at its first call",
+    "heartbeat": "MUST stay open (PRD-17 walk): it extends agent PRESENCE as well as an item "
+                 "lease. Gating it with the claiming verbs took reviewers and planners off "
+                 "the roster 150s after they registered. The lease half needs no gate — it "
+                 "only ever extends a lease the caller already holds",
+
+    # ---- work verbs: bounded by ownership rather than by role ----------------------------
+    "create_item": "any role may record work that needs doing; creating is not claiming",
+    "update_item": "the worker's verb, and its authority is bounded by WORKER_STATUS_CEILING "
+                   "below rather than by this map — a role gate here would not add to it",
+    "link_items": "a relation between two items is a statement about the work, not a claim "
+                  "on it",
+    "unlink_items": "the inverse of link_items and gated the same",
+
+    # ---- shared context: memory and the code graph ---------------------------------------
+    "add_memory": "memory is shared context; a role that could not contribute would make "
+                  "every other role's context worse",
+    "publish_memory": "promotes a shard already written; the authority question is the "
+                      "human review gate on memory, not the caller's fleet role",
+    "reject_memory": "the inverse of publish_memory and gated the same",
+    "describe_code": "records what a symbol is. The code graph is shared context and a "
+                     "worker is the role that has just read the code",
+    "link_code": "attaches a path to an item — a statement about work already claimed",
+    "unlink_code": "the inverse of link_code and gated the same",
+    "report_graphban_issue": "feedback about Graphban itself, to its maintainers. It touches "
+                             "no project data, so no project role bears on it",
+
+    # ---- open, and NOBODY HAS ARGUED IT (GRPH-516) ---------------------------------------
+    # Each of these is a candidate the ticket names and none is obvious. They are recorded as
+    # debt rather than given an invented rationale, because a fabricated argument here reads
+    # exactly like a considered one and would close the question wrongly.
+    "close_prd": f"{UNARGUED}: terminal and irreversible. test_authority_gates argues it is a "
+                 f"quality gate, which is the human-vs-agent axis — it says nothing about a "
+                 f"worker closing a PRD mid-build",
+    "request_rebaseline": f"{UNARGUED}: asks for new governing intent, beside update_prd "
+                          f"which is planner-only",
+    "propose_allocation": f"{UNARGUED}: the orchestrator planning a fleet allocation, beside "
+                          f"assign_role and mint_enrolment which are planner-gated",
+    "submit_verdict": f"{UNARGUED}: review-shaped, while sign_off and bounce are "
+                      f"reviewer-only",
+    "review_recommendation": f"{UNARGUED}: approves or rejects a proposed artifact — the "
+                             f"human boundary, and which fleet role may stand at it is "
+                             f"undecided",
+    "create_project": f"{UNARGUED}: self-host only and already refused once an instance is "
+                      f"linked, but no argument records which roles may create one",
+    "extract_lessons": f"{UNARGUED}: distils an item into memory. Reads like worker work "
+                       f"and is gated as nobody's",
+}
+
+
 # `update_item` is special: the tool is a worker's, but ONE argument on it is not. A worker
 # moves work as far as `review` and no further — `done` is the reviewer's word, and letting a
 # worker write it would make the self-review ban decorative while leaving every test green.

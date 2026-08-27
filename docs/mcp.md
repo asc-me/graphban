@@ -84,6 +84,29 @@ shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b)
 carries no `claim_next`, a worker credential no `sign_off`. A single-role fleet key sees
 roughly 16–19% fewer tokens.
 
+**Every tool argues its role gate** (GRPH-516). 15 of the 55 tools are role-gated; the other
+40 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
+completeness guard forcing each new tool to be classified as a quality gate or an authority
+one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without
+anyone arguing for one of them. Some are certainly right; nobody could tell which from the
+file.
+
+Every tool now appears in exactly one of `TOOL_ROLES` (gated, with the role) or `OPEN_TOOLS`
+(open, with the reason). Adding a tool to either map is forced — the suite goes red otherwise.
+
+**Nothing new was gated.** `heartbeat` is the warning: it *was* gated, that was the bug, and it
+took reviewers and planners off the roster 150 seconds after they registered. Four more gates
+today would be four more chances to repeat that. The guard makes the next forty arrive already
+argued.
+
+Seven entries are marked `NOT ARGUED` — the candidates worth deciding, recorded as debt rather
+than given an invented rationale, because a fabricated argument reads exactly like a considered
+one. A test pins that count so the list can shrink and not grow.
+
+Two entries are open *load-bearingly*, and say so: `register_agent` (a caller cannot hold a
+role before it registers, so gating it deadlocks) and `heartbeat` (it extends agent presence,
+not only an item lease).
+
 **A guessed project says so** (GRPH-482). A call resolves its project as
 `project_id` → the key's own default → *whichever project sorts first*. That last step is an
 ordering, and on a key spanning several projects a call that names none used to land in one
