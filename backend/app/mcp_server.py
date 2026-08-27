@@ -1806,7 +1806,8 @@ TOOL_ALIASES = {"report_agentledger_issue": "report_graphban_issue"}
 
 
 def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
-               session_id: str | None = None, defer=None) -> Any:
+               session_id: str | None = None, defer=None,
+               scope_out: dict | None = None) -> Any:
     name = TOOL_ALIASES.get(name, name)
     # Authority: a key's declared scopes ∩ its owner's memberships bound every call
     # (a key never out-ranks the user who minted it). `project_id` args can select
@@ -1830,6 +1831,27 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         or (key.project_id if key.project_id in allowed else None)
         or (allowed[0] if allowed else None)
     )
+    # SAY WHEN THE PROJECT WAS GUESSED (GRPH-482). The last clause above is an ordering:
+    # a key spanning several projects, called without `project_id`, lands in whichever
+    # sorts first — no error, and nothing in the response naming the project it chose.
+    #
+    # Recorded here because this is the only place that knows `allowed`, and reported by
+    # the caller alongside `directive`, which is the same shape of out-of-band fact.
+    #
+    # NOT refused, and that is a decision. Refusing is the honest-looking option and it
+    # breaks every existing multi-project caller — including agent prompts already in the
+    # wild, which cannot be edited from here. `wrong-project-write.test.tsx` exists because
+    # the frontend had this exact class of bug, and the fix there was to make the project
+    # explicit at the call site rather than to reject the call.
+    #
+    # The key's OWN default is not a guess — an operator chose it when minting — and it needs
+    # no clause here: `key_readable_ids`/`key_writable_ids` return AT MOST ONE project when
+    # `key.project_id` is set, so `len(allowed) > 1` already implies the key has no default.
+    # A `not (key.project_id and ...)` term was written first and could never change the
+    # outcome; the sabotage pass found it by deleting it and breaking nothing.
+    if scope_out is not None:
+        scope_out["project_id"] = pid
+        scope_out["guessed"] = bool(pid is not None and not requested and len(allowed) > 1)
 
     # Role gate (PRD-17 D2). AFTER scope, because "this key cannot reach that project" is a
     # more fundamental refusal than "this role cannot make that call", and reporting the role
@@ -2776,6 +2798,24 @@ def _run_deferred(jobs: list) -> None:
             logger.exception("deferred post-completion work failed")
 
 
+def _attach_resolved_project(result: Any, scope: dict) -> Any:
+    """Name the project when it was GUESSED rather than chosen (GRPH-482).
+
+    Present only when the resolution fell through to "whichever project sorts first" — a
+    multi-project key that named none and has no default of its own. Everywhere else this
+    would be noise, and noise on every response is how a field that matters gets skimmed
+    past. Same discipline as `intent_hold`, which appears on the rows that have one.
+
+    A dict result only: the annotation has to be reachable from `structuredContent`, and a
+    tool returning a list or a scalar has nowhere to put it that a client would look.
+    """
+    if not scope.get("guessed") or not isinstance(result, dict):
+        return result
+    return {**result, "resolved_project": scope.get("project_id"),
+            "resolved_project_note": "this key spans several projects and the call named "
+                                     "none — pass project_id to choose"}
+
+
 def _success(id_: Any, result: Any) -> dict:
     """Wrap a tool result. Objects are also returned as `structuredContent` (typed,
     no JSON-in-a-text-block); text mirrors it for back-compat (#8)."""
@@ -2880,9 +2920,11 @@ async def mcp_endpoint(
             # the event loop, so a slow/hanging tool never blocks the async server — and a
             # same-host upstream loop-back can still be served concurrently.
             deferred: list = []
+            scope: dict = {}
             result = await run_in_threadpool(
                 _call_tool, db, name, args, key,
-                request.headers.get("mcp-session-id"), deferred.append)
+                request.headers.get("mcp-session-id"), deferred.append, scope)
+            result = _attach_resolved_project(result, scope)
             # The DOWNLINK (PRD-17 D-e). MCP is client→server: the server cannot wake an idle
             # terminal, so the orchestrator's intent rides back on whatever the agent polls
             # next. A role change is not an error and does not arrive as one — the agent's
