@@ -145,11 +145,42 @@ def create_item(
     return item
 
 
-_EVIDENCE_KINDS = {"test", "url", "screenshot", "health", "note", "sabotage"}
+_EVIDENCE_KINDS = {"test", "url", "screenshot", "health", "note", "sabotage", "attestation"}
 
 # What a `sabotage` receipt must carry to be one (GRPH-321). Without these it is a `note`
 # wearing a stronger name, and a gate that counted it would be satisfied by prose.
 _SABOTAGE_FIELDS = ("claim", "mutation", "tests_failed")
+
+# What an `attestation` receipt must carry to be one (GRPH-542). Same bargain as `sabotage`
+# above: a structured kind that accepts unstructured input is the free-text field with a
+# stronger name, and the completion gate would then be checking a label rather than a fact.
+_ATTESTATION_FIELDS = ("adapter", "commit", "predicates")
+
+
+def _normalize_predicates(raw) -> list[dict]:
+    """Coerce an attestation's predicate list to `[{name, passed, detail}]`.
+
+    **Structure is validated; vocabulary is not.** An adapter must stay free to check more
+    than Graphban knows about, or every adapter improvement becomes a breaking change to the
+    core. So an unrecognised predicate name is recorded, not rejected.
+
+    `passed` must be a real bool. This is the fiddly part and it is load-bearing: a JSON
+    client that sends `"passed": "false"` would otherwise store a truthy string, and the gate
+    — which asks `all(p["passed"])` — would read a failure as a pass. Rejecting the row is
+    right rather than coercing it, because there is no reading of `"false"` that is safe to
+    guess at.
+    """
+    out: list[dict] = []
+    for p in raw or []:
+        if not isinstance(p, dict):
+            continue
+        name = str(p.get("name") or "").strip()
+        passed = p.get("passed")
+        if not name or not isinstance(passed, bool):
+            continue
+        out.append({"name": name, "passed": passed,
+                    "detail": str(p.get("detail") or "").strip()})
+    return out
 
 
 def normalize_evidence(raw) -> list[dict]:
@@ -178,6 +209,10 @@ def normalize_evidence(raw) -> list[dict]:
         detail = str(e.get("detail") or "").strip()
         url = str(e.get("url") or "").strip()
         row = {"kind": kind, "detail": detail, "url": url}
+        try:
+            schema_version = int(e.get("schema_version") or 1)
+        except (TypeError, ValueError):
+            schema_version = 1
         if kind == "sabotage":
             claim = str(e.get("claim") or "").strip()
             mutation = str(e.get("mutation") or "").strip()
@@ -201,6 +236,34 @@ def normalize_evidence(raw) -> list[dict]:
                 if not row["detail"]:
                     said = [f"{k}={e.get(k)!r}" for k in _SABOTAGE_FIELDS if e.get(k) is not None]
                     row["detail"] = ("incomplete sabotage receipt (" + ", ".join(said) + ")"
+                                     if said else "")
+        elif kind == "attestation":
+            adapter = str(e.get("adapter") or "").strip()
+            commit = str(e.get("commit") or "").strip()
+            preds = _normalize_predicates(e.get("predicates"))
+            if adapter and commit and preds:
+                row.update({
+                    "adapter": adapter,
+                    "commit": commit,
+                    "predicates": preds,
+                    # Opaque, deliberately. Graphban never resolves it on a critical path —
+                    # that is what keeps the core independent and offline-capable.
+                    "run_ref": str(e.get("run_ref") or "").strip(),
+                    "schema_version": schema_version,
+                })
+                if not detail:
+                    failed = [q["name"] for q in preds if not q["passed"]]
+                    row["detail"] = (
+                        f"{adapter} attested {commit[:12]} — {len(preds)} predicate(s), "
+                        + ("all passed" if not failed
+                           else "FAILED: " + ", ".join(failed)))
+            else:
+                # Demoted, never DISAPPEARED — same reasoning as the sabotage branch above.
+                row["kind"] = "note"
+                if not row["detail"]:
+                    said = [f"{k}={e.get(k)!r}" for k in _ATTESTATION_FIELDS
+                            if e.get(k) is not None]
+                    row["detail"] = ("incomplete attestation receipt (" + ", ".join(said) + ")"
                                      if said else "")
         if not row["detail"] and not row["url"]:
             continue
@@ -269,6 +332,48 @@ def has_effective_sabotage(evidence) -> bool:
     condition it detects satisfy the check that exists to detect it.
     """
     return any(e.get("tests_failed") for e in sabotage_receipts(evidence))
+
+
+def attestation_receipts(evidence) -> list[dict]:
+    """Every well-formed attestation on an item (GRPH-542)."""
+    return [e for e in (evidence or [])
+            if isinstance(e, dict) and e.get("kind") == "attestation"]
+
+
+def valid_attestations(evidence, *, commit: str | None = None) -> list[dict]:
+    """Attestations that actually attest something: at least one predicate, all passed.
+
+    **The empty-predicate check is the load-bearing half.** `all([])` is True, so an
+    attestation carrying `predicates: []` would satisfy "nothing failed" vacuously and the
+    completion gate would pass an item nobody checked. That is GRPH-466's shape exactly — a
+    guard that held because it had nothing to hold against — and it is the failure this
+    receipt exists to prevent, so it must not be reintroduced by the receipt itself.
+
+    `commit` narrows to attestations bound to one revision. Passing None asks the weaker
+    question "was this ever attested" rather than "is this attested AS IT STANDS"; see
+    `has_valid_attestation` for why the caller has to supply it.
+    """
+    out = []
+    for a in attestation_receipts(evidence):
+        preds = a.get("predicates") or []
+        if not preds or not all(q.get("passed") for q in preds):
+            continue
+        if commit is not None and a.get("commit") != commit:
+            continue
+        out.append(a)
+    return out
+
+
+def has_valid_attestation(evidence, *, commit: str | None = None) -> bool:
+    """The question the completion gate asks (GRPH-543).
+
+    Graphban cannot observe the working tree, so it cannot tell on its own whether an
+    attestation is CURRENT — only whether one exists. Staleness is therefore the caller's
+    to assert, by naming the commit it is completing at. That is a real limit and it is
+    stated here rather than in a comment on the gate, because this is the function anyone
+    reaching for the guarantee will read first.
+    """
+    return bool(valid_attestations(evidence, commit=commit))
 
 
 def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:

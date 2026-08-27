@@ -9,7 +9,7 @@ Semantics (the Membership model the app always had, now enforced):
 - ``Membership.access``: ``"write"`` | ``"read"`` | ``"none"`` (explicit denial).
   A user may read projects where access != "none" and write where access ==
   "write". No membership row means no access.
-- An agent API key is bounded by BOTH its declared ``scopes`` (read/write) and
+- An agent API key is bounded by BOTH its declared ``scopes`` (read/write/sync/gate) and
   its owner's memberships — a key can never out-rank the user who minted it.
   A project-scoped key (``project_id`` set) is further bounded to that project.
 
@@ -137,6 +137,27 @@ def key_sync_ids(db: Session, key: ApiKey) -> list[str]:
     target — the push lands in the key's OWN project, never a client-supplied one, so a sync
     can't cross into another tenant's workspace (the isolation invariant, AL-76/AL-95)."""
     if "sync" not in (key.scopes or []):
+        return []
+    writable = writable_project_ids(db, key.user_id)
+    if key.project_id:
+        return [key.project_id] if key.project_id in writable else []
+    return writable
+
+
+def key_gate_ids(db: Session, key: ApiKey) -> list[str]:
+    """Projects this key may ATTEST completion in (GRPH-541): requires the 'gate' scope AND
+    write access for the key's owner.
+
+    The point of a separate scope is that an ordinary agent key does not carry it, so an
+    agent cannot manufacture the proof that its own work is finished. Completion stops
+    depending on agents behaving and starts depending on what their credential can express.
+
+    Shaped exactly like `key_sync_ids` above rather than as a new pattern: same bounding by
+    the owner's memberships, so a gate key still cannot out-rank the human who minted it,
+    and same project pinning, so an attestation cannot be written into another tenant's
+    workspace.
+    """
+    if "gate" not in (key.scopes or []):
         return []
     writable = writable_project_ids(db, key.user_id)
     if key.project_id:
