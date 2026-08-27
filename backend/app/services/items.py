@@ -376,6 +376,73 @@ def has_valid_attestation(evidence, *, commit: str | None = None) -> bool:
     return bool(valid_attestations(evidence, commit=commit))
 
 
+def record_refusal(db: Session, item: Item, *, predicate: str, detail: str) -> None:
+    """Write a gate refusal where the next agent will meet it (GRPH-550).
+
+    A gate that blocks without teaching gets routed around, and a gate that is routinely
+    bypassed is worse than none — it reads as protection while protecting nothing. So a
+    refusal lands twice: as evidence on the item, and as a memory shard that
+    `search_memory` will surface to whoever plans similar work next.
+
+    **At refusal time, not on completion.** The first design routed this through
+    `extract_lessons`, which fires on `done` — so a refused item never completed and the
+    loop had no mechanism at all. Refusals must compound even for items that are abandoned
+    or never finish, because those teach the most: an item refused and then dropped is
+    exactly the case nobody writes up.
+
+    **Committed deliberately.** The caller raises immediately after this returns, and an
+    exception unwinds the session — so a refusal recorded without committing would vanish
+    with the failure it describes, which is the same defect one level down.
+
+    **PUBLISHED, not a candidate**, which is the one decision here worth arguing. The
+    trusted-publication boundary (AL-49) keeps UNREVIEWED AGENT SELF-REPORTS out of
+    retrieval, and `search` honours it by returning published shards only. A gate refusal is
+    not a self-report: the server refused, and it knows exactly why. Provenance is the
+    system rather than the agent, which is what that boundary sorts on. Filed as a candidate
+    it would sit in the triage queue, never surface, and the compounding this exists for
+    would not happen. `origin` marks it so these stay filterable and auditable.
+    """
+    from sqlalchemy import select as _select
+
+    from app.embeddings import safe_embed
+    from app.models import MemoryShard
+    from app.services import memory as memory_svc
+
+    receipt = {"kind": "note",
+               "detail": f"refused at `done` ({predicate}): {detail}"}
+    item.evidence = append_evidence(item.evidence, [receipt])
+
+    # Keyed on (item, predicate) — NOT on the commit. A non-functional refactor changes the
+    # SHA, so including it would re-emit the same unresolved refusal as a fresh shard and
+    # produce exactly the flooding this rule exists to prevent.
+    source = f"gate refusal: {predicate}"
+    text = (
+        f"{item.key} was refused at `done` — {detail} "
+        f"Completion needs an `attestation` receipt on the item, and only a key carrying the "
+        f"`gate` scope may write one: a reviewer signing off with a commit, or CI. Recording "
+        f"`test` or `sabotage` receipts is proof of work but does not open the gate."
+    )
+    existing = db.scalar(_select(MemoryShard).where(
+        MemoryShard.item_id == item.id, MemoryShard.source == source))
+    if existing is None:
+        memory_svc.add_memory(
+            db, text_body=text, scope="item", source=source, item_id=item.id,
+            project_id=item.project_id, status="published", origin="gate",
+            auto_triage=False)
+    elif existing.text != text:
+        # Updated in place rather than added beside. Two shards saying almost the same thing
+        # is the noise the dedupe key exists to avoid, and re-embedding keeps the vector
+        # honest about the text it now holds.
+        existing.text = text
+        existing.embedding = safe_embed(text)
+    # `add_memory` commits on the create path, so this is load-bearing only on the UPDATE
+    # one — where the text changed because a different predicate started failing. Kept
+    # explicit rather than relying on that: a reader should not have to know which branch
+    # another service happens to commit in, and the failure if it changed would be a
+    # refusal that quietly stopped persisting.
+    db.commit()
+
+
 class MissingAttestation(Exception):
     """`done` was asked for on an item nothing has attested (GRPH-543).
 
@@ -422,6 +489,14 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         if not has_valid_attestation(merged_for_gate):
             failing = [a for a in attestation_receipts(merged_for_gate)
                        if not all(q.get("passed") for q in (a.get("predicates") or []))]
+            failed_names = sorted({q["name"] for a in failing
+                                   for q in a.get("predicates") or []
+                                   if not q.get("passed")})
+            record_refusal(
+                db, item,
+                predicate="attestation_failing" if failing else "attestation_missing",
+                detail=(f"its attestation reports {', '.join(failed_names)} as failing."
+                        if failing else "nothing has attested it."))
             raise MissingAttestation(
                 f"{item.key} cannot move to done: nothing has attested it. `done` needs an "
                 "`attestation` receipt naming the adapter, the commit it binds to, and at "

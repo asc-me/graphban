@@ -442,3 +442,155 @@ def test_only_two_places_in_the_app_may_write_a_done_status():
         + " — route them through items.update_item, or add them to `allowed` with the "
           "gate they enforce instead"
     )
+
+
+# ---- refusals become memory (GRPH-550) -----------------------------------------------
+
+def _shards_for(db, item):
+    """REFUSAL shards only.
+
+    Scoped to `gate refusal:` deliberately — the first version matched every shard on the
+    item and the control below caught it: a successful completion fires `extract_lessons`,
+    which writes a lesson shard, and a broad match read that as a refusal. A helper that
+    cannot tell the two apart would have made every assertion here mean something else.
+    """
+    from sqlalchemy import select
+
+    from app.models import MemoryShard
+    return db.scalars(select(MemoryShard).where(
+        MemoryShard.item_id == item.id,
+        MemoryShard.source.like("gate refusal:%"))).all()
+
+
+def test_a_refusal_survives_the_exception_that_carries_it(db):
+    """The transaction trap. The gate raises immediately after recording, and an exception
+    unwinds the session — so a refusal written without committing vanishes with the failure
+    it describes, which is the same defect one level down."""
+    it = _item(db)
+
+    with pytest.raises(items_svc.MissingAttestation):
+        items_svc.update_item(db, it.id, status="done")
+
+    # A SEPARATE SESSION, and that is the whole test. The first version queried `db` — the
+    # same session the gate wrote through — where autoflush surfaces pending objects that
+    # were never committed. Removing the commit left it green, so it proved nothing about
+    # durability. Only a second connection can tell "committed" from "still in this
+    # session's memory".
+    from app.db import SessionLocal
+    other = SessionLocal()
+    try:
+        assert _shards_for(other, it), "the refusal was rolled back with the exception"
+        stored = other.get(type(it), it.id).evidence
+        assert any("refused at `done`" in (e.get("detail") or "") for e in stored), \
+            "the item carries no record of having been refused"
+    finally:
+        other.close()
+
+
+def test_the_shard_reaches_the_next_agent_without_asking_for_candidates(db):
+    """The decision this item turns on. `search_memory` returns published shards only by
+    default; filed as a candidate the refusal would sit in the triage queue, never surface,
+    and the compounding this exists for would not happen.
+
+    A gate refusal is not an agent self-report — the server refused and knows why — so the
+    trusted-publication boundary is not what it would be crossing.
+    """
+    from app.services import memory as memory_svc
+
+    it = _item(db)
+    with pytest.raises(items_svc.MissingAttestation):
+        items_svc.update_item(db, it.id, status="done")
+
+    hits = memory_svc.search_memory(db, "why was completion refused", top_k=20,
+                                    project_id="core")
+    assert any(s.item_id == it.id for s, _ in hits), \
+        "the refusal does not surface to an ordinary search — the loop is broken"
+
+
+def test_the_shard_says_what_would_satisfy_the_gate(db):
+    """A shard reading 'completion refused' teaches nothing the error message did not. The
+    point is that the NEXT agent plans differently, which needs the remedy, not the verdict."""
+    it = _item(db)
+    with pytest.raises(items_svc.MissingAttestation):
+        items_svc.update_item(db, it.id, status="done")
+
+    [shard] = _shards_for(db, it)
+    assert "attestation" in shard.text and "gate" in shard.text, \
+        f"the shard does not name what would satisfy the gate: {shard.text}"
+    assert it.key in shard.text, "the shard does not say which item it is about"
+
+
+def test_the_same_refusal_twice_is_one_shard(db):
+    """Without this the memory layer fills with the same refusal and semantic search gets
+    worse, not better — the feature degrading the thing it exists to improve."""
+    it = _item(db)
+    for _ in range(3):
+        with pytest.raises(items_svc.MissingAttestation):
+            items_svc.update_item(db, it.id, status="done")
+
+    assert len(_shards_for(db, it)) == 1, "each refusal wrote its own shard"
+
+
+def test_two_different_refusals_are_two_shards(db):
+    """The other direction, and the half a dedupe rule usually gets wrong. Swallowing a
+    genuinely different refusal would be silent under any test that only counts down."""
+    it = _item(db)
+    with pytest.raises(items_svc.MissingAttestation):
+        items_svc.update_item(db, it.id, status="done")          # attestation_missing
+
+    items_svc.update_item(db, it.id, evidence=[_attestation(predicates=[
+        {"name": "suite_green", "passed": False, "detail": "3 failed"}])])
+    with pytest.raises(items_svc.MissingAttestation):
+        items_svc.update_item(db, it.id, status="done")          # attestation_failing
+
+    sources = {s.source for s in _shards_for(db, it)}
+    assert len(sources) == 2, f"a different refusal was swallowed by the dedupe: {sources}"
+
+
+def test_a_successful_completion_records_no_refusal(db):
+    """The control. A recorder that fired unconditionally would satisfy every test above
+    and fill memory with refusals that never happened."""
+    it = _item(db)
+
+    items_svc.update_item(db, it.id, status="done", evidence=[_attestation()])
+
+    assert not _shards_for(db, it), "completing an item recorded a refusal"
+
+
+def test_a_refusal_that_changes_updates_its_shard_rather_than_adding_one(db):
+    """The update branch, and the reason it is not dead code.
+
+    A refusal of the same KIND can say something different — a different predicate started
+    failing — and the shard has to follow, or the memory the next agent reads describes a
+    failure that has already been fixed. Still one shard: the dedupe key is
+    (item, predicate), and `suite_green` failing then `mutation_probe` failing are the same
+    predicate class with different content.
+    """
+    it = _item(db)
+    items_svc.update_item(db, it.id, evidence=[_attestation(predicates=[
+        {"name": "suite_green", "passed": False}])])
+    with pytest.raises(items_svc.MissingAttestation):
+        items_svc.update_item(db, it.id, status="done")
+
+    [first] = _shards_for(db, it)
+    assert "suite_green" in first.text
+
+    items_svc.update_item(db, it.id, evidence=[_attestation(
+        adapter="ci2", predicates=[{"name": "mutation_probe", "passed": False}])])
+    with pytest.raises(items_svc.MissingAttestation):
+        items_svc.update_item(db, it.id, status="done")
+
+    # Read across a CONNECTION, not just the session that wrote it. Within one session an
+    # uncommitted attribute change is visible anyway, so a same-session read cannot tell an
+    # updated shard from a persisted one — and the update path is the only place
+    # `record_refusal`'s own commit is load-bearing (`add_memory` commits the create path
+    # itself).
+    from app.db import SessionLocal
+    other = SessionLocal()
+    try:
+        shards = _shards_for(other, it)
+        assert len(shards) == 1, "a changed refusal added a second shard instead of updating"
+        assert "mutation_probe" in shards[0].text, \
+            "the shard still describes a failure that has since changed"
+    finally:
+        other.close()
