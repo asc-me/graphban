@@ -17,6 +17,46 @@ Configuration is via environment variables. In Docker, set them in `.env` (copy 
 | `JWT_SECRET` | dev placeholder | **Set a long random value in production** (≥ 32 bytes) |
 | `ACCESS_TOKEN_MINUTES` | `30` | Access token lifetime |
 | `REFRESH_TOKEN_DAYS` | `14` | Refresh token lifetime |
+| `JWT_ALGORITHM` | `HS256` | Signing algorithm. Changing it invalidates every issued token |
+| `REQUIRE_STRONG_SECRET` | `false` | **Refuses to boot** on a weak or default `JWT_SECRET` rather than warning. Set it on anything exposed |
+| `MIN_PASSWORD_LENGTH` | `8` | Minimum on signup and password change |
+| `SIGNUP_MODE` | `open` | `open` or `invite_only`. **`open` means anyone who can reach the instance can create an account** — the hosted deployment runs `invite_only` |
+| `PLATFORM_ADMIN_EMAILS` | *(empty)* | Comma-separated. Who reaches the operator plane. Empty means nobody, which is the safe default and not an oversight |
+| `SECRET_ENCRYPTION_KEY` | *(empty)* | At-rest encryption for stored provider keys. **Empty means BYOK credentials are stored unencrypted**; set it before anyone saves one |
+| `GITHUB_WEBHOOK_SECRET` | *(empty)* | Verifies webhook signatures. Empty means an unsigned payload is accepted, so set it wherever the webhook is reachable |
+| `TRUSTED_PROXY` | `false` | Whether `X-Forwarded-For` is believed. **Read the note in `deploy.md` before setting it** — with a proxy that APPENDS to a client-supplied header, turning this on makes the rate-limit bucket key attacker-controlled (GRPH-439) |
+| `LOGIN_RATE_PER_MIN` | `10` | Per-IP and per-email login attempts |
+| `ORG_RATE_PER_MIN` | `300` | Per-org API calls |
+| `INVITE_EXPIRY_DAYS` | `14` | How long an unaccepted invite stays usable |
+
+## Email (SMTP)
+
+Invites and password flows go nowhere without these. An unset `SMTP_HOST` does not fail —
+mail is simply not sent, so an invite can be "issued" and never arrive.
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `SMTP_HOST` | *(empty)* | Empty disables sending entirely |
+| `SMTP_PORT` | `587` | |
+| `SMTP_USER` | *(empty)* | |
+| `SMTP_PASSWORD` | *(empty)* | |
+| `SMTP_FROM` | `Graphban <no-reply@graphban.dev>` | Envelope sender |
+| `SMTP_STARTTLS` | `true` | |
+| `APP_BASE_URL` | `http://localhost:5173` | The base of links in outbound mail. Wrong here means invites point at localhost |
+
+## Deployment mode and operations
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `HOSTED_MODE` | `false` | Multi-tenant posture: org gates on, first-run bootstrap refused, share links accept only the token |
+| `LOG_LEVEL` | `INFO` | |
+| `LOG_JSON` | `false` | Structured logs. On for anything with log search |
+| `REDIS_URL` | *(empty)* | Empty keeps rate-limit state in process, which is per-worker rather than per-deployment |
+| `SYNC_DIR` | `/data/sync` | Where the Drive/file sync writes |
+| `SYNC_CLOUD_URL`, `SYNC_API_KEY` | *(empty)* | Local → cloud code-graph push |
+| `UPSTREAM_FEEDBACK_URL` | `https://feedback.asc-me.dev/api/public/requests` | Where `report_graphban_issue` sends |
+| `UPSTREAM_FEEDBACK_PROJECT` | `agentledger` | |
+| `UPSTREAM_FEEDBACK_TOKEN` | *(empty)* | |
 
 ## AI providers
 
@@ -33,6 +73,10 @@ Configuration is via environment variables. In Docker, set them in `.env` (copy 
 | `OPENAI_EMBED_MODEL` | `text-embedding-3-small` | |
 | `ANTHROPIC_API_KEY` | — | Read by the `anthropic` SDK |
 | `ANTHROPIC_MODEL` | `claude-opus-4-8` | |
+| `OLLAMA_AUTH_KEY` | *(empty)* | Bearer token, for an Ollama behind a reverse proxy |
+| `LLM_TIMEOUT_SECONDS` | `90` | Per model call. A local coding model can exceed this |
+| `EMBED_MAX_RETRIES` | `2` | Retries before an embedding write gives up |
+| `REQUIRE_REAL_EMBEDDINGS` | `false` | **Refuses to write a stub vector.** Without it a misconfigured provider silently fills the index with vectors that match nothing |
 
 See [AI providers](ai-providers.md) for the details (and why embeddings are deploy-time).
 
