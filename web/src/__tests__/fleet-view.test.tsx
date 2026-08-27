@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -19,7 +19,8 @@ const api = vi.hoisted(() => ({
 vi.mock("@/lib/api", () => ({ api }));
 
 vi.mock("@/features/ProjectContext", () => ({
-  useProjectCtx: () => ({ active: { id: "core" }, activeId: "core", projects: [] }),
+  useProjectCtx: () => ({ active: { id: "core", name: "Core", tag: "core" },
+                          activeId: "core", projects: [] }),
 }));
 
 const fleet = vi.hoisted(() => ({ data: null as unknown, refetch: vi.fn() }));
@@ -317,7 +318,7 @@ describe("Fleet view", () => {
     // own span — a substring query would pass on a sentence that never mentions the wave.
     const line = await screen.findByText(
       (_, el) => el?.tagName === "P"
-        && /End wave-1: revoke 4 seats and 2 wave-tagged keys, release 1 lease and 3 reservations\?/
+        && /End wave-1 in core: revoke 4 seats and 2 wave-tagged keys, release 1 lease and 3 reservations\?/
           .test(el.textContent ?? ""),
     );
     expect(line).toBeInTheDocument();
@@ -391,7 +392,7 @@ describe("Fleet view", () => {
 
     // The counts followed the selection rather than lingering from wave-2.
     const line = await screen.findByText(
-      (_, el) => el?.tagName === "P" && /End wave-1: revoke 7 seats and 9 wave-tagged keys/.test(el.textContent ?? ""),
+      (_, el) => el?.tagName === "P" && /End wave-1 in core: revoke 7 seats and 9 wave-tagged keys/.test(el.textContent ?? ""),
     );
     expect(line).toBeInTheDocument();
     expect(api.endWavePreview).toHaveBeenLastCalledWith("core", "wave-1");
@@ -639,5 +640,58 @@ describe("Fleet view", () => {
 
     await user.click(screen.getAllByRole("button", { name: "Dismiss" })[0]);
     await waitFor(() => expect(api.dismissAgent).toHaveBeenCalledWith("GB-A1", false));
+  });
+
+  // ---- a seat names its project (GRPH-476) --------------------------------------------
+
+  it("says which project it is about to mint into, on the button", () => {
+    // `ProjectBar` already shows the active project in the page chrome — and an operator who
+    // has misread which project is active will misread it there too. This is at the point of
+    // action, which is where it was missing both times seats went to the wrong project.
+    fleet.data = { ...BASE, seats: [], keys: [] };
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: /^Wave/ }));
+    expect(screen.getByRole("button", { name: /Issue the seats into core/ })).toBeInTheDocument();
+  });
+
+  it("puts the project ON the seat, not only on the page", async () => {
+    // THE one that matters. A seat used to leave this page carrying a role and nothing else,
+    // so a mis-mint was undetectable from the code — diagnosing it meant querying the live
+    // `enrolments` table. And it is written as a CHECK the receiving agent can run, which is
+    // the only step in the chain that catches this without a human noticing first.
+    const user = userEvent.setup();
+    api.issueSeats.mockResolvedValue({ seats: [{ id: 1, role: "worker", code: "WORKER-AAA111" }] });
+    fleet.data = { ...BASE, seats: [], keys: [] };
+    renderView();
+
+    await user.click(screen.getByRole("button", { name: /^Wave/ }));
+    await user.click(screen.getByRole("button", { name: "+ worker" }));
+    await user.click(screen.getByRole("button", { name: /Issue the seats into core/ }));
+
+    const block = await screen.findByText(/This seat is for the core project/);
+    expect(block.textContent).toContain("get_context");
+    expect(block.textContent).toContain("WORKER-AAA111");
+  });
+
+  it("labels each copied seat with the project as well as the role", async () => {
+    const user = userEvent.setup();
+    api.issueSeats.mockResolvedValue({ seats: [{ id: 2, role: "planner", code: "PLANNER-BBB222" }] });
+    fleet.data = { ...BASE, seats: [], keys: [] };
+    renderView();
+
+    await user.click(screen.getByRole("button", { name: /^Wave/ }));
+    await user.click(screen.getByRole("button", { name: "+ planner" }));
+    await user.click(screen.getByRole("button", { name: /Issue the seats into core/ }));
+
+    expect(await screen.findByText(/planner for core — prompt \+ seat, shown once/))
+      .toBeInTheDocument();
+  });
+
+  it("declares the project in the heading, so every control below it is scoped", () => {
+    // The two sweep buttons act on the active project too. Naming it on each would be noise;
+    // declaring it once above them is not.
+    fleet.data = { ...BASE };
+    renderView();
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\s*core/);
   });
 });
