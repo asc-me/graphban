@@ -397,3 +397,58 @@ def test_a_genuinely_different_key_still_becomes_its_own_credential(db):
     mig.migrate(db)
 
     assert db.query(Credential).count() == 2
+
+
+# ---- the report counts what it WROTE (GRPH-546) ----------------------------------------------
+
+
+def test_a_no_op_run_reports_nothing(db):
+    """FOUND IN A PRODUCTION BOOT LOG. On an already-migrated deployment the report claimed
+    `projects_pointed: 4, overrides: 2` while writing nothing at all.
+
+    Both counts summed over the GROUPS `plan_migration` produced, and a group whose projects
+    already have pointers writes nothing yet is still counted. That report sent the agent
+    looking for an incident that did not exist.
+    """
+    _project(db, "p1", _blob(key="sk-live", model="claude-x"))
+    _project(db, "p2", _blob(key="sk-live", model="claude-other"))
+    mig.migrate(db)
+
+    again = mig.migrate(db)
+
+    assert again == {
+        **again,
+        "credentials_created": 0,
+        "credentials_reused": 0,
+        "projects_pointed": 0,
+        "overrides": 0,
+    }, f"a no-op run reported work: {again}"
+
+
+def test_the_counts_match_what_actually_changed(db):
+    """A first run reports exactly the rows it wrote — not the rows it looked at."""
+    _project(db, "p1", _blob(key="sk-shared", model="claude-big"))
+    _project(db, "p2", _blob(key="sk-shared", model="claude-cheap"))
+    _project(db, "p3", _blob(key="sk-other", model="claude-big"))
+
+    report = mig.migrate(db)
+
+    assert report["credentials_created"] == 2
+    assert report["projects_pointed"] == 3
+    # Only p2 differs from its credential's chosen model.
+    assert report["overrides"] == 1
+
+
+def test_joining_an_existing_credential_is_reported_as_reuse(db):
+    """A project that joins an existing credential is real work, and was previously invisible:
+    `credentials_created` stayed 0 and nothing else said a pointer had been written."""
+    _project(db, "p1", _blob("ollama", url="http://o:11434", key="", model="mistral"))
+    mig.migrate(db)
+
+    _project(db, "p2", _blob("ollama", url="http://o:11434", key="", model="qwen"))
+    report = mig.migrate(db)
+
+    assert report["credentials_created"] == 0
+    assert report["credentials_reused"] == 1
+    assert report["projects_pointed"] == 1
+    assert report["overrides"] == 1

@@ -210,6 +210,13 @@ def migrate(db: Session, scope: str = "") -> dict:
 
     labels: Counter = Counter()
     created: list[Credential] = []
+    # **Counted as they are WRITTEN** (GRPH-546). These used to be summed over the candidate
+    # groups at the end, so a group whose projects already had pointers — which writes nothing
+    # — was still counted. A boot with nothing to do reported pointing four projects and
+    # setting two overrides, and that report sent someone looking for an incident.
+    pointed = 0
+    overridden = 0
+    reused: set[str] = set()
     for group in credentials:
         match = existing.get(_identity(group["kind"], group["base_url"], group["api_key"]))
         if match is not None:
@@ -221,10 +228,14 @@ def migrate(db: Session, scope: str = "") -> dict:
                 if project is None or pid not in group["active_projects"]:
                     continue
                 project.credential_id = match.id
+                pointed += 1
+                reused.add(match.id)
                 # The override is relative to the EXISTING credential's model, not the one this
                 # batch would have chosen.
                 own = dict(zip(group["projects"], group["models"])).get(pid) or ""
                 project.model_override = own if own and own != match.model else ""
+                if project.model_override:
+                    overridden += 1
             continue
 
         cred = Credential(
@@ -256,9 +267,11 @@ def migrate(db: Session, scope: str = "") -> dict:
             if pid not in group["active_projects"]:
                 continue
             project.credential_id = cred.id
+            pointed += 1
             override = group["overrides"].get(pid)
             if override:
                 project.model_override = override
+                overridden += 1
 
     default_id, referenced = "", 0
     if created:
@@ -281,8 +294,11 @@ def migrate(db: Session, scope: str = "") -> dict:
 
     report = {
         "credentials_created": len(created),
-        "projects_pointed": sum(len(g["projects"]) for g in credentials),
-        "overrides": sum(len(g["overrides"]) for g in credentials),
+        # Joining an existing credential is real work and used to be invisible:
+        # `credentials_created` stayed 0 and nothing else said a pointer had been written.
+        "credentials_reused": len(reused),
+        "projects_pointed": pointed,
+        "overrides": overridden,
         # A heuristic, and on a deployment where one project matters more than five others it
         # picks wrong — so it is REPORTED with the count that decided it, rather than silent.
         # There is no rollback mechanism on purpose: changing the default is an ordinary edit
