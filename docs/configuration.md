@@ -40,6 +40,7 @@ See [AI providers](ai-providers.md) for the details (and why embeddings are depl
 
 | Var | Default | Notes |
 | --- | --- | --- |
+| `CREDENTIAL_RETRY_SECONDS` | `60` | How often the credential retry loop re-asks providers that could not be reached (PRD-25). `0` disables the background task entirely — what the test suite runs at, so a timer never fires mid-test. |
 | `SEED_ON_START` | `false` | Load the demo dataset on an empty DB. Default off — the app starts empty and you sign up in the UI. Set `true` for a populated demo. |
 | `PUBLIC_SUBMIT_ENABLED` | `true` | Allow the public feedback endpoints |
 | `CORS_ORIGINS` | `http://localhost:8080,http://localhost:5173` | Comma-separated allowed origins |

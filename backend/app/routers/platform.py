@@ -20,6 +20,7 @@ from app.security.deps import get_current_user
 from app.services import drive_sync
 from app.services import events as events_svc
 from app.services import items as items_svc
+from app.services import credential_retry
 from app.services import platform as platform_svc
 
 router = APIRouter(prefix="/platform", tags=["platform"])
@@ -135,6 +136,30 @@ def delete_credential(credential_id: str, project_id: str = "core",
         # bare "in use" is not good enough.
         raise HTTPException(409, str(e)) from None
     return None
+
+
+@router.post("/credentials/{credential_id}/retry")
+def retry_credential(credential_id: str, project_id: str = "core",
+                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """`Test connection` — re-ask a credential now, through the same claim the loop uses.
+
+    The operator presses this exactly when a row looks stuck, which is when the background
+    loop is also most likely to be picking it up. Going through `claim` means the budget
+    decrements once whoever wins, rather than twice for one real attempt.
+
+    Returns the resulting `state` rather than a bare 204: the whole point of pressing it is to
+    find out what happened, and making the caller re-read the list to discover that is a round
+    trip for information this response already has.
+    """
+    scope = _scope(db, user, project_id)
+    try:
+        state = credential_retry.retry_now(db, credential_id, scope)
+    except LookupError:
+        raise HTTPException(404, "no such credential") from None
+    cred = platform_svc.credential_in_scope(db, credential_id, scope)
+    return {"id": credential_id, "state": state,
+            "last_error": cred.last_error if cred else "",
+            "validation_attempts": cred.validation_attempts if cred else 0}
 
 
 @router.put("/credentials/defaults")

@@ -206,6 +206,13 @@ class Settings(BaseSettings):
     # Seed the design's dataset on startup when the DB is empty.
     seed_on_start: bool = True
 
+    # How often the credential retry loop wakes (PRD-25 S2b). `0` disables it entirely — the
+    # value the TEST suite runs at, because a background task that fires mid-test turns an
+    # unrelated assertion into a flake and the loop has its own tests that drive it directly.
+    # Production leaves it on: a credential saved while its provider was down is the whole
+    # reason `pending_validation` exists, and nothing else re-asks.
+    credential_retry_seconds: int = 60
+
     # Org invites (AL-74b). Delivered by email; when SMTP is unconfigured the email
     # service falls back to a console/outbox transport (fine for self-host + tests).
     # `app_base_url` is the SPA origin used to build the invite-accept link in the
