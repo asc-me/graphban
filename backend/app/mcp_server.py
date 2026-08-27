@@ -393,16 +393,15 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {"id": {"type": "string"}, "project_id": {"type": "string"},
                            "title": {"type": "string"}, "status": {"type": "string"},
-                           "version": {"type": "integer"}, "body": {"type": "string"}},
+                           "version": {"type": "string"}, "body_hash": {"type": "string"}, "body": {"type": "string"}},
         },
     },
     {
         "name": "update_prd",
         "description": (
-            "Patch a PRD's title, status (draft|review), or body (full markdown replace) — "
-            "call get_prd FIRST, because a replace deletes what you did not reproduce. "
-            "Returns the updated PRD. To keep a history checkpoint, the UI snapshots versions; edits here "
-            "update the working draft."
+            "Patch a PRD's title, status (draft|review), or body. Prefer `section` — it "
+            "rewrites one `## ` heading and leaves every other byte alone. A whole-body "
+            "replace needs `base_hash` from get_prd. Returns the updated PRD."
         ),
         "inputSchema": {
             "type": "object",
@@ -415,7 +414,15 @@ TOOLS: list[dict[str, Any]] = [
                 "status": {"type": "string", "enum": ["draft", "review", "approved"],
                            "description": "`approved` is NOT settable — it is reached by "
                                           "finishing the grill (see answer_grill)."},
-                "body": {"type": "string", "description": "Full markdown body (replaces the current draft)."},
+                "section": {"type": "string",
+                            "description": "A `## ` heading. `body` then replaces ONLY that "
+                                           "section; the rest is untouched."},
+                "base_hash": {"type": "string",
+                              "description": "`body_hash` from get_prd. Required for a "
+                                             "whole-body replace; refused if it has moved."},
+                "body": {"type": "string",
+                         "description": "New markdown — one section's contents with "
+                                        "`section`, else the entire body."},
             },
             "required": ["prd_id"],
         },
@@ -2366,6 +2373,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "title": prd.title,
             "status": prd.status,
             "version": prd.version,
+            # The token that makes a full-body replace safe (GRPH-357). NOT `version`, which
+            # only moves on an explicit snapshot and so cannot say whether the body changed.
+            "body_hash": prd_svc.body_hash(prd.body or ""),
             "body": prd.body or "",
         }
 
@@ -2375,11 +2385,31 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.NotFound(f"prd not found: {args['prd_id']}")
         if prd.project_id not in allowed:
             raise authz.Forbidden(f"prd {args['prd_id']!r} is outside this key's project scope")
+        # THE GUARD (GRPH-357). A full-body replace with no proof of a read is refused here
+        # rather than in the service, because the two callers are not alike: the REST caller
+        # is a human editing a textarea they are looking at, and demanding a token from them
+        # breaks the UI for no safety gain. An agent has no such guarantee — it may be forty
+        # turns deep in a compacted context — and this is the call that silently deletes
+        # every section it failed to reproduce.
+        #
+        # `section` is exempt on purpose: it cannot lose what it did not read, because it
+        # rewrites one span and splices the rest back byte for byte.
+        if args.get("body") is not None and args.get("section") is None \
+                and not args.get("base_hash"):
+            raise errors.Validation(
+                "replacing a PRD body whole requires `base_hash` from get_prd — without it "
+                "an unread replace silently deletes every section you did not reproduce. "
+                "Call get_prd, or edit one section with `section` instead.")
         try:
             updated = prd_svc.update_prd(
                 db, args["prd_id"],
                 title=args.get("title"), status=args.get("status"), body=args.get("body"),
+                section=args.get("section"), base_hash=args.get("base_hash"),
             )
+        except prd_svc.StaleBody as e:
+            raise errors.Conflict(str(e)) from e
+        except (prd_svc.SectionNotFound, prd_svc.AmbiguousSection) as e:
+            raise errors.Validation(str(e)) from e
         except prd_svc.RebaselineExpandsScope as e:
             raise errors.Conflict(str(e)) from e
         except prd_svc.ApprovalNotEarned as e:

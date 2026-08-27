@@ -141,6 +141,25 @@ def update_prd(db: Session, prd_id: str, **fields) -> Prd | None:
                if done["outstanding"] else "No answers are recorded yet. ")
             + "Answer the open dimensions (or defer one explicitly) and it approves itself."
         )
+    # A SECTION edit resolves to a body edit here, so every rule below still applies to the
+    # result — the rebaseline check, the body_updated_at stamp, all of it. The alternative,
+    # a separate write path, is how one of two writers quietly stops being governed.
+    section = fields.pop("section", None)
+    if section is not None:
+        if fields.get("body") is None:
+            raise ValueError("section edits need the new contents in `body`")
+        fields["body"] = replace_section(prd.body or "", section, fields["body"])
+    # Read-before-write on the DESTRUCTIVE form only (GRPH-357). A section edit cannot lose
+    # what it did not read — it rewrites one span and splices the rest back verbatim — so
+    # it is deliberately not gated. A full-body replace can lose everything, and did.
+    base = fields.pop("base_hash", None)
+    if base is not None and fields.get("body") is not None:
+        current = body_hash(prd.body or "")
+        if base != current:
+            raise StaleBody(
+                f"this PRD has changed since you read it (you saw {base}, it is now "
+                f"{current}). Call get_prd again and re-apply your edit — replacing the body "
+                f"from a stale read deletes whatever landed in between.")
     # Refuse the edit that introduces the violation, rather than letting the author
     # finish a whole grill and be rejected at the end (GRPH-318).
     if fields.get("body") is not None:
@@ -2792,9 +2811,123 @@ def classify_fidelity(text: str) -> str:
     return "high" if _HIGH_FIDELITY_RE.search(text or "") else "low"
 
 
+#: Opens or closes a fenced code block. Three or more backticks/tildes at line start; an
+#: opener may carry a language tag, a closer may carry trailing space.
+_FENCE_RE = re.compile(r"^(?:`{3,}|~{3,})", re.MULTILINE)
+
+
+def body_hash(body: str) -> str:
+    """What "you have read this PRD" means, exactly (GRPH-357).
+
+    A hash, not `version`: `version` only moves on an explicit `create_version` snapshot, so
+    two entirely different bodies routinely share one and it cannot answer the question that
+    matters — is the document still what you read? The same choice `gbagent` makes for files
+    (GRPH-515), for the same reason.
+
+    Truncated to 16 hex characters. It rides on every `get_prd` and back on every full-body
+    `update_prd`, and the MCP manifest is measured in tokens; 64 bits is far beyond what an
+    accident could collide, and this defends against forgetting to read, not against an
+    attacker who already holds a write credential.
+    """
+    return hashlib.sha256((body or "").encode("utf-8")).hexdigest()[:16]
+
+
+class StaleBody(ValueError):
+    """Tried to replace a body that has moved since it was read."""
+
+
+class SectionNotFound(ValueError):
+    """Named a `## ` section the PRD does not have."""
+
+
+class AmbiguousSection(ValueError):
+    """Named a section title the PRD carries more than once."""
+
+
+def section_spans(body: str) -> list[tuple[str, int, int]]:
+    """`(title, content_start, content_end)` for every `## ` section, in order.
+
+    FENCE-AWARE, which `_SECTION_RE` on its own is not. A line reading `## Example` inside
+    a ```` ``` ```` block is sample text, not a heading, and treating it as one puts a
+    section boundary in the middle of a code block. No PRD in this repo does that today —
+    checked — so this is a latent hazard rather than a live bug, and it stays latent only
+    because nothing had yet written bytes back based on these offsets. `replace_section`
+    does, and getting a boundary wrong there destroys a document silently, which is the
+    exact failure GRPH-357 exists to remove.
+
+    `parse_sections` derives from this so the two cannot disagree about what a section is —
+    a splitter and a lister that drift apart would corrupt precisely the documents that are
+    hardest to notice corruption in.
+
+    `content_start` is the first byte after the heading line; `content_end` is the first
+    byte of the next heading, or the end of the body. The heading line itself is owned by
+    neither, so a caller can never rename a section by editing its contents.
+    """
+    text = body or ""
+    heads: list[tuple[str, int, int]] = []   # title, heading_start, content_start
+    fenced = False
+    pos = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.rstrip("\r\n")
+        if _FENCE_RE.match(stripped):
+            fenced = not fenced
+        elif not fenced:
+            m = _SECTION_RE.match(stripped)
+            if m:
+                heads.append((m.group(1).strip(), pos, pos + len(line)))
+        pos += len(line)
+    return [(title, cstart, heads[i + 1][1] if i + 1 < len(heads) else len(text))
+            for i, (title, _hstart, cstart) in enumerate(heads)]
+
+
 def parse_sections(body: str) -> list[str]:
     """Level-2 headings (`## …`) — the PRD's sections, in order."""
-    return [m.group(1).strip() for m in _SECTION_RE.finditer(body or "")]
+    return [title for title, _s, _e in section_spans(body)]
+
+
+def section_content(body: str, title: str) -> str:
+    """One section's prose, without the heading line or its trailing blank lines."""
+    return body[_span_for(body, title)[0]:_span_for(body, title)[1]].strip("\n")
+
+
+def _span_for(body: str, title: str) -> tuple[int, int]:
+    """Resolve a section title to its content span, comparing the way the rest of this
+    module does — `_section_key` — so an agent is not made to reproduce punctuation and
+    casing exactly to edit a section it just read."""
+    want = _section_key(title)
+    hits = [(s, e) for t, s, e in section_spans(body) if _section_key(t) == want]
+    if not hits:
+        have = parse_sections(body)
+        raise SectionNotFound(
+            f"no section {title!r}. This PRD has: {', '.join(repr(h) for h in have) or 'none'}")
+    if len(hits) > 1:
+        # Refused rather than picking the first. Two sections with the same title is a
+        # malformed document, and quietly editing one of them is how the other silently
+        # becomes the stale copy nobody is looking at.
+        raise AmbiguousSection(
+            f"{title!r} appears {len(hits)} times in this PRD — rename one before editing")
+    return hits[0]
+
+
+def replace_section(body: str, title: str, content: str) -> str:
+    """Return `body` with ONE section's contents replaced. Every other byte is untouched.
+
+    That is the whole point (GRPH-357). `update_prd` replaces the body wholesale, so an
+    agent asked to record one decision had to reproduce the entire document from memory —
+    and on an approved PRD, anything it failed to reproduce was simply gone, with no
+    snapshot written on the MCP path to recover from.
+
+    Whitespace around the section is normalised to the form every PRD in this repo already
+    uses — a blank line after the heading, a blank line before the next one — so a caller
+    that sends `"Decided: X"` with no trailing newline cannot weld its text onto the
+    following `## `, and one that sends a dozen trailing blank lines cannot drift the
+    document. Normalisation touches only the edited section; everything outside the span is
+    spliced back byte for byte.
+    """
+    start, end = _span_for(body, title)
+    tail = body[end:]
+    text = (content or "").strip("\n")
+    return body[:start] + "\n" + text + ("\n\n" if tail else "\n") + tail
 
 
 # Conventional PRD sections that FRAME the work rather than being work themselves.
