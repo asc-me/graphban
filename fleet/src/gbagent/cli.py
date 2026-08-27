@@ -278,15 +278,37 @@ def _run(args: argparse.Namespace) -> int:
         heartbeat.stop()
         session.close()
 
-    # `None`, not 0, when it never wrote — see docs/orientation-metric-prd24.md. A run that
-    # read for forty turns and changed nothing must not average in as the best one.
-    first = outcome.turns_to_first_write
-    print(f"gbagent: {outcome.status} after {outcome.turns} turns "
-          f"({outcome.compactions} compaction(s), {orientation.calls} graph call(s), "
-          f"{heartbeat.beats} heartbeat(s), "
-          f"first write on turn {first if first is not None else 'NEVER'}) — {outcome.meaning}",
+    print(_summary(outcome, graph_calls=orientation.calls, beats=heartbeat.beats),
           file=sys.stderr)
     return outcome.exit_code
+
+
+def _summary(outcome, *, graph_calls: int, beats: int) -> str:
+    """The one line a human reads about a run.
+
+    **`NEVER`, not 0, when the agent never wrote** — see docs/orientation-metric-prd24.md.
+    `Outcome.turns_to_first_write` is `None` in that case and four tests pin it, but this
+    line is what anybody actually sees, and it was pinned by nothing: rendering it as
+    `{first or 0}` left `Outcome` carrying `None`, every value-layer assertion holding, and
+    the reader told "first write on turn 0" (GRPH-533).
+
+    That matters more here than the value does. The S7 walk's run 1 claimed an item, ran the
+    suite, passed BECAUSE IT HAD CHANGED NOTHING, and moved the item to review with "Ran all
+    tests and verified the fix". Nothing else in the stack noticed — the server does not know
+    worktrees exist, and an item arriving in review with a receipt looks like finished work.
+    Somebody reading THIS LINE is how it was caught, and averaged in as 0 that run scores as
+    the best one ever recorded.
+
+    Extracted from `_run` so it can be asserted at all. Inline in a function that opens a
+    model session and a heartbeat thread, it was unreachable from a test — which is why the
+    value grew four guards and the sentence grew none.
+    """
+    first = outcome.turns_to_first_write
+    return (f"gbagent: {outcome.status} after {outcome.turns} turns "
+            f"({outcome.compactions} compaction(s), {graph_calls} graph call(s), "
+            f"{beats} heartbeat(s), "
+            f"first write on turn {first if first is not None else 'NEVER'})"
+            f" — {outcome.meaning}")
 
 
 def build_parser() -> argparse.ArgumentParser:

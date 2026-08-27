@@ -607,3 +607,67 @@ def test_an_agent_with_no_identity_does_not_inject_an_empty_one():
     orientation.execute(ToolCall(id="c", name="claim_next", input={"agent_id": "mine"}))
 
     assert sent[0]["agent_id"] == "mine", "nothing to substitute, so nothing is taken away"
+
+
+# ---- the metric's RENDERING, not just its value (GRPH-533) ---------------------------------
+
+
+def _line(first_write):
+    """The summary line for a run whose first write landed on `first_write` (None = never)."""
+    from gbagent.cli import _summary
+    from gbagent.loop import Outcome
+
+    outcome = Outcome(status="finished", exit_code=0, turns=40, text="", handoff="",
+                      compactions=0, slowest_turn=1.0, turns_to_first_write=first_write)
+    return _summary(outcome, graph_calls=2, beats=12)
+
+
+def test_a_run_that_never_wrote_says_NEVER_and_never_says_turn_zero():
+    """The value is `None` and four tests above pin that. This is the sentence a person
+    reads, and it was pinned by nothing — rendering it as `{first or 0}` left Outcome
+    carrying None, every value assertion holding, and the reader told "first write on turn 0".
+
+    Zero is not a neutral wrong answer here: it is the BEST possible score. A run that read
+    for forty turns and changed nothing would average in as instant productivity.
+    """
+    line = _line(None)
+
+    assert "first write on turn NEVER" in line, line
+    assert "first write on turn 0" not in line, (
+        f"a run that never wrote is rendered as having written on turn 0: {line}"
+    )
+
+
+def test_a_run_that_did_write_reports_the_turn_rather_than_NEVER():
+    """The control. Without it, hardcoding the word NEVER satisfies the test above and the
+    metric stops distinguishing the two runs it exists to distinguish."""
+    line = _line(3)
+
+    assert "first write on turn 3" in line, line
+    assert "NEVER" not in line, f"a run that wrote on turn 3 is rendered as NEVER: {line}"
+
+
+def test_writing_on_turn_zero_is_still_reported_as_turn_zero():
+    """`0` and `None` are different runs and must render differently. A fix that special-cased
+    falsiness rather than `is None` would collapse them — and turn 0 is a real value, since
+    `first_write` is assigned before the counter increments on a first-turn write.
+    """
+    assert "first write on turn 0" in _line(0), _line(0)
+    assert "NEVER" not in _line(0)
+
+
+def test_the_cli_actually_prints_the_summary_it_builds():
+    """A helper nobody calls is indistinguishable from one that does not exist — the lesson
+    GRPH-496 and GRPH-506 both landed after shipping correct code nothing invoked. This line
+    was extracted from `_run` to make it testable, and extraction is exactly the move that
+    can leave the original inline copy behind.
+    """
+    import inspect
+
+    from gbagent import cli
+
+    source = inspect.getsource(cli._run)
+    assert "_summary(" in source, "_run no longer calls _summary — the extraction came undone"
+    assert "first write on turn" not in source, (
+        "_run builds its own summary line again; there are now two renderings that can drift"
+    )
