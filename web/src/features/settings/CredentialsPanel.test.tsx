@@ -38,6 +38,16 @@ const deleteCredential = vi.fn(async () => undefined);
 const retryCredential = vi.fn(async () => ({
   id: "cred_a", state: "valid", last_error: "", validation_attempts: 0,
 }));
+// Declared WITH parameters so `mock.calls[0][2]` is typed — a no-arg `vi.fn` gives an empty
+// tuple, and indexing it passes the tests while failing the typecheck.
+const updateCredential = vi.fn(
+  async (_projectId: string, _id: string, _body: Record<string, unknown>) =>
+    ({ id: "cred_a", state: "valid" }),
+);
+const setProjectCredential = vi.fn(
+  async (_projectId: string, _body: Record<string, unknown>) =>
+    ({ project_id: "core", credential_id: null, model_override: "" }),
+);
 
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
@@ -64,6 +74,10 @@ vi.mock("@/lib/api", () => ({
     deleteCredential: (...a: unknown[]) => deleteCredential(...(a as [])),
     retryCredential: (...a: unknown[]) => retryCredential(...(a as [])),
     setScopeDefaults: (...a: unknown[]) => setDefaults(...(a as [])),
+    updateCredential: (p: string, id: string, body: Record<string, unknown>) =>
+      updateCredential(p, id, body),
+    setProjectCredential: (p: string, body: Record<string, unknown>) =>
+      setProjectCredential(p, body),
   },
 }));
 
@@ -80,6 +94,14 @@ function show() {
   );
 }
 
+
+/** Controls are collapsed by default — open the row before acting on it. */
+async function openRow(id = "cred_a") {
+  const row = await screen.findByTestId(`credential-${id}`);
+  await userEvent.click(within(row).getByRole("button", { name: /actions for/i }));
+  return row;
+}
+
 beforeEach(() => {
   state.credentials = [];
   vi.clearAllMocks();
@@ -94,7 +116,9 @@ describe("CredentialsPanel", () => {
     state.credentials = [cred({ label: "Primary key" })];
     show();
 
-    expect(await screen.findByText("Primary key")).toBeInTheDocument();
+    // Asserted on the ROW, not a bare text match: the label appears both as text and inside
+    // the toggle button's accessible name, so `findByText` now finds two elements.
+    expect(await screen.findByTestId("credential-cred_a")).toHaveTextContent("Primary key");
   });
 
   it("shows which projects use a credential, because a delete refusal must be predictable", async () => {
@@ -112,7 +136,7 @@ describe("CredentialsPanel", () => {
     state.credentials = [cred({ state: "pending_validation" })];
     show();
 
-    const row = await screen.findByTestId("credential-cred_a");
+    const row = await openRow();
     expect(within(row).getByRole("button", { name: /set default/i })).toBeDisabled();
     expect(within(row).getByRole("button", { name: /set fallback/i })).toBeDisabled();
   });
@@ -123,7 +147,7 @@ describe("CredentialsPanel", () => {
     state.credentials = [cred({ state: "unreachable", last_error: "connection refused" })];
     show();
 
-    const row = await screen.findByTestId("credential-cred_a");
+    const row = await openRow();
     expect(within(row).getByRole("button", { name: /set default/i })).toBeEnabled();
   });
 
@@ -258,7 +282,7 @@ describe("CredentialsPanel", () => {
     state.credentials = [cred({ used_by: ["core", "web"] })];
     show();
 
-    const row = await screen.findByTestId("credential-cred_a");
+    const row = await openRow();
     await userEvent.click(within(row).getByRole("button", { name: /delete/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("used by core, web");
@@ -273,5 +297,120 @@ describe("wiring", () => {
     const src = await import("@/features/settings/SettingsView?raw").then((m) => m.default as string);
 
     expect(src).toContain("CredentialsPanel");
+  });
+});
+
+describe("collapsing, health, editing and overrides", () => {
+  it("hides the controls until the row is opened", async () => {
+    // A list exists to be read. Five buttons per row on a deployment with a dozen credentials
+    // is a wall, and the chevron opens only the row being acted on.
+    state.credentials = [cred()];
+    show();
+
+    const row = await screen.findByTestId("credential-cred_a");
+    expect(within(row).queryByRole("button", { name: /set default/i })).not.toBeInTheDocument();
+
+    await openRow();
+
+    expect(within(row).getByRole("button", { name: /set default/i })).toBeInTheDocument();
+  });
+
+  it("reports the open state to assistive tech, not just visually", async () => {
+    state.credentials = [cred()];
+    show();
+
+    const row = await screen.findByTestId("credential-cred_a");
+    const toggle = within(row).getByRole("button", { name: /actions for/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    await openRow();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it.each([
+    ["valid", "valid"],
+    ["pending_validation", "pending validation"],
+    ["unreachable", "unreachable"],
+  ])("shows a labelled health dot for %s", async (state_, label) => {
+    // The dot replaced a text chip that read like another tag. Colour alone would be worse
+    // than the chip for anyone not distinguishing red from green, so it is labelled.
+    state.credentials = [cred({ state: state_ as Credential["state"] })];
+    show();
+
+    const row = await screen.findByTestId("credential-cred_a");
+    expect(within(row).getByRole("img", { name: label })).toBeInTheDocument();
+  });
+
+  it("no longer renders state as a chip beside the usage tags", async () => {
+    state.credentials = [cred({ state: "valid", is_default: true })];
+    show();
+
+    const row = await screen.findByTestId("credential-cred_a");
+    // "default" is a tag; "valid" is not one any more.
+    expect(within(row).getByText("default")).toBeInTheDocument();
+    expect(within(row).queryByText("valid")).not.toBeInTheDocument();
+  });
+
+  it("edits a credential's model without touching its key", async () => {
+    state.credentials = [cred({ key_set: true, model: "claude-old" })];
+    show();
+    await openRow();
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    const model = await screen.findByLabelText(/^model$/i);
+    await userEvent.clear(model);
+    await userEvent.type(model, "claude-new");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(updateCredential).toHaveBeenCalledTimes(1);
+    const body = updateCredential.mock.calls[0][2];
+    expect(body.model).toBe("claude-new");
+    // An empty key means "leave it alone" — sending "" would erase a working credential
+    // because the operator opened the dialog to change the model.
+    expect(body).not.toHaveProperty("api_key");
+  });
+
+  it("sends the key only when one was typed", async () => {
+    state.credentials = [cred({ key_set: true })];
+    show();
+    await openRow();
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    await userEvent.type(await screen.findByLabelText(/api key/i), "sk-rotated");
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    expect(updateCredential.mock.calls[0][2].api_key).toBe("sk-rotated");
+  });
+
+  it("sets a project override on the project being changed, not the active one", async () => {
+    // `setProjectCredential` targets the project BEING CHANGED, which is also what scopes the
+    // server-side authz check. Passing the currently-viewed project would edit the wrong row.
+    state.credentials = [cred({ id: "cred_a", label: "Primary" })];
+    show();
+
+    const overrides = await screen.findByTestId("project-overrides");
+    await userEvent.selectOptions(
+      within(overrides).getByLabelText(/credential for web/i), "cred_a");
+
+    expect(setProjectCredential).toHaveBeenCalledWith("web", { credential_id: "cred_a" });
+  });
+
+  it("clears an override back to the deployment default", async () => {
+    state.credentials = [cred({ id: "cred_a", used_by: ["web"] })];
+    show();
+
+    const overrides = await screen.findByTestId("project-overrides");
+    const row = within(overrides).getByLabelText(/credential for web/i).closest("li")!;
+    await userEvent.click(within(row).getByRole("button", { name: /clear/i }));
+
+    expect(setProjectCredential).toHaveBeenCalledWith("web", { credential_id: null });
+  });
+
+  it("cannot clear a project that is already inheriting", async () => {
+    state.credentials = [cred({ id: "cred_a", used_by: [] })];
+    show();
+
+    const overrides = await screen.findByTestId("project-overrides");
+    const row = within(overrides).getByLabelText(/credential for core/i).closest("li")!;
+    expect(within(row).getByRole("button", { name: /clear/i })).toBeDisabled();
   });
 });
