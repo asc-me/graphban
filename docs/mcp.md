@@ -348,6 +348,28 @@ doesn't validate:
 An attestation binds to the commit it names: asked about any other revision it does not
 answer for it, so pushing after attesting invalidates the proof.
 
+**Completion is gated.** `update_item` refuses `status: "done"` unless the item carries a
+valid attestation, and answers `conflict` — not `unauthorized`, because the caller *may*
+complete it; the work simply is not accounted for yet. Over REST the same refusal is a
+`409`. Every other transition is ungated: claiming, reviewing, blocking and releasing are
+reversible, and gating the states agents pass through constantly is how a gate teaches
+people to route around it.
+
+The two halves are what make it hold. An agent cannot write the proof (no `gate` scope) and
+cannot complete without it — so finishing work means getting it attested by CI, or by a
+reviewer through `sign_off` with a `commit`. Fleet keys minted for the **reviewer** or
+**all-in-one** role carry `gate` for that reason; a worker or planner key does not, because
+a worker's ceiling is `review` by design.
+
+Items that were already `done` are untouched — the gate asks about the *transition*, not
+the state, so history is left alone.
+
+> **Known asymmetry.** The `gate` scope is enforced on the MCP boundary. The REST path
+> authenticates a human with write access to the project — the same authority that mints
+> gate keys — and JWT sessions carry no scopes, so a signed-in user may attest through
+> `PATCH /api/items/{id}`. That is deliberate for now rather than decided; it is recorded
+> here so it is not mistaken for an oversight.
+
 ### Spec → task traceability
 
 Items can link to a **PRD + section** (`prd_id` / `prd_section` on `create_item`/`update_item`),

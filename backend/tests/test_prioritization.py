@@ -4,6 +4,7 @@ import json
 from app.db import SessionLocal
 from app.services import items as items_svc
 from app.services import prioritization as prio
+from tests import attest
 
 
 def _mcp(client, key, name, args):
@@ -36,7 +37,7 @@ def test_dependency_blocks_readiness(client, auth):
     assert claimed.id == dep.id
 
     # Finish the dependency → the blocked item becomes ready and claimable.
-    items_svc.update_item(db, dep.id, status="done")
+    attest.complete(db, dep.id)
     assert prio.ready(prio.context(db, "prio"), blocked) is True
     assert items_svc.claim_next(db, "agent2", project_id="prio").id == blocked.id
     db.close()

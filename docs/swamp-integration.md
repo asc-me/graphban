@@ -1,11 +1,12 @@
 # Running Graphban with Swamp
 
-> **Status: partly built.** The attestation port's foundations have landed — the
-> `gate` scope (GRPH-541), the `attestation` evidence kind (GRPH-542), and
-> `fleet.sign_off` as the first adapter (GRPH-544). **The refusal itself has not**:
-> `update_item` still accepts `done` without proof, because turning that on is a
-> migration across ~71 call sites (GRPH-543). Everything below about Swamp — the
-> model, the mutation probe, the tripwire workflow — remains design. This doc exists so the
+> **Status: the port is built and armed.** The `gate` scope (GRPH-541), the
+> `attestation` evidence kind (GRPH-542), `fleet.sign_off` as the first adapter
+> (GRPH-544), and the refusal itself (GRPH-543) have all landed: `update_item` now
+> refuses `done` without a valid attestation. Everything below about **Swamp** — the
+> model, the mutation probe, the conformance and adversarial predicates, the tripwire
+> workflow — remains design. Swamp is one adapter the port can accept, not a dependency,
+> and none of it is written. This doc exists so the
 > shape is agreed before code is written, and so the licensing boundary in
 > [Licensing](#licensing-the-hard-boundary) is understood *before* an agent starts porting
 > things it should not port. The tracked spec is **GRPH-P26 "Gated completion"**

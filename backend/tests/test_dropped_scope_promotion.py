@@ -14,6 +14,7 @@ import pytest
 
 from app.services import items as items_svc
 from app.services import prds as prd_svc
+from tests import attest
 
 BODY = (
     "# Spec\n\n"
@@ -49,7 +50,7 @@ def approved(db):
     prd = _approve(db, prd_svc.create_prd(db, title="Spec", project_id="core", body=BODY))
     item = items_svc.create_item(db, title="Built it", project_id="core",
                                  prd_id=prd.id, prd_section="Baseline")
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     return prd
 
 

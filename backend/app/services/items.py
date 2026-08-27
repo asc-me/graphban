@@ -376,6 +376,14 @@ def has_valid_attestation(evidence, *, commit: str | None = None) -> bool:
     return bool(valid_attestations(evidence, commit=commit))
 
 
+class MissingAttestation(Exception):
+    """`done` was asked for on an item nothing has attested (GRPH-543).
+
+    Its own class rather than a ValueError so the boundaries can map it to a `conflict` —
+    the state is wrong, not the request — exactly as `MissingAdversarialEvidence` is.
+    """
+
+
 def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
     item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if item is None:
@@ -390,6 +398,42 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         if effort_update < 0:
             raise ValueError(f"negative effort: {effort_update}")
     prev_status = item.status
+    # THE COMPLETION GATE (GRPH-543). Before this, `update_item` validated a status
+    # transition for MEMBERSHIP IN A LIST and nothing else, so an agent working without a
+    # reviewer reached `done` by writing the string — and the result was indistinguishable
+    # from a placeholder move.
+    #
+    # Placed before anything is assigned, so a refusal leaves the row exactly as it was.
+    #
+    # PRINCIPAL-FREE, deliberately. This asks what the ITEM carries, never who is calling —
+    # which is what lets it live in a service at all, given `authz`'s rule that services stay
+    # principal-free so domain logic keeps one owner. Authority over who may ATTACH an
+    # attestation is the `gate` scope, enforced at the boundary (GRPH-541). The two halves
+    # are what make the guarantee hold: an agent cannot write the proof, and cannot complete
+    # without it.
+    #
+    # Gated on the TRANSITION, not the state. Items that were already `done` predate any
+    # attestation and are left alone; re-saving one does not re-ask the question.
+    #
+    # Evidence arriving in THIS call counts, so an adapter can attest and complete in one
+    # write rather than needing two round trips to satisfy a gate it is itself satisfying.
+    if fields.get("status") == "done" and prev_status != "done":
+        merged_for_gate = append_evidence(item.evidence, fields.get("evidence") or [])
+        if not has_valid_attestation(merged_for_gate):
+            failing = [a for a in attestation_receipts(merged_for_gate)
+                       if not all(q.get("passed") for q in (a.get("predicates") or []))]
+            raise MissingAttestation(
+                f"{item.key} cannot move to done: nothing has attested it. `done` needs an "
+                "`attestation` receipt naming the adapter, the commit it binds to, and at "
+                "least one predicate that passed — written by a key with the `gate` scope "
+                "(CI, or a reviewer via sign_off), not by the agent that built it"
+                + (f" — {len(failing)} recorded attestation(s) carry a FAILING predicate: "
+                   + "; ".join(f"{a['adapter']} says "
+                               + ", ".join(q["name"] for q in a["predicates"]
+                                           if not q.get("passed")) + " failed"
+                               for a in failing)
+                   if failing else "")
+            )
     # Captured BEFORE the status moves. `intent_hold` is about work in flight and goes
     # quiet once an item is done, so asking after the transition always answers None —
     # which silently turned the completion receipt into dead code.

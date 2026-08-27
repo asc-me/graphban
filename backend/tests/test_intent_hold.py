@@ -23,6 +23,7 @@ import pytest
 
 from app.services import items as items_svc
 from app.services import prds as prd_svc
+from tests import attest
 
 BODY = (
     "# Spec\n\n"
@@ -203,7 +204,7 @@ def test_an_unleased_completion_is_still_stamped(db, approved):
     item = _unclaimed_in_progress(db, approved)
     _rebaseline(db, approved, BODY.replace("Classify each completed item against the goal.",
                                            "Rewritten."))
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     db.refresh(item)
 
     assert any("superseded intent" in e["detail"] for e in item.evidence)
@@ -233,7 +234,7 @@ def test_completing_against_superseded_intent_is_recorded_on_the_item(db, approv
     _rebaseline(db, approved, BODY.replace("Classify each completed item against the goal.",
                                            "Rewritten."))
 
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     db.refresh(item)
 
     notes = [e["detail"] for e in item.evidence]
@@ -243,7 +244,7 @@ def test_completing_against_superseded_intent_is_recorded_on_the_item(db, approv
 def test_an_ordinary_completion_is_not_annotated(db, approved):
     """Otherwise the note appears on everything and stops meaning anything."""
     item = _claimed(db, approved)
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     db.refresh(item)
 
     assert not any("superseded intent" in e["detail"] for e in item.evidence)
@@ -255,7 +256,7 @@ def test_the_hold_clears_once_the_work_is_done(db, approved):
     item = _claimed(db, approved)
     _rebaseline(db, approved, BODY.replace("Classify each completed item against the goal.",
                                            "Rewritten."))
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     db.refresh(item)
 
     assert prd_svc.intent_hold(db, item) is None
@@ -284,7 +285,7 @@ def test_the_prd_can_list_who_needs_telling(db, approved):
     held = _claimed(db, approved)
     settled = items_svc.create_item(db, title="Already done", project_id="core",
                                     prd_id=approved.id, prd_section="Baseline")
-    items_svc.update_item(db, settled.id, status="done")
+    attest.complete(db, settled.id)
     _rebaseline(db, approved, BODY.replace("Classify each completed item against the goal.",
                                            "Rewritten."))
 

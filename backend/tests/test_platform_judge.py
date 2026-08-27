@@ -21,6 +21,7 @@ from app.services import items as items_svc
 from app.services import links as links_svc
 from app.services import prds as prd_svc
 from app.services.platform import Resolved
+from tests import attest
 
 BODY = (
     "# Spec\n\n"
@@ -84,7 +85,7 @@ def judge(monkeypatch):
 def _done(db, prd, section="Judging", title="Work", **kw):
     item = items_svc.create_item(db, title=title, project_id="core",
                                  prd_id=prd.id, prd_section=section, **kw)
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     db.refresh(item)
     return item
 
@@ -231,7 +232,7 @@ def test_a_failing_judge_never_blocks_completion(db, approved, judge):
     item = items_svc.create_item(db, title="Ships anyway", project_id="core",
                                  prd_id=approved.id, prd_section="Judging")
 
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     db.refresh(item)
     assert item.status == "done"
 
@@ -248,7 +249,7 @@ def test_completion_survives_the_judge_raising_outright(db, approved, monkeypatc
     item = items_svc.create_item(db, title="Ships anyway", project_id="core",
                                  prd_id=approved.id, prd_section="Judging")
 
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     db.refresh(item)
     assert item.status == "done"
 
@@ -259,7 +260,7 @@ def test_work_on_a_prd_with_no_baseline_is_not_judged(db, judge):
     draft = prd_svc.create_prd(db, title="Draft", project_id="core", body=BODY)
     item = items_svc.create_item(db, title="Work", project_id="core",
                                  prd_id=draft.id, prd_section="Judging")
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     db.refresh(item)
 
     assert prd_svc.classify_work(db, item) is None and judge["calls"] == 0

@@ -16,6 +16,7 @@ import pytest
 
 from app.models import Agent, Event, Item
 from app.services import fleet
+from tests import attest
 
 
 def _rpc(client, key, tool, args=None):
@@ -146,14 +147,17 @@ def test_a_reviewer_does_not_claim_fresh_work(client, agent_key):
 
 # ---- who the gate binds --------------------------------------------------------------------
 
-def test_an_unregistered_caller_on_a_full_key_is_unaffected(client, agent_key):
+def test_an_unregistered_caller_on_a_full_key_is_unaffected(client, auth, agent_key):
     """Every setup that predates PRD-17 keeps working. A key eligible for all three roles
     carries no restriction, which is exactly the old behaviour."""
     claimed = _ok(client, agent_key, "claim_next", {})
     assert claimed["claimed"]
 
-    moved = _ok(client, agent_key, "update_item",
-                {"id": claimed["item"]["id"], "status": "done"})
+    gated = client.post("/api/api-keys",
+                        json={"name": "full", "scopes": ["read", "write", "gate"]},
+                        headers=auth).json()["plaintext"]
+    moved = _ok(client, gated, "update_item",
+                {"id": claimed["item"]["id"], **attest.complete_body()})
 
     assert moved["status"] == "done"
 

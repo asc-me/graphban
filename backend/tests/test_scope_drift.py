@@ -15,6 +15,7 @@ import pytest
 
 from app.services import items as items_svc
 from app.services import prds as prd_svc
+from tests import attest
 
 BODY = (
     "# Spec\n\n"
@@ -185,7 +186,7 @@ def test_a_link_with_no_recorded_time_is_flagged_rather_than_invented(db, approv
 def test_baselined_sections_with_no_delivered_work_are_reported(db, approved):
     item = items_svc.create_item(db, title="Built", project_id="core",
                                  prd_id=approved.id, prd_section="Baseline")
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     items_svc.create_item(db, title="Planned only", project_id="core",
                           prd_id=approved.id, prd_section="Judging")
 

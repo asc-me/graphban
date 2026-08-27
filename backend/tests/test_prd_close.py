@@ -18,6 +18,7 @@ import pytest
 from app.services import items as items_svc
 from app.services import prds as prd_svc
 from app.services.platform import Resolved
+from tests import attest
 
 BODY = (
     "# Spec\n\n"
@@ -56,7 +57,7 @@ def approved(db):
     prd = _approve(db, prd_svc.create_prd(db, title="Spec", project_id="core", body=BODY))
     item = items_svc.create_item(db, title="Built it", project_id="core",
                                  prd_id=prd.id, prd_section="Baseline")
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     return prd
 
 
@@ -177,7 +178,7 @@ def test_the_record_does_not_recompute(db, approved):
 
     extra = items_svc.create_item(db, title="Late arrival", project_id="core",
                                   prd_id=approved.id, prd_section="Judging")
-    items_svc.update_item(db, extra.id, status="done")
+    attest.complete(db, extra.id)
     db.refresh(approved)
 
     assert approved.close_record["dispositions"] == before
