@@ -111,9 +111,13 @@ class Resolved:
     chat: ChatModel
     model: str = ""
     credential_id: str = ""
-    #: `legacy` the project's own `providers` blob (step 0, removed by S6) · `project` its
-    #: credential pointer · `deployment` the scope default · `stub` nothing is configured ·
-    #: `dangling` a pointer was set and did not resolve, and nothing downstream caught it.
+    #: `project` the project's credential pointer · `deployment` the scope default · `stub`
+    #: nothing is configured · `dangling` a pointer was set and did not resolve, and nothing
+    #: downstream caught it.
+    #:
+    #: `legacy` is GONE (S6). It marked a resolution from the per-project blob, and existed so
+    #: "how much is still unmigrated" was answerable by the running system. Once the migration
+    #: has run there is nothing left for it to describe.
     source: str = "stub"
     #: The credential this project ASKED for and did not get, when resolution fell past it
     #: (GRPH-525). Empty on every ordinary resolution.
@@ -256,16 +260,15 @@ def resolve_chat(db: Session, project_id: str) -> Resolved:
     surface that sets these pointers, and finds the ordering already proven rather than
     discovering it against live data.
     """
-    cfg = get_config(db, project_id)
-    provider, base_url, api_key, model = _chat_params(cfg)
-    if provider and provider != "stub":
-        return Resolved(
-            provider_id=provider,
-            chat=providers.build_chat(provider, base_url=base_url, api_key=api_key, model=model),
-            model=model,
-            source="legacy",
-        )
-
+    # STEP 0 IS GONE (PRD-25 S6). The project's legacy `providers` blob used to be consulted
+    # first, so that S1-S5 could ship without moving anyone's configuration. GRPH-512 migrated
+    # every entry into a credential row, and the step died with the data it read: a resolution
+    # branch that outlives its data is a branch nothing exercises.
+    #
+    # The blob itself is still on disk, deliberately. The grill amended "delete it in the same
+    # transaction" to "leave it as a read-only vestige", because deleting the only copy of the
+    # old configuration in the same breath as writing the new one is what makes a bad migration
+    # unrecoverable. Nothing reads it now; a later migration removes it.
     scope = scope_for(db, project_id)
     project = db.get(Project, project_id)
     pointer = getattr(project, "credential_id", None) if project is not None else None
