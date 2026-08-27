@@ -5,7 +5,6 @@ import * as React from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
-import { AiProvidersPanel } from "@/features/settings/AiProvidersPanel";
 import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
 import { McpInstall } from "@/features/settings/McpInstall";
 import { SyncCredentialInstall } from "@/features/settings/SyncCredentialInstall";
@@ -45,16 +44,12 @@ export function SettingsView() {
           ))}
         </div>
         <div className="min-h-0 overflow-y-auto p-6">
-          {tab === "AI Providers" && (
-            <div className="flex flex-col gap-6">
-              {/* The deployment-wide view leads (PRD-25 S5). The per-project provider table
-                  stays below it until S6 removes the legacy blob it edits — deleting it here
-                  would strand every project still configured the old way, which is exactly
-                  what the transitional resolution order exists to prevent. */}
-              <CredentialsPanel />
-              <AiProvidersPanel />
-            </div>
-          )}
+          {/* ONE list. `AiProvidersPanel` sat below this until S6, because it was the only
+              way to edit the legacy `providers` blob that resolution still read. S6 removed
+              that step and migrated every blob into a credential row, so the old panel became
+              a second editor for configuration nothing consults — two lists of the same thing,
+              free to disagree. */}
+          {tab === "AI Providers" && <CredentialsPanel />}
           {tab === "Integrations" && <IntegrationsPanel />}
           {tab === "Sync / Link" && <SyncLinkPanel />}
           {tab === "Project" && <ProjectPanel />}

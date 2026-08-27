@@ -31,6 +31,8 @@ vi.mock("@/lib/queries", () => ({
   // whole-module mock has to answer for its hooks too.
   useCredentials: () => ({ data: { credentials: [] }, isLoading: false }),
   useReindexStatus: () => ({ data: { running: false, tables: [] } }),
+  // The credentials panel colours each project tag with that project's accent (PRD-25 S5).
+  useProjects: () => ({ data: [] }),
 }));
 
 function renderSettings() {
