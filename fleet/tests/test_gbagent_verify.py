@@ -487,3 +487,69 @@ def test_prepare_leaves_a_missing_config_for_load_to_refuse(tmp_path):
         load(root)
 
     assert CONFIG_NAME in str(exc.value)
+
+
+# ---- counts come from the summary line, not from anywhere (GRPH-532) ----------------------
+
+
+def _counts(out: str) -> tuple[int | None, int | None]:
+    from gbagent.verify import _read_counts
+
+    passed, failed, _ = _read_counts(out)
+    return passed, failed
+
+
+def test_a_count_printed_after_the_summary_does_not_become_the_answer():
+    """`out` is stdout and stderr CONCATENATED, so every line of stderr lands after every
+    line of stdout. Reading counts from anywhere made the last of those the answer.
+
+    A teardown log, a coverage total, or any atexit write matching `N passed` used to win.
+    Measured before the fix: this exact input reported 99 passed on a run where three did —
+    the "confident, structured and false" answer `_read_counts` exists to refuse.
+    """
+    assert _counts("=== 1 failed, 3 passed in 0.5s ===\nteardown log: 99 passed\n") == (3, 1)
+    assert _counts("=== 2 failed, 10 passed in 1.2s ===\nTOTAL 340 passed\n") == (10, 2)
+
+
+def test_a_count_printed_before_the_summary_does_not_become_the_answer_either():
+    """The other direction, and it is why this anchors on the summary rather than taking the
+    FIRST match. Preferring the first would fix the case above and break every runner whose
+    summary is not the first count-shaped thing it prints — a warnings block, a previous
+    invocation, a captured log. Both ends have to be excluded by the same rule.
+    """
+    assert _counts("warnings: 77 passed earlier\n=== 1 failed, 3 passed in 0.5s ===\n") == (3, 1)
+
+
+def test_the_last_summary_wins_when_a_run_prints_more_than_one():
+    """A re-run or a nested invocation prints two. The final tally describes this run."""
+    out = "=== 5 failed, 1 passed in 0.2s ===\n…retrying…\n=== 0 failed, 6 passed in 0.4s ===\n"
+    assert _counts(out) == (6, 0)
+
+
+def test_a_runner_with_no_summary_line_still_reports_what_it_can():
+    """The fallback, and the reason it exists. jest prints `Tests: 3 passed, 3 total` with no
+    duration on that line, so requiring a summary would report None for a run that plainly
+    passed. Where the old whole-output read was the only option, it is still what happens.
+    """
+    assert _counts("Tests:       3 passed, 3 total\n") == (3, None)
+
+
+def test_output_nobody_can_read_is_still_None_rather_than_zero():
+    """The property the summary anchoring must not cost. A run whose output means nothing
+    reports nothing — `failed: 0` on an unreadable run is the original sin of this module.
+    """
+    assert _counts("Segmentation fault\n") == (None, None)
+
+
+def test_the_summary_regex_is_actually_consulted():
+    """_SUMMARY was dead code for the whole life of this module — defined, never referenced,
+    and the exact regex the fix needed. A test that only checked counts would pass against a
+    reimplementation that ignored it again, so this pins the wiring.
+    """
+    import inspect
+
+    from gbagent import verify
+
+    assert "_SUMMARY" in inspect.getsource(verify._read_counts), (
+        "_read_counts no longer consults _SUMMARY — if the anchoring moved, move this with it"
+    )

@@ -246,8 +246,7 @@ def _refuse_unread(target: Path, path: str, seen: str | None) -> None:
         raise Unread(
             f"{path}: you have not read this file, so you cannot replace it whole. "
             "write_file rewrites a file ENTIRELY — everything you do not reproduce is "
-            "deleted. Use edit_file to change part of it, or read_file first if you really "
-            "mean to replace all of it."
+            "deleted. Use edit_file to change the part you mean."
         )
     raise Unread(
         f"{path}: this file has changed since you read it, so replacing it whole would "
@@ -262,6 +261,18 @@ def _refuse_truncation(target: Path, path: str, content: str) -> None:
     A refusal rather than a warning, because the model is unattended and there is nobody to
     read a warning. It names `edit_file` because a refusal the model cannot act on costs the
     run, and because `edit_file` is the tool it should have reached for.
+
+    **It does NOT say "read_file first", and neither does `_refuse_unread`** (GRPH-530). Both
+    used to. Reading satisfies the knowledge guard and has no effect here — this one compares
+    line counts and has no notion of what was read — so a model that followed the advice spent
+    a turn reading, retried, and hit this same refusal. Worse, the two guards chained: the
+    knowledge guard sent it here, and here it was told the same thing again.
+
+    That is the failure the paragraph above names, committed by the sentence naming it. The
+    model that takes the bad branch is the one these guards exist for: the S7 walk measured a
+    30B replacing 856 lines with a six-line placeholder, and it is exactly the model that will
+    read, retry, and read again. `edit_file` reaches every case a model can actually get to,
+    so it is the only remedy either message offers.
     """
     try:
         existing = target.read_text(encoding="utf-8").splitlines()
@@ -276,8 +287,7 @@ def _refuse_truncation(target: Path, path: str, content: str) -> None:
         f"{path}: refusing to replace {len(existing)} lines with {len(incoming)}. "
         "write_file rewrites a file WHOLE, so this would delete everything you did not "
         "reproduce — and rewriting a large file from memory is how that happens by accident. "
-        "Use edit_file to change the part you mean, or read_file first if you genuinely "
-        "intend to replace all of it."
+        "Use edit_file to change the part you mean."
     )
 
 
