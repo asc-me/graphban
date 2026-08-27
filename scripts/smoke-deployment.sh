@@ -53,7 +53,15 @@ code=$(req GET "${BASE}/health")
 # reports SUCCESS for a deploy whose container is serving stale code; this is how you tell.
 sha=$(sed -n 's/.*"git_sha":"\([^"]*\)".*/\1/p' "$BODY_FILE")
 db=$(sed -n 's/.*"db":"\([^"]*\)".*/\1/p' "$BODY_FILE")
-[ -n "$sha" ] && ok "release identity: git_sha=${sha}" || bad "no git_sha in /health" "cannot tell which build is serving"
+# `unknown` is a SENTINEL, not a revision (GRPH-426). The API returns it deliberately, so
+# that an instance which could not find out says so instead of answering blank — and a
+# non-empty test then reads that admission as a pass. This check exists to make a stale or
+# unidentifiable build visible, so the one value that means "I cannot tell you" must fail it.
+case "${sha}" in
+    "")        bad "no git_sha in /health" "cannot tell which build is serving" ;;
+    unknown)   bad "git_sha=unknown" "the instance cannot state its revision: no GIT_SHA was baked in at build time and the platform supplied none. A deploy cannot be verified against origin/main, so 'is the fix live?' has no answer" ;;
+    *)         ok "release identity: git_sha=${sha}" ;;
+esac
 [ "$db" = "ok" ] && ok "database reachable: db=ok" || bad "db=${db:-missing}" "the API is up but its database is not"
 
 # ---- 2. pgvector, which this script CANNOT confirm from outside ---------------------------
