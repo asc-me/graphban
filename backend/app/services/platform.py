@@ -123,7 +123,7 @@ def scope_for(db: Session, project_id: str) -> str:
     return (project.org_id or "") if project is not None else ""
 
 
-def _credential(db: Session, credential_id: str | None, scope: str) -> Credential | None:
+def credential_in_scope(db: Session, credential_id: str | None, scope: str) -> Credential | None:
     """A credential, but only if it belongs to the scope asking for it.
 
     The scope check is not decoration. Without it a stale or hand-edited pointer would reach
@@ -193,13 +193,13 @@ def resolve_chat(db: Session, project_id: str) -> Resolved:
     project = db.get(Project, project_id)
     pointer = getattr(project, "credential_id", None) if project is not None else None
 
-    cred = _credential(db, pointer, scope)
+    cred = credential_in_scope(db, pointer, scope)
     if cred is not None:
         return _from_credential(cred, "project",
                                 getattr(project, "model_override", "") or "")
 
     row = db.get(DeploymentConfig, scope)
-    default = _credential(db, row.default_credential_id if row else None, scope)
+    default = credential_in_scope(db, row.default_credential_id if row else None, scope)
     if default is not None:
         return _from_credential(default, "deployment")
 
@@ -542,7 +542,7 @@ def update_credential(db: Session, credential_id: str, scope: str, **fields) -> 
     be asked may now be answerable, and a row that stayed `unreachable` after being corrected
     would be reporting the old failure.
     """
-    cred = _credential(db, credential_id, scope)
+    cred = credential_in_scope(db, credential_id, scope)
     if cred is None:
         raise LookupError(credential_id)
     for key in ("kind", "label", "base_url", "model"):
@@ -584,7 +584,7 @@ def delete_credential(db: Session, credential_id: str, scope: str) -> None:
     open seven projects to find the one holding it, and the `used_by` tags in the listing exist
     precisely so this refusal is predictable before it happens rather than a surprise after.
     """
-    cred = _credential(db, credential_id, scope)
+    cred = credential_in_scope(db, credential_id, scope)
     if cred is None:
         raise LookupError(credential_id)
     projects, roles = _references(db, credential_id, scope)
@@ -622,7 +622,7 @@ def set_scope_defaults(db: Session, scope: str, *, default_credential_id: str | 
         if value is None:
             setattr(row, field, None)
             continue
-        cred = _credential(db, value, scope)
+        cred = credential_in_scope(db, value, scope)
         if cred is None:
             raise LookupError(value)
         if cred.state == UNPROVEN:
@@ -653,7 +653,7 @@ def set_project_credential(db: Session, project_id: str, *,
         if credential_id is None:
             project.credential_id = None
         else:
-            cred = _credential(db, credential_id, (project.org_id or ""))
+            cred = credential_in_scope(db, credential_id, (project.org_id or ""))
             if cred is None:
                 raise LookupError(credential_id)
             project.credential_id = credential_id

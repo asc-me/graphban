@@ -27,6 +27,12 @@ import os
 # Alembic chain and pgvector `<=>` search path; local runs default to SQLite.
 os.environ.setdefault("DATABASE_URL", "sqlite:///./.pytest.db")
 os.environ["SEED_ON_START"] = "true"
+# The credential retry loop is OFF for the suite (PRD-25 S2b). A background task that fires
+# mid-test turns an unrelated assertion into a flake, and the loop's own tests drive
+# `run_once` directly rather than waiting on a timer — so nothing is lost by silencing it and
+# a whole class of intermittent failure is avoided. `test_credential_retry_loop.py` turns it
+# back on explicitly for the tests that are ABOUT the task.
+os.environ["CREDENTIAL_RETRY_SECONDS"] = "0"
 
 
 def _database_per_worker() -> None:

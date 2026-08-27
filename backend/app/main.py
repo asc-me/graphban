@@ -1,9 +1,12 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
+
+import logging
 
 from app.config import settings
 from app.errors import QuotaExceeded
@@ -32,6 +35,9 @@ from app.routers import (
     requests,
     sync,
 )
+
+
+logger = logging.getLogger("graphban.main")
 
 
 @asynccontextmanager
@@ -75,7 +81,61 @@ async def lifespan(app: FastAPI):
             apply_llm(get_config(db, first.id))
     finally:
         db.close()
-    yield
+
+    # The service's FIRST background task (PRD-25 S2b). Three properties it must have, each
+    # of them a test rather than a hope:
+    #
+    #   1. It must not throw its way out. A credential probe reaches the network, and an
+    #      unhandled error here would take down every self-hosted install on startup.
+    #   2. It must not hold a session open. A Session held for the process lifetime pins a
+    #      connection and serves increasingly stale identity-map reads; each pass opens and
+    #      closes its own.
+    #   3. Cancelling it must not hang shutdown.
+    #
+    # `create_task` rather than awaiting: the loop runs FOR the app, not before it. Awaiting
+    # here would mean the first probe's timeout is added to every boot.
+    retry_task = None
+    if settings.credential_retry_seconds > 0:
+        retry_task = asyncio.create_task(_credential_retry_loop())
+
+    try:
+        yield
+    finally:
+        if retry_task is not None:
+            retry_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await retry_task
+
+
+async def _credential_retry_loop() -> None:
+    """Re-ask credentials that could not be asked, forever, without ever raising.
+
+    The `except Exception` is deliberately broad and deliberately INSIDE the loop. A narrower
+    one would let an unanticipated failure kill the task silently — the task dies, nothing
+    logs, and `pending_validation` rows simply stop being retried while the console still shows
+    them as scheduled. Catching everything and continuing means a persistent fault produces a
+    persistent log line instead of silence.
+
+    `CancelledError` is re-raised rather than swallowed: it is how shutdown asks this to stop,
+    and catching it would hang the process on exit.
+    """
+    from app.services import credential_retry
+
+    interval = settings.credential_retry_seconds
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            db = SessionLocal()
+            try:
+                made = await asyncio.to_thread(credential_retry.run_once, db)
+            finally:
+                db.close()
+            if made:
+                logger.info("credential retry: %d attempt(s)", made)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — see the docstring: silence here is the failure
+            logger.warning("credential retry pass failed; continuing", exc_info=True)
 
 
 app = FastAPI(title="Graphban API", version=__version__, lifespan=lifespan)
