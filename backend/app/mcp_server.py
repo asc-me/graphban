@@ -174,9 +174,8 @@ TOOLS: list[dict[str, Any]] = [
                     },
                 },
                 "ack_section_drift": {"type": "boolean",
-                                      "description": "Its PRD section changed and this item is "
-                                                     "still right; stop flagging until it "
-                                                     "changes again."},
+                                      "description": "Its PRD section changed and this "
+                                                     "item is still right; stop flagging."},
             },
             "required": ["id"],
         },
@@ -453,9 +452,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "grill_prd",
         "description": (
-            "Next batch of clarifying questions to sharpen a PRD before building (the 'grill' "
-            "technique) — surfaces unstated assumptions, scope edges and failure modes, "
-            "favoring ones answerable in words. Markdown list; answer via update_prd."
+            "Next questions to sharpen a PRD — unstated assumptions, scope edges, failure "
+            "modes, answerable in words. Records NOTHING: answer_grill advances a grill."
         ),
         "inputSchema": {
             "type": "object",
@@ -1387,8 +1385,13 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
     "grill_prd": {
         "type": "object",
+        # `records_answers: false` is the load-bearing field (GRPH-513): this tool generates
+        # questions and advances nothing, and the counts beside it say so in numbers.
         "properties": {"prd_id": _STR, "questions": _STR,
-                       "retried": {"type": "boolean"}},
+                       "retried": {"type": "boolean"},
+                       "records_answers": {"type": "boolean"},
+                       "turns_recorded": {"type": "integer"},
+                       "dimensions_outstanding": {"type": "array"}},
     },
     "describe_code": {
         "type": "object",
@@ -1488,7 +1491,7 @@ for _t in TOOLS:
         props["fields"] = {
             "type": "string",
             "enum": ["lean", "full"],
-            "description": "`lean` (default) id/title/status; `full` every item field. The reply's `fields` lists what a row carries — one absent there is unreported, not empty.",
+            "description": "`lean` (default) id/title/status; `full` all fields. The reply's `fields` lists what a row carries; one absent is unreported, not empty.",
         }
     if _name in _PAGED:
         props["limit"] = {"type": "integer", "description": "Max results (default 25)."}
@@ -2611,7 +2614,25 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         questions, retried = prd_svc.ai_command_detail(db, prd.id, "grill")
         # `retried` is reported rather than logged only: a caller whose grill was slow can
         # tell contention from a hung server without reading the server's logs (GRPH-505).
-        return {"prd_id": prd.key, "questions": questions, "retried": retried}
+        #
+        # THE GRILL STATE RIDES ALONG (GRPH-513). This tool generates questions and writes
+        # nothing — no turn, no dimension, no status move — while its description said
+        # "answer via update_prd", which is true about recording an answer and silent about
+        # what recording it that way achieves, which is nothing. Four rounds were run against
+        # GRPH-P25 exactly as instructed; it ended with 25,293 characters of worked-through
+        # document, 0 turns, 0 dimensions, and status `draft`. Nothing was broken and nothing
+        # said so.
+        #
+        # A credential can hold `grill_prd` without `answer_grill` — the manifest is trimmed
+        # by scope, and `answer_grill` is not role-gated, so this is a tool-list difference
+        # rather than a refusal an agent would notice. Carrying the counts makes "these
+        # answers are not counting" visible at the moment it becomes true rather than four
+        # rounds later, which is the move GRPH-485 made for the sibling case.
+        done = prd_svc.completion(db, prd.id)
+        return {"prd_id": prd.key, "questions": questions, "retried": retried,
+                "turns_recorded": len(prd_svc.grill_turns(db, prd.id)),
+                "dimensions_outstanding": done["outstanding"],
+                "records_answers": False}
     if name == "prd_acceptance":
         prd = _readable_prd(db, args["prd_id"], readable)
         view = args["view"]

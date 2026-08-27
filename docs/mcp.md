@@ -84,6 +84,23 @@ shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b)
 carries no `claim_next`, a worker credential no `sign_off`. A single-role fleet key sees
 roughly 16–19% fewer tokens.
 
+**`grill_prd` generates questions and advances nothing** (GRPH-513). There are two grill
+modes. `grill_prd` is a drafting aid: it calls the model, returns a markdown list, and writes
+no turn, no dimension and no status change. `answer_grill` is the loop that records, grades and
+advances — and approval is *earned* by finishing it.
+
+The description used to end "answer via `update_prd`". True about how to record an answer, and
+silent about what recording it that way achieves — which is nothing, because `update_prd`
+replaces a body and touches neither `grill_turns` nor `grill_dimensions`, and those are exactly
+what the status is read from. Four rounds were run that way against a PRD; it ended with 25,293
+characters of worked-through document, **0 turns, 0 dimensions, status `draft`**. Nothing was
+broken and nothing said so.
+
+So the payload now carries `records_answers: false`, `turns_recorded` and
+`dimensions_outstanding` beside the questions. A credential can hold `grill_prd` without
+`answer_grill` — the manifest is trimmed by scope — so an agent may have no other way to find
+out that its answers are not counting.
+
 **Every tool argues its role gate** (GRPH-516). 15 of the 55 tools are role-gated; the other
 40 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
