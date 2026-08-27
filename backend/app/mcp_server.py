@@ -1472,7 +1472,7 @@ for _t in TOOLS:
         props["fields"] = {
             "type": "string",
             "enum": ["lean", "full"],
-            "description": "`lean` (default) returns id/title/status per row; `full` returns every item field. Fetch one item's full record with get_item_details.",
+            "description": "`lean` (default) id/title/status; `full` every item field. The reply's `fields` lists what a row carries — one absent there is unreported, not empty.",
         }
     if _name in _PAGED:
         props["limit"] = {"type": "integer", "description": "Max results (default 25)."}
@@ -1676,12 +1676,28 @@ def _ref_key(db, stored_id: str) -> str:
     return stored_id
 
 
+#: What the lean projection carries, named so a caller can tell a field this payload does
+#: not report from one the item does not have (GRPH-440).
+LEAN_FIELDS = ("id", "title", "status")
+
+
 def _lean_item(item) -> dict:
     """The scanning shape: just enough to recognize an item and decide whether to
     open it. List reads (search_items, get_backlog) return this by default and the
     fat fields (touchpoints, assignee, claimed_by, prd_*, fidelity, effort) only on
     `fields="full"` — an agent picking work calls get_item_details once it chooses,
-    so paying for 12 fields × N rows on every scan is waste (AL-78)."""
+    so paying for 12 fields × N rows on every scan is waste (AL-78).
+
+    The compact payload is defensible. What was not is that it looked COMPLETE: a consumer
+    asking a row for `built_by` got nothing back, and in every client language absent arrives
+    as null — `.get()` in Python, `undefined` in TS. So "nobody built this" and "this payload
+    does not say" were the same answer, on the exact field a reviewer consults to decide what
+    it may take. It was misread twice in one day from two different tools, minutes after
+    `update_item` had returned the author for the same items (GRPH-440).
+
+    Fixed on the ENVELOPE rather than the row: `_paginate` names the projection once per page,
+    so the cost is one short array per response instead of four more nulls per row.
+    """
     return {"id": item.key, "title": item.title, "status": item.status}
 
 
@@ -1714,19 +1730,28 @@ def _prd_dict(prd) -> dict:
     }
 
 
-def _paginate(rows: list, args: dict) -> dict:
-    """Slice a full result list to a page and report totals (#9)."""
+def _paginate(rows: list, args: dict, *, fields: tuple[str, ...] | None = None) -> dict:
+    """Slice a full result list to a page and report totals (#9).
+
+    `fields`, when given, names what each row carries (GRPH-440). A projection that does not
+    say what it left out is indistinguishable from a complete one, and the consumer's only
+    recourse is to guess — which is how `built_by: null` on a lean row was read as "nobody
+    built this" rather than "this payload does not report authorship".
+    """
     limit = int(args.get("limit", 25))
     offset = int(args.get("offset", 0))
     total = len(rows)
     page = rows[offset : offset + limit]
-    return {
+    out = {
         "results": page,
         "total": total,
         "limit": limit,
         "offset": offset,
         "has_more": offset + limit < total,
     }
+    if fields is not None:
+        out["fields"] = list(fields)
+    return out
 
 
 def _idempotent_get(db: Session, args: dict, tool: str, model) -> Any | None:
@@ -1949,8 +1974,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             db, args.get("query", ""), status=args.get("status"), project_id=pid,
             tags=args.get("tags"), limit=10_000,
         )
-        shape = _item_dict if _full(args) else _lean_item
-        return _paginate([shape(i) for i in rows], args)
+        lean = not _full(args)
+        shape = _lean_item if lean else _item_dict
+        return _paginate([shape(i) for i in rows], args,
+                         fields=LEAN_FIELDS if lean else None)
     if name == "add_memory":
         cached = _idempotent_get(db, args, "add_memory", MemoryShard)
         if cached is not None:
@@ -2023,14 +2050,20 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         ranked = prio_svc.prioritized(db, pid, statuses=("backlog", "next"), include_blocked=True)
         # The ranking signal (ready/blocked_by/unblocks/votes/score) is the reason to
         # call get_backlog, so it stays; only the fat item fields are opt-in (AL-78).
-        shape = _item_dict if _full(args) else _lean_item
+        lean = not _full(args)
+        shape = _lean_item if lean else _item_dict
+        ranking = ("ready", "blocked_by", "unblocks", "votes", "score")
         rows = [
             {**shape(r["item"]), "ready": r["ready"],
              "blocked_by": [_ref_key(db, d) for d in r["blocked_by"]],
              "unblocks": r["unblocks"], "votes": r["votes"], "score": r["score"]}
             for r in ranked
         ]
-        return _paginate(rows, args)
+        # The ranking fields are on every row whichever projection is in play, so they belong
+        # in the declaration too — a caller checking `fields` must see what it will actually
+        # get, not what the item shape alone carries.
+        return _paginate(rows, args,
+                         fields=(LEAN_FIELDS + ranking) if lean else None)
     if name == "get_item_details":
         _scoped_item(db, args["id"], readable)
         details = items_svc.get_item_details(db, args["id"])
