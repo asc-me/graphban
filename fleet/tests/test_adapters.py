@@ -18,6 +18,7 @@ import pytest
 import gbfleet
 from gbfleet.adapters import (
     ADAPTERS,
+    Adapter,
     AdapterUnavailable,
     Support,
     UnknownAdapter,
@@ -217,12 +218,12 @@ def test_claude_keeps_its_seat_out_of_the_repository_entirely(git_repo: Path, tm
 MATRIX_HEADING = "## The matrix"
 
 
-def _matrix_rows() -> dict[str, str]:
-    """The vendor rows of THE matrix, keyed by name.
+def _rows_under(heading: str) -> dict[str, str]:
+    """The vendor rows of ONE table, keyed by name.
 
-    Parsed rather than searched for. Both of these tests first checked whether the name
-    appeared ANYWHERE in the document, and both survived a sabotage that deleted the
-    table row — because every vendor is also discussed in the prose underneath. A docs
+    Parsed rather than searched for. Both of the matrix tests below first checked whether
+    the name appeared ANYWHERE in the document, and both survived a sabotage that deleted
+    the table row — because every vendor is also discussed in the prose underneath. A docs
     guard that a paragraph can satisfy is the absence-reads-clean defect pointed at
     documentation.
 
@@ -231,12 +232,17 @@ def _matrix_rows() -> dict[str, str]:
     vendor names in their first column. The moment a table appeared whose first column was
     something else — `gbagent`'s exit codes — the guard started reporting `75` and `other`
     as unregistered vendors. It was reading the right rows by luck.
+
+    Takes the heading as an argument so the model and tuning tables get the guard the
+    matrix already had (GRPH-528). Those two arrived after it and did not inherit it:
+    inverting grok's `validated?` column from **yes** to **no**, or exchanging claude's and
+    grok's tuning knobs, left the whole fleet suite green.
     """
     rows: dict[str, str] = {}
     inside = False
     for line in MATRIX.read_text(encoding="utf-8").splitlines():
         if line.startswith("## "):
-            inside = line.strip() == MATRIX_HEADING
+            inside = line.strip() == heading
             continue
         if not inside or not line.startswith("|"):
             continue
@@ -246,6 +252,12 @@ def _matrix_rows() -> dict[str, str]:
             continue
         rows[name] = line
     return rows
+
+
+def _matrix_rows() -> dict[str, str]:
+    """THE matrix's rows. One parser, so the three tables cannot drift apart in how they
+    are read."""
+    return _rows_under(MATRIX_HEADING)
 
 
 def test_the_matrix_section_is_where_this_thinks_it_is():
@@ -369,6 +381,17 @@ def test_the_model_table_keeps_its_caveats():
     assert "qwen3.6:35b-a3b-coding-mtp-det" in text and "qwen3-coder:30b" in text, (
         "the table has lost the models it was measured on"
     )
+    # The ownership claim is the one sentence here that a LEDGER write can falsify without
+    # touching this repository, and nothing in the tree records PRD-11's status — the PRD
+    # index only carries PRDs with a repo copy, and PRD-11 is ledger-only. So it cannot be
+    # pinned to a value; it is DATED instead, which keeps it true as a historical
+    # observation and tells the reader to re-check (GRPH-527).
+    assert "as measured on" in text, (
+        "the PRD-11 ownership claim lost its date. Stated flat it becomes false the moment "
+        "PRD-11 is approved, and no test in this repository can notice — there is no "
+        "committed record of a ledger-only PRD's status to compare against."
+    )
+
     assert "thin evidence and should be read as thin" in text, (
         "the limits of five runs on two models have gone, so this now reads as a ranking"
     )
@@ -376,3 +399,76 @@ def test_the_model_table_keeps_its_caveats():
         "PRD-24 §4 defers model routing to PRD-11, which has no approved baseline — dropping "
         "that leaves the arc's load-bearing variable looking owned when it is not"
     )
+
+
+# ---- the model and tuning tables cannot drift from the adapters (GRPH-528) ----------------
+
+MODEL_HEADING = "## Naming a model (GRPH-483)"
+TUNING_HEADING = "## Per-vendor tuning (GRPH-484)"
+
+
+def test_the_model_and_tuning_sections_are_where_this_thinks_they_are():
+    """Same guard-on-the-guard the matrix has. A renamed section leaves the two tests below
+    parsing nothing and passing, which is the failure they exist to prevent."""
+    for heading in (MODEL_HEADING, TUNING_HEADING):
+        assert heading in MATRIX.read_text(encoding="utf-8"), f"{heading} moved or was renamed"
+        assert len(_rows_under(heading)) >= 4, f"{heading} parsed almost nothing"
+
+
+def test_the_model_table_agrees_with_the_adapters_about_who_can_be_checked():
+    """`an unvalidated pass-through must not read the same as a verified one` — GRPH-483.
+
+    The doc says per vendor whether a named model can be checked before spawning, and
+    nothing kept that true: inverting grok's column from **yes** to **no** left the whole
+    fleet suite green, and an operator reading it would skip validating the one model they
+    could have validated.
+
+    Whether an adapter ATTEMPTS a listing is visible from the class, because `claude` alone
+    inherits the base `known_models`. So the correspondence is checkable without any vendor
+    binary — which is what makes this cheap enough to be worth having.
+    """
+    rows = _rows_under(MODEL_HEADING)
+    assert set(rows) == set(ADAPTERS), (
+        f"the model table lists {sorted(rows)}; the registry holds {sorted(ADAPTERS)}"
+    )
+
+    for name, adapter in ADAPTERS.items():
+        attempts = type(adapter).known_models is not Adapter.known_models
+        says_no = rows[name].lower().split("|")[3].strip().startswith("**no.")
+        assert says_no is not attempts, (
+            f"{name}: the table says {'it cannot be checked' if says_no else 'it can be'}, "
+            f"but the adapter {'does not' if not attempts else 'does'} attempt a listing. "
+            "One of the two is wrong, and the doc is what an operator reads."
+        )
+
+
+def test_the_tuning_table_names_the_knob_each_vendor_actually_has():
+    """A caller following a wrong row passes a knob the vendor refuses, and gets a message
+    naming the one it DOES accept — while the doc that sent them there stays wrong.
+
+    Exchanging claude's and grok's rows left the fleet suite green. `adapter.tuning` is a
+    plain set, so the rows are checkable directly against it.
+    """
+    rows = _rows_under(TUNING_HEADING)
+    assert set(rows) == set(ADAPTERS), (
+        f"the tuning table lists {sorted(rows)}; the registry holds {sorted(ADAPTERS)}"
+    )
+
+    # The knob names as an operator would type them, mapped to the field an adapter declares.
+    spellings = {"fallback_model": "--fallback-model", "effort": "--reasoning-effort",
+                 "turns": "--turns", "window": "--window"}
+    for name, adapter in ADAPTERS.items():
+        row = rows[name]
+        for field in adapter.tuning:
+            flag = spellings.get(field)
+            assert flag, f"{field} has no known spelling — add it to this test's map"
+            assert flag in row, (
+                f"{name} declares tuning={sorted(adapter.tuning)} but its row does not "
+                f"mention {flag}: {row}"
+            )
+        for field, flag in spellings.items():
+            if field not in adapter.tuning:
+                assert flag not in row, (
+                    f"{name}'s row offers {flag}, which it does not accept — "
+                    f"it declares {sorted(adapter.tuning) or 'no knobs'}: {row}"
+                )

@@ -144,9 +144,11 @@ model that is not on it.
 differ in training; nothing here separates those two variables, and the walk did not try.
 
 **Nothing owns the routing question.** PRD-24 §4 declares model routing a non-goal and defers
-"which model suits which role" to PRD-11 — and PRD-11 has no approved baseline. So the variable
-the arc's value rests on is currently assigned to a document that has not been approved. Worth
-knowing before anybody plans around it.
+"which model suits which role" to PRD-11 — and **as measured on 2026-08-26, PRD-11 was still
+`draft` with no approved baseline**. So the variable the arc's value rests on was assigned to a
+document that had not been approved. Worth knowing before anybody plans around it, and worth
+re-checking rather than trusting: this is the one claim on the page that a ledger write can
+falsify without touching the repository, so it is dated rather than stated flat.
 
 **What is not wired yet.** `gbagent run` can orient itself — the seven graph reads of PRD-24 S6
 are advertised from the server's own manifest — but it cannot CLAIM its own work: `claim_next`
