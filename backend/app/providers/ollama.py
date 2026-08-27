@@ -31,6 +31,40 @@ class OllamaEmbedder:
         self.dim = dim
         self.auth_key = auth_key or ""
 
+    def embed_many(self, texts: list[str]) -> list[list[float]]:
+        """Embed a batch in ONE request, falling back to per-text calls if unsupported.
+
+        Ollama's newer `/api/embed` takes an array in `input`; the older `/api/embeddings`
+        takes a single `prompt`. The re-index needs the batch path — a round trip per row is an
+        order of magnitude worse, and 1,103 shards at one request each is the difference
+        between half a minute and several (GRPH-536).
+
+        **The fallback is not defensive habit.** This code cannot verify which endpoint a given
+        Ollama build serves, and a deployment on an older one must keep working rather than
+        fail a re-index with a 404. When it triggers, the request-count property this batching
+        exists for is genuinely lost — so it logs, rather than degrading quietly.
+        """
+        if not texts:
+            return []
+        try:
+            r = httpx.post(
+                f"{self.base_url}/api/embed",
+                headers=_headers(self.auth_key),
+                json={"model": self.model, "input": list(texts)},
+                timeout=_timeout(),
+            )
+            r.raise_for_status()
+            vectors = r.json().get("embeddings")
+            if isinstance(vectors, list) and len(vectors) == len(texts):
+                return vectors
+            logger.warning("ollama /api/embed returned %s vectors for %d inputs; falling back "
+                           "to one request per row",
+                           len(vectors) if isinstance(vectors, list) else "no", len(texts))
+        except Exception as e:  # noqa: BLE001 — any failure means "use the older endpoint"
+            logger.warning("ollama /api/embed unavailable (%s); falling back to one request "
+                           "per row, which is much slower", e)
+        return [self.embed(t) for t in texts]
+
     def embed(self, text: str) -> list[float]:
         """Embed one string, retrying transient failures — a cold model behind a
         gateway can be slow on the first call, and a blip shouldn't cost an ingest.

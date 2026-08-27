@@ -21,6 +21,7 @@ Alembic; SQLite (tests / zero-infra dev) uses `create_all`.
 | `platform_config` | `project_id` | Per-project LLM mode + provider config + GitHub/Drive connection state |
 | `credentials` | `id` | One LLM provider credential, owned by the deployment (`org_id` NULL) or by an org. Keyed by ROW, so two keys for the same provider are two rows (PRD-25 D-a) |
 | `deployment_config` | `scope` | The default / fallback / embedding credential for one scope. `scope` is `''` for the deployment itself, an org id under hosted multi-tenancy |
+| `reindex_progress` | `scope` + `table_name` | How far a re-index has got, PER TABLE (PRD-25 S4b). One counter cannot distinguish "finished memory_shards" from "partway through it", so a resume would have to choose between redoing finished work and skipping unfinished work |
 | `api_keys` | `id` | Scoped agent key: name, prefix, `hashed_key` (SHA-256), scopes, last used |
 | `project_tag_history` | `tag` | A tag a project used to hold — one row per rename. Tags are never reused on a deployment |
 | `legacy_entity_keys` | `old_key` | Ids issued before project tags existed (`AL-12`, `R-33`, `PRD-1`), seeded once so they resolve forever |

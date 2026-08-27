@@ -201,6 +201,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | GET | `/api/platform/credentials` | JWT | Every credential in the caller's scope with `state`, derived `used_by`, and `falling_back` — projects pointing here that are NOT getting it because the row is unreachable or out of scope (PRD-25 §4). Never returns a key, only `key_set` |
 | POST | `/api/platform/credentials` | JWT |
 | PATCH / DELETE | `/api/platform/credentials/{id}` | JWT | Add, edit (rotation is an edit — the row id never moves) or remove a credential. `409` naming every referencing project and role while anything points at it |
+| POST / GET | `/api/platform/reindex` | JWT | Start a re-index of every embedded row in the scope, or read its per-table progress (PRD-25 S4b) |
 | POST | `/api/platform/credentials/{id}/retry` | JWT |
 | PUT | `/api/platform/credentials/defaults` | JWT | Set the scope's default / fallback / embedding credential. `422` for one that has never been validated |
 | PUT | `/api/platform/credentials/project` | JWT | Point a project at a credential, with an optional `model_override` |

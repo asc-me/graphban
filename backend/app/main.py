@@ -119,17 +119,27 @@ async def lifespan(app: FastAPI):
                 await retry_task
 
 
-def _one_retry_pass() -> int:
-    """One retry pass, session included. Runs entirely inside a worker thread.
+def _one_background_pass() -> int:
+    """One pass of the background work, session included. Runs inside a worker thread.
 
-    Owning the session here is what makes cancellation safe: nothing outside this function
-    can close a session while this function is using it.
+    Owning the session here is what makes cancellation safe: nothing outside this function can
+    close a session while this function is using it (GRPH-535).
+
+    Two jobs share the pass, and the ORDER is deliberate. The retry is bounded and cheap — a
+    handful of rows at most. The re-index is long, so it goes second and does exactly ONE batch
+    per pass: a loop that drained the whole re-index inside a single pass would block the retry
+    behind a job measured in minutes, and the two would stop being independent.
     """
-    from app.services import credential_retry
+    from app.services import credential_retry, reindex
 
     db = SessionLocal()
     try:
-        return credential_retry.run_once(db)
+        did = credential_retry.run_once(db)
+        try:
+            did += reindex.run_batch(db)
+        except Exception:  # noqa: BLE001 — a stuck re-index must not stop credential retries
+            logger.warning("re-index batch failed; retries continue", exc_info=True)
+        return did
     finally:
         db.close()
 
@@ -162,7 +172,7 @@ async def _credential_retry_loop() -> None:
             # whose threads are NON-DAEMON and joined at interpreter exit. A thread left
             # working on a closed session can block the process from exiting at all — which
             # is what "Terminate orphan process (python)" looked like in CI.
-            made = await asyncio.to_thread(_one_retry_pass)
+            made = await asyncio.to_thread(_one_background_pass)
             if made:
                 logger.info("credential retry: %d attempt(s)", made)
         except asyncio.CancelledError:
