@@ -19,6 +19,15 @@ import { describe, expect, it } from "vitest";
  * what one build happened to pass; this proves what the file says, which is what a future
  * edit changes. `graph-call-sites.test.ts` pins its call-site conventions the same way and
  * gives the argument in full.
+ *
+ * **WHAT THIS FILE CANNOT SEE, and where the other half lives.** A string-presence check at
+ * any scope cannot tell live code from dead code. Changing `counts.undescribed ?` to `false ?`
+ * leaves the interpolation exactly where the assertions below look for it, inside a branch
+ * that never runs — every test here passes and the screen-reader surface stops announcing the
+ * count (GRPH-524). What is announced is the RENDERED string, so that half is asserted off the
+ * element in `graph-accessible-name.test.tsx`. The two are complements, not duplicates: this
+ * file proves both surfaces read one memo, which no single render can show; that one proves
+ * the branch is reachable, which no source read can show.
  */
 const VIEWS = import.meta.glob("../features/code/CodeGraphView.tsx", {
   query: "?raw",
