@@ -112,21 +112,30 @@ def plan_migration(entries: list[dict]) -> tuple[list[dict], list[dict]]:
             "api_key": entry.get("api_key") or "",
             "projects": [],
             "models": [],
+            "active_projects": [],
         })
         group["projects"].append(entry["project_id"])
         group["models"].append(entry.get("model") or "")
+        if entry.get("active"):
+            group["active_projects"].append(entry["project_id"])
 
     out = []
     for group in groups.values():
-        model = choose_model(group["models"])
+        # Chosen from the models of the projects that are actually USING this credential, when
+        # any are. An inactive entry's model says what a project would use if it switched, and
+        # letting it win would create an override for every project that is using the thing.
+        active_models = [m for pid, m in zip(group["projects"], group["models"])
+                         if pid in group["active_projects"]]
+        model = choose_model(active_models or group["models"])
         out.append({
             **group,
             "model": model,
             # Only the projects whose model DIFFERS need an override. Choosing the most common
             # model above is what keeps this list as short as possible.
+            # Only projects that will actually point here can need an override.
             "overrides": {
                 pid: m for pid, m in zip(group["projects"], group["models"])
-                if m and m != model
+                if m and m != model and pid in group["active_projects"]
             },
         })
     return out, skipped
@@ -160,6 +169,11 @@ def collect_entries(db: Session) -> list[dict]:
                 "base_url": conf.get("base_url") or "",
                 "api_key": conf.get("api_key") or "",
                 "model": conf.get("chat_model") or "",
+                # **Which entry the project was actually USING** (GRPH-539). A blob can hold
+                # several configured providers while `active_chat_provider` names the one in
+                # use. Every entry still becomes a credential — they are real keys worth
+                # keeping — but only the active one may claim the project's pointer.
+                "active": kind == cfg.active_chat_provider,
             })
     return entries
 
@@ -201,6 +215,16 @@ def migrate(db: Session, scope: str = "") -> dict:
         for pid in group["projects"]:
             project = db.get(Project, pid)
             if project is None:
+                continue
+            # **Only the ACTIVE entry claims the pointer.** The first version assigned it for
+            # every group a project appeared in, so a project with two configured providers was
+            # written twice and whichever group came last won — on the reference deployment
+            # that pointed an ollama-configured project at an xai credential, with an ollama
+            # model override, so its calls asked x.ai for a qwen model.
+            #
+            # The inactive entry still became a credential above. It is a real key somebody
+            # saved; it simply is not what this project was using.
+            if pid not in group["active_projects"]:
                 continue
             project.credential_id = cred.id
             override = group["overrides"].get(pid)
