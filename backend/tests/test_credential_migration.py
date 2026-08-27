@@ -269,3 +269,73 @@ def test_after_migrating_a_project_resolves_through_its_new_pointer(db):
     assert resolved.source == "project"
     assert resolved.credential_id == db.get(Project, "p1").credential_id
     assert resolved.model == "claude-x"
+
+
+# ---- a blob with more than one entry (GRPH-539) ---------------------------------------------
+
+
+def test_the_pointer_follows_active_chat_provider_not_iteration_order(db):
+    """FOUND IN PRODUCTION, not by a test. This is the case none of the fifteen above covered.
+
+    A project's blob can hold several configured providers while `active_chat_provider` names
+    the one in use. The first version assigned `credential_id` for every group a project
+    appeared in, so it was written once per entry and whichever came LAST won.
+
+    On the reference deployment that pointed an ollama-configured project at an xai credential
+    — with an ollama model override — so its calls asked x.ai for a qwen model. Nothing failed
+    at migration time; it failed at the first chat request.
+    """
+    _project(db, "p1", {
+        # Deliberately ordered so the WRONG answer is the last one written.
+        "ollama": {"base_url": "http://ollama:11434", "api_key": "", "chat_model": "qwen"},
+        "xai": {"base_url": "", "api_key": secrets.encrypt("sk-xai"), "chat_model": "grok"},
+    })
+    cfg = platform_svc.get_config(db, "p1")
+    cfg.active_chat_provider = "ollama"
+    db.commit()
+
+    mig.migrate(db)
+
+    pointed = db.get(Credential, db.get(Project, "p1").credential_id)
+    assert pointed.kind == "ollama", (
+        f"the project was using ollama and now points at a {pointed.kind} credential"
+    )
+
+
+def test_an_inactive_entry_still_becomes_a_credential(db):
+    """It is a real key somebody saved — it simply is not what this project was using. Losing
+    it would mean the migration discarded configuration, which is the one thing it must not do.
+    """
+    _project(db, "p1", {
+        "ollama": {"base_url": "http://ollama:11434", "api_key": "", "chat_model": "qwen"},
+        "xai": {"base_url": "", "api_key": secrets.encrypt("sk-xai"), "chat_model": "grok"},
+    })
+    cfg = platform_svc.get_config(db, "p1")
+    cfg.active_chat_provider = "ollama"
+    db.commit()
+
+    mig.migrate(db)
+
+    kinds = sorted(c.kind for c in db.query(Credential).all())
+    assert kinds == ["ollama", "xai"], f"an entry was discarded: {kinds}"
+
+
+def test_an_inactive_entry_does_not_create_a_spurious_override(db):
+    """The credential's model is chosen from the projects USING it. An inactive entry's model
+    says what a project would use if it switched, and letting it win would create an override
+    for every project that is actually using the thing."""
+    _project(db, "p1", {
+        "ollama": {"base_url": "http://o:11434", "api_key": "", "chat_model": "qwen"},
+    })
+    _project(db, "p2", {
+        "ollama": {"base_url": "http://o:11434", "api_key": "", "chat_model": "qwen"},
+        "xai": {"base_url": "", "api_key": secrets.encrypt("k"), "chat_model": "grok"},
+    })
+    for pid in ("p1", "p2"):
+        platform_svc.get_config(db, pid).active_chat_provider = "ollama"
+    db.commit()
+
+    mig.migrate(db)
+
+    assert db.get(Project, "p1").model_override == ""
+    assert db.get(Project, "p2").model_override == ""
