@@ -395,8 +395,6 @@ TOOLS: list[dict[str, Any]] = [
                            "title": {"type": "string"}, "status": {"type": "string"},
                            "version": {"type": "integer"}, "body": {"type": "string"}},
         },
-        "annotations": {"readOnlyHint": True, "destructiveHint": False,
-                        "idempotentHint": True, "openWorldHint": False},
     },
     {
         "name": "update_prd",
@@ -1089,6 +1087,13 @@ _READ_ONLY = {
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
     "graph_query",
     "prd_acceptance", "learning_loop", "fleet_status",
+    # Added with the tool itself missing from this set (GRPH-519 -> GRPH-48). It looks a PRD
+    # up and returns fields; it writes nothing, and its own literal declared
+    # `readOnlyHint: True` — which the build loop then overwrote to False, because THIS is
+    # where read-ness is decided. The wrong hint was the visible half. The half that
+    # mattered: scope gating ships a read-only key exactly this set, so a read-only
+    # credential could not call the tool that exists to let an agent read a PRD.
+    "get_prd",
 }
 
 _PAGE_META = {  # shared output shape for paged reads (#9)

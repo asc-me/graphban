@@ -107,6 +107,32 @@ def test_review_recommendation_advertises_that_it_is_idempotent():
     assert effective(t)["readOnlyHint"] is False, "it does write — just not repeatedly"
 
 
+def test_get_prd_is_declared_a_read_and_a_read_only_key_can_call_it():
+    """The second thing the single-source guard caught, and the one with teeth.
+
+    `get_prd` shipped with a hand-written `readOnlyHint: True` that the build loop
+    overwrote, because read-ness is decided by `_READ_ONLY` and the tool was never added to
+    it. The wrong hint was the visible half. The half that mattered is that scope gating
+    ships a read-only key exactly that set — so a read-only credential could not call the
+    tool whose entire purpose is letting an agent read a PRD, and the manifest simply would
+    not mention it. Absent from a manifest looks like a tool that does not exist.
+    """
+    assert "get_prd" in _READ_ONLY
+    t = next(t for t in TOOLS if t["name"] == "get_prd")
+    assert effective(t)["readOnlyHint"] is True
+    assert effective(t)["destructiveHint"] is False
+
+
+def test_a_read_only_credential_actually_receives_get_prd(client, auth):
+    """Through the endpoint, because the set membership above and the manifest a key is
+    handed are two different things — and the second is what an agent experiences."""
+    key = client.post("/api/api-keys", json={"name": "ro-prd", "scopes": ["read"]},
+                      headers=auth).json()["plaintext"]
+    tl = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                     headers={"X-API-Key": key}).json()
+    assert "get_prd" in {t["name"] for t in tl["result"]["tools"]}
+
+
 @pytest.mark.parametrize("name", ["update_item", "create_item", "search_items", "sign_off"])
 def test_the_hints_survive_the_round_trip_to_a_client(client, auth, name):
     """Through the real endpoint, not just the module constant: the trim happens where the
