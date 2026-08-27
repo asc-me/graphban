@@ -23,8 +23,10 @@ __all__ = [
     "get_extractor",
     "iter_reply",
     "reset",
+    "set_active_embedder",
     "set_active_chat",
     "build_chat",
+    "build_embedder",
     "build_extractor",
 ]
 
@@ -81,6 +83,44 @@ def build_extractor(provider: str = "stub", *, base_url: str = "", api_key: str 
     return StubExtractor()
 
 
+def build_embedder(provider: str = "stub", *, base_url: str = "", api_key: str = "",
+                   model: str = "") -> Embedder:
+    """Construct an embedder from an explicit config — the counterpart to `build_chat`.
+
+    `get_embedder()` reads process-global settings and is cached, which is right for the
+    env-configured default and wrong for two things PRD-25 S4 needs: probing a CANDIDATE
+    credential before accepting it, and serving a deployment credential that a settings change
+    can alter without a restart.
+
+    **The dimension still comes from `settings.embed_dim`.** That is not a shortcut — the
+    vector column's width is fixed when the models import, so an embedder built here that
+    claimed a different dimension would be describing a column that does not exist. The gate in
+    `services.embedder` is what refuses a mismatch, by measuring what the provider actually
+    returns.
+    """
+    provider = provider or "stub"
+    if provider == "ollama":
+        from app.providers import ollama
+
+        return ollama.OllamaEmbedder(
+            base_url or settings.ollama_base_url,
+            model or settings.ollama_embed_model,
+            settings.embed_dim,
+            api_key or settings.ollama_auth_key,
+        )
+    if provider in ("openai", "openai_compat") or registry.is_openai_compat(provider):
+        from app.providers import openai as openai_provider
+
+        meta = registry.get(provider) or {}
+        return openai_provider.OpenAIEmbedder(
+            base_url or meta.get("base_url", "") or settings.openai_base_url,
+            api_key or settings.openai_api_key,
+            model or settings.openai_embed_model,
+            settings.embed_dim,
+        )
+    return StubEmbedder()
+
+
 def safe_embed(text: str) -> list[float] | None:
     """Embed for an INGEST path: never raise, return None if the provider is down.
 
@@ -111,8 +151,24 @@ def iter_reply(model: ChatModel, *, system: str, context: str, question: str):
         yield model.chat(system=system, context=context, question=question)
 
 
+# The deployment's embedding credential, when one is configured (PRD-25 S4). Plain module
+# state for the same reason `_active` is: a switch has to take effect immediately, and the
+# alternative is threading a Session into every call site that embeds.
+_active_embed: dict = {}
+
+
+def set_active_embedder(provider: str = "", *, base_url: str = "", api_key: str = "",
+                        model: str = "") -> None:
+    _active_embed.update(provider=provider, base_url=base_url, api_key=api_key, model=model)
+    get_embedder.cache_clear()
+
+
 @lru_cache
 def get_embedder() -> Embedder:
+    if _active_embed.get("provider"):
+        # A deployment credential was configured; it wins over the env default.
+        return build_embedder(_active_embed["provider"], base_url=_active_embed["base_url"],
+                              api_key=_active_embed["api_key"], model=_active_embed["model"])
     p = settings.embed_provider
     if p == "ollama":
         from app.providers import ollama
