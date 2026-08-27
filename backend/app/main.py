@@ -76,9 +76,21 @@ async def lifespan(app: FastAPI):
 
     db = SessionLocal()
     try:
+        # The CHAT provider still comes from a project, and still the alphabetically first one.
+        # That is a real wart and it is not this slice's (PRD-25 S4 covers the EMBEDDER); it is
+        # left visible rather than tidied silently.
         first = db.scalars(select(Project).order_by(Project.name)).first()
         if first is not None:
             apply_llm(get_config(db, first.id))
+
+        # The EMBEDDER no longer rides on that. It used to be configured by whichever project
+        # sorted first alphabetically, so on a multi-project deployment a project RENAME could
+        # silently change which model produced every vector written afterwards — and nothing
+        # recorded that it had. It is now the deployment's own credential, falling back to the
+        # environment when none is set (PRD-25 D-c).
+        from app.services.embedder import apply_embedder
+
+        apply_embedder(db)
     finally:
         db.close()
 
