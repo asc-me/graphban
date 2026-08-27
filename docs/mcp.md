@@ -374,7 +374,14 @@ people to route around it.
 
 The two halves are what make it hold. An agent cannot write the proof (no `gate` scope) and
 cannot complete without it — so finishing work means getting it attested by CI, or by a
-reviewer through `sign_off` with a `commit`. Fleet keys minted for the **reviewer** or
+reviewer through `sign_off` with a `commit`.
+
+Two adapters exist. **`fleet.sign_off`** needs a reviewer but no external service, which is
+what keeps completion reachable offline. **CI** (`scripts/attest_ci.py`, run as a step in
+the `ci` gate job) attests every item a green run's PR names, and needs no reviewer — set
+`GRAPHBAN_URL` as a repository variable and `GRAPHBAN_GATE_KEY` as a secret to enable it.
+Without them it skips loudly rather than failing the build, and items must be signed off
+by hand. Fleet keys minted for the **reviewer** or
 **all-in-one** role carry `gate` for that reason; a worker or planner key does not, because
 a worker's ceiling is `review` by design.
 
