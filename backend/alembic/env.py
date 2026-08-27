@@ -11,21 +11,31 @@ import app.models  # noqa: F401  (register all tables on Base.metadata)
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
-if config.config_file_name is not None:
-    # `disable_existing_loggers=False` is load-bearing, not tidiness (GRPH-525).
-    #
-    # `fileConfig` defaults to True, which sets `disabled = True` on every logger that already
-    # exists. On Postgres — which is what production runs — `run_migrations()` executes inside
-    # `lifespan` AFTER the app's modules have been imported, so this silenced ten of the twelve
-    # `graphban.*` loggers for the entire life of the process: `graphban.main`,
-    # `graphban.platform`, `graphban.credential_retry`, `graphban.mcp`, `graphban.events`,
-    # `graphban.email`, `graphban.ratelimit`, and more.
-    #
-    # What that cost: the credential retry loop's "pass failed; continuing" warning could never
-    # appear in production, so the background task added in PRD-25 S2b would have failed in
-    # exactly the silence its own error handling was written to prevent. SQLite installs use
-    # `create_all` and never call this, which is why every test suite and every local run looked
-    # fine — the one engine that mattered was the one nobody could observe.
+# TWO LAYERS, because they stop different halves of the same accident. `run_migrations()`
+# executes inside `lifespan` on Postgres — which is what production runs — AFTER the app has
+# imported its modules and called `configure_logging()`. SQLite installs use `create_all` and
+# never reach here, which is why every local run and the SQLite CI job look fine either way.
+#
+# LAYER 1 — `disable_existing_loggers=False` (GRPH-525). The default is True, which sets
+# `disabled = True` on every logger that already exists. That silenced ten of the twelve
+# `graphban.*` loggers for the life of the process, including the credential retry loop's
+# "pass failed; continuing" warning — so the background task added in PRD-25 S2b would have
+# failed in exactly the silence its own error handling was written to prevent.
+#
+# LAYER 2 — skip `fileConfig` altogether when the app embeds us (GRPH-33). Layer 1 alone is
+# not enough, measured: with `disable_existing_loggers=False` the loggers stay enabled, but
+# `fileConfig` still applies `[logger_root]`, which sets **level = WARNING** and swaps root's
+# handler for alembic.ini's plain `generic` console handler. So after migrations every INFO
+# record is dropped — the per-request access log, `graphban.main`'s "credential retry: N
+# attempt(s)", the seed line — and whatever still passes comes out as plain text on a stream
+# that LOG_JSON=true promised would be JSON.
+#
+#     start      : disabled=False formatter=['_JsonFormatter']
+#     layer 1    : disabled=False formatter=['Formatter']   <- level also raised to WARNING
+#
+# `app/migrate.py` sets the attribute. The default keeps `alembic upgrade head` on the command
+# line configuring its own logging, which is the one case where alembic SHOULD own the stream.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata

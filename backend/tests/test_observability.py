@@ -38,6 +38,36 @@ from app.config import settings
 SHARE_TOKEN = "super-secret-share-token"
 
 
+@pytest.fixture(autouse=True)
+def _restore_logging():
+    """Put the logging module back exactly as found, for EVERY test in this file.
+
+    Not hygiene — this is the bug the file is about, turned on itself. Three of the eight
+    CI failures that led here were other suites' `caplog` coming back empty, because
+    something had replaced the root handlers pytest installs. `configure_logging` does
+    `root.handlers[:] = [...]`, and `fileConfig` below additionally flips `.disabled` on
+    every logger it does not name. Both outlive the test that caused them and are invisible
+    to it: the damage lands on whatever runs next in the same worker, which under `-n auto`
+    is a different file on every run.
+
+    So: handlers, level, and every logger's disabled flag, saved and restored.
+    """
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    saved_disabled = {
+        name: lg.disabled
+        for name, lg in logging.root.manager.loggerDict.items()
+        if isinstance(lg, logging.Logger)
+    }
+    yield
+    root.handlers[:] = saved_handlers
+    root.setLevel(saved_level)
+    for name, was_disabled in saved_disabled.items():
+        lg = logging.root.manager.loggerDict.get(name)
+        if isinstance(lg, logging.Logger):
+            lg.disabled = was_disabled
+
+
 @pytest.fixture()
 def capture(monkeypatch):
     """Install the app's real handler and redirect it to a buffer.
@@ -56,8 +86,7 @@ def capture(monkeypatch):
             h.stream = stream
         return stream
 
-    yield install
-    logging.getLogger().handlers[:] = []
+    return install
 
 
 def drive(*, status=200, headers=None, raises=False, path="/api/public/roadmap"):
@@ -305,3 +334,75 @@ def test_the_runbook_names_the_start_command_the_image_actually_uses():
     assert "app.serve" in doc, "the runbook no longer names the image's actual start command"
     assert "uvicorn --port" not in doc, \
         "the runbook still documents the old uvicorn CLI invocation"
+
+
+# ---- alembic must not silence the app on the boot path that runs it -----------------------
+
+
+def test_alembics_own_config_would_still_drop_every_info_record(capture):
+    """Characterises the half that survives GRPH-525, so layer 2 cannot be read as duplicate.
+
+    GRPH-525 already passes `disable_existing_loggers=False`, which keeps the app's loggers
+    ENABLED — that was the half it was chasing, and it saves `logger.warning`. It does not
+    save INFO. `fileConfig` still applies alembic.ini's `[logger_root]`, which sets
+    `level = WARNING` and swaps root's handler for the plain `generic` console one.
+
+    So on Postgres, after migrations and with GRPH-525 in place, every INFO record is still
+    dropped — the per-request access log, `graphban.main`'s "credential retry: N attempt(s)",
+    the seed line — and whatever survives comes out as plain text on a stream `LOG_JSON=true`
+    promised would be JSON. Measured:
+
+        start   : disabled=False formatter=['_JsonFormatter']
+        layer 1 : disabled=False formatter=['Formatter']   <- level also raised to WARNING
+
+    If alembic.ini ever stops raising the root level, this test says so and layer 2 can go.
+    """
+    import pathlib as _p
+    from logging.config import fileConfig
+
+    from app.observability import access_logger
+
+    stream = capture(True)
+    ini = _p.Path(__file__).resolve().parents[1] / "alembic.ini"
+
+    fileConfig(str(ini), disable_existing_loggers=False)  # exactly GRPH-525's call
+
+    assert not access_logger.disabled, "GRPH-525's half regressed — loggers are disabled again"
+
+    root = logging.getLogger()
+    assert root.level > logging.INFO, (
+        "alembic.ini no longer raises the root level; re-check whether layer 2 is still needed"
+    )
+    for h in root.handlers:
+        h.stream = stream
+    access_logger.info("this must not survive")
+    assert stream.getvalue() == "", (
+        f"an INFO record survived alembic's config: {stream.getvalue()!r} — if that is now "
+        "true, layer 2 in alembic/env.py is no longer load-bearing"
+    )
+
+
+def test_migrations_run_from_the_app_do_not_reconfigure_logging():
+    """The wiring, in both halves — either alone is inert.
+
+    Read from source rather than executed: `alembic/env.py` runs its module body on import
+    and needs a live database to do so, and the branch that matters is the one taken on
+    Postgres. The behavioural proof is the Postgres CI job, which is where the failure was.
+    """
+    import inspect
+    import pathlib
+
+    from app import migrate
+
+    assert 'attributes["configure_logger"] = False' in inspect.getsource(migrate.run_migrations), \
+        "run_migrations no longer tells env.py to leave logging alone"
+
+    env = (pathlib.Path(__file__).resolve().parents[1] / "alembic" / "env.py").read_text()
+    guard = 'config.attributes.get("configure_logger", True)'
+    assert guard in env, "env.py calls fileConfig unconditionally again"
+    assert "disable_existing_loggers=False" in env, (
+        "GRPH-525's layer is gone; without it `alembic upgrade head` on the command line "
+        "disables the app's loggers for the rest of that process"
+    )
+    assert env.index(guard) < env.index("fileConfig(config.config_file_name"), \
+        "the guard no longer precedes the fileConfig call it is meant to gate"
