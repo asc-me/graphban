@@ -381,6 +381,19 @@ a worker's ceiling is `review` by design.
 Items that were already `done` are untouched — the gate asks about the *transition*, not
 the state, so history is left alone.
 
+**Refusals become memory.** A refusal is recorded twice: as a `note` receipt on the item,
+and as a **published** memory shard, at refusal time rather than on any later completion —
+a refused item never completes, so extraction-on-done would never fire for exactly the
+cases worth learning from. `search_memory` surfaces it to whoever plans similar work next,
+which is what turns enforcement into something that compounds instead of a wall people
+learn to route around.
+
+Published rather than filed as a candidate, deliberately: the trusted-publication boundary
+keeps *unreviewed agent self-reports* out of retrieval, and a gate refusal is not one — the
+server refused and knows why. `origin: "gate"` keeps them filterable. One shard per
+`(item, predicate)`, updated in place when the reason changes, so a repeated refusal cannot
+flood the corpus it exists to improve.
+
 > **Known asymmetry.** The `gate` scope is enforced on the MCP boundary. The REST path
 > authenticates a human with write access to the project — the same authority that mints
 > gate keys — and JWT sessions carry no scopes, so a signed-in user may attest through

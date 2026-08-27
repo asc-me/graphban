@@ -2,8 +2,9 @@
 
 > **Status: the port is built and armed.** The `gate` scope (GRPH-541), the
 > `attestation` evidence kind (GRPH-542), `fleet.sign_off` as the first adapter
-> (GRPH-544), and the refusal itself (GRPH-543) have all landed: `update_item` now
-> refuses `done` without a valid attestation. Everything below about **Swamp** — the
+> (GRPH-544), the refusal itself (GRPH-543), and refusals-become-memory (GRPH-550) have
+> all landed: `update_item` refuses `done` without a valid attestation, and every refusal
+> is written where the next agent will meet it. Everything below about **Swamp** — the
 > model, the mutation probe, the conformance and adversarial predicates, the tripwire
 > workflow — remains design. Swamp is one adapter the port can accept, not a dependency,
 > and none of it is written. This doc exists so the
