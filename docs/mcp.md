@@ -84,6 +84,28 @@ shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b)
 carries no `claim_next`, a worker credential no `sign_off`. A single-role fleet key sees
 roughly 16–19% fewer tokens.
 
+**Editing a PRD does not mean replacing it** (GRPH-357). `update_prd` used to take one
+thing: the entire markdown body. An agent asked to record a single decision had to reproduce
+the whole document from memory, and anything it failed to reproduce was gone — silently, with
+no snapshot written on the MCP path to recover from. `get_prd` made the read possible; a
+sentence in the tool description telling you to use it is not a guard.
+
+So there are two forms now, and the safe one is the cheap one:
+
+- **`section`** — `update_prd(prd_id, section="3. Resolution order", body="…")` replaces that
+  heading's contents. Every other byte is spliced back verbatim. It needs no read token,
+  because it cannot lose what it never read. Section titles match loosely enough that
+  `Resolution order` finds `## 3. Resolution order`, and a title the PRD carries twice is
+  refused rather than guessed.
+- **`base_hash`** — a whole-body replace must carry the `body_hash` that `get_prd` returned,
+  and is refused if the document has moved since. A hash rather than `version`, because
+  `version` only advances on an explicit snapshot and so cannot tell you whether the body
+  changed. The same mechanism `gbagent` uses for files.
+
+This is enforced at the MCP boundary, not in the service: the REST caller is a human editing
+a textarea they are looking at, and demanding a token from them would break the UI for no
+safety gain.
+
 **Annotations say only what differs from the spec default** (GRPH-48). MCP defines defaults
 for all four `ToolAnnotations` hints — `readOnlyHint` false, `destructiveHint` true,
 `idempotentHint` false, `openWorldHint` true — and an absent field means exactly that value.
@@ -153,8 +175,8 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `prd_coverage` | `prd_id` | Spec-to-task rollup: per-section counts, coverage %, gaps (read-only) |
 | `decompose_prd` | `prd_id`, `create` | Propose (or create) one task per un-covered PRD section, each carrying the PRD's framing prose |
 | `create_prd` | `title`, `body`, `template`, `project_id` | **Author a PRD** (the handoff artifact) — `## ` sections drive decompose/coverage |
-| `get_prd` | `prd_id` | The full PRD including its markdown `body`. **Read before `update_prd`** — that tool replaces the body whole, so editing without reading deletes what you did not reproduce (GRPH-519) |
-| `update_prd` | `prd_id`, `title`, `status`, `body` | Patch a PRD's title, status (`draft`/`review`) or body. **`approved` is not settable** — it is reached by finishing the grill; setting it returns `conflict` naming what is still outstanding (AL-300) |
+| `get_prd` | `prd_id` | The full PRD including its markdown `body` and a `body_hash` (GRPH-519) |
+| `update_prd` | `prd_id`, `title`, `status`, `section`, `base_hash`, `body` | Patch a PRD. **`section`** replaces one `## ` heading's contents and leaves every other byte alone; a whole-body replace needs `base_hash` from `get_prd` (GRPH-357). **`approved` is not settable** — it is reached by finishing the grill; setting it returns `conflict` naming what is still outstanding (AL-300) |
 | `answer_grill` | `prd_id`, `answer` | Relay the author's answer to a grill question — recorded as **agent-relayed**, visible to whoever reviews later. Returns `outstanding` + `complete` (AL-299) |
 | `grill_prd` | `prd_id` | **Grill** — next clarifying questions to sharpen a PRD before building (read-only) |
 | `describe_code` | `nodes`, `edges`, `prune`, `project_id` | **Record code structure** — upsert code nodes and typed edges. Idempotent by path; re-describe on change. `kind` is **`module`** = a package/directory, **`file`** = one source file, **`symbol`** = `path::name` inside a file, **`doc`** = prose (`AGENTS.md`, `README.md`), **`config`** = a file that configures rather than executes (`docker-compose.yml`, `nginx.conf`, `pyproject.toml`). Describe your docs and config too — work that touches them has a blast radius, and until GRPH-381 the graph could not represent them at all. A kind contradicting its path is stored as the path implies and reported in `kind_corrections` |

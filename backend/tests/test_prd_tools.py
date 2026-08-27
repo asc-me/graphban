@@ -52,9 +52,12 @@ def test_create_prd_from_template(client, auth):
 def test_update_prd_via_mcp(client, auth):
     key = _key(client, auth, project_id="core")
     prd = _ok(_mcp(client, key, "create_prd", {"title": "Draft"}))
+    # A whole-body replace carries `base_hash` from get_prd (GRPH-357); without it the call
+    # is refused, because an unread replace deletes what it did not reproduce.
+    read = _ok(_mcp(client, key, "get_prd", {"prd_id": prd["id"]}))
     upd = _ok(_mcp(client, key, "update_prd", {
         "id_ignore": None, "prd_id": prd["id"], "status": "review",
-        "body": "# Draft\n\n## Scope\n- narrowed\n",
+        "base_hash": read["body_hash"], "body": "# Draft\n\n## Scope\n- narrowed\n",
     }))
     assert upd["status"] == "review"
     assert upd["sections"] == ["Scope"]

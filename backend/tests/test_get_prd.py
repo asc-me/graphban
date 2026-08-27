@@ -83,10 +83,13 @@ def test_the_body_survives_a_read_modify_write(client, mcp_key, prd):
     there. A read that returned a truncated body would pass "returns a body" and fail here —
     and in production it would silently delete the sections it did not return.
     """
-    before = _call(client, mcp_key, "get_prd", prd_id=prd)["body"]
+    read = _call(client, mcp_key, "get_prd", prd_id=prd)
+    before = read["body"]
     assert "## 3. Resolution order" in before
 
-    _call(client, mcp_key, "update_prd", prd_id=prd,
+    # `base_hash` is now what makes this write legal at all (GRPH-357) — a whole-body
+    # replace with no proof of a read is refused rather than silently dropping sections.
+    _call(client, mcp_key, "update_prd", prd_id=prd, base_hash=read["body_hash"],
           body=before + "\n## 4. Migration\n\nEvery key becomes a row.\n")
 
     after = _call(client, mcp_key, "get_prd", prd_id=prd)["body"]
