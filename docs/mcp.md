@@ -84,6 +84,19 @@ shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b)
 carries no `claim_next`, a worker credential no `sign_off`. A single-role fleet key sees
 roughly 16–19% fewer tokens.
 
+**A lean page says what its rows carry** (GRPH-440). `search_items` and `get_backlog` return
+a compact row — `id`, `title`, `status` — and the full item only on `fields=full`. That
+projection is deliberate; these reads return many rows. What was not deliberate is that it
+looked complete: a consumer asking a row for `built_by` got nothing, and in every client
+language absent arrives as null. "Nobody built this" and "this payload does not say" were the
+same answer, on the exact field a reviewer consults to decide what it may take — misread twice
+in one day from two different tools.
+
+So a lean response carries a `fields` array naming what each row holds. **A field absent from
+that list is unreported, not empty.** `fields=full` omits the array entirely, because it omits
+nothing — and because a list there would invite a caller to treat it as the item's whole
+vocabulary, which it is not (`intent_hold` appears only on the rows that have one).
+
 **A section can declare what it is** (GRPH-247). `prd_coverage` decides whether a `## `
 section is buildable work or framing prose, and it used to decide purely from the heading
 name against an allowlist. That allowlist cannot keep up with headings people invent: three
