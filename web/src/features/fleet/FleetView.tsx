@@ -61,7 +61,25 @@ function RoleCounts({ byRole, roles }: { byRole: Record<string, number>; roles: 
   );
 }
 
-function primeSnippet(role: string, seat?: string) {
+/**
+ * The pasted prompt. `project` is the tag of the project the seat was minted into (GRPH-476).
+ *
+ * A seat used to leave this page carrying a role and nothing else. Twice in one afternoon
+ * seats were minted into the wrong project — the request said "Fleet Walk", `activeId` said
+ * `agentledger`, and neither mis-mint was detectable from the codes: diagnosing it meant
+ * querying `enrolments` on the live database. A credential shown once, that cannot be shown
+ * again, and does not say what it grants access to, is one you cannot audit afterwards.
+ *
+ * Naming it here rather than only in the panel is the difference that matters: the panel is
+ * the thing the operator has already misread, and the artefact is what survives the page.
+ * And it is written as a CHECK rather than a label — the agent can call `get_context` and
+ * find out, which is the only step in this chain that catches a mis-mint without a human
+ * noticing first.
+ */
+function primeSnippet(role: string, seat?: string, project?: string) {
+  const scope = project
+    ? `\nThis seat is for the ${project} project — call get_context first and stop if it disagrees.`
+    : "";
   // The role prompt, rendered short enough to paste. `register_agent` first is the load-bearing
   // line: an agent that claims before registering is invisible to the roster and ungoverned by
   // the role gate.
@@ -88,7 +106,7 @@ function primeSnippet(role: string, seat?: string) {
       "to take somebody else's finished work and sign_off or bounce it with a reason.",
       "You cannot sign off what you built; if you are the only agent here, the human reviews",
       "your work unless the project owner has turned on self-review.",
-    ].join("\n");
+    ].join("\n") + scope;
   }
   const duty =
     role === "planner" ? "Read collision_clusters and allocate. Do not claim work yourself."
@@ -103,7 +121,7 @@ function primeSnippet(role: string, seat?: string) {
   // manifest was fetched before this agent had a role, so it still lists every tool in the
   // product. Without this line the agent learns its boundary by being refused — and three
   // refusals in a row is how the server decides an agent has stopped listening.
-  return `You are a ${role} in a Graphban fleet.\nCall ${call} first, then heartbeat on the interval it returns.\nIt returns tools_off_limits — the tools your role will be refused. Your tool list was fetched before you had a role, so it still shows them; do not call them.\n${duty}`;
+  return `You are a ${role} in a Graphban fleet.\nCall ${call} first, then heartbeat on the interval it returns.\nIt returns tools_off_limits — the tools your role will be refused. Your tool list was fetched before you had a role, so it still shows them; do not call them.\n${duty}${scope}`;
 }
 
 function CopyRow({ label, value }: { label: string; value: string }) {
@@ -234,7 +252,11 @@ function AgentRow({ a, onDismiss, dismissed }: {
 }
 
 export function FleetView() {
-  const { activeId } = useProjectCtx();
+  // `active` as well as `activeId` (GRPH-476): eight write calls on this page are scoped to
+  // the active project and none of them said which one. The id is what the API needs; the
+  // NAME is what an operator can check against what they meant.
+  const { activeId, active } = useProjectCtx();
+  const scope = active?.tag || active?.name || activeId;
   const { data, refetch } = useFleet(activeId);
   const [role, setRole] = React.useState("worker");
   const [minted, setMinted] = React.useState<{ plaintext: string; role: string } | null>(null);
@@ -442,7 +464,9 @@ export function FleetView() {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-none items-center justify-between border-b border-line px-5 py-4">
         <div>
-          <h1 className="text-[18px] font-semibold tracking-tight">Fleet</h1>
+          <h1 className="text-[18px] font-semibold tracking-tight">
+            Fleet <span className="font-mono text-[13px] font-normal text-muted">{scope}</span>
+          </h1>
           <p className="mt-0.5 text-[12.5px] text-muted">
             {data
               ? `${data.online} of ${data.total} online · heartbeat every ${data.heartbeat_interval_seconds}s`
@@ -500,7 +524,8 @@ export function FleetView() {
                 <span className="text-muted">Reading {confirmWave}…</span>
               ) : (
                 <>
-                  End <span className="font-mono">{confirmWave ?? liveWave}</span>: revoke{" "}
+                  End <span className="font-mono">{confirmWave ?? liveWave}</span> in{" "}
+                  <span className="font-mono">{scope}</span>: revoke{" "}
                   {confirming.seats} seat{confirming.seats === 1 ? "" : "s"}
                   {/* Keys are named ONLY when the wave owns some. Under enrolment a wave owns
                       seats and no keys, so a permanent "revoke 0 keys" clause was describing
@@ -517,7 +542,7 @@ export function FleetView() {
             </p>
             <p className="mt-1 text-[12px] text-muted">
               Your own credential is untouched — only wave-tagged keys and this wave&apos;s
-              seats. This cannot be undone.
+              seats, in <span className="font-mono">{scope}</span> only. This cannot be undone.
             </p>
             <div className="mt-3 flex gap-2">
               <Button onClick={doEndWave} disabled={previewing}>
@@ -641,14 +666,17 @@ export function FleetView() {
               </button>
             )}
           </div>
+          {/* The project is NAMED on the button, not only in the page chrome. `ProjectBar`
+              already shows it — and an operator who has already misread which project is
+              active will misread it there too. This is at the point of action. */}
           <Button onClick={issueSeats} disabled={!Object.values(seatPlan).some(Boolean) || minting}>
-            {minting ? "Issuing…" : "Issue the seats"}
+            {minting ? "Issuing…" : `Issue the seats into ${scope}`}
           </Button>
           {issued.length > 0 && (
             <div className="mt-3 space-y-2">
               {issued.map((s) => (
-                <CopyRow key={s.id} label={`${s.role} — prompt + seat, shown once`}
-                         value={primeSnippet(s.role, s.code)} />
+                <CopyRow key={s.id} label={`${s.role} for ${scope} — prompt + seat, shown once`}
+                         value={primeSnippet(s.role, s.code, scope)} />
               ))}
               <p className="px-1 text-[11px] text-faint">
                 Paste each into that agent&apos;s prompt as{" "}
@@ -770,7 +798,7 @@ export function FleetView() {
                   two-branch stub of its own that handed the `claude mcp add` command to
                   Codex, Grok and opencode alike — found on the first real walk. */}
               <McpInstall apiKey={minted.plaintext} />
-              <CopyRow label="3. Prime" value={primeSnippet(minted.role)} />
+              <CopyRow label="3. Prime" value={primeSnippet(minted.role, undefined, scope)} />
             </div>
           )}
         </Section>
