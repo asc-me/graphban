@@ -1178,7 +1178,7 @@ def needs_adversarial_evidence(item: Item) -> bool:
 
 
 def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None = None,
-             api_key=None) -> Item:
+             api_key=None, commit: str | None = None) -> Item:
     """Take a reviewed item to `done`.
 
     The second of two independent gates on the invariant. `claim_review` already filters by
@@ -1267,6 +1267,47 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                "cannot fail rather than that the claim is guarded" if vacuous else "")
         )
 
+    # THE FIRST ATTESTATION ADAPTER (GRPH-544). The gates above already decided this item is
+    # finished; this records WHAT WAS CHECKED in a form the completion gate can read, so the
+    # verdict stops being a status change somebody made and becomes proof attached to the item.
+    #
+    # sign_off is the adapter that needs no external service, which is what keeps the offline
+    # guarantee true: a default install always has one, so completion can never become
+    # unreachable for want of CI.
+    #
+    # `commit` is REQUIRED to attest and deliberately not defaulted. An attestation names the
+    # revision it vouches for; inventing one — a sentinel, or the item's PR string — would
+    # produce a receipt that looks binding and vouches for nothing, and the gate reading it
+    # later could not tell the difference.
+    #
+    # No commit means NO RECEIPT AT ALL, and deliberately not a note explaining the absence.
+    # The first version wrote one, and it fired on every sign_off in the tree — today none of
+    # them pass a commit — which is the always-firing warning this repo already refuses
+    # elsewhere ("a warning that always fires is noise, and noise is how the real ones get
+    # ignored", test_hosted_hardening). The gap stays countable without it: an un-attested
+    # completion is exactly an item where `attestation_receipts(item.evidence)` is empty, and
+    # that is a query rather than a receipt on every row.
+    if commit:
+        attestation = items_svc.normalize_evidence([{
+            "kind": "attestation",
+            "adapter": "fleet.sign_off",
+            "commit": commit,
+            "predicates": [
+                {"name": "independent_review",
+                 "passed": True,
+                 "detail": f"signed off by {agent_id}"
+                           + (" under danger mode — no independent agent was available"
+                              if danger else f", independent of {item.built_by or 'the author'}")},
+                {"name": "adversarial_evidence",
+                 "passed": True,
+                 "detail": (f"effort {item.effort} needs adversarial evidence and the item "
+                            "carries an effective sabotage receipt"
+                            if needs_adversarial_evidence(item)
+                            else f"effort {item.effort} is below the threshold of "
+                                 f"{ADVERSARIAL_EFFORT_THRESHOLD}; not required")},
+            ],
+        }])
+        fresh, merged = fresh + attestation, merged + attestation
     release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
     # The hold is spent by the verdict. Leaving it set would keep a `done` item looking like

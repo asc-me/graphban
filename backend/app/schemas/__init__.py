@@ -560,7 +560,13 @@ class RequestOut(ORMModel):
 # minted read-only. Validated rather than free-text because an unrecognised scope silently
 # produces a DEAD key — "Sync" or "syncs" would never match the `"sync" in key.scopes` check
 # and the failure only surfaces later as a 403 at push time.
-API_KEY_SCOPES = ("read", "write", "sync")
+#
+# `gate` (GRPH-541) may write an `attestation` receipt — the proof the completion gate reads
+# (authz.key_gate_ids). Deliberately NOT implied by `write`: an agent that could mint its own
+# attestation could certify its own work, which is the entire thing the scope exists to stop.
+# This validator earned its keep here — the first draft of the feature minted keys with a
+# scope this tuple did not list, and the 422 is what said so.
+API_KEY_SCOPES = ("read", "write", "sync", "gate")
 
 
 class ApiKeyCreate(BaseModel):

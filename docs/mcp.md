@@ -257,7 +257,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `collision_clusters` | `project_id`, `status` | Partition ready work into clusters that provably share no touch-areas; `predicted` marks lower-confidence grouping |
 | `claim_cluster` | `agent_id`, `max_items`, `lease_seconds`, `wait_seconds` | Claim a whole non-colliding cluster and reserve its areas, checked against in-flight work |
 | `claim_review` | `agent_id`, `project_id`, `wait_seconds` | Lease an item in review you did **not** build, and are independent of — not your own call tree, and not the same credential on the same host |
-| `sign_off` | `id`, `agent_id`, `evidence` | Take a reviewed item to `done`. Refused if you built it — and, above effort 3, refused without a `sabotage` receipt |
+| `sign_off` | `id`, `agent_id`, `evidence`, `commit` | Take a reviewed item to `done`. Refused if you built it — and, above effort 3, refused without a `sabotage` receipt. With `commit`, mints an `attestation` |
 | `bounce` | `id`, `agent_id`, `reason` | Send it back to `next` with a reason, reserved for its author for one lease period |
 | `register_agent` | `label`, `capabilities`, `worktree`, `branch`, `role_hint`, `parent_agent_id` | Register THIS process as an agent and learn its role. Two terminals on one key become two agents. Returns `{agent_id, key, active_role, enrolled, tools_off_limits, heartbeat_interval_seconds}` — `tools_off_limits` names the tools this role will be refused, which the manifest cannot, having been fetched before the role existed |
 | `fleet_status` | `project_id` | Who else is working this project: agents, roles, derived presence, and what each holds |
@@ -315,11 +315,38 @@ machine-readable `structuredContent.error.code`, a human `message`, and often a
 
 A malformed request body returns a JSON-RPC parse error (`-32700`); an unknown method returns `-32601`. An `idempotency_key` is scoped to the tool that first used it — reusing it for a different tool is a `conflict`, not a silent duplicate.
 
-**Authority.** A key is bounded by its declared `scopes` (read/write) **and** its
+**Authority.** A key is bounded by its declared `scopes` **and** its
 owner's project memberships — a key can never out-rank the user who minted it. A
 project-scoped key is further pinned to that project; the `project_id` argument
 selects among in-scope projects but cannot escape the scope. Call `get_context`
 first: it reports `readable_projects` and `writable_projects` for the key.
+
+| Scope | Grants |
+| --- | --- |
+| `read` | Read tools. Implicit, but accepted so a key can be minted read-only |
+| `write` | Every mutating tool |
+| `sync` | Push a code graph (`authz.key_sync_ids`); must be pinned to one project |
+| `gate` | Write an `attestation` receipt — the proof a completion gate reads |
+
+`gate` is deliberately **not** implied by `write`. An agent that could mint its own
+attestation could certify its own work, which is the whole reason the scope is separate:
+a building agent records `test` and `sabotage` receipts, and an adapter — CI, or a
+reviewer signing off — attests the result. Keys without it are refused with
+`unauthorized` and a hint naming what to do instead, and the attestation-only fields are
+left out of their tool manifest entirely.
+
+**Evidence kinds.** `test`, `url`, `screenshot`, `health`, `note` are advisory and fall
+back to `note`. Two are structured, and a receipt that claims one without the required
+fields is **demoted to `note`, never dropped** — the claim stays readable even when it
+doesn't validate:
+
+| Kind | Requires | Notes |
+| --- | --- | --- |
+| `sabotage` | `claim`, `mutation`, `tests_failed` | `tests_failed: 0` means the test *cannot* fail — a finding, not a pass |
+| `attestation` | `adapter`, `commit`, `predicates` | Needs the `gate` scope. `predicates` is `[{name, passed, detail}]` — at least one, all `passed`, and `passed` must be a real boolean |
+
+An attestation binds to the commit it names: asked about any other revision it does not
+answer for it, so pushing after attesting invalidates the proof.
 
 ### Spec → task traceability
 

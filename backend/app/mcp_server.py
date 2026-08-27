@@ -11,6 +11,7 @@ Handled methods: `initialize`, `tools/list`, `tools/call`, and the
 """
 from __future__ import annotations
 
+import copy
 import json
 import secrets
 from typing import Any
@@ -591,6 +592,7 @@ TOOLS: list[dict[str, Any]] = [
                 "id": {"type": "string"},
                 "agent_id": {"type": "string"},
                 "evidence": {"type": "array"},
+                "commit": {"type": "string", "description": "SHA reviewed."},
             },
             "required": ["id"],
         },
@@ -1516,6 +1518,48 @@ LIVE_TOOL_COUNT = len(TOOLS)
 _SCHEMA_BY_NAME: dict[str, dict] = {t["name"]: t["inputSchema"] for t in TOOLS}
 
 
+# The evidence fields only a `gate`-scoped key may write (GRPH-541/542). ADDED for those
+# keys rather than carried in TOOLS and stripped for everyone else, because the shared
+# manifest has no room: measured at 13579 of a 13600 ceiling BEFORE this feature, so even a
+# description-free version of these three fields would have overflowed it. Injecting keeps
+# the number every ordinary agent pays exactly where it was.
+_ATTESTATION_PROPS = {
+    "adapter": {"type": "string", "description": "attestation: issuer."},
+    "commit": {"type": "string", "description": "attestation: SHA attested."},
+    "predicates": {"type": "array", "items": {"type": "object"},
+                   "description": "attestation: [{name, passed:bool, detail}] — needs >=1, all true."},
+}
+
+
+def _with_attestation(tools: list[dict]) -> list[dict]:
+    """`tools` with the attestation-only evidence fields added, for gate-scoped keys.
+
+    A TOKEN OPTIMISATION, never a boundary — the same contract `_visible_tools` states for
+    role gating. A manifest can only fail to MENTION a field; `normalize_evidence` accepts an
+    attestation whether or not it was advertised, and the dispatcher's scope check is what
+    refuses the write. So a gate-scoped key that never reads the manifest loses nothing.
+
+    Deep-copies what it edits. TOOLS is module-level and shared by every request; mutating it
+    would leak the fields into every subsequent caller's manifest — including the ordinary
+    agents this function exists to keep them away from — and the ceiling guard would only
+    notice if someone re-ran it after a gate-scoped connection.
+    """
+    out: list[dict] = []
+    for t in tools:
+        items = t.get("inputSchema", {}).get("properties", {}).get("evidence", {}).get("items")
+        if not isinstance(items, dict) or "properties" not in items:
+            out.append(t)
+            continue
+        widened = copy.deepcopy(t)
+        props = widened["inputSchema"]["properties"]["evidence"]["items"]["properties"]
+        props.update(copy.deepcopy(_ATTESTATION_PROPS))
+        kinds = props.get("kind", {}).get("enum")
+        if kinds is not None and "attestation" not in kinds:
+            props["kind"]["enum"] = list(kinds) + ["attestation"]
+        out.append(widened)
+    return out
+
+
 def _visible_tools(key: ApiKey, role: str | None = None) -> list[dict]:
     """The manifest a given key should see, gated by SCOPE and then by ROLE.
 
@@ -1545,6 +1589,8 @@ def _visible_tools(key: ApiKey, role: str | None = None) -> list[dict]:
 
     tools = TOOLS if "write" in (key.scopes or []) else [
         t for t in TOOLS if t["name"] in _READ_ONLY]
+    if "gate" in (key.scopes or []):
+        tools = _with_attestation(tools)
     allowed = set(fleet_svc.eligible_roles(key))
     # E9b: the SESSION's role, when this connection carries exactly one registered agent, is
     # narrower than the credential and is what the agent will actually be judged by. It never
@@ -1818,6 +1864,33 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             f"api key {key.name!r} has scopes {key.scopes} but {name!r} mutates state; "
             "mint a key with the 'write' scope or use a read-only tool"
         )
+    # The `gate` scope (GRPH-541). An `attestation` receipt is the proof the completion gate
+    # reads, so writing one is a strictly higher authority than writing an item — an agent
+    # that could mint its own attestation could certify its own work, which is the whole
+    # thing this scope exists to prevent.
+    #
+    # Checked on ARGS, not on tool name: `update_item` is an ordinary write for every other
+    # receipt kind, and gating the whole tool would take heartbeating and status moves away
+    # from every agent to close a hole in one field.
+    #
+    # Refused rather than silently demoted to a `note`. A demotion here would leave the
+    # caller believing it had attested something and the item quietly unprovable — the
+    # failure would surface much later, at a refusal nobody could explain.
+    if writes and any((e or {}).get("kind") == "attestation"
+                      for e in (args.get("evidence") or []) if isinstance(e, dict)):
+        if "gate" not in (key.scopes or []):
+            raise authz.Forbidden(
+                f"api key {key.name!r} has scopes {key.scopes} and cannot write an "
+                "`attestation` receipt — that needs the 'gate' scope, which is held by "
+                "completion adapters (CI, a reviewer signing off), not by building agents",
+                hint="record your proof as `test` or `sabotage` receipts and let an adapter "
+                     "attest the result",
+            )
+        if not authz.key_gate_ids(db, key):
+            raise authz.Forbidden(
+                f"api key {key.name!r} carries the 'gate' scope but its owner has write "
+                "access to no project, so it may not attest anything"
+            )
     readable = authz.key_readable_ids(db, key)
     allowed = authz.key_writable_ids(db, key) if writes else readable
     requested = args.get("project_id")
@@ -2251,7 +2324,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         try:
             item = fleet_svc.sign_off(
                 db, item_id=keys.resolve_item(db, args["id"]) or args["id"],
-                agent_id=agent, evidence=args.get("evidence"), api_key=key)
+                agent_id=agent, evidence=args.get("evidence"), api_key=key,
+                commit=args.get("commit"))
         except fleet_svc.NotInReview as e:
             # Conflict, not unauthorized, for the same reason the evidence gate below is: the
             # caller is permitted to sign this off, the work simply has not been handed over.
