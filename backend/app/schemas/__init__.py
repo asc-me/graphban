@@ -904,6 +904,8 @@ class CodeNodeOut(ORMModel):
     lang: str
     summary: str
     fresh: bool
+    #: Commit this node was described at; "" when unknown (GRPH-54).
+    revision: str = ""
 
 
 class CodeHit(BaseModel):
@@ -944,11 +946,24 @@ class ProjectStubOut(BaseModel):
     unanchored: bool = False
 
 
+class CodeRevisionsOut(BaseModel):
+    """Why `CodeMapOut.revision` is null, when it is (GRPH-54)."""
+
+    distinct: int = 0
+    unknown_nodes: int = 0
+    known: list[str] = []
+    truncated: int = 0
+
+
 class CodeMapOut(BaseModel):
     nodes: list[CodeNodeOut]
     edges: list[CodeEdgeOut]
     node_count: int
     edge_count: int
+    #: The commit this map is pinned to — null unless EVERY node agrees on one, because a
+    #: map at two revisions has no revision and reporting the newest would read as current.
+    revision: str | None = None
+    revisions: CodeRevisionsOut = CodeRevisionsOut()
     # Empty on self-host and on any project outside an org — there are no siblings to
     # depend on, which is different from having none.
     outbound: list[ProjectStubOut] = []

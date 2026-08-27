@@ -724,9 +724,10 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Upsert the codebase's structure as a queryable graph of `nodes` and `edges`. You "
             "have the repo in context, so you are the source of truth. Idempotent per path — "
-            "re-describe a changed file with its new `content_hash`. `prune=true` after a whole "
-            "subtree marks unseen nodes stale. A `kind` contradicting its path is corrected and "
-            "returned in `kind_corrections`."
+            "re-describe a changed file with its new `content_hash`. Pass `revision` so a reader "
+            "can tell whether the map is still current. `prune=true` after a whole "
+            "subtree marks unseen nodes stale. A `kind` "
+            "contradicting its path is corrected and returned in `kind_corrections`."
         ),
         "inputSchema": {
             "type": "object",
@@ -747,6 +748,13 @@ TOOLS: list[dict[str, Any]] = [
                         },
                         "required": ["path"],
                     },
+                },
+                # The manifest ships to every agent on every session, so this string is a
+                # running cost rather than documentation. Kept to the one fact a caller
+                # cannot infer from the field name: omitting it un-pins the map.
+                "revision": {
+                    "type": "string",
+                    "description": "Commit sha described at. Omitting it un-pins the whole map.",
                 },
                 "edges": {
                     "type": "array",
@@ -1395,6 +1403,12 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "nodes": {"type": "array"}, "edges": {"type": "array"},
             "node_count": {"type": "integer"}, "edge_count": {"type": "integer"},
+            # Declared because an agent reads this to decide whether it may reason from the
+            # map at all (GRPH-54). Null is a real value here, not an absence: it means the
+            # map spans more than one commit, or contains a node of unknown revision, and
+            # `revisions` says which.
+            "revision": {"type": ["string", "null"]},
+            "revisions": {"type": "object"},
         },
     },
     "code_neighbors": {
@@ -2566,6 +2580,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             nodes=args.get("nodes", []),
             edges=args.get("edges", []),
             prune=bool(args.get("prune", False)),
+            revision=str(args.get("revision", "")),
         )
     if name == "get_code_map":
         return code_svc.get_code_map(db, pid, kind=args.get("kind"))
