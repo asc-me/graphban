@@ -45,8 +45,20 @@ vi.mock("@/lib/api", () => ({
     projects: vi.fn(async () => [
       { id: "core", tag: "CORE", name: "Core", accent: "#c6f24e", visibility: "private",
         description: "", provides: [], depends_on: [] },
+      { id: "web", tag: "WEB", name: "Web", accent: "#4ea3f2", visibility: "private",
+        description: "", provides: [], depends_on: [] },
     ]),
     credentials: vi.fn(async () => state),
+    aiProviders: vi.fn(async () => ({
+      providers: [
+        { id: "anthropic", label: "Anthropic", kind: "anthropic", embeds: false,
+          base_url: "", chat_model: "claude-x", embed_model: "", auth: true },
+        { id: "ollama", label: "Ollama", kind: "ollama", embeds: true,
+          base_url: "http://localhost:11434", chat_model: "llama3.1:8b", embed_model: "bge-m3", auth: false },
+        { id: "stub", label: "Offline stub", kind: "stub", embeds: true,
+          base_url: "", chat_model: "", embed_model: "", auth: false },
+      ],
+    })),
     reindexStatus: vi.fn(async () => ({ running: false, tables: [] })),
     createCredential: (...a: unknown[]) => createCredential(...(a as [])),
     deleteCredential: (...a: unknown[]) => deleteCredential(...(a as [])),
@@ -122,6 +134,36 @@ describe("CredentialsPanel", () => {
     expect(await screen.findByText(/connection refused/)).toBeInTheDocument();
   });
 
+  it("puts the tags on the RIGHT of the card", async () => {
+    // Asserted on the class that does the pushing, which is admittedly brittle — but the
+    // alternative was no coverage at all: dropping `ml-auto` passed all sixteen other tests,
+    // and "tags on the right" was an explicit requirement, not an incidental.
+    state.credentials = [cred({ is_default: true, used_by: ["core"] })];
+    show();
+
+    const row = await screen.findByTestId("credential-cred_a");
+    const tags = within(row).getByText("default").parentElement!;
+
+    expect(tags.className).toContain("ml-auto");
+  });
+
+  // ---- project tags carry the project's accent -----------------------------------------
+
+  it("glows each project tag in that project's accent colour", async () => {
+    // Two projects with different accents, so "uses the accent" can be told from "uses a
+    // colour". A single project would let a hardcoded colour pass.
+    state.credentials = [cred({ used_by: ["core", "web"] })];
+    show();
+
+    const row = await screen.findByTestId("credential-cred_a");
+    const core = within(row).getByText("core");
+    const web = within(row).getByText("web");
+
+    expect(core.style.boxShadow).toContain("#c6f24e");
+    expect(web.style.boxShadow).toContain("#4ea3f2");
+    expect(core.style.boxShadow).not.toEqual(web.style.boxShadow);
+  });
+
   // ---- falling back -------------------------------------------------------------------
 
   it("distinguishes a project that POINTS here from one being SERVED here", async () => {
@@ -139,40 +181,74 @@ describe("CredentialsPanel", () => {
 
   // ---- the dialog ---------------------------------------------------------------------
 
-  it("cannot save a credential missing a field its kind requires", async () => {
+  it("opens a DIALOG and asks which provider first", async () => {
     show();
     await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
 
-    // anthropic needs a key and a model; neither is filled.
-    expect(screen.getByRole("button", { name: /add credential/i })).toBeDisabled();
+    // The picker comes first: choosing a provider is a different question from filling in its
+    // details, and one form with a kind dropdown makes the reader work out which fields matter.
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("provider-picker")).toBeInTheDocument();
+    expect(screen.queryByTestId("credential-form")).not.toBeInTheDocument();
+  });
+
+  it("does not offer the offline stub as something to add", async () => {
+    show();
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+
+    // The stub is not a credential — it is what you get when there are none.
+    const picker = await screen.findByTestId("provider-picker");
+    expect(within(picker).queryByText(/offline stub/i)).not.toBeInTheDocument();
+  });
+
+  it("asks for what the CHOSEN provider needs, from the registry", async () => {
+    show();
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByText("Anthropic"));
+
+    // anthropic has auth:true and is not ollama — a key, no endpoint.
+    expect(await screen.findByLabelText(/api key/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/endpoint/i)).not.toBeInTheDocument();
+  });
+
+  it("asks a DIFFERENT provider for different fields", async () => {
+    show();
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByText("Ollama"));
+
+    // ollama has auth:false — an endpoint, no key.
+    expect(await screen.findByLabelText(/endpoint/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/api key/i)).not.toBeInTheDocument();
+  });
+
+  it("cannot save without a field the chosen provider requires", async () => {
+    show();
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByText("Anthropic"));
+
+    expect(await screen.findByRole("button", { name: /add credential/i })).toBeDisabled();
     expect(screen.getByText(/anthropic needs/i)).toBeInTheDocument();
     expect(createCredential).not.toHaveBeenCalled();
   });
 
-  it("asks for what the KIND needs, not a fixed set of fields", async () => {
+  it("saves once the required fields are present", async () => {
     show();
     await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
-
-    // anthropic: a key, no endpoint.
-    expect(screen.getByLabelText(/api key/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/endpoint/i)).not.toBeInTheDocument();
-
-    await userEvent.selectOptions(screen.getByLabelText(/provider kind/i), "ollama");
-
-    // ollama: an endpoint, no key.
-    expect(screen.getByLabelText(/endpoint/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/api key/i)).not.toBeInTheDocument();
-  });
-
-  it("saves once every required field is present", async () => {
-    show();
-    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
-    await userEvent.type(screen.getByLabelText(/api key/i), "sk-live");
-    await userEvent.type(screen.getByLabelText(/^model$/i), "claude-x");
+    await userEvent.click(await screen.findByText("Anthropic"));
+    await userEvent.type(await screen.findByLabelText(/api key/i), "sk-live");
 
     await userEvent.click(screen.getByRole("button", { name: /add credential/i }));
 
     expect(createCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it("can go back to the picker without leaving the dialog", async () => {
+    show();
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByText("Anthropic"));
+    await userEvent.click(await screen.findByRole("button", { name: /^back$/i }));
+
+    expect(await screen.findByTestId("provider-picker")).toBeInTheDocument();
   });
 
   // ---- refusals reach the operator ------------------------------------------------------
