@@ -454,6 +454,23 @@ class Item(Base):
     # Spec traceability (feature D): the PRD + section this item implements.
     prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
     prd_section: Mapped[str] = mapped_column(String, default="")
+    # The section text AS IT WAS when this item was decomposed out of it (GRPH-360).
+    #
+    # `description` already carries a copy of that text, but a copy cannot answer "has the
+    # source moved" — it can only be compared against the PRD by a human reading both. On
+    # PRD-17, nine of eleven items had drifted from the approved body and `prd_coverage`
+    # still read 100%, because it matches items to sections BY NAME and so measures
+    # existence rather than agreement.
+    #
+    # Empty means "never fingerprinted", which is every item created before this column and
+    # every item made by hand. Those are reported as UNKNOWN, never as clean — an item whose
+    # source might have moved and an item whose source demonstrably has not are different
+    # answers, and collapsing them is how this defect stayed invisible in the first place.
+    prd_section_hash: Mapped[str] = mapped_column(String, default="")
+    # Set when a human decides a divergence is intentional (the item was narrowed after a
+    # spike, retitled, annotated with findings). Holds the hash that was acknowledged, so a
+    # LATER edit to the same section flags again rather than staying silent forever.
+    prd_section_ack: Mapped[str] = mapped_column(String, default="")
     # When this item was attached to that PRD (GRPH-243). `created_at` cannot answer it:
     # an item raised months earlier and linked after approval is scope ADDED, and reading
     # its creation time would file it as original scope — under-reporting exactly the

@@ -2832,6 +2832,66 @@ def body_hash(body: str) -> str:
     return hashlib.sha256((body or "").encode("utf-8")).hexdigest()[:16]
 
 
+def section_fingerprint(body: str, title: str) -> str:
+    """What "this item was decomposed from that text" means, exactly (GRPH-360).
+
+    Hashes the section's markdown as `section_bodies` renders it, which is the same text
+    `decompose_prd` copies into the item's description — so the thing fingerprinted and the
+    thing copied cannot disagree. Returns "" for a section that is not there, because an
+    item whose section has been RENAMED OR DELETED is a different report from one whose
+    section has been edited, and flattening them into a hash mismatch would say the wrong
+    thing loudly.
+    """
+    bodies = section_bodies(body)
+    return body_hash(bodies[title]) if title in bodies else ""
+
+
+#: What an item's relationship to its section can be. `unknown` is a real answer, not a
+#: fallback — see `section_drift`.
+DRIFT_STATES = ("agrees", "drifted", "acknowledged", "section_gone", "unknown")
+
+
+def section_drift(item, body: str) -> dict:
+    """Has the PRD section this item was decomposed from moved since? (GRPH-360)
+
+    Read-only, and deliberately never rewrites anything. An item is legitimately edited away
+    from its section — retitled, split, narrowed after a spike, annotated with what the build
+    actually found. Auto-syncing would destroy that, which is the same class of mistake as
+    re-asking a question somebody already answered. So this reports; a human decides.
+
+    Five answers, and the two that are not about drift matter most:
+
+    * `unknown` — no fingerprint. Every item created before this column, and every item
+      linked to a PRD by hand. It is NOT `agrees`. On PRD-17 nine of eleven items contradicted
+      the spec while `prd_coverage` read 100%, because a check that cannot tell reported
+      nothing; a silent pass is how that happened, and `unknown` is the fix for it.
+    * `section_gone` — the section was renamed or deleted out from under the item. A hash
+      comparison would call that "drifted", which is true but useless: nobody can diff against
+      text that is not there, and the remedy is relinking, not re-reading.
+    """
+    title = item.prd_section or ""
+    if not title:
+        return {"state": "unknown", "reason": "not linked to a section"}
+    bodies = section_bodies(body or "")
+    if title not in bodies:
+        return {"state": "section_gone", "reason": f"no section {title!r} in the PRD any more"}
+    current = body_hash(bodies[title])
+    stamped = getattr(item, "prd_section_hash", "") or ""
+    if not stamped:
+        return {"state": "unknown",
+                "reason": "no fingerprint — created before this was recorded, or linked by hand"}
+    if current == stamped:
+        return {"state": "agrees", "reason": "the section is unchanged since this was created"}
+    if (getattr(item, "prd_section_ack", "") or "") == current:
+        # Acknowledged AGAINST THIS TEXT, not forever. A later edit produces a new hash and
+        # flags again, which is the difference between "I have read the change" and "stop
+        # telling me about this section".
+        return {"state": "acknowledged", "reason": "this divergence was reviewed and kept"}
+    return {"state": "drifted",
+            "reason": "the section has been edited since this item was created; the item's "
+                      "description is the OLD text and the PRD is the source"}
+
+
 class StaleBody(ValueError):
     """Tried to replace a body that has moved since it was read."""
 
@@ -2984,20 +3044,23 @@ def is_implementable_section(title: str) -> bool:
 
 
 def section_bodies(body: str) -> dict[str, str]:
-    """Map each `## section` to the markdown beneath it (until the next `## `)."""
-    out: dict[str, str] = {}
-    cur, buf = None, []
-    for line in (body or "").splitlines():
-        m = re.match(r"^##\s+(.+?)\s*$", line)
-        if m:
-            if cur is not None:
-                out[cur] = "\n".join(buf).strip()
-            cur, buf = m.group(1).strip(), []
-        elif cur is not None:
-            buf.append(line)
-    if cur is not None:
-        out[cur] = "\n".join(buf).strip()
-    return out
+    """Map each `## section` to the markdown beneath it (until the next `## `).
+
+    Derived from `section_spans` rather than walking the lines itself (GRPH-360). It used to
+    be a third independent parser — after `parse_sections` was folded into the spans in
+    GRPH-357, this one was still matching `^##` line by line with no idea what a code fence
+    is, so a PRD containing a markdown example would have had `decompose_prd` and
+    `replace_section` disagreeing about where a section ends.
+
+    That was already worth fixing. It became load-bearing here: the drift fingerprint hashes
+    what decompose COPIED, and if the copier and the checker disagree about the boundary,
+    every item on such a PRD reads as drifted the moment it is created.
+
+    `.strip()` rather than `.strip("\n")`, matching the behaviour this replaced — callers
+    compare and display these bodies, and leading indentation on the first line was never
+    part of them.
+    """
+    return {title: body[start:end].strip() for title, start, end in section_spans(body)}
 
 
 def coverage(db: Session, prd: Prd) -> dict:
@@ -3029,6 +3092,11 @@ def coverage(db: Session, prd: Prd) -> dict:
             # its work under the tag it no longer holds, and the ids coverage hands back
             # are ones the UI and the agent surface no longer use (PRD-13).
             "item_ids": [it.key for it in its],
+            # Per item, because "this section has drift" is not actionable — which item
+            # holds the stale copy is (GRPH-360). Reported HERE, on the surface that
+            # previously said 100% covered while nine of eleven items contradicted the
+            # spec: a drift report nobody looks at would repeat that failure exactly.
+            "drift": [{"id": it.key, **section_drift(it, prd.body or "")} for it in its],
         })
     total = len(items)
     done = sum(1 for it in items if it.status == "done")
@@ -3042,6 +3110,27 @@ def coverage(db: Session, prd: Prd) -> dict:
         # Safe to round-trip: `keys.resolve_prd` accepts a rendered key and a frozen id.
         "prd_id": prd.key, "title": prd.title, "status": prd.status,
         "sections": per,
+        # Items pointing at a section this PRD no longer has (GRPH-360). They are NOT in
+        # `sections` above, which iterates the PRD's own headings — so a rename silently
+        # dropped them out of coverage entirely, and the item went on holding rules from a
+        # section nobody could find. Found by the test for `section_gone`, which could not
+        # fire until this existed: the state was reachable in `section_drift` and
+        # unreachable through the surface that reports it.
+        "orphaned": [{"id": it.key, "section": it.prd_section,
+                      **section_drift(it, prd.body or "")}
+                     for it in items
+                     if it.prd_section and it.prd_section not in set(sections)],
+        # The rollup, so a caller that reads nothing else still cannot miss it. Counted per
+        # STATE rather than as one boolean: "3 drifted, 2 unknown" and "3 drifted" call for
+        # different next moves, and a single `has_drift` flag would hide the unknowns behind
+        # the knowns.
+        "drift_counts": {
+            st: (sum(1 for p in per for d in p["drift"] if d["state"] == st)
+                 + sum(1 for it in items
+                       if it.prd_section and it.prd_section not in set(sections)
+                       and section_drift(it, prd.body or "")["state"] == st))
+            for st in DRIFT_STATES
+        },
         # `section_count` stays the total for continuity; coverage is measured against
         # the buildable subset so prose can't drag the ratio down.
         "section_count": len(sections),
@@ -3211,6 +3300,13 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
                 prd_id=prd.id, prd_section=pr["section"],
                 reporter={"name": "Spec", "handle": "prd", "avatar": "#c9b8ff"},
             )
+            # Stamped at creation, so the description's snapshot has something to be
+            # compared against later. Set here rather than passed through `create_item`:
+            # this is a fact about how the item was DERIVED, not a field a caller supplies,
+            # and an item created by hand must not be able to claim a provenance it has not
+            # got — an unfingerprinted item reports UNKNOWN, which is the truth.
+            item.prd_section_hash = section_fingerprint(prd.body or "", pr["section"])
+            db.commit()
             created.append(item.id)
     # Rendered, as in `coverage` above. NOT the same as the `prd_id=prd.id` written onto each
     # created item further up: that column holds the frozen id deliberately (GRPH-319), because
