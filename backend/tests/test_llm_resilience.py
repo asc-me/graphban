@@ -166,7 +166,7 @@ def test_code_graph_describe_survives_a_dead_embedder(client, auth, monkeypatch)
 
 
 # ---- startup guard ------------------------------------------------------------
-def test_hosted_stub_embeddings_warns_not_fatal(monkeypatch, capsys):
+def test_hosted_stub_embeddings_warns_not_fatal(monkeypatch, caplog):
     """Warn loudly, but never strand a running deployment mid-migration."""
     from app.config import settings
     from app.security.startup import check_security
@@ -177,7 +177,7 @@ def test_hosted_stub_embeddings_warns_not_fatal(monkeypatch, capsys):
     monkeypatch.setattr(settings, "secret_encryption_key", "k")
     monkeypatch.setattr(settings, "require_real_embeddings", False)
     check_security()
-    assert "EMBED_PROVIDER is 'stub'" in capsys.readouterr().out
+    assert "EMBED_PROVIDER is 'stub'" in caplog.text
 
 
 def test_hosted_stub_embeddings_refuses_when_required(monkeypatch):
@@ -224,7 +224,7 @@ def _hosted(monkeypatch, **over):
     return settings
 
 
-def test_no_startup_guard_on_the_legacy_chat_provider_mirror(monkeypatch, capsys):
+def test_no_startup_guard_on_the_legacy_chat_provider_mirror(monkeypatch, caplog):
     """`settings.chat_provider` is a legacy mirror that `platform.apply_llm` writes at
     runtime — the resolver reads `PlatformConfig.active_chat_provider` from the DB, per
     project. At boot the mirror is therefore always the env default, whatever projects
@@ -236,7 +236,7 @@ def test_no_startup_guard_on_the_legacy_chat_provider_mirror(monkeypatch, capsys
 
     _hosted(monkeypatch, chat_provider="stub")
     check_security()
-    assert "CHAT_PROVIDER" not in capsys.readouterr().out
+    assert "CHAT_PROVIDER" not in caplog.text
 
 
 def test_health_reports_embedding_readiness(client, monkeypatch):

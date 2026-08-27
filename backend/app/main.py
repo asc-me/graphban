@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
         db = SessionLocal()
         try:
             if seed(db):
-                print("[seed] loaded Graphban prototype dataset")
+                logger.info("seed: loaded Graphban prototype dataset")
         finally:
             db.close()
 

@@ -233,7 +233,8 @@ account-touching step (the remaining `railway` items). What the code already han
   Dockerfile build + healthcheck per service. Create two Railway services with root
   directories `backend/` and `web/`; each picks up its `railway.json`.
 - **`$PORT`.** Both images honor Railway's injected `$PORT` — the API via
-  `uvicorn --port ${PORT:-8000}`, the web via nginx's envsubst template
+  `python -m app.serve` (which reads `$PORT`; it exists so logging is configured before
+  uvicorn's first line — see Observability below), the web via nginx's envsubst template
   (`nginx.conf.template`, `listen ${PORT}`). Locally (`docker compose`) the defaults
   (8000 / 80) keep working unchanged.
 - **`DATABASE_URL`.** Railway's Postgres hands out a `postgres://…` URL; config rewrites
@@ -242,7 +243,8 @@ account-touching step (the remaining `railway` items). What the code already han
   address (e.g. `${{backend.RAILWAY_PRIVATE_DOMAIN}}:8000`); it defaults to `api:8000`
   for compose.
 - **Migrations** run on API startup (same as self-host). Run a single API replica during
-  a migration deploy to avoid two instances racing `upgrade head`.
+  a migration deploy to avoid two instances racing `upgrade head`. See Scaling policy —
+  today that is not a per-deploy precaution but a standing one.
 
 ### Required environment (backend service, hosted)
 
@@ -293,6 +295,69 @@ admin is an env allowlist, not a flag on the row, so an account created with any
 address signs in perfectly and can never open the operator console — which looks like a
 product bug rather than a configuration one. Note that Railway *stages* variable edits:
 until you apply them they are absent from the running service while appearing saved.
+
+### Observability
+
+`LOG_JSON=true` on both services. Without it the stream is human-readable text, which is
+the right default for `docker compose logs` on a self-host box and the wrong one for a log
+platform.
+
+**What you get.** One JSON object per line, from both services:
+
+```
+nginx    {"ts":"…","request_id":"604a1378…","method":"GET","path":"/api/public/roadmap",
+          "status":404,"duration_s":0.003,"upstream_status":"404","upstream_time":"0.002"}
+backend   {"ts":"…","level":"INFO","logger":"graphban.access","request_id":"604a1378…",
+          "http":{"method":"GET","path":"/api/public/roadmap","status":404,"duration_ms":1.9}}
+```
+
+**The `request_id` is the same on both.** nginx generates it and forwards it as
+`X-Request-ID`; the API honours an inbound one and echoes it on the response. So a search
+for one id returns the full path of a request across the hop — which is where the
+2026-08-26 outage actually lived, and the pair to compare there is `status` against
+`upstream_status`: nginx returned 499 (client gave up) while the upstream returned nothing.
+
+**Before GRPH-33 there was no request log at all.** `configure_logging` silenced
+`uvicorn.access` as a duplicate of something that did not exist; three requests including a
+404 produced zero lines. `LOG_JSON=true` also did not make the stream JSON — uvicorn
+configures its own loggers before the app's lifespan runs, so its lines stayed plain text
+alongside JSON app lines.
+
+**Deliberately absent, and do not add them without reading why:**
+
+- *The query string.* The public share link's token is a query parameter and is the
+  credential. Both access logs record the path only (`$uri` in nginx, `scope["path"]` in the
+  API). Logging it would copy live secrets into a searchable store no revocation path
+  reaches. Pinned by `backend/tests/test_observability.py`.
+- *The client IP.* Which forwarded hop is the real caller is open (GRPH-517) — `client_ip`
+  reads the leftmost, which is the one an attacker writes. A field named `ip` would be
+  authoritative-looking and sometimes attacker-chosen.
+
+Health checks **are** logged. Suppressing the noisy ones is what produced the original hole;
+volume belongs to `LOG_LEVEL`, which an operator can lower knowing what they lose.
+
+### Scaling policy
+
+**API replicas: 1.** Not a performance judgement — two preconditions are unmet, and each has
+a specific consequence.
+
+| Precondition | State | What >1 replica does today |
+|---|---|---|
+| Shared rate-limit store (`REDIS_URL`) | Optional, off by default | `ratelimit.allow` falls back to `spam._hits`, an in-process dict. N replicas = N independent buckets, so **every limit is silently N×** — including login and the `/api/public/*` limits GRPH-32 added. The endpoints still read as protected. |
+| Migration locking (AL-31) | **Not implemented** — `app/migrate.py` takes no lock | Every replica runs `run_migrations()` on boot. Two booting together race `upgrade head`. |
+
+Before raising it, verify both: `REDIS_URL` set on the backend service, and a lock in
+`app/migrate.py`. The web service is nginx over static files and is stateless; replicate it
+freely.
+
+**Local-disk state.** The only writer under `app/` outside the CLI is
+`drive_sync.LocalFolderBackend`, which serves the optional `/data/sync` volume. A Railway
+volume attaches to one instance, so a deployment that uses Drive sync is single-replica for
+that reason too. Everything else is in Postgres.
+
+**Resource limits and alerting** are dashboard settings, not repo config — they are the part
+of GRPH-33 that cannot be committed. Set them against a measured baseline (Railway's own
+HTTP error-rate and response-time panels) rather than a guess.
 
 ### `/data/sync`
 

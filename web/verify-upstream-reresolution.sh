@@ -26,8 +26,22 @@ TMPL_NEW="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/nginx.conf.template"
 TMPL_OLD=$(mktemp)
 trap 'docker rm -f nginx-verify be-one be-two >/dev/null 2>&1 || true; docker network rm ${NET} >/dev/null 2>&1 || true; rm -f "${TMPL_OLD}" "${ECHO_PY}"' EXIT
 
-git -C "$(dirname -- "${TMPL_NEW}")/.." show origin/main~1:web/nginx.conf.template > "${TMPL_OLD}" 2>/dev/null \
-  || git -C "$(dirname -- "${TMPL_NEW}")/.." show HEAD~1:web/nginx.conf.template > "${TMPL_OLD}"
+# THE BASELINE IS A PINNED SHA, NOT A RELATIVE REF. This read `origin/main~1` (falling back
+# to `HEAD~1`), which named the pre-fix template for exactly one commit and then rotted: by
+# 2026-08-27 `origin/main~1` was several merges past the fix, so BOTH sides of the comparison
+# contained the resolver and both passed. The script's own control caught it and printed
+# CONTROL BROKEN — it fails closed, which is why this is a repair and not an outage — but a
+# verification that can never pass is one nobody runs twice.
+#
+# fff8b76 is the parent of 10fd287, the commit that introduced the fix. That relationship
+# does not change, so neither does this line.
+PREFIX_SHA=fff8b76
+git -C "$(dirname -- "${TMPL_NEW}")/.." show "${PREFIX_SHA}:web/nginx.conf.template" > "${TMPL_OLD}"
+grep -q 'set \$api_upstream' "${TMPL_OLD}" && {
+    echo "BASELINE IS NOT PRE-FIX: ${PREFIX_SHA} already contains the resolver fix, so the" >&2
+    echo "control below compares the fix against itself and can only report a false pass." >&2
+    exit 1
+}
 
 ECHO_PY=$(mktemp)
 cat > "${ECHO_PY}" <<'PY'

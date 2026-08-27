@@ -3,8 +3,34 @@
 # keep docker-compose working — PORT=80, API_UPSTREAM=api:8000 — while a managed host
 # like Railway injects its own $PORT and the backend's internal address. NGINX_ENVSUBST_FILTER
 # restricts substitution to those two names so nginx runtime vars ($host, $uri, …) survive.
+
+# STRUCTURED ACCESS LOG (GRPH-33). Railway's log search is the only way to ask what this
+# edge served, and nginx's default `combined` format is a text line an ingester cannot filter.
+# Declared here rather than inside `server` because `log_format` is an http-context directive
+# and this file is included from `http` — conf.d/default.conf.
+#
+# **$uri, NEVER $request OR $request_uri.** `$uri` is the normalized path with the query
+# string already stripped. The other two carry it, and the public share link's credential
+# travels as `?token=...` — logging it would copy a live secret into the log store, where it
+# is searchable, outlives the request, and is reachable by no revocation path. The backend's
+# access log applies the same rule for the same reason; `test_observability.py` pins that half.
+#
+# `$upstream_status` and `$upstream_response_time` are separate from `$status`/`$request_time`
+# on purpose: during the 2026-08-26 outage nginx returned 499 (client gave up) while the
+# upstream returned nothing at all, and it was that pair — not the status alone — that showed
+# the backend had gone away rather than erred.
+#
+# `escape=json` makes nginx emit valid JSON for values containing quotes or control bytes; a
+# hand-quoted format produces broken lines exactly when a request is interesting.
+log_format json_access escape=json
+    '{"ts":"$time_iso8601","request_id":"$request_id","method":"$request_method",'
+    '"path":"$uri","status":$status,"duration_s":$request_time,'
+    '"upstream_status":"$upstream_status","upstream_time":"$upstream_response_time",'
+    '"bytes":$body_bytes_sent}';
+
 server {
     listen ${PORT};
+    access_log /dev/stdout json_access;
     server_name _;
     root /usr/share/nginx/html;
     index index.html;
@@ -65,6 +91,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # ONE ID ACROSS BOTH SERVICES. The backend honours an inbound X-Request-ID and
+        # generates one otherwise, so without this the same request carries two unrelated ids
+        # and the two log streams cannot be joined — which is most of what "log search is
+        # useful" means when the failure is at the hop between them.
+        proxy_set_header X-Request-ID $request_id;
     }
 
     location /health {
@@ -72,6 +103,10 @@ server {
         proxy_pass ${API_SCHEME}://$api_upstream;
         proxy_ssl_server_name on;
         proxy_set_header Host ${API_UPSTREAM};
+        # Same shared id as /api/. A health check that starts failing is precisely the
+        # request you want to follow across the hop, and it was the one Railway kept
+        # calling SUCCESS while the backend was gone.
+        proxy_set_header X-Request-ID $request_id;
     }
 
     # Vite content-hashes everything under /assets/ — the filename changes whenever the bytes
