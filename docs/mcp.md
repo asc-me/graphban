@@ -84,6 +84,30 @@ shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b)
 carries no `claim_next`, a worker credential no `sign_off`. A single-role fleet key sees
 roughly 16–19% fewer tokens.
 
+**A section can declare what it is** (GRPH-247). `prd_coverage` decides whether a `## `
+section is buildable work or framing prose, and it used to decide purely from the heading
+name against an allowlist. That allowlist cannot keep up with headings people invent: three
+sections on this repo's own approved PRD-17 — `Key decisions`, `Roles`, `Relationship to
+in-session orchestrators` — were pure framing, missing from it, and therefore reported as
+coverage gaps that could never close. Two already carried hand-retitled "Spec:" items created
+only to silence the report.
+
+Put `<!-- framing -->` anywhere in a section's body and it is framing. Put
+`<!-- buildable -->` and it is work. Either beats the name in both directions — which matters,
+because `Decisions from grilling` is on the allowlist while a plain `Decisions` deliberately
+is not, on the grounds that it may be design decisions that do need building.
+
+Every section in a coverage report now carries `implementable_basis` naming the rule that
+decided: `marked <!-- framing -->`, `a conventional framing heading`, or `no framing marker
+and not a conventional framing heading`. A false gap is found by somebody disbelieving a
+report, and the next question is always why.
+
+**What was deliberately not done:** inverting the default, so a section with no acceptance
+markers counts as framing unless it says otherwise. Measured against the PRDs in `docs/`, that
+reclassifies 30 sections and most are genuinely buildable — it trades a visible false gap for
+an invisible missing one, and work that quietly stops being counted is worse than a gap nobody
+can close.
+
 **Coverage reports whether items still AGREE with their sections** (GRPH-360). `decompose_prd`
 copies a section's markdown into the item it creates, and that copy is never refreshed — so a
 PRD edited afterwards leaves its items holding the old rules. Found live on PRD-17, where nine
