@@ -79,6 +79,17 @@ def attestation(*, commit: str, branch: str, run_url: str = "") -> dict:
     }
 
 
+def post_head(url: str, key: str, item_key: str, commit: str, *,
+              timeout: float = 15.0) -> None:
+    """Record the commit this run OBSERVED, whether or not it passed (GRPH-555).
+
+    This is the half that makes an attestation expire. A passing run writes a receipt for
+    the head; a FAILING run writes no receipt but must still move the head, or the last
+    passing attestation goes on opening the gate for code that has since broken.
+    """
+    _call(url, key, {"id": item_key, "head_commit": commit}, timeout=timeout)
+
+
 def post(url: str, key: str, item_key: str, receipt: dict, *, timeout: float = 15.0) -> None:
     """Attach the receipt to one item. Raises on anything that is not a success.
 
@@ -86,9 +97,14 @@ def post(url: str, key: str, item_key: str, receipt: dict, *, timeout: float = 1
     successful attestation would leave the item uncompletable with nothing saying why —
     the operator would go looking at the gate, which is working correctly.
     """
+    _call(url, key, {"id": item_key, "evidence": [receipt]}, timeout=timeout)
+
+
+def _call(url: str, key: str, arguments: dict, *, timeout: float = 15.0) -> None:
+    """One `update_item` call. Raises on anything that is not a success."""
+    item_key = arguments.get("id", "?")
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-        "name": "update_item",
-        "arguments": {"id": item_key, "evidence": [receipt]},
+        "name": "update_item", "arguments": arguments,
     }}).encode()
     req = urllib.request.Request(
         url.rstrip("/") + "/api/mcp", data=body,
@@ -98,7 +114,7 @@ def post(url: str, key: str, item_key: str, receipt: dict, *, timeout: float = 1
     result = payload.get("result") or {}
     if result.get("isError") or "error" in payload:
         detail = (result.get("structuredContent") or {}).get("error") or payload.get("error")
-        raise RuntimeError(f"{item_key}: graphban refused the attestation: {detail}")
+        raise RuntimeError(f"{item_key}: graphban refused the write: {detail}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -107,6 +123,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--branch", default="")
     ap.add_argument("--text", default="", help="PR title/body/branch to scan for item keys")
     ap.add_argument("--run-url", default="")
+    ap.add_argument("--mode", choices=("attest", "head"), default="attest",
+                    help="`head` records the observed commit and runs even when CI failed; "
+                         "`attest` writes the receipt and must not.")
     args = ap.parse_args(argv)
 
     url = os.environ.get("GRAPHBAN_URL", "").strip()
@@ -131,6 +150,10 @@ def main(argv: list[str] | None = None) -> int:
     failures = []
     for item_key in keys:
         try:
+            if args.mode == "head":
+                post_head(url, key, item_key, args.commit)
+                print(f"{item_key}: head is now {args.commit[:12]}")
+                continue
             post(url, key, item_key, receipt)
             print(f"attested {item_key} at {args.commit[:12]}")
         except (urllib.error.URLError, RuntimeError, ValueError) as e:

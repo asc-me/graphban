@@ -1534,6 +1534,12 @@ _ATTESTATION_PROPS = {
 }
 
 
+# Written by an adapter, never by a building agent (GRPH-555): setting it to the commit a
+# stale receipt names would walk straight through the staleness check.
+_GATE_ONLY_ARGS = {"head_commit": {"type": "string",
+                                  "description": "gate: commit an adapter last observed."}}
+
+
 def _with_attestation(tools: list[dict]) -> list[dict]:
     """`tools` with the attestation-only evidence fields added, for gate-scoped keys.
 
@@ -1559,6 +1565,7 @@ def _with_attestation(tools: list[dict]) -> list[dict]:
         kinds = props.get("kind", {}).get("enum")
         if kinds is not None and "attestation" not in kinds:
             props["kind"]["enum"] = list(kinds) + ["attestation"]
+        widened["inputSchema"]["properties"].update(copy.deepcopy(_GATE_ONLY_ARGS))
         out.append(widened)
     return out
 
@@ -1879,13 +1886,15 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     # Refused rather than silently demoted to a `note`. A demotion here would leave the
     # caller believing it had attested something and the item quietly unprovable — the
     # failure would surface much later, at a refusal nobody could explain.
-    if writes and any((e or {}).get("kind") == "attestation"
-                      for e in (args.get("evidence") or []) if isinstance(e, dict)):
+    if writes and (args.get("head_commit") or any(
+            (e or {}).get("kind") == "attestation"
+            for e in (args.get("evidence") or []) if isinstance(e, dict))):
         if "gate" not in (key.scopes or []):
             raise authz.Forbidden(
                 f"api key {key.name!r} has scopes {key.scopes} and cannot write an "
-                "`attestation` receipt — that needs the 'gate' scope, which is held by "
-                "completion adapters (CI, a reviewer signing off), not by building agents",
+                "`attestation` receipt or a `head_commit` — those need the 'gate' scope, "
+                "which is held by completion adapters (CI, a reviewer signing off), not by "
+                "building agents",
                 hint="record your proof as `test` or `sabotage` receipts and let an adapter "
                      "attest the result",
             )
@@ -2075,6 +2084,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             touchpoints=args.get("touchpoints"),
             prd_id=args.get("prd_id"),
             prd_section=args.get("prd_section"),
+            head_commit=args.get("head_commit"),
             ack_section_drift=args.get("ack_section_drift"),
             evidence=args.get("evidence"),
         )

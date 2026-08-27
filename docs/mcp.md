@@ -362,8 +362,24 @@ doesn't validate:
 | `sabotage` | `claim`, `mutation`, `tests_failed` | `tests_failed: 0` means the test *cannot* fail — a finding, not a pass |
 | `attestation` | `adapter`, `commit`, `predicates` | Needs the `gate` scope. `predicates` is `[{name, passed, detail}]` — at least one, all `passed`, and `passed` must be a real boolean |
 
-An attestation binds to the commit it names: asked about any other revision it does not
-answer for it, so pushing after attesting invalidates the proof.
+An attestation binds to the commit it names, and that binding is now read. `head_commit`
+records what an adapter last **observed** — written whether its run passed or failed — and
+completion requires an attestation for that commit. Pushing after attesting invalidates the
+proof.
+
+The failure-path write is the load-bearing half. A passing run writes a receipt for the new
+head, so staleness never arises there; the dangerous sequence is attest at A, push B, CI
+fails on B, no receipt written — and unless the head still moves, A's receipt goes on
+vouching for code that has since broken.
+
+`head_commit` needs the `gate` scope for the same reason the receipt does: an agent able to
+set it to the commit its stale attestation names would walk straight through the check.
+
+**With no head reported, the weaker check applies** — any valid attestation completes.
+Refusing instead would make completion impossible for every install without such an adapter,
+including the offline one, and `fleet.sign_off` reports no head. The stronger guarantee is
+opt-in, and visibly so: an item completed under the weak check is exactly one whose
+`head_commit` is empty.
 
 **Completion is gated.** `update_item` refuses `status: "done"` unless the item carries a
 valid attestation, and answers `conflict` — not `unauthorized`, because the caller *may*

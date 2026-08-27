@@ -486,19 +486,44 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
     # write rather than needing two round trips to satisfy a gate it is itself satisfying.
     if fields.get("status") == "done" and prev_status != "done":
         merged_for_gate = append_evidence(item.evidence, fields.get("evidence") or [])
-        if not has_valid_attestation(merged_for_gate):
+        # THE STALENESS CHECK (GRPH-555). An attestation names the commit it vouches for,
+        # and until now nothing read it — so the gate asked "was this ever attested" rather
+        # than "is this attested as it stands". Attest at A, push B, and A's receipt still
+        # opened the gate. The dangerous case is not a passing run: it is CI FAILING on B,
+        # writing no attestation, and leaving A's standing.
+        #
+        # `head_commit` is what an adapter last observed, written whether its run passed or
+        # failed. Comparing against it is what makes a receipt expire.
+        #
+        # NO HEAD REPORTED falls back to the weaker check, deliberately. Refusing instead
+        # would make completion impossible for every install without such an adapter —
+        # including the offline one this product promises — and `fleet.sign_off` reports no
+        # head either. The guarantee is therefore opt-in, and NOT silently so: an item
+        # completed under the weak check is exactly one whose `head_commit` is empty, which
+        # is a query rather than a receipt on every row.
+        head = (fields.get("head_commit") or item.head_commit or "").strip()
+        if not has_valid_attestation(merged_for_gate, commit=head or None):
             failing = [a for a in attestation_receipts(merged_for_gate)
                        if not all(q.get("passed") for q in (a.get("predicates") or []))]
             failed_names = sorted({q["name"] for a in failing
                                    for q in a.get("predicates") or []
                                    if not q.get("passed")})
-            record_refusal(
-                db, item,
-                predicate="attestation_failing" if failing else "attestation_missing",
-                detail=(f"its attestation reports {', '.join(failed_names)} as failing."
-                        if failing else "nothing has attested it."))
+            # A receipt that PASSED but names another commit is its own case, and saying
+            # "nothing has attested it" there would send the author looking for a missing
+            # run when what they actually need is to re-run on the head they just pushed.
+            stale = [a for a in valid_attestations(merged_for_gate) if head] if head else []
+            if stale:
+                predicate, detail = "attestation_stale", (
+                    f"it is attested at {stale[0]['commit'][:12]} but the head is "
+                    f"{head[:12]} — the code moved after it was checked.")
+            elif failing:
+                predicate, detail = "attestation_failing", (
+                    f"its attestation reports {', '.join(failed_names)} as failing.")
+            else:
+                predicate, detail = "attestation_missing", "nothing has attested it."
+            record_refusal(db, item, predicate=predicate, detail=detail)
             raise MissingAttestation(
-                f"{item.key} cannot move to done: nothing has attested it. `done` needs an "
+                f"{item.key} cannot move to done: {detail} `done` needs an "
                 "`attestation` receipt naming the adapter, the commit it binds to, and at "
                 "least one predicate that passed — written by a key with the `gate` scope "
                 "(CI, or a reviewer via sign_off), not by the agent that built it"
@@ -528,6 +553,7 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         if fields["prd_id"] != item.prd_id:
             item.prd_linked_at = utcnow()
     for key in ("title", "description", "status", "tags", "effort", "blocker", "pr", "date",
+                "head_commit",
                 "github_url", "assignee", "touchpoints", "prd_id", "prd_section", "fidelity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])

@@ -466,6 +466,15 @@ class Item(Base):
     # every item made by hand. Those are reported as UNKNOWN, never as clean — an item whose
     # source might have moved and an item whose source demonstrably has not are different
     # answers, and collapsing them is how this defect stayed invisible in the first place.
+    # The commit an adapter last OBSERVED for this item, written whether its run passed or
+    # failed (GRPH-555). The completion gate compares an attestation's commit against this,
+    # so a receipt that has been overtaken by a later push stops opening the gate.
+    #
+    # Empty means nobody has reported one. That is the truthful state for an install with no
+    # such adapter, and the gate falls back to the weaker "was this ever attested" there —
+    # see `items.update_item`, where the choice is argued.
+    head_commit: Mapped[str] = mapped_column(String, default="", server_default="",
+                                             nullable=False)
     prd_section_hash: Mapped[str] = mapped_column(String, default="")
     # Set when a human decides a divergence is intentional (the item was narrowed after a
     # spike, retitled, annotated with findings). Holds the hash that was acknowledged, so a
