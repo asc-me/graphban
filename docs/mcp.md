@@ -84,6 +84,26 @@ shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b)
 carries no `claim_next`, a worker credential no `sign_off`. A single-role fleet key sees
 roughly 16–19% fewer tokens.
 
+**Annotations say only what differs from the spec default** (GRPH-48). MCP defines defaults
+for all four `ToolAnnotations` hints — `readOnlyHint` false, `destructiveHint` true,
+`idempotentHint` false, `openWorldHint` true — and an absent field means exactly that value.
+Restating one costs bytes and tells a client nothing, so the manifest omits it. Read a hint
+the way the spec does, filling in defaults for what was not sent: `create_item` advertises
+that it is not read-only by saying nothing, and `update_item` advertises that it is
+destructive the same way.
+
+That is the only trim of its kind taken. The spec further says `destructiveHint` and
+`idempotentHint` are meaningful only when `readOnlyHint == false`, which would drop both from
+every read-only tool — worth another ~238 tokens, and lossless only for a client that honours
+the conditional. A client reading the field regardless would flip to the opposite value, so
+the saving is declined.
+
+**What cannot be done, so nobody spends a week on it.** There is no server-side progressive
+disclosure. `inputSchema` is a required field of every tool in `tools/list`; the spec has no
+detail level and no on-demand schema, and it explicitly makes progressive discovery the
+*client's* job. Pagination does not reduce total tokens, and `ttlMs`/`cacheScope` save round
+trips rather than context. Scope and role gating are the real levers, and they are above.
+
 `wait_seconds` (max 60) parks a claim instead of returning empty — one tool call a minute
 rather than twelve. The park holds no database transaction while idle, and an outstanding
 `directive` wakes it early, so a re-tasked agent adopts its new role in seconds rather than at
@@ -191,7 +211,7 @@ must fetch its parent to be actionable is the cost this tool exists to remove.
 
 The block is **bounded and says what it left out** (GRPH-428). Framing across this repo's
 PRDs runs 7,461–15,819 characters, and copying all of it onto every task put ~3,300 tokens
-of duplicated prose on each — against an MCP manifest of ~13,150 whose ceiling has been
+of duplicated prose on each — against an MCP manifest of ~13,200 whose ceiling has been
 argued five separate times. The budget is 8,000 characters, sections are taken in document
 order because PRDs state their rules first, and anything that does not fit is **named** in a
 `Not carried` block rather than silently dropped. A short block and a PRD with nothing more

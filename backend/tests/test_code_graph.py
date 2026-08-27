@@ -1,4 +1,5 @@
 """Code-structure graph: agent describes the codebase over MCP, then it's queryable."""
+from tests.annotations import effective
 import json
 
 
@@ -300,9 +301,9 @@ def test_code_tools_are_scoped_and_read_only_flags(client, auth):
     tl = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
                      headers={"X-API-Key": key})
     by = {t["name"]: t for t in tl.json()["result"]["tools"]}
-    assert by["describe_code"]["annotations"]["readOnlyHint"] is False
-    assert by["describe_code"]["annotations"]["idempotentHint"] is True
+    assert effective(by["describe_code"])["readOnlyHint"] is False
+    assert effective(by["describe_code"])["idempotentHint"] is True
     for ro in ("get_code_map", "code_neighbors", "search_code"):
-        assert by[ro]["annotations"]["readOnlyHint"] is True
+        assert effective(by[ro])["readOnlyHint"] is True
     # project scoping is injected onto the input schema
     assert "project_id" in by["describe_code"]["inputSchema"]["properties"]

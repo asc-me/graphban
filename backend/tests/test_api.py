@@ -1,3 +1,4 @@
+from tests.annotations import effective
 import json
 from app import tagging
 
@@ -270,9 +271,11 @@ def test_mcp_tools_carry_annotations(client, auth):
     tl = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
                      headers={"X-API-Key": key})
     by = {t["name"]: t for t in tl.json()["result"]["tools"]}
-    assert by["search_items"]["annotations"]["readOnlyHint"] is True
-    assert by["create_item"]["annotations"]["readOnlyHint"] is False
-    assert by["update_item"]["annotations"]["destructiveHint"] is True
+    # Read through the defaults: the manifest sends only what differs from them, so
+    # `create_item` advertises non-read-only by SAYING NOTHING, which is the same claim.
+    assert effective(by["search_items"])["readOnlyHint"] is True
+    assert effective(by["create_item"])["readOnlyHint"] is False
+    assert effective(by["update_item"])["destructiveHint"] is True
 
 
 def test_every_mcp_tool_declares_output_schema(client, auth):

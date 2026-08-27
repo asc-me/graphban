@@ -323,16 +323,36 @@ Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT th
     **Who pays, measured rather than assumed** (the docstring above was stale about this;
     E9b's session-role narrowing changed it):
 
-        full (unregistered / all-in-one)   13379   54 tools
-        session role = planner             11526   47 tools   retire_wave visible
-        session role = worker              11000   44 tools   not visible
-        session role = reviewer            11074   44 tools   not visible
+        full (unregistered / all-in-one)   13216   54 tools
+        session role = planner             11380   47 tools   retire_wave visible
+        session role = worker              10594   43 tools   not visible
+        session role = reviewer            10689   43 tools   not visible
 
     `retire_wave` is planner-gated, so a worker or reviewer in a fleet pays 24 tokens of
     this, not 239. The full number is what an all-in-one agent pays — the solo-developer
     default — which is the awkward part of the trade and is stated rather than buried.
 
     The structural fix is still GRPH-48/146 and this raise does not substitute for it.
+
+    LOWERED 13600 -> 13400 on 2026-08-26 (GRPH-48), which is the direction this number is
+    supposed to move and had not moved in yet. The manifest was at 13598 with TWO tokens of
+    headroom, so the next honest contract addition would have forced another raise.
+
+    The slack came from somewhere the ceiling had never looked. This docstring says a prose
+    pass "was attempted first and there is nothing left", and that was true — but it then
+    reaches straight for outputSchema (26%) and skips annotations (11%). ~388 tokens were
+    hints repeating a value the MCP spec already defines as the default, and the spec is
+    explicit that an ABSENT field means exactly that default. So those bytes told every
+    client something it already knew, once per tool, 54 times.
+
+    Banked rather than spent: 13216 measured, ceiling at 13400, leaving 184 tokens of
+    working room — near the 190 the last raise allowed. Lowering it is the point. A win
+    left unratcheted is just headroom for the next round of prose.
+
+    Not taken: the spec also says `destructiveHint` and `idempotentHint` are meaningful
+    only when `readOnlyHint == false`, worth another ~238 tokens across the 19 read-only
+    tools. That trim is lossless only for a client that honours the conditional, and 238
+    tokens do not buy a behaviour that depends on how carefully somebody else read the spec.
 
     RAISED 13410 -> 13600 on 2026-08-22 (GRPH-474), and the reason matters more than the
     number. This is not prose creep, which is what the ceiling exists to catch — it is 178
