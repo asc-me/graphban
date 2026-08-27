@@ -67,6 +67,20 @@ async def lifespan(app: FastAPI):
         finally:
             db.close()
 
+    # GRPH-55's deferral, evaluated (GRPH-540). It parked real scaling work behind a precise
+    # trigger — first project over ~5k items — and nothing checked it, so the condition could
+    # only fire if somebody re-measured on a hunch. Here rather than beside `check_security`
+    # because that runs before the schema exists, and this one has to count rows.
+    db = SessionLocal()
+    try:
+        from app.scaling import check_scaling_triggers
+
+        check_scaling_triggers(db)
+    except Exception:  # pragma: no cover - a tripwire must never keep the app down
+        logger.exception("scaling trigger check failed")
+    finally:
+        db.close()
+
     # Apply any persisted platform LLM config so it drives the live providers.
     # Use the first existing project (there may be none on a freshly wiped DB).
     from sqlalchemy import select
