@@ -19,6 +19,29 @@ import httpx
 from app import errors
 
 
+#: HTTP statuses worth trying a DIFFERENT credential for (PRD-25 D-h, S3).
+#:
+#: The line is the one `gbfleet.client` already draws — *"a bad credential does not become
+#: true by waiting"*. 429 and 5xx are about the provider's moment; 401/403/400 are about the
+#: credential itself, and asking a second provider the same malformed question spends money to
+#: be told the same thing twice.
+RETRYABLE_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
+
+def _tagged(exc, *, status: int | None, retryable: bool | None = None):
+    """Attach the failover verdict to a provider error.
+
+    **Unknown and vendor-specific statuses are TERMINAL**, and that default is the decision,
+    not an oversight (D-h). Failing over on an unclassified error is how one bug becomes a
+    doubled bill on every call. The asymmetry is what makes the default safe: a terminal
+    misclassification surfaces immediately as an error a human reads, while a retryable one
+    hides inside a response that looks fine.
+    """
+    exc.status = status
+    exc.retryable = (status in RETRYABLE_STATUSES) if retryable is None else retryable
+    return exc
+
+
 @contextmanager
 def provider_errors(provider: str, *, model: str = "", endpoint: str = ""):
     """Turn a provider transport failure into an ACTIONABLE domain error.
@@ -41,30 +64,33 @@ def provider_errors(provider: str, *, model: str = "", endpoint: str = ""):
     except httpx.HTTPStatusError as e:
         status = e.response.status_code
         body = (e.response.text or "")[:200]
+        # `status` is carried on the exception, not only formatted into the message.
+        # PRD-25 S3 has to decide whether to fail over, and parsing "returned HTTP 429" back
+        # out of prose would be a second, weaker copy of a fact we already have.
         if status == 404 and model and model in body:
-            raise errors.Unavailable(
+            raise _tagged(errors.Unavailable(
                 f"{where} has no model {model!r}",
                 hint=f"pull it on the provider (`ollama pull {model}`) or correct the "
                      "model name in Settings -> AI providers; retrying will not help",
-            ) from e
-        raise errors.Unavailable(
+            ), status=404, retryable=False) from e
+        raise _tagged(errors.Unavailable(
             f"{where} returned HTTP {status}" + (f": {body}" if body else ""),
             hint="check the provider's credentials and model configuration in "
                  "Settings -> AI providers",
-        ) from e
+        ), status=status) from e
     except httpx.TimeoutException as e:
-        raise errors.Unavailable(
+        raise _tagged(errors.Unavailable(
             f"{where} timed out",
             hint="the model may be cold or the endpoint overloaded; this one IS worth "
                  "retrying, or raise LLM_TIMEOUT_SECONDS",
-        ) from e
+        ), status=None, retryable=True) from e
     except httpx.HTTPError as e:
-        raise errors.Unavailable(
+        raise _tagged(errors.Unavailable(
             f"cannot reach {where}: {type(e).__name__}",
             hint="correct the provider base URL in Settings -> AI providers. Note that "
                  "`localhost` resolves to the API CONTAINER, not the host — use the "
                  "host's name or address; retrying will not help",
-        ) from e
+        ), status=None, retryable=True) from e
 
 
 @runtime_checkable
