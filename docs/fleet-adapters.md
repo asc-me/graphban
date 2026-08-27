@@ -81,6 +81,39 @@ for "cannot be asked" and a non-empty set for "asked and answered". Treating an 
 as an exhaustive list would refuse every spawn on an account that simply has no entitlements
 yet — which is a working setup, broken by a check that was supposed to help.
 
+## Which model, and what that was measured on (GRPH-557)
+
+The section above says how to NAME a model. This one says what happened when two were
+actually run, because the answer turned out to matter more than anything else in PRD-24.
+
+**Measured 2026-08-20 on `ms-s1-ubt`, against real items in this repository, five runs:**
+
+| runs | model | outcome |
+| --- | --- | --- |
+| 1–3 | `qwen3-coder:30b` | 93 minutes, **zero usable lines**, three distinct failures |
+| 4 | `qwen3.6:35b-a3b-coding-mtp-det` | a correct 9-line fix with 90 lines of tests, signed off to `done` |
+| 5 | `qwen3.6:35b-a3b-coding-mtp-det` | closed a real **authority hole** at effort 3 — and was refused `sign_off` for having no sabotage receipt, which is the gate working |
+
+The walk's own conclusion, kept in its words: *"`qwen3-coder:30b` cannot build an item in this
+repository, and a newer coding-specialised model of similar size can. Model choice is the
+variable."*
+
+**Read this as a measurement, not a recommendation.** It is one repository, two models, one
+box, one day. `qwen3-coder:30b` is not a bad model in general; it could not do this work here.
+A newer coding-specialised model of similar size could. What transfers is the shape — that the
+gap between two same-sized local models was the difference between *nothing* and *signed off*
+— not the specific names, which will age.
+
+**It says nothing about the vendor adapters.** `claude`, `cursor-agent` and `grok` were not
+measured here. PRD-24's own §4 non-goal stands — *"not a model router; which model suits which
+role is PRD-11's question"* — and the walk's finding is that this non-goal is where the arc's
+value rests. That is a reason to record what is known, not to invent what is not.
+
+The three runs that failed were not wasted: the completion guard and the truncation guard both
+came out of them, and those are the sort of thing you only find with a model bad enough to
+need them. What was wrong was the conclusion first drawn from them — that the cheap tier was a
+false economy — which came from one model and did not survive a second.
+
 ## Per-vendor tuning (GRPH-484)
 
 Beyond the model, two vendors expose one knob each. These are **not** uniform and are not
