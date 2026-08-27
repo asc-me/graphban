@@ -84,6 +84,21 @@ shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b)
 carries no `claim_next`, a worker credential no `sign_off`. A single-role fleet key sees
 roughly 16–19% fewer tokens.
 
+**A guessed project says so** (GRPH-482). A call resolves its project as
+`project_id` → the key's own default → *whichever project sorts first*. That last step is an
+ordering, and on a key spanning several projects a call that names none used to land in one
+of them silently.
+
+When it happens, the response now carries `resolved_project` and a note saying to pass
+`project_id`. Only then — a key scoped to one project has nothing to choose between, and a
+key with its own default had that chosen by whoever minted it. A note on every response is
+how a field that matters gets skimmed past.
+
+**The call is not refused**, and that is deliberate. Refusing would break every existing
+multi-project caller, including agent prompts already in the wild that cannot be edited from
+the server. The frontend hit this same class of bug and fixed it by making the project
+explicit at the call site rather than rejecting the call.
+
 **A lean page says what its rows carry** (GRPH-440). `search_items` and `get_backlog` return
 a compact row — `id`, `title`, `status` — and the full item only on `fields=full`. That
 projection is deliberate; these reads return many rows. What was not deliberate is that it
