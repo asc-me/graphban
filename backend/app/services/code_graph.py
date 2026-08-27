@@ -170,6 +170,7 @@ def upsert_node(
     summary: str = "",
     content_hash: str = "",
     fresh: bool = True,
+    revision: str = "",
     retained_unspecified: list | None = None,
 ) -> CodeNode:
     """Create or update the node at (project_id, path). Re-embeds only when the embed
@@ -203,6 +204,7 @@ def upsert_node(
             summary=summary,
             content_hash=content_hash,
             fresh=fresh,
+            revision=revision,
             embedding=safe_embed(new_embed_input),
         )
         db.add(node)
@@ -227,6 +229,10 @@ def upsert_node(
                 retained_unspecified.append(path)
         else:
             node.content_hash = content_hash or node.content_hash
+        # `or node.revision`, matching content_hash: a describe that omits the revision is
+        # saying "I do not know", not "forget what you knew". Overwriting a recorded sha
+        # with "" would let one legacy caller silently un-pin a whole map.
+        node.revision = revision or node.revision
         node.fresh = fresh
         if new_embed_input != old_embed_input:
             node.embedding = safe_embed(new_embed_input)
@@ -287,6 +293,7 @@ def describe_code(
     nodes: list[dict] | None = None,
     edges: list[dict] | None = None,
     prune: bool = False,
+    revision: str = "",
 ) -> dict:
     """Upsert a batch of nodes and edges the agent has described. Idempotent by
     (project_id, path) for nodes and (project_id, src, dst, type) for edges.
@@ -294,6 +301,12 @@ def describe_code(
     `prune=True` marks any *existing* node in this project that wasn't in this batch as
     stale (`fresh=False`) — the invalidation half of the staleness handle. It never
     deletes; a later describe re-freshens whatever is still real.
+
+    `revision` is the commit this batch was described at, stamped on every node it upserts
+    (GRPH-54). One value per call rather than one per node: a describe pass runs against a
+    single checkout, so a per-node revision would invite a caller to report a mixture that
+    cannot physically have been observed in one pass. Omitting it leaves the nodes at the
+    unknown revision, which `map_revision` refuses to treat as agreement.
     """
     nodes = nodes or []
     edges = edges or []
@@ -316,6 +329,7 @@ def describe_code(
             lang=str(n.get("lang", "")),
             summary=str(n.get("summary", "")),
             content_hash=str(n.get("content_hash", "")),
+            revision=revision,
             retained_unspecified=retained,
         )
         # Reported, not silent (GRPH-382). Coercing without saying so is how the live graph
@@ -388,6 +402,7 @@ def node_dict(node: CodeNode) -> dict:
         "summary": node.summary,
         "content_hash": node.content_hash,
         "fresh": node.fresh,
+        "revision": node.revision,
     }
 
 
@@ -420,6 +435,41 @@ def get_code_map(db: Session, project_id: str, kind: str | None = None) -> dict:
         "edges": [_edge_dict(e) for e in edges],
         "node_count": len(nodes),
         "edge_count": len(edges),
+        **map_revision(nodes),
+    }
+
+
+def map_revision(nodes: list[CodeNode]) -> dict:
+    """What commit is this map *pinned* to — and null unless that question has one answer.
+
+    **A map at two revisions has no revision.** The tempting implementation reports the
+    newest one, and it is wrong in the one direction that matters: an agent reads
+    `revision` to decide whether it may reason from this projection, so an optimistic
+    answer defeats the field's entire purpose. Half the nodes described three commits ago
+    would be presented as current, and the agent has no way to tell.
+
+    So `revision` is set only when every described node agrees. Otherwise it is None, and
+    `revisions` says why — how many distinct ones, and how many nodes never carried one at
+    all. That is enough for a caller to decide "re-describe first" without guessing.
+
+    An unknown revision ("") is NOT treated as agreeing with anything. A map of ten nodes
+    where nine share a sha and one is unknown is not pinned to that sha: the tenth may have
+    been described at any commit, which is exactly the case the field exists to expose.
+    """
+    seen = {n.revision for n in nodes}
+    unknown = sum(1 for n in nodes if not n.revision)
+    known = sorted(r for r in seen if r)
+    return {
+        "revision": known[0] if len(known) == 1 and not unknown else None,
+        "revisions": {
+            "distinct": len(known),
+            "unknown_nodes": unknown,
+            # Listed so a caller can act rather than only despair: with the shas in hand it
+            # can re-describe the minority instead of the whole tree. Bounded because a
+            # neglected map could accumulate one per commit.
+            "known": known[:10],
+            "truncated": max(0, len(known) - 10),
+        },
     }
 
 

@@ -1339,6 +1339,11 @@ class CodeNode(Base):
     summary: Mapped[str] = mapped_column(Text, default="")  # what it is / does / owns
     content_hash: Mapped[str] = mapped_column(String, default="")  # source hash for staleness
     fresh: Mapped[bool] = mapped_column(Boolean, default=True)  # verified this describe pass
+    # The commit this node was described AT (GRPH-54). Supplied by the describing agent,
+    # which is the only party holding the repo. "" means unknown — a node described before
+    # this existed, or an agent that passed none — and unknown must stay distinguishable
+    # from current, because a map that cannot say when it was taken reads like a fresh one.
+    revision: Mapped[str] = mapped_column(String, default="", server_default="")
     embedding = mapped_column(EmbeddingType(settings.embed_dim), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
