@@ -32,7 +32,7 @@ import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { useCredentials, useProjects, useReindexStatus } from "@/lib/queries";
+import { keys, useCredentials, useProjects, useReindexStatus } from "@/lib/queries";
 import type { AiProvider, Credential, Project } from "@/lib/types";
 
 /** Whether this credential may be offered as default or fallback (PRD-25 D-f). */
@@ -475,7 +475,16 @@ export function CredentialsPanel() {
     return m;
   }, [projects]);
 
-  const refresh = () => qc.invalidateQueries({ queryKey: ["credentials", projectId] });
+  // **Both queries, because this panel reads both.** The credential cards come from
+  // `useCredentials` and the override rules from `useProjects`, and a write touches both: a
+  // pointer change alters a credential's `used_by` AND the project's own `credential_id`.
+  //
+  // Invalidating only the first is what made "Remove" delete the tag on the card above while
+  // leaving the rule in the list — the same write, half-rendered.
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["credentials", projectId] });
+    qc.invalidateQueries({ queryKey: keys.projects });
+  };
   const onError = (e: Error) => setFailure(e.message);
 
   const setDefaults = useMutation({

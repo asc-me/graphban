@@ -16,7 +16,7 @@
  *   not be served by it, which is exactly what §4 required the UI to surface.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -55,15 +55,38 @@ const updateCredential = vi.fn(
     ({ id: "cred_a", state: "valid" }),
 );
 const setProjectCredential = vi.fn(
-  async (_projectId: string, _body: Record<string, unknown>) =>
-    ({ project_id: "core", credential_id: null, model_override: "" }),
+  async (projectId: string, body: Record<string, unknown>) => {
+    // Behaves like the server: the write changes what `api.projects` returns next. Without
+    // that, a test cannot tell an invalidated query from a stale one — both render the same
+    // thing, which is exactly the bug this file now covers.
+    projectList = projectList.map((p) =>
+      p.id === projectId
+        ? { ...p,
+            credential_id: (body.credential_id as string | null) ?? null,
+            model_override: (body.model_override as string) ?? p.model_override }
+        : p);
+    // `used_by` moves too — it is derived from the same pointer server-side. Without this the
+    // credential card can never go stale in a test, and the invalidation that keeps it fresh
+    // has nothing to prove.
+    const target = (body.credential_id as string | null) ?? null;
+    state.credentials = state.credentials.map((c) => ({
+      ...c,
+      used_by: c.id === target
+        ? Array.from(new Set([...c.used_by, projectId]))
+        : c.used_by.filter((p) => p !== projectId),
+    }));
+    return { project_id: projectId, credential_id: null, model_override: "" };
+  },
 );
 
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
     projects: vi.fn(async () => projectList),
-    credentials: vi.fn(async () => state),
+    // A SNAPSHOT, not the shared object. Returning `state` itself put the live array into
+    // react-query's cache, so mutating it updated the cached value in place and the cache
+    // could never be stale — which made an invalidation test unable to fail.
+    credentials: vi.fn(async () => ({ credentials: [...state.credentials] })),
     aiProviders: vi.fn(async () => ({
       providers: [
         { id: "anthropic", label: "Anthropic", kind: "anthropic", embeds: false,
@@ -483,6 +506,56 @@ describe("collapsing, health, editing and overrides", () => {
 
     expect(within(picker).queryByRole("option", { name: "core" })).not.toBeInTheDocument();
     expect(within(picker).getByRole("option", { name: "web" })).toBeInTheDocument();
+  });
+
+  it("removes the tag from the credential card too", async () => {
+    // The mirror of the reported bug, and it survived a sabotage: dropping the CREDENTIALS
+    // invalidation passed every test, so the half the author happened to see working was the
+    // half nothing covered.
+    state.credentials = [cred({ id: "cred_a", used_by: ["core"] })];
+    projectList = [proj("core", { credential_id: "cred_a" }), proj("web")];
+    show();
+
+    const card = await screen.findByTestId("credential-cred_a");
+    expect(within(card).getByText("core")).toBeInTheDocument();
+
+    await userEvent.click(within(await screen.findByTestId("rule-core"))
+      .getByRole("button", { name: /remove/i }));
+
+    await waitFor(() =>
+      expect(within(screen.getByTestId("credential-cred_a")).queryByText("core"))
+        .not.toBeInTheDocument());
+  });
+
+  it("removes the rule from the LIST, not just the tag above it", async () => {
+    // FOUND BY USING IT. `refresh` invalidated only the credentials query, and the rules list
+    // reads `useProjects` — so the tag vanished from the credential card while the rule row
+    // stayed, showing an override that no longer existed.
+    state.credentials = [cred({ id: "cred_a", used_by: ["core"] })];
+    projectList = [proj("core", { credential_id: "cred_a" }), proj("web")];
+    show();
+
+    await userEvent.click(within(await screen.findByTestId("rule-core"))
+      .getByRole("button", { name: /remove/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("rule-core")).not.toBeInTheDocument());
+  });
+
+  it("shows a newly added rule without a reload", async () => {
+    // The same staleness in the other direction: adding a rule wrote the pointer and left the
+    // list empty until something else happened to refetch projects.
+    state.credentials = [cred({ id: "cred_a", label: "Primary", model: "mistral" })];
+    projectList = [proj("core"), proj("web")];
+    show();
+
+    await userEvent.click(await screen.findByRole("button", { name: /add rule/i }));
+    const form = await screen.findByTestId("rule-form");
+    await userEvent.selectOptions(within(form).getByTestId("rule-project"), "web");
+    await userEvent.selectOptions(within(form).getByTestId("rule-credential"), "cred_a");
+    await userEvent.click(within(form).getByRole("button", { name: /add rule/i }));
+
+    await waitFor(() => expect(screen.getByTestId("rule-web")).toBeInTheDocument());
   });
 
   it("removing a rule clears the model override with it", async () => {
