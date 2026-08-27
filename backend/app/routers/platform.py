@@ -21,6 +21,7 @@ from app.services import drive_sync
 from app.services import events as events_svc
 from app.services import items as items_svc
 from app.services import credential_retry
+from app.services import reindex
 from app.services import platform as platform_svc
 
 router = APIRouter(prefix="/platform", tags=["platform"])
@@ -160,6 +161,31 @@ def retry_credential(credential_id: str, project_id: str = "core",
     return {"id": credential_id, "state": state,
             "last_error": cred.last_error if cred else "",
             "validation_attempts": cred.validation_attempts if cred else 0}
+
+
+@router.post("/reindex")
+def start_reindex(project_id: str = "core", db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """Begin a re-index of every embedded row in this scope (PRD-25 S4b).
+
+    A deliberate action, never a side effect of saving a form: changing the embedder is refused
+    while vectors exist precisely so that re-embedding is something a human asks for and can
+    see the progress of.
+
+    `restart=True` because this endpoint IS the operator asking. The background loop's own call
+    is the resuming one, and it defaults to leaving progress alone.
+    """
+    scope = _scope(db, user, project_id)
+    rows = reindex.plan(db, scope, restart=True)
+    return {"started": [{"table": r.table_name, "total": r.total} for r in rows]}
+
+
+@router.get("/reindex")
+def reindex_status(project_id: str = "core", db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """How far the re-index has got, per table."""
+    authz.require_readable(db, user.id, project_id)
+    return reindex.status(db, platform_svc.scope_for(db, project_id))
 
 
 @router.put("/credentials/defaults")

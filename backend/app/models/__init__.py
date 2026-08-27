@@ -1766,3 +1766,32 @@ class DeploymentConfig(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class ReindexProgress(Base):
+    """How far a re-index has got, PER TABLE (PRD-25 S4b, GRPH-536).
+
+    **A single `reindex_done` counter cannot answer the question**, which is why the original
+    two-integer design was amended during the grill. A crash after finishing `memory_shards`
+    and before touching `code_nodes` is indistinguishable from a crash partway through
+    `memory_shards` — so the restart has to choose between redoing finished work and skipping
+    unfinished work, and both are wrong. Per-table rows make "in progress" and "completed"
+    separate observable facts for each table.
+
+    A row per (scope, table). Not a job table: there is no queue, no worker identity and no
+    history — just how many rows there are and how many are done, which is the whole of what a
+    resume needs.
+    """
+
+    __tablename__ = "reindex_progress"
+
+    scope: Mapped[str] = mapped_column(String, primary_key=True)      # "" = the deployment
+    table_name: Mapped[str] = mapped_column(String, primary_key=True)
+    total: Mapped[int] = mapped_column(Integer, default=0)
+    done: Mapped[int] = mapped_column(Integer, default=0)
+    #: Set when this table is finished. Distinct from `done == total`, which is also true of a
+    #: table that was empty when the run started and has since gained rows.
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -53,6 +53,29 @@ class OpenAIEmbedder:
                     time.sleep(0.5 * (attempt + 1))
         raise last  # type: ignore[misc]
 
+    def embed_many(self, texts: list[str]) -> list[list[float]]:
+        """One request for the whole batch — the OpenAI embeddings endpoint takes an array.
+
+        Order is not assumed: the response carries an `index` per item and the vectors are
+        placed by it. An endpoint that returned them out of order would otherwise attach every
+        vector to the wrong row, which is the kind of corruption that looks like a bad model
+        rather than a bad loop.
+        """
+        if not texts:
+            return []
+        r = httpx.post(
+            f"{self.base_url.rstrip('/')}/embeddings",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json={"model": self.model, "input": list(texts)},
+            timeout=_timeout() if callable(globals().get("_timeout")) else 60.0,
+        )
+        r.raise_for_status()
+        rows = r.json()["data"]
+        out: list[list[float]] = [[] for _ in texts]
+        for row in rows:
+            out[row.get("index", rows.index(row))] = row["embedding"]
+        return out
+
 
 def embedder() -> OpenAIEmbedder:
     return OpenAIEmbedder(
