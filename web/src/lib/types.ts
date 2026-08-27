@@ -30,6 +30,10 @@ export interface Project {
   agent_adjudication: boolean;
   /** Danger mode: an agent may sign off its own work, but only when no independent agent exists. */
   allow_self_review: boolean;
+  /** The project's credential override, if it has one (PRD-25). `null` means it inherits. */
+  credential_id: string | null;
+  /** Its model override. Empty means the credential's own model. */
+  model_override: string;
 }
 
 // ── Deploy config + Organizations (hosted-only, AL-74b) ────────────────────

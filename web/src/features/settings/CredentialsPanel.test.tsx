@@ -23,7 +23,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
 import { ProjectProvider } from "@/features/ProjectContext";
-import type { Credential } from "@/lib/types";
+import type { Credential, Project } from "@/lib/types";
 
 const cred = (over: Partial<Credential> = {}): Credential => ({
   id: "cred_a", kind: "anthropic", label: "Primary", base_url: "", model: "claude-x",
@@ -32,6 +32,16 @@ const cred = (over: Partial<Credential> = {}): Credential => ({
 });
 
 const state: { credentials: Credential[] } = { credentials: [] };
+
+const proj = (id: string, over: Partial<Project> = {}): Project => ({
+  id, tag: id.toUpperCase().slice(0, 4), name: id, accent: id === "core" ? "#c6f24e" : "#4ea3f2",
+  visibility: "private", description: "", share_global_memory: false, auto_extract: true,
+  mcp_enabled: true, embed_model: "", memory_auto_reject: true, memory_write_mode: "review",
+  memory_llm_judge: false, agent_adjudication: false, allow_self_review: false,
+  credential_id: null, model_override: "", ...over,
+});
+
+let projectList: Project[] = [];
 const setDefaults = vi.fn(async () => ({ scope: "" }));
 const createCredential = vi.fn(async () => ({ id: "cred_new", state: "pending_validation" }));
 const deleteCredential = vi.fn(async () => undefined);
@@ -52,12 +62,7 @@ const setProjectCredential = vi.fn(
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
-    projects: vi.fn(async () => [
-      { id: "core", tag: "CORE", name: "Core", accent: "#c6f24e", visibility: "private",
-        description: "", provides: [], depends_on: [] },
-      { id: "web", tag: "WEB", name: "Web", accent: "#4ea3f2", visibility: "private",
-        description: "", provides: [], depends_on: [] },
-    ]),
+    projects: vi.fn(async () => projectList),
     credentials: vi.fn(async () => state),
     aiProviders: vi.fn(async () => ({
       providers: [
@@ -104,6 +109,7 @@ async function openRow(id = "cred_a") {
 
 beforeEach(() => {
   state.credentials = [];
+  projectList = [proj("core"), proj("web")];
   vi.clearAllMocks();
 });
 
@@ -381,36 +387,116 @@ describe("collapsing, health, editing and overrides", () => {
     expect(updateCredential.mock.calls[0][2].api_key).toBe("sk-rotated");
   });
 
-  it("sets a project override on the project being changed, not the active one", async () => {
-    // `setProjectCredential` targets the project BEING CHANGED, which is also what scopes the
-    // server-side authz check. Passing the currently-viewed project would edit the wrong row.
-    state.credentials = [cred({ id: "cred_a", label: "Primary" })];
+  it("lists only projects that HAVE a rule", async () => {
+    // Listing every project made the common case — most projects inherit — into a wall of
+    // rows saying nothing.
+    state.credentials = [cred({ id: "cred_a", label: "Primary", model: "claude-x" })];
+    projectList = [
+      proj("core", { credential_id: "cred_a" }),
+      proj("web", { credential_id: null }),
+    ];
     show();
 
-    const overrides = await screen.findByTestId("project-overrides");
-    await userEvent.selectOptions(
-      within(overrides).getByLabelText(/credential for web/i), "cred_a");
+    const rules = await screen.findByTestId("override-rules");
+    expect(within(rules).getByTestId("rule-core")).toBeInTheDocument();
+    expect(within(rules).queryByTestId("rule-web")).not.toBeInTheDocument();
+  });
+
+  it("shows the provider AND the model on a rule", async () => {
+    // A rule naming only the provider hides the thing most often overridden: two projects
+    // sharing a key and wanting different models is exactly what `model_override` is for.
+    state.credentials = [cred({ id: "cred_a", label: "Primary", kind: "ollama", model: "mistral" })];
+    projectList = [proj("core", { credential_id: "cred_a", model_override: "qwen" })];
+    show();
+
+    const rule = await screen.findByTestId("rule-core");
+    expect(rule).toHaveTextContent("Primary");
+    expect(rule).toHaveTextContent("ollama");
+    expect(rule).toHaveTextContent("qwen");
+  });
+
+  it("falls back to the credential's own model when there is no override", async () => {
+    state.credentials = [cred({ id: "cred_a", label: "Primary", model: "mistral" })];
+    projectList = [proj("core", { credential_id: "cred_a", model_override: "" })];
+    show();
+
+    expect(await screen.findByTestId("rule-core")).toHaveTextContent("mistral");
+  });
+
+  it("says so when nothing overrides", async () => {
+    state.credentials = [cred()];
+    projectList = [proj("core", { credential_id: null })];
+    show();
+
+    expect(await screen.findByText(/every project uses the deployment default/i)).toBeInTheDocument();
+  });
+
+  it("adds a rule through a dialog, naming provider and model in the picker", async () => {
+    state.credentials = [cred({ id: "cred_a", label: "Primary", kind: "ollama", model: "mistral" })];
+    projectList = [proj("core"), proj("web", { credential_id: null })];
+    show();
+
+    await userEvent.click(await screen.findByRole("button", { name: /add rule/i }));
+    const form = await screen.findByTestId("rule-form");
+    // The credential option carries both, because two credentials can share a provider and
+    // differ only by model.
+    expect(within(form).getByRole("option", { name: /Primary — ollama · mistral/ })).toBeInTheDocument();
+
+    await userEvent.selectOptions(within(form).getByTestId("rule-project"), "web");
+    await userEvent.selectOptions(within(form).getByTestId("rule-credential"), "cred_a");
+    await userEvent.click(within(form).getByRole("button", { name: /add rule/i }));
 
     expect(setProjectCredential).toHaveBeenCalledWith("web", { credential_id: "cred_a" });
   });
 
-  it("clears an override back to the deployment default", async () => {
-    state.credentials = [cred({ id: "cred_a", used_by: ["web"] })];
+  it("seeds the model from the chosen credential, and sends an override only if changed", async () => {
+    state.credentials = [cred({ id: "cred_a", label: "Primary", model: "mistral" })];
+    projectList = [proj("core"), proj("web", { credential_id: null })];
     show();
 
-    const overrides = await screen.findByTestId("project-overrides");
-    const row = within(overrides).getByLabelText(/credential for web/i).closest("li")!;
-    await userEvent.click(within(row).getByRole("button", { name: /clear/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /add rule/i }));
+    const form = await screen.findByTestId("rule-form");
+    await userEvent.selectOptions(within(form).getByTestId("rule-project"), "web");
+    await userEvent.selectOptions(within(form).getByTestId("rule-credential"), "cred_a");
 
-    expect(setProjectCredential).toHaveBeenCalledWith("web", { credential_id: null });
+    // Seeded, so the dialog shows what the rule will actually use.
+    expect(within(form).getByLabelText(/^model$/i)).toHaveValue("mistral");
+
+    const model = within(form).getByLabelText(/^model$/i);
+    await userEvent.clear(model);
+    await userEvent.type(model, "qwen");
+    await userEvent.click(within(form).getByRole("button", { name: /add rule/i }));
+
+    expect(setProjectCredential).toHaveBeenCalledWith("web", {
+      credential_id: "cred_a", model_override: "qwen",
+    });
   });
 
-  it("cannot clear a project that is already inheriting", async () => {
-    state.credentials = [cred({ id: "cred_a", used_by: [] })];
+  it("will not offer a project that already has a rule", async () => {
+    // "Add" must not silently mean "replace".
+    state.credentials = [cred({ id: "cred_a" })];
+    projectList = [proj("core", { credential_id: "cred_a" }), proj("web", { credential_id: null })];
     show();
 
-    const overrides = await screen.findByTestId("project-overrides");
-    const row = within(overrides).getByLabelText(/credential for core/i).closest("li")!;
-    expect(within(row).getByRole("button", { name: /clear/i })).toBeDisabled();
+    await userEvent.click(await screen.findByRole("button", { name: /add rule/i }));
+    const picker = within(await screen.findByTestId("rule-form")).getByTestId("rule-project");
+
+    expect(within(picker).queryByRole("option", { name: "core" })).not.toBeInTheDocument();
+    expect(within(picker).getByRole("option", { name: "web" })).toBeInTheDocument();
+  });
+
+  it("removing a rule clears the model override with it", async () => {
+    // A model override left behind would apply to whatever the project inherits next, which
+    // is not what "remove this rule" means.
+    state.credentials = [cred({ id: "cred_a" })];
+    projectList = [proj("core", { credential_id: "cred_a", model_override: "qwen" })];
+    show();
+
+    await userEvent.click(within(await screen.findByTestId("rule-core"))
+      .getByRole("button", { name: /remove/i }));
+
+    expect(setProjectCredential).toHaveBeenCalledWith("core", {
+      credential_id: null, model_override: "",
+    });
   });
 });

@@ -341,6 +341,12 @@ class ProjectOut(ORMModel):
     auto_extract: bool
     mcp_enabled: bool
     embed_model: str
+    # The project's credential override and its model (PRD-25). Exposed because the settings
+    # UI lists override RULES — project, provider AND model — and a rule that named only the
+    # provider would hide the thing most often overridden: two projects share a key and want
+    # different models, which is precisely what `model_override` exists for.
+    credential_id: str | None = None
+    model_override: str = ""
     # Memory auto-triage (AL-227); write mode replaced `memory_auto_accept` (AL-280).
     memory_write_mode: str = "review"
     memory_auto_reject: bool = True
