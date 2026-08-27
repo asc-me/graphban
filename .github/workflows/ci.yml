@@ -197,3 +197,21 @@ jobs:
               *) echo "a required job reported '$r'"; exit 1 ;;
             esac
           done
+
+      # A STEP, not a job (GRPH-551). Steps stop at the first failure, so this is
+      # unreachable unless the check above passed — there is no window in which a masked
+      # failure gets attested. A separate job would also have to appear in `ci.needs` to
+      # satisfy `test_ci_gate_covers_every_job`, and a job that runs after the gate cannot
+      # be one of its dependencies.
+      - name: Check out (the gate job has no source yet)
+        uses: actions/checkout@v4
+      - name: Attest the items this green run vouches for
+        env:
+          GRAPHBAN_URL: ${{ vars.GRAPHBAN_URL }}
+          GRAPHBAN_GATE_KEY: ${{ secrets.GRAPHBAN_GATE_KEY }}
+        run: |
+          python3 scripts/attest_ci.py \
+            --commit "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --branch "${{ github.event.pull_request.head.ref || github.ref_name }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --text "${{ github.event.pull_request.title }} ${{ github.event.pull_request.body }}"
