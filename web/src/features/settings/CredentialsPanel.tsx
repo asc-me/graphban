@@ -101,12 +101,12 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function TinyButton({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+function TinyButton({ children, className, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
       type="button"
       {...props}
-      className="rounded border border-line-2 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wide text-muted hover:text-fg disabled:opacity-40 disabled:hover:text-muted"
+      className={cn("rounded border border-line-2 px-2.5 py-1 font-mono text-[10px] uppercase tracking-wide text-muted hover:text-fg disabled:opacity-40 disabled:hover:text-muted", className)}
     >
       {children}
     </button>
@@ -282,68 +282,160 @@ function EditCredentialDialog({
 
 // ---- per-project overrides ------------------------------------------------------------------
 
-function ProjectOverrides({
+function AddRuleDialog({
+  open, onOpenChange, credentials, projects, onSaved, onError,
+}: {
+  open: boolean; onOpenChange: (v: boolean) => void;
+  credentials: Credential[]; projects: Project[];
+  onSaved: () => void; onError: (e: Error) => void;
+}) {
+  const [pid, setPid] = React.useState("");
+  const [credentialId, setCredentialId] = React.useState("");
+  const [model, setModel] = React.useState("");
+
+  // Only projects WITHOUT a rule. Offering one that already has a rule would make "add"
+  // silently mean "replace".
+  const available = projects.filter((p) => !p.credential_id);
+  const chosen = credentials.find((c) => c.id === credentialId);
+
+  React.useEffect(() => {
+    if (!open) { setPid(""); setCredentialId(""); setModel(""); }
+  }, [open]);
+
+  const save = useMutation({
+    mutationFn: () => api.setProjectCredential(pid, {
+      credential_id: credentialId,
+      // Empty means "use the credential's own model" — not an override of "".
+      ...(model.trim() && model.trim() !== chosen?.model ? { model_override: model.trim() } : {}),
+    }),
+    onSuccess: () => { onSaved(); onOpenChange(false); },
+    onError,
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader><DialogTitle>Add an override rule</DialogTitle></DialogHeader>
+        <div className="flex flex-col gap-3" data-testid="rule-form">
+          <Field label="Project">
+            <select data-testid="rule-project" value={pid} onChange={(e) => setPid(e.target.value)}
+              className="w-full rounded border border-line-2 bg-transparent px-2 py-1.5 text-[12px]">
+              <option value="">Choose a project…</option>
+              {available.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
+            </select>
+          </Field>
+
+          <Field label="Credential">
+            <select data-testid="rule-credential" value={credentialId}
+              onChange={(e) => {
+                setCredentialId(e.target.value);
+                // Seed the model from the credential, so the dialog shows what this rule will
+                // actually use rather than an empty box the reader has to interpret.
+                setModel(credentials.find((c) => c.id === e.target.value)?.model ?? "");
+              }}
+              className="w-full rounded border border-line-2 bg-transparent px-2 py-1.5 text-[12px]">
+              <option value="">Choose a credential…</option>
+              {credentials.map((c) => (
+                // Provider AND model: two credentials can share a provider and differ only by
+                // model, and a list showing just the provider cannot tell them apart.
+                <option key={c.id} value={c.id}>
+                  {(c.label || c.id)} — {c.kind} · {c.model}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Model">
+            <Input aria-label="Model" value={model} onChange={(e) => setModel(e.target.value)}
+              placeholder={chosen?.model || "the credential's model"}
+              className="font-mono text-[12px]" />
+            <p className="mt-1 text-[10.5px] text-faint">
+              Leave as the credential's model unless this project needs a different one.
+            </p>
+          </Field>
+
+          <div className="flex gap-2">
+            <Button disabled={!pid || !credentialId || save.isPending} onClick={() => save.mutate()}>
+              Add rule
+            </Button>
+            <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function OverrideRules({
   credentials, projects, onChanged, onError,
 }: {
   credentials: Credential[]; projects: Project[];
   onChanged: () => void; onError: (e: Error) => void;
 }) {
-  // No active-project prop: `setProjectCredential` targets the project BEING CHANGED, which is
-  // also what scopes the server-side authz check. Passing the currently-viewed project would
-  // silently edit the wrong row.
-  const set = useMutation({
-    mutationFn: ({ pid, credential_id }: { pid: string; credential_id: string | null }) =>
-      api.setProjectCredential(pid, { credential_id }),
+  const [adding, setAdding] = React.useState(false);
+
+  const clear = useMutation({
+    // Clearing the pointer AND the model together: a model override left behind would apply to
+    // whatever the project inherits next, which is not what "remove this rule" means.
+    mutationFn: (pid: string) =>
+      api.setProjectCredential(pid, { credential_id: null, model_override: "" }),
     onSuccess: onChanged, onError,
   });
 
-  // Which credential each project points at, derived from `used_by` rather than fetched
-  // separately — the listing already carries it, and a second source would be free to disagree.
-  const pointerOf: Record<string, string> = {};
-  for (const c of credentials) for (const p of c.used_by) pointerOf[p] = c.id;
-
-  if (projects.length === 0) return null;
+  // Only projects that HAVE a rule. Listing every project made the common case — most projects
+  // inherit — into a wall of rows saying nothing.
+  const rules = projects.filter((p) => p.credential_id);
+  const byId = new Map(credentials.map((c) => [c.id, c]));
 
   return (
-    <section className="flex flex-col gap-2" data-testid="project-overrides">
-      <div>
-        <h3 className="text-[13px] font-medium text-fg">Project overrides</h3>
-        <p className="text-[11px] text-faint">
-          A project with no override uses the deployment default.
+    <section className="flex flex-col gap-3" data-testid="override-rules">
+      <header className="flex items-center justify-between">
+        <div>
+          <h3 className="text-[13px] font-medium text-fg">Override rules</h3>
+          <p className="text-[11px] text-faint">
+            Projects listed here use their own credential. Everything else uses the deployment default.
+          </p>
+        </div>
+        <Button onClick={() => setAdding(true)}>Add rule</Button>
+      </header>
+
+      <AddRuleDialog open={adding} onOpenChange={setAdding} credentials={credentials}
+        projects={projects} onSaved={onChanged} onError={onError} />
+
+      {rules.length === 0 ? (
+        <p className="text-[12px] text-muted">
+          No overrides — every project uses the deployment default.
         </p>
-      </div>
-      <ul className="flex flex-col gap-1.5">
-        {projects.map((p) => {
-          const current = pointerOf[p.id] ?? "";
-          return (
-            <li key={p.id} className="flex items-center gap-3 rounded border border-line bg-surface-2/40 px-4 py-2.5">
-              <span className={cn(chip, "border-transparent")}
-                style={{ color: p.accent, boxShadow: `0 0 0 1px ${p.accent}55, 0 0 6px ${p.accent}66`,
-                         background: `${p.accent}14` }}>
-                {p.id}
-              </span>
-              <select
-                aria-label={`Credential for ${p.id}`}
-                className="ml-auto rounded border border-line-2 bg-transparent px-2 py-1 text-[12px]"
-                value={current}
-                onChange={(e) => set.mutate({ pid: p.id, credential_id: e.target.value || null })}
-              >
-                <option value="">Inherit default</option>
-                {credentials.map((c) => (
-                  <option key={c.id} value={c.id}>{c.label || c.id}</option>
-                ))}
-              </select>
-              <TinyButton
-                disabled={!current}
-                title={current ? undefined : "already inheriting the deployment default"}
-                onClick={() => set.mutate({ pid: p.id, credential_id: null })}
-              >
-                Clear
-              </TinyButton>
-            </li>
-          );
-        })}
-      </ul>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {rules.map((p) => {
+            const c = byId.get(p.credential_id!);
+            return (
+              <li key={p.id} data-testid={`rule-${p.id}`}
+                  className="flex items-center gap-3 rounded border border-line bg-surface-2/40 px-4 py-3">
+                <span className={cn(chip, "border-transparent")}
+                  style={{ color: p.accent, boxShadow: `0 0 0 1px ${p.accent}55, 0 0 6px ${p.accent}66`,
+                           background: `${p.accent}14` }}>
+                  {p.id}
+                </span>
+                <span className="text-[12px] text-muted">uses</span>
+                {/* Provider AND model. A rule naming only the provider hides the thing most
+                    often overridden — two projects sharing a key and wanting different
+                    models is exactly what `model_override` is for. */}
+                <span className="text-[13px] text-fg">{c?.label || p.credential_id}</span>
+                <span className={cn(chip, "text-faint")}>{c?.kind ?? "unknown"}</span>
+                <span className="font-mono text-[10.5px] text-muted-2">
+                  {p.model_override || c?.model || ""}
+                </span>
+                {p.model_override && (
+                  <span className={cn(chip, "border-amber-400/40 text-amber-300")}>model override</span>
+                )}
+                <TinyButton className="ml-auto" onClick={() => clear.mutate(p.id)}>Remove</TinyButton>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
 }
@@ -491,8 +583,8 @@ export function CredentialsPanel() {
       </section>
 
       {credentials.length > 0 && (
-        <ProjectOverrides credentials={credentials}
-          projects={(projects ?? []) as Project[]} onChanged={refresh} onError={onError} />
+        <OverrideRules credentials={credentials} projects={(projects ?? []) as Project[]}
+          onChanged={refresh} onError={onError} />
       )}
     </div>
   );

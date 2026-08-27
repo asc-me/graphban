@@ -20,7 +20,9 @@ import type { Project } from "@/lib/types";
 const core: Project = {
   id: "prj_core", name: "Core", tag: "CORE", accent: "#c6f24e", visibility: "private",
   description: "", share_global_memory: false, auto_extract: true, mcp_enabled: true,
-  embed_model: "", memory_auto_reject: true, memory_write_mode: "review",
+  embed_model: "",
+  credential_id: null,
+  model_override: "", memory_auto_reject: true, memory_write_mode: "review",
   memory_llm_judge: false, agent_adjudication: false, allow_self_review: false,
 };
 const web: Project = { ...core, id: "prj_web", name: "Web", tag: "WEB", accent: "#7ca2ff" };
