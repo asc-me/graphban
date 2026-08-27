@@ -1,7 +1,16 @@
 # API reference
 
+**This is a curated subset, not the full surface** (GRPH-468). It names 94 of the 167 paths
+the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
+page exists for the endpoints whose *authority* needs explaining, which a schema has no field
+for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
+is the only accepted credential in hosted mode.
+
+Everything listed here is checked to still exist, and a route added without a line here fails
+in CI on the PR that adds it. The gap is tracked in `docs/completeness-baseline.json` and can
+only shrink.
+
 All endpoints are under `/api` (proxied by the web tier and served directly by the API).
-Interactive OpenAPI docs are at **`/docs`**.
 
 **Auth legend:** **JWT** = `Authorization: Bearer <access-jwt>` · **MCP** = API key via
 `X-API-Key` / `Authorization: Bearer gb_sk_…` · **public** = no auth (rate-limited).

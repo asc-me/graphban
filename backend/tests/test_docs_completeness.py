@@ -113,3 +113,48 @@ def test_the_debt_is_visible(kind, current, capsys):
     with capsys.disabled():
         print(f"\n  {dc.DOCS[kind].name}: {live - missing}/{live} documented "
               f"({missing} in the baseline)")
+
+
+# ---- the reference says it is a subset, and everything in it is real (GRPH-468) -------------
+
+def _full_paths(mentioned: set[str]) -> set[str]:
+    """Only fully-qualified routes.
+
+    The reference compresses siblings — `` `/api/platform/github/connect` · `/disconnect` ``
+    means three routes — so the extractor also yields bare fragments like `/disconnect` and
+    `/stream`. Those are real documentation, not ghosts, and a check that treated them as
+    paths would fail on the document's own shorthand rather than on anything wrong with it.
+    """
+    return {p for p in mentioned if p.startswith("/api/") or p == "/health"}
+
+
+def test_the_reference_only_names_routes_that_exist():
+    """The direction nothing checked (GRPH-468). `test_the_document_still_names_what_it_used_to`
+    catches a route the app gained and the doc did not; this catches the reverse — a route the
+    doc still advertises after the app stopped serving it, which sends a reader to build
+    against something that is gone."""
+    live = dc.live_routes()
+    named = _full_paths(dc.mentioned_routes(dc.DOCS["routes"].read_text()))
+    assert named, "no routes extracted — the parser has drifted from the document"
+    ghosts = sorted(named - live)
+    assert not ghosts, f"api-reference.md names routes the app does not serve: {ghosts}"
+
+
+def test_the_reference_admits_it_is_partial():
+    """The ticket's actual complaint: *partial, presented as total*. It opened with a
+    statement about where endpoints live that read as a claim to completeness, and there was
+    no 'selected endpoints' caveat — so a reader had no way to know 73 paths were missing."""
+    text = dc.DOCS["routes"].read_text()
+    opening = text[:1200]
+    assert "subset" in opening.lower(), "the reference does not say it is partial"
+    assert "/docs" in opening, "it must point at the authoritative list it is a subset of"
+
+
+def test_the_admission_carries_the_real_numbers():
+    """A caveat with stale numbers is the same defect wearing a disclaimer. These are the two
+    the completeness tool reports, so the claim can be checked rather than trusted."""
+    text = dc.DOCS["routes"].read_text()
+    live = dc.live_routes()
+    named = _full_paths(dc.mentioned_routes(text))
+    assert f"{len(named)} of the {len(live)}" in text, (
+        f"the stated coverage is not {len(named)} of {len(live)} — regenerate the sentence")
