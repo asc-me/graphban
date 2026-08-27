@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
 from app import providers
+from app.services import failover
 from app.providers import probe
 from app.providers import registry as provider_registry
 from app.providers.base import ChatModel, Extractor
@@ -175,8 +176,29 @@ def usable(cred: "Credential | None") -> bool:
     return cred is not None and cred.state != UNREACHABLE
 
 
+def _fallback_for(db: Session, scope: str, primary_id: str):
+    """The scope's fallback credential, if it is usable and is not the one that just resolved.
+
+    Three refusals, each with its own reason:
+
+    - **not set** — failover is opt-in; absent means errors surface unchanged (S3).
+    - **the same credential** — falling over to the credential that just failed spends a
+      second call to be told the same thing.
+    - **not usable** — an `unreachable` fallback is SKIPPED rather than probed on the request
+      path. A synchronous probe there would put an unbounded network call inside a
+      user-facing request to rescue a configuration the operator already broke.
+    """
+    row = db.get(DeploymentConfig, scope or "")
+    fallback_id = row.fallback_credential_id if row else None
+    if not fallback_id or fallback_id == primary_id:
+        return None
+    cred = credential_in_scope(db, fallback_id, scope)
+    return cred if usable(cred) else None
+
+
 def _from_credential(cred: Credential, source: str, model_override: str = "",
-                     *, fell_back_from: str = "") -> Resolved:
+                     *, fell_back_from: str = "", db: Session | None = None,
+                     scope: str = "") -> Resolved:
     """Build the adapter from a credential row, honouring a project's model override.
 
     The override reaches `build_chat` and not just the returned `model` field. Reporting an
@@ -185,12 +207,27 @@ def _from_credential(cred: Credential, source: str, model_override: str = "",
     between would disagree.
     """
     model = model_override or cred.model
+    chat = providers.build_chat(
+        cred.kind, base_url=cred.base_url,
+        api_key=secrets.decrypt(cred.api_key), model=model,
+    )
+
+    # Wrapped only when a usable fallback exists, so a deployment without one gets exactly the
+    # object it got before this slice — and its provider errors surface unchanged.
+    second = _fallback_for(db, scope, cred.id) if db is not None else None
+    if second is not None:
+        chat = failover.FailoverChat(
+            primary=chat, primary_id=cred.id,
+            fallback=providers.build_chat(
+                second.kind, base_url=second.base_url,
+                api_key=secrets.decrypt(second.api_key), model=second.model,
+            ),
+            fallback_id=second.id,
+        )
+
     return Resolved(
         provider_id=cred.kind,
-        chat=providers.build_chat(
-            cred.kind, base_url=cred.base_url,
-            api_key=secrets.decrypt(cred.api_key), model=model,
-        ),
+        chat=chat,
         model=model,
         credential_id=cred.id,
         source=source,
@@ -236,7 +273,8 @@ def resolve_chat(db: Session, project_id: str) -> Resolved:
     cred = credential_in_scope(db, pointer, scope)
     if usable(cred):
         return _from_credential(cred, "project",
-                                getattr(project, "model_override", "") or "")
+                                getattr(project, "model_override", "") or "",
+                                db=db, scope=scope)
 
     # The project asked for something it is not getting. `fell_back_from` carries that the
     # whole way down, so every outcome below reports the substitution rather than looking
@@ -257,7 +295,8 @@ def resolve_chat(db: Session, project_id: str) -> Resolved:
         # project credential above. There is nothing below the default but the stub, so
         # routing around it would hide a broken default forever; a project credential has
         # somewhere to fall to, so it falls.
-        return _from_credential(default, "deployment", fell_back_from=wanted)
+        return _from_credential(default, "deployment", fell_back_from=wanted,
+                                db=db, scope=scope)
 
     # Nothing resolved. `dangling` when a pointer was SET and did not survive — the operator
     # has something to fix, and it is not the same situation as never having configured one.
