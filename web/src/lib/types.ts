@@ -1096,3 +1096,46 @@ export type ShellCounts = {
   requests: number;
   review: number;
 };
+
+/** A deployment credential (PRD-25). `used_by` and `falling_back` are DERIVED server-side. */
+export type Credential = {
+  id: string;
+  kind: string;
+  label: string;
+  base_url: string;
+  model: string;
+  key_set: boolean;
+  state: "valid" | "pending_validation" | "unreachable";
+  last_error: string;
+  /** Projects pointing at this credential. */
+  used_by: string[];
+  /**
+   * Projects pointing here that are NOT getting it — the row is unreachable or out of scope,
+   * so resolution falls back to the deployment default (PRD-25 §4). Distinct from `used_by`
+   * on purpose: a project can point at a credential and not be served by it.
+   */
+  falling_back: string[];
+  is_default: boolean;
+  is_fallback: boolean;
+  is_embed: boolean;
+};
+
+export type CredentialIn = {
+  kind: string;
+  label?: string;
+  base_url?: string;
+  api_key?: string;
+  model?: string;
+};
+
+export type ScopeDefaults = {
+  default_credential_id?: string | null;
+  fallback_credential_id?: string | null;
+  embed_credential_id?: string | null;
+};
+
+/** Per-table, not one counter — see `ReindexProgress` for why (PRD-25 S4b). */
+export type ReindexStatus = {
+  running: boolean;
+  tables: { table: string; total: number; done: number; finished: boolean }[];
+};
