@@ -323,16 +323,46 @@ Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT th
     **Who pays, measured rather than assumed** (the docstring above was stale about this;
     E9b's session-role narrowing changed it):
 
-        full (unregistered / all-in-one)   13379   54 tools
-        session role = planner             11526   47 tools   retire_wave visible
-        session role = worker              11000   44 tools   not visible
-        session role = reviewer            11074   44 tools   not visible
+        full (unregistered / all-in-one)   13399   55 tools
+        session role = planner             11563   48 tools   retire_wave visible
+        session role = worker              10757   44 tools   not visible
+        session role = reviewer            10852   44 tools   not visible
 
     `retire_wave` is planner-gated, so a worker or reviewer in a fleet pays 24 tokens of
     this, not 239. The full number is what an all-in-one agent pays — the solo-developer
     default — which is the awkward part of the trade and is stated rather than buried.
 
     The structural fix is still GRPH-48/146 and this raise does not substitute for it.
+
+    LOWERED 14000 -> 13600 on 2026-08-26 (GRPH-48) — the raise directly above is GIVEN BACK.
+    That is the direction this number is supposed to move and, across five arguments, never
+    once had.
+
+    The slack came from somewhere the ceiling had never looked. This docstring says a prose
+    pass "was attempted first and there is nothing left", and that was true — but it then
+    reaches straight for outputSchema (26%) and skips annotations (11%). ~394 tokens were
+    hints repeating a value the MCP spec already defines as the default, and the spec is
+    explicit that an ABSENT field means exactly that default. So those bytes told every
+    client something it already knew, once per tool, 55 times.
+
+    The arithmetic against the raise above, which is why it is written here rather than in a
+    commit message. `get_prd` costs 163; the trim returns 394. Measured with both landed:
+    **13399 across 55 tools**, where that same manifest untrimmed would be ~13793 — 193 over
+    the old 13600, which is precisely why GRPH-519 had to raise at all. The read that makes
+    `update_prd` survivable is paid for, and 13600 still leaves ~201 of headroom, near the
+    ~218 that raise was aiming at.
+
+    Not taken: the spec also says `destructiveHint` and `idempotentHint` are meaningful
+    only when `readOnlyHint == false`, worth another ~238 tokens across the read-only tools.
+    That trim is lossless only for a client that honours the conditional, and 238 tokens do
+    not buy a behaviour that depends on how carefully somebody else read the spec.
+
+    What this does NOT fix is the pattern the raise above names — tools added without anyone
+    re-running the arithmetic, three times now. A one-off 394 buys time, not a habit. And
+    GRPH-48's own finding is that no structural fix is available on this side: MCP requires
+    `inputSchema` on every `tools/list` entry, has no detail level and no lazy schema, and
+    explicitly assigns progressive discovery to the CLIENT. Scope and role gating are the
+    only real levers, and the table below is what they buy.
 
     RAISED 13410 -> 13600 on 2026-08-22 (GRPH-474), and the reason matters more than the
     number. This is not prose creep, which is what the ceiling exists to catch — it is 178
@@ -341,9 +371,10 @@ Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT th
     that blocks a schema from telling the truth is measuring the wrong thing.
 
     Measured per role, because the full manifest is a worst case nobody in a fleet receives:
-    worker 44 tools / ~11.0k, reviewer 44 / ~11.1k, planner 47 / ~11.5k. 13.6k is what an
-    all-in-one or an unregistered session pays. The 190-token allowance leaves 43 of headroom,
-    so the next raise still has to be argued for rather than absorbed.
+    worker 44 tools / ~10.8k, reviewer 44 / ~10.9k, planner 48 / ~11.6k. 13.4k is what an
+    all-in-one or an unregistered session pays — still the worst case nobody in a fleet
+    receives, and still the solo-developer default, which is the awkward part of the trade
+    and is stated rather than buried.
 
     RAISED 13600 -> 14000 on 2026-08-26 (GRPH-519), and the first thing to record is that the
     "43 of headroom" above had become ONE. Measured on `main` immediately before this change:
@@ -363,10 +394,16 @@ Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT th
 
     `get_prd` is UNGATED, so every role pays the 163 — that is the honest worst case and it is
     stated rather than buried. 14000 leaves ~218 of headroom, roughly what the previous raise
-    intended before it eroded. The structural fix is still GRPH-48/146."""
+    intended before it eroded. The structural fix is still GRPH-48/146.
+
+    (Superseded hours later by GRPH-48, which found the 394 that pays for this tool and put
+    the ceiling back to 13600. The reasoning above is kept rather than rewritten: the raise
+    was correct when it was made — a ceiling that blocks the read which makes an existing
+    write survivable is measuring the wrong thing — and that does not stop being true
+    because the money later turned up elsewhere.)"""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 14000, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < 13600, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
 

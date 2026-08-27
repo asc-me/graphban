@@ -395,8 +395,6 @@ TOOLS: list[dict[str, Any]] = [
                            "title": {"type": "string"}, "status": {"type": "string"},
                            "version": {"type": "integer"}, "body": {"type": "string"}},
         },
-        "annotations": {"readOnlyHint": True, "destructiveHint": False,
-                        "idempotentHint": True, "openWorldHint": False},
     },
     {
         "name": "update_prd",
@@ -805,8 +803,6 @@ TOOLS: list[dict[str, Any]] = [
                            "returned": {"type": "integer"}, "found": {"type": "boolean"},
                            "hops": {"type": "array"}},
         },
-        "annotations": {"readOnlyHint": True, "destructiveHint": False,
-                        "idempotentHint": True, "openWorldHint": False},
     },
     {
         "name": "search_code",
@@ -884,8 +880,6 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {"prd_id": {"type": "string"}, "view": {"type": "string"},
                            "result": {"type": "object"}},
         },
-        "annotations": {"readOnlyHint": True, "destructiveHint": False,
-                        "idempotentHint": True, "openWorldHint": False},
     },
     {
         "name": "request_rebaseline",
@@ -909,8 +903,6 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {"id": {"type": "string"}, "status": {"type": "string"},
                            "pending_rebaseline": {"type": "object"}},
         },
-        "annotations": {"readOnlyHint": False, "destructiveHint": False,
-                        "idempotentHint": False, "openWorldHint": False},
     },
     {
         "name": "submit_verdict",
@@ -949,8 +941,6 @@ TOOLS: list[dict[str, Any]] = [
                            "separation": {"type": "string"},
                            "baseline_version": {"type": "string"}},
         },
-        "annotations": {"readOnlyHint": False, "destructiveHint": False,
-                        "idempotentHint": False, "openWorldHint": False},
     },
     {
         "name": "close_prd",
@@ -990,8 +980,6 @@ TOOLS: list[dict[str, Any]] = [
                            "disclosure": {"type": "string"},
                            "dispositions": {"type": "array", "items": {"type": "object"}}},
         },
-        "annotations": {"readOnlyHint": False, "destructiveHint": False,
-                        "idempotentHint": False, "openWorldHint": False},
     },
     # The learning loop (PRD-16 / GRPH-310). Two tools, same footprint discipline as the
     # acceptance surface: every read is one question asked of a different surface, so they
@@ -1016,8 +1004,6 @@ TOOLS: list[dict[str, Any]] = [
         },
         "outputSchema": {"type": "object", "properties": {"view": {"type": "string"},
                                                           "result": {"type": "object"}}},
-        "annotations": {"readOnlyHint": True, "destructiveHint": False,
-                        "idempotentHint": True, "openWorldHint": False},
     },
     {
         "name": "review_recommendation",
@@ -1036,8 +1022,6 @@ TOOLS: list[dict[str, Any]] = [
                          "properties": {"id": {"type": "integer"},
                                         "status": {"type": "string"},
                                         "install_class": {"type": "string"}}},
-        "annotations": {"readOnlyHint": False, "destructiveHint": False,
-                        "idempotentHint": True, "openWorldHint": False},
     },
     {
         "name": "report_graphban_issue",
@@ -1088,7 +1072,7 @@ _TAKES_PROJECT = _PROJECT_SCOPED | {
 # Creates accept an idempotency key so a retried call returns the original resource.
 _IDEMPOTENT_CREATES = {"create_item", "add_memory", "link_items"}
 # Writes that are idempotent by their own natural key (no idempotency token needed).
-_IDEMPOTENT_WRITES = {"describe_code", "link_code"}
+_IDEMPOTENT_WRITES = {"describe_code", "link_code", "review_recommendation"}
 # Paged reads accept limit + offset and return {results, total, limit, offset, has_more}.
 _PAGED = {"search_items", "get_backlog"}
 # Item-list reads return a lean row by default (id/title/status) and the full item
@@ -1103,6 +1087,13 @@ _READ_ONLY = {
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
     "graph_query",
     "prd_acceptance", "learning_loop", "fleet_status",
+    # Added with the tool itself missing from this set (GRPH-519 -> GRPH-48). It looks a PRD
+    # up and returns fields; it writes nothing, and its own literal declared
+    # `readOnlyHint: True` — which the build loop then overwrote to False, because THIS is
+    # where read-ness is decided. The wrong hint was the visible half. The half that
+    # mattered: scope gating ships a read-only key exactly this set, so a read-only
+    # credential could not call the tool that exists to let an agent read a PRD.
+    "get_prd",
 }
 
 _PAGE_META = {  # shared output shape for paged reads (#9)
@@ -1429,6 +1420,30 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
 }
 
+#: The spec's own defaults for `ToolAnnotations` (MCP 2026-07-28). A field ABSENT from the
+#: manifest means exactly this value, so emitting it says nothing a client did not already
+#: know — and it is said 54 times.
+_ANNOTATION_DEFAULTS = {"readOnlyHint": False, "destructiveHint": True,
+                        "idempotentHint": False, "openWorldHint": True}
+
+
+def _lean_annotations(hints: dict) -> dict:
+    """Emit only the hints that DIFFER from the spec default (GRPH-48).
+
+    Worth ~388 tokens off a manifest that had two to spare, and it is lossless by the
+    spec's own definition rather than by our judgement: absent IS the default, so no
+    client can distinguish the two, however naively it reads them.
+
+    Deliberately NOT the wider trim available here. The spec also says `destructiveHint`
+    and `idempotentHint` are "meaningful only when `readOnlyHint == false`", which would
+    let us drop both from all 19 read-only tools for another ~238 tokens. That one is
+    lossless only for a client that honours the conditional; a client reading the field
+    anyway would flip from our `true` to the default `false`. The extra 238 tokens are not
+    worth a behaviour that depends on how carefully somebody else read the spec.
+    """
+    return {k: v for k, v in hints.items() if _ANNOTATION_DEFAULTS[k] != v}
+
+
 for _t in TOOLS:
     _name = _t["name"]
     props = _t["inputSchema"].setdefault("properties", {})
@@ -1455,14 +1470,22 @@ for _t in TOOLS:
     elif _name in _OUTPUT_SCHEMAS:
         _t["outputSchema"] = _OUTPUT_SCHEMAS[_name]
     # MCP annotations so an agent can reason about safety (#7).
+    #
+    # Computed HERE and only here. Seven tools used to carry a hand-written `annotations`
+    # block in the literal above, which this loop then overwrote — six agreed with what it
+    # computes and were merely noise, but `review_recommendation` declared
+    # `idempotentHint: true` and shipped `false`, so the manifest advertised the opposite of
+    # what the author wrote and nothing said so. One source of truth instead, with the
+    # disagreement resolved in the data: it sets a status and commits, so a second identical
+    # call changes nothing further and the hand-written value was the correct one.
     _ro = _name in _READ_ONLY
-    _t["annotations"] = {
+    _t["annotations"] = _lean_annotations({
         "readOnlyHint": _ro,
         "destructiveHint": _name == "update_item",
         # read-only + update_item are naturally idempotent; creates become idempotent with a key.
         "idempotentHint": _ro or _name in ({"update_item"} | _IDEMPOTENT_CREATES | _IDEMPOTENT_WRITES),
         "openWorldHint": False,
-    }
+    })
 
 LIVE_TOOL_COUNT = len(TOOLS)
 _SCHEMA_BY_NAME: dict[str, dict] = {t["name"]: t["inputSchema"] for t in TOOLS}
