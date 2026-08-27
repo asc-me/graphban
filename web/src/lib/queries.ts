@@ -382,6 +382,33 @@ export function useCodeAnalysis(
   });
 }
 
+/**
+ * Every credential in the caller's SCOPE (PRD-25 S5) — not just the active project's.
+ *
+ * Keyed on the project id even though the result is deployment-wide, because the id is what
+ * resolves the scope server-side and two projects in different orgs must not share a cache
+ * entry. `used_by` and `falling_back` come from the endpoint on every read rather than being
+ * derived here: the tags exist so a delete refusal is predictable, and a tag computed from a
+ * stale cache is exactly the drift this view was built to remove.
+ */
+export function useCredentials(projectId: string) {
+  return useQuery({
+    queryKey: ["credentials", projectId],
+    queryFn: () => api.credentials(projectId),
+    enabled: !!projectId,
+  });
+}
+
+/** Re-index progress, PER TABLE. Polls only while a run is in flight. */
+export function useReindexStatus(projectId: string) {
+  return useQuery({
+    queryKey: ["reindex", projectId],
+    queryFn: () => api.reindexStatus(projectId),
+    enabled: !!projectId,
+    refetchInterval: (q) => (q.state.data?.running ? 2000 : false),
+  });
+}
+
 export function usePlatform(projectId: string) {
   return useQuery({
     queryKey: ["platform", projectId],

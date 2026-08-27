@@ -27,6 +27,10 @@ vi.mock("@/lib/queries", () => ({
   useApiKeys: () => ({ data: [] }),
   useMembers: () => ({ data: [] }),
   usePlatform: () => ({ data: null }),
+  // The settings view now also renders the deployment credentials panel (PRD-25 S5), so a
+  // whole-module mock has to answer for its hooks too.
+  useCredentials: () => ({ data: { credentials: [] }, isLoading: false }),
+  useReindexStatus: () => ({ data: { running: false, tables: [] } }),
 }));
 
 function renderSettings() {

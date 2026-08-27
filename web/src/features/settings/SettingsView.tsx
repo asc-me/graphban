@@ -6,6 +6,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { AiProvidersPanel } from "@/features/settings/AiProvidersPanel";
+import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
 import { McpInstall } from "@/features/settings/McpInstall";
 import { SyncCredentialInstall } from "@/features/settings/SyncCredentialInstall";
 import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
@@ -44,7 +45,16 @@ export function SettingsView() {
           ))}
         </div>
         <div className="min-h-0 overflow-y-auto p-6">
-          {tab === "AI Providers" && <AiProvidersPanel />}
+          {tab === "AI Providers" && (
+            <div className="flex flex-col gap-6">
+              {/* The deployment-wide view leads (PRD-25 S5). The per-project provider table
+                  stays below it until S6 removes the legacy blob it edits — deleting it here
+                  would strand every project still configured the old way, which is exactly
+                  what the transitional resolution order exists to prevent. */}
+              <CredentialsPanel />
+              <AiProvidersPanel />
+            </div>
+          )}
           {tab === "Integrations" && <IntegrationsPanel />}
           {tab === "Sync / Link" && <SyncLinkPanel />}
           {tab === "Project" && <ProjectPanel />}

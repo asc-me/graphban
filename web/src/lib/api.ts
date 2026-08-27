@@ -1,5 +1,4 @@
-import type {
-  OrgOverview, FleetOverview, FleetPresence, ShellCounts } from "@/lib/types";
+import type { Credential, CredentialIn, FleetOverview, FleetPresence, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -644,6 +643,41 @@ export const api = {
   updatePlatform: (projectId: string, body: Partial<PlatformConfig>) =>
     request<PlatformConfig>(`/platform${projectQuery(projectId)}`, { method: "PATCH", body: JSON.stringify(body) }),
   aiProviders: () => request<{ providers: AiProvider[] }>("/platform/providers"),
+
+  // ---- Credentials (PRD-25). Deployment-scoped: the project id in the query resolves the
+  // SCOPE server-side (org under hosted multi-tenancy, the deployment otherwise). It is not a
+  // filter — every credential the caller's scope owns comes back, which is the whole point of
+  // the view that replaced the per-project provider table.
+  credentials: (projectId: string) =>
+    request<{ credentials: Credential[] }>(`/platform/credentials${projectQuery(projectId)}`),
+  createCredential: (projectId: string, body: CredentialIn) =>
+    request<{ id: string; state: string }>(`/platform/credentials${projectQuery(projectId)}`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  updateCredential: (projectId: string, id: string, body: Partial<CredentialIn>) =>
+    request<{ id: string; state: string }>(`/platform/credentials/${id}${projectQuery(projectId)}`, {
+      method: "PATCH", body: JSON.stringify(body),
+    }),
+  deleteCredential: (projectId: string, id: string) =>
+    request<void>(`/platform/credentials/${id}${projectQuery(projectId)}`, { method: "DELETE" }),
+  retryCredential: (projectId: string, id: string) =>
+    request<{ id: string; state: string; last_error: string; validation_attempts: number }>(
+      `/platform/credentials/${id}/retry${projectQuery(projectId)}`, { method: "POST" }),
+  setScopeDefaults: (projectId: string, body: ScopeDefaults) =>
+    request<ScopeDefaults & { scope: string }>(`/platform/credentials/defaults${projectQuery(projectId)}`, {
+      method: "PUT", body: JSON.stringify(body),
+    }),
+  setProjectCredential: (projectId: string, body: { credential_id?: string | null; model_override?: string }) =>
+    request<{ project_id: string; credential_id: string | null; model_override: string }>(
+      `/platform/credentials/project${projectQuery(projectId)}`, {
+        method: "PUT", body: JSON.stringify(body),
+      }),
+  startReindex: (projectId: string) =>
+    request<{ started: { table: string; total: number }[] }>(`/platform/reindex${projectQuery(projectId)}`, {
+      method: "POST",
+    }),
+  reindexStatus: (projectId: string) =>
+    request<ReindexStatus>(`/platform/reindex${projectQuery(projectId)}`),
   saveProviders: (projectId: string, body: { active_chat_provider?: string; providers?: Record<string, ProviderConfigUpdate> }) =>
     request<PlatformConfig>(`/platform${projectQuery(projectId)}`, { method: "PATCH", body: JSON.stringify(body) }),
   githubConnect: (projectId: string, account: string, repo: string) =>
