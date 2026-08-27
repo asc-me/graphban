@@ -101,6 +101,21 @@ overlap.
   evidence; a judgement surface especially can pass a full suite and still be
   wrong on contact with real data, so run it against a live PRD too.
 
+- **Sabotage the CALL, not only the callee.** The same hole survived that
+  instruction three tickets running: a pure function with thorough unit tests, and
+  the surface that consumes it with none. `section_drift` could return
+  `section_gone` and `coverage` iterated the PRD's own headings, so an item whose
+  section was renamed away was unreachable (GRPH-360). `owns()` had six tests on
+  what may be dropped and none on the call, so deleting `if not owns(...)` from the
+  teardown broke nothing (GRPH-534). `classify_section` honoured `<!-- framing -->`
+  while `coverage` could pass an empty body and drop the field from its payload,
+  with 104 tests green (GRPH-247). Every one was caught by mutating the boundary,
+  never the function. So when the thing you built feeds a report or a payload:
+  make the caller pass an empty argument, drop the field, skip the branch that
+  consults it. If the suite stays green you have shipped a correct function nobody
+  calls — and here that means a clean report, which is the absence rule above
+  wearing different clothes.
+
 **Compatibility is NOT one of these defaults — the opposite rule applies.** Two
 instances are deployed, API keys live in agents' configs, and the MCP tool names
 are cached by clients. So: *an identifier that existing data is keyed by is
