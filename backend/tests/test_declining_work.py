@@ -172,3 +172,125 @@ def test_a_second_claimant_still_becomes_the_author(client, auth, proj, key, db)
 
     row = db.query(Item).filter(Item.number == int(item["id"].split("-")[-1])).one()
     assert row.built_by == b["agent_id"]
+
+
+# ---- a reservation is work (GRPH-435) ------------------------------------------------------
+
+def test_claiming_a_cluster_and_releasing_it_keeps_the_authorship(client, auth, proj, key, db):
+    """`claim_cluster` records the work in a different place, and the guard could not see it.
+
+    The rule the clock enforces is "nothing has been written since the claim". Area
+    reservations ARE written — a row carrying this agent and this item, created by the act of
+    taking it — and they do not touch `items.updated_at`. So the guard read an untouched item
+    and cleared `built_by` on an agent that had demonstrably taken the work.
+
+    This is the primary claim path, not a corner: GRPH-380 made the all-in-one posture claim
+    through the divvy, and claim-a-cluster-then-decline is an ordinary move.
+    """
+    me = _ok(client, key, "register_agent", {"label": "w"})
+    item = _ok(client, key, "create_item", {"title": "clustered", "status": "next",
+                                            "touchpoints": ["backend/app/services/items.py"]})
+    got = _ok(client, key, "claim_cluster", {"agent_id": me["agent_id"]})
+    assert got["claimed"], got
+    assert got.get("areas"), "no areas reserved — this test would prove nothing"
+
+    _ok(client, key, "release_item", {"id": item["id"], "agent_id": me["agent_id"]})
+
+    row = db.query(Item).filter(Item.number == int(item["id"].split("-")[-1])).one()
+    assert row.built_by == me["agent_id"], (
+        "the agent reserved areas for this item, which is work — the author must survive")
+
+
+def test_that_agent_is_then_refused_by_sign_off(client, auth, proj, key, db):
+    """The consequence, end to end, and the reason this is a defect rather than a wart.
+
+    With `built_by` cleared, `independent()` has nothing to refuse: the agent that claimed
+    the cluster, held its areas and released it could sign off that same item. The self-review
+    ban is the gate the whole review model rests on, and this walked around it through the
+    normal claim path.
+    """
+    me = _ok(client, key, "register_agent", {"label": "w"})
+    item = _ok(client, key, "create_item", {"title": "clustered", "status": "next",
+                                            "touchpoints": ["backend/app/services/items.py"]})
+    _ok(client, key, "claim_cluster", {"agent_id": me["agent_id"]})
+    _ok(client, key, "release_item", {"id": item["id"], "agent_id": me["agent_id"]})
+    _ok(client, key, "update_item", {"id": item["id"], "status": "review"})
+
+    # Read RAW, not through `_ok`: a refusal comes back as an error result whose text is a
+    # message rather than JSON, so the success helper cannot express this assertion.
+    r = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                      "params": {"name": "sign_off",
+                                                 "arguments": {"id": item["id"],
+                                                               "agent_id": me["agent_id"]}}},
+                    headers={"X-API-Key": key}).json()["result"]
+    assert r.get("isError"), f"sign_off accepted the agent that took this cluster: {r}"
+    text = r["content"][0]["text"].lower()
+    assert "own" in text or "independent" in text or "review" in text, text
+
+
+def test_claiming_and_writing_nothing_at_all_still_loses_it(client, auth, proj, key, db):
+    """GRPH-434's fix must survive. An agent that claimed, reserved NOTHING and released
+    wrote nothing anywhere, and barring it from ever reviewing what it declined is the cost
+    that fix exists to remove."""
+    me = _ok(client, key, "register_agent", {"label": "w"})
+    item = _ok(client, key, "create_item", {"title": "untouched", "status": "next"})
+    _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
+    _ok(client, key, "release_item", {"id": item["id"], "agent_id": me["agent_id"]})
+
+    row = db.query(Item).filter(Item.number == int(item["id"].split("-")[-1])).one()
+    assert row.built_by is None, "nothing was written anywhere — the claim alone is not authorship"
+
+
+def _reserve(db, agent_id, item_row, area="backend/app/services/other.py"):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import AreaReservation
+
+    db.add(AreaReservation(
+        agent_id=agent_id, item_id=item_row.id, area=area,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=600), predicted=False,
+    ))
+    db.commit()
+
+
+def _row(db, item):
+    return db.query(Item).filter(Item.number == int(item["id"].split("-")[-1])).one()
+
+
+def test_a_reservation_on_a_DIFFERENT_item_does_not_save_the_authorship(client, auth, proj,
+                                                                       key, db):
+    """The query must name the item, not just the agent.
+
+    Both of the tests above use one agent and one item, so a lookup that asked only "does
+    this agent hold ANY reservation" passed them perfectly — it survived the sabotage pass.
+    An agent working on one item would then keep authorship on every unrelated item it
+    claimed and abandoned, which is the GRPH-434 defect back again by a different route.
+    """
+    me = _ok(client, key, "register_agent", {"label": "w"})
+    busy = _ok(client, key, "create_item", {"title": "elsewhere", "status": "backlog"})
+    idle = _ok(client, key, "create_item", {"title": "untouched", "status": "next"})
+    _reserve(db, me["agent_id"], _row(db, busy))
+
+    _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
+    _ok(client, key, "release_item", {"id": idle["id"], "agent_id": me["agent_id"]})
+
+    db.expire_all()
+    assert _row(db, idle).built_by is None, (
+        "the reservation was for another item — it is not work on this one")
+
+
+def test_ANOTHER_agents_reservation_does_not_save_your_authorship(client, auth, proj, key, db):
+    """And it must name the agent. The same one-agent blind spot: a lookup that asked only
+    "is this item reserved by anyone" also passed both tests above, and would let an agent
+    keep authorship on the strength of somebody else's work."""
+    me = _ok(client, key, "register_agent", {"label": "me"})
+    other = _ok(client, key, "register_agent", {"label": "other"})
+    item = _ok(client, key, "create_item", {"title": "untouched", "status": "next"})
+    _reserve(db, other["agent_id"], _row(db, item))
+
+    _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
+    _ok(client, key, "release_item", {"id": item["id"], "agent_id": me["agent_id"]})
+
+    db.expire_all()
+    assert _row(db, item).built_by is None, (
+        "somebody else reserved this — that is not evidence THIS agent did anything")

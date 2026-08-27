@@ -1618,6 +1618,29 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
             "held_by": held, "reason": reason}
 
 
+def holds_reservation(db: Session, *, agent_id: str, item_id: str) -> bool:
+    """Does this agent hold an area reservation for this item? (GRPH-435)
+
+    Existence only — one indexed lookup on the two columns that identify the pair. It answers
+    the question `items.updated_at` cannot: `claim_cluster` writes its work here rather than
+    on the item row, so an agent that took a cluster and touched nothing else looks, by the
+    clock, exactly like one that claimed and walked away.
+
+    Deliberately NOT solved by stamping `updated_at` when reservations are written. That
+    would make the existing guard true as written, at the cost of moving the item's timestamp
+    for a reason unrelated to the item's content — and `updated_at` is read by drift, by
+    completeness and by every "has this changed" question in the codebase.
+
+    Expiry is not consulted. The question is whether this agent DID the work, not whether the
+    hold is still live; a lapsed reservation is still a record that they took it.
+    """
+    return db.scalars(
+        select(AreaReservation.id)
+        .where(AreaReservation.agent_id == agent_id, AreaReservation.item_id == item_id)
+        .limit(1)
+    ).first() is not None
+
+
 def release_reservations(db: Session, *, item_id: str | None = None,
                          agent_id: str | None = None) -> int:
     """Drop reservations when work ends. Called on sign_off / release / bounce.

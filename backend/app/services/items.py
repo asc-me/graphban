@@ -886,6 +886,9 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
 
     if item.claimed_by != agent_id:
         return None
+    # Asked BEFORE the reservations are released, because releasing them destroys the
+    # evidence the guard below needs (GRPH-435).
+    reserved = fleet_svc.holds_reservation(db, agent_id=agent_id, item_id=item.id)
     fleet_svc.release_reservations(db, item_id=item.id)
     # AUTHORSHIP IS NOT EARNED BY CLAIMING (GRPH-434). `built_by` is written at claim and never
     # cleared, which is right — releasing a lease must not destroy the record of who made the
@@ -899,7 +902,20 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
     # any write to the row, so an untouched item still carries the timestamp it had when the
     # lease was taken. A single substantive write — a status move, touchpoints, evidence —
     # keeps the authorship, which is what the ban needs.
-    if item.built_by == agent_id and item.claimed_at and item.updated_at <= item.claimed_at:
+    # ...and `updated_at` is not the whole story (GRPH-435). `claim_cluster` — the primary
+    # claim path since GRPH-380 made the all-in-one posture claim through the divvy — records
+    # its work as AREA RESERVATIONS, rows carrying this agent and this item, written by the
+    # act of taking it. They do not touch `items.updated_at`, so the clock read an untouched
+    # item and cleared the authorship of an agent that had demonstrably taken the work. With
+    # `built_by` NULL, `independent()` had nothing to refuse and that same agent could sign
+    # the item off: a walk around the self-review ban through the ordinary claim path.
+    #
+    # `heartbeat` and `link_items` also leave `updated_at` alone and are deliberately NOT
+    # counted. A heartbeat is about the agent's liveness rather than the item, and linking two
+    # items is work but not necessarily work on this one. The reservation is different in
+    # kind: the row names this agent and this item and nothing else.
+    if (item.built_by == agent_id and item.claimed_at
+            and item.updated_at <= item.claimed_at and not reserved):
         item.built_by = None
     item.claimed_by = None
     item.claimed_at = None
