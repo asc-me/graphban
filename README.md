@@ -124,6 +124,31 @@ pnpm test         # vitest
 pnpm typecheck
 ```
 
+## Deploying
+
+Two services from one repo — the API (`backend/`) and an nginx-served SPA (`web/`), each with
+its own `railway.json`. The general runbook is **[docs/deploy.md](docs/deploy.md)** (build,
+release identity, invariants, recover, rollback); Railway specifics live in
+**[docs/deploy-railway.md](docs/deploy-railway.md)**.
+
+**Postgres must have the `vector` extension.** Migration `0001_initial` opens with
+`CREATE EXTENSION IF NOT EXISTS vector`, migrations run on API startup, and Railway's stock
+Postgres plugin does not ship it — so a plain Postgres restart-loops before serving anything.
+Provision the pgvector image (`pgvector/pgvector:pg16` is the pairing CI uses). This is
+invisible locally: SQLite dev uses `create_all` and never runs a migration.
+
+Verify a deployment from outside, after every deploy rather than once:
+
+```bash
+scripts/smoke-deployment.sh https://your-domain
+```
+
+It checks reachability and release identity (a Railway deploy can report SUCCESS while
+serving the previous image), the embed page's cross-origin framing headers, that the public
+surface is rate limited, and that the MCP endpoint refuses anonymous callers. Exercising
+`create_item`/`search_items` needs `GRAPHBAN_API_KEY` and is opt-in, because those write real
+rows.
+
 ## Schema migrations
 
 Postgres schema is owned by **Alembic** (`backend/alembic/`). Migrations run automatically
