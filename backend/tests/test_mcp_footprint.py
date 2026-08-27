@@ -8,6 +8,24 @@ import json
 
 from app.mcp_server import TOOLS, _READ_ONLY
 
+# The ceiling, and what the manifest actually costs against it TODAY (GRPH-547).
+#
+# `MEASURED_TOKENS` is a literal somebody typed, never a computed value — that is the whole
+# point. A figure derived the same way on both sides of an assertion agrees by construction
+# and can never fail; this one disagrees the moment the manifest moves, which forces whoever
+# moved it to re-run the arithmetic and write down the new number.
+#
+# That habit is what has never formed. This file's docstring below complains that tools were
+# "added without anyone re-running the arithmetic, three times now" — and then it happened
+# again: the prose recorded ~201 tokens of headroom while the real figure had fallen to ~21,
+# so the one place an author would look to decide "do I have room?" read ten times too
+# generous for months. The complaint was accurate and could not enforce itself.
+#
+# Raising CEILING is a decision, not a fix. The history below is a series of raises that the
+# docstring itself argues should have been trims.
+CEILING = 13600
+MEASURED_TOKENS = 13592
+
 
 def _mint(client, auth, scopes):
     return client.post(
@@ -352,6 +370,11 @@ Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT th
     `update_prd` survivable is paid for, and 13600 still leaves ~201 of headroom, near the
     ~218 that raise was aiming at.
 
+    (That last sentence was true when written and stopped being true without anyone
+    noticing — the headroom was ~21 by the time GRPH-541 measured it. It is kept as the
+    dated claim it was, and `MEASURED_TOKENS` at the top of this file now carries the
+    current one, because a number in prose cannot fail.)
+
     Not taken: the spec also says `destructiveHint` and `idempotentHint` are meaningful
     only when `readOnlyHint == false`, worth another ~238 tokens across the read-only tools.
     That trim is lossless only for a client that honours the conditional, and 238 tokens do
@@ -403,9 +426,37 @@ Raised 12800 -> 13100 in GRPH-398, and PER-ENROLMENT TRIMMING IS THE ARGUMENT th
     because the money later turned up elsewhere.)"""
     full_chars = len(json.dumps({"tools": TOOLS}))
     read_chars = len(json.dumps({"tools": [t for t in TOOLS if t["name"] in _READ_ONLY]}))
-    assert full_chars // 4 < 13600, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
+    assert full_chars // 4 < CEILING, f"full manifest ~{full_chars // 4} tokens — trim descriptions"
     # scope-gating must keep buying its ~half-off for read keys
     assert read_chars < full_chars * 0.55
+
+
+def test_the_recorded_manifest_size_is_the_real_one():
+    """The stated headroom has to be true, not merely once-true (GRPH-547).
+
+    The ceiling test above answers "is there still room" and nothing answers "how much" —
+    so the figure an author reads to plan by lived only in prose, and drifted ~180 tokens
+    without anything noticing. A ceiling with 8 tokens left and a note claiming 201 is worse
+    than no note: it invites exactly the change that will fail.
+
+    Failing here is not a problem to work around. It means the manifest moved, and the
+    correct response is to read the number in the message, decide whether the cost is worth
+    it, and record it. That IS the arithmetic being re-run.
+    """
+    measured = len(json.dumps({"tools": TOOLS})) // 4
+
+    room = CEILING - measured
+    where = (f"that leaves {room} of headroom under the {CEILING} ceiling" if room > 0
+             else f"that is {abs(room)} tokens OVER the {CEILING} ceiling")
+    assert measured == MEASURED_TOKENS, (
+        f"the manifest is {measured} tokens; MEASURED_TOKENS says {MEASURED_TOKENS}. "
+        f"Set it to {measured} — {where}"
+        + ("." if room >= 50 else
+           ". There is effectively no room left, so what you are adding should probably be "
+           "gated to the keys that can use it rather than carried by every agent — "
+           "`_with_attestation` in mcp_server is the shape, and it is why GRPH-541 added "
+           "three fields for nothing.")
+    )
 
 
 def test_a_session_scoped_manifest_actually_saves_the_tokens(client, auth):
