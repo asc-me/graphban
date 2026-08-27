@@ -431,3 +431,64 @@ def test_both_guards_stay_and_catch_different_things(wt):
         tools.write_file(wt, "big.py", "# placeholder\n", seen=tools.content_hash(body))
 
     assert "refusing to replace" in str(exc.value), "read it, and the SHAPE guard still answers"
+
+
+# ---- a refusal only names remedies that work (GRPH-530) -----------------------------------
+
+
+def _refusal_for(root, existing_lines: int, *, read_first: bool) -> str:
+    """Drive a real whole-file replacement and hand back what the model would be told."""
+    from gbagent.toolset import Toolset
+
+    root.mkdir(parents=True, exist_ok=True)
+    target = root / "established.py"
+    target.write_text("\n".join(f"line_{i} = {i}" for i in range(existing_lines)) + "\n")
+    ts = Toolset(root=root, cfg=None, orientation=None, last_tests=None,
+                 written=set(), seen={}, refusals=[])
+    if read_first:
+        ts._do_read_file("established.py")
+    try:
+        ts._do_write_file("established.py", "x = 1")
+    except Exception as exc:
+        return str(exc)
+    raise AssertionError("the stub was accepted; this test has nothing to inspect")
+
+
+def test_neither_refusal_tells_the_model_to_read_the_file_first(tmp_path):
+    """Reading satisfies the knowledge guard and does nothing for the shape guard, so the
+    advice sent an unattended model round a loop it could not exit: read, retry, refused,
+    and the message still says read.
+
+    Both refusals carried it, so following the first landed on the second — the two guards
+    chaining into a dead end two steps deep. `edit_file` reaches every case a model can
+    actually get to, and is now the only remedy either message offers.
+    """
+    unread = _refusal_for(tmp_path / "a", 200, read_first=False)
+    truncation = _refusal_for(tmp_path / "b", 200, read_first=True)
+
+    assert "have not read this file" in unread, unread
+    assert "refusing to replace 200 lines" in truncation, truncation
+
+    for message in (unread, truncation):
+        assert "read_file" not in message, (
+            f"a refusal still names read_file as a remedy, and it is not one: {message}"
+        )
+        assert "edit_file" in message, (
+            f"a refusal must name the remedy that does work: {message}"
+        )
+
+
+def test_reading_the_file_really_does_not_license_a_whole_file_replacement(tmp_path):
+    """The fact the messages used to deny. This is why the clause was dropped rather than
+    made true: no sequence of reads gets a stub past both guards, so there was never a path
+    the advice could have described.
+    """
+    root = tmp_path / "c"
+    before = _refusal_for(root, 200, read_first=False)
+    after = _refusal_for(root, 200, read_first=True)
+
+    assert "have not read this file" in before
+    assert "refusing to replace" in after, (
+        "reading let a stub through — if that is now intended, this test is the one to argue "
+        f"with rather than delete: {after}"
+    )

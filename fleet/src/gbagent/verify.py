@@ -33,15 +33,38 @@ TAIL_LINES = 100
 #: if a single turn never returns. This repository's own backend suite takes ~9 minutes.
 DEFAULT_TIMEOUT = 1800
 
-_SUMMARY = re.compile(r"^=*\s*(?:(\d+) failed)?.*?(?:(\d+) passed)?.*?in [\d.]+s", re.M)
+#: A runner's own summary line: a count, and a duration, on one line. pytest's is
+#: `=== 1 failed, 3 passed in 0.5s ===`. The DURATION is what makes this specific — a
+#: teardown log reading `99 passed` or a coverage row reading `TOTAL 340 passed` has a
+#: count and no duration, and those are exactly the lines that used to win (GRPH-532).
+_SUMMARY = re.compile(
+    r"^.*?\b\d+\s+(?:passed|failed|error|errors|skipped)\b.*?\bin\s[\d.]+s.*$", re.M
+)
 _COUNT = re.compile(r"(\d+)\s+(passed|failed|error|errors)")
 _FAILED_LINE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.M)
 
 
 def _read_counts(out: str) -> tuple[int | None, int | None, list[str]]:
-    """Best effort. Returns (passed, failed, names) with `None` where nothing could be read."""
+    """Best effort. Returns (passed, failed, names) with `None` where nothing could be read.
+
+    **Counts come from the runner's own summary line when there is one** (GRPH-532). Reading
+    them from anywhere in the output was correct for pytest by accident: its summary is last,
+    and last-wins happened to pick it. But `out` is stdout and stderr CONCATENATED, so every
+    line of stderr lands after every line of stdout — and any of them matching `N passed`
+    became the answer. Measured: a summary of `1 failed, 3 passed` followed by a teardown log
+    reading `99 passed` reported 99, which is the `confident, structured and false` answer
+    this function's own docstring exists to refuse.
+
+    A runner with no recognisable summary line falls back to reading the whole output, which
+    is what jest and friends need — their totals carry no duration. That fallback keeps the
+    old behaviour exactly where the old behaviour was the only option.
+    """
     names = _FAILED_LINE.findall(out)
-    tallies = {kind: int(n) for n, kind in _COUNT.findall(out)}
+    # The LAST summary line, not the first: a re-run or a nested invocation prints more than
+    # one, and the final tally is the one that describes this run.
+    summaries = _SUMMARY.findall(out)
+    source = summaries[-1] if summaries else out
+    tallies = {kind: int(n) for n, kind in _COUNT.findall(source)}
     # `.get` WITHOUT a default is the whole mechanism: an absent count stays None and never
     # becomes 0. Adding `, 0` here would report a clean run on output nobody could read —
     # confident, structured and false. An earlier draft had an explicit `if nothing parsed:
