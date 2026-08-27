@@ -339,3 +339,61 @@ def test_an_inactive_entry_does_not_create_a_spurious_override(db):
 
     assert db.get(Project, "p1").model_override == ""
     assert db.get(Project, "p2").model_override == ""
+
+
+# ---- dedupe against what already exists (GRPH-545) -------------------------------------------
+
+
+def test_a_later_run_reuses_an_existing_identical_credential(db):
+    """FOUND IN PRODUCTION, after GRPH-539's repair.
+
+    Dedupe was batch-local: `plan_migration` grouped the entries it was handed, and `migrate`
+    handed it only projects WITHOUT a pointer. So a project migrated on a later run never saw
+    the credential that already matched it, and got a fresh one.
+
+    On the reference deployment that produced two ollama rows with the same endpoint and the
+    same key. Nothing broke — every project resolved correctly — which is exactly why it
+    survived. It defeats the property the migration exists to provide: D-a's whole argument is
+    that a shared key must be ONE row, or rotating it becomes two edits and one gets forgotten.
+    """
+    # p1 migrates first. p2 is configured AFTERWARDS — which is both the natural case (a
+    # project added later) and what GRPH-539's repair produced (a pointer cleared so the fixed
+    # migration could redo it).
+    _project(db, "p1", _blob("ollama", url="http://o:11434", key="", model="mistral"))
+    mig.migrate(db)
+    first = db.get(Project, "p1").credential_id
+
+    _project(db, "p2", _blob("ollama", url="http://o:11434", key="", model="qwen"))
+    mig.migrate(db)
+
+    assert db.query(Credential).count() == 1, (
+        "a second run created a duplicate of a credential that already existed"
+    )
+    assert db.get(Project, "p2").credential_id == first
+
+
+def test_the_reused_credentials_model_decides_the_override(db):
+    """The override is relative to the EXISTING credential's model, not the one this batch
+    would have chosen on its own — otherwise a project reusing a credential gets an override
+    computed against a model nothing is set to."""
+    _project(db, "p1", _blob("ollama", url="http://o:11434", key="", model="mistral"))
+    mig.migrate(db)
+
+    _project(db, "p2", _blob("ollama", url="http://o:11434", key="", model="qwen"))
+    mig.migrate(db)
+
+    cred = db.query(Credential).one()
+    assert cred.model == "mistral", "the existing credential was restyled by a later run"
+    assert db.get(Project, "p2").model_override == "qwen"
+
+
+def test_a_genuinely_different_key_still_becomes_its_own_credential(db):
+    """The opposite error, and just as plausible: matching on kind alone would collapse two
+    real keys into one and hand a project someone else's."""
+    _project(db, "p1", _blob(key="sk-one"))
+    mig.migrate(db)
+
+    _project(db, "p2", _blob(key="sk-two"))
+    mig.migrate(db)
+
+    assert db.query(Credential).count() == 2

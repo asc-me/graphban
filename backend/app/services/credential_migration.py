@@ -195,9 +195,38 @@ def migrate(db: Session, scope: str = "") -> dict:
     credentials, skipped = plan_migration(entries)
     skipped += [{**e, "why": "malformed entry"} for e in malformed]
 
+    # **What is already in the table** (GRPH-545). Dedupe used to be batch-local: a run only
+    # compared its own entries, so a project migrated on a LATER run got a fresh credential even
+    # when an identical one existed. That happened on the reference deployment after GRPH-539's
+    # repair cleared one pointer — the next boot migrated that project alone and created a
+    # second ollama row with the same endpoint and the same key.
+    #
+    # Nothing breaks when it does, which is why it survived: every project resolves correctly.
+    # It just defeats the property the migration exists to provide, since D-a's whole argument
+    # is that a shared key must be ONE row or rotating it becomes two edits.
+    existing: dict[tuple[str, str, str], Credential] = {}
+    for cred in db.query(Credential).filter(Credential.org_id == (scope or None)).all():
+        existing[_identity(cred.kind, cred.base_url, cred.api_key)] = cred
+
     labels: Counter = Counter()
     created: list[Credential] = []
     for group in credentials:
+        match = existing.get(_identity(group["kind"], group["base_url"], group["api_key"]))
+        if match is not None:
+            # Point at what is there. The label, model and state of the existing row are left
+            # alone — it is in use, and a migration must not restyle a credential other
+            # projects are already served by.
+            for pid in group["projects"]:
+                project = db.get(Project, pid)
+                if project is None or pid not in group["active_projects"]:
+                    continue
+                project.credential_id = match.id
+                # The override is relative to the EXISTING credential's model, not the one this
+                # batch would have chosen.
+                own = dict(zip(group["projects"], group["models"])).get(pid) or ""
+                project.model_override = own if own and own != match.model else ""
+            continue
+
         cred = Credential(
             id=f"cred_{token_urlsafe(8)}",
             org_id=scope or None,
@@ -233,7 +262,12 @@ def migrate(db: Session, scope: str = "") -> dict:
 
     default_id, referenced = "", 0
     if created:
-        counts = {c.id: len(g["projects"]) for c, g in zip(created, credentials)}
+        # Only newly created rows are candidates. A reused credential already exists and may
+        # already BE the default; re-deciding it from one batch's counts would let a later
+        # partial run overwrite a choice the operator made in the console.
+        new_groups = [g for g in credentials
+                      if _identity(g["kind"], g["base_url"], g["api_key"]) not in existing]
+        counts = {c.id: len(g["projects"]) for c, g in zip(created, new_groups)}
         default_id = max(counts, key=lambda k: (counts[k], k))
         referenced = counts[default_id]
         row = db.get(DeploymentConfig, scope or "")
