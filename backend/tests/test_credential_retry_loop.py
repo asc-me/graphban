@@ -84,15 +84,29 @@ def test_the_app_serves_even_when_every_pass_raises(monkeypatch, _clean_database
 
 def test_shutdown_does_not_hang_on_the_task(monkeypatch, _clean_database):
     """Cancelling must actually end it. A loop that swallows `CancelledError` would keep the
-    process alive on exit — and on a container that is a failed deploy, not a slow one."""
+    process alive on exit — and on a container that is a failed deploy, not a slow one.
+
+    **Measured directly rather than wrapped in `asyncio.wait_for(asyncio.to_thread(...))`.**
+    That construction looked safer and was worse: `to_thread` cannot cancel the thread it
+    started, so a timeout abandoned a still-running thread instead of stopping it — and those
+    threads are NON-DAEMON, joined at interpreter exit. The "timeout" moved the hang from this
+    test to process shutdown, where it appeared as an xdist worker that never exited and a CI
+    job stuck at 90% with no failing test to point at.
+
+    Timing the block is enough: if shutdown blocks, the elapsed assertion is what fails, and
+    nothing is left behind to strand the worker.
+    """
     app = _app_with_loop(monkeypatch, interval=30.0)
 
-    async def run():
-        with TestClient(app) as client:
-            client.get("/health")
+    began = time.monotonic()
+    with TestClient(app) as client:
+        client.get("/health")
+    elapsed = time.monotonic() - began
 
-    # The whole with-block, including lifespan shutdown, well inside one 30s interval.
-    asyncio.run(asyncio.wait_for(asyncio.to_thread(lambda: asyncio.run(run())), timeout=15))
+    assert elapsed < 15.0, (
+        f"startup+shutdown took {elapsed:.1f}s against a 30s loop interval — cancellation is "
+        "waiting out the sleep instead of interrupting it"
+    )
 
 
 def test_the_loop_is_not_started_when_disabled(monkeypatch, _clean_database):

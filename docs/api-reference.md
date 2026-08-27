@@ -198,7 +198,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | Method | Path | Auth |
 | --- | --- | --- |
 | GET / PATCH | `/api/platform` | JWT |
-| GET | `/api/platform/credentials` | JWT | Every credential in the caller's scope with `state` and derived `used_by`; never returns a key, only `key_set` |
+| GET | `/api/platform/credentials` | JWT | Every credential in the caller's scope with `state`, derived `used_by`, and `falling_back` — projects pointing here that are NOT getting it because the row is unreachable or out of scope (PRD-25 §4). Never returns a key, only `key_set` |
 | POST | `/api/platform/credentials` | JWT |
 | PATCH / DELETE | `/api/platform/credentials/{id}` | JWT | Add, edit (rotation is an edit — the row id never moves) or remove a credential. `409` naming every referencing project and role while anything points at it |
 | POST | `/api/platform/credentials/{id}/retry` | JWT |

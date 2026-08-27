@@ -12,7 +12,21 @@ config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers=False` is load-bearing, not tidiness (GRPH-525).
+    #
+    # `fileConfig` defaults to True, which sets `disabled = True` on every logger that already
+    # exists. On Postgres — which is what production runs — `run_migrations()` executes inside
+    # `lifespan` AFTER the app's modules have been imported, so this silenced ten of the twelve
+    # `graphban.*` loggers for the entire life of the process: `graphban.main`,
+    # `graphban.platform`, `graphban.credential_retry`, `graphban.mcp`, `graphban.events`,
+    # `graphban.email`, `graphban.ratelimit`, and more.
+    #
+    # What that cost: the credential retry loop's "pass failed; continuing" warning could never
+    # appear in production, so the background task added in PRD-25 S2b would have failed in
+    # exactly the silence its own error handling was written to prevent. SQLite installs use
+    # `create_all` and never call this, which is why every test suite and every local run looked
+    # fine — the one engine that mattered was the one nobody could observe.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

@@ -107,6 +107,21 @@ async def lifespan(app: FastAPI):
                 await retry_task
 
 
+def _one_retry_pass() -> int:
+    """One retry pass, session included. Runs entirely inside a worker thread.
+
+    Owning the session here is what makes cancellation safe: nothing outside this function
+    can close a session while this function is using it.
+    """
+    from app.services import credential_retry
+
+    db = SessionLocal()
+    try:
+        return credential_retry.run_once(db)
+    finally:
+        db.close()
+
+
 async def _credential_retry_loop() -> None:
     """Re-ask credentials that could not be asked, forever, without ever raising.
 
@@ -125,11 +140,17 @@ async def _credential_retry_loop() -> None:
     while True:
         try:
             await asyncio.sleep(interval)
-            db = SessionLocal()
-            try:
-                made = await asyncio.to_thread(credential_retry.run_once, db)
-            finally:
-                db.close()
+            # **The thread opens and closes its own session.** The previous shape held the
+            # session out here and closed it in a `finally` — and `asyncio.to_thread` cannot
+            # cancel the thread it started, so `retry_task.cancel()` during shutdown made the
+            # AWAIT raise while the worker thread was still inside `run_once(db)`. The
+            # `finally` then closed a session that thread was actively using.
+            #
+            # Worse for shutdown: `to_thread` runs on the loop's default ThreadPoolExecutor,
+            # whose threads are NON-DAEMON and joined at interpreter exit. A thread left
+            # working on a closed session can block the process from exiting at all — which
+            # is what "Terminate orphan process (python)" looked like in CI.
+            made = await asyncio.to_thread(_one_retry_pass)
             if made:
                 logger.info("credential retry: %d attempt(s)", made)
         except asyncio.CancelledError:
