@@ -88,6 +88,29 @@ async def lifespan(app: FastAPI):
         # silently change which model produced every vector written afterwards — and nothing
         # recorded that it had. It is now the deployment's own credential, falling back to the
         # environment when none is set (PRD-25 D-c).
+        # **The credential migration runs BEFORE anything serves** (GRPH-538). PRD-25 S6
+        # removed resolution step 0 — the branch that read each project's legacy `providers`
+        # blob — and every project configured the old way depends on this having moved its
+        # configuration into a credential row first. Without it: step 0 gone, pointers
+        # unwritten, every such project silently resolving to the offline stub. That is the
+        # downgrade step 0 existed to prevent, arriving in the slice that removed it.
+        #
+        # Idempotent by construction: a project that already has a pointer is skipped, so on a
+        # migrated deployment this costs one query per boot.
+        #
+        # It must NOT be able to stop the app starting. A deployment that cannot boot is worse
+        # than one whose migration needs another attempt — and because it is idempotent, the
+        # next boot simply tries again. The failure is logged loudly rather than swallowed.
+        from app.services import credential_migration
+
+        try:
+            report = credential_migration.migrate(db)
+            if report["credentials_created"]:
+                logger.info("credential migration: %s", report)
+        except Exception:  # noqa: BLE001 — see above: booting matters more
+            logger.exception("credential migration failed; projects configured the old way "
+                             "will resolve to the stub until it succeeds")
+
         from app.services.embedder import apply_embedder
 
         apply_embedder(db)
