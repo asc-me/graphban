@@ -23,6 +23,7 @@ from app.models import AreaReservation, Item
 from app.models import utcnow
 from app.services import fleet
 from app.services import items as items_svc
+from tests import attest
 
 
 def _rpc(client, key, tool, args=None):
@@ -61,7 +62,8 @@ def proj(client, auth):
 
 @pytest.fixture()
 def key(client, auth, proj):
-    return client.post("/api/api-keys", json={"name": "divvy", "project_id": proj},
+    return client.post("/api/api-keys", json={"name": "divvy", "project_id": proj,
+                             "scopes": ["read", "write", "gate"]},
                        headers=auth).json()["plaintext"]
 
 
@@ -390,7 +392,8 @@ def test_claiming_a_predicted_cluster_records_the_guess_on_the_reservation(clien
     _ok(client, key, "link_items",
         {"a": guess["id"], "b": declared["id"], "type": "dependency",
          "reason": "same surface", "confidence": 0.9})
-    _ok(client, key, "update_item", {"id": declared["id"], "status": "done"})
+    _ok(client, key, "update_item",
+        {"id": declared["id"], **attest.complete_body()})
 
     w = _worker(client, key, "guesser")
     got = _ok(client, key, "claim_cluster", {"agent_id": w["agent_id"]})

@@ -106,6 +106,11 @@ def update_item(
         # (GRPH-399). Scheduled here so the response does not wait on them.
         item = items_svc.update_item(db, item_id, defer=background.add_task,
                                      **body.model_dump(exclude_unset=True))
+    except items_svc.MissingAttestation as e:
+        # 409, not 422: the request is well formed and the caller is permitted — the ITEM is
+        # not in a state that may be completed (GRPH-543). A 422 would read as "you sent
+        # something malformed" and send the caller editing their payload.
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
     if item is None:

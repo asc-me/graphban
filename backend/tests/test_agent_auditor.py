@@ -20,6 +20,7 @@ import pytest
 from app.models import CodeNode
 from app.services import items as items_svc
 from app.services import prds as prd_svc
+from tests import attest
 
 BODY = (
     "# Spec\n\n"
@@ -55,7 +56,7 @@ def approved(db):
 def _delivered(db, prd, section, **kw):
     item = items_svc.create_item(db, title=f"Work on {section}", project_id="core",
                                  prd_id=prd.id, prd_section=section, **kw)
-    items_svc.update_item(db, item.id, status="done",
+    attest.complete(db, item.id,
                           evidence=[{"kind": "test", "detail": "42 passed"}])
     db.refresh(item)
     return item

@@ -5,6 +5,7 @@ mutations require project membership with write access. Seeded fixtures
 (seed.py): alex = write on core/web/infra; ops = read on core, write on infra,
 none on web; kate = read core/web.
 """
+from tests import attest
 
 
 def _login(client, email):
@@ -123,7 +124,7 @@ def test_rest_non_member_cannot_patch_project(client):
 
 def test_rest_read_only_member_gets_403_on_write(client):
     ops = _login(client, "ops@ascme-labs.com")  # core access: read
-    r = client.patch("/api/items/AL-12", json={"status": "done"}, headers=ops)
+    r = client.patch("/api/items/AL-12", json=attest.complete_body(), headers=ops)
     assert r.status_code == 403
 
 

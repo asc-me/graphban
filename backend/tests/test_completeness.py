@@ -16,6 +16,7 @@ import pytest
 
 from app.services import items as items_svc
 from app.services import prds as prd_svc
+from tests import attest
 
 BODY = (
     "# Spec\n\n"
@@ -60,7 +61,10 @@ def _link(db, prd, section, status="done", title="Work"):
     item = items_svc.create_item(db, title=title, project_id="core",
                                  prd_id=prd.id, prd_section=section)
     if status != "backlog":
-        items_svc.update_item(db, item.id, status=status)
+        if status == "done":
+            attest.complete(db, item.id)
+        else:
+            items_svc.update_item(db, item.id, status=status)
     return item
 
 

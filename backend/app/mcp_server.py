@@ -3033,6 +3033,18 @@ async def mcp_endpoint(
             # Authenticated but out of scope: distinct code so agents can branch
             # (retry won't help — a different key or membership grant will).
             return _tool_error(id_, "unauthorized", str(e), getattr(e, "hint", None))
+        except items_svc.MissingAttestation as e:
+            # CONFLICT, not unauthorized (GRPH-543). The caller MAY complete this item; the
+            # work simply is not accounted for yet. `unauthorized` would send an agent
+            # hunting a permissions problem it does not have — and the fix is to get the work
+            # attested, which no permission change achieves.
+            #
+            # Mapped here rather than in the update_item handler because it is the only place
+            # every path into that service call passes through, and a second mapping site is
+            # one refactor away from disagreeing with this one.
+            return _tool_error(id_, "conflict", str(e),
+                               "move it to `review` and let an adapter attest it — a reviewer "
+                               "via sign_off with a commit, or CI holding a `gate`-scoped key")
         except errors.AppError as e:
             # Expected, agent-correctable failure: not_found | validation | conflict.
             return _tool_error(id_, e.code, str(e), e.hint)

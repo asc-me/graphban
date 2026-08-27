@@ -25,6 +25,7 @@ import pytest
 
 from app.models import Enrolment
 from app.services import fleet
+from tests import attest
 
 
 def _rpc(client, key, tool, args=None):
@@ -61,7 +62,8 @@ def proj(client, auth):
 @pytest.fixture()
 def key(client, auth, proj):
     """ONE shared credential — the whole point. Every agent below authenticates with it."""
-    return client.post("/api/api-keys", json={"name": "shared", "project_id": proj},
+    return client.post("/api/api-keys", json={"name": "shared", "project_id": proj,
+                             "scopes": ["read", "write", "gate"]},
                        headers=auth).json()["plaintext"]
 
 
@@ -687,7 +689,8 @@ def test_a_worker_cannot_write_done_by_omitting_its_own_id(client, key, proj, db
     _ok(client, key, "create_item", {"title": "x", "status": "next"})
     got = _ok(client, key, "claim_next", {"agent_id": w["agent_id"]})
 
-    res = _rpc(client, key, "update_item", {"id": got["item"]["id"], "status": "done"})
+    res = _rpc(client, key, "update_item",
+               {"id": got["item"]["id"], **attest.complete_body()})
 
     assert res.get("isError") is True, "an anonymous call must not inherit the key's ceiling"
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
@@ -699,12 +702,14 @@ def test_a_lone_unregistered_agent_still_works(client, auth, proj):
     """The other half, and the reason this is not simply "always require agent_id". A single
     developer with one agent and no registration is the DEFAULT posture — refusing it would
     break every setup predating PRD-17 to fix a fleet problem."""
-    raw = client.post("/api/api-keys", json={"name": "solo", "project_id": proj},
+    raw = client.post("/api/api-keys", json={"name": "solo", "project_id": proj,
+                                             "scopes": ["read", "write", "gate"]},
                       headers=auth).json()["plaintext"]
     _ok(client, raw, "create_item", {"title": "mine", "status": "next"})
     got = _ok(client, raw, "claim_next", {})
 
-    out = _ok(client, raw, "update_item", {"id": got["item"]["id"], "status": "done"})
+    out = _ok(client, raw, "update_item",
+              {"id": got["item"]["id"], **attest.complete_body()})
 
     assert out["status"] == "done"
 

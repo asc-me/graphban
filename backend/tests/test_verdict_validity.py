@@ -19,6 +19,7 @@ from app.models import CodeNode
 from app.services import items as items_svc
 from app.services import prds as prd_svc
 from app.services.platform import Resolved
+from tests import attest
 
 BODY = (
     "# Spec\n\n"
@@ -148,7 +149,7 @@ def test_non_code_evidence_can_be_cited(db, approved):
     rule rejected valid proof and skewed verdicts toward code-shaped work — a docs or
     infrastructure item could never be signed off."""
     item = items_svc.create_item(db, title="Runbook", project_id="core", prd_id=approved.id)
-    items_svc.update_item(db, item.id, status="done",
+    attest.complete(db, item.id,
                           evidence=[{"kind": "url", "detail": "runbook", "url": "http://x"}])
 
     ok, why = prd_svc.validate_citation(db, approved, {"kind": "evidence", "ref": item.key})
@@ -207,7 +208,7 @@ def test_a_verdict_may_mix_citation_forms(db, approved):
     db.add(CodeNode(id="cn_2", project_id="core", path="app/services/prds.py", kind="file"))
     db.commit()
     item = items_svc.create_item(db, title="Runbook", project_id="core", prd_id=approved.id)
-    items_svc.update_item(db, item.id, status="done",
+    attest.complete(db, item.id,
                           evidence=[{"kind": "note", "detail": "verified by hand"}])
 
     out = prd_svc.validate_verdict(db, approved, [

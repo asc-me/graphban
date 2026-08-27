@@ -25,6 +25,7 @@ import pytest
 
 from app.services import insights as insights_svc
 from app.services import memory as mem_svc
+from tests import attest
 
 
 def _mcp(client, key, tool, args):
@@ -220,10 +221,8 @@ def test_extraction_uses_the_outcome_document(client, auth, db, monkeypatch):
     item = client.post("/api/items", json={
         "title": "An item", "description": "The plan as filed.", "project_id": pid,
     }, headers=auth).json()
-    client.patch(f"/api/items/{item['id']}", headers=auth, json={
-        "status": "done",
-        "evidence": [{"kind": "test", "detail": "what actually shipped"}],
-    })
+    client.patch(f"/api/items/{item['id']}", headers=auth, json=attest.complete_body(
+        evidence=[{"kind": "test", "detail": "what actually shipped"}]))
 
     insights_svc.extract_lessons(db, item["id"])
 
@@ -259,10 +258,8 @@ def test_closing_an_item_uses_the_outcome_document(client, auth, db, monkeypatch
         "title": "An item", "description": "The plan as filed.", "project_id": pid,
     }, headers=auth).json()
 
-    client.patch(f"/api/items/{item['id']}", headers=auth, json={
-        "status": "done",
-        "evidence": [{"kind": "test", "detail": "what actually shipped"}],
-    })
+    client.patch(f"/api/items/{item['id']}", headers=auth, json=attest.complete_body(
+        evidence=[{"kind": "test", "detail": "what actually shipped"}]))
 
     assert "description" in seen, "closing the item must extract at all"
     doc = seen["description"]
@@ -279,7 +276,7 @@ def test_a_lesson_from_closing_an_item_is_not_published(client, auth):
         "title": "An item", "description": "Some plan.", "project_id": pid,
     }, headers=auth).json()
 
-    client.patch(f"/api/items/{item['id']}", headers=auth, json={"status": "done"})
+    client.patch(f"/api/items/{item['id']}", headers=auth, json=attest.complete_body())
 
     shards = client.get(f"/api/memory/shards?project_id={pid}", headers=auth).json()
     lessons = [s for s in shards if s["source"] == f"lesson from {item['id']}"]

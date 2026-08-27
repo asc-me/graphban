@@ -1,5 +1,7 @@
 """Phase 1: real memory intelligence + full MCP surface (all on the stub provider)."""
 import json
+from app.services import items as items_svc
+from tests import attest
 
 
 def _key(client, auth):
@@ -31,13 +33,13 @@ def test_reembed_on_shard_edit_changes_ranking(client, auth):
 def test_auto_extraction_on_done(client, auth):
     before = len(client.get("/api/memory/shards?project_id=core", headers=auth).json())
     # AL-15 is `next` in the seed; moving it to done should mint a lesson shard.
-    client.patch("/api/items/AL-15", json={"status": "done"}, headers=auth)
+    client.patch("/api/items/AL-15", json=attest.complete_body(), headers=auth)
     shards = client.get("/api/memory/shards?project_id=core", headers=auth).json()
     assert len(shards) == before + 1
     assert any(s["source"] == "lesson from AL-15" for s in shards)
     # Idempotent: re-setting done doesn't double-extract.
     client.patch("/api/items/AL-15", json={"status": "review"}, headers=auth)
-    client.patch("/api/items/AL-15", json={"status": "done"}, headers=auth)
+    client.patch("/api/items/AL-15", json=attest.complete_body(), headers=auth)
     assert len(client.get("/api/memory/shards?project_id=core", headers=auth).json()) == before + 1
 
 
@@ -132,7 +134,12 @@ def test_proof_on_done_records_evidence_and_audit(client, auth):
     """AL-53: update_item accepts proof receipts (normalized), and the proof rides into
     the audit ledger so a completion is auditable against its evidence."""
     pid = client.post("/api/projects", json={"name": "Proof"}, headers=auth).json()["id"]
-    key = client.post("/api/api-keys", json={"name": "pf", "project_id": pid}, headers=auth).json()["plaintext"]
+    # `gate` because completing now needs an `attestation`, and only that scope may write one
+    # (GRPH-541/543). The receipts below are still the point of this test.
+    key = client.post("/api/api-keys",
+                      json={"name": "pf", "project_id": pid,
+                            "scopes": ["read", "write", "gate"]},
+                      headers=auth).json()["plaintext"]
     it = _call(client, key, "create_item", {"title": "Ship parser"})
     updated = _call(client, key, "update_item", {
         "id": it["id"], "status": "done",
@@ -140,13 +147,18 @@ def test_proof_on_done_records_evidence_and_audit(client, auth):
             {"kind": "test", "detail": "142 passed", "url": "https://ci/run/9"},
             {"kind": "bogus", "detail": "looks fine"},  # unknown kind → note
             {"detail": "", "url": ""},                   # no detail/url → dropped
+            attest.attestation(),
         ],
     })
     assert updated["status"] == "done"
-    assert updated["evidence"] == [
+    # The attestation the gate required is trailing; this test is about the three receipts
+    # in front of it — normalised, demoted, and dropped respectively.
+    assert updated["evidence"][:2] == [
         {"kind": "test", "detail": "142 passed", "url": "https://ci/run/9"},
         {"kind": "note", "detail": "looks fine", "url": ""},
     ]
+    assert [e["kind"] for e in updated["evidence"]] == ["test", "note", "attestation"], \
+        "the empty receipt must still be dropped, and nothing else added"
     events = client.get("/api/events", headers=auth).json()["results"]
     ev = next(e for e in events if e["action"] == "update_item" and e["target_id"] == it["id"])
     assert ev["meta"]["evidence"][0]["detail"] == "142 passed"
@@ -155,9 +167,12 @@ def test_proof_on_done_records_evidence_and_audit(client, auth):
 def test_proof_on_done_via_rest(client, auth):
     it = client.post("/api/items", json={"title": "Do X", "project_id": "core"}, headers=auth).json()
     up = client.patch(f"/api/items/{it['id']}",
-                      json={"status": "done", "evidence": [{"kind": "health", "detail": "prod green"}]},
+                      json=attest.complete_body(evidence=[{"kind": "health", "detail": "prod green"}]),
                       headers=auth).json()
-    assert up["evidence"] == [{"kind": "health", "detail": "prod green", "url": ""}]
+    assert up["evidence"][0] == {"kind": "health", "detail": "prod green", "url": ""}, \
+        "the caller's own receipt must survive, and come first"
+    assert items_svc.has_valid_attestation(up["evidence"]), \
+        "the completion the gate allowed must be the one recorded"
 
 
 def test_link_items_rejects_bad_type(client, auth):

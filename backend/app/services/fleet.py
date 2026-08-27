@@ -1812,8 +1812,23 @@ def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
 
     if role not in ROLES + (ALL_IN_ONE,):
         raise ValueError(f"unknown role: {role!r}")
+    # `gate` follows the REVIEWER role (GRPH-543). Completion needs an `attestation`, and only
+    # a gate-scoped key may write one — so a credential that can sign work off must be able to
+    # attest it, or the verdict it is entitled to give cannot be recorded.
+    #
+    # This matters most in the single-agent posture, where there is no reviewer agent and the
+    # human is the reviewer: without it an all-in-one agent could never finish anything, and
+    # its work would park in `review` with nothing explaining why it stopped. That is exactly
+    # the failure `test_the_capability_the_hint_used_to_cost_is_kept` was written against, and
+    # this gate would otherwise have re-created it one layer down.
+    #
+    # A worker- or planner-only key does NOT get it. A worker's ceiling is `review` by design,
+    # and handing it the means to attest would return the capability the role gate removes.
+    scopes = ["read", "write"]
+    if role in ("reviewer", ALL_IN_ONE):
+        scopes.append("gate")
     row, plaintext = generate_api_key(
-        db, user_id, label or f"fleet {role}", ["read", "write"], project_id, FLEET_KEY_DAYS)
+        db, user_id, label or f"fleet {role}", scopes, project_id, FLEET_KEY_DAYS)
     # `all-in-one` mints an UNNARROWED credential — all three roles — which is what makes an
     # agent registering on it unrestricted. It is still wave-tagged, so "End wave" sweeps it
     # like any other: the posture differs, the lifecycle does not.

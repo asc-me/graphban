@@ -18,6 +18,7 @@ import pytest
 from app.models import CodeNode
 from app.services import items as items_svc
 from app.services import prds as prd_svc
+from tests import attest
 
 BODY = (
     "# Spec\n\n"
@@ -56,7 +57,7 @@ def _node(db, path):
 def _delivered(db, prd, section, *, evidence=None, touchpoints=None, title="Work"):
     item = items_svc.create_item(db, title=title, project_id="core", prd_id=prd.id,
                                  prd_section=section, touchpoints=touchpoints or [])
-    items_svc.update_item(db, item.id, status="done", evidence=evidence or [])
+    attest.complete(db, item.id, evidence=evidence or [])
     db.refresh(item)
     return item
 
@@ -75,7 +76,9 @@ def test_receipts_are_split_by_whether_anyone_else_can_check_them(db, approved):
     s = _section(prd_svc.evidence_rollup(db, approved), "Judging")
 
     assert s["falsifiable"] == 2 and s["unfalsifiable"] == 1
-    assert s["receipts"] == {"test": 1, "note": 1, "url": 1}
+    # `attestation` rides along because completing the item is what the gate now requires
+    # (GRPH-543) — it is a real receipt on the item and the rollup counts it as one.
+    assert s["receipts"] == {"test": 1, "note": 1, "url": 1, "attestation": 1}
 
 
 def test_work_supported_only_by_a_note_is_named(db, approved):

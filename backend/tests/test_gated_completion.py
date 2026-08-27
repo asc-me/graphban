@@ -328,3 +328,117 @@ def test_the_minted_attestation_records_why_adversarial_evidence_was_not_require
     adv = next(p for p in att["predicates"] if p["name"] == "adversarial_evidence")
     assert "not required" in adv["detail"], \
         f"the receipt does not say why the predicate passed: {adv}"
+
+
+# ---- the refusal (GRPH-543) ----------------------------------------------------------
+#
+# These must NOT use tests/attest.py. It exists so the rest of the suite can step past this
+# gate; a test of the gate that used it would be asserting the helper works.
+
+def _item(db, **kw):
+    from app.services import items as svc
+    return svc.create_item(db, title=kw.pop("title", "work"), project_id="core", **kw)
+
+
+def test_done_is_refused_when_nothing_has_attested_it(db):
+    """The defect, pinned. `update_item` used to validate `done` for membership in a list
+    and nothing else, so an agent reached it by writing the string."""
+    it = _item(db)
+
+    with pytest.raises(items_svc.MissingAttestation) as e:
+        items_svc.update_item(db, it.id, status="done")
+
+    assert "attestation" in str(e.value)
+    assert "gate" in str(e.value), \
+        "the refusal does not name what would satisfy it, so an agent routes around it"
+    db.refresh(it)
+    assert it.status != "done", "the refusal still moved the row"
+
+
+def test_done_is_allowed_once_something_has_attested_it(db):
+    """The control. A gate that refused everything would satisfy the test above and make
+    the tracker unusable."""
+    it = _item(db)
+    items_svc.update_item(db, it.id, evidence=[_attestation()])
+
+    out = items_svc.update_item(db, it.id, status="done")
+
+    assert out.status == "done"
+
+
+def test_an_attestation_and_the_completion_may_arrive_together(db):
+    """An adapter attesting and completing in one write must not need two round trips to
+    satisfy a gate it is itself satisfying."""
+    it = _item(db)
+
+    out = items_svc.update_item(db, it.id, status="done", evidence=[_attestation()])
+
+    assert out.status == "done"
+
+
+def test_a_failing_predicate_does_not_open_the_gate(db):
+    """A recorded failure must not read as a pass because a receipt exists."""
+    it = _item(db)
+    items_svc.update_item(db, it.id, evidence=[_attestation(predicates=[
+        {"name": "suite_green", "passed": False, "detail": "3 failed"}])])
+
+    with pytest.raises(items_svc.MissingAttestation) as e:
+        items_svc.update_item(db, it.id, status="done")
+
+    assert "FAILING" in str(e.value), \
+        "the refusal does not say the attestation it has is a failure, so the agent will " \
+        "read it as absent and attest again rather than fix the failure"
+
+
+def test_every_other_transition_is_untouched(db):
+    """Only `done` is gated. Claiming, reviewing and blocking are reversible, and gating
+    the states agents pass through constantly is how a gate teaches people to route
+    around it."""
+    it = _item(db)
+    for status in ("in_progress", "review", "blocked", "next", "backlog"):
+        assert items_svc.update_item(db, it.id, status=status).status == status
+
+
+def test_an_item_already_done_is_not_re_gated(db):
+    """Gated on the TRANSITION, not the state. Items completed before this existed carry no
+    attestation, and re-saving one must not refuse — a migration that invalidates history
+    makes every old item unusable."""
+    it = _item(db)
+    it.status = "done"                      # as a pre-migration row would be
+    db.commit()
+
+    out = items_svc.update_item(db, it.id, status="done", title="renamed")
+
+    assert out.status == "done" and out.title == "renamed"
+
+
+def test_only_two_places_in_the_app_may_write_a_done_status():
+    """The ratchet, and the reason the gate holds rather than merely intends to.
+
+    A gate on `update_item` is worth exactly as much as the guarantee that nothing else
+    writes the column. Two writers exist deliberately — `update_item`, gated here, and
+    `fleet.sign_off`, which reaches `done` through the reviewer path and its own
+    independence and adversarial gates. A third added later would reopen the hole in
+    silence, which is how the original defect survived: `fleet.sign_off` had a real gate
+    and nobody noticed the other path had none.
+    """
+    import pathlib
+    import re
+
+    app = pathlib.Path(__file__).resolve().parent.parent / "app"
+    allowed = {"services/fleet.py"}          # sign_off, deliberately
+    offenders = []
+    for path in app.rglob("*.py"):
+        rel = str(path.relative_to(app))
+        if rel in allowed:
+            continue
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r'\.status\s*=\s*["\']done["\']', line):
+                offenders.append(f"{rel}:{i}")
+
+    assert not offenders, (
+        "these write a `done` status without passing the completion gate: "
+        + ", ".join(offenders)
+        + " — route them through items.update_item, or add them to `allowed` with the "
+          "gate they enforce instead"
+    )

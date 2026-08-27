@@ -17,6 +17,7 @@ import pytest
 
 from app.services import items as items_svc
 from app.services import prds as prd_svc
+from tests import attest
 
 BODY = (
     "# Spec\n\n"
@@ -64,7 +65,7 @@ def _rebaseline(db, prd, body, reason="Reality differed."):
 def _deliver(db, prd, section, title="Work"):
     item = items_svc.create_item(db, title=title, project_id="core",
                                  prd_id=prd.id, prd_section=section)
-    items_svc.update_item(db, item.id, status="done")
+    attest.complete(db, item.id)
     db.refresh(item)
     return item
 

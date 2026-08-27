@@ -16,6 +16,7 @@ import pytest
 
 from app.services import items as items_svc
 from app.services import platform as platform_svc
+from tests import attest
 
 
 @pytest.fixture()
@@ -36,7 +37,12 @@ def proj(client, auth):
 
 @pytest.fixture()
 def key(client, auth, proj):
-    return client.post("/api/api-keys", json={"name": "a", "project_id": proj},
+    """Carries `gate` because these tests complete an item over MCP, and completing needs an
+    `attestation` — which only a gate-scoped key may write (GRPH-541/543). Nothing here is
+    about authority; the scope is what makes the transition reachable at all."""
+    return client.post("/api/api-keys",
+                       json={"name": "a", "project_id": proj,
+                             "scopes": ["read", "write", "gate"]},
                        headers=auth).json()["plaintext"]
 
 
@@ -56,7 +62,8 @@ class _SlowExtractor:
 def _done_over_mcp(client, key, item_id):
     return client.post("/api/mcp", json={
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {"name": "update_item", "arguments": {"id": item_id, "status": "done"}},
+        "params": {"name": "update_item",
+                   "arguments": {"id": item_id, **attest.complete_body()}},
     }, headers={"X-API-Key": key})
 
 
@@ -77,7 +84,7 @@ def test_the_service_hands_the_model_calls_to_the_scheduler(client, auth, proj, 
     jobs: list = []
 
     started = time.monotonic()
-    items_svc.update_item(db, item["id"], defer=jobs.append, status="done")
+    attest.complete(db, item["id"], defer=jobs.append)
     elapsed = time.monotonic() - started
 
     assert elapsed < 0.5, (
@@ -161,6 +168,6 @@ def test_the_service_still_enriches_inline_by_default(client, auth, proj, db, mo
     item = client.post("/api/items", json={"title": "inline", "project_id": proj},
                        headers=auth).json()
 
-    items_svc.update_item(db, item["id"], status="done")
+    attest.complete(db, item["id"])
 
     assert slow.ran, "with no scheduler the work must happen in the call"

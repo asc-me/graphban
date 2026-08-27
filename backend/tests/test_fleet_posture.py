@@ -21,6 +21,7 @@ fix's clothes.
 import pytest
 
 from app.services import fleet
+from tests import attest
 
 
 def _rpc(client, key, tool, args=None):
@@ -64,8 +65,8 @@ def _take_an_item_to_done(client, key, agent_id, title):
     """Claim work and try to finish it — the capability a worker does not have."""
     _ok(client, key, "create_item", {"title": title, "status": "next"})
     got = _ok(client, key, "claim_next", {"agent_id": agent_id})
-    return _rpc(client, key, "update_item", {"id": got["item"]["id"], "status": "done",
-                                             "agent_id": agent_id})
+    return _rpc(client, key, "update_item",
+                {"id": got["item"]["id"], "agent_id": agent_id, **attest.complete_body()})
 
 
 # ---- what the mint records -------------------------------------------------------------------
