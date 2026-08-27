@@ -93,11 +93,19 @@ jobs:
           POSTGRES_DB: graphban_test
         ports:
           - 5432:5432
+        # The cluster lives in RAM (GRPH-529). This database is created, migrated and
+        # destroyed inside one job, and the Postgres job is the whole CI wall clock —
+        # 8m38s of 9m, running the same tests as the SQLite job in 1.8x the time. The gap
+        # is what each test pays to have a database, and most of that is durability the
+        # runner's network-backed disk charges full price for on data with a nine-minute
+        # lifetime. Nothing here needs to survive the job, so nothing here is written to
+        # disk. `size` is generous over the seeded dataset; the runner has 16GB.
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
+          --tmpfs /var/lib/postgresql/data:rw,size=2048m
     env:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/graphban_test
     steps:
