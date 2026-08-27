@@ -174,6 +174,94 @@ def _build_schema() -> None:
         run_migrations()
 
 
+# Postgres restores each test from a TEMPLATE database rather than emptying the live one
+# (GRPH-529). Two templates per worker, because the two are genuinely different states:
+_TMPL_EMPTY = "_t0"    # schema at head, no rows — what a test WITHOUT `client` sees today
+_TMPL_SEEDED = "_t1"   # schema at head, prototype dataset loaded
+
+
+def _admin_engine():
+    """A connection to `postgres`, because you cannot DROP the database you are in."""
+    import sqlalchemy as sa
+
+    from app.db import engine
+
+    return sa.create_engine(engine.url.set(database="postgres"),
+                            isolation_level="AUTOCOMMIT")
+
+
+def _copy_database(source: str, target: str) -> None:
+    """`CREATE DATABASE target TEMPLATE source` — a file copy, and in CI a RAM copy since
+    the cluster lives in tmpfs.
+
+    Postgres refuses to copy a database anyone is connected to, and refuses to drop one
+    too, so both ends are cleared first. `engine.dispose()` handles our own pool; the
+    terminate covers a connection some test opened and did not close, which would otherwise
+    surface as an unexplained failure in whichever test happened to run next.
+    """
+    from sqlalchemy import text
+
+    from app.db import engine
+
+    engine.dispose()
+    admin = _admin_engine()
+    try:
+        with admin.begin() as conn:
+            for name in (source, target):
+                conn.execute(text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :n AND pid <> pg_backend_pid()"), {"n": name})
+            conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{target}"')
+            conn.exec_driver_sql(f'CREATE DATABASE "{target}" TEMPLATE "{source}"')
+    finally:
+        admin.dispose()
+
+
+def _build_templates() -> None:
+    """Build both templates once per worker: migrate, snapshot, seed, snapshot.
+
+    The seed used to run inside the app's lifespan on EVERY test — this conftest's own
+    docstring called it "the largest cost left", at ~198 ms, and recorded that hoisting it
+    needed a per-test transaction the downgrade tests cannot live inside. A template needs
+    no transaction: the seeded rows are already in the file being copied, and `seed()`
+    short-circuits on `select(User).limit(1)`, so the lifespan's call becomes one SELECT.
+    """
+    from app.db import SessionLocal, engine
+    from app.seed import seed
+
+    live = engine.url.database
+    _build_schema()
+    _copy_database(live, live + _TMPL_EMPTY)
+    db = SessionLocal()
+    try:
+        seed(db)          # commits
+    finally:
+        db.close()
+    _copy_database(live, live + _TMPL_SEEDED)
+
+
+def _drop_templates() -> None:
+    """Leave nothing behind. A worker that dies mid-session leaves its templates, and the
+    next session's `CREATE DATABASE` would fail on a name already taken — so the build side
+    drops before creating too, and this is the tidy path rather than the only one."""
+    from sqlalchemy import text
+
+    from app.db import engine
+
+    name = engine.url.database
+    engine.dispose()
+    admin = _admin_engine()
+    try:
+        with admin.begin() as conn:
+            for suffix in (_TMPL_EMPTY, _TMPL_SEEDED):
+                conn.execute(text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :n AND pid <> pg_backend_pid()"), {"n": name + suffix})
+                conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{name + suffix}"')
+    finally:
+        admin.dispose()
+
+
 def _drop_schema() -> None:
     from sqlalchemy import text
 
@@ -212,24 +300,50 @@ def _reset_data() -> None:
 def _schema():
     """Build the schema once for the whole session, and leave nothing behind."""
     _drop_schema()  # a previous run may have died mid-test
-    _build_schema()
+    if _is_sqlite():
+        _build_schema()
+        yield
+        _drop_schema()
+        return
+    _build_templates()
     yield
     _drop_schema()
+    _drop_templates()
 
 
 @pytest.fixture(autouse=True)
-def _clean_database(_schema):
-    """Every test starts against an empty database — not only the ones asking for `client`.
+def _clean_database(_schema, request):
+    """Every test starts against a known database — not only the ones asking for `client`.
 
     Autouse because the alternative is an invariant held by convention. Before the schema
     was hoisted, a test that reached the database WITHOUT `client` found no tables at all
     and failed loudly; now it would quietly read whatever the previous test left, which is
-    the kind of thing that surfaces as an unexplained flake months later. Nothing in the
-    suite does that today — it costs ~97 ms x the 109 tests that do not use `client`, about
-    11 seconds on Postgres, to make sure nothing ever can.
+    the kind of thing that surfaces as an unexplained flake months later.
+
+    On Postgres this is a TEMPLATE copy rather than a truncate-and-reseed (GRPH-529):
+    ~80 ms against 358, because the seeded rows arrive in the file copy instead of being
+    INSERTed again for every test.
+
+    **Which template depends on what the test asked for**, read off its own fixture
+    closure. A test that uses `client` gets the app's lifespan, which seeds — so it has
+    always seen the prototype dataset. A test that does not has always seen an empty
+    database. Copying the seeded template to both would hand ~109 tests rows they have
+    never had, and the ones that break would break in ways unrelated to what they test.
+
+    The copy also subsumes the schema repair the old path needed: a test that downgrades
+    and fails before upgrading back used to leave the schema behind for everything after
+    it. The next test does not repair that schema, it replaces the whole database.
     """
-    _build_schema()  # no-op at head; repairs after a test that downgraded
-    _reset_data()
+    if _is_sqlite():
+        _build_schema()  # no-op at head; repairs after a test that downgraded
+        _reset_data()
+        yield
+        return
+    from app.db import engine
+
+    live = engine.url.database
+    seeded = "client" in request.fixturenames
+    _copy_database(live + (_TMPL_SEEDED if seeded else _TMPL_EMPTY), live)
     yield
 
 
