@@ -172,6 +172,10 @@ TOOLS: list[dict[str, Any]] = [
                         },
                     },
                 },
+                "ack_section_drift": {"type": "boolean",
+                                      "description": "Its PRD section changed and this item is "
+                                                     "still right; stop flagging until it "
+                                                     "changes again."},
             },
             "required": ["id"],
         },
@@ -1934,6 +1938,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             touchpoints=args.get("touchpoints"),
             prd_id=args.get("prd_id"),
             prd_section=args.get("prd_section"),
+            ack_section_drift=args.get("ack_section_drift"),
             evidence=args.get("evidence"),
         )
         if item is None:

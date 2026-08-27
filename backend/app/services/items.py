@@ -311,6 +311,17 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         # Appends. See `append_evidence` — a write here must never remove a receipt somebody
         # else left, because `sign_off` gates on the stored ones (GRPH-494).
         item.evidence = append_evidence(item.evidence, fields["evidence"])
+    if fields.get("ack_section_drift"):
+        # "I have read what changed in the PRD and this item is right as it stands"
+        # (GRPH-360). A FLAG, not a value: the caller cannot supply the hash, so it can only
+        # ever acknowledge the text that is there right now — an agent cannot pre-acknowledge
+        # an edit it has not seen, and a later edit produces a new hash and flags again.
+        from app.services import prds as prd_svc
+
+        prd = db.get(Prd, item.prd_id) if item.prd_id else None
+        if prd is None or not item.prd_section:
+            raise ValueError("ack_section_drift needs an item linked to a PRD section")
+        item.prd_section_ack = prd_svc.section_fingerprint(prd.body or "", item.prd_section)
     db.commit()
     db.refresh(item)
 

@@ -84,6 +84,36 @@ shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b)
 carries no `claim_next`, a worker credential no `sign_off`. A single-role fleet key sees
 roughly 16–19% fewer tokens.
 
+**Coverage reports whether items still AGREE with their sections** (GRPH-360). `decompose_prd`
+copies a section's markdown into the item it creates, and that copy is never refreshed — so a
+PRD edited afterwards leaves its items holding the old rules. Found live on PRD-17, where nine
+of eleven items had drifted from the approved body: one specified a `403` where the PRD
+specifies an `unauthorized` tool error, and one carried nine acceptance steps against the
+PRD's twelve, missing the attack the grill was run to find. `prd_coverage` read **100%
+covered** throughout, because it matches items to sections by NAME — it measures existence,
+not agreement.
+
+Each item now records a fingerprint of the section it came from, and `prd_coverage` reports
+one of five states per item, plus a `drift_counts` rollup:
+
+| state | meaning |
+|---|---|
+| **agrees** | the section is unchanged since this item was created |
+| **drifted** | the section has been edited; the item's description is the OLD text |
+| **acknowledged** | a human reviewed this divergence and kept it |
+| **section_gone** | the section was renamed or deleted — the item is orphaned |
+| **unknown** | no fingerprint: created before this existed, or linked by hand |
+
+**`unknown` is an answer, not a fallback.** An item that cannot be checked and one that has
+been checked and agrees are different facts, and collapsing them is how the PRD-17 drift stayed
+invisible. Orphaned items are reported in their own `orphaned` list, because coverage iterates
+the PRD's own headings and a renamed-away item is in none of them.
+
+**Nothing is ever rewritten.** An item is legitimately edited away from its section — narrowed
+after a spike, annotated with what the build found — so this detects and a human decides. To
+keep a divergence, call `update_item(id, ack_section_drift=true)`; that acknowledges the text
+as it stands now, so a LATER edit flags again.
+
 **Editing a PRD does not mean replacing it** (GRPH-357). `update_prd` used to take one
 thing: the entire markdown body. An agent asked to record a single decision had to reproduce
 the whole document from memory, and anything it failed to reproduce was gone — silently, with
