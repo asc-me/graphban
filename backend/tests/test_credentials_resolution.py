@@ -64,13 +64,20 @@ def _legacy_blob(db, project_id="p1", provider="ollama", model="llama3.1:8b"):
 # ---- the one that matters ----------------------------------------------------------------
 
 
-def test_a_project_holding_a_legacy_key_is_untouched(db, project):
-    """THE POINT OF THE SLICE. A project configured the old way must resolve exactly as it did
-    before this table existed, even when a deployment default is sitting right there.
+def test_the_legacy_blob_is_no_longer_consulted(db, project):
+    """**This test used to assert the opposite, and the inversion is the point.**
 
-    The default is deliberately present and different. Without step 0 the resolver finds an
-    unset pointer, falls to that default, and every project on the deployment quietly changes
-    provider — an outage shipped as an additive slice.
+    As `test_a_project_holding_a_legacy_key_is_untouched`, it pinned step 0 coming FIRST — the
+    guarantee that made S1 additive, because consulting the new pointers first would have
+    dropped every already-configured project onto a deployment default nobody had set.
+
+    That guarantee was explicitly transitional ("S1-S5 ONLY"), and GRPH-512 ended it: the
+    migration moved every blob entry into a credential row, and resolution step 0 died in the
+    same slice as the data it read. A resolution step that outlives its data is a branch
+    nothing exercises.
+
+    The blob itself is still on disk — the grill amended "delete it in the same transaction"
+    to "leave it as a read-only vestige". This is what proves nothing reads it.
     """
     _legacy_blob(db, "p1", provider="ollama", model="llama3.1:8b")
     cred = _credential(db, "cred_default", kind="anthropic", model="claude-x")
@@ -79,13 +86,11 @@ def test_a_project_holding_a_legacy_key_is_untouched(db, project):
 
     resolved = platform_svc.resolve_chat(db, "p1")
 
-    assert resolved.source == "legacy", (
-        f"a project holding its own legacy key resolved via {resolved.source!r} — step 0 is not "
-        "first, so every already-configured project on this deployment just changed provider"
+    assert resolved.source == "deployment", (
+        f"resolved via {resolved.source!r} — step 0 is back, and the migration's rows are "
+        "being ignored in favour of configuration this PRD replaced"
     )
-    assert resolved.provider_id == "ollama"
-    assert resolved.model == "llama3.1:8b"
-    assert resolved.credential_id == "", "a legacy resolution names no credential row"
+    assert resolved.credential_id == "cred_default"
 
 
 # ---- the rest of the order ---------------------------------------------------------------
