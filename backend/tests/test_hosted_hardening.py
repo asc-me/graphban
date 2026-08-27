@@ -81,7 +81,7 @@ def test_a_forwarded_ip_is_only_trusted_when_the_operator_says_so(monkeypatch):
     assert client_ip(req(None)) == "10.0.0.9", "no header falls back to the socket peer"
 
 
-def test_hosted_mode_without_a_trusted_proxy_says_what_it_costs(monkeypatch, capsys):
+def test_hosted_mode_without_a_trusted_proxy_says_what_it_costs(monkeypatch, caplog):
     """Silence here is the failure mode: the limits exist, the endpoints look protected,
     and every caller shares one bucket. The warning has to name that consequence, not just
     the setting."""
@@ -93,7 +93,7 @@ def test_hosted_mode_without_a_trusted_proxy_says_what_it_costs(monkeypatch, cap
     monkeypatch.setattr(settings, "database_url", "postgresql+psycopg://u:p@h/db")
 
     startup.check_security()
-    out = capsys.readouterr().out
+    out = caplog.text
 
     assert "TRUSTED_PROXY" in out, "the warning does not name the setting to change"
     assert "bucket" in out.lower(), (
@@ -102,7 +102,7 @@ def test_hosted_mode_without_a_trusted_proxy_says_what_it_costs(monkeypatch, cap
     )
 
 
-def test_the_proxy_warning_is_silent_when_correctly_configured(monkeypatch, capsys):
+def test_the_proxy_warning_is_silent_when_correctly_configured(monkeypatch, caplog):
     """The control. A warning that always fires is noise, and noise is how the real ones
     get ignored."""
     from app.security import startup
@@ -113,5 +113,5 @@ def test_the_proxy_warning_is_silent_when_correctly_configured(monkeypatch, caps
     monkeypatch.setattr(settings, "database_url", "postgresql+psycopg://u:p@h/db")
 
     startup.check_security()
-    assert "TRUSTED_PROXY" not in capsys.readouterr().out, \
+    assert "TRUSTED_PROXY" not in caplog.text, \
         "the proxy warning fires even when a trusted proxy is configured"

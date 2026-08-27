@@ -26,6 +26,7 @@ migration should never change behaviour retroactively. This module is the live p
 """
 from __future__ import annotations
 
+import logging
 import re
 
 import sqlalchemy as sa
@@ -62,6 +63,9 @@ def current_dim(bind, table: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+logger = logging.getLogger("graphban.vector_schema")
+
+
 def converge(bind, target: int) -> list[tuple[str, int, int]]:
     """Rebuild every vector column whose width differs from ``target``.
 
@@ -86,7 +90,7 @@ def converge(bind, target: int) -> list[tuple[str, int, int]]:
             if populated
             else ""
         )
-        print(f"  [vector-schema] {table}.embedding {current} -> {target}{note}", flush=True)
+        logger.info("vector-schema: %s.embedding %s -> %s%s", table, current, target, note)
 
         bind.execute(sa.text(f"DROP INDEX IF EXISTS {ix}"))
         bind.execute(sa.text(f"ALTER TABLE {table} DROP COLUMN embedding"))

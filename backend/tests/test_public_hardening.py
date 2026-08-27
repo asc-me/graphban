@@ -67,14 +67,14 @@ def test_check_security_raises_when_required(monkeypatch):
         startup.check_security()
 
 
-def test_check_security_warns_but_allows_by_default(monkeypatch, capsys):
+def test_check_security_warns_but_allows_by_default(monkeypatch, caplog):
     from app.security import startup
 
     monkeypatch.setattr(settings, "database_url", "postgresql+psycopg://x/y")
     monkeypatch.setattr(settings, "jwt_secret", "short")
     monkeypatch.setattr(settings, "require_strong_secret", False)
     startup.check_security()  # no raise
-    assert "SECURITY WARNING" in capsys.readouterr().out
+    assert "SECURITY WARNING" in caplog.text
 
 
 def test_check_security_skips_sqlite(monkeypatch):

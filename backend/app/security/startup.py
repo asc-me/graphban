@@ -13,7 +13,16 @@ hardening switch for a real deploy.
 """
 from __future__ import annotations
 
+import logging
+
 from app.config import settings
+
+# WARNING RECORDS, NOT PRINTS (GRPH-33). These are the lines an operator must be paged on,
+# and a `print` carries no level for a platform to alert on, no logger name to route by, and
+# no timestamp — it also lands as plain text in a stream that is otherwise JSON, which an
+# ingester may drop entirely. The banner is kept inside the message so `docker compose logs`
+# still shows the box the self-host default relies on.
+logger = logging.getLogger("graphban.security")
 
 _BANNER = "=" * 72
 
@@ -46,7 +55,7 @@ def check_security() -> None:
             raise RuntimeError(
                 f"refusing to start: {message} (REQUIRE_REAL_EMBEDDINGS is on)"
             )
-        print(f"\n{_BANNER}\n  CONFIGURATION WARNING: {message}\n{_BANNER}\n", flush=True)
+        logger.warning("\n%s\n  CONFIGURATION WARNING: %s\n%s\n", _BANNER, message, _BANNER)
 
     # NO CHAT GUARD HERE, deliberately. `settings.chat_provider` looks like the chat
     # equivalent of the check above, but it is a legacy MIRROR that `platform.apply_llm`
@@ -70,14 +79,13 @@ def check_security() -> None:
     # configuration, and turning this on for someone who has no proxy would let any
     # caller forge their own bucket key.
     if settings.hosted_mode and not settings.trusted_proxy:
-        print(
+        logger.warning(
             f"\n{_BANNER}\n  CONFIGURATION WARNING: HOSTED_MODE is on but TRUSTED_PROXY "
             "is off. If a proxy or load balancer sits in front of this instance, every "
             "caller shares ONE rate-limit bucket (the proxy's IP), so the limits on "
             "/api/public/* and login are effectively global rather than per-client. "
             f"Set TRUSTED_PROXY=true if — and only if — a trusted proxy terminates every "
-            f"request.\n{_BANNER}\n",
-            flush=True,
+            f"request.\n{_BANNER}\n"
         )
 
     if not settings.jwt_secret_is_weak:
@@ -93,4 +101,4 @@ def check_security() -> None:
             f"refusing to start: {message} "
             "(REQUIRE_STRONG_SECRET is on)"
         )
-    print(f"\n{_BANNER}\n  SECURITY WARNING: {message}\n{_BANNER}\n", flush=True)
+    logger.warning("\n%s\n  SECURITY WARNING: %s\n%s\n", _BANNER, message, _BANNER)
