@@ -48,7 +48,7 @@ def _database_per_worker() -> None:
     if not worker:
         return
 
-    from tests.dbnames import worker_url
+    from tests.dbnames import refuse_if_in_use, worker_url
 
     url = os.environ["DATABASE_URL"]
     # Idempotent. This module rewrites the environment at IMPORT time, and pytest can load
@@ -62,6 +62,9 @@ def _database_per_worker() -> None:
     if not url.startswith("sqlite"):
         base, _, _ = url.rpartition("/")
         _, _, name = worker_url(url, worker).rpartition("/")
+        # Before adopting it, and before this process connects — so any backend on that
+        # database belongs to another run (GRPH-534).
+        refuse_if_in_use(f"{base}/postgres", name)
         _create_database(f"{base}/postgres", name)
 
 
@@ -262,6 +265,30 @@ def _drop_templates() -> None:
         admin.dispose()
 
 
+def _drop_worker_database() -> None:
+    """Drop the database this worker created, at the end of its session (GRPH-534).
+
+    Nothing used to remove these: one developer machine had 76, 771 MB, four base names
+    across eighteen workers, from every parallel run ever done against that container. In CI
+    the job is ephemeral so it never showed.
+
+    The decision and the DROP both live in `tests.dbnames.drop_if_ours`, which is importable
+    without side effects and therefore testable. That split is not tidiness — this is the
+    destructive path, and the first version kept the check inline here: `owns()` was
+    thoroughly tested, and deleting the call to it from this function broke no test at all.
+    The sabotage pass caught exactly that.
+    """
+    worker = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker or _is_sqlite():
+        return
+    from app.db import engine
+
+    from tests.dbnames import drop_if_ours
+
+    engine.dispose()
+    drop_if_ours(engine.url.render_as_string(hide_password=False), worker)
+
+
 def _drop_schema() -> None:
     from sqlalchemy import text
 
@@ -309,6 +336,7 @@ def _schema():
     yield
     _drop_schema()
     _drop_templates()
+    _drop_worker_database()
 
 
 @pytest.fixture(autouse=True)
