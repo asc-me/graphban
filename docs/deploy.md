@@ -37,6 +37,35 @@ recovered; if you lose them, mint a new key in Settings → API Keys.
 Issuing that first credential is an authority gate, which is why it is a script an
 operator runs rather than something an agent does — see PRD-14.
 
+### Rate limits and `TRUSTED_PROXY` (GRPH-439)
+
+The compose stack puts **nginx in front of uvicorn** — the same topology as the hosted
+deployment. `TRUSTED_PROXY` was documented for that one and never carried here, and the cost
+is quiet: `security/net.client_ip` falls back to the socket peer, which behind nginx is the
+container address for every caller. The per-IP sliding window on `/api/public/*` and on login
+becomes a **per-deployment** one. Nothing fails; the limits fire on the wrong population.
+
+The app now says so — the first request through a proxy with the flag off logs a warning
+naming the address it is bucketing on. If you see it, do **not** simply set
+`TRUSTED_PROXY=true`:
+
+**Check what your proxy does to `X-Forwarded-For` first.** `client_ip` reads the **first**
+hop. That is right for an edge that *prepends* the caller, and wrong for one that *appends*
+to a client-supplied header — this stack's `nginx.conf.template` uses
+`$proxy_add_x_forwarded_for`, which appends, so a browser sending
+`X-Forwarded-For: 9.9.9.9` arrives as `9.9.9.9, 172.20.0.1`. Turning the flag on against
+that hands every caller its own bucket key: a rate-limit **bypass**, which is worse than the
+shared bucket it replaces.
+
+So the two must change together, and which change is right depends on where nginx sits:
+
+| Where | nginx is | The header nginx should send |
+|---|---|---|
+| compose self-host | the edge | `$remote_addr` — overwrite, so a client cannot supply one |
+| hosted (Railway) | behind Railway's edge | preserve what the edge set; overwriting names the edge |
+
+The template is shared between both, so this is one variable, not one value.
+
 ## Deploy
 
 ```bash
