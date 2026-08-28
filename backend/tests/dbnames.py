@@ -100,3 +100,80 @@ def worker_url(url: str, worker: str) -> str:
         return url.replace(".pytest.db", f".pytest_{worker}.db")
     base, _, name = url.rpartition("/")
     return f"{base}/{name}_{worker}"
+
+
+#: Held for the lifetime of the session, keyed by the database path. A `flock` lives on the
+#: open file DESCRIPTION, so the handle has to outlive the function that took it — drop it and
+#: the lock silently releases, which is the failure mode that looks exactly like the guard
+#: working.
+#:
+#: Keyed by path rather than a single slot, because "already claimed something" and "already
+#: claimed THIS" are different questions. A single slot answers the first and silently returns
+#: success for a database it never locked.
+_sqlite_locks: dict[str, object] = {}
+
+
+def claim_sqlite(url: str) -> bool:
+    """Refuse to run when another test process already holds this SQLite database.
+
+    **The SQLite half of GRPH-534, and the reason GRPH-554 kept recurring.** That item gave
+    Postgres `refuse_if_in_use`; SQLite got nothing, so two runs in one working tree happily
+    shared one file. What made it destructive rather than merely racy is that the suite
+    deletes and rebuilds that file — so one run unlinks the database the other has open.
+
+    Every signature recorded on GRPH-554 follows from that single act, which is why they never
+    resolved into one cause while they were being read as three:
+
+    * an unlinked inode under an open connection -> `attempt to write a readonly database`,
+      `disk I/O error`, `malformed database schema (X) - table X already exists`
+    * a new connection creating a fresh empty file -> `no such table: projects`
+    * a re-seed landing in a half-populated file -> `UNIQUE constraint failed: projects.tag`
+
+    Reproduced deliberately: two suites started four seconds apart in one worktree, each of
+    which passes alone (44 passed), corrupted BOTH runs — 2 failed / 16 errors in the second
+    and 7 failed / 17 errors in the first, the one that was minding its own business.
+
+    `flock` rather than a PID file: the kernel releases it when the process dies, however it
+    dies. A PID file has to be cleaned up by the thing that crashed, and a stale one refuses
+    every future run — turning a real guard into a thing people delete by habit.
+
+    Returns True when the claim succeeded, so a caller can tell "not applicable" (Postgres)
+    from "claimed". Refusal RAISES, because continuing is what does the damage.
+    """
+    if not url.startswith("sqlite"):
+        return False
+
+    import fcntl
+    import pathlib
+
+    path = url.split("///", 1)[-1] or ".pytest.db"
+    if path in _sqlite_locks:         # already claimed by this process; re-entrant like the
+        return True                   # URL rewrite above, and for the same reason
+    lock_path = pathlib.Path(path + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("w")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        raise RuntimeError(
+            f"another test run already holds {path}. Two runs in one working tree share this "
+            f"file, and the suite DELETES and rebuilds it — so one run unlinks the database "
+            f"the other has open. That does not fail cleanly: it surfaces as 'no such table', "
+            f"'attempt to write a readonly database', 'malformed database schema' or a UNIQUE "
+            f"violation in the seed, none of which point at the cause (GRPH-554). Wait for the "
+            f"first run to finish, or point this one somewhere else with DATABASE_URL."
+        ) from None
+
+    _sqlite_locks[path] = handle
+    return True
+
+
+def release_sqlite(url: str | None = None) -> None:
+    """Drop a claim, or all of them. Only needed by tests — a real session holds until the
+    process ends, which is the point of using `flock`."""
+    paths = ([url.split("///", 1)[-1]] if url else list(_sqlite_locks))
+    for path in paths:
+        handle = _sqlite_locks.pop(path, None)
+        if handle is not None:
+            handle.close()            # closing releases the flock

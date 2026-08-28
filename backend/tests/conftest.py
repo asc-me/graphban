@@ -91,6 +91,16 @@ def _create_database(admin_url: str, name: str) -> None:
 
 _database_per_worker()
 
+# CLAIM THE SQLITE FILE, after the per-worker rewrite has settled DATABASE_URL and before
+# anything connects (GRPH-554). Postgres got this guard in GRPH-534; SQLite did not, so two
+# runs in one working tree shared one file — and because the suite deletes and rebuilds that
+# file, one run unlinks the database the other has open. It surfaces as "no such table",
+# "readonly database", "malformed database schema" or a UNIQUE violation in the seed, none of
+# which name the cause. Refusing costs one clear error; not refusing cost this repository a
+# recurring mystery.
+from tests.dbnames import claim_sqlite  # noqa: E402
+
+claim_sqlite(os.environ["DATABASE_URL"])
 import pytest
 from fastapi.testclient import TestClient
 
