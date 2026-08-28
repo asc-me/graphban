@@ -121,8 +121,18 @@ def test_only_the_named_doors_make_requests():
     is a normal thing to do by accident — the supervisor already imports httpx, and a
     one-off `httpx.get` looks like the smallest possible change.
     """
+    sources = sorted(FLEET_SRC.rglob("*.py"))
+    # THE CONTROL, borrowed from `test_packaging.py`, which already does this correctly:
+    # "no python sources under {FLEET_SRC} — this guard scanned nothing". This sweep did not,
+    # and it is the one that decides which modules may reach the network at all. Measured:
+    # pointing the walk at a directory with no sources left this file passing 31 tests, so an
+    # allowlist guarded by nothing read exactly like an allowlist that held.
+    assert sources, (
+        f"no python sources under {FLEET_SRC} — this guard scanned nothing, and an egress "
+        "allowlist that examined no modules cannot have found a violation")
+
     offenders: list[str] = []
-    for path in sorted(FLEET_SRC.rglob("*.py")):
+    for path in sources:
         if path.relative_to(FLEET_SRC).as_posix() in NETWORK_DOORS:
             continue
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
