@@ -307,6 +307,42 @@ def test_a_busy_child_is_not_stopped_for_being_quiet(quiet_child):
     assert wave.quiet == {"GRPH-A7": 0.0}, "it should be REPORTED as quiet, not acted on"
 
 
+def test_a_busy_child_is_not_stopped_on_a_later_poll_within_the_bound(quiet_child):
+    """THE BOUND ITSELF, which nothing above could see (GRPH-452, second bounce).
+
+    `disowned_after` could be disabled entirely — `if quiet < limits.disowned_after` to
+    `if False` — and all eleven tests in this file still passed. Not an oversight but a
+    structural one: the first poll returns early at the `offline_since is None` branch,
+    which starts the clock and never reads the bound. So the test above pins *the clock is
+    started*, and the control below backdates past the bound and expects a stop, which it
+    gets either way. Neither drives the discriminating case.
+
+    That case is a SECOND poll while still inside the bound. Without it, a busy child is
+    stopped on its second poll — the exact defect this slice was bounced for the first
+    time, one poll later — and CI stays green.
+
+    Same shape as the survivor already recorded here (a child that already exited): a
+    branch the green path returns before reaching.
+    """
+    from gbfleet.supervisor import Limits, Wave, _catch_the_disowned
+
+    wave = Wave()
+    limits = Limits()                                             # disowned_after = 1800.0
+    _catch_the_disowned(wave, [quiet_child], OFFLINE, limits)     # poll 1 starts the clock
+    quiet_child.offline_since = time.monotonic() - 30.0           # 30s quiet, far inside 1800
+    _catch_the_disowned(wave, [quiet_child], OFFLINE, limits)     # poll 2, still busy
+
+    assert quiet_child.stopped_because is None, (
+        "a busy child was stopped on the second poll after 30s, inside the 1800s bound")
+    assert quiet_child.running
+    assert wave.failures == []
+
+    # The REPORTED figure, not just the decision. A bound that is respected while the wave
+    # reports the wrong duration still misleads whoever reads the summary.
+    assert wave.quiet["GRPH-A7"] == pytest.approx(30.0, abs=5.0), (
+        f"the wave reports {wave.quiet.get('GRPH-A7')!r} quiet, expected about 30s")
+
+
 def test_a_child_quiet_past_the_bound_is_stopped(quiet_child):
     """The control. Without it the fix above is indistinguishable from deleting the
     backstop, which would lose the revocation case D-d exists for."""
