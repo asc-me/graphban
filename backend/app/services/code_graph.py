@@ -17,7 +17,7 @@ from __future__ import annotations
 import fnmatch
 import uuid
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -410,31 +410,136 @@ def _edge_dict(edge: CodeEdge) -> dict:
     return {"src": edge.src, "dst": edge.dst, "type": edge.type}
 
 
-def list_nodes(db: Session, project_id: str, kind: str | None = None) -> list[CodeNode]:
+#: Default cap on nodes for a BOUNDED read (GRPH-146, the deferred half of GRPH-55).
+#:
+#: Argued rather than picked. Measured against this repo's own graph, a described node
+#: serialises to roughly 400 bytes — the summary dominates, running 150-450 characters — so
+#: 200 nodes is about 20k tokens. That is already larger than the ENTIRE MCP tool manifest,
+#: whose ceiling is 13,600. Going higher means one read costs an agent more context than every
+#: tool description it holds, combined; going much lower starts hiding the shape of a small
+#: project, which is the question this call exists to answer.
+#:
+#: It bounds the QUERY, not just the payload: GRPH-55's complaint is that the whole graph is
+#: loaded, and returning fewer rows after fetching them all would fix the context cost and
+#: leave the scan.
+DEFAULT_MAP_NODES = 200
+
+
+def count_nodes(db: Session, project_id: str, kind: str | None = None) -> int:
+    """How many nodes the project has, independent of how many are being returned.
+
+    Separate from `list_nodes` because a bounded read must still report the TOTAL. A page
+    that reports its own size as the project's size is a small complete map as far as the
+    reader can tell, which is worse than refusing to page at all.
+    """
+    stmt = select(func.count(CodeNode.id)).where(CodeNode.project_id == project_id)
+    if kind:
+        stmt = stmt.where(CodeNode.kind == kind)
+    return db.scalar(stmt) or 0
+
+
+def list_nodes(db: Session, project_id: str, kind: str | None = None,
+               limit: int | None = None, offset: int = 0) -> list[CodeNode]:
+    """Nodes, ordered by path. `limit=None` is unbounded — see `get_code_map`.
+
+    Ordering is by `path` and was already, which is what makes paging coherent: an unordered
+    LIMIT returns an arbitrary subset that changes between calls, so page 2 could repeat or
+    skip rows from page 1 with nothing to indicate it.
+    """
+    return list(db.scalars(nodes_stmt(project_id, kind=kind, limit=limit, offset=offset)).all())
+
+
+def nodes_stmt(project_id: str, kind: str | None = None,
+               limit: int | None = None, offset: int = 0):
+    """The node query, built separately so its ORDERING can be asserted.
+
+    Extracted for a reason worth stating. `ORDER BY path` is a correctness guarantee that is
+    **not observable through the feature**: `uq_code_node_path` is a unique index on
+    (project_id, path), so both engines happen to return path order from an index scan even
+    with the clause removed — measured, and the sabotage pass survived because of it.
+
+    That does not make the clause decorative. SQL guarantees no ordering without it, and the
+    planner is free to choose another shape as statistics change; the day it does, LIMIT/OFFSET
+    starts slicing an unstable sequence and pages silently repeat and skip rows. A guarantee
+    resting on today's query plan is not a guarantee. So the property is asserted here, where
+    it is reachable, rather than through a walk that passes either way.
+    """
     stmt = select(CodeNode).where(CodeNode.project_id == project_id)
     if kind:
         stmt = stmt.where(CodeNode.kind == kind)
-    return list(db.scalars(stmt.order_by(CodeNode.path)).all())
+    stmt = stmt.order_by(CodeNode.path)
+    if offset:
+        stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return stmt
 
 
-def list_edges(db: Session, project_id: str) -> list[CodeEdge]:
-    return list(
-        db.scalars(select(CodeEdge).where(CodeEdge.project_id == project_id)).all()
-    )
+def count_edges(db: Session, project_id: str) -> int:
+    """Total edges in the project — the denominator for a filtered or paged edge list."""
+    return db.scalar(
+        select(func.count(CodeEdge.id)).where(CodeEdge.project_id == project_id)
+    ) or 0
 
 
-def get_code_map(db: Session, project_id: str, kind: str | None = None) -> dict:
-    nodes = list_nodes(db, project_id, kind=kind)
-    edges = list_edges(db, project_id)
-    if kind:
-        # When filtered to a kind, keep only edges wholly inside the filtered node set.
-        keep = {n.path for n in nodes}
-        edges = [e for e in edges if e.src in keep and e.dst in keep]
+def list_edges(db: Session, project_id: str, paths: set[str] | None = None) -> list[CodeEdge]:
+    """Edges, optionally restricted to those wholly inside `paths`.
+
+    Restricted in SQL rather than in Python once paging exists: filtering afterwards still
+    loads every edge in the project, which is half of what GRPH-55 records.
+    """
+    stmt = select(CodeEdge).where(CodeEdge.project_id == project_id)
+    if paths is not None:
+        if not paths:
+            return []
+        stmt = stmt.where(CodeEdge.src.in_(paths), CodeEdge.dst.in_(paths))
+    return list(db.scalars(stmt).all())
+
+
+def get_code_map(db: Session, project_id: str, kind: str | None = None,
+                 limit: int | None = None, offset: int = 0) -> dict:
+    """The code graph, optionally a page of it (GRPH-146).
+
+    **`limit=None` is unbounded and is the right answer for exactly one caller** — the graph
+    view, which draws every node and every edge and cannot draw a page. Every other caller
+    should bound, and the MCP tool does by default.
+
+    GRPH-55 records this returning the whole graph as real scaling debt. The cost is not
+    abstract: a described node serialises to roughly 400 bytes, so a few hundred of them is
+    more context than an agent's entire tool manifest, spent before it has asked anything.
+
+    **A truncated map must never read as a complete one.** `node_count` and `edge_count` stay
+    PROJECT TOTALS whatever the page size, `returned_nodes`/`returned_edges` say what came
+    back, and `truncated` is the flag a caller can branch on without comparing two numbers.
+    Reporting the page size as the count is the version of this that looks like it works: an
+    agent reading `node_count: 200` on a 4,000-node project concludes it has the whole shape
+    of the codebase and reasons from a twentieth of it.
+
+    `revision` describes THE RETURNED NODES, which is the honest scope for a page and is why
+    `truncated` sits beside it — a page can be pinned to one commit while the map is not.
+    """
+    nodes = list_nodes(db, project_id, kind=kind, limit=limit, offset=offset)
+    total_nodes = count_nodes(db, project_id, kind=kind)
+
+    if kind or limit is not None or offset:
+        # Edges wholly inside the returned nodes. Without this a page carries edges pointing
+        # at nodes it did not include, which reads as a dangling graph rather than a page.
+        edges = list_edges(db, project_id, paths={n.path for n in nodes})
+    else:
+        edges = list_edges(db, project_id)
+    total_edges = count_edges(db, project_id)
+
     return {
         "nodes": [node_dict(n) for n in nodes],
         "edges": [_edge_dict(e) for e in edges],
-        "node_count": len(nodes),
-        "edge_count": len(edges),
+        # TOTALS, not page sizes. See the docstring — this is the field a truncated map would
+        # lie with.
+        "node_count": total_nodes,
+        "edge_count": total_edges,
+        "returned_nodes": len(nodes),
+        "returned_edges": len(edges),
+        "offset": offset,
+        "truncated": offset + len(nodes) < total_nodes,
         **map_revision(nodes),
     }
 

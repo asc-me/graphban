@@ -24,7 +24,18 @@ from app.mcp_server import TOOLS, _READ_ONLY
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
 CEILING = 13600
-MEASURED_TOKENS = 13592
+# 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
+# possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
+# headroom. It was paid for inside the manifest rather than by raising the ceiling — four
+# pieces of prose that restated their own machine-readable schema were removed (`fidelity`'s
+# "`low` or `high`" beside its enum, in two tools; `kind` "optionally filter by" beside its
+# enum; and one sentence of flavour) and the new output fields were left undeclared.
+#
+# Recorded because the arithmetic is the finding: adding two integer parameters to one tool
+# required trimming four unrelated places to fit. There is no room for the next one, which
+# makes GRPH-146's OTHER half — tiered exposure — a prerequisite for new MCP surface rather
+# than an optimisation.
+MEASURED_TOKENS = 13595
 
 
 def _mint(client, auth, scopes):
