@@ -66,7 +66,9 @@ def test_it_uses_the_venvs_interpreter_not_whatever_is_on_path(plist):
 def test_the_working_directory_is_where_dotenv_lives(plist):
     """pydantic-settings reads `.env` relative to the cwd. Without this the service starts
     with defaults — including a placeholder JWT secret — and looks perfectly healthy."""
-    assert plist["WorkingDirectory"] == str(ROOT / "backend")
+    assert plist["WorkingDirectory"] == str(ROOT / "current" / "backend"), (
+        "it must read the directory S5 swaps — see test_install_layout.py"
+    )
 
 
 def test_the_port_is_a_real_environment_variable_not_left_to_dotenv():

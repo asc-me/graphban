@@ -100,13 +100,22 @@ def verify(base: str, expected_sha: str, *, root: pathlib.Path, python: pathlib.
     been told half of what was known.
     """
     got = wait_healthy(base, probe=probe)
+    # S1 MOUNTS THE SPA ONLY IF `web/dist` EXISTS, so an API-only install has no bundle and no
+    # `version.txt`. Requiring a web sha there would make such an install permanently
+    # un-upgradeable — S1 says the bundle is optional and S5 was demanding it, which the S6
+    # walk found by upgrading a release that had none.
+    #
+    # Reported as NOT APPLICABLE rather than skipped: "there is no bundle" and "the bundle
+    # matches" must not read the same, which is this repository's oldest rule about absences.
+    has_bundle = (root / "current" / "web" / "dist" / "index.html").exists()
     facts = {
         "api": (got or {}).get("git_sha", ""),
-        "web": web(base),
+        "web": web(base) if has_bundle else "n/a (no web bundle installed)",
         "alembic": head(root, python),
         "db": (got or {}).get("db", ""),
     }
-    ok = bool(got) and facts["api"] == expected_sha and facts["web"] == expected_sha
+    ok = (bool(got) and facts["api"] == expected_sha
+          and (not has_bundle or facts["web"] == expected_sha))
     return ok, facts
 
 
@@ -151,8 +160,9 @@ def upgrade(root: pathlib.Path, release: pathlib.Path, sha: str, *, base: str,
         return EXIT_OK
 
     # ROLL BACK, and say what was wrong rather than only that something was.
+    checked = ("api", "web") if not facts["web"].startswith("n/a") else ("api",)
     problems = [f"{f} serves {facts[f]!r}, expected {sha!r}"
-                for f in ("api", "web") if facts[f] != sha]
+                for f in checked if facts[f] != sha]
     if not facts["api"]:
         problems.insert(0, "the api never became healthy")
     print("upgrade failed: " + "; ".join(problems), file=sys.stderr)
@@ -181,7 +191,7 @@ def uninstall(root: pathlib.Path, *, restart, purge: bool = False,
     """
     restart("stop")
     kept: list[str] = []
-    for path in (root / "current", root / "previous", root / "backend" / ".venv"):
+    for path in (root / "current", root / "previous", root / "venv"):
         if path.exists():
             shutil.rmtree(path, ignore_errors=True)
 
@@ -212,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     root = pathlib.Path(args.root).resolve()
-    python = pathlib.Path(args.python) if args.python else root / "backend" / ".venv" / "bin" / "python"
+    python = pathlib.Path(args.python) if args.python else root / "venv" / "bin" / "python"
 
     def restart(action: str) -> None:
         """Whatever the platform uses. Resolved here so this file does not branch on the OS."""

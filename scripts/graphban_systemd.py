@@ -64,7 +64,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 {account}# How `.env` is found at all — pydantic-settings reads it relative to the cwd.
-WorkingDirectory={root / "backend"}
+WorkingDirectory={root / "current" / "backend"}
 # `app.serve` reads these from the environment itself; `.env` cannot supply them.
 Environment=PORT={port}
 Environment=HOST={host}
@@ -192,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     root = pathlib.Path(args.root).resolve()
-    python = pathlib.Path(args.python) if args.python else root / "backend" / ".venv" / "bin" / "python"
+    python = pathlib.Path(args.python) if args.python else root / "venv" / "bin" / "python"
     text = unit_text(root=root, python=python, user=args.user, port=args.port,
                      host=args.bind, user_scope=args.user_scope)
 

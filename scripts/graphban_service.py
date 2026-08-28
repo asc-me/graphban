@@ -65,7 +65,10 @@ def plist_dict(*, root: pathlib.Path, python: pathlib.Path, user: str,
         # picks up whatever the last installer put there.
         "ProgramArguments": [str(python), "-m", "app.serve"],
         # How `.env` is found at all — pydantic-settings reads it relative to the cwd.
-        "WorkingDirectory": str(root / "backend"),
+        # `current` is the live release; S5 swaps it and puts the old one back. The
+        # service must read THAT, not a fixed `backend/` beside it — pointing them at
+        # different directories makes an upgrade replace code nobody serves.
+        "WorkingDirectory": str(root / "current" / "backend"),
         "UserName": user,
         # Start at boot AND come back after a crash. See the module docstring: either alone
         # produces a service that looks installed and is not running.
@@ -162,17 +165,43 @@ def install(path: pathlib.Path, data: bytes, *, user_domain: bool, label: str = 
     # cleanly and dies immediately. Report what `launchctl list` says rather than what the
     # exit code implied, because "installed and not running" is the failure this slice exists
     # to make impossible.
+    # AND A CRASH LOOP IS NOT RUNNING EITHER. Checking immediately is not enough: launchd has
+    # just forked, so the job HAS a pid for the instant between fork and exit, and this
+    # returned success for a service dying on ModuleNotFoundError every few seconds during the
+    # S6 walk. The systemd side hit the identical race and grew a settle; this is that.
+    time.sleep(2.0)
     if not _loaded(label):
-        print(f"launchd accepted {label} but it is not running — check the log", file=sys.stderr)
+        _, listing = _run(["launchctl", "list"])
+        line = next((l for l in listing.splitlines() if label in l), "(not listed)")
+        print(f"launchd accepted {label} but it is not running — check the log\n  {line}",
+              file=sys.stderr)
         return 1
     print(f"installed {label} in {domain}")
     return 0
 
 
 def _loaded(label: str) -> bool:
-    """Is launchd holding this job right now?"""
+    """Is this job RUNNING — not merely known to launchd?
+
+    `launchctl list` prints `PID  Status  Label`, and a crash-looping job is still listed:
+    `-  1  dev.graphban.api`, with no pid and a non-zero exit status. The first version of
+    this asked only whether the label APPEARED, so it answered yes for a service that had
+    never once stayed up.
+
+    Found during the S6 walk against a job failing on `ModuleNotFoundError` every few seconds:
+    the install printed "installed" while `launchctl list` showed `-` and `1`. The systemd side
+    had already learned this and grown an `NRestarts` check, and the lesson was never carried
+    back here — which is exactly the cross-slice gap a walk exists to find.
+
+    A real pid is the whole test: launchd gives one to a process that is up, and a `-` to one
+    that is not.
+    """
     _, out = _run(["launchctl", "list"])
-    return any(label in line for line in out.splitlines())
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == label:
+            return parts[0].isdigit()
+    return False
 
 
 def uninstall(path: pathlib.Path, *, user_domain: bool, label: str = LABEL) -> int:
@@ -198,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("command", choices=("plist", "install", "uninstall", "status"))
     ap.add_argument("--root", default="/opt/graphban", help="the install root")
-    ap.add_argument("--python", default="", help="defaults to <root>/backend/.venv/bin/python")
+    ap.add_argument("--python", default="", help="defaults to <root>/venv/bin/python — OUTSIDE the swapped release")
     ap.add_argument("--user", default="graphban", help="the service account")
     ap.add_argument("--label", default=LABEL)
     ap.add_argument("--logs", default="/usr/local/var/log")
@@ -212,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     root = pathlib.Path(args.root).resolve()
-    python = pathlib.Path(args.python) if args.python else root / "backend" / ".venv" / "bin" / "python"
+    python = pathlib.Path(args.python) if args.python else root / "venv" / "bin" / "python"
     data = plist_dict(root=root, python=python, user=args.user, label=args.label,
                       logs=pathlib.Path(args.logs), port=args.port, host=args.bind)
 
