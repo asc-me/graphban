@@ -475,6 +475,15 @@ class Item(Base):
     # see `items.update_item`, where the choice is argued.
     head_commit: Mapped[str] = mapped_column(String, default="", server_default="",
                                              nullable=False)
+    # When a PR was FIRST linked to this item (GRPH-567). The completion gate refuses `done`
+    # for a short interval afterwards, so CI has time to run and an outcome cannot be
+    # recorded before the run it rests on exists.
+    #
+    # First link wins and is never rewritten: re-posting the same URL must not restart the
+    # clock, or the cooldown is escaped by the cheapest possible action. NULL means no PR has
+    # been linked, and such an item is not delayed at all.
+    pr_linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                          nullable=True, default=None)
     prd_section_hash: Mapped[str] = mapped_column(String, default="")
     # Set when a human decides a divergence is intentional (the item was narrowed after a
     # spike, retitled, annotated with findings). Holds the hash that was acknowledged, so a
