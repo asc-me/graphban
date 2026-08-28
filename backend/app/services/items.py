@@ -8,6 +8,7 @@ from datetime import timedelta, timezone
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import Item, Prd, Project, utcnow
 from app.services import keys
 
@@ -451,6 +452,44 @@ class MissingAttestation(Exception):
     """
 
 
+class PRCooldown(Exception):
+    """`done` was asked for too soon after the PR was linked (GRPH-567).
+
+    Its own class for the same reason as `MissingAttestation`, and mapped the same way: the
+    caller is permitted and the request is well formed — the outcome simply cannot be known
+    yet. It is also the one refusal in this file that FIXES ITSELF, so the message says when
+    rather than what to change.
+    """
+
+
+#: A link to a proposed change, as opposed to any other URL an item might carry.
+#:
+#: GitHub and GitLab spell it differently and both are matched; anything else is not a PR
+#: and must not start a cooldown. Deliberately NOT a general "is this a code host" guess —
+#: an unrecognised forge stays outside the gate rather than being delayed by a pattern that
+#: happened to match, because a cooldown nobody can explain is worse than none.
+_PR_URL_MARKERS = ("/pull/", "/pull-requests/", "/merge_requests/")
+
+
+def is_pr_url(url: str) -> bool:
+    """Does this URL point at a pull/merge request?"""
+    return any(marker in (url or "").lower() for marker in _PR_URL_MARKERS)
+
+
+def pr_linked_at(evidence, existing=None):
+    """When this item's PR was FIRST linked, or None.
+
+    `existing` wins whenever it is set. Re-posting the same URL — or posting a second one —
+    must not restart the clock, because the cooldown would then be escaped by the cheapest
+    available action, and an agent that wanted to escape it would not have to know it exists.
+    """
+    if existing is not None:
+        return existing
+    if any(is_pr_url(e.get("url", "")) for e in evidence or [] if isinstance(e, dict)):
+        return utcnow()
+    return None
+
+
 def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
     item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if item is None:
@@ -534,6 +573,32 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
                                for a in failing)
                    if failing else "")
             )
+        # THE PR COOLDOWN (GRPH-567, PRD-26). An attestation proves something was checked;
+        # it does not prove the check had time to happen. A reviewer who links a PR and signs
+        # it off in the same minute records an outcome for a run that has not finished — the
+        # PRD's "reporting green before green existed".
+        #
+        # Read from the INCOMING evidence as well as the stored stamp, so linking and
+        # completing in ONE call is the case this catches rather than the hole it leaves.
+        # That is the worst version of the defect, not an edge of it.
+        #
+        # An item with no linked PR is not delayed at all: this must not become a tax on
+        # every completion in the product, only on the ones making a claim about CI.
+        cooldown = max(0, int(getattr(settings, "pr_cooldown_seconds", 0) or 0))
+        linked = pr_linked_at(fields.get("evidence") or [], item.pr_linked_at)
+        if cooldown and linked is not None:
+            waited = (utcnow() - _aware(linked)).total_seconds()
+            if waited < cooldown:
+                remaining = int(cooldown - waited)
+                record_refusal(db, item, predicate="pr_cooldown",
+                               detail=f"its PR was linked {int(waited)}s ago; "
+                                      f"{remaining}s of the cooldown remain.")
+                raise PRCooldown(
+                    f"{item.key} cannot move to done yet: its PR was linked {int(waited)}s "
+                    f"ago and the cooldown is {cooldown}s, so CI has not had time to run. "
+                    f"Try again in {remaining}s — this refusal clears itself, and nothing "
+                    "needs changing"
+                )
     # Captured BEFORE the status moves. `intent_hold` is about work in flight and goes
     # quiet once an item is done, so asking after the transition always answers None —
     # which silently turned the completion receipt into dead code.
@@ -561,6 +626,9 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         # Appends. See `append_evidence` — a write here must never remove a receipt somebody
         # else left, because `sign_off` gates on the stored ones (GRPH-494).
         item.evidence = append_evidence(item.evidence, fields["evidence"])
+        # Stamped from the INCOMING rows, not the merged record, so the clock starts when the
+        # link actually arrived (GRPH-567). First link wins — see `pr_linked_at`.
+        item.pr_linked_at = pr_linked_at(fields["evidence"], item.pr_linked_at)
     if fields.get("ack_section_drift"):
         # "I have read what changed in the PRD and this item is right as it stands"
         # (GRPH-360). A FLAG, not a value: the caller cannot supply the hash, so it can only

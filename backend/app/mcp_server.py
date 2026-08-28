@@ -3068,6 +3068,14 @@ async def mcp_endpoint(
             return _tool_error(id_, "conflict", str(e),
                                "move it to `review` and let an adapter attest it — a reviewer "
                                "via sign_off with a commit, or CI holding a `gate`-scoped key")
+        except items_svc.PRCooldown as e:
+            # CONFLICT for the same reason, and the hint says WAIT rather than naming an
+            # action (GRPH-567). It is the only refusal in this surface that resolves on its
+            # own, so telling an agent to change something would send it editing a payload
+            # that is already correct.
+            return _tool_error(id_, "conflict", str(e),
+                               "nothing is wrong with the call — wait for the cooldown to "
+                               "elapse and send it again")
         except errors.AppError as e:
             # Expected, agent-correctable failure: not_found | validation | conflict.
             return _tool_error(id_, e.code, str(e), e.hint)
