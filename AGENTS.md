@@ -220,14 +220,24 @@ that migrations 0001/0013 pin 384 in the column type — see AL-46.
 
 **The ledger is the source of truth for a PRD. A `docs/prd-*.md` copy is optional.**
 
-Nineteen PRDs exist; five have a repo document. Eight of the fourteen without one are past
-`draft`, including PRD-24 — approved, six slices built — and three finished specs (PRD-16,
-PRD-18, and PRD-13, whose project-tag invariants GRPH-319, GRPH-457 and GRPH-459 all turn on).
+Most PRDs have no repo document, and plenty of those are past `draft`. PRD-24 is approved with
+its slices built and has none; PRD-16, PRD-18 and PRD-13 are finished specs living only in the
+ledger, and PRD-13's project-tag invariants are what GRPH-319, GRPH-457 and GRPH-459 all turn
+on.
+
+**No count appears here, on purpose (GRPH-558).** The previous version of this paragraph gave
+one — and every figure in it was wrong within two days, because PRDs are created faster than a
+hand-typed census is revisited. A number in this file has nothing keeping it true, and this
+repository has already carried the MCP tool count as three different values in three places at
+once. Generating it is not available either: the tests that keep `docs/api-reference.md` and
+the tool count honest work because routes and the manifest are readable from the app offline,
+and nothing in CI can reach the ledger. So the rule is stated without arithmetic, which costs
+nothing — it does not depend on how many PRDs there are.
 
 An earlier expectation that a PRD past `draft` should exist in both was never written down and
 never held. Stating it now would make a rule nobody follows, and enforcing it would fail on
-eight documents in the one direction a test cannot fix — which trains people to ignore the
-test. So it is dropped, deliberately, and this paragraph is the record of that (GRPH-465).
+every ledger-only spec in the one direction a test cannot fix — which trains people to ignore
+the test. So it is dropped, deliberately, and this paragraph is the record of that (GRPH-465).
 
 There is no rule about WHEN a repo copy appears, and no honest one available: the five that
 have docs look like recent implementation work until you notice PRD-24 is newer than all of
@@ -240,8 +250,11 @@ build and the acceptance walk.
 
 Two consequences worth knowing before you build on either:
 
-- `docs/prd-index.json` indexes only PRDs that have a repo doc, so it is **5 of 19** and is
-  not the list of PRDs. Reading it as one produces a confident undercount (GRPH-486).
+- `docs/prd-index.json` indexes only PRDs that have a repo doc, so it is **a fraction of them
+  and not the list of PRDs**. Reading it as one produces a confident undercount (GRPH-486).
+  The file says so itself, in a `scope` block that deliberately states no ledger total — the
+  generator cannot obtain one, and a number it cannot check is the confident wrong answer that
+  note exists to prevent.
 - `prd_coverage` and `prd_acceptance` answer from the ledger, which is complete. Prefer them.
 
 ## Deploy

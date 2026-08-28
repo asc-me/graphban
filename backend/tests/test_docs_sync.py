@@ -159,3 +159,83 @@ def test_the_historical_exemption_is_still_earned():
         "no excluded document records a count that differs from today's — the historical "
         "exemption is protecting nothing and should be removed"
     )
+
+
+# ---- no count that nothing keeps true (GRPH-558) ------------------------------------
+
+#: Cardinal numbers as words, because the census was written that way — "Nineteen PRDs exist;
+#: five have a repo document". A digits-only guard would have missed every figure in it.
+_NUM = (
+    r"\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|"
+    r"fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty"
+)
+
+#: A COUNT OF PRDs, not any number. `one` and `two` occur constantly in ordinary prose here —
+#: "the one direction a test cannot fix", "Two consequences worth knowing", "eleven days" — and
+#: a guard that flagged those would be one someone deletes rather than obeys. Two shapes, both
+#: taken from the census this replaces:
+#:
+#:   "Nineteen PRDs exist" / "five have a repo document"  -> a number, then the thing counted
+#:   "Eight of the fourteen" / "5 of 19"                  -> a ratio, which needs no noun
+#:
+#: `one` and `two` are excluded from THIS pattern (they stay in the ratio one below). They are
+#: pronouns here far more often than quantities — "Write one when a spec is worth reviewing in
+#: a diff" is the sentence that proved it — and no plausible census of PRDs reads "one PRD
+#: exists". Excluding them costs nothing and is what keeps the guard obeyable.
+_QUANTITY = _NUM.replace("one|two|", "").replace("|one|", "|")
+_COUNTS_PRDS = re.compile(
+    rf"\b({_QUANTITY})\b(?:\s+\w+){{0,3}}\s+(PRDs?|documents?|specs?|copies)\b", re.I)
+_RATIO = re.compile(rf"\b({_NUM})\s+of\s+(?:the\s+)?({_NUM})\b", re.I)
+
+
+def _prd_section() -> str:
+    text = _AGENTS.read_text(encoding="utf-8")
+    start = text.index("## PRDs live in the ledger")
+    end = text.index("\n## ", start + 1)
+    return text[start:end]
+
+
+def test_the_prd_section_states_no_census():
+    """AGENTS.md must not count PRDs (GRPH-558).
+
+    It used to. Written 2026-08-25 — *"Nineteen PRDs exist; five have a repo document. Eight of
+    the fourteen without one are past `draft`"* — and re-measured two days later **every figure
+    was wrong**: 21, 5, 16, 10. Nothing was done badly; PRDs are created faster than a
+    hand-typed census is revisited.
+
+    **The other option was to generate the figure, and it is not available.** The tests above
+    keep the tool count and the migration range honest because the manifest and the Alembic
+    chain are readable from the app, offline. A PRD census lives in the LEDGER, and nothing in
+    CI can reach it. So a number here could only ever be re-typed, which restores it for about
+    two days — and this repository has already carried the MCP tool count as three different
+    values in three places simultaneously.
+
+    Scoped to counts OF PRDS rather than to numbers, deliberately. `one` and `two` are ordinary
+    words in this section, and a guard that tripped on "the one direction a test cannot fix"
+    would be one the next person deletes instead of obeying.
+    """
+    section = _prd_section()
+    scrubbed = re.sub(r"\b(?:PRD|GRPH|AC|PR)-\d+\b", "", section)   # identifiers name, not count
+
+    counted = [m.group(0) for m in _COUNTS_PRDS.finditer(scrubbed)]
+    ratios = [m.group(0) for m in _RATIO.finditer(scrubbed)]
+
+    assert not counted, (
+        f"AGENTS.md's PRD section counts PRDs: {counted}. A count here has nothing keeping it "
+        "true, and the last one was wrong within two days (GRPH-558)")
+    assert not ratios, (
+        f"AGENTS.md's PRD section states the ratio(s) {ratios} — the same drift one shape over; "
+        "`docs/prd-index.json` said '5 of 19' and the denominator had already moved")
+
+
+def test_the_prd_section_still_states_the_rule():
+    """Dropping the numbers must not drop the point. The section's value is the DECISION — the
+    ledger is the source of truth, a repo copy is optional — and a guard that only forbids
+    counts would be satisfied by deleting the section entirely."""
+    section = _prd_section()
+
+    assert "source of truth" in section
+    assert "optional" in section
+    assert "test_prd_sync.py" in section, (
+        "the section no longer says what IS enforced, which is the half a reader acts on")
+    assert "GRPH-465" in section, "the record of the dropped both-copies expectation is gone"
