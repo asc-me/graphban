@@ -1,4 +1,5 @@
 import asyncio
+import pathlib
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
@@ -312,3 +313,74 @@ def health():
             "embed_ok": settings.embed_provider != "stub",
         },
     }
+
+
+# ---------------------------------------------------------------------------------------
+# THE SPA, SERVED BY THE API (GRPH-577, PRD-27 S1)
+#
+# In Docker, nginx serves the bundle and proxies `/api/` here. That is a second service to
+# install and supervise, and it is where GRPH-523 came from — nginx resolved the backend
+# address once at boot. A native install has no reason to pay for it: this is a Python
+# process and some static files.
+#
+# MOUNTED LAST, deliberately. Every `/api/` route and `/health` is registered above, so the
+# catch-all below cannot shadow one — an ordering bug here would turn a real endpoint into
+# an HTML page and the failure would look like a frontend routing problem.
+#
+# CONDITIONAL ON THE BUNDLE EXISTING, rather than on a setting. The api container has no
+# `web/dist`, so the Docker path is untouched BY CONSTRUCTION instead of by a flag somebody
+# has to set correctly on one deployment and not the other.
+_DIST = pathlib.Path(__file__).resolve().parents[2] / "web" / "dist"
+
+#: What nginx sets with `add_header … always`. The `always` is the whole point: nginx applies
+#: these to ERROR responses too, and middleware that only decorated 2xx would drop them on
+#: exactly the responses an attacker can most easily provoke.
+SPA_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "Content-Security-Policy": "frame-ancestors 'self' https:",
+}
+
+
+def _mount_spa(application: FastAPI, dist: pathlib.Path) -> None:
+    """Serve the built SPA, matching what `web/nginx.conf.template` does today.
+
+    Kept as a function taking its directory so the behaviour is testable against a fixture
+    bundle rather than only against a tree that happens to have been built — a mount that is
+    only ever exercised when `web/dist` exists is one nobody tests.
+    """
+    from fastapi.responses import FileResponse, JSONResponse
+    from starlette.staticfiles import StaticFiles
+
+    @application.middleware("http")
+    async def _security_headers(request, call_next):
+        response = await call_next(request)
+        for name, value in SPA_SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        return response
+
+    # `html=False` so a miss raises 404 rather than falling back to index.html. nginx spells
+    # this `try_files $uri =404` and the reason is not tidiness: a missing bundle that returns
+    # index.html answers 200 with HTML where the browser asked for JavaScript, which surfaces
+    # as a MIME-type error pointing at the wrong thing entirely — while a stale index.html
+    # naming a hashed file that no longer exists reads as a working deploy.
+    application.mount("/assets", StaticFiles(directory=dist / "assets", html=False),
+                      name="assets")
+
+    @application.get("/{full_path:path}", include_in_schema=False)
+    async def _spa(full_path: str):
+        """Anything not matched above is a client-side route."""
+        # An unmatched `/api/*` is a MISSING ENDPOINT, and must stay JSON. Returning the SPA
+        # would hand an agent an HTML page where it expected an error object, and the 200
+        # would read as success.
+        if full_path.startswith("api/"):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        target = dist / full_path
+        if full_path and target.is_file():
+            return FileResponse(target)
+        return FileResponse(dist / "index.html")
+
+
+if _DIST.is_dir():  # pragma: no cover - exercised via `_mount_spa` against a fixture
+    _mount_spa(app, _DIST)
