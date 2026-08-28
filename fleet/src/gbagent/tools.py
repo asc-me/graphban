@@ -121,21 +121,61 @@ def read_file(root: Path, path: str, *, start: int = 1, count: int = 0) -> dict:
     }
 
 
+#: What an entry is, when asking might fail.
+UNREADABLE = "unreadable"
+
+
+def _kind(path: Path) -> str:
+    """`dir`, `file`, or `unreadable` — never an exception.
+
+    `Path.is_dir()` looks total and is not. It swallows `ENOENT`, `ENOTDIR`, `EBADF` and
+    `ELOOP` and **re-raises everything else**, `EACCES` included. So one entry the
+    process cannot stat used to raise out of an entire directory listing, and the model
+    got a traceback where it had asked what was in a folder (GRPH-591).
+
+    Windows makes it easy to hit — a symlink out of the worktree stats as `[WinError 5]
+    Access is denied` — but the shape is not Windows'. A restricted ACL, a file removed
+    between `iterdir` and the stat, or a mount this process cannot traverse all do it.
+    """
+    try:
+        return "dir" if path.is_dir() else "file"
+    except OSError:
+        return UNREADABLE
+
+
+def _size(path: Path, kind: str) -> int | None:
+    if kind != "file":
+        return None
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
 def list_dir(root: Path, path: str = ".") -> dict:
-    """Names and kinds in one directory. Not recursive — that is what `grep` is for."""
+    """Names and kinds in one directory. Not recursive — that is what `grep` is for.
+
+    An entry that cannot be read is REPORTED as `unreadable`, not skipped. Skipping would
+    make an inaccessible path and an absent one look identical to the model, which is
+    worse than saying "this is here and I could not look at it".
+    """
     target = safe_path(root, path)
     if not target.exists():
         raise ToolError(f"{path}: no such directory")
-    if not target.is_dir():
+    if _kind(target) != "dir":
         raise ToolError(f"{path}: not a directory — use read_file")
-    kids = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name))
+
+    # Kind is resolved ONCE per entry and reused for the sort, the label and the size.
+    # It used to be recomputed in the sort key, in the comprehension and again for
+    # `st_size` — three chances per entry for the same failure.
+    kids = [(_kind(child), child) for child in target.iterdir()]
+    kids.sort(key=lambda pair: (pair[0] != "dir", pair[1].name))
     shown = kids[:MAX_LIST_ENTRIES]
     return {
         "path": path,
         "entries": [
-            {"name": k.name, "kind": "dir" if k.is_dir() else "file",
-             "bytes": None if k.is_dir() else k.stat().st_size}
-            for k in shown
+            {"name": child.name, "kind": kind, "bytes": _size(child, kind)}
+            for kind, child in shown
         ],
         "truncated": len(kids) > len(shown),
     }
@@ -168,11 +208,16 @@ def grep(root: Path, pattern: str, *, path: str = ".", glob: str = "*") -> dict:
         raise ToolError(f"{path}: no such directory")
 
     hits: list[dict] = []
-    walk = base.rglob(glob) if base.is_dir() else [base]
+    walk = base.rglob(glob) if _kind(base) == "dir" else [base]
     for f in walk:
         if len(hits) >= MAX_GREP_HITS:
             break
-        if f.is_dir() or ".git" in f.parts:
+        # `_kind`, not `is_dir()`. The docstring above promises to skip "anything
+        # unreadable rather than failing the call", and the `read_text` below is duly
+        # wrapped — but `is_dir()` came first and raised on exactly those entries. The
+        # guard that was thought about was in place; the one nobody thought about fired
+        # first (GRPH-591).
+        if _kind(f) != "file" or ".git" in f.parts:
             continue
         try:
             safe_path(root, str(f))

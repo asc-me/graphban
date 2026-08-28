@@ -81,9 +81,14 @@ def safe_path(root: Path | str, requested: str) -> Path:
     try:
         target.relative_to(base)
     except ValueError:
+        # Quoted, not `!r`. `repr` of a Windows path doubles every separator, so the
+        # refusal named the boundary as `C:\\Users\\...` — a path nobody would type,
+        # in the one message whose whole job is to tell the model where it may go
+        # instead. Invisible on POSIX, where the two renderings are identical
+        # (GRPH-591).
         raise OutsideWorktree(
-            f"{requested!r} resolves to {str(target)!r}, which is outside the worktree "
-            f"({str(base)!r}). Paths are relative to the worktree root; nothing above it is "
+            f"'{requested}' resolves to '{target}', which is outside the worktree "
+            f"('{base}'). Paths are relative to the worktree root; nothing above it is "
             "reachable from here."
         ) from None
     return target
