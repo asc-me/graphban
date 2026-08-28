@@ -48,6 +48,25 @@ def safe_path(root: Path | str, requested: str) -> Path:
     Works for paths that do not exist yet: `Path.resolve()` is non-strict, so it resolves the
     components that do exist (which is where a symlink would be) and appends the rest. That is
     what makes it usable for `write_file` creating a new file in a new directory.
+
+    **What this guarantees, exactly: nothing reachable BY PATH resolves outside the worktree.**
+    That covers every shape above — traversal, absolute paths, and symlinks at any depth.
+
+    **It does not cover a hardlink, and that is accepted rather than overlooked** (GRPH-561).
+    A hardlink to a file outside the worktree is not a reference to that file, it IS that file,
+    listed in two directories at once. Demonstrated against this function rather than reasoned:
+    the link is ALLOWED, reads return the outside file's contents, `st_nlink` is 2, and
+    `is_symlink()` returns **False** — so the check that catches the symlink case is blind here
+    and `resolve()` has nothing to follow. There is no path-based way to tell.
+
+    `st_nlink > 1` is not the missing check. It refuses legitimate files, it still misses the
+    case on a filesystem that does not report link counts, and it would have the tool rejecting
+    things a model can neither predict nor repair.
+
+    This paragraph exists because the rest of this docstring reads as a complete account of the
+    boundary, and a reader concludes the worktree is sealed. It is sealed against everything a
+    path can express. Someone has to already know about hardlinks to know that — which is the
+    shape of gap this repository keeps rediscovering and re-filing.
     """
     base = Path(root).resolve()
     # `Path("/a") / "/etc"` is `/etc` — an absolute request wins the join and is then judged

@@ -492,3 +492,56 @@ def test_reading_the_file_really_does_not_license_a_whole_file_replacement(tmp_p
         "reading let a stub through — if that is now intended, this test is the one to argue "
         f"with rather than delete: {after}"
     )
+
+
+# ---- the shape the boundary CANNOT catch (GRPH-561) --------------------------------
+
+
+def test_a_hardlink_out_is_allowed_and_that_is_the_documented_limit(tmp_path: Path):
+    """The boundary's one blind spot, pinned as KNOWN rather than left to be rediscovered.
+
+    A hardlink to a file outside the worktree is not a reference to that file — it IS that
+    file, listed in two directories at once. So `resolve()` has nothing to follow and
+    `is_symlink()` is False; there is no path-based way to tell it from an ordinary file.
+
+    This test asserts the CURRENT behaviour on purpose. It is not endorsing it: the fix would
+    be `st_nlink > 1`, which refuses legitimate files, still misses the case on filesystems
+    that do not report link counts, and would have the tool rejecting things a model can
+    neither predict nor repair. GRPH-561 decided to document rather than fix.
+
+    What this buys is that the decision cannot rot silently. If someone later closes the gap,
+    this test fails and they must update the docstring that currently promises they have not.
+    """
+    outside = tmp_path / "secret.txt"
+    outside.write_text("SECRET OUTSIDE THE WORKTREE\n")
+    root = tmp_path / "wt"
+    root.mkdir()
+    os.link(outside, root / "innocent.txt")
+
+    allowed = safe_path(root, "innocent.txt")
+
+    assert allowed.read_text().startswith("SECRET"), (
+        "the hardlink no longer reads the outside file — the fixture stopped testing anything")
+    assert allowed.is_symlink() is False, (
+        "the symlink check does not see this, which is the whole reason it gets through")
+    assert allowed.stat().st_nlink > 1
+
+
+def test_the_docstring_says_the_boundary_has_this_limit(tmp_path: Path):
+    """The acceptance GRPH-561 actually asked for: named where a reader of `safe_path` sees it.
+
+    The rest of that docstring reads as a complete account of the boundary, so a reader
+    concludes the worktree is sealed. It is sealed against everything a path can express —
+    and someone has to already know about hardlinks to know that. A limitation nobody wrote
+    down gets rediscovered and re-filed, which is what happened here: this was asked for once
+    in a bounce, not done, and found again months later.
+    """
+    doc = safe_path.__doc__ or ""
+
+    assert "hardlink" in doc.lower(), "the one shape it cannot catch is not named"
+    assert "is_symlink" in doc, (
+        "the docstring does not say WHY the symlink check misses it, which is the part a "
+        "reader cannot derive")
+    assert "accepted rather than overlooked" in doc, (
+        "nothing marks this as a decision — an undocumented limit and a documented one look "
+        "the same to the next reader unless the docstring says which it is")
