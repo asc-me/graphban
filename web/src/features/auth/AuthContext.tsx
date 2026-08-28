@@ -15,6 +15,7 @@ interface AuthState {
     password: string,
     inviteToken?: string,
   ) => Promise<void>;
+  completePasswordReset: (token: string, newPassword: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -54,6 +55,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  /** Spend a reset link and land signed in (GRPH-570). Mirrors `login`: the server has
+   *  already revoked every other session and issued a fresh pair, so there is nothing left
+   *  to authenticate with — sending the user to the login form afterwards would ask them to
+   *  prove something they have just proved. */
+  const completePasswordReset = React.useCallback(
+    async (token: string, newPassword: string) => {
+      const u = await api.confirmPasswordReset(token, newPassword);
+      setUser(u);
+    },
+    [],
+  );
+
   const logout = React.useCallback(() => {
     api.logout();
     setUser(null);
@@ -61,7 +74,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [qc]);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, register, logout, completePasswordReset }}>
       {children}
     </AuthContext.Provider>
   );

@@ -3,6 +3,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { AppFrame } from "@/components/shell/AppFrame";
 import { useAuth } from "@/features/auth/AuthContext";
 import { LoginPage } from "@/features/auth/LoginPage";
+import { ResetPasswordPage } from "@/features/auth/ResetPasswordPage";
 import { ActivityView } from "@/features/activity/ActivityView";
 import { AdminView } from "@/features/admin/AdminView";
 import { OperatorHome } from "@/features/admin/OperatorHome";
@@ -51,6 +52,9 @@ export function App() {
       <Route path="/embed/roadmap" element={<EmbedRoadmapPage />} />
       {/* Emailed org-invite landing — works signed in or out (AL-74b). */}
       <Route path="/invite/:token" element={<InviteAcceptPage />} />
+      {/* Emailed password-reset landing (GRPH-570). Public by necessity: the premise is that
+          the visitor cannot sign in, so it cannot live behind AuthedApp. */}
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="*" element={<AuthedApp />} />
     </Routes>
   );
