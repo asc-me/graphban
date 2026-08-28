@@ -31,6 +31,20 @@ class Settings(BaseSettings):
     access_token_minutes: int = 30
     refresh_token_days: int = 14
 
+    # How long after a PR is linked an item must wait before it can be completed
+    # (GRPH-567, PRD-26 §PR cooldown). Long enough that CI has had time to run, so an
+    # outcome cannot be recorded before the run it rests on exists.
+    #
+    # 600s is measured from THIS repository's own CI, not chosen for roundness: the two
+    # backend jobs take 4m34s and 8m20s, so anything under about nine minutes can be
+    # completed while the slower engine is still going. An install whose CI is faster
+    # should lower it — the number is a property of the pipeline, not of the product.
+    #
+    # 0 disables it entirely, which is the right setting for a repository with no CI at
+    # all: a delay protecting nothing is pure friction, and this must not become a tax on
+    # every completion.
+    pr_cooldown_seconds: int = 600
+
     # Auth hardening (AL-72). Login is rate-limited per-email and (more loosely)
     # per-IP to blunt credential stuffing / brute force.
     login_rate_per_min: int = 10
