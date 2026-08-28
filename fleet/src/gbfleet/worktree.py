@@ -32,8 +32,13 @@ BRANCH_PREFIX = "gb/"
 #: tree. Adapters extend this list (GRPH-449); it is declared here because salvage
 #: must know it before any adapter exists.
 SEAT_FILES: tuple[str, ...] = (
-    ".cursor/mcp.json", ".grok/mcp.json", ".gbfleet-instruction",
+    ".cursor/mcp.json", ".grok/config.toml", ".grok/mcp.json", ".gbfleet-instruction",
 )
+
+#: `.grok/mcp.json` is in that tuple but nothing writes it any more. It is kept because
+#: a worktree left behind by a gbfleet from before GRPH-575 still has one, with a live
+#: key in it, and salvage running from this version would otherwise commit it. Removing
+#: the entry costs a credential leak in exactly the case nobody would test.
 
 #: `.gbfleet-instruction` is in that tuple for the same reason as the Cursor config and
 #: it is easier to miss: it carries the enrolment CODE, because the code is an argument

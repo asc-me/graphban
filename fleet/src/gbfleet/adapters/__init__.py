@@ -36,6 +36,7 @@ from typing import NamedTuple
 from pathlib import Path
 from typing import ClassVar
 
+from .. import seat as seat_mod
 from ..seat import Seat
 from ..spawn import Launch
 from ..worktree import Worktree
@@ -175,6 +176,12 @@ class Adapter:
     #: Which `Tuning` fields this vendor actually has. Anything else is refused, never
     #: ignored — see `TuningUnsupported`.
     tuning: ClassVar[frozenset[str]] = frozenset()
+    #: The language this vendor's seat file is written in. JSON for all but grok, which
+    #: reads TOML and nothing else. Declared beside `seat_path` because the two are one
+    #: fact: WHERE the file goes and WHAT it is written in are both vendor trivia, and
+    #: getting either wrong produces the same symptom — a child with no tools and no
+    #: error (GRPH-575).
+    seat_format: ClassVar[str] = seat_mod.JSON
 
     def model_argv(self, model: str) -> list[str]:
         """The flag this vendor spells `--model`, or nothing when none was named.
