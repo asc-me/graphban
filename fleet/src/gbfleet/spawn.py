@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import seat as seat_mod
+from .hostos import ProcessTree, spawn_kwargs
 from .seat import Seat
 
 #: How long a child gets to register before it is presumed broken. Seconds, not the
@@ -121,6 +122,11 @@ class Child:
     process: subprocess.Popen
     started_at: float
     log_dir: Path
+    #: Control over the child AND everything it spawned. A vendor CLI's helpers are its
+    #: own children, and signalling only the leader leaves them running and working.
+    #: POSIX gets this from a session and `killpg`; Windows from a job object. `None`
+    #: only for a `Child` built by hand, which `stop` handles by falling back to the pid.
+    tree: "ProcessTree | None" = None
     agent_id: str | None = None
     binary_version: str = ""
     #: The enrolment's ROW id, read off the roster once the child registers. Never the
@@ -164,9 +170,10 @@ def spawn(
     long-running chatty process that would hit that — a child wedged on a full pipe
     looks identical to a child thinking hard about something.
 
-    `start_new_session` puts the child in its own process group so `stop` can signal
-    the whole tree. A vendor CLI that spawns its own helpers is the normal case, and
-    signalling only the leader leaves them running.
+    The child is put at the head of its own process group so `stop` can signal the whole
+    tree. A vendor CLI that spawns its own helpers is the normal case, and signalling
+    only the leader leaves them running. How that is spelled — a new session on POSIX, a
+    new process group plus a job object on Windows — lives in `hostos`.
     """
     worktree = Path(worktree)
     log_dir = Path(log_dir)
@@ -187,7 +194,7 @@ def spawn(
             stdin=stdin,
             stdout=open(log_dir / _STDOUT, "wb"),
             stderr=open(log_dir / _STDERR, "wb"),
-            start_new_session=True,
+            **spawn_kwargs(),
         )
     except OSError as exc:
         raise LaunchFailed(
@@ -206,6 +213,7 @@ def spawn(
         process=process,
         started_at=started,
         log_dir=log_dir,
+        tree=ProcessTree(process),
         binary_version=launch.binary_version,
     )
 
@@ -285,11 +293,18 @@ class Stopped:
 
 
 def stop(child: Child, reason: Reason, grace: float = TERM_GRACE) -> Stopped:
-    """SIGTERM the child's process group, then SIGKILL it if it is still there.
+    """Ask the child's whole tree to stop, then make it.
 
-    Signals the GROUP, not the pid: a vendor CLI's helper processes are children of the
+    Signals the TREE, not the pid: a vendor CLI's helper processes are children of the
     child, and killing only the leader leaves them holding file handles and, worse,
     still working.
+
+    On Windows this ordering is not merely tidy, it is required. Measured there:
+    `Popen.terminate()` kills the leader and leaves the grandchild running, and
+    `taskkill /T` against a leader that has already exited fails with "process not
+    found" — so a graceful step that kills the leader outright destroys the only handle
+    the forceful step had. `hostos.ProcessTree` sidesteps that with a job object, which
+    can terminate the tree whatever state the leader is in.
 
     **Cleans up nothing.** No seat file removed, no worktree touched, no branch deleted.
     Every path into here is a path where something already went wrong, and tidying at
@@ -299,25 +314,17 @@ def stop(child: Child, reason: Reason, grace: float = TERM_GRACE) -> Stopped:
     if not child.running:
         return Stopped(reason=reason, escalated=False, exit_code=child.process.returncode)
 
-    _signal_group(child, signal.SIGTERM)
+    tree = child.tree or ProcessTree(child.process)
+    tree.terminate()
     try:
         code = child.process.wait(timeout=grace)
         return Stopped(reason=reason, escalated=False, exit_code=code)
     except subprocess.TimeoutExpired:
         pass
 
-    _signal_group(child, signal.SIGKILL)
+    tree.kill()
     try:
         code = child.process.wait(timeout=grace)
-    except subprocess.TimeoutExpired:  # pragma: no cover - a SIGKILLed group does not linger
+    except subprocess.TimeoutExpired:  # pragma: no cover - a killed tree does not linger
         code = None
     return Stopped(reason=reason, escalated=True, exit_code=code)
-
-
-def _signal_group(child: Child, sig: int) -> None:
-    try:
-        os.killpg(os.getpgid(child.pid), sig)
-    except ProcessLookupError:
-        # Gone between the liveness check and the signal. Not an error: a worker
-        # exiting on its own is the normal end of its life (D-c).
-        pass
