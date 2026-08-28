@@ -100,7 +100,7 @@ def test_the_readme_and_the_runbook_name_the_same_start_command():
             f"{doc} documents the old uvicorn CLI invocation the image stopped using"
 
 
-def _smoke_against(tmp_path, health_body: str) -> str:
+def _smoke_against(tmp_path, health_body: str, status: int = 404) -> str:
     """Run the smoke script against a stub serving `health_body` at /health, return its output.
 
     RUN rather than read. Every other assertion in this file is a source-read, which the
@@ -119,8 +119,11 @@ def _smoke_against(tmp_path, health_body: str) -> str:
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
-            body = health_body.encode() if self.path.startswith("/health") else b"{}"
-            self.send_response(200)
+            health = self.path.startswith("/health")
+            body = health_body.encode() if health else b"{}"
+            # `status` drives the PUBLIC surface only; /health must answer 200 or the script
+            # stops at the reachability check and never reaches what is being tested.
+            self.send_response(200 if health else status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -208,3 +211,40 @@ def test_the_release_identity_check_covers_the_hosted_instance(tmp_path):
     assert "does not cover the hosted instance" in section, (
         "the alembic check is self-host-only (no ssh, no docker compose on Railway) and the "
         "section no longer says so — an inapplicable step that reads as universal")
+
+
+def test_the_rate_limit_probe_does_not_fire_at_an_unprobeable_endpoint(tmp_path):
+    """A check must not FAIL on a condition the script itself just called unprobeable
+    (GRPH-564).
+
+    Against the hosted instance the script reported `FAIL 70 requests, never a 429` — three
+    lines after its own check established the endpoint answers 404 and labelled it
+    "unprobeable". It then fired 70 requests at it and called the absent 429 a defect.
+
+    It is not one. `_public_project` resolves the project and 404s BEFORE `_rate_or_429` runs,
+    so a request without a share token never reaches the limiter — deliberately, because
+    limiting before resolution would let anyone exhaust another tenant's bucket by naming
+    their project, and a 404 does no roadmap query so there is nothing to bound.
+
+    Driven rather than read: a stub that always 404s must produce no failure, and the 70
+    requests must not be sent. `skip` is the right outcome and already counts as neither pass
+    nor fail — the same mechanism the pgvector check uses, for the same reason.
+    """
+    out = _smoke_against(tmp_path, '{"status":"ok","git_sha":"abc1234","db":"ok"}', status=404)
+
+    rate_lines = [ln for ln in out.splitlines() if "429" in ln or "rate limit" in ln]
+    assert rate_lines, f"the rate-limit check vanished entirely:\n{out}"
+    assert not any("FAIL" in ln for ln in rate_lines), (
+        f"the script reports a failure against an endpoint it cannot probe: {rate_lines}")
+    assert any("not probed" in ln for ln in rate_lines), (
+        f"it should say the probe was skipped and why: {rate_lines}")
+
+
+def test_the_rate_limit_probe_still_runs_when_the_endpoint_serves(tmp_path):
+    """The complement, and the reason the gate is on `200` rather than on nothing. Skipping
+    unconditionally would satisfy the test above while removing the check the script exists to
+    make — an unbounded public endpoint is what GRPH-32 added the limit for."""
+    out = _smoke_against(tmp_path, '{"status":"ok","git_sha":"abc1234","db":"ok"}', status=200)
+
+    assert any("never a 429" in ln for ln in out.splitlines()), (
+        "the endpoint is serving 200 and the rate limit was not probed at all")

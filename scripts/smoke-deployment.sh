@@ -139,14 +139,30 @@ esac
 
 # The limit that GRPH-32 added. Unbounded, this is a full roadmap query per request for
 # anyone holding a share link.
-i=0; limited=no
-while [ $i -lt 70 ]; do
-    c=$(req GET "${BASE}/api/public/roadmap")
-    [ "$c" = "429" ] && { limited=yes; break; }
-    i=$((i+1))
-done
-[ "$limited" = yes ] && ok "public roadmap is rate limited (429 after ${i} requests)" \
-    || bad "70 requests, never a 429" "the public endpoint is unbounded, or the limit is far above 70"
+#
+# ONLY PROBED WHEN THE ENDPOINT IS ACTUALLY SERVING (GRPH-564). This loop used to run
+# unconditionally and reported `FAIL 70 requests, never a 429` against the hosted instance —
+# where the check three lines up had ALREADY established the endpoint is 404 and called it
+# "unprobeable", and then probed it anyway.
+#
+# It is not a defect there. `_public_project` resolves and 404s BEFORE `_rate_or_429` runs, so
+# a request without a share token never reaches the limiter — deliberately: rate limiting
+# before resolution would let anyone exhaust another tenant's bucket by naming their project,
+# and a 404 does no roadmap query, so there is nothing to bound. Firing 70 requests at a live
+# service to observe that is pointless load, and reporting it as a failure is how an operator
+# learns to ignore this script.
+if [ "$code" = "200" ]; then
+    i=0; limited=no
+    while [ $i -lt 70 ]; do
+        c=$(req GET "${BASE}/api/public/roadmap")
+        [ "$c" = "429" ] && { limited=yes; break; }
+        i=$((i+1))
+    done
+    [ "$limited" = yes ] && ok "public roadmap is rate limited (429 after ${i} requests)" \
+        || bad "70 requests, never a 429" "the public endpoint is serving and unbounded, or the limit is far above 70"
+else
+    skip "rate limit not probed: the endpoint answered ${code}, not 200"
+fi
 
 # ---- 5. MCP is reachable and refuses anonymous callers ------------------------------------
 say ""
