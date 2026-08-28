@@ -1,4 +1,9 @@
 {
+  "scope": {
+    "covers": "PRDs with a document in docs/ that names its ledger row",
+    "indexed": 5,
+    "note": "NOT the list of PRDs. A ledger-only PRD has no repo copy to compare and is absent here by construction; anything reading `prds` as complete is seeing a fraction of them."
+  },
   "prds": {
     "GRPH-P17": {
       "file": "docs/prd-17-fleet-roles.md",
