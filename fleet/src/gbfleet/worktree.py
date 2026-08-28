@@ -53,6 +53,24 @@ class GitError(RuntimeError):
     pass
 
 
+class SeatPathIsTracked(GitError):
+    """The repository itself commits a file the supervisor must write a seat into.
+
+    There is no safe way through, which is why this refuses rather than choosing one:
+
+    * write the seat and the repository's own file is destroyed. `seat.write` truncates,
+      and these paths are not only credentials — `.grok/config.toml` is where a repo
+      states its `[permission]` rules, so a committed `deny` rule protecting the repo
+      would be removed by the supervisor without a word. It would not even show up as a
+      modification, because `SEAT_FILES` is excluded from salvage on purpose.
+    * skip the seat and the child starts with no tools and no error, which is the exact
+      failure GRPH-575 was about.
+
+    Refusing is loud and takes ten seconds to fix. Either alternative is silent and
+    changes what the worker is allowed to do.
+    """
+
+
 class BranchExists(RuntimeError):
     """Refuse to spawn onto a branch somebody else already owns.
 
@@ -156,6 +174,24 @@ def create(
             "make the branch stop identifying the agent. Reap or rename it first."
         )
     base_sha = _git(repo, "rev-parse", base).strip()
+
+    # Checked against the base COMMIT, before the worktree exists. Checking afterwards
+    # would leave a worktree behind on the failure path, and checking the working tree
+    # rather than the commit would miss it on a clean checkout — which is every child.
+    tracked = _tracked_at(repo, base_sha, SEAT_FILES)
+    if tracked:
+        raise SeatPathIsTracked(
+            f"{repo} commits {tracked} at {base_sha[:12]}, and the supervisor has to "
+            f"write a child's seat to that path. Writing it would truncate the "
+            f"repository's own file — including any `[permission]` deny rules it sets "
+            f"for its agents — and salvage excludes these paths, so nothing would ever "
+            f"report the loss. Not writing it leaves the child with no tools and no "
+            f"error.\n"
+            f"Remedy: stop committing {tracked} (user-scope config does the same job — "
+            f"`grok mcp add --scope user`), or run the fleet against a checkout that "
+            f"does not."
+        )
+
     _git(repo, "worktree", "add", "-q", "-b", branch, str(path), base_sha)
     return Worktree(path=Path(path), branch=branch, repo=Path(repo), base=base_sha)
 
@@ -192,11 +228,16 @@ def is_dirty(worktree: Path) -> bool:
     return bool(porcelain(worktree)) or bool(seats_present(worktree))
 
 
-def _tracked_in_head(worktree: Path, paths: tuple[str, ...]) -> list[str]:
-    if not _git(worktree, "rev-parse", "--quiet", "--verify", "HEAD", check=False):
+def _tracked_at(gitdir: Path, ref: str, paths: tuple[str, ...]) -> list[str]:
+    """Which of `paths` the commit `ref` tracks. Empty on a repository with no commits."""
+    if not _git(gitdir, "rev-parse", "--quiet", "--verify", ref, check=False):
         return []
-    listed = _git(worktree, "ls-tree", "-r", "--name-only", "HEAD").splitlines()
+    listed = _git(gitdir, "ls-tree", "-r", "--name-only", ref).splitlines()
     return sorted(set(listed) & set(paths))
+
+
+def _tracked_in_head(worktree: Path, paths: tuple[str, ...]) -> list[str]:
+    return _tracked_at(worktree, "HEAD", paths)
 
 
 @dataclass(frozen=True)
