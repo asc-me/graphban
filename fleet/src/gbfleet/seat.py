@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -109,20 +110,135 @@ def _reject_parentage(config: dict) -> None:
     walk(config, "")
 
 
-def write(path: Path, config: dict) -> Path:
+class UnrenderableSeat(RuntimeError):
+    """The seat config cannot be expressed in the format this vendor reads."""
+
+
+#: The two on-disk languages the vendors read. Not cosmetic: grok reads TOML and
+#: nothing else, so writing it JSON produces a file it ignores in silence — which is
+#: how a child ends up running with no tools and no error (GRPH-575).
+JSON = "json"
+TOML = "toml"
+
+
+def _as_json(config: dict) -> str:
+    return json.dumps(config, indent=2) + "\n"
+
+
+#: Every key grok's TOML understands for one server, measured rather than assumed: on
+#: 1.0.5, `grok mcp add --transport http graphban <url> --header "X-API-Key: ..."`
+#: writes exactly `url`, `enabled` and a `headers` sub-table. There is no `type` or
+#: `transport` key at all — grok infers HTTP from the presence of `url`.
+_GROK_RENDERED = frozenset({"type", "url", "headers"})
+
+_BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_string(value: str) -> str:
+    """A TOML basic string. Escaping the credential rather than trusting its alphabet:
+    the api key and server url arrive from the server, and a `"` in either would
+    otherwise emit a file that grok fails to parse — which reads, from the child's
+    side, exactly like having no seat."""
+    out = ['"']
+    for ch in value:
+        if ch == '"':
+            out.append('\\"')
+        elif ch == "\\":
+            out.append("\\\\")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\b":
+            out.append("\\b")
+        elif ch == "\f":
+            out.append("\\f")
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _toml_key(key: str) -> str:
+    return key if _BARE_KEY.match(key) else _toml_string(key)
+
+
+def _as_toml(config: dict) -> str:
+    """`mcp_config`'s vendor-neutral dict in grok's TOML dialect.
+
+    Note `mcp_servers`, not `mcpServers` — the case difference is the whole reason a
+    hand-translated file would look right and load nothing.
+
+    Unknown keys RAISE rather than being dropped. If `mcp_config` ever grows a field,
+    the grok path has to fail loudly: silently omitting it would hand the child a seat
+    that is missing the very thing that was added, and nothing downstream would say so.
+    """
+    servers = config.get("mcpServers") or {}
+    blocks: list[str] = []
+    for name, spec in servers.items():
+        unknown = sorted(set(spec) - _GROK_RENDERED)
+        if unknown:
+            raise UnrenderableSeat(
+                f"grok's config.toml has no place for {unknown} on server {name!r}. "
+                "Dropping them would give the child a seat missing exactly what was "
+                "added, so this refuses instead. Teach _as_toml the new field."
+            )
+        # `type` is carried by the neutral config but has no TOML spelling: grok reads
+        # the transport off `url`. So it is CHECKED and then not emitted — a stdio seat
+        # rendered this way would silently become an HTTP one.
+        transport = spec.get("type", "http")
+        if transport != "http":
+            raise UnrenderableSeat(
+                f"server {name!r} is transport {transport!r}, but grok infers transport "
+                "from `url` and only HTTP can be expressed here. Rendering it anyway "
+                "would silently turn it into an HTTP server."
+            )
+        table = f"mcp_servers.{_toml_key(name)}"
+        lines = [f"[{table}]"]
+        if "url" in spec:
+            lines.append(f"url = {_toml_string(str(spec['url']))}")
+        lines.append("enabled = true")
+        headers = spec.get("headers") or {}
+        if headers:
+            lines.append("")
+            lines.append(f"[{table}.headers]")
+            for header, value in headers.items():
+                lines.append(f"{_toml_key(header)} = {_toml_string(str(value))}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks) + "\n"
+
+
+_RENDERERS = {JSON: _as_json, TOML: _as_toml}
+
+
+def write(path: Path, config: dict, fmt: str = JSON) -> Path:
     """Write a child's seat config 0600, refusing anything that declares parentage.
 
     The mode is set explicitly after creation rather than relying on `open`'s: the
     umask masks it, and a file already present keeps whatever mode it had.
+
+    `fmt` picks the vendor's on-disk language. The parentage check runs FIRST and for
+    every format — it is a property of the config, not of how it is spelled, and a
+    guard that only covered JSON would be no guard at all the day a vendor needed TOML.
     """
     _reject_parentage(config)
+    render = _RENDERERS.get(fmt)
+    if render is None:
+        raise UnrenderableSeat(
+            f"no seat renderer for {fmt!r}; known formats are {sorted(_RENDERERS)}"
+        )
+    text = render(config)
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(config, handle, indent=2)
-        handle.write("\n")
+        handle.write(text)
     os.chmod(path, _FILE_MODE)
     return path
 

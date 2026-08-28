@@ -46,7 +46,7 @@ without stopping the other.
 | `claude` | `2.1.233 (Claude Code)` | 2.0 – 3.0 | `--mcp-config <path>` | stdin | **no** — private temp file |
 | `gbagent` | `gbagent 0.1.0` | **exactly `0.1.0`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
 | `cursor-agent` | `2026.04.17-787b533` | 2026.1 – 2027.1 | none; reads `.cursor/mcp.json` from the project dir | stdin | **yes** — forced |
-| `grok` | `grok 1.0.5 (5115b46bc909) [stable]` | 1.0 – 2.0 | user-level `~/.grok/config.toml`; **unresolved** | `--prompt-file <path>` | yes — `.grok/mcp.json`, see below |
+| `grok` | `grok 1.0.5 (5115b46bc909) [stable]` | 1.0 – 2.0 | project-scoped `<worktree>/.grok/config.toml` (**TOML**), needs `--trust` | `--prompt-file <path>` | yes — `.grok/config.toml`, see below |
 | `codex` | — | — | — | — | **not implemented** |
 
 Every row above was read off a binary that was actually run on macOS, except `codex`.
@@ -289,17 +289,86 @@ one stuck in a loop look identical. The only finer signal that exists is `gbagen
 per-turn trace (GRPH-506), which is unstructured, local to the spawn log, and first-party
 only — which is exactly why it was not made the source.
 
-## Two things that are not solved
+## `grok`'s per-child seat: solved, and how it was wrong
 
-**`grok`'s per-child seat.** Its MCP configuration is user-level
-(`~/.grok/config.toml`) and `--help` shows no per-invocation config flag. A per-child
-seat cannot be delivered through a shared user-level file without two children racing
-for it. The adapter writes `.grok/mcp.json` into the worktree so the file is at least
-per-child and salvage knows about it — namespaced to grok rather than borrowed from
-Cursor, so it does not read as leftover from a vendor that is not running. Whether grok
-reads it there is untested. A child that
-cannot see its seat fails to register, and the bounded registration window is what
-surfaces that — loudly, and blamed on the right adapter.
+This section used to say the seat was unresolved and that grok's MCP config was
+user-level only. Both halves were wrong, and the way they were wrong is worth keeping.
+
+`grok mcp add --help` names two scopes: `user (~/.grok/config.toml)` and `project
+(./.grok/config.toml)`. The project scope is **per-directory**, and each child's
+worktree is its own directory — so the seats never race, and the fleet model works for
+this vendor. The adapter now writes `<worktree>/.grok/config.toml`.
+
+Three things had to be measured rather than assumed (grok 1.0.5, Windows 11 and macOS):
+
+**It is TOML, and the table is `mcp_servers`.** Not `mcpServers`. The previous adapter
+wrote `.grok/mcp.json`, a filename that appears nowhere in grok's Config Sources, so the
+seat was read by nobody. Letting `grok mcp add` write the file and reading it back is
+the only reason this is a fact rather than a guess:
+
+```toml
+[mcp_servers.graphban]
+url = "https://cloud.graphban.dev/api/mcp"
+enabled = true
+
+[mcp_servers.graphban.headers]
+X-API-Key = "..."
+```
+
+There is no `type` or `transport` key — grok infers HTTP from the presence of `url`.
+`seat._as_toml` therefore *refuses* a non-HTTP server rather than rendering one that
+silently becomes HTTP, and refuses unknown fields rather than dropping them.
+
+**A repo-local server is gated on folder trust.** In a fresh worktree:
+
+```
+✗ folder untrusted (repo-local (project-scoped) server not started for an untrusted folder)
+```
+
+The child gets no tools and no error. `grok inspect` makes it worse by listing the
+server as loaded while `grok mcp doctor` reports it never started — so the obvious way
+to check agrees with the broken state. The adapter passes `--trust`, which is absent
+from `--help` but accepted, and which grok's own bundled docs name as the mechanism
+(`~/.grok/docs/user-guide/10-hooks.md`: `/hooks-trust` "or launching with `--trust`",
+recorded in `~/.grok/trusted_folders.toml`, "the same gate that governs repo-local
+MCP/LSP servers"). Pre-seeding that store works too, but it is a shared file and
+concurrent children would race on it — which is the mistake this section used to
+describe, just moved. `--trust` is per-invocation and races nothing.
+
+**Project scope beats user scope on a name collision.** This one is security-relevant.
+The operator running the supervisor is exactly the person likely to have `graphban`
+configured in their own `~/.grok/config.toml`. If user scope won, every child would
+connect with the *operator's* credential and take the operator's role, and seat-based
+roles would mean nothing while appearing to work. Measured: the project file wins.
+`test_a_childs_seat_beats_an_operators_user_level_server_of_the_same_name` holds it.
+
+One caveat that changes how failure looks: **a grok child whose MCP server fails to
+connect still runs to completion and exits 0.** Measured with a deliberately invalid
+key — it answered its prompt and left. A broken seat is not a crash, it is an expensive
+silence, and `registration_latency` is what turns it back into a signal.
+
+A last trap for whoever reads `grok mcp doctor` next: **its *Config sources* block is
+not trustworthy and its per-server verdicts are.** Two separate ways it misleads, both
+measured:
+
+- it reported `0 servers` for a project `.grok/config.toml` whose server it had plainly
+  loaded and started;
+- it never lists `.cursor/mcp.json` as a source at all, and credits servers loaded from
+  it to `.mcp.json`.
+
+The per-server `✓ server started` / `✗ folder untrusted` lines are the reliable signal.
+
+**grok reads more project files than its own.** `.mcp.json` and `.cursor/mcp.json` in
+the project directory are both loaded (measured — servers from each started). A worktree
+is cut from the repository, so **anything the repo commits is in front of every grok
+child**, added to whatever its seat provides. This repo commits no such file today; a
+repo that did would be handing extra tools to every worker, and nothing in gbfleet is in
+a position to stop it. What it *cannot* do is override the seat: on a name collision
+`.grok/config.toml` wins, and two tests hold that down — one for the collision and one
+control proving the committed file is genuinely loaded when nothing outranks it, because
+"the seat won" and "the rival never entered" look identical from the outside.
+
+## One thing that is not solved
 
 **`codex` is declared and deliberately not implemented.** It was not installed on the
 machine this was written on, so its version string, its flags and its config mechanism

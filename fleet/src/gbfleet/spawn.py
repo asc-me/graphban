@@ -89,6 +89,12 @@ class Launch:
     seat_path: Path
     config: dict
     instruction: str
+    #: The on-disk language `seat_path` must be written in. Carried on the Launch rather
+    #: than inferred from the suffix: a `.toml` path written as JSON is a file the vendor
+    #: silently ignores, and guessing from an extension is how that mistake gets made
+    #: twice. `adapters.Adapter.seat_format` is the source, and a test asserts every
+    #: adapter's `launch()` actually passes its own.
+    seat_format: str = seat_mod.JSON
     #: What `--version` reported for the binary that will run. Carried so the child's
     #: record can name the build (S6), not just the vendor.
     binary_version: str = ""
@@ -166,7 +172,7 @@ def spawn(
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    seat_mod.write(launch.seat_path, launch.config)
+    seat_mod.write(launch.seat_path, launch.config, launch.seat_format)
 
     env = {**os.environ, **launch.env}
     started = time.monotonic()
