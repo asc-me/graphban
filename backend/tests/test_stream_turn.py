@@ -137,7 +137,13 @@ def test_anthropic_stream_yields_text_then_returns_tool_use(monkeypatch):
 
     assert deltas == ["Mark", "ing done."] and turn.text == "Marking done."
     assert turn.tool_calls == [ToolCall(id="toolu_1", name="update_item", input={"status": "done"})]
-    assert turn.wants_tools and turn.usage == {"input": 12, "output": 4}
+    # Cache accounting rides along on every Anthropic turn (GRPH-226). Both zero here is the
+    # meaningful reading, not padding: prompt caching is deferred while the stable prefix is
+    # below the model's minimum, and zeros are exactly what the documentation says to look for
+    # to know a prompt was NOT cached. Asserted rather than omitted, so enabling caching later
+    # has to change this line.
+    assert turn.wants_tools and turn.usage == {
+        "input": 12, "output": 4, "cache_read": 0, "cache_write": 0}
     # the assistant content blocks were echoed into history verbatim (replay pattern)
     assert session.messages[-1] == {"role": "assistant", "content": message.content}
 

@@ -59,6 +59,28 @@ class AnthropicChat:
         return AnthropicToolSession(self, system, context, question)
 
 
+#: Prompt-cache accounting, carried on every turn (GRPH-226).
+#:
+#: **Recorded before caching is enabled, deliberately.** The documented behaviour is that a
+#: prompt below the model's minimum cacheable length is "processed without caching, and no
+#: error is returned" — so a `cache_control` breakpoint that does nothing is indistinguishable
+#: from one that works, unless somebody is reading these two numbers. The docs name them as
+#: the way to tell: if both are 0, the prompt was not cached.
+#:
+#: Extra keys rather than a new shape, because every consumer reads this dict with `.get`.
+def _usage(usage) -> dict | None:
+    if usage is None:
+        return None
+    return {
+        "input": getattr(usage, "input_tokens", 0),
+        "output": getattr(usage, "output_tokens", 0),
+        # Both absent on providers that do not cache, and 0 on Anthropic when the prefix fell
+        # short. Those two cases are different and neither is "it worked".
+        "cache_read": getattr(usage, "cache_read_input_tokens", 0) or 0,
+        "cache_write": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+    }
+
+
 class AnthropicToolSession:
     """Owns the Anthropic-format message history for one tool-calling conversation."""
 
@@ -89,8 +111,7 @@ class AnthropicToolSession:
         usage = getattr(message, "usage", None)
         return ToolTurn(text="".join(text), tool_calls=calls,
                         wants_tools=message.stop_reason == "tool_use",
-                        usage={"input": getattr(usage, "input_tokens", 0),
-                               "output": getattr(usage, "output_tokens", 0)} if usage else None)
+                        usage=_usage(usage))
 
     def stream_turn(self, tools: list[ToolSpec]):
         """Streaming run_turn (AL-183): yield text deltas, then return the ToolTurn.
@@ -114,8 +135,7 @@ class AnthropicToolSession:
         usage = getattr(message, "usage", None)
         return ToolTurn(text="".join(text_parts), tool_calls=calls,
                         wants_tools=message.stop_reason == "tool_use",
-                        usage={"input": getattr(usage, "input_tokens", 0),
-                               "output": getattr(usage, "output_tokens", 0)} if usage else None)
+                        usage=_usage(usage))
 
     def add_results(self, results: list[ToolResult]) -> None:
         # Anthropic: a SINGLE user message carrying all tool_result blocks.
