@@ -486,6 +486,69 @@ def _mcp(payload: dict, id_: int = 1) -> httpx.Response:
                                      "result": {"structuredContent": payload}})
 
 
+#: Prose that claims a tool is NOT in a set. ONE definition, used by the guard and by the test
+#: that proves the guard still matches — two copies would drift, and the proof-test would keep
+#: passing against its own stale copy while the guard went blind. That is the same failure
+#: `test_mcp_footprint` names: a figure derived the same way on both sides of an assertion
+#: agrees by construction and can never fail.
+_ABSENT = r"\b(?:absent|not in|excluded|withheld)\b"
+
+
+def _tools_claimed_absent(text: str) -> set[str]:
+    import re
+
+    return (
+        {m.group(1) for m in re.finditer(rf"`(\w+)`[^.]{{0,80}}?{_ABSENT}", text)}
+        | {m.group(1) for m in re.finditer(rf"{_ABSENT}[^.]{{0,80}}?`(\w+)`", text)}
+    )
+
+
+def test_the_cli_docstring_does_not_contradict_the_tool_set():
+    """The entry point's docstring is the first thing a reader opens to learn what the binary
+    may do, and it said `claim_next` was *deliberately absent* from `WORKER_TOOLS` long after a
+    later slice put it there (GRPH-562). Not a stale TODO: it stated a SECURITY property, in a
+    module docstring, using the word "deliberately" — so it read as a decision rather than as
+    rot, and someone reasoning about worker authority from that file would conclude the wrong
+    thing. The file even contradicted itself; `assignment_for` below already said `--item` is
+    optional and the model claims for itself.
+
+    Checked against the SET rather than against the one sentence that was wrong, so the guard
+    catches the next drift too: no tool may be described as absent while it is present.
+    """
+    from gbagent import cli
+    from gbagent.coord import WORKER_TOOLS
+
+    doc = cli.__doc__ or ""
+    # THE GUARD MUST HAVE SOMETHING TO READ. Pointed at an empty string — a renamed module, a
+    # moved docstring, `__doc__` stripped under -OO — every assertion below passes on nothing,
+    # which is this file's own subject matter one level up. Found by sabotage: emptying `doc`
+    # left the suite green.
+    assert "WORKER_TOOLS" in doc, (
+        "the cli docstring no longer discusses WORKER_TOOLS, so this guard is reading a "
+        "document that cannot contain the claim it checks for")
+
+    wrong = sorted(_tools_claimed_absent(doc) & WORKER_TOOLS)
+
+    assert not wrong, (
+        f"the cli docstring says {wrong} is absent from WORKER_TOOLS, and it is present. A "
+        "tool set is a declaration of intent, not an enforcement boundary — but a docstring "
+        "that describes it wrongly is read as the boundary")
+
+
+def test_the_docstring_guard_matches_the_sentence_it_was_written_for():
+    """The pattern, driven against the ORIGINAL false sentence. Without this the guard could
+    stop matching anything — a regex that finds nothing reports a clean docstring."""
+    from gbagent.coord import WORKER_TOOLS
+
+    original = ("It can orient itself — S6 advertises the graph reads — but `claim_next` is "
+                "deliberately absent from `coord.WORKER_TOOLS`, so it cannot pick up its own "
+                "work.")
+    found = _tools_claimed_absent(original)
+
+    assert "claim_next" in found, "the pattern no longer matches the sentence this exists for"
+    assert found & WORKER_TOOLS, "the guard would not have flagged the original docstring"
+
+
 def test_the_worker_set_is_pinned_and_is_not_the_supervisors():
     """A test that only asserts `sign_off not in WORKER_TOOLS` passes for every widening.
 
