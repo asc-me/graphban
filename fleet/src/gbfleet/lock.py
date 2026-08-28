@@ -19,15 +19,18 @@ exactly when a new supervisor must adopt its orphaned children rather than start
 beside them. Acquiring after a crash therefore must not look identical to acquiring
 fresh, so `acquire` reports which happened.
 
-Caveat worth stating: `flock` on a networked filesystem is unreliable. A repository on
-NFS or SMB is outside what this can promise, and the supervisor runs on the developer's
-own machine by design (PRD-22 §7 rules out remote spawn).
+Caveat worth stating: file locking on a networked filesystem is unreliable. A repository
+on NFS or SMB is outside what this can promise, and the supervisor runs on the
+developer's own machine by design (PRD-22 §7 rules out remote spawn).
+
+The lock itself lives in `hostos`, which explains why Windows takes it on a byte at a
+non-zero offset rather than on the whole file: `msvcrt.locking` is mandatory, so a lock
+over the holder record would stop the refused process reading the very record it needs
+in order to say who is holding it.
 """
 
 from __future__ import annotations
 
-import errno
-import fcntl
 import json
 import os
 from contextlib import contextmanager
@@ -37,6 +40,7 @@ from pathlib import Path
 from typing import Iterator
 
 from . import __version__
+from .hostos import AlreadyLocked, lock_exclusive, read_at, write_at
 from .state import lock_path, repo_root
 
 _FILE_MODE = 0o600
@@ -149,22 +153,24 @@ def hold(repo: Path | str, state: Path | str | None = None) -> Iterator[Acquired
     try:
         os.chmod(path, _FILE_MODE)  # O_CREAT's mode is masked by the umask
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            if exc.errno not in (errno.EACCES, errno.EAGAIN):
-                raise
-            raw = os.pread(fd, 4096, 0).decode("utf-8", "replace").strip()
+            lock_exclusive(fd)
+        except AlreadyLocked:
+            # Reading the holder record while another process holds the lock is only
+            # possible because the lock is taken on a byte PAST the record — see
+            # `hostos._LOCK_BYTE`. On Windows the lock is mandatory, and a lock on byte
+            # 0 would make this read fail and this error message useless.
+            raw = read_at(fd, 4096, 0).decode("utf-8", "replace").strip()
             raise RepoLocked(path, Holder.parse(raw) if raw else None) from None
 
         acquired = True
-        previous = os.pread(fd, 4096, 0).decode("utf-8", "replace").strip()
+        previous = read_at(fd, 4096, 0).decode("utf-8", "replace").strip()
         takeover = Takeover(Holder.parse(previous), previous) if previous else None
 
         holder = Holder(
             pid=os.getpid(), repo=str(root), acquired_at=_now(), version=__version__
         )
         os.ftruncate(fd, 0)
-        os.pwrite(fd, holder.as_json().encode("utf-8"), 0)
+        write_at(fd, holder.as_json().encode("utf-8"), 0)
         os.fsync(fd)
 
         yield Acquired(path=path, holder=holder, takeover=takeover)

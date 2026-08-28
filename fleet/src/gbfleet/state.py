@@ -19,21 +19,27 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-#: Only the owner. On Linux `/tmp` is shared, so the uid is in the directory name as
-#: well as the mode — not as a security boundary (PRD-22 D-k is explicit that there
+from .hostos import user_tag
+
+#: Only the owner. On Linux `/tmp` is shared, so the user tag is in the directory name
+#: as well as the mode — not as a security boundary (PRD-22 D-k is explicit that there
 #: isn't one) but so two accounts on one host do not silently contend for a lock.
+#: Windows gives each account its own temp directory, so there the name is redundant
+#: and the mode is close to meaningless; both are kept so the path reads the same.
 _DIR_MODE = 0o700
 
 
 class UnsupportedPlatform(RuntimeError):
-    """POSIX only. `fcntl.flock` and `os.getuid` are what the lock is built on."""
+    """Neither POSIX nor Windows. Kept because `hostos` implements exactly two hosts,
+    and a third would silently take whichever branch was not guarded."""
 
 
-def _require_posix() -> None:
-    if os.name != "posix":
+def _require_supported() -> None:
+    if os.name not in ("posix", "nt"):
         raise UnsupportedPlatform(
-            f"gbfleet needs a POSIX host (found os.name={os.name!r}). The supervisor's "
-            "lock relies on the kernel releasing an flock when a process dies."
+            f"gbfleet supports POSIX and Windows hosts (found os.name={os.name!r}). "
+            "The supervisor's lock relies on the kernel releasing it when a process "
+            "dies, and `hostos` implements that for those two only."
         )
 
 
@@ -43,10 +49,17 @@ def state_root() -> Path:
     Created 0700 explicitly rather than via `mkdir(mode=...)`, because that mode is
     masked by the umask and a permissive umask would leave it wider than it reads.
     """
-    _require_posix()
-    root = Path(tempfile.gettempdir()) / f"gbfleet-{os.getuid()}"
+    _require_supported()
+    root = Path(tempfile.gettempdir()) / f"gbfleet-{user_tag()}"
     root.mkdir(exist_ok=True)
-    root.chmod(_DIR_MODE)
+    try:
+        root.chmod(_DIR_MODE)
+    except (NotImplementedError, OSError):
+        # Windows `chmod` only understands the read-only bit, and 0o700 there is a
+        # gesture rather than a restriction. Not an error: each account already gets
+        # its own temp directory, which is what the mode was buying on shared /tmp.
+        if os.name != "nt":
+            raise
     return root
 
 
