@@ -9,10 +9,22 @@ round — a model name that did not exist, found days later as a grill that woul
 The adapter cannot ask an endpoint itself (only two modules in this package may open a socket),
 so it shells out to here.
 
-**`run` refuses when it has no item.** It can orient itself — S6 advertises the graph reads —
-but `claim_next` is deliberately absent from `coord.WORKER_TOOLS`, so it cannot pick up its own
-work. Rather than start, do nothing useful and exit 0, it says which slice owns the gap. A
-child that starts and quietly achieves nothing is the failure PRD-22 keeps naming.
+**`run` can pick up its own work.** `--item` is optional from S7 on: without one the model
+calls `claim_next` itself, which is in `coord.WORKER_TOOLS` along with the rest of
+`COORDINATION_TOOLS`.
+
+This paragraph used to say the opposite, and was true when written — a later slice wired the
+thing it described as unwired, and the prose did not follow (GRPH-562). Corrected rather than
+deleted, because the mistake is worth not repeating: **a tool set is a declaration of intent,
+not an enforcement boundary**, so a docstring reasoning about authority from set membership is
+describing the wrong object. The file even disagreed with itself — `assignment_for` below has
+said all along that the model claims for itself.
+
+What actually stops a worker overreaching is on the server: `TOOL_ROLES` gates what a
+credential may call, `independent()` refuses a sign-off from the author whatever tools it
+holds, and D5 clamps a worker at `review` — done is not the agent's word. `assert not
+WORKER_TOOLS & ALLOWED_TOOLS` pins that a worker is not a supervisor, which is the one thing
+the set itself is good for.
 """
 from __future__ import annotations
 
