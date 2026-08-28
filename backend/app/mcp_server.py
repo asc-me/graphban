@@ -125,7 +125,7 @@ TOOLS: list[dict[str, Any]] = [
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
                 "status": {"type": "string", "enum": _STATUS_ENUM, "description": "Defaults to backlog."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
-                             "description": "`low` (specifiable now) or `high` (needs a prototype first). Defaults to low."},
+                             "description": "low = specifiable now; high = needs a prototype. Default low."},
                 "prd_id": {"type": "string", "description": "The PRD this task implements (traceability)."},
                 "prd_section": {"type": "string", "description": "The PRD section this task implements."},
             },
@@ -150,7 +150,7 @@ TOOLS: list[dict[str, Any]] = [
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
                 "blocker": {"type": "string", "description": "Free-text blocker; empty string clears it."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,
-                             "description": "`low` or `high` (needs a prototype first)."},
+                             "description": "high = needs a prototype first."},
                 "prd_id": {"type": "string"},
                 "prd_section": {"type": "string"},
                 "evidence": {
@@ -777,11 +777,16 @@ TOOLS: list[dict[str, Any]] = [
         "name": "get_code_map",
         "description": (
             "The project's code graph: described nodes (path, kind, summary, fresh) and the typed "
-            "edges between them. Optionally filter by `kind`. Read the codebase's shape without a checkout."
+            "edges between them. "
+            f"Max {code_svc.DEFAULT_MAP_NODES} nodes unless `limit:0`; check `truncated`."
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"kind": {"type": "string", "enum": code_svc.NODE_KINDS}},
+            "properties": {
+                "kind": {"type": "string", "enum": code_svc.NODE_KINDS},
+                "limit": {"type": "integer"},
+                "offset": {"type": "integer"},
+            },
         },
     },
     {
@@ -1407,6 +1412,8 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {
             "nodes": {"type": "array"}, "edges": {"type": "array"},
+            # PROJECT TOTALS, not the size of this page — `returned_nodes` is that. A page
+            # that reported its own size here would read as a small complete map (GRPH-146).
             "node_count": {"type": "integer"}, "edge_count": {"type": "integer"},
             # Declared because an agent reads this to decide whether it may reason from the
             # map at all (GRPH-54). Null is a real value here, not an absence: it means the
@@ -2743,7 +2750,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             revision=str(args.get("revision", "")),
         )
     if name == "get_code_map":
-        return code_svc.get_code_map(db, pid, kind=args.get("kind"))
+        # Bounded BY DEFAULT (GRPH-146). An agent that omits `limit` gets a page rather than
+        # a project's entire graph, because the caller who does not know to ask is exactly
+        # the one who cannot afford the answer. `limit: 0` is the explicit opt-out.
+        limit = args.get("limit", code_svc.DEFAULT_MAP_NODES)
+        limit = None if isinstance(limit, int) and limit <= 0 else limit
+        return code_svc.get_code_map(db, pid, kind=args.get("kind"),
+                                     limit=limit, offset=args.get("offset") or 0)
     if name == "code_neighbors":
         return code_svc.neighbors(db, pid, args["path"])
     if name == "graph_query":

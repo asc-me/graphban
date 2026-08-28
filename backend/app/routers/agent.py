@@ -162,9 +162,13 @@ def _build_code_context(db: Session, project_id: str, hits) -> str:
     """Ground the ChatModel in the code graph: the semantically-matched nodes, then the
     dependency edges and touching work around the strongest hits — so the model can answer
     'what depends on X' from real edges instead of prose."""
-    stats = code_svc.get_code_map(db, project_id)
+    # COUNTS, not the graph. This built the entire map — every node with its summary, every
+    # edge — to print two integers, on a path that runs per chat message. Two COUNT queries
+    # answer the same question without materialising a row (GRPH-146, and the read GRPH-55
+    # names first).
     parts = [
-        f"Code graph: {stats['node_count']} described nodes, {stats['edge_count']} edges."
+        f"Code graph: {code_svc.count_nodes(db, project_id)} described nodes, "
+        f"{code_svc.count_edges(db, project_id)} edges."
     ]
     if not hits:
         parts.append(
@@ -210,7 +214,14 @@ def _code_hits(db: Session, message: str, project_id: str):
 
 @router.get("/code/map", response_model=CodeMapOut)
 def code_map(project_id: str | None = None, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    """The project's code graph — every described node and typed edge. Powers the graph view."""
+    """The project's code graph — every described node and typed edge. Powers the graph view.
+
+    **Deliberately unbounded, and the only caller that should be** (GRPH-146). The view draws
+    the whole graph with a force-directed layout; a page would produce a picture of an
+    arbitrary fifth of the codebase with no way to tell from looking. The MCP tool bounds by
+    default because an agent pays for it in context and can ask for the next page; a canvas
+    cannot. If this becomes a problem it needs viewport culling, not a limit parameter.
+    """
     pid = _readable_pid(db, user, project_id)
     payload = code_svc.get_code_map(db, pid)
     # D4: the arrows out ride along with the map the graph already fetches, rather than a
