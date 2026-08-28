@@ -112,7 +112,12 @@ def test_the_doc_only_names_settings_that_exist():
                "CREDENTIAL_RETRY_SECONDS", "NPM_CONFIG_MINIMUM_RELEASE_AGE",
                # Real, and read by the `anthropic` SDK itself rather than through Settings —
                # which the document already says in its own Notes column.
-               "ANTHROPIC_API_KEY"}
+               "ANTHROPIC_API_KEY",
+               # Same shape: read by UVICORN from the environment, not through Settings, which
+               # is why the fix for GRPH-477 is a deployment variable and no code change. It
+               # belongs in the reference because an operator who does not set it gets an API
+               # that silently discards X-Forwarded-Proto — and the document says so.
+               "FORWARDED_ALLOW_IPS"}
     known = {n.upper() for n in Settings.model_fields} | compose
     # Only the FIRST cell of a table row — the Var column. Scanning the whole row picks up
     # DEFAULTS (`HS256`, `INFO`) and reads them as variable names, which is a test failing on
