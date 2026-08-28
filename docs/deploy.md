@@ -69,9 +69,22 @@ The template is shared between both, so this is one variable, not one value.
 ## Deploy
 
 ```bash
-scripts/deploy.sh              # ships origin/main
-scripts/deploy.sh <ref>        # ships any ref
+scripts/deploy.sh                      # ships origin/main to the default host
+scripts/deploy.sh <ref>                # ships any ref
+scripts/deploy.sh --host box.local     # ships to any host over ssh
+scripts/deploy.sh --local              # ships to THIS machine, no ssh hop
+scripts/deploy.sh --dir /srv/graphban  # a target directory other than ~/agentledger
 ```
+
+`GRAPHBAN_DEPLOY_HOST` and `GRAPHBAN_DEPLOY_DIR` set the same two things, so a box you deploy
+to often does not need a flag every time. `--local` is what a Mac Studio or a Linux server
+running the stack on itself wants: same worktree, same verification, one fewer hop.
+
+**Ports and the Postgres role are read from the target's `.env`**, not assumed — with
+compose's own defaults (`8000`, `8080`, `agentledger`) as the fallback, so an install that
+sets nothing still verifies correctly. This deployment overrides them (`API_PORT=8001`), and
+the script used to hardcode that: on any other install it polled a port nothing served, and a
+perfectly good deploy reported as broken.
 
 **It syncs from a detached worktree at `../agentledger-wt-deploy`, not from your checkout.**
 `rsync` ships whatever is on disk, and that stopped being a safe assumption the day agents

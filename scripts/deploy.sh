@@ -17,12 +17,58 @@
 # It also removes the `GIT_SHA` trap the runbook documents at length: the sha comes from the
 # worktree itself rather than from a variable a human has to remember to export twice.
 #
-# Usage:  scripts/deploy.sh [ref]        # default: origin/main
+# WHERE it deploys is configuration, not a constant (GRPH-573). This script was hardcoded to
+# one host, one directory, one pair of ports and one Postgres role — so the runbook the product
+# recommends worked for exactly one person, and everybody else deployed by hand. Deploying by
+# hand is what the two incidents above are.
+#
+# Ports and credentials are READ FROM THE TARGET'S `.env`, which is where they are already
+# defined, rather than assumed. The old script asserted `localhost:8001`, which is true only of
+# this repository's box because that box had `:8000` busy — on a default install it checked a
+# port nothing was serving and would have reported a healthy deploy as broken.
+#
+# Usage:
+#   scripts/deploy.sh                       # origin/main to $GRAPHBAN_DEPLOY_HOST
+#   scripts/deploy.sh v1.2.3                # any ref
+#   scripts/deploy.sh --host box.local      # any host
+#   scripts/deploy.sh --local               # this machine, no ssh
+#   GRAPHBAN_DEPLOY_HOST=box scripts/deploy.sh
 set -euo pipefail
 
-REF="${1:-origin/main}"
-REMOTE="ubuntu-srv"
-REMOTE_DIR="~/agentledger/"
+REMOTE="${GRAPHBAN_DEPLOY_HOST:-ubuntu-srv}"
+TARGET_DIR="${GRAPHBAN_DEPLOY_DIR:-~/agentledger/}"
+LOCAL=""
+REF=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --host) REMOTE="${2:?--host needs a hostname}"; shift 2 ;;
+    --dir)  TARGET_DIR="${2:?--dir needs a path}"; shift 2 ;;
+    # A local deploy still ships a COMMIT to a target directory rather than running compose in
+    # your checkout. Same guarantee, one fewer hop — the worktree is the point, not the ssh.
+    --local) LOCAL=1; REMOTE="(local)"; shift ;;
+    -h|--help) sed -n '20,28p' "$0"; exit 0 ;;
+    *) REF="$1"; shift ;;
+  esac
+done
+REF="${REF:-origin/main}"
+TARGET_DIR="${TARGET_DIR/#\~/$HOME}"
+
+# One place that knows whether there is an ssh hop, so every later step reads the same for a
+# remote and a local deploy and neither can drift from the other.
+on_target() {
+  if [ -n "$LOCAL" ]; then bash -lc "$1"; else ssh "$REMOTE" "$1"; fi
+}
+
+# A value the target already declares, or the compose default. Never a guess: a wrong port here
+# fails a good deploy, which teaches people to ignore the verification.
+target_env() {
+  local key="$1" default="$2" val=""
+  val="$(on_target "grep -sE '^${key}=' '${TARGET_DIR%/}/.env' | tail -1 | cut -d= -f2-" 2>/dev/null || true)"
+  val="$(printf '%s' "$val" | tr -d '[:space:]\"'"'"'')"
+  printf '%s' "${val:-$default}"
+}
+
 WORKTREE="$(cd "$(dirname "$0")/.." && pwd)/../agentledger-wt-deploy"
 
 cd "$(dirname "$0")/.."
@@ -50,26 +96,42 @@ echo "==> shipping $GIT_SHA ($(git -C "$WORKTREE" log -1 --format=%s | cut -c1-6
 # --exclude .env: there is no local one, so a bare --delete would DELETE the server's, and
 #   compose then reverts to default ports while the persisted volume keeps the old password.
 # --exclude sync: root-owned, container-written on the server; rsync fails exit 23 without it.
-rsync -az --delete \
-  --exclude .git --exclude .env --exclude sync \
-  --exclude node_modules --exclude dist --exclude __pycache__ \
-  --exclude .venv --exclude .serena \
-  "$WORKTREE/" "$REMOTE:$REMOTE_DIR"
+if [ -n "$LOCAL" ]; then
+  mkdir -p "$TARGET_DIR"
+  rsync -a --delete \
+    --exclude .git --exclude .env --exclude sync \
+    --exclude node_modules --exclude dist --exclude __pycache__ \
+    --exclude .venv --exclude .serena \
+    "$WORKTREE/" "$TARGET_DIR"
+else
+  rsync -az --delete \
+    --exclude .git --exclude .env --exclude sync \
+    --exclude node_modules --exclude dist --exclude __pycache__ \
+    --exclude .venv --exclude .serena \
+    "$WORKTREE/" "$REMOTE:$TARGET_DIR"
+fi
 
 echo "==> building on $REMOTE"
-ssh "$REMOTE" "cd ~/agentledger && GIT_SHA=$GIT_SHA docker compose up -d --build" >/dev/null
+on_target "cd '$TARGET_DIR' && GIT_SHA=$GIT_SHA docker compose up -d --build" >/dev/null
 
-echo "==> verifying release identity"
+# Read AFTER the sync, so a first deploy to a fresh box sees the .env it just arrived beside.
+# Defaults are compose's own, so an install that sets nothing still verifies correctly.
+API_PORT="$(target_env API_PORT 8000)"
+WEB_PORT="$(target_env WEB_PORT 8080)"
+PG_USER="$(target_env POSTGRES_USER agentledger)"
+PG_DB="$(target_env POSTGRES_DB agentledger)"
+
+echo "==> verifying release identity (api :$API_PORT, web :$WEB_PORT)"
 for _ in $(seq 1 30); do
-  LIVE="$(ssh "$REMOTE" 'curl -s http://localhost:8001/health' 2>/dev/null || true)"
+  LIVE="$(on_target "curl -s http://localhost:$API_PORT/health" 2>/dev/null || true)"
   echo "$LIVE" | grep -q '"status":"ok"' && break
   sleep 2
 done
 
 LIVE_SHA="$(echo "$LIVE" | sed -n 's/.*"git_sha":"\([^"]*\)".*/\1/p')"
-WEB_SHA="$(ssh "$REMOTE" 'curl -s http://localhost:8080/version.txt' 2>/dev/null | tr -d '[:space:]')"
-MIGRATION="$(ssh "$REMOTE" 'cd ~/agentledger && docker compose exec -T db \
-  psql -U agentledger -d agentledger -tAc "select version_num from alembic_version"' | tr -d '[:space:]')"
+WEB_SHA="$(on_target "curl -s http://localhost:$WEB_PORT/version.txt" 2>/dev/null | tr -d '[:space:]')"
+MIGRATION="$(on_target "cd '$TARGET_DIR' && docker compose exec -T db \
+  psql -U '$PG_USER' -d '$PG_DB' -tAc 'select version_num from alembic_version'" | tr -d '[:space:]')"
 
 echo "    api      $LIVE_SHA"
 echo "    web      $WEB_SHA"
