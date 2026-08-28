@@ -106,9 +106,20 @@ class GbAgent(Adapter):
                  and not line.startswith(("#", " ", "\t"))}
         return frozenset(names) or None
 
+    def debug_argv(self, path: Path) -> list[str]:
+        """Nothing yet, and this one is ours.
+
+        `gbagent run` takes no debug or verbose flag. Unlike the vendor CLIs that is
+        fixable rather than a fact of life — it has a per-turn trace already (GRPH-506),
+        it simply has no way to be told to write it somewhere. Left as [] rather than
+        half-wired, so the support matrix does not claim a capability that is not there.
+        """
+        return []
+
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
-        model: str = "", tuning: Tuning | None = None,
+        model: str = "", tuning: Tuning | None = None, *,
+        debug_file: Path | None = None,
     ) -> Launch:
         seat_file = self.seat_path(tree.path)
         return Launch(

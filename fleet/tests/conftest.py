@@ -86,6 +86,51 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
 
     write("exits_immediately", "pass\n")
 
+    # A child that is ALIVE and says nothing, which is the case the roster cannot
+    # distinguish from a busy one and `progress` exists to surface (GRPH-579).
+    write("silent_then_exits", "import time\ntime.sleep(1.5)\n")
+
+    # The realistic stuck child: it worked, and then it stopped. Distinct from
+    # `silent_then_exits`, which never wrote at all — that one exercises NEVER_WROTE and
+    # leaves the numeric silence path untested, which sabotage caught (GRPH-579).
+    write(
+        "talks_then_stalls",
+        "import sys, time\n"
+        "sys.stdout.write('starting work\\n')\n"
+        "sys.stdout.flush()\n"
+        "time.sleep(1.5)\n",
+    )
+
+    # ...and the one that comes back. A child quiet for a while and then productive
+    # again must stop being reported as quiet, or the summary accuses a working child.
+    # It must still be TALKING when it exits, not merely have talked once. A child that
+    # speaks and then falls silent again for its last half-second is quiet at the end,
+    # and reporting it is correct — the first version of this stand-in tested the
+    # opposite of what it claimed.
+    write(
+        "stalls_then_talks",
+        "import sys, time\n"
+        "time.sleep(1.0)\n"
+        "end = time.time() + 0.6\n"
+        "while time.time() < end:\n"
+        "    sys.stdout.write('back at work\\n')\n"
+        "    sys.stdout.flush()\n"
+        "    time.sleep(0.05)\n",
+    )
+
+    # ...and its control. Same lifetime, same exit, the only difference is that this one
+    # produces output — so a test asserting the quiet one is reported has something to
+    # compare against, rather than asserting a property nothing could fail.
+    write(
+        "chatty_then_exits",
+        "import sys, time\n"
+        "end = time.time() + 1.5\n"
+        "while time.time() < end:\n"
+        "    sys.stdout.write('working\\n')\n"
+        "    sys.stdout.flush()\n"
+        "    time.sleep(0.05)\n",
+    )
+
     # Long enough for the supervisor's wait loop to poll several times, short enough
     # that the wave ends on its own. `works_then_exits` is gone before the loop runs at
     # all, which makes it useless for anything about what happens WHILE a child works.

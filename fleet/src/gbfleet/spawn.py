@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 from . import seat as seat_mod
 from .hostos import ProcessTree, spawn_kwargs
+from .progress import Output
 from .seat import Seat
 
 #: How long a child gets to register before it is presumed broken. Seconds, not the
@@ -108,6 +109,12 @@ class Launch:
     #: on the machine, stdin is not. `grok` takes `--prompt-file` and needs neither.
     stdin_file: Path | None = None
     env: dict[str, str] = field(default_factory=dict)
+    #: Where this vendor was told to write a debug log, or None when it has no flag for
+    #: one. `None` is a real answer and the supervisor reports it: `cursor-agent` and
+    #: `gbagent` have no debug flag at all, and an operator who asked for `--debug` and
+    #: silently got nothing from half the fleet has been misled about how much they can
+    #: see (GRPH-579).
+    debug_path: Path | None = None
 
 
 @dataclass
@@ -127,6 +134,13 @@ class Child:
     #: POSIX gets this from a session and `killpg`; Windows from a job object. `None`
     #: only for a `Child` built by hand, which `stop` handles by falling back to the pid.
     tree: "ProcessTree | None" = None
+    #: Reads the child's log files to answer "is it producing anything?" — the only
+    #: liveness signal that needs no network and no cooperation from the vendor. See
+    #: `progress.Output` for why silence is reported and never acted on.
+    output: "Output | None" = None
+    #: Where the vendor was told to write its debug log, when it can. None means this
+    #: adapter has no such flag, which is reported rather than left to be inferred.
+    debug_path: Path | None = None
     agent_id: str | None = None
     binary_version: str = ""
     #: The enrolment's ROW id, read off the roster once the child registers. Never the
@@ -214,6 +228,11 @@ def spawn(
         started_at=started,
         log_dir=log_dir,
         tree=ProcessTree(process),
+        output=Output.watching(
+            [p for p in (log_dir / _STDOUT, log_dir / _STDERR, launch.debug_path) if p],
+            started_at=started,
+        ),
+        debug_path=launch.debug_path,
         binary_version=launch.binary_version,
     )
 

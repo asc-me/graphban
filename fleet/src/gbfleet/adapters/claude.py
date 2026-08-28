@@ -71,9 +71,19 @@ class ClaudeCode(Adapter):
     # the support matrix says so. Inherits `known_models` -> None deliberately rather than
     # returning an empty set, which would refuse every model instead of checking none.
 
+    def debug_argv(self, path: Path) -> list[str]:
+        """`--debug-file <path>`, which `--help` says "implicitly enables debug mode".
+
+        So `--debug` is NOT also passed: it takes an optional category filter, and a bare
+        `-d` sitting next to a positional would be one more chance for the filter to
+        swallow something it should not.
+        """
+        return ["--debug-file", str(path)]
+
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
-        model: str = "", tuning: Tuning | None = None,
+        model: str = "", tuning: Tuning | None = None, *,
+        debug_file: Path | None = None,
     ) -> Launch:
         seat_file = self.seat_path(tree.path)
         return Launch(
@@ -82,6 +92,8 @@ class ClaudeCode(Adapter):
             argv=[
                 str(binary),
                 "--print",
+                # Before POINTER, which is positional: a flag after it is prompt text.
+                *(self.debug_argv(debug_file) if debug_file else []),
                 "--mcp-config", str(seat_file),
                 *self.model_argv(model),
                 *self.tuning_argv(tuning or Tuning()),
@@ -92,6 +104,7 @@ class ClaudeCode(Adapter):
                 POINTER,
             ],
             seat_path=seat_file,
+            debug_path=debug_file,
             config=seat.mcp_config(),
             instruction="",
             stdin_file=instruction_file,

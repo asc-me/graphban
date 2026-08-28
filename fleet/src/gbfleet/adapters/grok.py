@@ -111,9 +111,19 @@ class Grok(Adapter):
                 names.add(token)
         return frozenset(names) or None
 
+    def debug_argv(self, path: Path) -> list[str]:
+        """`--debug` plus `--debug-file <FILE>`, both in `--help` on 1.0.5.
+
+        Both are passed. `--debug-file` alone is not documented to imply `--debug` the
+        way claude's does, and asking for a file without turning logging on is the sort
+        of thing that produces an empty file and a confident operator.
+        """
+        return ["--debug", "--debug-file", str(path)]
+
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
-        model: str = "", tuning: Tuning | None = None,
+        model: str = "", tuning: Tuning | None = None, *,
+        debug_file: Path | None = None,
     ) -> Launch:
         return Launch(
             adapter=self.name,
@@ -124,6 +134,7 @@ class Grok(Adapter):
                 # is never started, and the child runs to completion with no tools and
                 # no complaint. It is the difference between a worker and an expense.
                 "--trust",
+                *(self.debug_argv(debug_file) if debug_file else []),
                 "--prompt-file", str(instruction_file),
                 "--cwd", str(tree.path),
                 *self.model_argv(model),
@@ -131,6 +142,7 @@ class Grok(Adapter):
             ],
             seat_path=self.seat_path(tree.path),
             seat_format=self.seat_format,
+            debug_path=debug_file,
             config=seat.mcp_config(),
             instruction="",
         )
