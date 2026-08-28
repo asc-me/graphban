@@ -291,6 +291,34 @@ class OrgInvite(Base):
     accepted_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
+class PasswordReset(Base):
+    """A single-use link back into an account whose password is forgotten (GRPH-359).
+
+    Modelled on `OrgInvite` — a token, an expiry, and a terminal state — with one deliberate
+    difference: **the token is stored HASHED.** An invite token addresses a pending offer; a
+    reset token IS a credential for an existing account, so a database read, a backup, or a
+    log line containing this row must not yield a working link. `token_hash` is what the
+    lookup keys on, and the plaintext exists only in the email.
+
+    `used_at` is what makes it single-use, and it is set on SUCCESS rather than on first
+    sight, so a link is not burned by a request that failed validation.
+    """
+
+    __tablename__ = "password_resets"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # pwr_...
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    # sha256 of the emailed token. Unique so a collision is a database error rather than an
+    # ambiguous lookup that silently resets the wrong account.
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # What asked for it. Not used for a decision — kept so an operator investigating "who
+    # requested resets for this account" has an answer that is not just a timestamp.
+    requested_ip: Mapped[str] = mapped_column(String, default="")
+
+
 class Membership(Base):
     __tablename__ = "memberships"
 

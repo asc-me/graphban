@@ -9,6 +9,7 @@ Alembic; SQLite (tests / zero-infra dev) uses `create_all`.
 | --- | --- | --- |
 | `users` | `id` (`u1`, `u_…`) | Account: name, handle, email, avatar, initials, password hash |
 | `projects` | `id` (`core`) | Project: name, **`tag`** (unique, 2–4 chars), accent, visibility, description, flags (`share_global_memory`, `auto_extract`, `mcp_enabled`, `embed_model`) |
+| `password_resets` | `id` (`pwr_…`) | A single-use way back into an account: **`token_hash`** (sha256 — the plaintext exists only in the email), `expires_at`, `used_at` set on success, `requested_ip` for provenance |
 | `memberships` | `id` | User ↔ project with `role` (owner/admin/member) + `access` (write/read/none) |
 | `items` | `id` (frozen at issue) | Tracker item: **`number`** (unique per project), title, description, `status`, tags, effort, `sort_order`, blocker, reporter, `pr` (JSON), date |
 | `memory_shards` | `id` (`m1`, `m_…`) | Shard: text, `scope`, source, optional `item_id`, `embedding` (vector), `fresh` |
