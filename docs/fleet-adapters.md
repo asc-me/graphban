@@ -429,7 +429,58 @@ declarations and a version string, for somebody with the binary in front of them
 `claude` gets `--dangerously-skip-permissions`; `cursor-agent` gets `--force`,
 `--approve-mcps` and `--trust`. There is nobody to answer a prompt in a headless run.
 
+**`grok` gets nothing, and that is correct rather than an oversight.** This section used
+to name two vendors and say nothing about the third, which reads as "grok needs
+nothing" without ever claiming it. It does need nothing, and here is the measurement:
+grok's own user guide says headless mode "accepts a single prompt, executes it with
+**full tool access**, and returns the result" (user-guide 14). Tested rather than taken
+on trust — a child launched with no approval flag at all, stdout to a file, stdin
+`/dev/null`, no tty, was asked to create a file. It created it and exited 0.
+
+That control matters because the obvious-looking change is wrong. grok has
+`--always-approve` (alias `--yolo`, or `--permission-mode bypassPermissions`), and its
+docs even recommend it for "Scripts, SDKs, CI, agent servers" — so adding it looks like
+an improvement. It would be a no-op dressed as a fix, justified by a hypothesis that a
+five-minute experiment disproves.
+
+What *can* still stop a grok child is configuration rather than a missing flag: `deny`
+rules, hooks, and `ask` rules matching a shell command's segments apply on top of any
+mode, and an administrator can lock always-approve off. Those come from
+`~/.grok/config.toml`, from **every project `.grok/config.toml` from the repo root
+down**, and from `.claude/settings.json`. A child blocked that way does not crash — it
+waits — which is now visible as a quiet child rather than as nothing at all (GRPH-579).
+
 PRD-22's risk table names this and answers it with the worktree boundary plus the
 per-child config — and is explicit that this is **not a sandbox** (D-k, §7). The child's
 cwd is its own worktree, so a bad worker cannot reach another's files. That is the whole
-claim.
+claim. Worth noting for anyone revisiting D-k: grok does offer `--sandbox <PROFILE>` for
+filesystem and network access. It is deliberately not used, because turning it on would
+change the security posture the PRD reasoned about, and that is a decision to make on
+purpose rather than a flag to add because it exists.
+
+## A repository may not commit a seat path
+
+The seat paths — `.grok/config.toml`, `.cursor/mcp.json` — are files a repository can
+reasonably commit. `grok mcp add --scope project` writes exactly the first one. A
+worktree is cut from the repo, so a committed one lands in every child's tree, and
+`seat.write` truncates.
+
+That is not only a lost MCP entry. grok merges `[permission]` rules from every project
+`.grok/config.toml` from the repo root down, so this is where a repository states what
+its agents may not do — and overwriting it removes the repo's own `deny` rules. Because
+`SEAT_FILES` is excluded from salvage on purpose, the change is never committed, never
+reported, and invisible for the rest of the child's life. The one signal that did fire
+was wrong: at reap the path shows up as `credential_in_history`, i.e. "the worker
+committed a credential", when the repository tracked it all along.
+
+So `worktree.create` refuses, against the base commit, before the worktree exists:
+
+```
+<repo> commits ['.grok/config.toml'] at <sha>, and the supervisor has to write a
+child's seat to that path. ... Remedy: stop committing it (user-scope config does the
+same job — `grok mcp add --scope user`), or run the fleet against a checkout that does
+not.
+```
+
+Refusing is loud and takes ten seconds to fix. Writing the seat anyway is silent and
+changes what every worker in the fleet is allowed to do.
