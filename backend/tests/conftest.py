@@ -58,7 +58,21 @@ def _database_per_worker() -> None:
     if url.endswith(f"_{worker}") or url.endswith(f"_{worker}.db"):
         return
 
-    os.environ["DATABASE_URL"] = worker_url(url, worker)
+    isolated = worker_url(url, worker)
+    if isolated == url:
+        # REFUSE RATHER THAN NO-OP (GRPH-568). An unchanged URL means every xdist worker shares
+        # one database and they race to create the schema — measured at 2,659
+        # `table users already exists` errors, loud and pointing nowhere near the cause. The
+        # previous derivation did this silently for any sqlite name that was not the default,
+        # which broke the escape hatch GRPH-554's own lock message recommends.
+        from tests.dbnames import NotIsolated
+
+        raise NotIsolated(
+            f"{url!r} did not yield a per-worker database for {worker!r}, so every worker "
+            "would share it. Run serially, or use a DATABASE_URL whose final path segment can "
+            "carry a worker suffix."
+        )
+    os.environ["DATABASE_URL"] = isolated
     if not url.startswith("sqlite"):
         base, _, _ = url.rpartition("/")
         _, _, name = worker_url(url, worker).rpartition("/")

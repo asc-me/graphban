@@ -190,3 +190,80 @@ def test_the_teardown_is_actually_wired_into_the_session():
     assert "_drop_worker_database()" in src, (
         "the session fixture no longer drops the worker's database — worker databases will "
         "accumulate again, one per run, silently")
+
+
+# ---- a NON-default sqlite name must isolate too (GRPH-568) --------------------------
+
+@pytest.mark.parametrize("url, expected", [
+    # The default, unchanged — this is the regression guard for everything that came before.
+    ("sqlite:///./.pytest.db", "sqlite:///./.pytest_gw0.db"),
+    # THE CASE THAT WAS BROKEN. The old derivation replaced the literal substring
+    # `.pytest.db`, so this returned unchanged and every worker opened one file.
+    ("sqlite:///./.pytest-v2.db", "sqlite:///./.pytest-v2_gw0.db"),
+    ("sqlite:///./scratch/run.db", "sqlite:///./scratch/run_gw0.db"),
+    ("sqlite:////abs/path/db.sqlite3", "sqlite:////abs/path/db_gw0.sqlite3"),
+    # No suffix to insert before, so the id goes on the end rather than nowhere.
+    ("sqlite:///./mydb", "sqlite:///./mydb_gw0"),
+])
+def test_any_sqlite_name_isolates(url, expected):
+    """GRPH-554's lock tells a blocked run to *"point this one somewhere else with
+    `DATABASE_URL`"*. Doing that worked serially and silently defeated `-n auto`, which is how
+    CI and everyone runs the suite: the derivation replaced a literal substring, so any name
+    that was not the default came back unchanged and every worker raced to create the schema.
+
+    Measured on the ticket: `sqlite:///./.pytest-v2.db` gave **2,659** `table users already
+    exists` errors, while `sqlite:///./.mine/.pytest.db` passed 2,746 — the second only because
+    it happened to keep the magic substring in a different directory.
+    """
+    assert worker_url(url, "gw0") == expected
+
+
+def test_the_relative_prefix_is_preserved():
+    """`./` survives. Deriving through `PurePosixPath` would normalise it away and rewrite a
+    URL the caller typed by hand — a small thing that makes the refusal message and the file on
+    disk stop matching what was asked for."""
+    assert worker_url("sqlite:///./.pytest.db", "gw1").startswith("sqlite:///./")
+
+
+def test_two_workers_never_share_a_database():
+    """The property the whole mechanism exists for, asserted directly rather than inferred from
+    the strings above. A derivation that returned a constant would satisfy every equality test
+    written one URL at a time."""
+    for url in ("sqlite:///./.pytest.db", "sqlite:///./.pytest-v2.db",
+                "postgresql+psycopg://u:p@h/graphban_test"):
+        derived = {worker_url(url, f"gw{i}") for i in range(4)}
+        assert len(derived) == 4, f"{url} does not isolate: {sorted(derived)}"
+        assert url not in derived, f"{url} returned itself for some worker"
+
+
+def test_an_in_memory_database_is_left_alone():
+    """Exempt because it needs no isolation: an in-memory database is per-process already, so
+    workers cannot collide on one. Returning it unchanged is correct, which is why the no-op
+    refusal lives at the call site rather than in here."""
+    assert worker_url("sqlite:///:memory:", "gw0") == "sqlite:///:memory:"
+
+
+def test_a_derivation_that_stops_isolating_is_refused(monkeypatch):
+    """The refusal GRPH-568 asked for, driven rather than asserted.
+
+    It lives in `conftest._database_per_worker`, not in `worker_url`: with the path-based
+    derivation a no-op can no longer happen, so a check inside that function would be
+    unreachable code guarding nothing. At the call site it stays live — it fires if a future
+    edit stops isolating, which is precisely the regression that cost 2,659 errors.
+    """
+    import sys
+
+    from tests import dbnames
+
+    conftest = sys.modules["conftest"]
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw0")
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///./scratch.db")
+    # `conftest` imports `worker_url` INSIDE the function, so the module attribute is what the
+    # call resolves against — patching a name on `conftest` would miss it entirely.
+    monkeypatch.setattr(dbnames, "worker_url", lambda url, worker: url)   # the old bug
+
+    with pytest.raises(dbnames.NotIsolated) as err:
+        conftest._database_per_worker()
+
+    assert "would share it" in str(err.value)
+    assert "scratch.db" in str(err.value), "the refusal does not name the URL that failed"
