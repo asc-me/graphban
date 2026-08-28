@@ -239,3 +239,145 @@ def test_the_supervisor_does_not_decide_whether_to_resume(fleet: Fleet, tmp_path
     assert [t["name"] for t in TOOLS] == ["spawn", "stop", "ps", "orphans"]
     orphans = next(t for t in TOOLS if t["name"] == "orphans")
     assert orphans["inputSchema"]["properties"] == {}
+
+
+# --- GRPH-586: the surface can answer "is it stuck?" ---------------------------------
+#
+# `start_one` exists so the wave loop and this tool cannot drift, and GRPH-579 drifted
+# them: output sampling, quiet reporting and --debug were wired into `up` and not here.
+# That was the wrong half — a long unattended build is planner-driven, because the
+# supervisor may not mint seats and so cannot run waves back to back on its own.
+
+
+def _fleet_with(git_repo: Path, tmp_path: Path, scripts, which: str, **kw) -> Fleet:
+    workspace = tmp_path / "ws"
+    return Fleet(
+        repo=git_repo,
+        workspace=workspace,
+        client=_server(workspace),
+        launch_for=lambda name, model="", tuning=None: _factory(scripts, which, adapter=name),
+        **kw,
+    )
+
+
+def test_ps_reports_what_a_child_has_written(git_repo: Path, tmp_path: Path, scripts):
+    """`running: true` is what a thinking child and a wedged one both say."""
+    fleet = _fleet_with(git_repo, tmp_path, scripts, "chatty_then_exits")
+    _call(fleet, "spawn", adapter="fake", enrolment_code="enrol-1")
+
+    child = _value(_call(fleet, "ps"))["children"][0]
+    assert "output" in child, "ps says nothing about whether the child is producing anything"
+    assert set(child["output"]) >= {"total_bytes", "silent_for", "age"}
+
+
+def test_ps_names_the_children_that_have_gone_quiet(git_repo: Path, tmp_path: Path, scripts):
+    """Counted by the supervisor, not left to the planner.
+
+    A planner that must compare `silent_for` against a threshold per child in order to
+    notice a stuck worker is a planner that will not — and `quiet_after` is the
+    supervisor's number, not one the planner should be guessing at.
+    """
+    from gbfleet.supervisor import Limits
+
+    fleet = _fleet_with(git_repo, tmp_path, scripts, "silent_then_exits",
+                        limits=Limits(quiet_after=0.0))
+    _call(fleet, "spawn", adapter="fake", enrolment_code="enrol-1")
+
+    listed = _value(_call(fleet, "ps"))
+    assert listed["quiet"], "a child that has written nothing is not named as quiet"
+    assert listed["quiet_after"] == 0.0
+
+
+def test_a_child_that_is_writing_is_not_named_quiet(git_repo: Path, tmp_path: Path, scripts):
+    """The control. A `quiet` list that names every child is one an operator ignores."""
+    from gbfleet.supervisor import Limits
+
+    fleet = _fleet_with(git_repo, tmp_path, scripts, "chatty_then_exits",
+                        limits=Limits(quiet_after=60.0))
+    _call(fleet, "spawn", adapter="fake", enrolment_code="enrol-1")
+
+    listed = _value(_call(fleet, "ps"))
+    assert not listed["quiet"], f"a child writing every 50ms was named quiet: {listed['quiet']}"
+
+
+def test_a_child_that_never_wrote_counts_as_quiet_once_it_is_old_enough(tmp_path: Path):
+    """`NEVER_WROTE` is not a duration and must not be compared as one — but it is the
+    worse case, not an exempt one. A child that has made no sound since it started is
+    one that may never have started properly."""
+    from gbfleet.mcp import _is_quiet
+    from gbfleet.progress import NEVER_WROTE
+
+    young = {"output": {"silent_for": NEVER_WROTE, "age": 1.0}}
+    old = {"output": {"silent_for": NEVER_WROTE, "age": 600.0}}
+    assert _is_quiet(young, 300.0) is False
+    assert _is_quiet(old, 300.0) is True, (
+        "a child that has written nothing for ten minutes was treated as fine because "
+        "its silence is a word rather than a number"
+    )
+
+
+def test_a_child_with_no_watcher_is_not_reported_quiet(tmp_path: Path):
+    """A `Child` built by hand has no `output`. Absent evidence is not evidence of
+    silence, and reporting it as quiet would accuse something nothing observed."""
+    from gbfleet.mcp import _is_quiet
+
+    assert _is_quiet({"agent_id": "x"}, 0.0) is False
+
+
+def test_spawn_can_ask_for_vendor_debug_and_says_when_it_cannot(
+    git_repo: Path, tmp_path: Path, scripts
+):
+    """The gap is announced here for the same reason the wave summary announces it."""
+    fleet = _fleet_with(git_repo, tmp_path, scripts, "works_then_waits")
+    described = _value(_call(fleet, "spawn", adapter="fake", enrolment_code="e", debug=True))
+
+    # The stand-in factory is a literal argv template with no vendor behind it, which is
+    # the same answer cursor-agent and gbagent give.
+    assert described["debug_unavailable"], (
+        "debug was asked for, the adapter cannot do it, and the reply said nothing"
+    )
+    assert "fake" in described["debug_unavailable"]
+
+
+def test_spawn_without_debug_claims_nothing_about_it(git_repo: Path, tmp_path: Path, scripts):
+    fleet = _fleet_with(git_repo, tmp_path, scripts, "works_then_waits")
+    described = _value(_call(fleet, "spawn", adapter="fake", enrolment_code="e"))
+    assert "debug_unavailable" not in described
+    assert described["debug_log"] is None
+
+
+def test_the_spawn_tool_advertises_debug(): 
+    """A planner reads `inputSchema` to know what it may ask for. An argument the code
+    honours and the schema omits is one no planner will ever send."""
+    spawn_tool = next(t for t in TOOLS if t["name"] == "spawn")
+    assert "debug" in spawn_tool["inputSchema"]["properties"]
+
+
+def test_spawn_actually_hands_the_debug_path_down(git_repo: Path, tmp_path: Path, scripts, monkeypatch):
+    """Asserted on the wiring, because the stand-in adapter cannot show it.
+
+    The fake factory is an argv template with no vendor behind it, so it reports
+    `debug_path: None` whether or not a path was passed — which means every test above
+    stays green if `spawn` drops the argument entirely. Sabotage found exactly that. So
+    this one watches what reaches `start_one`.
+    """
+    captured: dict = {}
+    real = mcp.start_one
+
+    def recording(*args, **kwargs):
+        captured["debug_file"] = kwargs.get("debug_file")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mcp, "start_one", recording)
+    fleet = _fleet_with(git_repo, tmp_path, scripts, "works_then_waits")
+
+    _call(fleet, "spawn", adapter="fake", enrolment_code="e", debug=True)
+    asked = captured["debug_file"]
+    assert asked is not None, "debug was requested and no path reached start_one"
+    assert asked.name == "debug.log"
+    # Outside the worktree: a vendor writing megabytes of debug output must not dirty
+    # the tree, trip salvage, or end up in a WIP commit.
+    assert fleet.workspace in asked.parents
+
+    _call(fleet, "spawn", adapter="fake", enrolment_code="e2")
+    assert captured["debug_file"] is None, "a path was passed without debug being asked for"
