@@ -27,6 +27,7 @@ from gbfleet.adapters.cursor import CursorAgent
 from gbfleet.adapters.grok import Grok
 from gbfleet.seat import Seat
 from gbfleet.worktree import Worktree
+from conftest import make_stub_binary  # noqa: E402
 
 SEAT = Seat(code="PLANNER-AAAAAA", server_url="http://localhost:8099", api_key="gb_sk_x")
 
@@ -131,9 +132,7 @@ def fake_binary(tmp_path_factory):
     refuses an unknown version — correctly. The first version of this file used it and
     every model test died on the version check instead of the thing it was about.
     """
-    path = tmp_path_factory.mktemp("bin") / "fake-cli"
-    path.write_text("#!/bin/sh\necho 1.0.0\n", encoding="utf-8")
-    path.chmod(0o755)
+    path = make_stub_binary(tmp_path_factory.mktemp("bin") / "fake-cli", prints="1.0.0")
     return str(path)
 
 

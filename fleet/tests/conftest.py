@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,6 +24,72 @@ def _init(root: Path) -> Path:
     _git(root, "add", "README.md")
     _git(root, "commit", "-qm", "first")
     return root
+
+
+def make_stub_binary(path: Path, prints: str = "", exit_code: int = 0) -> Path:
+    """A stand-in for a vendor BINARY — a file the code under test will EXECUTE by path.
+
+    `#!/bin/sh` is not a program on Windows. CreateProcess reports "%1 is not a valid
+    Win32 application" (WinError 193), which accounted for 32 of this suite's 50 failures
+    the first time it ran there (GRPH-588). A `.cmd` is the portable equivalent.
+
+    **Returns the path to invoke, which on Windows is not the path passed in** — the
+    extension is what makes the file executable, so callers must use the return value.
+
+    For stand-ins the code runs as `[interpreter, script]` rather than by path, write a
+    plain `.py` instead: there is no exec bit to set and no shebang to honour.
+    """
+    lines = [line for line in prints.splitlines() if line != ""] if prints else []
+    if os.name == "nt":
+        target = path.with_suffix(".cmd")
+        body = "@echo off\n" + "".join(f"@echo {line}\n" for line in lines)
+        body += f"@exit /b {exit_code}\n"
+        target.write_text(body, encoding="utf-8")
+        return target
+
+    body = "#!/bin/sh\n" + "".join(f"echo '{line}'\n" for line in lines)
+    body += f"exit {exit_code}\n"
+    path.write_text(body, encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    return path
+
+
+def console_script(name: str) -> Path:
+    """Where pip put a console script.
+
+    `.exe` on Windows — pip writes a real launcher there, not an extensionless shim, so
+    asking for the bare name finds nothing and the test fails for a reason that has
+    nothing to do with what it was checking (GRPH-588).
+    """
+    return Path(sys.executable).parent / (f"{name}.exe" if os.name == "nt" else name)
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether a process exists, on either platform.
+
+    `os.kill(pid, 0)` is the POSIX idiom and raises `OSError: [WinError 87] The parameter
+    is incorrect` on Windows — signal 0 is not a thing there. Several tests used it as a
+    helper, so they failed for a reason unconnected to what they were testing
+    (GRPH-588).
+    """
+    if os.name == "nt":
+        listed = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True
+        ).stdout
+        return str(pid) in listed
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, owned by someone else
+    return True
+
+
+@pytest.fixture
+def stub_binary():
+    """`make_stub_binary`, for tests that would rather take a fixture than an import."""
+    return make_stub_binary
 
 
 @pytest.fixture
@@ -163,8 +232,13 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
 
     write("exits_badly", "import sys\nsys.stderr.write('adapter blew up\\n')\nsys.exit(3)\n")
 
-    # Distinguishes a polite SIGTERM from a SIGKILL, which a plain sleeper cannot: it
+    # Distinguishes a polite stop from a hard kill, which a plain sleeper cannot: it
     # dies to both, so a test using one cannot tell whether the grace period happened.
+    #
+    # SIGBREAK as well as SIGTERM. There is no SIGTERM on Windows — the graceful step is
+    # CTRL_BREAK — so a stand-in that trapped only SIGTERM exited with
+    # STATUS_CONTROL_C_EXIT (0xC000013A) instead of on its own terms, and the test read
+    # that as "never got the chance" when it plainly had (GRPH-588).
     write(
         "notes_sigterm",
         "import signal, sys, time\n"
@@ -173,6 +247,8 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
         "    Path(sys.argv[1]).write_text('sigterm', encoding='utf-8')\n"
         "    sys.exit(0)\n"
         "signal.signal(signal.SIGTERM, bye)\n"
+        "if hasattr(signal, 'SIGBREAK'):\n"
+        "    signal.signal(signal.SIGBREAK, bye)\n"
         "print('ready', flush=True)\n"
         "while True: time.sleep(0.05)\n",
     )
@@ -181,6 +257,8 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
         "ignores_sigterm",
         "import signal, time\n"
         "signal.signal(signal.SIGTERM, lambda *a: None)\n"
+        "if hasattr(signal, 'SIGBREAK'):\n"
+        "    signal.signal(signal.SIGBREAK, lambda *a: None)\n"
         "print('ready', flush=True)\n"
         "while True: time.sleep(0.1)\n",
     )

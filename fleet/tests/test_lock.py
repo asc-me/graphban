@@ -261,7 +261,11 @@ def test_a_pre_existing_lock_file_gets_tightened(git_repo: Path, state: Path):
     path = lock_path(repo_root(git_repo), state)
     path.write_text("", encoding="utf-8")
     path.chmod(0o644)
-    assert path.stat().st_mode & 0o777 == 0o644
+    assert not is_owner_only(path), (
+        "the precondition did not take: this test needs a file that starts "
+        "readable by others, and asserting a POSIX mode literal here is what "
+        "made it fail on Windows for a reason unrelated to the lock"
+    )
 
     with hold(git_repo, state) as acquired:
         assert is_owner_only(acquired.path)

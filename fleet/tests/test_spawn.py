@@ -28,6 +28,7 @@ from gbfleet.spawn import (
     stop,
 )
 from gbfleet.worktree import create
+from conftest import pid_alive as _alive  # noqa: E402
 from gbfleet.hostos import is_owner_only  # noqa: E402
 
 SEAT = Seat(code="WORKER-7F3K", server_url="https://gb.invalid", api_key="gbk_test")
@@ -43,14 +44,6 @@ def _launch(scripts: dict, which: str, seat_path: Path, adapter: str = "fake") -
     )
 
 
-def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 def _roster(*agents: dict):
@@ -101,10 +94,14 @@ def test_the_child_is_told_it_has_no_parent():
     SUBAGENT: who spawned you" — and a child launched by a supervisor has an obvious,
     wrong answer to that. Saying nothing would leave the schema's invitation standing.
     """
-    text = instruction_for(SEAT, Path("/repo/wt-1"), "gb/wave-1-grph-a1")
+    worktree = Path("/repo/wt-1")
+    text = instruction_for(SEAT, worktree, "gb/wave-1-grph-a1")
     assert "parent_agent_id" in text and "Do NOT set" in text
     assert "WORKER-7F3K" in text
-    assert "/repo/wt-1" in text and "gb/wave-1-grph-a1" in text
+    # `str(Path(...))` is `\\repo\\wt-1` on Windows, so the literal cannot be asserted —
+    # what matters is that the child is told WHICH worktree, not how the host spells it.
+    assert repr(str(worktree)).strip("'\"") in text or str(worktree) in text
+    assert "gb/wave-1-grph-a1" in text
     # D-c: exit on empty is the normal end of a run.
     assert "wait_seconds=0" in text and "EXIT" in text
 

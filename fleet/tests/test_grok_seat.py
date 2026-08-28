@@ -50,7 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from gbfleet import seat as seat_mod  # noqa: E402
 from gbfleet.adapters import ADAPTERS  # noqa: E402
 from gbfleet.seat import Seat, UnrenderableSeat, WouldDeclareParentage  # noqa: E402
-from gbfleet.worktree import SEAT_FILES  # noqa: E402
+from gbfleet.worktree import SEAT_FILES, is_seat_file  # noqa: E402
 from gbfleet.hostos import is_owner_only  # noqa: E402
 
 SEAT = Seat(code="enrol-1", server_url="https://cloud.graphban.dev", api_key="gb_sk_test")
@@ -92,8 +92,10 @@ def test_the_grok_seat_is_written_as_toml_not_json(tmp_path: Path):
 def test_the_grok_seat_is_in_seat_files_so_salvage_excludes_it(tmp_path: Path):
     """Moving the seat file moves the credential. If SEAT_FILES kept pointing at the
     old name, salvage would commit the new one."""
-    relative = str(ADAPTERS["grok"].seat_path(tmp_path).relative_to(tmp_path))
-    assert relative in SEAT_FILES
+    assert is_seat_file(ADAPTERS["grok"].seat_path(tmp_path), tmp_path), (
+        "salvage does not know about grok's seat path, so a WIP commit would carry a "
+        "live credential"
+    )
 
 
 def test_the_old_grok_seat_name_is_still_excluded():
@@ -230,7 +232,7 @@ def _probe(
 ) -> str:
     """Write the seat exactly as the adapter would and ask grok's own doctor about it.
 
-    Runs under an isolated HOME. Without that, `grok mcp doctor` also reports every
+    Runs under an isolated `GROK_HOME`. Without that, `grok mcp doctor` also reports every
     server in the operator's real config — and an assertion looking for "server started"
     anywhere in that output passes on `serena` or `vercel` while proving nothing about
     the file under test. That is not hypothetical; it is how the first version of this
@@ -240,9 +242,10 @@ def _probe(
     because `--trust` only records during a real session and a real session is a model
     call. The adapter's use of `--trust` is asserted separately, in argv.
     """
-    home = tmp_path / "home"
+    # `GROK_HOME` IS the `.grok` directory, so its contents sit directly inside it.
+    home = tmp_path / "grok-home"
     project = tmp_path / "project"
-    (home / ".grok").mkdir(parents=True)
+    home.mkdir(parents=True)
     project.mkdir()
 
     adapter = ADAPTERS["grok"]
@@ -251,7 +254,7 @@ def _probe(
         seat_mod.write(adapter.seat_path(project), probe.mcp_config(), adapter.seat_format)
 
     if user_scope_url:
-        (home / ".grok" / "config.toml").write_text(
+        (home / "config.toml").write_text(
             f'[mcp_servers.graphban]\nurl = "{user_scope_url}"\nenabled = true\n',
             encoding="utf-8",
         )
@@ -266,7 +269,7 @@ def _probe(
             encoding="utf-8",
         )
     if trusted:
-        (home / ".grok" / "trusted_folders.toml").write_text(
+        (home / "trusted_folders.toml").write_text(
             f"[folders.'{project}']\ntrusted = true\ndecided_at = 1787935094\n",
             encoding="utf-8",
         )
@@ -277,23 +280,35 @@ def _probe(
         capture_output=True,
         text=True,
         timeout=180,
-        env={**os.environ, "HOME": str(home)},
+        # `GROK_HOME`, which is grok's own documented way to relocate its config
+        # directory. Overriding `HOME` worked on POSIX by luck and not at all on
+        # Windows, where the config directory is resolved through the Win32 known-folder
+        # API and no environment variable reaches it — so the probe read the OPERATOR's
+        # real grok config, which is the contamination this isolation exists to prevent.
+        # Verified: with GROK_HOME set, doctor reports `~/.grok/config.toml not found`.
+        env={**os.environ, "GROK_HOME": str(home)},
     )
     return doctor.stdout + doctor.stderr
 
 
 def _graphban_block(out: str) -> str:
     """Just the `graphban (...)` stanza. Asserting against the whole output is how an
-    unrelated server's success gets read as this one's."""
+    unrelated server's success gets read as this one's.
+
+    Indentation is the only thing this keys on. The first version also required each
+    line to begin with one of grok's status glyphs, which works until the output is
+    decoded through a Windows console codepage and the glyphs arrive mangled — at which
+    point the stanza ended at its own header and the test reported that grok had not
+    started a server it plainly had (GRPH-588). The words being asserted are ASCII; the
+    decoration is not, so nothing depends on it.
+    """
     lines = out.splitlines()
     for i, line in enumerate(lines):
         if line.strip().startswith("graphban ("):
             block = [line]
             for following in lines[i + 1:]:
                 if following.strip() and not following.startswith((" " * 4, "\t")):
-                    break
-                if following.strip() and not following.strip().startswith(("✓", "✗", "→")):
-                    break
+                    break  # a new, unindented stanza: this one is over
                 block.append(following)
             return "\n".join(block)
     return ""

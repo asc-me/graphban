@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import os
 import sys
 import tomllib
 from pathlib import Path
 
 import gbfleet
 from gbfleet import UNINSTALLED
+from conftest import console_script  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 FLEET_PYPROJECT = REPO / "fleet" / "pyproject.toml"
@@ -43,7 +45,9 @@ def _console_script(name: str) -> Path:
     surfaces as a FileNotFoundError from inside subprocess, which names the path but
     not the reason, and every caller would need the same guard to say so.
     """
-    script = Path(sys.executable).parent / name
+    # `.exe` on Windows: pip writes a launcher, not an extensionless shim. Asking for
+    # the bare name there fails for a reason that has nothing to do with packaging.
+    script = console_script(name)
     assert script.exists(), (
         f"console script `{name}` is not installed at {script}. "
         "Run: uv pip install -e '.[dev]' from fleet/"

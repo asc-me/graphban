@@ -228,6 +228,31 @@ def is_dirty(worktree: Path) -> bool:
     return bool(porcelain(worktree)) or bool(seats_present(worktree))
 
 
+def seat_key(path: Path, worktree: Path) -> str | None:
+    """`path`'s key in `SEAT_FILES`, or None when it is not inside `worktree`.
+
+    `SEAT_FILES` holds forward slashes because every production comparison is against
+    **git** output, which always uses them. A path derived from the FILESYSTEM does not:
+    `Path.relative_to()` yields `.grok\\config.toml` on Windows, and `in SEAT_FILES` is
+    then quietly False.
+
+    Nothing was broken by that yet — the existing call sites all compare git output — but
+    "correct by luck" is a poor guarantee, and the first caller to reach for
+    `relative_to` gets a silent no on one platform. This is the comparison to use.
+    """
+    try:
+        relative = Path(path).resolve().relative_to(Path(worktree).resolve())
+    except ValueError:
+        return None
+    return relative.as_posix()
+
+
+def is_seat_file(path: Path, worktree: Path) -> bool:
+    """Whether `path` is one of the credential files salvage must exclude."""
+    key = seat_key(path, worktree)
+    return key is not None and key in SEAT_FILES
+
+
 def _tracked_at(gitdir: Path, ref: str, paths: tuple[str, ...]) -> list[str]:
     """Which of `paths` the commit `ref` tracks. Empty on a repository with no commits."""
     if not _git(gitdir, "rev-parse", "--quiet", "--verify", ref, check=False):

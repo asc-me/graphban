@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from .. import seat as seat_mod
+from ..hostos import terminated_by_signal
 from ..seat import Seat
 from ..spawn import Launch
 from ..worktree import Worktree
@@ -255,8 +256,17 @@ class Adapter:
 
         Default: exit 0 is the normal end of a worker's life (D-c) and anything else is
         the adapter's business to explain. Vendors that overload specific codes say so.
+
+        A status the OS imposed is reported as such rather than as a number the program
+        chose. On Windows the graceful half of `stop()` is CTRL_BREAK, so a child that
+        shut down exactly as asked reports `STATUS_CONTROL_C_EXIT` — 3221225786 — and
+        printing that raw makes every clean stop look like a crash.
         """
-        return "finished" if code == 0 else f"exited {code}"
+        if code == 0:
+            return "finished"
+        if terminated_by_signal(code):
+            return f"stopped by signal ({code})"
+        return f"exited {code}"
 
 
 def _run_version(binary: Path, argv: tuple[str, ...]) -> str:

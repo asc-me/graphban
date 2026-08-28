@@ -426,3 +426,40 @@ def test_restrict_to_owner_does_not_trust_chmod_to_have_worked(tmp_path: Path, m
         "reported success from a chmod that did nothing — a credential would be "
         "recorded as protected while being world-readable"
     )
+
+
+# --- a clean stop is not a crash ----------------------------------------------------
+
+def test_a_status_the_os_imposed_is_not_read_as_one_the_program_chose():
+    """`stop()`'s graceful step is SIGTERM here and CTRL_BREAK on Windows, and the two
+    leave completely different traces: `-15` there, `STATUS_CONTROL_C_EXIT` (3221225786)
+    on Windows. Neither is a number the program picked."""
+    assert hostos.terminated_by_signal(0) is False
+    assert hostos.terminated_by_signal(3) is False
+    assert hostos.terminated_by_signal(None) is False
+
+    if hostos.WINDOWS:  # pragma: no cover - the box
+        assert hostos.terminated_by_signal(hostos.CONTROL_C_EXIT) is True
+        assert hostos.terminated_by_signal(-15) is False
+    else:
+        assert hostos.terminated_by_signal(-15) is True
+        assert hostos.terminated_by_signal(-9) is True
+        # Not on POSIX: 3221225786 is an ordinary, if odd, exit status here.
+        assert hostos.terminated_by_signal(hostos.CONTROL_C_EXIT) is False
+
+
+def test_exit_meaning_says_stopped_rather_than_printing_the_raw_status():
+    """Without this, every child stopped cleanly on Windows is recorded as
+    `exited 3221225786` — a shutdown that reads like a crash, on every child, every time
+    the supervisor asks one to stop."""
+    from gbfleet.adapters import ADAPTERS
+
+    adapter = ADAPTERS["grok"]
+    assert adapter.exit_meaning(0) == "finished"
+    assert "3" in adapter.exit_meaning(3)
+
+    imposed = hostos.CONTROL_C_EXIT if hostos.WINDOWS else -15
+    assert "stopped by signal" in adapter.exit_meaning(imposed), (
+        f"a child the supervisor stopped reports {imposed} and the fleet calls it an "
+        "ordinary non-zero exit"
+    )
