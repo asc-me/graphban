@@ -216,3 +216,108 @@ def test_the_mcp_tool_says_it_appends(client, auth):
 
     desc = tools["update_item"]["inputSchema"]["properties"]["evidence"]["description"]
     assert "APPEND" in desc.upper()
+
+
+# ---- every writer appends, not just the one that was caught (GRPH-563) -----------------
+
+
+def test_every_evidence_assignment_goes_through_append_evidence():
+    """THE STRUCTURAL GUARD, and the reason it is worth more than a test per call site.
+
+    GRPH-494 consolidated the WRITER and did not pin the CALLERS. GRPH-563 then found two
+    unpinned sites — and by the time it was built there were **four**, because a new one had
+    been added in between. A census of call sites goes stale exactly the way the PRD census in
+    GRPH-558 did; a rule about the shape of the code does not.
+
+    Measured before this existed: converting the refusal receipt at `record_refusal` back to
+    replacement passed **342** tests across every file touching evidence, attestation, gates,
+    sabotage and refusals. The superseded-intent note passed **411**. Both would restore
+    GRPH-494's exact defect at a different call site, with the suite green.
+
+    So the rule is: nothing assigns to an `.evidence` attribute except through
+    `append_evidence`. That cannot rot as sites are added, which is the failure mode here.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path(items_svc.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not (isinstance(target, ast.Attribute) and target.attr == "evidence"):
+                continue
+            call = node.value
+            ok = (isinstance(call, ast.Call)
+                  and isinstance(call.func, ast.Name)
+                  and call.func.id == "append_evidence")
+            if not ok:
+                offenders.append(f"line {node.lineno}: {ast.unparse(node)[:90]}")
+
+    assert not offenders, (
+        "these write `.evidence` without appending, so they can destroy receipts already on "
+        f"the item — GRPH-494's defect at a new call site: {offenders}")
+
+
+def test_the_structural_guard_is_looking_at_the_right_file():
+    """A guard that parsed the wrong module, or a file with no evidence writes in it, would
+    report a clean sweep of nothing. Pinned by requiring the assignments it claims to check to
+    actually be there."""
+    import ast
+    import pathlib
+
+    tree = ast.parse(pathlib.Path(items_svc.__file__).read_text(encoding="utf-8"))
+    writes = [n for n in ast.walk(tree)
+              if isinstance(n, ast.Assign)
+              and any(isinstance(t, ast.Attribute) and t.attr == "evidence" for t in n.targets)]
+
+    assert len(writes) >= 3, (
+        f"only {len(writes)} evidence assignments found in {items_svc.__file__} — the guard "
+        "above is sweeping a file it cannot see the writers in")
+
+
+# ---- the two sites nothing was driving --------------------------------------------------
+
+
+def test_a_refusal_at_done_does_not_wipe_the_builders_receipts(db):
+    """The sharpest of the unpinned sites. `record_refusal` writes a receipt at the moment an
+    item is REFUSED at `done` — which is precisely when the record matters — and under
+    replacement it would delete every receipt already on the item, the builder's sabotage
+    included.
+
+    That is GRPH-494's exact defect, one call site over. Driven through the real refusal path
+    rather than by calling the helper: what broke the first time was a caller, not the writer.
+    """
+    it = _item(db)
+    items_svc.update_item(db, it.id, evidence=[
+        {"kind": "sabotage", "claim": "the gate refuses an unattested item",
+         "mutation": "removed the check", "tests_failed": 3}])
+
+    with pytest.raises(items_svc.MissingAttestation):
+        items_svc.update_item(db, it.id, status="done")
+
+    db.refresh(it)
+    kinds = [row["kind"] for row in it.evidence]
+    assert "sabotage" in kinds, (
+        f"the refusal receipt replaced the builder's evidence: {it.evidence}")
+    assert any(r["kind"] == "note" and "refused at `done`" in r.get("detail", "")
+               for r in it.evidence), "the refusal itself was not recorded"
+
+
+def test_a_superseded_intent_note_does_not_wipe_the_record(db):
+    """The fourth call site, which GRPH-563 does not list — it was added after the census was
+    taken. Same shape, same consequence: a note about the baseline replacing the receipts that
+    justify the work it is annotating."""
+    it = _item(db)
+    items_svc.update_item(db, it.id, evidence=[{"kind": "test", "detail": "2363 passed"}])
+
+    items_svc._record_superseded_intent(
+        db, it, hold={"started_against": "v1", "baseline_version": "v2"})
+
+    db.refresh(it)
+    kinds = [row["kind"] for row in it.evidence]
+    assert "test" in kinds, f"the note replaced the earlier receipts: {it.evidence}"
+    assert any("superseded intent" in r.get("detail", "") for r in it.evidence)
