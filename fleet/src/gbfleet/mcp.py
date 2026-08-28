@@ -32,6 +32,8 @@ is why nothing here needs to know how much work is outstanding.
 
 from __future__ import annotations
 
+import time
+
 import json
 import sys
 from dataclasses import dataclass, field
@@ -44,6 +46,7 @@ from .client import Graphban
 from .lock import Acquired
 from .seat import Seat
 from .spawn import Child, LaunchFailed, Reason, stop
+from .progress import NEVER_WROTE
 from .supervisor import Limits, LaunchFactory, Partition, _tree_for, start_one
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -81,6 +84,14 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "grok only. Reasoning effort, passed through unvalidated.",
                 },
+                "debug": {
+                    "type": "boolean",
+                    "description": (
+                        "Ask this vendor to write a debug log beside its stdout. grok and "
+                        "claude can; cursor-agent and gbagent have no such flag and the "
+                        "reply says so rather than leaving you to assume otherwise."
+                    ),
+                },
                 "model": {
                     "type": "string",
                     "description": (
@@ -110,7 +121,12 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "ps",
-        "description": "Children this supervisor started, running or not, with why each stopped.",
+        "description": (
+            "Children this supervisor started, running or not, with why each stopped — "
+            "and how much each has WRITTEN. `running` alone cannot tell a child that is "
+            "thinking from one that is wedged; `output.silent_for` and the `quiet` list "
+            "can."
+        ),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -180,7 +196,21 @@ def _rpc_error(id_: Any, code: int, message: str) -> dict:
 
 
 def _describe(child: Child) -> dict:
-    return {
+    """One child, including whether it is actually producing anything.
+
+    `running` alone cannot answer the question a planner is really asking. A child
+    thinking hard and a child wedged on a prompt nobody can answer both report
+    `running: true`, and until GRPH-586 that was the whole of what this returned — while
+    `spawn()` had already attached an output watcher to every child and nothing here
+    ever read it.
+
+    Sampling mutates the watcher: it records when output was last seen. If the wave loop
+    and this were both sampling one child they would split `new_bytes` between them,
+    each seeing only the delta the other had not consumed. `silent_for` stays right
+    either way, because it derives from the shared last-seen timestamp — and in practice
+    the two do not overlap, since stdio has no wave loop.
+    """
+    described = {
         "agent_id": child.agent_id,
         "pid": child.pid,
         "adapter": child.adapter,
@@ -189,7 +219,32 @@ def _describe(child: Child) -> dict:
         "running": child.running,
         "registration_latency": child.registration_latency,
         "stopped_because": child.stopped_because.value if child.stopped_because else None,
+        "debug_log": str(child.debug_path) if child.debug_path else None,
     }
+    if child.output is not None:
+        reading = child.output.sample(time.monotonic())
+        described["output"] = reading.as_dict()
+    return described
+
+
+def _is_quiet(described: dict, quiet_after: float) -> bool:
+    """Whether this child has produced nothing for longer than the supervisor allows
+    before saying so.
+
+    `NEVER_WROTE` is not a duration and must not be compared as one. It is treated as
+    quiet once the child is older than the threshold — a child that has made no sound
+    since it started is the worse case, not an exempt one.
+    """
+    reading = described.get("output")
+    if not reading:
+        return False
+    silent = reading.get("silent_for")
+    if silent == NEVER_WROTE:
+        return float(reading.get("age") or 0.0) >= quiet_after
+    try:
+        return float(silent) >= quiet_after
+    except (TypeError, ValueError):
+        return False
 
 
 def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
@@ -218,8 +273,21 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             fleet.client, fleet.limits,
             fleet.partition, workspace=fleet.workspace, wave_name=wave,
             slot=str(fleet.started), on_spawned=fleet.children.append,
+            debug_file=(
+                fleet.workspace / "logs" / f"{wave}-{fleet.started}" / "debug.log"
+                if args.get("debug")
+                else None
+            ),
         )
-        return _describe(child)
+        described = _describe(child)
+        # Said once, at spawn, for the same reason the wave summary says it: an operator
+        # who asked for debug and gets a quiet log from an adapter that has no debug flag
+        # would reasonably conclude the child is fine.
+        if args.get("debug") and child.debug_path is None:
+            described["debug_unavailable"] = (
+                f"{child.adapter} has no debug flag; output sampling only"
+            )
+        return described
 
     if name == "stop":
         child = fleet.find(args.get("agent_id"), args.get("pid"))
@@ -234,8 +302,22 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 "child": _describe(child)}
 
     if name == "ps":
-        return {"children": [_describe(c) for c in fleet.children],
-                "running": sum(1 for c in fleet.children if c.running)}
+        children = [_describe(c) for c in fleet.children]
+        # Counted here rather than left to the caller. A planner that has to compare
+        # `silent_for` against a threshold per child in order to notice a stuck worker
+        # is a planner that will not — and the number it would need, `quiet_after`, is
+        # the supervisor's, not something the planner should be guessing at.
+        quiet = [
+            c["agent_id"] or f"{c['adapter']}:{c['pid']}"
+            for c in children
+            if c["running"] and _is_quiet(c, fleet.limits.quiet_after)
+        ]
+        return {
+            "children": children,
+            "running": sum(1 for c in fleet.children if c.running),
+            "quiet": quiet,
+            "quiet_after": fleet.limits.quiet_after,
+        }
 
     if name == "orphans":
         found = wt_mod.orphans(fleet.repo)
