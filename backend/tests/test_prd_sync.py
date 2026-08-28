@@ -252,3 +252,85 @@ def test_a_declared_id_the_ledger_does_not_have_is_recorded_not_paired():
         index, unindexed = gen_prd_index.build([doc], lookup)
 
     assert index == {} and unindexed == ["docs/prd-40-not-filed-yet.md"]
+
+
+# ── the artefact says what it covers, and keeps saying it (GRPH-486) ──────────
+
+def _generator_scope() -> dict:
+    """The `scope` literal as it appears in `gen_prd_index.py`, read from the SOURCE.
+
+    Parsed rather than obtained by running the generator, which needs a live credential and a
+    reachable instance — neither of which a test may depend on. `indexed` is `len(index)` and
+    so has no literal value; only the prose constants are recoverable here, which are the two
+    the artefact was bounced for lacking.
+    """
+    import ast
+
+    src = (REPO / "scripts" / "gen_prd_index.py").read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if isinstance(key, ast.Constant) and key.value == "scope" and isinstance(value, ast.Dict):
+                out = {}
+                for k, v in zip(value.keys, value.values):
+                    try:
+                        out[k.value] = ast.literal_eval(v)
+                    except ValueError:
+                        pass  # `len(index)`, computed at write time
+                return out
+    raise AssertionError("gen_prd_index.py no longer emits a `scope` block")
+
+
+def test_the_committed_index_declares_its_scope():
+    """THE test this was bounced for. Asserted on the FILE, not on the generator.
+
+    `gen_prd_index.py` was updated to emit a `scope` block and the artefact was never
+    regenerated, so for weeks the committed JSON presented 5 of 21 PRDs with nothing in it
+    saying so. The generator's docstring had always been clear; a consumer reads the JSON.
+
+    That file has already produced two wrong measurements, both recorded in the ledger: a
+    changelog tool built its PRD map from it and reported "166 of 200 PRs reference a ticket
+    no PRD claims" against a real 46 of 114, and GRPH-465 records an inflated coverage figure
+    from the same cause. Both were caught before filing by luck rather than by anything here.
+    """
+    scope = SNAPSHOT.get("scope")
+    assert scope, (
+        "docs/prd-index.json has no `scope` block — regenerate it with "
+        "scripts/gen_prd_index.py. A consumer reads this file, and without it the file "
+        "presents a fraction of the PRDs as though it were all of them")
+    assert scope.get("covers", "").strip(), "`scope.covers` is empty"
+    assert scope.get("note", "").strip(), "`scope.note` is empty"
+
+
+def test_the_scope_note_warns_that_this_is_not_the_list_of_prds():
+    """Naming the field is not the same as saying the thing. The failure was a reader treating
+    `prds` as complete, so the note has to contradict that reading, not merely exist."""
+    note = SNAPSHOT["scope"]["note"].lower()
+    assert "not the list of prds" in note, (
+        f"the note does not say what the file is not: {SNAPSHOT['scope']['note']!r}")
+
+
+def test_the_committed_scope_still_matches_the_generator():
+    """The regression the bounce predicted: this "silently reverts on the next regeneration by
+    an older checkout, and nothing in CI would notice".
+
+    Comparing the artefact against the generator's own literal is what closes that. A drift in
+    either direction fails — an edited note that was never regenerated into the file, or a
+    regeneration from a checkout whose generator predates the block.
+    """
+    expected = _generator_scope()
+    committed = SNAPSHOT["scope"]
+    for field in ("covers", "note"):
+        assert committed.get(field) == expected.get(field), (
+            f"scope.{field} in docs/prd-index.json disagrees with gen_prd_index.py.\n"
+            f"  file:      {committed.get(field)!r}\n"
+            f"  generator: {expected.get(field)!r}\n"
+            "Regenerate with scripts/gen_prd_index.py.")
+
+
+def test_the_declared_count_is_the_real_one():
+    """`indexed` is the only number in the block, and a number that disagrees with the data
+    beside it is worse than no number — it is the file misreporting its own size."""
+    assert SNAPSHOT["scope"]["indexed"] == len(INDEX), (
+        f"scope.indexed says {SNAPSHOT['scope']['indexed']}, the file holds {len(INDEX)}")
