@@ -283,9 +283,41 @@ def test_this_repository_declares_how_a_fresh_worktree_is_built():
     # `[tests].cwd`. `./.venv/bin/python` under `backend` is `backend/.venv`.
     venv = (Path(data["tests"]["cwd"]) / data["tests"]["command"].split()[0]).parts[:2]
     needed = "/".join(venv)
-    assert any(needed in c for c in commands), (
-        f"[tests].command needs {needed!r} but no [setup] command builds it"
+
+    # AGAINST THE COMMAND THAT CREATES IT, not the list as a whole. `any(needed in c ...)` was
+    # satisfied by the INSTALL line whatever the creating line did, so every divergence the
+    # docstring above describes passed: measured, `uv venv` pointed at `backend/venv`,
+    # `backend/.venv2` and `.venv` all went green, and the last two do not even share a prefix
+    # with the needed path. Deletion failed; divergence did not, and they are different faults.
+    #
+    # Same bare-`any()`-over-a-collection weakness that has bitten twice in this repository
+    # already — GRPH-479 counted a name across a whole file, GRPH-426 matched a domain that
+    # appeared elsewhere in the same section. Both were fixed the same way: pin the specific
+    # thing, not a substring somewhere nearby.
+    creator = next(c for c in commands if "uv venv" in c)
+    assert creator.split()[-1] == needed, (
+        f"[setup] creates {creator.split()[-1]!r} but [tests].command needs {needed!r} — a "
+        "fresh worktree would build an interpreter the test command cannot find, and the "
+        "primary checkout would look perfectly fine"
     )
+
+    # The install line names the interpreter INDEPENDENTLY, so it can drift from the creating
+    # line too — a tree that builds the venv and then installs into a different one.
+    #
+    # Only where `--python` names a PATH. `uv venv --python 3.12` uses the same flag for a
+    # version selector, and checking that one asserts "3.12 is inside backend/.venv" — which
+    # is how this test failed on its first run, against a config that was entirely correct.
+    for command in commands:
+        parts = command.split()
+        if "--python" not in parts:
+            continue
+        target = parts[parts.index("--python") + 1]
+        if "/" not in target:
+            continue                      # a version, not an interpreter path
+        assert target.startswith(f"{needed}/"), (
+            f"a [setup] command installs into {target!r}, which is not inside the {needed!r} "
+            "that [tests].command needs"
+        )
 
 
 def test_this_repository_loads_where_its_interpreter_is_installed():
