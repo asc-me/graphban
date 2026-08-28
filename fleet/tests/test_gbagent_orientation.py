@@ -188,6 +188,13 @@ def test_an_enormous_answer_is_bounded():
 def test_every_orientation_tool_is_a_read():
     """What makes handing this layer to a weak model need no further argument. A write here
     would belong in `coord.WORKER_TOOLS` with the give-up path, not among the reads."""
+    # An empty set satisfies "every one of them is a read" vacuously, and this claim is what
+    # makes handing the layer to a weak model need no further argument — so the count is
+    # asserted first. Measured: emptying the set left this test passing.
+    assert len(ORIENTATION_TOOLS) >= 5, (
+        f"ORIENTATION_TOOLS has {len(ORIENTATION_TOOLS)} entries — too few for this to be "
+        "checking the layer it claims to, and an empty set passes the loop below trivially")
+
     for name in ORIENTATION_TOOLS:
         assert not name.startswith(("create_", "update_", "claim_", "sign_", "release_",
                                     "assign_", "mint_", "close_", "delete_", "bounce"))

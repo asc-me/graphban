@@ -197,8 +197,19 @@ def test_no_workflow_interpolates_untrusted_input_into_a_shell_script():
     import re
 
     root = pathlib.Path(__file__).resolve().parents[2] / ".github/workflows"
+    workflows = sorted(root.glob("*.yml"))
+    # THE CONTROL, and this sweep needed it. Every assertion below is "no matches found",
+    # which is also what an empty file list produces — so pointing `root` at a directory that
+    # does not exist reported a clean sweep of nothing and the whole file still passed.
+    # Measured: renaming the target to `.github/workflows-renamed` left 15 tests green,
+    # including this one. A rename is not hypothetical in a repository that has renamed
+    # itself once already.
+    assert workflows, (
+        f"no workflows found under {root} — this sweep is reporting a clean result for a "
+        "directory it cannot read, and the injection it guards against would be invisible")
+
     offenders = []
-    for wf in sorted(root.glob("*.yml")):
+    for wf in workflows:
         spec = yaml.safe_load(wf.read_text())
         for job_name, job in (spec.get("jobs") or {}).items():
             for step in job.get("steps") or []:
@@ -206,6 +217,13 @@ def test_no_workflow_interpolates_untrusted_input_into_a_shell_script():
                     if any(u in expr for u in UNTRUSTED):
                         offenders.append(
                             f"{wf.name}:{job_name}: `${{{{{expr.strip()}}}}}` in a run: block")
+
+    # And that the scan reached inside them: a workflow list that parses to zero steps is the
+    # same silence one level down.
+    assert any((job.get("steps") or [])
+               for wf in workflows
+               for job in (yaml.safe_load(wf.read_text()).get("jobs") or {}).values()), (
+        f"{len(workflows)} workflow(s) found but none has any steps — nothing was scanned")
 
     assert not offenders, (
         "attacker-controllable values are interpolated into shell scripts: "
