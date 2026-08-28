@@ -124,9 +124,20 @@ def test_the_old_claim_file_path_is_still_read(tmp_path, monkeypatch):
 def test_no_hook_or_agent_file_kept_the_old_prefix():
     """A rename that leaves `al_stop.py` behind while hooks.json points at `gb_stop.py`
     fails silently — Cursor just stops running the hook."""
+    searched = (".cursor/hooks", ".cursor/agents", ".claude/agents", ".codex/agents")
+
+    # THE CONTROL. `assert not stale` is satisfied by finding nothing, and finding nothing is
+    # also what a renamed directory produces — measured, pointing these at paths that do not
+    # exist left this file passing 9 tests. The directories being swept are exactly the ones a
+    # toolchain rename moves, which is the event this test exists for.
+    missing = [d for d in searched if not (REPO / d).is_dir()]
+    assert not missing, (
+        f"this sweep is looking in directories that do not exist: {missing} — it would report "
+        "no stale files whether or not any were left behind")
+
     stale = sorted(
         p.name
-        for d in (".cursor/hooks", ".cursor/agents", ".claude/agents", ".codex/agents")
+        for d in searched
         for p in (REPO / d).glob("al[-_]*")
     )
     assert not stale, f"stale al-prefixed tooling left behind: {stale}"
