@@ -545,3 +545,130 @@ def test_the_docstring_says_the_boundary_has_this_limit(tmp_path: Path):
     assert "accepted rather than overlooked" in doc, (
         "nothing marks this as a decision — an undocumented limit and a documented one look "
         "the same to the next reader unless the docstring says which it is")
+
+
+# --- GRPH-591: one entry the process cannot stat must not fail the whole call --------
+#
+# Found by running this suite on Windows, where a symlink out of the worktree stats as
+# `[WinError 5] Access is denied`. The shape is not Windows': a restricted ACL, a file
+# removed between `iterdir` and the stat, or an untraversable mount all do it. These
+# tests reproduce the condition directly, so the behaviour is pinned on every platform
+# rather than only on the one that happened to surface it.
+
+
+def _raise_on(name: str, monkeypatch):
+    """Make `Path.is_dir()` raise EACCES for one entry, as an unreadable one does."""
+    real = Path.is_dir
+
+    def guarded(self):
+        if self.name == name:
+            raise PermissionError(13, "Access is denied")
+        return real(self)
+
+    monkeypatch.setattr(Path, "is_dir", guarded)
+
+
+def test_list_dir_reports_an_unreadable_entry_instead_of_raising(wt, monkeypatch):
+    """`Path.is_dir()` looks total and is not: it swallows ENOENT, ENOTDIR, EBADF and
+    ELOOP and re-raises the rest, EACCES included. One such entry used to take the whole
+    listing with it, and the model got a traceback where it asked what was in a folder."""
+    (wt / "readable.txt").write_text("x", encoding="utf-8")
+    (wt / "locked").mkdir()
+
+    _raise_on("locked", monkeypatch)
+
+    listing = tools.list_dir(wt, ".")
+    kinds = {e["name"]: e["kind"] for e in listing["entries"]}
+
+    assert "readable.txt" in kinds, "one bad entry hid the good ones"
+    assert kinds["locked"] == "unreadable", (
+        "an entry that cannot be read was reported as something else, or dropped — and "
+        "a dropped one is indistinguishable from a path that is not there"
+    )
+    assert next(e for e in listing["entries"] if e["name"] == "locked")["bytes"] is None
+
+
+def test_an_unreadable_entry_is_not_silently_dropped(wt, monkeypatch):
+    """The control on the fix. Skipping would also stop the exception, and would be
+    worse: an inaccessible path and an absent one would look the same to the model."""
+    (wt / "locked").mkdir()
+    _raise_on("locked", monkeypatch)
+
+    names = {e["name"] for e in tools.list_dir(wt, ".")["entries"]}
+    assert "locked" in names, "the entry vanished rather than being reported"
+
+
+def test_grep_keeps_the_promise_its_docstring_makes(wt, monkeypatch):
+    """"Skips `.git` and anything unreadable rather than failing the call" — which it
+    did not. `read_text` was wrapped, but `f.is_dir()` came first and raised on exactly
+    the entries that sentence is about."""
+    (wt / "hay.txt").write_text("needle here\n", encoding="utf-8")
+    (wt / "locked.txt").write_text("needle too\n", encoding="utf-8")
+
+    _raise_on("locked.txt", monkeypatch)
+
+    found = tools.grep(wt, "needle")
+    paths = {h["path"] for h in found["hits"]}
+    assert any("hay.txt" in p for p in paths), (
+        "one unreadable file killed a search that had a perfectly good hit in it"
+    )
+
+
+def test_a_file_that_disappears_between_listing_and_sizing_does_not_fail_the_call(
+    wt, monkeypatch
+):
+    """The narrow race the size lookup is guarded against.
+
+    `iterdir` names an entry, `_kind` stats it successfully, and by the time `st_size` is
+    asked the file is gone — a build, a `git checkout` or a temp file's own cleanup all
+    do this in a live worktree. Sabotage found the guard untested: nothing in the suite
+    made `stat` fail while `is_dir` succeeded.
+    """
+    (wt / "vanishing.txt").write_text("x", encoding="utf-8")
+    (wt / "steady.txt").write_text("y", encoding="utf-8")
+
+    real_stat = Path.stat
+
+    def flaky(self, **kw):
+        if self.name == "vanishing.txt" and kw.get("_sizing", True):
+            raise FileNotFoundError(2, "vanished")
+        return real_stat(self, **kw)
+
+    real_is_dir = Path.is_dir
+    monkeypatch.setattr(Path, "is_dir", lambda self: False if self.name.endswith(".txt") else real_is_dir(self))
+    monkeypatch.setattr(Path, "stat", flaky)
+
+    listing = tools.list_dir(wt, ".")
+    sizes = {e["name"]: e["bytes"] for e in listing["entries"]}
+    assert "vanishing.txt" in sizes, "the entry was dropped rather than reported"
+    assert sizes["vanishing.txt"] is None, "a size was invented for a file that was gone"
+
+
+def test_grep_on_an_unreadable_starting_point_does_not_raise(wt, monkeypatch):
+    """The walk's own root gets the same treatment as the entries under it.
+
+    `base.is_dir()` decides whether to recurse, and it raises on an unreadable base just
+    as readily — so a search rooted at something inaccessible failed before it began,
+    with the same traceback the per-entry bug produced.
+    """
+    (wt / "shed").mkdir()
+    _raise_on("shed", monkeypatch)
+
+    found = tools.grep(wt, "needle", path="shed")
+    assert found["hits"] == [], "an unreadable search root produced hits from somewhere"
+
+
+def test_the_refusal_names_paths_the_way_they_are_typed(wt):
+    """`repr` doubles every separator on Windows, so the boundary was named as
+    `C:\\\\Users\\\\...` — in the one message whose entire job is to tell the model where
+    it may go instead. Identical to the quoted form on POSIX, which is why it survived.
+    """
+    with pytest.raises(OutsideWorktree) as exc:
+        safe_path(wt, "escape/secret.txt")
+
+    message = str(exc.value)
+    assert "\\\\\\\\" not in message, (
+        f"the refusal escaped its path separators, so the path it names cannot be "
+        f"copied: {message}"
+    )
+    assert str(wt.resolve()) in message
