@@ -30,6 +30,7 @@ from typing import Callable, Iterable, Sequence
 
 from . import worktree as wt_mod
 from .client import Graphban, ServerUnreachable
+from .hostos import restrict_to_owner
 from .lock import Acquired, hold
 from . import observe
 from . import seat as seat_mod
@@ -488,7 +489,18 @@ def _instruction_file(tree: Worktree, seat: Seat, wave_name: str) -> Path:
     """
     path = tree.path / ".gbfleet-instruction"
     path.write_text(instruction_for(seat, tree.path, tree.branch), encoding="utf-8")
-    path.chmod(0o600)
+    # This file carries the enrolment CODE, so it is the more sensitive of the two and
+    # was protected by the same call that does nothing on Windows.
+    if not restrict_to_owner(path):
+        observe.emit(
+            "credential_unrestricted",
+            path=str(path),
+            what="enrolment code",
+            detail=(
+                "could not restrict the instruction file to this user; it carries a "
+                "live enrolment code and may be readable by others on this host"
+            ),
+        )
     return path
 
 

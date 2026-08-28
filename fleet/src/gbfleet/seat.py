@@ -13,9 +13,15 @@ from the *seat*, not from the config on disk. Tampering breaks only the child's 
 connection. The file is transport; the server-side enrolment is the artifact, and any
 design leaning on the file's integrity is leaning on the wrong object.
 
-What the supervisor is responsible for is narrower and worth stating: writing it 0600,
-never inside the repo except where a vendor forces it, taking it away at reap, and
-**never putting a parent agent id anywhere near it** (D-b).
+What the supervisor is responsible for is narrower and worth stating: keeping it to the
+user running the fleet, never inside the repo except where a vendor forces it, taking it
+away at reap, and **never putting a parent agent id anywhere near it** (D-b).
+
+That first one used to say "0600", and said it while calling `os.chmod` — which on
+Windows succeeds, restricts nothing, and leaves the file at `0o666`. The guarantee is
+now expressed as the property rather than the POSIX spelling of it (`hostos`
+`restrict_to_owner` / `is_owner_only`), because the number was true on one platform and
+the sentence was true on neither.
 """
 
 from __future__ import annotations
@@ -25,6 +31,8 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from .hostos import restrict_to_owner
 
 #: PRD-22 D-b. A spawned child is a separate PROCESS, not a subagent inside the
 #: planner's turn, and `parent_agent_id` means the latter — `independent()` treats
@@ -239,7 +247,11 @@ def write(path: Path, config: dict, fmt: str = JSON) -> Path:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _FILE_MODE)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
-    os.chmod(path, _FILE_MODE)
+    # Not `os.chmod`. On Windows that call succeeds and restricts nothing — measured,
+    # `0o600` in and `0o666` out — so the source read as if a live api key were protected
+    # while it was not. `restrict_to_owner` uses `icacls` there and `chmod` here, and
+    # the caller checks whether it worked (GRPH-584).
+    restrict_to_owner(path)
     return path
 
 

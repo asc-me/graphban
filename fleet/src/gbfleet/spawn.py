@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import seat as seat_mod
-from .hostos import ProcessTree, spawn_kwargs
+from . import observe
+from .hostos import ProcessTree, is_owner_only, spawn_kwargs
 from .progress import Output
 from .seat import Seat
 
@@ -194,6 +195,22 @@ def spawn(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     seat_mod.write(launch.seat_path, launch.config, launch.seat_format)
+    # Verified, not assumed. `seat.write` asks for the restriction; this checks it took.
+    # The two are separate because the platform where the request silently did nothing is
+    # exactly the platform where nobody was checking (GRPH-584). Reported rather than
+    # refused: D-k says this is not a security boundary, and a workspace on a filesystem
+    # with no permissions at all must not stop the fleet — it must not be quiet either.
+    if not is_owner_only(launch.seat_path):
+        observe.emit(
+            "credential_unrestricted",
+            path=str(launch.seat_path),
+            what="api key",
+            adapter=launch.adapter,
+            detail=(
+                "the seat file could not be restricted to this user and may be readable "
+                "by others on this host"
+            ),
+        )
 
     env = {**os.environ, **launch.env}
     started = time.monotonic()

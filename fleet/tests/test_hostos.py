@@ -358,3 +358,71 @@ def test_spawn_attaches_a_process_tree(tmp_path: Path, git_repo: Path):
     finally:
         child.process.kill()
         child.process.wait(timeout=10)
+
+
+# --- keeping a credential to its owner ---------------------------------------------
+
+def test_restrict_to_owner_closes_a_file_that_was_open(tmp_path: Path):
+    """The property, not the number.
+
+    On POSIX this is `chmod`; on Windows it is `icacls`, because `chmod` there succeeds
+    and restricts nothing — measured, `0o600` in and `0o666` out. Asserting the property
+    is what lets one test mean the same thing on both.
+    """
+    path = tmp_path / "seat"
+    path.write_text("gb_sk_live", encoding="utf-8")
+    if not hostos.WINDOWS:
+        os.chmod(path, 0o644)
+    assert not hostos.is_owner_only(path) or hostos.WINDOWS
+
+    assert hostos.restrict_to_owner(path) is True
+    assert hostos.is_owner_only(path)
+    assert path.read_text(encoding="utf-8") == "gb_sk_live", "restricted it from its owner"
+
+
+def test_is_owner_only_is_false_for_a_readable_file(tmp_path: Path):
+    """The control. A checker that answered True unconditionally would make every
+    caller's verification meaningless while every test stayed green."""
+    path = tmp_path / "public"
+    path.write_text("x", encoding="utf-8")
+    if hostos.WINDOWS:  # pragma: no cover - exercised on the box
+        pytest.skip("POSIX modes; the Windows equivalent runs in the box script")
+    os.chmod(path, 0o644)
+    assert hostos.is_owner_only(path) is False
+    os.chmod(path, 0o604)
+    assert hostos.is_owner_only(path) is False, "other-readable but reported private"
+    os.chmod(path, 0o640)
+    assert hostos.is_owner_only(path) is False, "group-readable but reported private"
+
+
+def test_is_owner_only_says_no_rather_than_raising_for_a_missing_file(tmp_path: Path):
+    assert hostos.is_owner_only(tmp_path / "nope") is False
+
+
+def test_a_directory_can_be_restricted_too(tmp_path: Path):
+    """`state_root` holds the lock file and the fleet log, and makes the same promise."""
+    d = tmp_path / "state"
+    d.mkdir()
+    assert hostos.restrict_to_owner(d) is True
+    assert hostos.is_owner_only(d)
+
+
+@posix_only
+def test_restrict_to_owner_does_not_trust_chmod_to_have_worked(tmp_path: Path, monkeypatch):
+    """It verifies its own work, and says False when the filesystem ignored it.
+
+    Not hypothetical: `chmod` is a silent no-op on FAT32, on many network mounts, and —
+    the whole reason this ticket exists — on Windows. A version that returned True
+    because the call did not raise would report a credential as protected on exactly the
+    filesystems where it is not, which is the failure being fixed rather than a new one.
+    """
+    path = tmp_path / "seat"
+    path.write_text("gb_sk_live", encoding="utf-8")
+    os.chmod(path, 0o644)
+
+    monkeypatch.setattr(os, "chmod", lambda *a, **k: None)  # succeeds, changes nothing
+
+    assert hostos.restrict_to_owner(path) is False, (
+        "reported success from a chmod that did nothing — a credential would be "
+        "recorded as protected while being world-readable"
+    )

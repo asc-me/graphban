@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Iterator
 
 from . import __version__
-from .hostos import AlreadyLocked, lock_exclusive, read_at, write_at
+from .hostos import AlreadyLocked, lock_exclusive, read_at, restrict_to_owner, write_at
 from .state import lock_path, repo_root
 
 _FILE_MODE = 0o600
@@ -151,7 +151,10 @@ def hold(repo: Path | str, state: Path | str | None = None) -> Iterator[Acquired
     fd = os.open(path, os.O_RDWR | os.O_CREAT, _FILE_MODE)
     acquired = False
     try:
-        os.chmod(path, _FILE_MODE)  # O_CREAT's mode is masked by the umask
+        # `restrict_to_owner`, not `chmod`: O_CREAT's mode is masked by the umask on
+        # POSIX and means almost nothing on Windows, and this file names the process
+        # holding the repository (GRPH-584).
+        restrict_to_owner(path)
         try:
             lock_exclusive(fd)
         except AlreadyLocked:

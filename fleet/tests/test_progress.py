@@ -350,3 +350,28 @@ def test_both_silences_reach_the_summary(capsys):
         "both silences printed but neither says which evidence it rests on"
     )
     assert "cursor-agent" in printed
+
+
+def test_a_seat_that_could_not_be_restricted_is_reported(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """The defect this ticket is about was silence, so the report is the fix.
+
+    D-k says none of this is a security boundary, and a workspace on a filesystem with
+    no permissions at all must not stop the fleet — so it does not refuse. It must not
+    be quiet either, which is exactly what `os.chmod` on Windows was.
+    """
+    import gbfleet.spawn as spawn_mod
+
+    monkeypatch.setattr(spawn_mod, "is_owner_only", lambda path: False)
+
+    workspace = tmp_path / "ws"
+    wave = up(
+        git_repo, _seats(1), _factory(scripts, "works_then_exits"), _server(workspace),
+        limits=Limits(max_workers=1), state=state, workspace=workspace, poll=0.05,
+    )
+
+    assert wave.spawned, "refused to run instead of reporting"
+    exposed = [r for r in _lines(state / LOG_FILE) if r["event"] == "credential_unrestricted"]
+    assert exposed, "a seat file that is readable by others was written without a word"
+    assert exposed[0]["what"] == "api key"

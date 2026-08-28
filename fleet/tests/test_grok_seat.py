@@ -51,6 +51,7 @@ from gbfleet import seat as seat_mod  # noqa: E402
 from gbfleet.adapters import ADAPTERS  # noqa: E402
 from gbfleet.seat import Seat, UnrenderableSeat, WouldDeclareParentage  # noqa: E402
 from gbfleet.worktree import SEAT_FILES  # noqa: E402
+from gbfleet.hostos import is_owner_only  # noqa: E402
 
 SEAT = Seat(code="enrol-1", server_url="https://cloud.graphban.dev", api_key="gb_sk_test")
 
@@ -214,7 +215,7 @@ def test_a_header_name_that_is_not_a_bare_key_is_quoted(tmp_path: Path):
 
 def test_the_seat_file_is_still_0600_in_toml(tmp_path: Path):
     path = seat_mod.write(tmp_path / "config.toml", SEAT.mcp_config(), seat_mod.TOML)
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert is_owner_only(path)
 
 
 # --- the loop closed against a real binary, where there is one ---------------------

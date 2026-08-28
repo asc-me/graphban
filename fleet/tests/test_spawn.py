@@ -28,6 +28,7 @@ from gbfleet.spawn import (
     stop,
 )
 from gbfleet.worktree import create
+from gbfleet.hostos import is_owner_only  # noqa: E402
 
 SEAT = Seat(code="WORKER-7F3K", server_url="https://gb.invalid", api_key="gbk_test")
 
@@ -61,7 +62,7 @@ def _roster(*agents: dict):
 
 def test_the_seat_config_is_written_private(tmp_path: Path):
     path = seat_mod.write(tmp_path / "mcp.json", SEAT.mcp_config())
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert is_owner_only(path)
 
     config = json.loads(path.read_text(encoding="utf-8"))
     assert config["mcpServers"]["graphban"]["headers"]["X-API-Key"] == "gbk_test"
@@ -73,7 +74,7 @@ def test_an_existing_seat_file_is_tightened_not_inherited(tmp_path: Path):
     path.write_text("{}", encoding="utf-8")
     path.chmod(0o644)
     seat_mod.write(path, SEAT.mcp_config())
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert is_owner_only(path)
 
 
 @pytest.mark.parametrize(
