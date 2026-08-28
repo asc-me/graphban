@@ -377,6 +377,43 @@ def has_valid_attestation(evidence, *, commit: str | None = None) -> bool:
     return bool(valid_attestations(evidence, commit=commit))
 
 
+def attested_predicates(evidence, *, commit: str | None = None) -> set[str]:
+    """Every predicate name that PASSED on a valid attestation (GRPH-569).
+
+    Unioned ACROSS attestations, because adapters are separate and each answers what it can:
+    CI attests `suite_green`, a reviewer attests `conformance`, a probe attests
+    `sabotage_observed`. Requiring one adapter to carry them all would mean an install could
+    only ever require what its most capable adapter emits.
+
+    **`valid_attestations` is what makes a failing predicate not count, and it is the only
+    thing that does.** It admits a receipt only when EVERY predicate on it passed, so a name
+    riding on an attestation with another failing predicate has not been attested, it has
+    been contradicted — and by the time the names are read here, no failing one can remain.
+
+    There is deliberately no `if q.get("passed")` filter below. It reads like a safety net and
+    is dead code against that precondition: it can never exclude anything, so it would pass
+    every test while carrying none of the property, and the first person to change
+    `valid_attestations` would trust a guard that had never once fired. The mechanism is
+    named here instead, and `test_predicates_are_read_only_from_sound_receipts` sabotages the
+    real one.
+    """
+    return {str(q.get("name") or "")
+            for a in valid_attestations(evidence, commit=commit)
+            for q in (a.get("predicates") or [])} - {""}
+
+
+def missing_predicates(evidence, required, *, commit: str | None = None) -> list[str]:
+    """Required predicate names that nothing has attested, in a stable order.
+
+    **Absent is not failing, and the two call for opposite actions.** A missing predicate
+    means nothing ran that checks it — go and run the adapter. A failing one means something
+    ran and found a problem — go and read it. The completion gate reports them separately for
+    that reason; collapsing them would send half its readers to the wrong place, which is the
+    defect GRPH-543 already fixed once for stale-versus-missing.
+    """
+    return sorted(set(required or []) - attested_predicates(evidence, commit=commit))
+
+
 def record_refusal(db: Session, item: Item, *, predicate: str, detail: str) -> None:
     """Write a gate refusal where the next agent will meet it (GRPH-550).
 
@@ -572,6 +609,31 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
                                            if not q.get("passed")) + " failed"
                                for a in failing)
                    if failing else "")
+            )
+        # THE REQUIRED PREDICATES (GRPH-569, PRD-26 §Conformance and adversarial gates).
+        # Reached only once a valid attestation exists, so this asks a narrower question than
+        # the gate above: not "was this checked" but "was it checked FOR THE THINGS THIS
+        # DEPLOYMENT REQUIRES". Empty by default, so an install with only the CI adapter is
+        # unaffected — that is the PRD's requirement, not a concession.
+        #
+        # Deliberately NOT folded into `has_valid_attestation`: a missing required predicate
+        # and no attestation at all are different states, and the message an operator needs
+        # differs. The one above says "get it attested"; this one names WHICH check has never
+        # run, because "attestation_missing" would send them looking for an adapter that is
+        # already working.
+        required = settings.required_predicate_list
+        absent = missing_predicates(merged_for_gate, required, commit=head or None)
+        if absent:
+            attested = sorted(attested_predicates(merged_for_gate, commit=head or None))
+            record_refusal(db, item, predicate="attestation_incomplete",
+                           detail=f"nothing has attested {', '.join(absent)}.")
+            raise MissingAttestation(
+                f"{item.key} cannot move to done: this deployment requires the predicate(s) "
+                f"{', '.join(required)}, and nothing has attested {', '.join(absent)}. "
+                + (f"What IS attested: {', '.join(attested)}. " if attested else "")
+                + "That is a check nobody has run rather than a check that failed — the "
+                "adapter that answers it has not reported, so run it rather than looking "
+                "for a problem in what did"
             )
         # THE PR COOLDOWN (GRPH-567, PRD-26). An attestation proves something was checked;
         # it does not prove the check had time to happen. A reviewer who links a PR and signs

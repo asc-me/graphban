@@ -260,6 +260,21 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
+    # Predicate names an attestation must carry, PASSING, before an item may reach `done`
+    # (GRPH-569, PRD-26 §Conformance and adversarial gates). Comma-separated, e.g.
+    # `conformance,adversarial`.
+    #
+    # EMPTY BY DEFAULT, and that is the PRD's requirement rather than a concession: "an
+    # install with only the CI adapter has an attestation carrying one predicate, and the
+    # gate still functions". Requiring a predicate nobody emits would make completion
+    # impossible on a working deployment — so this is required of the GATE'S CONFIGURATION,
+    # not of every adapter, and an install turns it on when it has an adapter that answers it.
+    required_predicates: str = ""
+
+    @property
+    def required_predicate_list(self) -> list[str]:
+        return [p.strip() for p in self.required_predicates.split(",") if p.strip()]
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
