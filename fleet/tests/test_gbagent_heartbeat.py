@@ -24,6 +24,7 @@ from gbagent.config import VerifyConfig
 from gbagent.heartbeat import FALLBACK_INTERVAL, Heartbeat
 from gbagent.llm import ToolCall
 from gbagent.toolset import Toolset
+from conftest import make_stub_script, stub_argv  # noqa: E402
 from gbfleet.client import ProtocolError, ServerUnreachable, ToolFailed
 
 
@@ -60,12 +61,10 @@ def wt(tmp_path: Path) -> Path:
 
 def _slow_toolset(root: Path, seconds: float) -> Toolset:
     """A toolset whose `run_tests` blocks — the thing the turn loop cannot fire during."""
-    runner = root / "backend" / "slow.sh"
-    runner.write_text(f"#!/bin/sh\nsleep {seconds}\necho '1 passed in {seconds}s'\n",
-                      encoding="utf-8")
-    runner.chmod(runner.stat().st_mode | stat.S_IEXEC)
-    return Toolset(root=root, cfg=VerifyConfig(argv=[str(runner)], cwd=root / "backend",
-                                               source="slow.sh"))
+    runner = make_stub_script(root / "backend" / "slow.py", sleep=seconds,
+                              prints=(f"1 passed in {seconds}s",))
+    return Toolset(root=root, cfg=VerifyConfig(argv=stub_argv(runner), cwd=root / "backend",
+                                               source="slow.py"))
 
 
 # ---- the one that matters ---------------------------------------------------------------

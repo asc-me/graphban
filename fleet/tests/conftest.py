@@ -64,6 +64,54 @@ def console_script(name: str) -> Path:
     return Path(sys.executable).parent / (f"{name}.exe" if os.name == "nt" else name)
 
 
+def make_stub_script(
+    path: Path,
+    *,
+    prints: tuple[str, ...] = (),
+    exit_code: int = 0,
+    sleep: float = 0.0,
+    numbered_lines: int = 0,
+    touch: tuple[str, ...] = (),
+) -> Path:
+    """A stand-in the code under test runs as ARGV — `[interpreter, script]`.
+
+    The sibling of `make_stub_binary`, for the other half of the problem. Where that one
+    is handed to something that execs a path and therefore has to be a program, this one
+    is named in an argv the test controls, so it can be a plain `.py`: no shebang to
+    honour, no exec bit to set, and sleeping, looping and choosing an exit status are all
+    just Python (GRPH-589).
+
+    The shell scripts these replace expressed the same four things — print, exit, sleep,
+    loop — in a language Windows has no interpreter for.
+    """
+    body = ["import sys, time"]
+    if sleep:
+        body.append(f"time.sleep({sleep})")
+    for name in touch:
+        body.append(f"open({name!r}, 'w').close()")
+    for line in prints:
+        body.append(f"print({line!r}, flush=True)")
+    if numbered_lines:
+        body.append(f"for i in range(1, {numbered_lines} + 1): print(f'line {{i}}', flush=True)")
+    body.append(f"sys.exit({exit_code})")
+    path.write_text("\n".join(body) + "\n", encoding="utf-8")
+    return path
+
+
+def stub_argv(path: Path) -> list[str]:
+    """How to run a `make_stub_script` stub: through this interpreter, not by path."""
+    return [sys.executable, str(path)]
+
+
+def stub_command(path: Path) -> str:
+    """The same, as a config string a test embeds in TOML.
+
+    Quoted and forward-slashed: `shlex.split` eats backslashes as escapes, so a Windows
+    interpreter path written raw arrives as `C:UsersAlex...`.
+    """
+    return f'"{Path(sys.executable).as_posix()}" "{Path(path).as_posix()}"'
+
+
 def pid_alive(pid: int) -> bool:
     """Whether a process exists, on either platform.
 

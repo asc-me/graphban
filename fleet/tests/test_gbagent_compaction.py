@@ -22,6 +22,7 @@ from gbagent import compact, loop
 from gbagent.config import VerifyConfig
 from gbagent.llm import ToolCall, ToolTurn
 from gbagent.toolset import Toolset
+from conftest import make_stub_script, stub_argv  # noqa: E402
 
 BIG = "x" * 4000
 
@@ -265,11 +266,9 @@ def wt(tmp_path: Path) -> Path:
 
 
 def _toolset(root: Path) -> Toolset:
-    runner = root / "backend" / "r.sh"
-    runner.write_text("#!/bin/sh\necho '1 passed in 1.0s'\n", encoding="utf-8")
-    runner.chmod(runner.stat().st_mode | stat.S_IEXEC)
-    return Toolset(root=root, cfg=VerifyConfig(argv=[str(runner)], cwd=root / "backend",
-                                               source="r.sh"))
+    runner = make_stub_script(root / "backend" / "r.py", prints=("1 passed in 1.0s",))
+    return Toolset(root=root, cfg=VerifyConfig(argv=stub_argv(runner), cwd=root / "backend",
+                                               source="r.py"))
 
 
 class ScriptedSession:

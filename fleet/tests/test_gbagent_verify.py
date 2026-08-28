@@ -11,6 +11,7 @@ be read they are `None`, never `0`.
 from __future__ import annotations
 
 import os
+import shlex
 import stat
 from pathlib import Path
 
@@ -19,6 +20,7 @@ import pytest
 from gbagent import config, tools, verify
 from gbagent.config import CONFIG_NAME, ConfigRefused, VerifyConfig, load
 from gbagent.workspace import ToolError
+from conftest import make_stub_script, stub_argv, stub_command  # noqa: E402
 
 
 def _repo(tmp_path: Path, toml: str | None, *, script: str | None = None) -> Path:
@@ -90,7 +92,7 @@ def test_a_cwd_outside_the_worktree_refuses(tmp_path):
     """The config is not exempt from S1's boundary. Pointing the test run at `../../` would
     run somebody else's suite and report it as this agent's verification."""
     with pytest.raises(ConfigRefused) as exc:
-        load(_repo(tmp_path, '[tests]\ncommand = "echo hi"\ncwd = "../.."\n'))
+        load(_repo(tmp_path, '[tests]\ncommand = "git hi"\ncwd = "../.."\n'))
 
     assert "outside the worktree" in str(exc.value)
 
@@ -115,39 +117,75 @@ def test_a_command_given_as_a_repo_relative_path_is_accepted(tmp_path):
 
 
 def test_a_bare_name_is_looked_up_on_path(tmp_path):
-    cfg = load(_repo(tmp_path, '[tests]\ncommand = "echo hello"\n'))
+    # `git`, not `echo`. `echo` is a cmd BUILTIN on Windows, so `shutil.which` finds
+    # nothing and the config is refused — for a reason that has nothing to do with
+    # looking a bare name up on PATH, which is what this is about. The suite already
+    # requires git on both platforms.
+    cfg = load(_repo(tmp_path, '[tests]\ncommand = "git hello"\n'))
 
-    assert cfg.argv[0] == "echo"
+    assert cfg.argv[0] == "git"
 
 
 def test_a_command_may_be_given_as_a_list(tmp_path):
-    cfg = load(_repo(tmp_path, '[tests]\ncommand = ["echo", "a b"]\n'))
+    cfg = load(_repo(tmp_path, '[tests]\ncommand = ["git", "a b"]\n'))
 
-    assert cfg.argv == ["echo", "a b"], "a list is taken as-is, not re-split"
+    assert cfg.argv == ["git", "a b"], "a list is taken as-is, not re-split"
 
 
 def test_the_command_is_not_run_through_a_shell(tmp_path):
     """D4: there is no shell. A pipe becomes a literal argument rather than a second command."""
-    cfg = load(_repo(tmp_path, '[tests]\ncommand = "echo a | rm -rf /"\n'))
+    cfg = load(_repo(tmp_path, '[tests]\ncommand = "git a | rm -rf /"\n'))
 
     assert "|" in cfg.argv, cfg.argv
-    assert cfg.argv[0] == "echo"
+    assert cfg.argv[0] == "git"
 
 
 # ---- run_tests reports what it knows, and no more -------------------------------------
 
 
-def _cfg(root: Path, script: str) -> VerifyConfig:
-    p = root / "backend" / "r.sh"
-    p.write_text(script, encoding="utf-8")
-    p.chmod(p.stat().st_mode | stat.S_IEXEC)
-    return VerifyConfig(argv=[str(p)], cwd=(root / "backend").resolve(), source="r.sh")
+def _setup_repo(tmp_path: Path, *stubs: dict, tests: str = "git hi") -> tuple[Path, list[str]]:
+    """A repo whose `[setup].commands` are interpreter-run stubs.
+
+    `touch` and `false` are not programs on Windows, and `[setup]` runs argv without a
+    shell — so the POSIX spelling of "make a file" and "fail" simply had nothing to run.
+    Each stub becomes `"<interpreter>" "<script>"`, quoted and forward-slashed because
+    `shlex.split` treats a backslash as an escape (GRPH-589).
+
+    Returns the repo root and the command strings, so a test can assert on what ran.
+    """
+    root = tmp_path / "repo"
+    (root / "backend").mkdir(parents=True)
+    commands = []
+    for i, stub in enumerate(stubs):
+        script = make_stub_script(root / f"setup{i}.py", **stub)
+        commands.append(stub_command(script))
+    # TOML LITERAL strings (single quotes): the commands contain double quotes around
+    # the interpreter path, and wrapping those in a basic string produced `""C:/..."` —
+    # malformed, which `prepare` reported as "no setup commands" rather than as a broken
+    # config, so the test failed by finding nothing to run.
+    listed = ", ".join(f"'{c}'" for c in commands)
+    (root / CONFIG_NAME).write_text(
+        f'[tests]\ncommand = "{tests}"\n\n[setup]\ncommands = [{listed}]\n',
+        encoding="utf-8",
+    )
+    return root, commands
+
+
+def _cfg(root: Path, **stub) -> VerifyConfig:
+    """A test runner stand-in, run as `[interpreter, script]`.
+
+    It used to be a `#!/bin/sh` file executed by path, which Windows cannot run at all —
+    "not a valid Win32 application". What these stubs actually need is to print, exit,
+    sleep and loop, and Python does all four on both platforms (GRPH-589).
+    """
+    p = make_stub_script(root / "backend" / "r.py", **stub)
+    return VerifyConfig(argv=stub_argv(p), cwd=(root / "backend").resolve(), source="r.py")
 
 
 def test_a_passing_run_is_ok(tmp_path):
     root = _repo(tmp_path, None)
 
-    out = verify.run_tests(root, _cfg(root, "#!/bin/sh\necho '261 passed, 1 skipped in 51.86s'\n"))
+    out = verify.run_tests(root, _cfg(root, prints=("261 passed, 1 skipped in 51.86s",)))
 
     assert out["ok"] is True and out["exit_code"] == 0
     assert out["passed"] == 261
@@ -156,15 +194,11 @@ def test_a_passing_run_is_ok(tmp_path):
 def test_a_failing_run_names_the_tests_and_returns_a_tail(tmp_path):
     """AC-4. The name is what the agent's next turn has to reference."""
     root = _repo(tmp_path, None)
-    script = (
-        "#!/bin/sh\n"
-        "echo 'FAILED tests/test_a.py::test_boundary_refuses_symlink - AssertionError'\n"
-        "echo 'FAILED tests/test_b.py::test_turn_budget_releases - AssertionError'\n"
-        "echo '2 failed, 231 passed in 3.10s'\n"
-        "exit 1\n"
-    )
-
-    out = verify.run_tests(root, _cfg(root, script))
+    out = verify.run_tests(root, _cfg(root, prints=(
+        "FAILED tests/test_a.py::test_boundary_refuses_symlink - AssertionError",
+        "FAILED tests/test_b.py::test_turn_budget_releases - AssertionError",
+        "2 failed, 231 passed in 3.10s",
+    ), exit_code=1))
 
     assert out["ok"] is False and out["exit_code"] == 1
     assert out["failed"] == 2 and out["passed"] == 231
@@ -181,7 +215,7 @@ def test_an_unreadable_failure_reports_None_rather_than_zero(tmp_path):
     """
     root = _repo(tmp_path, None)
 
-    out = verify.run_tests(root, _cfg(root, "#!/bin/sh\necho 'kaboom, in a shape nobody parses'\nexit 3\n"))
+    out = verify.run_tests(root, _cfg(root, prints=("kaboom, in a shape nobody parses",), exit_code=3))
 
     assert out["ok"] is False and out["exit_code"] == 3
     assert out["passed"] is None and out["failed"] is None
@@ -191,9 +225,7 @@ def test_an_unreadable_failure_reports_None_rather_than_zero(tmp_path):
 
 def test_a_long_run_is_truncated_to_a_bounded_tail(tmp_path):
     root = _repo(tmp_path, None)
-    script = "#!/bin/sh\nfor i in $(seq 1 500); do echo \"line $i\"; done\nexit 1\n"
-
-    out = verify.run_tests(root, _cfg(root, script))
+    out = verify.run_tests(root, _cfg(root, numbered_lines=500, exit_code=1))
 
     assert out["truncated"] is True
     assert len(out["tail"].splitlines()) == verify.TAIL_LINES
@@ -206,7 +238,7 @@ def test_a_hanging_test_command_is_killed_and_says_nothing_is_known(tmp_path):
     root = _repo(tmp_path, None)
 
     with pytest.raises(ToolError) as exc:
-        verify.run_tests(root, _cfg(root, "#!/bin/sh\nsleep 30\n"), timeout=1)
+        verify.run_tests(root, _cfg(root, sleep=30), timeout=1)
 
     assert "Nothing is known" in str(exc.value)
 
@@ -436,22 +468,23 @@ def test_git_diff_outside_a_git_repo_still_answers(tmp_path):
 def test_a_repository_declaring_no_setup_needs_none(tmp_path):
     """Absent `[setup]` is legal and is not an absence reading as clean: if the tree really did
     need building, `load`'s executable check refuses on the next line."""
-    assert config.prepare(_repo(tmp_path, '[tests]\ncommand = "echo hi"\n')) == []
+    assert config.prepare(_repo(tmp_path, '[tests]\ncommand = "git hi"\n')) == []
 
 
 def test_setup_commands_run_in_the_worktree(tmp_path):
-    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
-                           '\n[setup]\ncommands = ["touch built.txt"]\n')
+    root, commands = _setup_repo(tmp_path, {"touch": ("built.txt",)})
 
     ran = config.prepare(root)
 
-    assert ran == ["touch built.txt"]
+    # Compared as argv, not as text. `prepare` reports what it ran by re-joining the
+    # split command, so the quoting the config needed does not survive — and asserting
+    # on the raw string would be asserting about quotes rather than about what ran.
+    assert [shlex.split(c) for c in ran] == [shlex.split(c) for c in commands]
     assert (root / "built.txt").exists(), "it ran somewhere else"
 
 
 def test_setup_runs_every_command_in_order(tmp_path):
-    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
-                           '\n[setup]\ncommands = ["touch one", "touch two"]\n')
+    root, _ = _setup_repo(tmp_path, {"touch": ("one",)}, {"touch": ("two",)})
 
     config.prepare(root)
 
@@ -461,8 +494,7 @@ def test_setup_runs_every_command_in_order(tmp_path):
 def test_a_setup_that_fails_refuses_the_spawn(tmp_path):
     """The whole point. An agent in a tree that did not build cannot verify anything, and
     discovering that at the first `run_tests` costs the run."""
-    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
-                           '\n[setup]\ncommands = ["false"]\n')
+    root, _ = _setup_repo(tmp_path, {"exit_code": 1})
 
     with pytest.raises(config.SetupFailed) as exc:
         config.prepare(root)
@@ -472,8 +504,7 @@ def test_a_setup_that_fails_refuses_the_spawn(tmp_path):
 
 def test_a_failing_setup_stops_before_the_commands_after_it(tmp_path):
     """Continuing past a failed build would run the rest against a tree that is not there."""
-    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
-                           '\n[setup]\ncommands = ["false", "touch after.txt"]\n')
+    root, _ = _setup_repo(tmp_path, {"exit_code": 1}, {"touch": ("after.txt",)})
 
     with pytest.raises(config.SetupFailed):
         config.prepare(root)
@@ -482,7 +513,7 @@ def test_a_failing_setup_stops_before_the_commands_after_it(tmp_path):
 
 
 def test_a_setup_naming_a_missing_program_says_so(tmp_path):
-    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
+    root = _repo(tmp_path, '[tests]\ncommand = "git hi"\n'
                            '\n[setup]\ncommands = ["definitely-not-a-real-binary-xyz"]\n')
 
     with pytest.raises(config.SetupFailed) as exc:
@@ -493,7 +524,7 @@ def test_a_setup_naming_a_missing_program_says_so(tmp_path):
 
 def test_setup_is_a_list_because_there_is_no_shell(tmp_path):
     """D4: `a && b` as one string would make `&&` a literal argument to `a`."""
-    root = _repo(tmp_path, '[tests]\ncommand = "echo hi"\n'
+    root = _repo(tmp_path, '[tests]\ncommand = "git hi"\n'
                            '\n[setup]\ncommands = "touch one && touch two"\n')
 
     with pytest.raises(config.SetupFailed) as exc:
@@ -585,3 +616,22 @@ def test_the_summary_regex_is_actually_consulted():
     assert "_SUMMARY" in inspect.getsource(verify._read_counts), (
         "_read_counts no longer consults _SUMMARY — if the anchoring moved, move this with it"
     )
+
+
+def test_a_setup_command_survives_a_space_in_the_interpreter_path(tmp_path):
+    """The case neither of my machines reproduces, which is why sabotage found nothing.
+
+    `stub_command` quotes because `[setup].commands` are shlex-split, and the commonest
+    Windows Python lives under `C:\\Program Files\\...`. Here the interpreter path has no
+    space and the quoted and unquoted forms split identically — so dropping the quoting
+    changed nothing anywhere, and a real operator would have hit it on their first run.
+    """
+    spaced = tmp_path / "a directory with spaces"
+    spaced.mkdir()
+    script = make_stub_script(spaced / "s.py", touch=("made.txt",))
+
+    argv = shlex.split(stub_command(script))
+
+    assert len(argv) == 2, f"the command split into {len(argv)} parts: {argv}"
+    assert argv[1].endswith("s.py")
+    assert Path(argv[0]).name.startswith("python")
