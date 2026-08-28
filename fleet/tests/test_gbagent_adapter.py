@@ -29,9 +29,10 @@ from gbfleet.adapters import (
 )
 from gbfleet.seat import Seat
 from gbfleet.worktree import SEAT_FILES, create
+from conftest import console_script, make_stub_binary  # noqa: E402
 
 GBAGENT = ADAPTERS["gbagent"]
-BINARY = Path(sys.executable).parent / "gbagent"
+BINARY = console_script("gbagent")
 
 
 @pytest.fixture()
@@ -122,7 +123,7 @@ def test_the_other_adapters_refuse_gbagents_knobs_too(tmp_path):
     is what the first draft of this did.
     """
     fake = tmp_path / "claude"
-    fake.write_text("#!/bin/sh\necho '2.1.233 (Claude Code)'\n", encoding="utf-8")
+    fake = make_stub_binary(fake, prints="2.1.233 (Claude Code)")
     fake.chmod(0o755)
 
     with pytest.raises(TuningUnsupported) as exc:

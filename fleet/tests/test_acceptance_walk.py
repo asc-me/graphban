@@ -48,6 +48,7 @@ from gbfleet.mcp import Fleet, handle
 from gbfleet.seat import Seat
 from gbfleet.spawn import Launch, LaunchFailed, Reason
 from gbfleet.worktree import SEAT_FILES, Disposition, create, orphans, reap
+from conftest import make_stub_binary  # noqa: E402
 
 SERVER = os.environ.get("GBFLEET_WALK_SERVER")
 KEY = os.environ.get("GBFLEET_WALK_KEY")
@@ -329,9 +330,7 @@ def test_the_acceptance_walk(git_repo: Path, tmp_path: Path, state: Path):
     report.ok(10, f"orphans lists {killed.branch} as salvaged, and nothing else")
 
     # 11 ─ a version outside the adapter's range refuses at spawn.
-    fake = tmp_path / "claude"
-    fake.write_text("#!/bin/sh\necho '1.0.0 (Claude Code)'\n", encoding="utf-8")
-    fake.chmod(0o755)
+    fake = make_stub_binary(tmp_path / "claude", prints="1.0.0 (Claude Code)")
     from gbfleet.adapters import resolve
 
     with pytest.raises(VersionUnsupported) as exc:

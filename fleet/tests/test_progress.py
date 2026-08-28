@@ -274,7 +274,10 @@ def test_debug_mode_emits_a_reading_per_poll_and_plain_mode_does_not(
     assert with_debug, "--debug produced no per-child readings at all"
     assert {"total_bytes", "silent_for", "age"} <= set(with_debug[0])
 
-    (state / LOG_FILE).unlink()
+    # Truncated, not unlinked. `RotatingFileHandler` still holds this file open, and
+    # Windows refuses to delete an open file — POSIX happily unlinks one, which is why
+    # this passed here and failed there with WinError 32 (GRPH-588).
+    (state / LOG_FILE).write_text("", encoding="utf-8")
     workspace2 = tmp_path / "ws2"
     up(
         git_repo, _seats(1), _factory(scripts, "silent_then_exits", adapter="fake2"),

@@ -238,6 +238,32 @@ def _fallback_user() -> str:
         return ""
 
 
+# --- reading an exit status ---------------------------------------------------------
+
+#: What Windows reports for a process that ended because it received CTRL_C or
+#: CTRL_BREAK — `STATUS_CONTROL_C_EXIT`. The graceful half of `stop()` sends exactly
+#: that, so a child stopped politely reports 3221225786 rather than 0, and every one of
+#: them would otherwise be recorded as `exited 3221225786`: a clean shutdown that reads
+#: like a crash (GRPH-588).
+CONTROL_C_EXIT = 0xC000013A
+
+
+def terminated_by_signal(code: int | None) -> bool:
+    """Whether this status means the OS stopped the process, not that it chose a status.
+
+    POSIX spells it as a negative return code (`-15` for SIGTERM); Windows has no such
+    convention and reports `STATUS_CONTROL_C_EXIT` instead. Neither is a number the
+    program picked, and reporting either as though it were misattributes a shutdown.
+
+    It cannot tell WHO asked — a user pressing Ctrl-C and the supervisor calling `stop`
+    produce the same status. `Child.stopped_because` is what answers that, and callers
+    with it in hand should say so.
+    """
+    if code is None:
+        return False
+    return code == CONTROL_C_EXIT if WINDOWS else code < 0
+
+
 # --- who "this user" is ------------------------------------------------------------
 
 def user_tag() -> str:

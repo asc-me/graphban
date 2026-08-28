@@ -27,7 +27,8 @@ from gbfleet.adapters import (
     resolve,
 )
 from gbfleet.seat import Seat
-from gbfleet.worktree import SEAT_FILES, create
+from gbfleet.worktree import SEAT_FILES, create, seat_key
+from conftest import console_script, make_stub_binary  # noqa: E402
 
 MATRIX = Path(__file__).resolve().parents[2] / "docs" / "fleet-adapters.md"
 SEAT = Seat(code="WORKER-7F3K", server_url="https://gb.invalid", api_key="gbk_secret")
@@ -108,9 +109,7 @@ def test_a_missing_binary_refuses_by_name(tmp_path: Path):
 def test_a_version_outside_the_range_refuses_at_resolve(tmp_path: Path):
     """The load-bearing refusal: before a worktree exists, before a seat is written,
     before anything can fail in a way that looks like the vendor's fault."""
-    fake = tmp_path / "claude"
-    fake.write_text("#!/bin/sh\necho '1.0.0 (Claude Code)'\n", encoding="utf-8")
-    fake.chmod(0o755)
+    fake = make_stub_binary(tmp_path / "claude", prints="1.0.0 (Claude Code)")
 
     with pytest.raises(VersionUnsupported) as exc:
         resolve("claude", binary=fake)
@@ -121,9 +120,7 @@ def test_a_version_outside_the_range_refuses_at_resolve(tmp_path: Path):
 
 def test_a_binary_inside_the_range_resolves(tmp_path: Path):
     """The control. Without it the refusal above could be refusing everything."""
-    fake = tmp_path / "claude"
-    fake.write_text("#!/bin/sh\necho '2.1.233 (Claude Code)'\n", encoding="utf-8")
-    fake.chmod(0o755)
+    fake = make_stub_binary(tmp_path / "claude", prints="2.1.233 (Claude Code)")
     found = resolve("claude", binary=fake)
     assert found.adapter.name == "claude"
     assert found.binary == fake
@@ -188,9 +185,8 @@ def test_a_seat_written_into_the_worktree_is_one_salvage_knows_about(
     tree = create(git_repo, tmp_path / f"w-{name}", "wave", "1")
     seat_path = ADAPTERS[name].seat_path(tree.path)
 
-    try:
-        relative = str(Path(seat_path).resolve().relative_to(tree.path.resolve()))
-    except ValueError:
+    relative = seat_key(seat_path, tree.path)
+    if relative is None:
         return  # outside the worktree: nothing for salvage to exclude
 
     assert relative in SEAT_FILES, (
@@ -343,7 +339,7 @@ def test_the_first_party_binary_resolves_and_is_never_skipped():
     docstring in `adapters/gbagent.py` says this is re-verified on every run, and this is
     what makes that sentence true rather than decorative.
     """
-    binary = Path(sys.executable).parent / "gbagent"
+    binary = console_script("gbagent")
     assert binary.exists(), (
         f"gbagent is not installed at {binary}. It ships in this distribution; a missing "
         "console script means the install is broken. Run: uv pip install -e '.[dev]'"
