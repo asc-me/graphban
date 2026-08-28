@@ -210,6 +210,32 @@ export const api = {
     accessToken = null;
     setRefreshToken(null);
   },
+  // ---- forgotten password (GRPH-359 / GRPH-570) ----
+  //
+  // The request endpoint answers 202 with one sentence whether or not the address is
+  // registered, DELIBERATELY — it must not be usable to discover who has an account here.
+  // So this returns nothing: there is no answer to branch on, and a caller that tried would
+  // be reintroducing the oracle the API refuses to be.
+  async requestPasswordReset(email: string): Promise<void> {
+    await request<{ detail: string }>(
+      "/auth/password-reset",
+      { method: "POST", body: JSON.stringify({ email }) },
+      false,   // no refresh-retry: there is no session to refresh, that is why we are here
+    );
+  },
+  async confirmPasswordReset(token: string, newPassword: string): Promise<User> {
+    // Same reasoning as changePassword: the server revokes every session and hands back a
+    // fresh pair, so storing it is what makes the user land SIGNED IN rather than at a login
+    // form they have just proved they can get past.
+    const data = await request<{ access_token: string; refresh_token: string }>(
+      "/auth/password-reset/confirm",
+      { method: "POST", body: JSON.stringify({ token, new_password: newPassword }) },
+      false,   // no refresh-retry; a 400 here means the link is spent or expired
+    );
+    accessToken = data.access_token;
+    setRefreshToken(data.refresh_token);
+    return request<User>("/auth/me");
+  },
   async changePassword(currentPassword: string, newPassword: string): Promise<void> {
     // The server revokes EVERY session on a password change, including this one, so it
     // hands back a fresh pair. Storing it is what stops a successful change reading as an

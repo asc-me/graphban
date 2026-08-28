@@ -3,6 +3,8 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
+import { api } from "@/lib/api";
+
 import { useAuth } from "./AuthContext";
 
 type Mode = "signin" | "signup";
@@ -14,6 +16,7 @@ export function LoginPage() {
   const [handle, setHandle] = React.useState("");
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
+  const [sent, setSent] = React.useState(false);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
@@ -36,6 +39,24 @@ export function LoginPage() {
           : "Invalid email or password.",
       );
     } finally {
+      setBusy(false);
+    }
+  }
+
+  async function forgot() {
+    setBusy(true);
+    setError("");
+    try {
+      await api.requestPasswordReset(email.trim());
+    } catch {
+      // Swallowed on purpose. The request endpoint answers 202 for every address, so the only
+      // errors reachable here are transport or the rate limit — and surfacing "429" beside an
+      // email field invites a reader to infer something about the ADDRESS. The confirmation
+      // below is shown either way, which is the same promise the server makes.
+    } finally {
+      // Set regardless of outcome, for the reason above: the message must not depend on
+      // anything the server would not tell an anonymous caller.
+      setSent(true);
       setBusy(false);
     }
   }
@@ -116,6 +137,31 @@ export function LoginPage() {
                 ? "Create account"
                 : "Sign in"}
           </Button>
+
+          {!isSignup && (
+            <div className="mt-3 text-center text-[12px]">
+              {sent ? (
+                // ALWAYS THIS SENTENCE, whether or not the address is registered. The API
+                // answers 202 identically either way so it cannot be used to discover who has
+                // an account here (GRPH-359); a UI that said "no account found" would
+                // reintroduce the oracle the server refuses to be. "Check your inbox" rather
+                // than "Email sent", because `send_email` falls back to an in-process outbox
+                // and the server cannot observe delivery either.
+                <span className="text-muted">
+                  If an account exists for that address, a reset link is on its way. Check your inbox.
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={forgot}
+                  disabled={busy || !email.trim()}
+                  className="text-muted hover:text-fg-2 hover:underline disabled:opacity-50"
+                >
+                  Forgot your password?
+                </button>
+              )}
+            </div>
+          )}
 
           <div className="mt-5 text-center text-[12px] text-muted">
             {isSignup ? (
