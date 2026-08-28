@@ -1551,6 +1551,15 @@ class ApiKey(Base):
     # so a compromised or over-eager client cannot promote itself into `reviewer`.
     # Existing keys are backfilled to all three, so nothing in flight breaks.
     roles: Mapped[list] = mapped_column(JSON, default=list)
+    # Which optional tool tiers appear in this key's manifest (GRPH-571). NULL/[] = core
+    # only, which is the DEFAULT and not a legacy state: `tool_tiers.visible` treats "no
+    # tiers" as "no tiers" rather than "all tiers", because defaulting existing keys to
+    # everything would make tiering a no-op on precisely the keys already in the wild.
+    #
+    # Never an authorisation field. A tool absent from the manifest still dispatches for an
+    # authorised key — `scopes` and `roles` above decide what may be CALLED, this decides
+    # only what is ADVERTISED.
+    tool_tiers: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Tags keys the Fleet view minted for one wave, so "End wave" revokes exactly those and
     # never a key a human made by hand (PRD-17 D-g). NULL = hand-minted, never swept.
     fleet_wave: Mapped[str | None] = mapped_column(String, nullable=True, index=True)

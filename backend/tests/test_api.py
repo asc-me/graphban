@@ -114,7 +114,7 @@ def test_mcp_requires_key(client):
 
 
 def test_mcp_tools_and_call(client, auth):
-    key = client.post("/api/api-keys", json={"name": "test"}, headers=auth).json()["plaintext"]
+    key = client.post("/api/api-keys", json={"name": "test", "tool_tiers": ["prd", "codegraph", "fleet", "misc"]}, headers=auth).json()["plaintext"]
     hk = {"X-API-Key": key}
     tl = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=hk)
     names = [t["name"] for t in tl.json()["result"]["tools"]]
@@ -234,11 +234,14 @@ def test_create_api_key_unknown_project_is_422(client, auth):
 
 
 def test_mcp_get_context_and_list_projects(client, auth):
-    key = client.post("/api/api-keys", json={"name": "ctx", "project_id": "core"}, headers=auth).json()["plaintext"]
+    key = client.post("/api/api-keys", json={"name": "ctx", "project_id": "core", "tool_tiers": ["prd", "codegraph", "fleet", "misc"]}, headers=auth).json()["plaintext"]
     ctx = _mcp(client, key, "get_context", {})
     assert ctx["project_id"] == "core"
     assert ctx["key_project_id"] == "core"
     from app.mcp_server import LIVE_TOOL_COUNT
+    # Minted with every tool tier above (GRPH-571), so `tool_count` is still the whole
+    # manifest and this stays a test about `get_context` reporting the truth rather than a
+    # test about tiering. A plain key would report 33 and that would ALSO be correct.
     assert ctx["tool_count"] == LIVE_TOOL_COUNT
     assert ctx["project_count"] >= 1
 
@@ -288,7 +291,10 @@ def test_every_mcp_tool_declares_output_schema(client, auth):
 
 
 def test_mcp_returns_structured_content(client, auth):
-    key = client.post("/api/api-keys", json={"name": "sc"}, headers=auth).json()["plaintext"]
+    key = client.post("/api/api-keys",
+                      json={"name": "sc",
+                            "tool_tiers": ["prd", "codegraph", "fleet", "misc"]},
+                      headers=auth).json()["plaintext"]
     r = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                     "params": {"name": "get_context", "arguments": {}}},
                     headers={"X-API-Key": key})

@@ -4,6 +4,9 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field, field_validator
 
+# Imports nothing from `app`, so this cannot cycle back through schemas.
+from app.services import tool_tiers as tool_tiers_svc
+
 
 class ORMModel(BaseModel):
     # populate_by_name so the `id` fields aliased to a rendered `key` (PRD-13) can still
@@ -588,6 +591,22 @@ class ApiKeyCreate(BaseModel):
     project_id: str | None = None
     # Optional lifetime; None = non-expiring (AL-72).
     expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+    # Optional tool tiers (GRPH-571). Empty = the core manifest, which is the default and
+    # not a degraded state. Never widens what the key may CALL — only what it is told about.
+    tool_tiers: list[str] = []
+
+    @field_validator("tool_tiers")
+    @classmethod
+    def _known_tiers(cls, v: list[str]) -> list[str]:
+        # Validated for the same reason `scopes` is, one field up: an unrecognised tier
+        # would mint fine and never widen anything, and the failure surfaces much later as
+        # a tool the agent cannot see and cannot explain.
+        bad = tool_tiers_svc.unknown(v)
+        if bad:
+            raise ValueError(
+                f"unknown tier(s) {bad}; allowed: {list(tool_tiers_svc.TIERS)}"
+            )
+        return v
 
     @field_validator("scopes")
     @classmethod
@@ -605,6 +624,8 @@ class ApiKeyOut(ORMModel):
     name: str
     prefix: str
     scopes: list[str]
+    # Surfaced so the UI can show what a key was minted with. `None` means core-only.
+    tool_tiers: list[str] | None = None
     project_id: str | None = None
     last_used: datetime | None
     created_at: datetime

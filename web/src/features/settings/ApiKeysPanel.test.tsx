@@ -52,7 +52,8 @@ let keyList: ApiKey[] = [];
 // Declared WITH parameters so `mock.calls[0][3]` is typed — a no-arg `vi.fn` gives an empty
 // tuple, and indexing it passes the test while failing the typecheck.
 const createApiKey = vi.fn(
-  async (name: string, _projectId: string | null, _days?: number | null, _scopes?: string[]) => ({
+  async (name: string, _projectId: string | null, _days?: number | null, _scopes?: string[],
+         _tiers?: string[]) => ({
     ...key({ id: "key_new", name }), plaintext: "gb_live_plaintext",
   }),
 );
@@ -144,6 +145,66 @@ describe("minting a gate key", () => {
 
     await waitFor(() => expect(createApiKey).toHaveBeenCalled());
     expect(createApiKey.mock.calls[0][3]).toBeUndefined();
+  });
+});
+
+describe("tool tiers (GRPH-571)", () => {
+  it("mints with no tiers by default", async () => {
+    // The default IS core-only, and it is not a degraded state. If the picker defaulted to
+    // everything selected, tiering would be a no-op for every key made in the UI — which is
+    // the same shape as the backend bug where `None` tiers meant "all tiers".
+    view();
+    await mint("Agent key", "plain");
+
+    await waitFor(() => expect(createApiKey).toHaveBeenCalled());
+    expect(createApiKey.mock.calls[0][4]).toEqual([]);
+  });
+
+  it("sends the tiers that were picked", async () => {
+    const user = userEvent.setup();
+    view();
+    await user.click(await screen.findByRole("button", { name: "Agent key" }));
+    await user.click(screen.getByRole("button", { name: "PRDs" }));
+    await user.click(screen.getByRole("button", { name: "Fleet admin" }));
+    await user.type(screen.getByPlaceholderText(/Key name/), "planner");
+    await user.click(screen.getByRole("button", { name: /Create key/ }));
+
+    await waitFor(() => expect(createApiKey).toHaveBeenCalled());
+    expect(createApiKey.mock.calls[0][4]).toEqual(["prd", "fleet"]);
+  });
+
+  it("toggles a tier off again", async () => {
+    // A picker that only ever adds looks identical to a working one until someone changes
+    // their mind.
+    const user = userEvent.setup();
+    view();
+    await user.click(await screen.findByRole("button", { name: "Agent key" }));
+    await user.click(screen.getByRole("button", { name: "PRDs" }));
+    await user.click(screen.getByRole("button", { name: "PRDs" }));
+    await user.type(screen.getByPlaceholderText(/Key name/), "k");
+    await user.click(screen.getByRole("button", { name: /Create key/ }));
+
+    await waitFor(() => expect(createApiKey).toHaveBeenCalled());
+    expect(createApiKey.mock.calls[0][4]).toEqual([]);
+  });
+
+  it("says a tiered-out tool is still callable", async () => {
+    // The one thing an operator must not misread. Reading a tier as a permission would mean
+    // granting all four to every key "to be safe", which is tiering switched off.
+    view();
+    await screen.findByRole("button", { name: "Agent key" });
+    expect(screen.getByText(/still/)).toBeInTheDocument();
+    expect(screen.getByText(/callable/)).toBeInTheDocument();
+  });
+
+  it("does not offer tiers for a sync credential", async () => {
+    // A sync credential calls no MCP tools at all, so a tier on it is a control that does
+    // nothing — and a control that does nothing teaches the wrong model of what tiers are.
+    const user = userEvent.setup();
+    view();
+    await user.click(await screen.findByRole("button", { name: "Sync credential" }));
+
+    expect(screen.queryByRole("button", { name: "PRDs" })).toBeNull();
   });
 });
 

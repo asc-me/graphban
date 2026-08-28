@@ -44,6 +44,7 @@ from app.services import mcp_proxy
 from app.services import mcp_stats
 from app.services import memory as mem_svc
 from app.services import setup as setup_svc
+from app.services import tool_tiers
 from app.services import quotas
 from app.services import artifacts as art_svc
 from app.services import prds as prd_svc
@@ -1179,6 +1180,8 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "scopes": {"type": "array", "items": _STR},
             "project_count": {"type": "integer"},
             "tool_count": {"type": "integer"},
+            "missing_tiers": {"type": "array", "items": {"type": "object"}},
+            "widen_hint": _STR,
             "empty": {"type": "boolean"},
         },
     },
@@ -1615,10 +1618,34 @@ def _visible_tools(key: ApiKey, role: str | None = None) -> list[dict]:
     # role's extra tools rather than gaining the worker's.
     if role and role != fleet_svc.ALL_IN_ONE:
         allowed = allowed & {role}
-    if allowed >= set(fleet_svc.ROLES):
-        return tools           # unrestricted credential — the pre-PRD-17 manifest, unchanged
-    return [t for t in tools
-            if not (req := fleet_svc.TOOL_ROLES.get(t["name"])) or allowed.intersection(req)]
+    if not allowed >= set(fleet_svc.ROLES):
+        tools = [t for t in tools
+                 if not (req := fleet_svc.TOOL_ROLES.get(t["name"]))
+                 or allowed.intersection(req)]
+    return _tiered(tools, key)
+
+
+def _tiered(tools: list[dict], key: ApiKey) -> list[dict]:
+    """Drop tools whose TIER this key was not minted with (GRPH-571).
+
+    Last, and after the role gate, because it is the weakest of the three filters: scope and
+    role describe what a key may CALL, this describes only what it is TOLD ABOUT. A tool
+    removed here still dispatches — see `tool_tiers`, and `test_tool_tiers.py` proves it,
+    because a manifest optimisation that quietly became an authorisation change would be a
+    far worse defect than the token cost it was fixing.
+
+    `settings.default_tool_tier_list` is unioned in rather than used as a fallback, so an
+    operator restoring the old manifest deployment-wide cannot accidentally narrow a key that
+    was minted with a tier the setting omits.
+    """
+    granted = list(key.tool_tiers or ()) + settings.default_tool_tier_list
+    keep = set(tool_tiers.visible([t["name"] for t in tools], granted))
+    return [t for t in tools if t["name"] in keep]
+
+
+def _missing_tiers(key: ApiKey) -> list[str]:
+    """Tiers absent from this key's manifest, for `get_context` to advertise."""
+    return tool_tiers.missing(list(key.tool_tiers or ()) + settings.default_tool_tier_list)
 
 # JSON-schema primitive -> (python type, label). bool is excluded from int on purpose.
 _JSON_TYPES: dict[str, tuple[type | tuple[type, ...], str]] = {
@@ -1998,6 +2025,27 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # The count the agent can actually call with this key — matches the
             # scope-gated manifest it received, not the server-wide total (AL-78).
             "tool_count": len(_visible_tools(key)),
+            # THE AFFORDANCE (GRPH-571). Tools this key was not shipped, and why.
+            #
+            # Without this, tiering ships the defect GRPH-580 was about: a capability that
+            # exists, works, and cannot be discovered — so it is never used, and the thing
+            # depending on it runs on a worse path that looks identical to the good one.
+            # An agent that cannot see `create_prd` has no way to learn the tool exists, let
+            # alone that a tier would give it back. It is told here, in the call every agent
+            # makes first, and told what each tier is FOR rather than only its name.
+            #
+            # Absent when the key holds everything, so a fully-tiered key pays nothing for a
+            # field that would only ever say "nothing is missing".
+            **({"missing_tiers": [
+                {"tier": name, "purpose": tool_tiers.TIER_PURPOSE[name],
+                 "tools": sorted(n for n, tier in tool_tiers.TOOL_TIERS.items()
+                                 if tier == name)}
+                for name in _missing_tiers(key)],
+                "widen_hint": "these tools are NOT forbidden — they are absent from your "
+                              "manifest to keep it small, and a call to one still works. "
+                              "Ask the operator to mint a key with the tier for a manifest "
+                              "that lists them."}
+               if _missing_tiers(key) else {}),
             # First-run signal (AL-133): an empty project → call setup_project for a bootstrap.
             "empty": setup_svc.is_empty(db, pid) if pid else False,
         }

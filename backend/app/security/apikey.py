@@ -54,6 +54,7 @@ def generate_api_key(
     scopes: list[str] | None = None,
     project_id: str | None = None,
     expires_in_days: int | None = None,
+    tool_tiers: list[str] | None = None,
 ) -> tuple[ApiKey, str]:
     """Create a key row and return (row, plaintext). Plaintext is not persisted.
 
@@ -70,6 +71,9 @@ def generate_api_key(
         prefix=raw[: len(MINT_PREFIX) + 4],  # display fragment, e.g. gb_sk_ab12
         hashed_key=_hash_key(raw),
         scopes=scopes or ["read", "write"],
+        # `or None` rather than `or []`: an empty list and NULL both mean core-only, and
+        # storing one shape keeps a hand-minted key indistinguishable from a migrated one.
+        tool_tiers=list(tool_tiers) if tool_tiers else None,
         expires_at=utcnow() + timedelta(days=expires_in_days) if expires_in_days else None,
     )
     db.add(row)

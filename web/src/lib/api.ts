@@ -491,6 +491,7 @@ export const api = {
     projectId: string | null,
     expiresInDays?: number | null,
     scopes?: string[],
+    toolTiers?: string[],
   ) =>
     request<ApiKeyCreated>("/api-keys", {
       method: "POST",
@@ -501,6 +502,9 @@ export const api = {
         // Omitted → the backend default (["read","write"]). A sync credential passes
         // ["sync"] and must pin to a project; the backend rejects a global one.
         ...(scopes ? { scopes } : {}),
+        // Optional MCP tool tiers (GRPH-571). Omitted/empty → the core manifest. Never
+        // widens what the key may CALL — only what its `tools/list` advertises.
+        ...(toolTiers?.length ? { tool_tiers: toolTiers } : {}),
       }),
     }),
   revokeApiKey: (id: string) => request<void>(`/api-keys/${id}`, { method: "DELETE" }),

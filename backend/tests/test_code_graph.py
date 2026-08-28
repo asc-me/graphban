@@ -15,7 +15,12 @@ def _mcp(client, key, name, args):
 
 def _key(client, auth):
     return client.post(
-        "/api/api-keys", json={"name": "code-agent", "project_id": "core"}, headers=auth
+        # `codegraph` tier (GRPH-571): `describe_code`/`link_code`/`unlink_code` are opt-in,
+        # since indexing the graph is not something an agent does mid-change. The READS are
+        # core and these tests exercise both.
+        "/api/api-keys",
+        json={"name": "code-agent", "project_id": "core", "tool_tiers": ["codegraph"]},
+        headers=auth
     ).json()["plaintext"]
 
 

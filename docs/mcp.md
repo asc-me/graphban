@@ -76,6 +76,36 @@ mcp_servers:
 Every client authenticates the same way: the key in an `X-API-Key` header (or
 `Authorization: Bearer`), against a URL reachable **from where the agent runs**.
 
+## Tool tiers
+
+**By tier** (GRPH-571). The manifest had five tokens of headroom, so the next tool that
+needed a field had nowhere to go. A key is now minted with optional **tool tiers**, and the
+default is the *core* manifest — a core set of 33, ~8.5k tokens against ~13.6k untiered, so a plain
+agent carries ~5,100 fewer tokens on every turn.
+
+| Tier | What it is for |
+| --- | --- |
+| *(core)* | Everything on the path of doing one piece of work: finding, claiming, updating and releasing items, reviewing, memory, all code-graph **reads**, and reading a PRD |
+| `prd` | **Authoring** a spec — `create_prd`, `update_prd`, `grill_prd`, `answer_grill`, `decompose_prd`, `close_prd`, `request_rebaseline`, `submit_verdict` |
+| `codegraph` | **Writing** the code graph — `describe_code`, `link_code`, `unlink_code` |
+| `fleet` | **Running** a fleet — `propose_allocation`, `assign_role`, `mint_enrolment`, `retire_wave`. Being *in* a fleet needs none of it |
+| `misc` | `extract_lessons`, `generate_digest`, `report_graphban_issue`, `learning_loop`, `create_project`, `publish_memory`, `reject_memory` |
+
+Two things to know, because getting either wrong is expensive:
+
+- **A tool left out of your manifest is not forbidden.** Tiering decides what is *advertised*,
+  never what may be *called* — scope and role decide that. Call a tiered-out tool on an
+  authorised key and it runs. So the symptom of a missing tier is an agent that does not know a
+  tool exists, never an error.
+- **`get_context` tells you what you are missing.** It returns `missing_tiers` — each tier's
+  name, purpose and tools — for any key that does not hold all four. That is the only way an
+  agent learns the surface exists, so it is worth reading on the first call.
+
+Grant tiers when minting: `tool_tiers: ["prd"]` on `POST /api-keys`, or the tier buttons under
+Settings → API keys. `fleet.mint` gives a planner credential the `fleet` tier automatically. An
+operator can restore the pre-tiering manifest for a whole deployment with
+`MCP_DEFAULT_TOOL_TIERS=prd,codegraph,fleet,misc` — see [configuration.md](configuration.md).
+
 ## The 55 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not

@@ -20,6 +20,7 @@ import json
 import pytest
 
 from app.mcp_server import TOOLS, _READ_ONLY
+from app.services import tool_tiers as tool_tiers_svc
 from app.services import fleet
 
 
@@ -113,20 +114,38 @@ def test_every_credential_keeps_the_shared_reads(client, auth, proj):
             assert shared in names, f"{role} lost {shared}"
 
 
-def test_an_unrestricted_key_sees_everything(client, auth):
-    """Backwards compatibility, and it is not incidental: every setup predating PRD-17 has a
-    key eligible for all three roles, and its manifest must not move."""
+def test_an_unrestricted_key_is_narrowed_by_no_ROLE(client, auth):
+    """Backwards compatibility for the ROLE gate specifically: every setup predating PRD-17
+    has a key eligible for all three roles, and role narrowing must take nothing from it.
+
+    Asserted against the TIER-filtered set rather than against `TOOLS` since GRPH-571. The
+    equality with `TOOLS` was this test's whole content and it is no longer the claim — a
+    plain key is tiered down to core, which is a different filter doing its job. Written so it
+    can still fail: if the role gate started removing something from an all-roles key, the
+    result would no longer equal core.
+    """
     raw = client.post("/api/api-keys", json={"name": "plain"}, headers=auth).json()["plaintext"]
 
-    assert set(_list(client, raw)) == {t["name"] for t in TOOLS}
+    assert set(_list(client, raw)) == set(tool_tiers_svc.CORE_TOOLS)
+    # And with every tier, it is once again the whole manifest — so the role gate is doing
+    # nothing here for any tier setting, which is what "unrestricted" has to mean.
+    wide = client.post("/api/api-keys",
+                       json={"name": "wide", "tool_tiers": list(tool_tiers_svc.TIERS)},
+                       headers=auth).json()["plaintext"]
+    assert set(_list(client, wide)) == {t["name"] for t in TOOLS}
 
 
 def test_the_scope_gate_still_runs_first(client, auth):
     """Role gating narrows what is left after scope, never widens it. A read-only key must not
     acquire a write tool by being role-restricted."""
-    raw = client.post("/api/api-keys", json={"name": "ro", "scopes": ["read"]},
+    raw = client.post("/api/api-keys",
+                      json={"name": "ro", "scopes": ["read"],
+                            "tool_tiers": list(tool_tiers_svc.TIERS)},
                       headers=auth).json()["plaintext"]
 
+    # Every tier granted, so this isolates the SCOPE gate — which is the claim. Without the
+    # tiers it would also pass, and would pass for the wrong reason: tiering removes read
+    # tools too, so the set would be smaller for a reason this test is not about.
     assert set(_list(client, raw)) == set(_READ_ONLY)
 
 
@@ -165,6 +184,10 @@ def test_the_saving_is_real_and_measured(client, auth, proj):
     class Key:
         scopes = ["read", "write"]
         roles = ["reviewer"]
+        # Every tier, so this measures the ROLE gate alone. A stub with no `tool_tiers`
+        # attribute is what this test had before GRPH-571 and it would now measure both
+        # filters at once, reporting a saving the role gate did not make.
+        tool_tiers = list(tool_tiers_svc.TIERS)
 
     narrowed = json.dumps({"tools": _visible_tools(Key())})
 

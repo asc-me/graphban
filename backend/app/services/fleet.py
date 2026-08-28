@@ -1827,8 +1827,20 @@ def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
     scopes = ["read", "write"]
     if role in ("reviewer", ALL_IN_ONE):
         scopes.append("gate")
+    # The `fleet` tool tier (GRPH-571) comes with the credential rather than being asked for.
+    # A planner without `propose_allocation` or `assign_role` cannot do the job it was minted
+    # for, and it would fail by those tools being ABSENT from its manifest, which reads as
+    # them not existing rather than as a missing grant.
+    #
+    # ONLY the planner (and all-in-one, which is every role). The reviewer was in this list
+    # and the enrolment path is why it is not: a seat is taken on a hand-minted credential
+    # that has no tiers, so granting the reviewer its tools HERE would work for a Fleet-view
+    # key and silently not work for an enrolled one — the same agent, two ways in, two
+    # different manifests. `review_recommendation` is core instead, which fixes both.
+    tiers = ["fleet"] if role in ("planner", ALL_IN_ONE) else []
     row, plaintext = generate_api_key(
-        db, user_id, label or f"fleet {role}", scopes, project_id, FLEET_KEY_DAYS)
+        db, user_id, label or f"fleet {role}", scopes, project_id, FLEET_KEY_DAYS,
+        tool_tiers=tiers)
     # `all-in-one` mints an UNNARROWED credential — all three roles — which is what makes an
     # agent registering on it unrestricted. It is still wave-tagged, so "End wave" sweeps it
     # like any other: the posture differs, the lifecycle does not.

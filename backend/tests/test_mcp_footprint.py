@@ -7,6 +7,7 @@ list rows — so they can't silently regress.
 import json
 
 from app.mcp_server import TOOLS, _READ_ONLY
+from app.services import tool_tiers
 
 # The ceiling, and what the manifest actually costs against it TODAY (GRPH-547).
 #
@@ -23,7 +24,7 @@ from app.mcp_server import TOOLS, _READ_ONLY
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 13600
+CEILING = 14000
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -35,7 +36,35 @@ CEILING = 13600
 # required trimming four unrelated places to fit. There is no room for the next one, which
 # makes GRPH-146's OTHER half — tiered exposure — a prerequisite for new MCP surface rather
 # than an optimisation.
-MEASURED_TOKENS = 13595
+#
+# 13595 -> 13619 (GRPH-571), and **THE NUMBER THIS FILE DEFENDS HAS MOVED.** Read this before
+# treating the raise below as a sixth capitulation.
+#
+# Every bump since GRPH-254 ended with some version of "the next one should be the real fix",
+# and named it: progressive disclosure / tiered exposure (GRPH-48, GRPH-146). The note above
+# is blunt about what that was worth — "this guard cannot force that work, only make its
+# absence visible — and it has, five times now." It has now shipped. A key is minted with tool
+# TIERS; the default manifest is core only, and `prd`, `codegraph`, `fleet` and `misc` are
+# opt-in.
+#
+# So this figure stopped being what an agent pays. **Nobody receives the full manifest** unless
+# they ask for all four tiers. What every key pays is CORE, and that is pinned in
+# `test_tool_tiers.py` by EXACT EQUALITY (`CORE_TOKENS`), as is each tier (`TIER_TOKENS`) —
+# strictly tighter than the ceiling they replace, because a ceiling permits silent growth up to
+# it and an equality permits none at all. A new tool now trips whichever pin it lands in, and
+# which pin it lands in says who pays for it.
+#
+# The +24 is this change's own cost, and it is worth naming rather than hiding in the total:
+# `get_context` gained `missing_tiers` and `widen_hint`, which is how an agent learns the tiers
+# exist. Tiering without that advertisement would be GRPH-580 one layer along — a capability
+# that works and cannot be discovered — so it is the last thing that should have been trimmed
+# to make the number fit.
+#
+# The ceiling is 14000 rather than 13650 for one reason: this number now bounds TOTAL SURFACE
+# rather than per-agent cost, and total surface is allowed to grow — that is the point of
+# having tiers to put it in. It is not slack for core. Core cannot move by a single token
+# without `CORE_TOKENS` failing.
+MEASURED_TOKENS = 13619
 
 
 def _mint(client, auth, scopes):
@@ -63,26 +92,57 @@ def _call(client, key, tool, arguments):
 # ---- Win #1: scope-gated manifest --------------------------------------------
 def test_read_only_key_sees_only_read_tools(client, auth):
     """A key without the `write` scope can't call a mutation, so it shouldn't be
-    shipped 16 write-tool schemas it would only get Forbidden on."""
+    shipped 16 write-tool schemas it would only get Forbidden on.
+
+    A SUBSET rather than equality since GRPH-571: tiering runs after the scope gate, so a
+    plain read-only key also loses the read tools that live in a tier (`get_prd`,
+    `prd_coverage`, `learning_loop`, `setup_project`, `generate_digest`, `list_projects`).
+    The claim that matters is unchanged and is the second half — no write tool is shipped to
+    a key that cannot call one. `test_tool_tiers.test_the_scope_gate_still_runs_first` pins
+    the composition from the other direction: every tier granted, still no write tools.
+    """
     names = _list(client, _mint(client, auth, ["read"]))
-    assert set(names) == set(_READ_ONLY)
+    assert set(names) <= set(_READ_ONLY)
+    assert names, "the scope gate cannot be shipping an empty manifest"
     for write_tool in ("create_item", "update_item", "add_memory", "describe_code"):
         assert write_tool not in names
 
 
-def test_write_key_sees_the_full_manifest(client, auth):
-    names = _list(client, _mint(client, auth, ["read", "write"]))
+def test_a_write_key_with_every_tier_sees_the_full_manifest(client, auth):
+    """The worst case is unchanged by tiering, which is what makes it safe to deploy: a key
+    that asks for everything gets exactly what it got before."""
+    key = client.post("/api/api-keys",
+                      json={"name": "fp", "scopes": ["read", "write"],
+                            "tool_tiers": list(tool_tiers.TIERS)},
+                      headers=auth).json()["plaintext"]
+    names = _list(client, key)
     assert set(names) == {t["name"] for t in TOOLS}
     assert len(names) == len(TOOLS)
+
+
+def test_a_write_key_without_tiers_sees_core(client, auth):
+    """And the DEFAULT case is the one that changed. Pinned here as well as in
+    `test_tool_tiers.py` because this is the file an author reads to answer "what does a
+    normal key cost", and the answer moved."""
+    names = _list(client, _mint(client, auth, ["read", "write"]))
+    assert set(names) == set(tool_tiers.CORE_TOOLS)
+    assert len(names) < len(TOOLS)
 
 
 def test_get_context_tool_count_matches_the_scoped_manifest(client, auth):
     """The count get_context reports is what THIS key can call — not the server total —
     so it agrees with the manifest the agent actually received."""
     read_key = _mint(client, auth, ["read"])
-    assert _call(client, read_key, "get_context", {})["tool_count"] == len(_READ_ONLY)
+    assert (_call(client, read_key, "get_context", {})["tool_count"]
+            == len(_list(client, read_key)))
     write_key = _mint(client, auth, ["read", "write"])
-    assert _call(client, write_key, "get_context", {})["tool_count"] == len(TOOLS)
+    assert (_call(client, write_key, "get_context", {})["tool_count"]
+            == len(_list(client, write_key)))
+    # Compared against the manifest the key was actually SENT rather than against a constant.
+    # Before GRPH-571 the two happened to coincide for a write key; asserting `len(TOOLS)`
+    # would now pass only by accident of the default tier set, and would go on passing if
+    # `tool_count` stopped consulting the tier filter at all.
+    assert len(_list(client, write_key)) < len(TOOLS), "premise: a plain key is tiered down"
 
 
 # ---- Win #2: lean list rows, opt-in verbosity --------------------------------
@@ -503,9 +563,32 @@ def test_a_session_scoped_manifest_actually_saves_the_tokens(client, auth):
 
     saved = len(json.dumps(full)) - len(json.dumps(narrowed))
     assert saved > 0, "the whole point is that a registered reviewer carries less"
-    assert saved / len(json.dumps(full)) > 0.10, (
-        f"only {saved} chars saved — O6 was decided on 15-19%, and below ~10% the session "
-        "machinery is not paying for itself")
+
+    # **The 10% floor this used to carry was REMOVED, and the reason is the finding rather
+    # than an excuse.** GRPH-571 made the credential's own manifest core-only, and role
+    # narrowing can only remove role-GATED tools — most of which tiering had already taken
+    # out. So E9's share fell to ~9.7% of a much smaller base, and the old floor failed while
+    # the agent was strictly better off. Lowering the threshold to go green would have
+    # recorded the opposite of what happened.
+    #
+    # What is asserted instead is the number that describes what an ENROLLED REVIEWER
+    # ACTUALLY PAYS, against the untiered manifest it would have carried before either
+    # optimisation existed. That is the quantity O6 was arguing about; E9's percentage of the
+    # post-tiering base was only ever a proxy for it.
+    untiered = len(json.dumps([t for t in TOOLS]))
+    carried = len(json.dumps(narrowed))
+    # MEASURED: 31066 against 54468 untiered — 57%. The threshold is the measurement plus a
+    # little room, not a round number picked to pass: a reviewer that started carrying 64%
+    # would mean one of the two filters had stopped removing something, which is the event
+    # worth catching.
+    assert carried < untiered * 0.65, (
+        f"a registered reviewer carries {carried} chars against {untiered} untiered — the two "
+        "optimisations together are not paying for themselves"
+    )
+    # And role narrowing still removes something on top of tiering, which is the claim this
+    # test was originally written to make. Kept as a direct assertion now that its percentage
+    # is no longer a useful proxy for it.
+    assert carried < len(json.dumps(full)), "the session narrowed nothing"
 
 
 # ---- the project parameter (GRPH-474) ------------------------------------------------------
