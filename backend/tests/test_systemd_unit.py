@@ -70,7 +70,9 @@ def test_the_port_is_an_environment_assignment_not_left_to_dotenv(unit):
 
 
 def test_the_working_directory_is_where_dotenv_lives(unit):
-    assert f"WorkingDirectory={ROOT / 'backend'}" in unit
+    assert f"WorkingDirectory={ROOT / 'current' / 'backend'}" in unit, (
+        "it must read the directory S5 swaps — see test_install_layout.py"
+    )
 
 
 def test_it_runs_the_same_entrypoint_as_every_other_path(unit):

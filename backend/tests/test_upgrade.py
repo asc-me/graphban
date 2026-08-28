@@ -24,11 +24,27 @@ NEW, OLD = "beef1234", "cafe5678"
 
 @pytest.fixture()
 def install(tmp_path: pathlib.Path) -> pathlib.Path:
-    """A root with a current release, as S3/S4 would have left it."""
+    """A root with a current release, as S3/S4 would have left it. API-only: no web bundle."""
     (tmp_path / "current").mkdir()
     (tmp_path / "current" / "marker").write_text(OLD, encoding="utf-8")
     (tmp_path / "backend").mkdir()
     return tmp_path
+
+
+@pytest.fixture()
+def bundled_release(release: pathlib.Path) -> pathlib.Path:
+    """A release that CARRIES a built SPA.
+
+    S1 mounts the SPA only when `web/dist` exists, so the web sha is a fact about installs that
+    have one — which the S6 walk found by upgrading an API-only install and watching it refuse
+    forever. The bundle belongs to the RELEASE rather than the install it replaces, because the
+    check runs after the swap and therefore describes the incoming code; putting it on the old
+    install (my first attempt) proves nothing, since the swap removes it.
+    """
+    dist = release / "web" / "dist"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+    return release
 
 
 @pytest.fixture()
@@ -124,13 +140,13 @@ def test_a_release_that_serves_the_wrong_sha_is_rolled_back(install, release, mo
     assert (install / "current" / "marker").read_text() == OLD
 
 
-def test_a_web_bundle_lagging_the_api_is_caught(install, release, monkeypatch):
+def test_a_web_bundle_lagging_the_api_is_caught(install, bundled_release, monkeypatch):
     """The bundle is baked at build time and can lag the API independently, which is why
     `deploy.sh` checks it separately rather than trusting `/health` alone."""
     monkeypatch.setattr(up.time, "sleep", lambda s: None)
     _, restart = calls_recorder()
 
-    rc = up.upgrade(install, release, NEW, base="http://x", python=pathlib.Path("py"),
+    rc = up.upgrade(install, bundled_release, NEW, base="http://x", python=pathlib.Path("py"),
                     restart=restart,
                     probe=lambda b, **k: {"status": "ok", "git_sha": NEW, "db": "ok"},
                     web=lambda b, **k: OLD,
@@ -139,14 +155,14 @@ def test_a_web_bundle_lagging_the_api_is_caught(install, release, monkeypatch):
     assert rc == up.EXIT_ROLLED_BACK
 
 
-def test_the_failure_names_every_wrong_fact_not_just_the_first(install, release, monkeypatch,
+def test_the_failure_names_every_wrong_fact_not_just_the_first(install, bundled_release, monkeypatch,
                                                                capsys):
     """An operator who fixes one problem and re-runs to find a second was told half of what
     was already known."""
     monkeypatch.setattr(up.time, "sleep", lambda s: None)
     _, restart = calls_recorder()
 
-    up.upgrade(install, release, NEW, base="http://x", python=pathlib.Path("py"),
+    up.upgrade(install, bundled_release, NEW, base="http://x", python=pathlib.Path("py"),
                restart=restart,
                probe=lambda b, **k: {"status": "ok", "git_sha": OLD, "db": "ok"},
                web=lambda b, **k: OLD, head=lambda r, p: "0091")
