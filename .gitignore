@@ -10,6 +10,10 @@ backend/.pytest.db
 # `test_no_tracked_control_bytes` on main and therefore on every PR built against it.
 .pytest.db
 .pytest.db-journal
+# The concurrency lock GRPH-554 added sits beside the database it guards, and xdist gives
+# each worker its own — so the pattern has to cover `.pytest_gw3.db.lock` as well as the
+# bare one. Untracked litter in `git status` is how a real change gets missed in the noise.
+*.db.lock
 # Same trap, same fix: scripts/docs_completeness.py opens a throwaway SQLite
 # database in whatever directory it is run from (GRPH-475).
 .docscheck.db
