@@ -600,13 +600,66 @@ function AccountPanel() {
   );
 }
 
-/** Agent keys talk to the MCP endpoint; sync credentials only push a code graph (AL-219 D4). */
-type KeyKind = "agent" | "sync";
+/** Agent keys talk to the MCP endpoint; sync credentials only push a code graph (AL-219 D4).
+ *
+ * `gate` attests that work was checked (GRPH-580). It shipped as a scope in GRPH-541, completion
+ * was made to depend on it in GRPH-543, and a CI adapter was built for it in GRPH-551 — while the
+ * only way to mint one was curl with a JWT. A capability nobody can create is one nobody uses,
+ * and the gate then runs permanently under the weak path, which looks identical to working.
+ */
+type KeyKind = "agent" | "sync" | "gate";
 
-function ApiKeysPanel() {
+/**
+ * What to do with a gate key, which is NOT what to do with an agent key.
+ *
+ * Routing this to `McpInstall` — the previous behaviour for anything non-sync — would tell the
+ * operator to paste a completion-attesting key into the MCP config of the agent doing the work.
+ * That is precisely the arrangement the scope exists to prevent: the gate would still be armed,
+ * still refuse `done` without an attestation, and the attestation would come from the same
+ * agent. It would look exactly like a working gate.
+ *
+ * The consumer is `scripts/attest_ci.py`, which reads these two variables and nothing else.
+ */
+function GateKeyInstall({ apiKey }: { apiKey: string }) {
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const snippet = `GRAPHBAN_URL=${origin}\nGRAPHBAN_GATE_KEY=${apiKey}`;
+  const [copied, setCopied] = React.useState(false);
+  return (
+    <div className="mt-3 border-t border-line-2 pt-3">
+      <p className="mb-2 text-[12px] text-muted">
+        Store as CI secrets — <span className="text-fg-2">not</span> in an agent&rsquo;s MCP
+        config. <code className="font-mono text-[11px] text-fg-2">scripts/attest_ci.py</code>{" "}
+        reads these after the check that decides CI is green.
+      </p>
+      <div className="flex items-start gap-2">
+        <pre className="flex-1 overflow-x-auto rounded-md border border-line-2 bg-surface-3 p-2 font-mono text-[11px] text-fg-2">
+          {snippet}
+        </pre>
+        <button
+          className="rounded-md border border-line-2 bg-surface-3 p-1.5 text-muted hover:text-fg"
+          aria-label="Copy CI secrets"
+          onClick={() =>
+            copyText(snippet).then(
+              (ok) => ok && (setCopied(true), setTimeout(() => setCopied(false), 1500)),
+            )
+          }
+        >
+          {copied ? <Check size={13} className="text-accent" /> : <Copy size={13} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function ApiKeysPanel() {
   const { data: apiKeys = [] } = useApiKeys();
   const syncKeys = apiKeys.filter((k) => k.scopes?.includes("sync"));
-  const agentKeys = apiKeys.filter((k) => !k.scopes?.includes("sync"));
+  const gateKeys = apiKeys.filter((k) => k.scopes?.includes("gate"));
+  // Everything that is neither. Written as an exclusion of BOTH rather than of `sync` alone:
+  // the old expression put a gate key in the agent list, where its scope is invisible.
+  const agentKeys = apiKeys.filter(
+    (k) => !k.scopes?.includes("sync") && !k.scopes?.includes("gate"),
+  );
   const { active, projects } = useProjectCtx();
   const qc = useQueryClient();
   const [kind, setKind] = React.useState<KeyKind>("agent");
@@ -638,7 +691,12 @@ function ApiKeysPanel() {
       return;
     }
     try {
-      const res = await api.createApiKey(name.trim(), projectId, expiryDays, isSync ? ["sync"] : undefined);
+      // `["gate"]` alone mints a DEAD key. `attest_ci.py` attests via `update_item`, which
+      // mcp_server refuses without `write` — so the key would be created successfully, be
+      // stored as a CI secret, and 403 on the first real attestation. `fleet.mint` already
+      // carries read+write alongside `gate` for exactly this reason; this matches it.
+      const scopes = kind === "sync" ? ["sync"] : kind === "gate" ? ["read", "write", "gate"] : undefined;
+      const res = await api.createApiKey(name.trim(), projectId, expiryDays, scopes);
       setCreated({ plaintext: res.plaintext, kind, projectId: projectId ?? "" });
       setName("");
       qc.invalidateQueries({ queryKey: keys.apiKeys });
@@ -665,6 +723,8 @@ function ApiKeysPanel() {
           </div>
           {created.kind === "sync" ? (
             <SyncCredentialInstall apiKey={created.plaintext} projectId={created.projectId} />
+          ) : created.kind === "gate" ? (
+            <GateKeyInstall apiKey={created.plaintext} />
           ) : (
             <McpInstall apiKey={created.plaintext} />
           )}
@@ -675,6 +735,7 @@ function ApiKeysPanel() {
           [
             ["agent", "Agent key", "Talks to the MCP endpoint — read/write on items, memory, code."],
             ["sync", "Sync credential", "Pushes a code graph from a local instance into one project. Nothing else."],
+            ["gate", "Gate key", "Attests that work was checked, so an item may reach done. For CI or a reviewer — never for the agent doing the work."],
           ] as const
         ).map(([id, label, desc]) => (
           <button
@@ -697,7 +758,13 @@ function ApiKeysPanel() {
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder={kind === "sync" ? "Key name (e.g. laptop — acme-core)" : "Key name (e.g. ci-agent)"}
+          placeholder={
+            kind === "sync"
+              ? "Key name (e.g. laptop — acme-core)"
+              : kind === "gate"
+                ? "Key name (e.g. github-actions)"
+                : "Key name (e.g. ci-agent)"
+          }
           className="max-w-xs"
         />
         {kind === "sync" && (
@@ -724,7 +791,7 @@ function ApiKeysPanel() {
           <option value="365">Expires in 365 days</option>
         </select>
         <Button size="sm" onClick={create} disabled={!name.trim()}>
-          <Plus size={14} />{kind === "sync" ? "Mint credential" : "Create key"}
+          <Plus size={14} />{kind === "sync" ? "Mint credential" : kind === "gate" ? "Mint gate key" : "Create key"}
         </Button>
       </div>
       {error && <p className="mb-2 text-[12px] text-st-blocked">{error}</p>}
@@ -875,6 +942,38 @@ function ApiKeysPanel() {
                 <McpInstall apiKey="<YOUR_API_KEY>" keyPrefix={k.prefix} />
               </div>
             )}
+          </div>
+        )}
+      </KeyGroup>
+      <KeyGroup
+        title="Gate keys"
+        blurb={
+          <>
+            Attest that work was checked, so an item may reach <code className="font-mono text-[11px]">done</code>.
+            Give one to CI or to a reviewer — <em className="not-italic text-fg-2">never</em> to the
+            agent doing the work, since the whole point is that the proof comes from somewhere else.
+          </>
+        }
+        rows={gateKeys}
+        empty="No gate key exists, so nothing can attest. Completion then depends entirely on a reviewer signing off with a commit."
+      >
+        {(k) => (
+          <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">
+            <div className="flex items-center gap-3 px-3 py-2.5">
+              <KeyRound size={14} className="text-muted" />
+              <span className="text-[13px] text-fg-2">{k.name}</span>
+              <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
+              <span className="rounded border border-accent/40 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-accent">
+                gate
+              </span>
+              <span className="ml-auto text-[11px] text-faint">{projectName(k.project_id ?? null)}</span>
+              <button
+                onClick={() => revoke(k.id)}
+                className="rounded px-1.5 py-0.5 text-[11px] text-muted hover:text-st-blocked"
+              >
+                Revoke
+              </button>
+            </div>
           </div>
         )}
       </KeyGroup>

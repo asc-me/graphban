@@ -181,6 +181,31 @@ def test_a_write_key_cannot_write_an_attestation(client, auth):
     assert err.get("hint"), "a refused agent gets no machine-readable next step"
 
 
+def test_the_gate_scope_ALONE_is_not_enough(client, auth):
+    """A `["gate"]`-only key is minted successfully and cannot attest — the shape of an
+    unusable credential that looks correct.
+
+    `gate` is in `API_KEY_SCOPES`, so `POST /api-keys` returns 201 and a plausible key. It
+    then fails at the only thing it was minted for, because attesting goes through
+    `update_item`, which mutates, which needs `write`. Nothing said so: `fleet.mint` carries
+    read+write+gate and every test above mints all three, so the combination that does NOT
+    work was the one nobody had written down.
+
+    Found building the Settings picker (GRPH-580), where sending `["gate"]` was the obvious
+    reading of "mint a gate key" — and would have produced a key stored as a CI secret that
+    403s on its first real attestation, months later, in CI.
+    """
+    item = client.post("/api/items", json={"title": "gated"}, headers=auth).json()
+    key = _mint(client, auth, ["gate"])
+
+    err = _error(_rpc(client, key, "update_item",
+                      {"id": item["id"], "evidence": [_attestation()]}))
+
+    assert err, "a gate-only key attested; this test's premise is wrong, not the code"
+    assert "write" in err["message"], \
+        f"the refusal does not name the scope it is actually missing: {err}"
+
+
 def test_a_gate_key_may_write_one(client, auth):
     """The control for the refusal above. Without it, a check that refused everyone would
     pass that test — and the port would be unusable rather than protected."""
