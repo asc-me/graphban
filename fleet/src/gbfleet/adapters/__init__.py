@@ -202,6 +202,22 @@ class Adapter:
         """Vendor flags for the knobs this adapter declares. Empty unless overridden."""
         return []
 
+    def debug_argv(self, path: Path) -> list[str]:
+        """Flags that make this vendor write a debug log to `path`, or [] if it has none.
+
+        **Empty means "this vendor cannot", and the caller must say so.** Measured per
+        vendor rather than assumed, and the answers genuinely differ: `grok` and `claude`
+        both take a debug file, `cursor-agent`'s `--help` has no debug or verbose flag at
+        all, and first-party `gbagent` has none either. An operator who asks for `--debug`
+        and silently gets nothing extra from half the fleet has been told the fleet is
+        more observable than it is, which is worse than knowing it is not.
+
+        The flags are placed by each adapter rather than appended by the caller, because
+        two of these CLIs end their argv with a positional prompt and a flag after it
+        would be read as part of the prompt.
+        """
+        return []
+
     def known_models(self, binary: Path) -> frozenset[str] | None:
         """What this binary says it can run, or None when it cannot be asked.
 
@@ -229,7 +245,8 @@ class Adapter:
 
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
-        model: str = "", tuning: "Tuning | None" = None,
+        model: str = "", tuning: "Tuning | None" = None, *,
+        debug_file: Path | None = None,
     ) -> Launch:
         raise NotImplementedError
 

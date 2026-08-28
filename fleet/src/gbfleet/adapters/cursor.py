@@ -62,9 +62,24 @@ class CursorAgent(Adapter):
     def seat_path(self, worktree: Path) -> Path:
         return Path(worktree) / ".cursor" / "mcp.json"
 
+    def debug_argv(self, path: Path) -> list[str]:
+        """Nothing. `cursor-agent --help` has no debug and no verbose flag.
+
+        It does have `--output-format stream-json` and `--stream-partial-output`, which
+        give structured progress rather than a debug log — a different feature, reached a
+        different way, and not something to quietly substitute here. Declaring one would
+        be the fabrication `codex.py` refuses to make.
+
+        A Cursor child under `--debug` therefore gets the output sampling every child
+        gets, and nothing more. The supervisor reports that by name rather than letting
+        the operator assume otherwise.
+        """
+        return []
+
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
-        model: str = "", tuning: Tuning | None = None,
+        model: str = "", tuning: Tuning | None = None, *,
+        debug_file: Path | None = None,
     ) -> Launch:
         return Launch(
             adapter=self.name,

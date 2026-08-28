@@ -368,6 +368,52 @@ a position to stop it. What it *cannot* do is override the seat: on a name colli
 control proving the committed file is genuinely loaded when nothing outranks it, because
 "the seat won" and "the rival never entered" look identical from the outside.
 
+## Debug output: what each vendor can be asked for
+
+`gbfleet up --debug` asks each child's CLI to write a debug log beside its stdout, and
+emits a per-poll reading of what every child is producing. Measured from each `--help`,
+not assumed, and the answers differ enough that the gaps matter more than the coverage:
+
+| adapter | debug flag | what `--debug` gets you |
+|---|---|---|
+| `grok` | `--debug`, `--debug-file <FILE>` | vendor debug log + output sampling |
+| `claude` | `--debug-file <path>` (its help says this implicitly enables debug mode) | vendor debug log + output sampling |
+| `cursor-agent` | **none** | output sampling only |
+| `gbagent` | **none** | output sampling only |
+
+`cursor-agent` has `--output-format stream-json` and `--stream-partial-output`, which
+give structured progress rather than a debug log. That is a different feature reached a
+different way, and quietly substituting it would be the fabrication `codex.py` refuses
+to make. `gbagent` is ours and has no flag either; it already has a per-turn trace
+(GRPH-506) and simply no way to be told where to put it, so fixing that is real work
+rather than a declaration.
+
+**The gaps are announced, not left to be inferred.** A wave run with `--debug` prints
+`NO DEBUG cursor-agent: no debug flag; output sampling only` and logs a
+`debug_unavailable` event. An operator who asked for debug, saw a quiet log for a Cursor
+child and concluded the child was fine would have been misled by the tool.
+
+The flags are placed by each adapter rather than appended by the caller, because
+`claude` and `cursor-agent` both end their argv with a positional prompt pointer and a
+flag after it is read as prompt text.
+
+## Two silences, and why both are printed
+
+The supervisor reports a child as quiet from two independent kinds of evidence, and the
+summary labels which:
+
+- `QUIET <child>: wrote nothing for 900s (local)` — this machine watched the child's own
+  log files stop growing. Needs no network and no cooperation from the vendor, which is
+  what makes it the useful one under D-i.
+- `QUIET <agent>: no heartbeat for 1200s (server)` — the roster stopped seeing it. A
+  partition produces this without the first.
+
+Neither stops anything. Silence is weak evidence: a child inside one long tool call is
+legitimately silent — `gbagent`'s `run_tests` timeout alone is 1800s — and file writes
+are buffered, so output arrives in bursts with real gaps between them. `--quiet-after`
+sets when it is *reported* (default 300s), and `Limits.disowned_after` remains the only
+thing that stops a child on silence, at 1800s and for the server-side signal only.
+
 ## One thing that is not solved
 
 **`codex` is declared and deliberately not implemented.** It was not installed on the

@@ -91,6 +91,25 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--child-wall-clock", type=float, default=3600.0)
     run.add_argument("--workspace", default=None, help="where worktrees go")
     run.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "ask each vendor to write a debug log beside its stdout, and emit a per-poll "
+            "reading of what every child is producing. Adapters with no debug flag "
+            "(cursor-agent, gbagent) are named on the summary rather than passed over"
+        ),
+    )
+    run.add_argument(
+        "--quiet-after",
+        type=float,
+        default=Limits.quiet_after,
+        help=(
+            "seconds of no output before a child is REPORTED as quiet (default: "
+            f"{Limits.quiet_after:.0f}). Nothing is stopped on it — a child inside one "
+            "long tool call is legitimately silent"
+        ),
+    )
+    run.add_argument(
         "argv", nargs=argparse.REMAINDER, help="-- followed by the command to run per child"
     )
 
@@ -134,15 +153,28 @@ def make_adapter_factory(name: str, binary: str | None, model: str = "",
     """
     found = resolve(name, binary=binary, model=model, tuning=tuning)
 
-    def factory(seat: Seat, tree: Worktree, instruction_file: Path) -> Launch:
-        launch = found.adapter.launch(seat, tree, instruction_file, found.binary, model, tuning)
+    def factory(seat: Seat, tree: Worktree, instruction_file: Path,
+                debug_file: Path | None = None) -> Launch:
+        launch = found.adapter.launch(
+            seat, tree, instruction_file, found.binary, model, tuning,
+            debug_file=debug_file,
+        )
         return replace(launch, binary_version=found.version)
 
     return factory
 
 
 def make_launch_factory(adapter: str, template: list[str]):
-    def factory(seat: Seat, tree: Worktree, instruction_file: Path) -> Launch:
+    """A factory from a literal argv template, for stand-ins and probes.
+
+    It takes `debug_file` and does nothing with it, on purpose. A template is not a
+    vendor and has no flags to add, so `debug_path` stays None — which is the same answer
+    `cursor-agent` and `gbagent` give, and makes the supervisor report the gap rather
+    than pretend the child is writing a debug log somewhere.
+    """
+
+    def factory(seat: Seat, tree: Worktree, instruction_file: Path,
+                debug_file: Path | None = None) -> Launch:
         seat_path = tree.path / ".cursor" / "mcp.json"
         values = {
             "{seat_file}": str(seat_path),
@@ -205,6 +237,23 @@ def report(wave: Wave, out=sys.stdout) -> None:
         print(f"  reaped {reaped.branch}: {reaped.disposition.value}{extra}", file=out)
         if reaped.reason:
             print(f"    {reaped.reason}", file=out)
+
+    # Both silences, and they are different claims about different evidence. `silent` is
+    # what this machine saw: the child's own log files stopped growing, which needs no
+    # network and no vendor cooperation. `quiet` is what the SERVER saw: no heartbeat
+    # inside the presence TTL, which a partition produces just as readily as a stuck
+    # child. Printing one and not the other would let a fleet look healthy from whichever
+    # side happened to be reported.
+    #
+    # `quiet` was populated by the supervisor and printed by nothing at all until
+    # GRPH-579 — the field existed, its docstring said it was there so an operator would
+    # not have to work it out afterwards, and no output surface ever mentioned it.
+    for key, seconds in sorted(wave.silent.items()):
+        print(f"QUIET {key}: wrote nothing for {seconds:.0f}s (local)", file=out)
+    for key, seconds in sorted(wave.quiet.items()):
+        print(f"QUIET {key}: no heartbeat for {seconds:.0f}s (server)", file=out)
+    for gap in wave.debug_gaps:
+        print(f"NO DEBUG {gap}", file=out)
 
     if wave.unused_seats:
         print(f"{wave.unused_seats} seat(s) never redeemed", file=out)
@@ -300,8 +349,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_workers=args.max_workers,
                 max_children=args.max_children,
                 child_wall_clock=args.child_wall_clock,
+                quiet_after=args.quiet_after,
             ),
             workspace=Path(args.workspace) if args.workspace else None,
+            debug=args.debug,
         )
     except RepoLocked as exc:
         print(f"gbfleet up: {exc}", file=sys.stderr)

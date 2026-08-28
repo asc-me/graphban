@@ -119,3 +119,24 @@ def emit(event: str, **fields: Any) -> None:
 
 def child(record: ChildRecord) -> None:
     emit("child", **record.as_dict())
+
+
+def pulse(child_key: str, adapter: str, pid: int, **fields: Any) -> None:
+    """One live reading of a child mid-run, as opposed to `child()`'s post-mortem.
+
+    Emitted every poll under `--debug` only. Always measuring but not always printing is
+    deliberate: the measurement is one `stat` per file and is what lets the wave summary
+    name a child that went quiet, while printing it every second for an hour would bury
+    the lines that matter in the same file.
+    """
+    emit("pulse", child=child_key, adapter=adapter, pid=pid, **fields)
+
+
+def debug_gap(adapter: str, reason: str) -> None:
+    """Say that `--debug` bought less than the operator asked for.
+
+    `cursor-agent` and `gbagent` have no debug flag, so a child on either gets output
+    sampling and nothing more. Announcing that is the whole point: partial coverage that
+    looks like full coverage is how somebody concludes a silent child is fine.
+    """
+    emit("debug_unavailable", adapter=adapter, reason=reason)

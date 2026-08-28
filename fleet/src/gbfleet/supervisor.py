@@ -76,6 +76,13 @@ class Limits:
     #: Deliberately generous: a revoked child costs extra spend, a killed healthy one
     #: costs the work AND the spend, and only one of those is recoverable.
     disowned_after: float = 1800.0
+    #: How long a child may write nothing before the wave REPORTS it as quiet. Not a
+    #: kill threshold and deliberately much shorter than `disowned_after`: nothing acts
+    #: on it, so a false positive costs one line, while the thing it catches — a child
+    #: alive and producing nothing — was previously invisible for the full 1800s and then
+    #: blamed on the network. A child in one long tool call will trip this and that is
+    #: fine; it is an observation, not an accusation.
+    quiet_after: float = 300.0
 
 
 @dataclass(frozen=True)
@@ -204,6 +211,15 @@ class Wave:
     #: with a child quiet for twenty minutes says so, instead of the operator learning it
     #: from a kill that named the wrong cause.
     quiet: dict[str, float] = field(default_factory=dict)
+    #: Children that produced no output for longer than `Limits.quiet_after`, and for how
+    #: long. LOCAL evidence, unlike `quiet` above, which is the server's view: this one
+    #: survives a partition and needs nothing from the vendor. Reported, never acted on —
+    #: a child inside one long tool call is legitimately silent, and file writes are
+    #: buffered, so silence is weak evidence of anything (GRPH-579).
+    silent: dict[str, float] = field(default_factory=dict)
+    #: Adapters in this wave that have no debug flag, when debug was asked for. Named so
+    #: `--debug` cannot quietly mean "debug for some of them".
+    debug_gaps: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -213,7 +229,11 @@ class Wave:
 #: Builds the argv and config for one child. GRPH-449 replaces the caller-supplied
 #: version with a per-vendor registry; until then the operator names the command, which
 #: is what "selection is explicit, never inferred" asks for anyway.
-LaunchFactory = Callable[[Seat, Worktree, Path], Launch]
+#: The fourth argument is where this child's vendor debug log should go, or None when
+#: debug was not asked for. Positional and required rather than optional-by-duck-typing:
+#: a factory that quietly ignored it would produce a fleet running without the debug
+#: output its operator believes they turned on.
+LaunchFactory = Callable[[Seat, Worktree, Path, "Path | None"], Launch]
 
 
 def _roster(client: Graphban, partition: Partition) -> dict | None:
@@ -284,6 +304,7 @@ def up(
     workspace: Path | None = None,
     poll: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
+    debug: bool = False,
 ) -> Wave:
     """Run one wave to completion and return what happened.
 
@@ -314,9 +335,10 @@ def up(
             return wave
 
         children = list(_start(
-            wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client, limits
+            wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
+            limits, debug=debug,
         ))
-        _wait_out(wave, children, limits, client, poll=poll, sleep=sleep)
+        _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug)
         _reap_all(wave, children)
 
         wave.after = _read_allocation(client, wave)
@@ -349,6 +371,7 @@ def start_one(
     wave_name: str,
     slot: str,
     on_spawned: Callable[[Child], None] | None = None,
+    debug_file: Path | None = None,
 ) -> Child:
     """Launch one child into one worktree and wait for it to appear on the roster.
 
@@ -363,7 +386,7 @@ def start_one(
     dropped exactly that child out of the wave, and the only symptom was one fewer line
     in a log nobody was reading yet.
     """
-    launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name))
+    launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name), debug_file)
     child = spawn(
         launch, tree.path, tree.branch, _logs(workspace, f"{wave_name}-{slot}"), base=tree.base
     )
@@ -394,6 +417,7 @@ def _start(
     wave_name: str,
     client: Graphban,
     limits: Limits,
+    debug: bool = False,
 ) -> Iterable[Child]:
     """Create a worktree per seat, spawn into it, and wait for it to register.
 
@@ -416,11 +440,24 @@ def _start(
             def remember(child: Child) -> None:
                 started.append(child)
                 wave.spawned.append(child)
+                # Asked for, and the adapter had no flag for it. Said here, once, per
+                # child — the alternative is an operator reading a quiet log and
+                # concluding the child is fine when nothing was ever going to be written.
+                if debug and child.debug_path is None:
+                    note = f"{child.adapter}: no debug flag; output sampling only"
+                    if note not in wave.debug_gaps:
+                        wave.debug_gaps.append(note)
+                    observe.debug_gap(child.adapter, "vendor CLI has no debug flag")
 
+            # Outside the worktree, so a vendor writing megabytes of debug output cannot
+            # dirty the tree, trip salvage, or end up in a WIP commit.
+            debug_file = (
+                _logs(workspace, f"{wave_name}-{slot}") / "debug.log" if debug else None
+            )
             start_one(
                 tree, seat, launch_factory, client, limits, wave.partition,
                 workspace=workspace, wave_name=wave_name, slot=slot,
-                on_spawned=remember,
+                on_spawned=remember, debug_file=debug_file,
             )
         except (LaunchFailed, wt_mod.BranchExists, wt_mod.GitError) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
@@ -467,6 +504,7 @@ def _wait_out(
     *,
     poll: float,
     sleep: Callable[[float], None],
+    debug: bool = False,
 ) -> None:
     """Wait for children to exit on their own, stopping any that overrun or outlive their claim.
 
@@ -492,6 +530,7 @@ def _wait_out(
                     f"{child.adapter} pid {child.pid}: over {limits.child_wall_clock:.0f}s, stopped"
                 )
 
+        _watch_output(wave, children, limits, debug=debug)
         _enforce_the_lease(wave, children)
         if roster is not None:
             _catch_the_disowned(wave, children, roster, limits)
@@ -502,6 +541,63 @@ def _wait_out(
     # One last read, so a partition that ended just as the children did is still
     # reconciled rather than left as the last thing that happened.
     _roster(client, wave.partition)
+
+
+def _child_key(child: Child) -> str:
+    """How a child is named in the live reports.
+
+    The agent id once it has one, because that is what the roster and the tracker use.
+    Before that it has no server identity at all — and a child that never registers is
+    exactly the case worth reporting, so falling back to adapter and pid keeps it
+    nameable instead of dropping it out of the report for want of a key.
+    """
+    return child.agent_id or f"{child.adapter}:{child.pid}"
+
+
+def _watch_output(wave: Wave, children: list[Child], limits: Limits, *,
+                  debug: bool) -> None:
+    """Read how much each live child has written, and remember who has gone quiet.
+
+    **Measured always, printed only under debug.** The measurement is one `stat` per log
+    file per poll, and it is what lets the wave summary name a child that produced
+    nothing for twenty minutes. Printing a line per child per second for an hour would
+    bury the lines that matter inside the file meant to carry them.
+
+    Nothing here stops anything. Silence is weak evidence: a child inside a single long
+    tool call is legitimately silent — `gbagent`'s `run_tests` timeout alone is 1800s —
+    and writes are buffered, so output arrives in bursts with real gaps between them.
+    Acting on it would put a second owner on a transition `_catch_the_disowned` already
+    owns, which is the mistake `fleet_idle` is deliberately not repeating.
+    """
+    now = time.monotonic()
+    for child in children:
+        if not child.running or child.output is None:
+            continue
+        reading = child.output.sample(now)
+        key = _child_key(child)
+
+        if debug:
+            observe.pulse(
+                key, child.adapter, child.pid,
+                debug_log=str(child.debug_path) if child.debug_path else None,
+                **reading.as_dict(),
+            )
+
+        silent = reading.silent_for
+        if isinstance(silent, str):
+            # Never wrote anything at all. Reported from the moment it passes the
+            # threshold, using its age: "quiet for 400s" and "has not made a sound since
+            # it started 400s ago" are different findings, and the second is worse.
+            if reading.age >= limits.quiet_after:
+                wave.silent[key] = reading.age
+            continue
+        if silent >= limits.quiet_after:
+            wave.silent[key] = silent
+        else:
+            # Spoke again. Drop it, or the wave ends reporting a child as quiet that has
+            # been talking for the last ten minutes — the same correction
+            # `_catch_the_disowned` makes for `quiet`.
+            wave.silent.pop(key, None)
 
 
 def _catch_the_disowned(wave: Wave, children: list[Child], roster: dict,

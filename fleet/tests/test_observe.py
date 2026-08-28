@@ -155,10 +155,12 @@ def test_the_record_names_the_build_not_just_the_vendor(
     workspace = tmp_path / "ws"
     factory = _factory(scripts, "works_then_exits")
 
-    def versioned(seat, tree, instruction):
+    def versioned(seat, tree, instruction, debug_file=None):
         from dataclasses import replace
 
-        return replace(factory(seat, tree, instruction), binary_version="9.9.9 (fake)")
+        return replace(
+            factory(seat, tree, instruction, debug_file), binary_version="9.9.9 (fake)"
+        )
 
     up(git_repo, _seats(1), versioned, _server(workspace), state=state, workspace=workspace)
     record = next(r for r in _lines(state / LOG_FILE) if r["event"] == "child")
