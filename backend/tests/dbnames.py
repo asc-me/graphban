@@ -89,15 +89,50 @@ def owns(database: str | None, worker: str) -> bool:
     return bool(database) and bool(worker) and database.endswith(f"_{worker}")
 
 
+class NotIsolated(RuntimeError):
+    """A per-worker URL was not derived, so every worker would share one database.
+
+    Raised by the CALLER (`conftest._database_per_worker`) rather than by `worker_url`, and
+    that placement is the point. GRPH-568 asked for a refusal instead of a silent no-op; with
+    the path-based derivation below a no-op can no longer happen, so a check inside
+    `worker_url` would be unreachable code guarding against nothing — which is the shape this
+    repository keeps filing defects about. At the call site it stays reachable: it fires if a
+    future edit to the derivation stops isolating, which is exactly the regression that cost
+    2,659 errors.
+    """
+
+
 def worker_url(url: str, worker: str) -> str:
     """The database `worker` owns, derived from the base URL.
 
     Pure, so it can be tested without a server — and so importing it cannot rewrite
     anyone's environment.
+
+    **Derived from the PATH, not by replacing a substring** (GRPH-568). This used to be
+    `url.replace(".pytest.db", f".pytest_{worker}.db")`, which silently did nothing for any
+    sqlite name that was not the default one — every worker then resolved to the same file and
+    raced to create the schema, producing thousands of `table users already exists` errors that
+    point nowhere near the cause.
+
+    That mattered because it broke the escape hatch GRPH-554's lock message recommends by name:
+    *"point this one somewhere else with `DATABASE_URL`"*. Doing exactly that worked serially
+    and defeated `-n auto`, which is how CI and everyone else runs the suite. Measured:
+    `sqlite:///./.pytest-v2.db` gave 2,659 errors against `sqlite:///./.mine/.pytest.db`
+    passing 2,746 — the second only because it happened to keep the magic substring.
+
+    The string surgery is deliberate rather than `PurePath`: `PurePosixPath("./.pytest.db")`
+    normalises away the `./`, which would rewrite a URL the caller wrote by hand.
     """
     if url.startswith("sqlite"):
-        # A file per worker. SQLite has no server to create anything on.
-        return url.replace(".pytest.db", f".pytest_{worker}.db")
+        prefix, sep, path = url.partition("///")
+        if not sep or path.endswith(":memory:"):
+            # An in-memory database is per-process already, so workers cannot collide on it.
+            return url
+        head, slash, filename = path.rpartition("/")
+        stem, dot, ext = filename.rpartition(".")
+        derived = (f"{stem}_{worker}{dot}{ext}" if dot else f"{filename}_{worker}")
+        return f"{prefix}{sep}{head}{slash}{derived}"
+
     base, _, name = url.rpartition("/")
     return f"{base}/{name}_{worker}"
 
