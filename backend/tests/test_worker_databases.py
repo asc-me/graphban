@@ -267,3 +267,111 @@ def test_a_derivation_that_stops_isolating_is_refused(monkeypatch):
 
     assert "would share it" in str(err.value)
     assert "scratch.db" in str(err.value), "the refusal does not name the URL that failed"
+
+
+# ---- the SQLite half of the teardown (GRPH-554 acceptance, done late) ----------------
+
+@pytest.fixture()
+def sqlite_tree(tmp_path):
+    """A worker file with its sidecars, and the base file beside it — the two that must be
+    told apart."""
+    base = tmp_path / ".pytest.db"
+    worker = tmp_path / ".pytest_gw3.db"
+    for p in (base, worker):
+        p.write_bytes(b"x")
+    for suffix in ("-journal", "-wal", "-shm"):
+        (tmp_path / f".pytest_gw3.db{suffix}").write_bytes(b"x")
+    (tmp_path / ".pytest_gw3.db.lock").write_bytes(b"")
+    return tmp_path
+
+
+def test_a_worker_file_and_its_sidecars_are_removed(sqlite_tree):
+    """The accumulation this closes: eighteen `.pytest_gw*.db` files at ~888 KB were sitting
+    in a working tree tonight, because `_drop_worker_database` returned early on SQLite while
+    Postgres had been cleaned up since GRPH-534.
+
+    Sidecars go too — a stale journal beside a deleted database is its own source of
+    confusion, since SQLite tries to roll it back into whatever appears next.
+    """
+    from tests.dbnames import unlink_if_ours
+
+    assert unlink_if_ours(f"sqlite:///{sqlite_tree}/.pytest_gw3.db", "gw3") is True
+
+    assert not (sqlite_tree / ".pytest_gw3.db").exists()
+    for suffix in ("-journal", "-wal", "-shm"):
+        assert not (sqlite_tree / f".pytest_gw3.db{suffix}").exists()
+
+
+def test_the_base_file_survives(sqlite_tree):
+    """THE SAFETY PROPERTY, and the reason ownership is a separate pure function. `.pytest.db`
+    is somebody's — a `pytest` invocation that deleted it would be a far worse bug than the
+    accumulation being fixed. That is `owns()`'s own argument, applied to the file's stem."""
+    from tests.dbnames import unlink_if_ours
+
+    assert unlink_if_ours(f"sqlite:///{sqlite_tree}/.pytest.db", "gw3") is False
+    assert (sqlite_tree / ".pytest.db").exists(), "the teardown deleted the base database"
+
+
+def test_a_siblings_file_survives(sqlite_tree):
+    """gw3 must not tidy up gw1's database mid-run — the xdist equivalent of the concurrent-run
+    corruption GRPH-554 was about."""
+    from tests.dbnames import unlink_if_ours
+
+    assert unlink_if_ours(f"sqlite:///{sqlite_tree}/.pytest_gw3.db", "gw1") is False
+    assert (sqlite_tree / ".pytest_gw3.db").exists()
+
+
+def test_the_lock_file_is_left_behind_deliberately(sqlite_tree):
+    """The one place this does NOT mirror Postgres, pinned so it is not tidied up later.
+
+    Removing the lock opens a race: a second run that has OPENED it but not yet flocked ends
+    up holding an unlinked inode, a third creates a fresh file and also succeeds, and two runs
+    both believe they hold the claim. The lock being correct matters more than the directory
+    being tidy — and the file is empty and gitignored.
+    """
+    from tests.dbnames import unlink_if_ours
+
+    unlink_if_ours(f"sqlite:///{sqlite_tree}/.pytest_gw3.db", "gw3")
+
+    assert (sqlite_tree / ".pytest_gw3.db.lock").exists(), (
+        "the lock was deleted — see the docstring; this reintroduces a claim race")
+
+
+def test_a_serial_run_removes_nothing(sqlite_tree):
+    """No worker id means no derived file, and `owns` refuses an empty worker."""
+    from tests.dbnames import unlink_if_ours
+
+    assert unlink_if_ours(f"sqlite:///{sqlite_tree}/.pytest.db", "") is False
+    assert unlink_if_ours(f"sqlite:///{sqlite_tree}/.pytest_gw3.db", "") is False
+    assert (sqlite_tree / ".pytest_gw3.db").exists()
+
+
+def test_the_sqlite_teardown_is_actually_wired_in():
+    """GRPH-534's recorded lesson, applied to its own sequel: `owns()` was thoroughly tested
+    while the CALL to it was not, and deleting that call broke no test at all.
+
+    So this asserts the wiring rather than the helper — `_drop_worker_database` must reach
+    `unlink_if_ours` on SQLite instead of returning early, which is exactly what it did for
+    the whole time the files were piling up.
+    """
+    import inspect
+
+    import conftest
+
+    source = inspect.getsource(conftest._drop_worker_database)
+    assert "unlink_if_ours" in source, (
+        "the SQLite teardown is not called from _drop_worker_database, so worker files "
+        "accumulate again however well the helper is tested")
+    assert "if not worker or _is_sqlite():" not in source, (
+        "the early return is back — SQLite skips teardown entirely")
+
+    # AND THAT SOMETHING REACHES IT. This is the level my first version missed: the helper
+    # was tested, `_drop_worker_database` called it, and `_schema` returned before ever
+    # calling `_drop_worker_database` on SQLite — so a real `-n 4` run left all four worker
+    # files behind while every test here passed. Exactly GRPH-534's recorded lesson, one
+    # level further out than it was recorded at.
+    schema = inspect.getsource(conftest._schema)
+    sqlite_branch = schema[schema.index("if _is_sqlite():"):schema.index("_build_templates()")]
+    assert "_drop_worker_database()" in sqlite_branch, (
+        "_schema returns from its SQLite branch without calling _drop_worker_database, so "
+        "the teardown below it is unreachable on the only engine that needs it")

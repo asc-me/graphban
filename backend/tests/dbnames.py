@@ -40,6 +40,49 @@ def drop_if_ours(url: str, worker: str) -> bool:
     return True
 
 
+def unlink_if_ours(url: str, worker: str) -> bool:
+    """Delete this worker's SQLite file at session end, but ONLY if this suite derived it.
+
+    **The SQLite half of `drop_if_ours`.** GRPH-534 stopped Postgres worker databases
+    accumulating — 76 of them, 771 MB, on one machine — and `_drop_worker_database` returned
+    early on SQLite, so `backend/.pytest_gw*.db` kept doing exactly the same thing: eighteen
+    files at ~888 KB apiece were sitting in a working tree earlier tonight. GRPH-554's
+    acceptance asked for this and it was not done; the concurrency lock shipped instead.
+
+    Ownership is decided by the SAME pure function Postgres uses, applied to the file's stem:
+    `.pytest_gw3` ends with `_gw3` and is an artifact this suite creates on demand, while
+    `.pytest` does not and is somebody's. A `pytest` invocation that deleted the base file
+    would be a far worse bug than the accumulation being fixed — that is `owns()`'s own
+    argument and it transfers unchanged.
+
+    **The `.lock` file is deliberately left behind**, which is the one place this does not
+    mirror Postgres. It is empty, it is gitignored, and removing it opens a race: a second run
+    that has OPENED the lock but not yet flocked it would end up holding an unlinked inode,
+    after which a third run creates a fresh file and also succeeds — two runs both believing
+    they hold the claim. The lock being correct matters more than the directory being tidy.
+
+    Returns whether it deleted anything, so a refusal is an ordinary outcome rather than an
+    error — same shape as `drop_if_ours`.
+    """
+    import pathlib as _pathlib
+
+    if not url.startswith("sqlite"):
+        return False
+    path = url.split("///", 1)[-1]
+    if not path or path.endswith(":memory:"):
+        return False
+
+    target = _pathlib.Path(path)
+    if not owns(target.stem, worker):
+        return False
+
+    # The sidecars are ours too, and a stale journal beside a deleted database is its own
+    # source of confusion — SQLite will try to roll it back into whatever appears next.
+    for suffix in ("", "-journal", "-wal", "-shm"):
+        _pathlib.Path(f"{path}{suffix}").unlink(missing_ok=True)
+    return True
+
+
 def refuse_if_in_use(admin_url: str, name: str) -> None:
     """Refuse to adopt a database another test run is already using (GRPH-534).
 

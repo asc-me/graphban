@@ -303,14 +303,26 @@ def _drop_worker_database() -> None:
     The sabotage pass caught exactly that.
     """
     worker = os.environ.get("PYTEST_XDIST_WORKER")
-    if not worker or _is_sqlite():
+    if not worker:
         return
     from app.db import engine
 
+    url = engine.url.render_as_string(hide_password=False)
+    engine.dispose()
+
+    if _is_sqlite():
+        # SQLITE USED TO RETURN EARLY HERE, and its worker FILES accumulated exactly the way
+        # the Postgres databases did before GRPH-534 — eighteen of them in one working tree.
+        # The early return was correct about the reason (there is no server to DROP on) and
+        # wrong to stop there, which GRPH-554's acceptance said and GRPH-554 did not do.
+        from tests.dbnames import unlink_if_ours
+
+        unlink_if_ours(url, worker)
+        return
+
     from tests.dbnames import drop_if_ours
 
-    engine.dispose()
-    drop_if_ours(engine.url.render_as_string(hide_password=False), worker)
+    drop_if_ours(url, worker)
 
 
 def _drop_schema() -> None:
@@ -355,6 +367,11 @@ def _schema():
         _build_schema()
         yield
         _drop_schema()
+        # AND the worker's FILE, which this branch used to return without doing — so the
+        # teardown added to `_drop_worker_database` was unreachable on the one engine that
+        # needed it. Measured: a `-n 4` run left all four `.pytest_gw*.db` behind with the
+        # helper fully tested and correctly called from a function nothing reached.
+        _drop_worker_database()
         return
     _build_templates()
     yield
