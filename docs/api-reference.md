@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 94 of the 167 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 96 of the 169 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -28,6 +28,8 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | POST | `/api/auth/login` | none | Email + password → access + refresh tokens |
 | POST | `/api/auth/register` | none | Create a user → tokens |
 | POST | `/api/auth/refresh` | none | Refresh token → new tokens |
+| POST | `/api/auth/password-reset` | none | Ask for a reset link. **Always 202 with the same body**, registered address or not — otherwise it is an account-enumeration oracle. Rate-limited on its own bucket so reset attempts cannot lock the account out of `login` |
+| POST | `/api/auth/password-reset/confirm` | none | Spend the link once and set a new password → tokens. Every prior session is revoked |
 | GET | `/api/auth/me` | JWT | Current user |
 | GET | `/api/auth/me/memberships` | JWT | Current user's project access |
 

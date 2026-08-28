@@ -33,6 +33,18 @@ class PasswordChangeIn(BaseModel):
     new_password: str = Field(min_length=8, max_length=200)
 
 
+class PasswordResetRequestIn(BaseModel):
+    email: str
+
+
+class PasswordResetConfirmIn(BaseModel):
+    token: str
+    # Same floor as RegisterIn and PasswordChangeIn, spelled the same way for the reason
+    # given there: one path honouring `settings.min_password_length` while the others
+    # hardcode 8 is how the three quietly diverge.
+    new_password: str = Field(min_length=8, max_length=200)
+
+
 class RegisterIn(BaseModel):
     name: str
     email: EmailStr

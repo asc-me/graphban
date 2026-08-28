@@ -8,13 +8,15 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import Membership, Project, User
-from app.schemas import (LoginIn, PasswordChangeIn, RefreshIn, RegisterIn, TokenOut,
+from app.schemas import (LoginIn, PasswordChangeIn, PasswordResetConfirmIn,
+                         PasswordResetRequestIn, RefreshIn, RegisterIn, TokenOut,
                          UserOut)
 from app.security.deps import get_current_user
 from app.security.jwt import create_access_token, create_refresh_token, decode_token
 from app.security.net import client_ip
 from app.security.passwords import hash_password, verify_password
 from app.services import orgs as orgs_svc
+from app.services import password_reset as reset_svc
 from app.services import ratelimit
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -150,6 +152,68 @@ def change_password(
     user.token_version += 1
     db.commit()
     db.refresh(user)
+    return TokenOut(
+        access_token=create_access_token(user.id, user.token_version),
+        refresh_token=create_refresh_token(user.id, user.token_version),
+    )
+
+
+#: Said for every request, registered address or not. The endpoint must not be an
+#: account-enumeration oracle — "no account for that address" tells anyone who asks whether
+#: you have an account here, which is worse than the missing feature was.
+_RESET_SENT = {"detail": "If an account exists for that address, a reset link has been sent."}
+
+
+def _guard_reset_rate(request: Request, email: str) -> None:
+    """A SEPARATE bucket from login, and that is the point rather than tidiness.
+
+    Sharing it would mean a few reset attempts lock the account out of `login` — the one door
+    still open to someone who has just remembered their password. `change_password` avoided
+    that same trade-off by not being limited at all, which it can afford because it already
+    requires a token; this route is unauthenticated, so it needs a limit of its own.
+    """
+    per_email = settings.login_rate_per_min
+    per_ip = per_email * 3
+    ip = client_ip(request)
+    if not ratelimit.allow(f"pwreset:email:{email.strip().lower()}", per_email) or not (
+        ratelimit.allow(f"pwreset:ip:{ip}", per_ip)
+    ):
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
+                            "too many reset requests; try again shortly")
+
+
+@router.post("/password-reset", status_code=202)
+def request_password_reset(body: PasswordResetRequestIn, request: Request,
+                           db: Session = Depends(get_db)):
+    """Ask for a reset link (GRPH-359). Always 202, always the same body.
+
+    202 rather than 200: the request has been accepted and a mail may be on its way. It is
+    the honest code, because `send_email` never raises and falls back to an in-process outbox
+    with no SMTP_HOST — so this route CANNOT observe delivery, and returning 200 "sent" would
+    promise something it does not know. The evidence of delivery is the `graphban.email` log
+    line, not this response.
+    """
+    _guard_reset_rate(request, body.email)
+    reset_svc.request_reset(db, email=body.email, base_url=settings.app_base_url,
+                            ip=client_ip(request))
+    # The token is deliberately NOT returned. `request_reset` hands it back for tests; a route
+    # that echoed it would make the reset link readable by whoever could call the endpoint,
+    # which is everyone.
+    return _RESET_SENT
+
+
+@router.post("/password-reset/confirm", response_model=TokenOut)
+def confirm_password_reset(body: PasswordResetConfirmIn, db: Session = Depends(get_db)):
+    """Follow the link once and set a new password.
+
+    Returns a fresh token pair so the user lands signed in rather than at a login form they
+    have just proved they can get past. Every OTHER session is dead by then — `token_version`
+    moved, which is the point: a reset usually means the old password was not private.
+    """
+    try:
+        user = reset_svc.consume_reset(db, token=body.token, new_password=body.new_password)
+    except reset_svc.InvalidReset as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
     return TokenOut(
         access_token=create_access_token(user.id, user.token_version),
         refresh_token=create_refresh_token(user.id, user.token_version),
