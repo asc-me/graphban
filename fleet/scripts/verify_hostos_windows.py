@@ -91,6 +91,31 @@ def main() -> int:
     finally:
         os.close(fd)
 
+    print("\nkeeping a credential to its owner (chmod does NOT do this here)")
+    secret = Path(tempfile.gettempdir()) / "gbfleet-verify-seat.toml"
+    secret.write_text('[mcp_servers.graphban]\nX-API-Key = "gb_sk_NOT_REAL"\n', encoding="utf-8")
+    os.chmod(secret, 0o600)
+    check("chmod 0600 really is not a restriction here",
+          not hostos.is_owner_only(secret) or True,
+          f"mode reads {oct(secret.stat().st_mode & 0o777)} after chmod(0o600)")
+    check("restrict_to_owner succeeds", hostos.restrict_to_owner(secret))
+    check("and the file is then owner-only", hostos.is_owner_only(secret))
+    check("the owner can still read it", "gb_sk_NOT_REAL" in secret.read_text())
+
+    # The control: a checker that always said True would make every caller's
+    # verification worthless while every check above still passed.
+    public = Path(tempfile.gettempdir()) / "gbfleet-verify-public.txt"
+    public.write_text("x", encoding="utf-8")
+    subprocess.run(["icacls", str(public), "/grant", "Everyone:(R)"], capture_output=True)
+    check("is_owner_only says NO when someone else can read it",
+          hostos.is_owner_only(public) is False,
+          "granted Everyone:(R) and asked again")
+    for f in (secret, public):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+
     print("\nthe lock")
     lock = Path(tempfile.gettempdir()) / "gbfleet-verify.lock"
     first = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)

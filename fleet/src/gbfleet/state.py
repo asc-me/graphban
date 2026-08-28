@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .hostos import user_tag
+from .hostos import restrict_to_owner, user_tag
 
 #: Only the owner. On Linux `/tmp` is shared, so the user tag is in the directory name
 #: as well as the mode — not as a security boundary (PRD-22 D-k is explicit that there
@@ -52,14 +52,11 @@ def state_root() -> Path:
     _require_supported()
     root = Path(tempfile.gettempdir()) / f"gbfleet-{user_tag()}"
     root.mkdir(exist_ok=True)
-    try:
-        root.chmod(_DIR_MODE)
-    except (NotImplementedError, OSError):
-        # Windows `chmod` only understands the read-only bit, and 0o700 there is a
-        # gesture rather than a restriction. Not an error: each account already gets
-        # its own temp directory, which is what the mode was buying on shared /tmp.
-        if os.name != "nt":
-            raise
+    # One call that means the same thing on both platforms. The previous version called
+    # `chmod` and swallowed the Windows failure with a comment explaining that 0o700 was
+    # "a gesture rather than a restriction" there — true, and avoidable: `icacls` makes
+    # it a restriction (GRPH-584).
+    restrict_to_owner(root)
     return root
 
 

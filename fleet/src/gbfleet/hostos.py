@@ -135,6 +135,109 @@ def lock_exclusive(fd: int) -> None:
         os.lseek(fd, 0, os.SEEK_SET)
 
 
+# --- keeping a credential file to its owner ----------------------------------------
+#
+# `os.chmod(path, 0o600)` is a POSIX idiom that Windows accepts and very nearly ignores:
+# it understands only the read-only bit, so group and other permissions are not so much
+# denied as absent. Measured on the box — after `chmod(0o600)`, `stat().st_mode & 0o777`
+# reads `0o666`. The call succeeds, the file is not restricted, and the source still
+# says 0600 (GRPH-584).
+#
+# That matters here because these are not ordinary files: `.grok/config.toml` carries a
+# live api key and `.gbfleet-instruction` carries a live enrolment code.
+#
+# D-k is explicit that none of this is a security boundary, so a failure to restrict
+# does not stop the fleet. It is reported instead — the whole defect was that it kept
+# quiet.
+
+_OWNER_ONLY = 0o600
+#: Every permission bit that must NOT be set. Checking this rather than `== 0o600` is
+#: what lets the same assertion mean the same thing on a platform with no group bits.
+_GROUP_AND_OTHER = 0o077
+
+
+def restrict_to_owner(path: Path) -> bool:
+    """Make `path` readable only by the user running the supervisor. True if it worked.
+
+    POSIX gets `chmod`. Windows gets `icacls`, which is the tool that actually does the
+    thing the chmod was pretending to: `/inheritance:r` drops the inherited entries and
+    `/grant:r <user>:(F)` leaves exactly one. Verified on the box — a temp file that
+    began with SYSTEM, Administrators and the user ended with a single entry for the
+    user, still readable by them.
+    """
+    path = Path(path)
+    if not WINDOWS:
+        try:
+            os.chmod(path, _OWNER_ONLY)
+        except OSError:
+            return False
+        return is_owner_only(path)
+
+    user = os.environ.get("USERNAME") or _fallback_user()
+    if not user:
+        return False
+    try:
+        done = subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:(F)"],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0 and is_owner_only(path)
+
+
+def is_owner_only(path: Path) -> bool:
+    """Whether nobody but the owner may read `path`.
+
+    Deliberately a question about the PROPERTY rather than about a mode number. A test
+    asserting `mode == 0o600` is a test that goes red on Windows for a reason that has
+    nothing to do with the code it is testing, which is how a platform ends up with a
+    permanently failing suite that everyone learns to ignore.
+    """
+    path = Path(path)
+    if not WINDOWS:
+        try:
+            return not (path.stat().st_mode & _GROUP_AND_OTHER)
+        except OSError:
+            return False
+
+    try:
+        listing = subprocess.run(
+            ["icacls", str(path)], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if listing.returncode != 0:
+        return False
+
+    # `icacls` prints `<path> PRINCIPAL:(F)` then one indented `PRINCIPAL:(F)` per extra
+    # entry, and finishes with a localised summary line. Keying on the `:(` separator
+    # rather than on any English word keeps this working on a non-English Windows.
+    me = (os.environ.get("USERNAME") or _fallback_user() or "").casefold()
+    for line in listing.stdout.splitlines():
+        if ":(" not in line:
+            continue
+        principal = line.split(":(")[0].strip()
+        if principal.lower().startswith(str(path).lower()):
+            principal = principal[len(str(path)):].strip()
+        if not principal:
+            continue
+        # `MONOLITH\Alex` and `Alex` are the same person; compare the account name.
+        account = principal.rsplit("\\", 1)[-1].casefold()
+        if account != me:
+            return False
+    return True
+
+
+def _fallback_user() -> str:
+    import getpass
+
+    try:
+        return getpass.getuser()
+    except Exception:  # pragma: no cover - no USERNAME and no password database
+        return ""
+
+
 # --- who "this user" is ------------------------------------------------------------
 
 def user_tag() -> str:

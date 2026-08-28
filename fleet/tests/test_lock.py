@@ -19,6 +19,7 @@ import pytest
 
 from gbfleet.lock import Holder, RepoLocked, hold
 from gbfleet.state import NotARepository, lock_path, repo_key, repo_root, state_root
+from gbfleet.hostos import is_owner_only, user_tag
 
 HOLD_SCRIPT = """
 import sys, time
@@ -140,7 +141,7 @@ def test_a_killed_supervisor_leaves_a_lock_the_next_one_can_take(
         with hold(git_repo, state):
             pass  # pragma: no cover - the point is that we do not get here
 
-    proc.send_signal(signal.SIGKILL)
+    proc.kill()  # portable: SIGKILL here, TerminateProcess on Windows
     proc.wait(timeout=30)
 
     with hold(git_repo, state) as taken:
@@ -193,24 +194,39 @@ def test_a_lock_held_but_not_yet_written_is_not_reported_as_free(
         assert exc.value.holder is None
         assert "has not yet written its record" in str(exc.value)
     finally:
-        proc.send_signal(signal.SIGKILL)
+        proc.kill()  # portable: SIGKILL here, TerminateProcess on Windows
         proc.wait(timeout=30)
 
 
 # --- the state directory ----------------------------------------------------------
 
 
-def test_the_state_directory_is_private_to_this_user():
+def test_the_state_directory_is_private_to_this_user(tmp_path: Path, monkeypatch):
     """On Linux /tmp is shared. Not a security boundary (D-k), but two accounts on one
-    host must not silently contend for the same lock."""
+    host must not silently contend for the same lock.
+
+    The temp directory is redirected so the directory is CREATED by this test. Without
+    that it asserted against `tempfile.gettempdir()`, a path that survives between runs
+    — so once any earlier run had made it private, `mkdir(exist_ok=True)` left it alone
+    and the assertion passed whether or not the code still restricted anything.
+    Sabotage caught it: removing the restriction entirely kept every test green.
+
+    `user_tag()` rather than `os.getuid()`, which does not exist on Windows — the same
+    reason the mode assertions became `is_owner_only`.
+    """
+    import tempfile as tempfile_mod
+
+    monkeypatch.setattr(tempfile_mod, "gettempdir", lambda: str(tmp_path))
+
     root = state_root()
-    assert root.name == f"gbfleet-{os.getuid()}"
-    assert root.stat().st_mode & 0o777 == 0o700
+    assert root.parent == tmp_path, "the redirect did not take; this proves nothing"
+    assert root.name == f"gbfleet-{user_tag()}"
+    assert is_owner_only(root)
 
 
 def test_the_lock_file_is_not_world_readable(git_repo: Path, state: Path):
     with hold(git_repo, state) as acquired:
-        assert acquired.path.stat().st_mode & 0o777 == 0o600
+        assert is_owner_only(acquired.path)
 
 
 def test_being_refused_does_not_disturb_the_holder(git_repo: Path, state: Path):
@@ -248,4 +264,4 @@ def test_a_pre_existing_lock_file_gets_tightened(git_repo: Path, state: Path):
     assert path.stat().st_mode & 0o777 == 0o644
 
     with hold(git_repo, state) as acquired:
-        assert acquired.path.stat().st_mode & 0o777 == 0o600
+        assert is_owner_only(acquired.path)
