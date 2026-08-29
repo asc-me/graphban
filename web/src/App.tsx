@@ -29,7 +29,7 @@ import { OrgIntegrations } from "@/features/orgadmin/OrgIntegrations";
 import { OrgDeployments } from "@/features/orgadmin/OrgDeployments";
 import { OrgTeams } from "@/features/orgadmin/OrgTeams";
 import { OrgUsers } from "@/features/orgadmin/OrgUsers";
-import { OrganizationView } from "@/features/organization/OrganizationView";
+
 import { PrdEditorView } from "@/features/prds/PrdEditorView";
 import { PrdListView } from "@/features/prds/PrdListView";
 import { ProfileView } from "@/features/profile/ProfileView";
@@ -37,6 +37,7 @@ import { ProjectHome } from "@/features/projecthome/ProjectHome";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { EmbedRoadmapPage } from "@/features/roadmap/EmbedRoadmapPage";
 import { RoadmapView } from "@/features/roadmap/RoadmapView";
+import { HomeView } from "@/features/home/HomeView";
 import { SettingsView } from "@/features/settings/SettingsView";
 import { RequestsView } from "@/features/requests/RequestsView";
 import { TrackerView } from "@/features/tracker/TrackerView";
@@ -115,10 +116,18 @@ function AuthedApp() {
           ? PROJECT_VIEWS.map(([path, el]) => (
               <Route key={path} path={`/p/:tag/${path}`} element={el} />
             ))
-          : PROJECT_VIEWS.map(([path, el]) => (
-              <Route key={path} path={`/${path}`} element={el} />
-            ))}
+          : PROJECT_VIEWS.filter(([path]) => !["dashboard", "mcp-tools", "feedback-kit"].includes(path)).map(
+              ([path, el]) => <Route key={path} path={`/${path}`} element={el} />,
+            )}
         {hosted && <Route path="/p/:tag" element={<ProjectHome />} />}
+        {!hosted && (
+          <>
+            <Route path="/home" element={<HomeView />} />
+            <Route path="/dashboard" element={<Navigate to="/home" replace />} />
+            <Route path="/mcp-tools" element={<Navigate to="/settings/project/mcp" replace />} />
+            <Route path="/feedback-kit" element={<Navigate to="/settings/project/feedback-kit" replace />} />
+          </>
+        )}
 
         {/* ---- the org plane (hosted only) ---- */}
         {hosted && (
@@ -148,8 +157,10 @@ function AuthedApp() {
           </>
         )}
 
-        {!hosted && <Route path="/organization" element={<OrganizationView />} />}
-        <Route path="/settings" element={<SettingsView />} />
+        {!hosted && (
+          <Route path="/organization" element={<Navigate to="/settings/deployment/sync" replace />} />
+        )}
+        <Route path="/settings/*" element={<SettingsView />} />
         <Route path="/profile" element={<ProfileView />} />
         <Route index element={<HomeRedirect hosted={hosted} />} />
         <Route path="*" element={<HomeRedirect hosted={hosted} />} />
@@ -182,7 +193,7 @@ function FlatRedirect() {
 function HomeRedirect({ hosted }: { hosted: boolean }) {
   const { projects, loading } = useProjectCtx();
   if (loading) return null;
-  if (!hosted) return <Navigate to="/tracker" replace />;
+  if (!hosted) return <Navigate to="/home" replace />;
 
   const remembered = lastProjectTag();
   const target = projects.find((p) => p.tag === remembered) ?? projects[0] ?? null;

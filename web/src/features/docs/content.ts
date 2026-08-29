@@ -198,5 +198,9 @@ export const GLOBAL_SHORTCUTS: DocShortcut[] = [
 
 export function docFor(pathname: string): DocEntry {
   if (/^\/prds\/[^/]+$/.test(pathname)) return CONTENT["prd-editor"];
+  if (pathname === "/home") return CONTENT["/dashboard"];
+  if (pathname.startsWith("/settings/project/mcp")) return CONTENT["/mcp-tools"];
+  if (pathname.startsWith("/settings/project/feedback-kit")) return CONTENT["/feedback-kit"];
+  if (pathname.startsWith("/settings")) return CONTENT["/settings"];
   return CONTENT[pathname] ?? CONTENT.default;
 }

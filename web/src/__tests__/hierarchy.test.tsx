@@ -5,7 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectProvider, useProjectCtx } from "@/features/ProjectContext";
-import { ORG_BASE, adminPath, orgPath, projectPath, tagFromPath, viewFromPath } from "@/lib/routes";
+import { ORG_BASE, adminPath, orgPath, projectPath, settingsPath, tagFromPath, usableHttpUrl, viewFromPath } from "@/lib/routes";
 import type { Project } from "@/lib/types";
 
 /**
@@ -65,6 +65,12 @@ describe("path helpers", () => {
     expect(orgPath()).toBe(ORG_BASE);
     expect(orgPath("projects")).toBe(`${ORG_BASE}/projects`);
     expect(adminPath("users")).toBe(`${ORG_BASE}/admin/users`);
+    expect(settingsPath()).toBe("/settings");
+    expect(settingsPath("project/mcp")).toBe("/settings/project/mcp");
+    expect(usableHttpUrl("https://cloud.graphban.dev")).toBe("https://cloud.graphban.dev/");
+    expect(usableHttpUrl("not a url")).toBeNull();
+    expect(usableHttpUrl("ftp://x")).toBeNull();
+    expect(usableHttpUrl("")).toBeNull();
   });
 
   it("has no source file spelling the org base as a literal", () => {

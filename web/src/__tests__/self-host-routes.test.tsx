@@ -41,7 +41,8 @@ describe("the org plane is absent on self-host, not guarded", () => {
 
   it("mounts project views at the root when not hosted, and under /p/:tag when hosted", () => {
     expect(app).toMatch(/hosted\s*\n?\s*\?[\s\S]{0,200}\/p\/:tag\//);
-    expect(app).toMatch(/:\s*PROJECT_VIEWS\.map/);
+    expect(app).toMatch(/PROJECT_VIEWS/);
+    expect(app).toMatch(/path=\{`\/\$\{path\}`\}/);
   });
 
   it("clears org state on boot for a self-host build", () => {

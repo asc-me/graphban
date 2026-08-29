@@ -5,6 +5,8 @@ import * as React from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
+import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
+import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
 import { McpInstall } from "@/features/settings/McpInstall";
 import { SyncCredentialInstall } from "@/features/settings/SyncCredentialInstall";
@@ -14,13 +16,113 @@ import { copyText } from "@/lib/clipboard";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { keys, useApiKeys, useMembers, usePlatform } from "@/lib/queries";
+import { keys, useApiKeys, useConfig, useMembers, usePlatform } from "@/lib/queries";
+import { settingsPath } from "@/lib/routes";
 import type { ApiKey, PlatformConfig, Project } from "@/lib/types";
+import { NavLink, Navigate, useLocation } from "react-router-dom";
 
 const TABS = ["AI Providers", "Integrations", "Sync / Link", "Project", "Members", "API Keys", "Account"] as const;
 type Tab = (typeof TABS)[number];
 
 export function SettingsView() {
+  const { data: config } = useConfig();
+  const hosted = config?.hosted_mode ?? false;
+  if (hosted) return <HostedSettingsTabs />;
+  return <SelfHostSettings />;
+}
+
+const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: boolean }[] }[] = [
+  {
+    group: "This box",
+    items: [{ to: settingsPath("deployment/sync"), label: "Cloud / Sync" }],
+  },
+  {
+    group: "This project",
+    items: [
+      { to: settingsPath("project"), label: "Project", end: true },
+      { to: settingsPath("project/providers"), label: "AI providers" },
+      { to: settingsPath("project/api-keys"), label: "API keys" },
+      { to: settingsPath("project/mcp"), label: "MCP" },
+      { to: settingsPath("project/integrations"), label: "Integrations" },
+      { to: settingsPath("project/feedback-kit"), label: "Feedback Kit" },
+      { to: settingsPath("project/members"), label: "Members" },
+    ],
+  },
+];
+
+function SelfHostSettings() {
+  const { pathname } = useLocation();
+  if (pathname === "/settings" || pathname === "/settings/") {
+    return <Navigate to={settingsPath("project/providers")} replace />;
+  }
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex-none border-b border-line px-5 py-4">
+        <h1 className="text-[18px] font-semibold tracking-tight">Settings</h1>
+        <p className="mt-0.5 text-[12.5px] text-muted">This project and this box.</p>
+      </div>
+      <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr]">
+        <div className="flex flex-col gap-0.5 overflow-y-auto border-r border-line p-3">
+          {SELF_HOST_NAV.map((g) => (
+            <div key={g.group} className="mb-2">
+              <div className="mb-1 px-3 font-mono text-[10px] uppercase tracking-wide text-faint">
+                {g.group}
+              </div>
+              {g.items.map((it) => (
+                <NavLink
+                  key={it.to}
+                  to={it.to}
+                  end={it.end}
+                  className={({ isActive }) =>
+                    cn(
+                      "block rounded-[9px] px-3 py-2 text-[13px] transition-colors",
+                      isActive ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-3 hover:text-fg-2",
+                    )
+                  }
+                >
+                  {it.label}
+                </NavLink>
+              ))}
+            </div>
+          ))}
+          <div className="mt-auto border-t border-line pt-2">
+            <NavLink
+              to={settingsPath("account")}
+              className={({ isActive }) =>
+                cn(
+                  "block rounded-[9px] px-3 py-2 text-[13px] transition-colors",
+                  isActive ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-3 hover:text-fg-2",
+                )
+              }
+            >
+              Account
+            </NavLink>
+          </div>
+        </div>
+        <div className="min-h-0 overflow-y-auto p-6">
+          <SelfHostPane pathname={pathname} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SelfHostPane({ pathname }: { pathname: string }) {
+  if (pathname.startsWith(settingsPath("deployment/sync"))) return <SyncLinkPanel />;
+  if (pathname.startsWith(settingsPath("project/mcp"))) return <McpToolsView />;
+  if (pathname.startsWith(settingsPath("project/feedback-kit"))) return <FeedbackKitView />;
+  if (pathname.startsWith(settingsPath("project/integrations"))) return <IntegrationsPanel />;
+  if (pathname.startsWith(settingsPath("project/api-keys"))) return <ApiKeysPanel />;
+  if (pathname.startsWith(settingsPath("project/providers"))) return <CredentialsPanel />;
+  if (pathname.startsWith(settingsPath("project/members"))) return <MembersPanel />;
+  if (pathname === settingsPath("project") || pathname.startsWith(`${settingsPath("project")}/`)) {
+    return <ProjectPanel />;
+  }
+  if (pathname.startsWith(settingsPath("account"))) return <AccountPanel />;
+  return <CredentialsPanel />;
+}
+
+function HostedSettingsTabs() {
   const [tab, setTab] = React.useState<Tab>("AI Providers");
   return (
     <div className="flex h-full min-h-0 flex-col">
