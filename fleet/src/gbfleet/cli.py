@@ -15,6 +15,7 @@ from pathlib import Path
 from . import __version__
 from .adapters import ADAPTERS, AdapterError, Tuning, resolve
 from .client import Graphban
+from . import doctor
 from .lock import RepoLocked
 from .seat import Seat
 from dataclasses import replace
@@ -113,6 +114,23 @@ def build_parser() -> argparse.ArgumentParser:
         "argv", nargs=argparse.REMAINDER, help="-- followed by the command to run per child"
     )
 
+    doc = sub.add_parser(
+        "doctor",
+        help="check everything that can be checked before a child is spawned",
+        description=(
+            "Answers the questions that otherwise cost a wave: does this repository "
+            "commit a seat path, can a credential file be kept private on this "
+            "filesystem, is the vendor binary in range, does the server accept this "
+            "key. Reports PASS, FAIL and UNKNOWN — a check that could not run is not "
+            "a check that passed."
+        ),
+    )
+    doc.add_argument("--repo", default=".", help="repository to check (default: cwd)")
+    doc.add_argument("--workspace", default=None, help="where worktrees would go")
+    doc.add_argument("--adapter", default="", help="vendor you intend to run")
+    doc.add_argument("--server", default="", help="Graphban base URL")
+    doc.add_argument("--seats-file", default=None, help="seats file `up` would read")
+
     stdio = sub.add_parser(
         "mcp",
         help="serve spawn/stop/ps/orphans over stdio, for a planner to drive",
@@ -199,13 +217,17 @@ def _substitute(part: str, values: dict[str, str]) -> str:
     return part
 
 
-def report(wave: Wave, out=sys.stdout) -> None:
+def report(wave: Wave, out=None) -> None:
     """Say what happened, including the parts that are absences.
 
     Every line answers a question somebody would otherwise infer from a length or a
     silence — how many seats went unused, whether a proposal of zero meant anything,
     whether a branch carries a credential the worker committed itself.
     """
+    # Resolved here rather than as a default: `out=sys.stdout` in the signature binds
+    # whatever stdout was at IMPORT, so an in-process redirect gets nothing while the
+    # summary goes somewhere nobody is reading (found in `doctor`, same shape).
+    out = sys.stdout if out is None else out
     if wave.lock and wave.lock.takeover:
         print(f"took over a lock: {wave.lock.takeover.describe()}", file=out)
 
@@ -312,6 +334,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "mcp":
         return _serve_stdio(args)
+
+    if args.command == "doctor":
+        report = doctor.run(
+            repo=Path(args.repo),
+            workspace=Path(args.workspace) if args.workspace else None,
+            adapter=args.adapter,
+            server=args.server,
+            api_key=os.environ.get(API_KEY_ENV),
+            seats_file=args.seats_file,
+        )
+        # FAIL only. An UNKNOWN is loud in the report and does not stop a run — refusing
+        # on a check that could not be made would ground the fleet on a slow network.
+        return 0 if report.ok else 1
 
     template = [a for a in (args.argv or []) if a != "--"]
     try:

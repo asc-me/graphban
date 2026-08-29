@@ -368,6 +368,45 @@ a position to stop it. What it *cannot* do is override the seat: on a name colli
 control proving the committed file is genuinely loaded when nothing outranks it, because
 "the seat won" and "the rival never entered" look identical from the outside.
 
+## Before the first run: `gbfleet doctor`
+
+Every trap in this document is one an operator meets on their first run, and several are
+silent or blamed on the wrong component. `gbfleet doctor` asks them all before a child
+exists:
+
+```
+gbfleet doctor --repo . --adapter grok --server https://cloud.graphban.dev
+```
+
+```
+  [PASS   ] host platform — Windows (nt)
+  [PASS   ] python version — 3.12.10
+  [PASS   ] credential files can be kept private
+  [PASS   ] repository — C:\Users\Alex\gbsrc
+  [FAIL   ] repository does not commit a seat path — commits ['.grok/config.toml']
+            the supervisor must write a child's seat there and would truncate your
+            file; use user-scope config instead (grok mcp add --scope user)
+  [PASS   ] supervisor lock is free
+  [PASS   ] adapter grok — grok 1.0.5 [stable]
+  [PASS   ] adapter grok supports --debug
+  [UNKNOWN] server reachable — no --server given
+
+  9 ok, 1 failed, 2 unknown
+  unknown is not ok: these were not checked, not checked and found fine
+```
+
+**Three outcomes, not two.** `UNKNOWN` is a check that could not be made, and it is
+neither counted as success nor left out of the summary. Two outcomes would force every
+unanswerable question into one of the answers — which is the defect this repository
+keeps finding, and it found another one here: the preflight's first run reported
+`[UNKNOWN] supervisor lock is free — Permission denied` and turned up a live regression
+that had made the supervisor unable to take its own lock (GRPH-600). A two-outcome
+version would have printed `FAIL` or, worse, `PASS`.
+
+Only `FAIL` sets a non-zero exit. Refusing to start because a check could not be *made*
+would ground the fleet on a slow network, so unknowns are printed loudly and the
+operator decides.
+
 ## Debug output: what each vendor can be asked for
 
 `gbfleet up --debug` asks each child's CLI to write a debug log beside its stdout, and
