@@ -72,6 +72,19 @@ class Settings(BaseSettings):
     # known proxy; refuse to start on a weak/default JWT secret when required.
     github_webhook_secret: str = ""
     trusted_proxy: bool = False
+    # How many proxies stand between this app and the internet (GRPH-553). 0 = none; the
+    # socket peer is the caller.
+    #
+    # Supersedes `trusted_proxy`, which reads the FIRST `X-Forwarded-For` hop — the one value
+    # a client fully controls, since the bundled nginx APPENDS rather than overwrites. This
+    # counts from the RIGHT, so it only ever reads what a proxy actually observed: 1 for the
+    # compose stack (client -> nginx -> app), 2 behind an edge that already sets the header
+    # (client -> edge -> nginx -> app).
+    #
+    # Not a bool because the two topologies differ by one hop and a bool cannot say which —
+    # that is precisely how the same nginx template ended up correct on Railway and wrong on
+    # the self-host.
+    trusted_hops: int = 0
     require_strong_secret: bool = False
 
     # Release identity: the git revision this image was built from, baked in at
