@@ -44,6 +44,9 @@ vi.mock("@/lib/api", () => ({
     counts: vi.fn(async () => ({ items: 41, items_in_progress: 3, requests: 7, review: 5 })),
     orgs: vi.fn(async () => []),
     adminWhoami: vi.fn(async () => ({ is_platform_admin: false })),
+    syncStatus: vi.fn(async () => ({
+      linked: false, source: "", cloud_url: "", org: "", credential_set: false, linked_at: null, projects: [],
+    })),
     ...collections,
   },
 }));

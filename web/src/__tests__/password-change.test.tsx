@@ -22,6 +22,7 @@ vi.mock("@/features/ProjectContext", () => ({
 
 vi.mock("@/lib/queries", () => ({
   keys: { apiKeys: ["api-keys"] },
+  useConfig: () => ({ data: { hosted_mode: true, signup_mode: "invite_only" } }),
   useApiKeys: () => ({ data: [] }),
   useMembers: () => ({ data: [] }),
   usePlatform: () => ({ data: null }),

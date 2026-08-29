@@ -19,6 +19,7 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useSyncStatus } from "@/lib/queries";
 import type { SyncProjectState, SyncProjectStatus } from "@/lib/types";
+import { useSearchParams } from "react-router-dom";
 
 // A self-hosted instance links to a cloud tenant, then pushes its locally-built code graph up
 // so cloud-side triage/collision-clustering can reason across the whole repo (AL-141). The
@@ -45,6 +46,8 @@ function ago(iso: string | null): string {
 
 export function SyncLinkPanel() {
   const { data: status, isLoading } = useSyncStatus();
+  const [params] = useSearchParams();
+  const reason = params.get("reason");
   const qc = useQueryClient();
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["sync-status"] });
@@ -65,6 +68,16 @@ export function SyncLinkPanel() {
           graph; the cloud holds items, claims, and memory. Summaries and structure are pushed —
           vectors never leave the box; the cloud re-embeds.
         </p>
+        {reason === "missing" && (
+          <p className="mt-3 rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-[12.5px] text-st-review">
+            No cloud URL is linked. Connect a tenant here rather than opening a blank address.
+          </p>
+        )}
+        {reason === "malformed" && (
+          <p className="mt-3 rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-[12.5px] text-st-review">
+            The stored cloud URL is not a usable http(s) address, so it was not opened.
+          </p>
+        )}
       </div>
 
       <CloudLinkCard status={status} onChange={invalidate} scopedId={scopedId} onScope={setScopedId} />

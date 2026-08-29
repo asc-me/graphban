@@ -2,10 +2,27 @@ import { useMcpTools } from "@/lib/queries";
 import type { McpToolInfo } from "@/lib/types";
 
 export function McpToolsView() {
-  const { data, isLoading } = useMcpTools();
+  const { data, isLoading, isError } = useMcpTools();
 
-  if (isLoading || !data) {
+  if (isLoading && !data) {
     return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
+  }
+  if (isError && !data) {
+    return (
+      <div className="p-6 text-[13px] text-st-blocked">
+        MCP catalog unavailable — the tool list could not be fetched.
+      </div>
+    );
+  }
+  if (!data) {
+    return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
+  }
+  if (data.tools.length === 0) {
+    return (
+      <div className="p-6 text-[13px] text-muted">
+        No tools are registered. That is a looked-at empty catalog, not a failed fetch.
+      </div>
+    );
   }
 
   const totalCalls = data.tools.reduce((s, t) => s + t.calls, 0);

@@ -38,6 +38,25 @@ export function adminPath(sub = ""): string {
   return orgPath(sub ? `admin/${sub.replace(/^\/+/, "")}` : "admin");
 }
 
+/** `/settings`, `/settings/project/mcp` — self-host Settings is path-per-item (GRPH-P28 D3). */
+export function settingsPath(sub = ""): string {
+  const tail = sub.replace(/^\/+/, "");
+  return tail ? `/settings/${tail}` : "/settings";
+}
+
+/** A cloud console URL we will actually open. Missing/junk is not a URL (GRPH-P28 D5). */
+export function usableHttpUrl(raw: string | null | undefined): string | null {
+  const s = (raw ?? "").trim();
+  if (!s) return null;
+  try {
+    const u = new URL(s);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The tag in a `/p/:tag/...` path, or null.
  *
