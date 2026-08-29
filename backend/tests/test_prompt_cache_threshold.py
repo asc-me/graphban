@@ -123,13 +123,40 @@ def test_the_grounding_context_is_not_part_of_the_prefix():
     ("claude-opus-4-8", 1024),
     ("claude-haiku-4-5", 4096),
     ("claude-opus-4-8-20260101", 1024),   # dated variants resolve to their family
-    ("some-unknown-model", DEFAULT_MINIMUM),
+    # PINNED BY VALUE, not by the constant (GRPH-590). This row read
+    # `("some-unknown-model", DEFAULT_MINIMUM)` — the expected value WAS what the function
+    # returns, so both sides moved together and it asserted `DEFAULT_MINIMUM ==
+    # DEFAULT_MINIMUM`. Setting the constant to 0 — the exact value the docstring below says
+    # would disarm the tripwire — left all nine tests passing.
+    ("some-unknown-model", 1024),
 ])
 def test_the_threshold_table_resolves_by_model(model, expected):
     """The thresholds differ fourfold across models, so the tripwire is only meaningful if it
     reads the RIGHT one. An unknown model falls back to 1024 rather than to 0 — guessing low
     would silently disarm this."""
     assert _minimum_for(model) == expected
+
+
+def test_the_fallback_is_conservative_rather_than_permissive():
+    """The second axis, because pinning the literal only catches someone editing the number
+    and not someone adding a cheaper model to the table below it.
+
+    Direction is everything here. The tripwire defers when `prefix < minimum`, so a fallback
+    that is too LOW makes that comparison false and reports "go ahead" — and Anthropic's
+    documented behaviour for a prefix under the real minimum is that the request is processed
+    WITHOUT caching and NO ERROR IS RETURNED. A too-low fallback therefore enables a feature
+    that silently does nothing, which is the whole reason GRPH-226 shipped a tripwire instead
+    of the feature.
+
+    An unknown model is one nobody has measured, so the safe assumption is the strictest
+    threshold seen, not the loosest.
+    """
+    assert DEFAULT_MINIMUM >= min(CACHE_MINIMUM_TOKENS.values()), (
+        f"the fallback ({DEFAULT_MINIMUM}) is below the cheapest model in the table "
+        f"({min(CACHE_MINIMUM_TOKENS.values())}), so an unknown model would be told a prefix "
+        "is long enough when no measured model would accept it"
+    )
+    assert DEFAULT_MINIMUM > 0, "a fallback of 0 disarms the tripwire for every unknown model"
 
 
 def test_cache_accounting_is_carried_on_every_turn():
