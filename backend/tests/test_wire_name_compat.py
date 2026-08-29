@@ -15,6 +15,10 @@ from app.security import apikey
 
 
 def _key(client, auth, **body) -> str:
+    # Every tier (GRPH-571): this file is about ALIASES, and a tool absent because it was
+    # not opted into would make an alias test pass for a reason that has nothing to do with
+    # aliasing.
+    body.setdefault("tool_tiers", ["prd", "codegraph", "fleet", "misc"])
     r = client.post("/api/api-keys", json={"name": "compat", **body}, headers=auth)
     assert r.status_code in (200, 201), r.text
     return r.json()["plaintext"]

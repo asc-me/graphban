@@ -38,11 +38,13 @@ def create_key(body: ApiKeyCreate, db: Session = Depends(get_db), user: User = D
         # sync bug rather than a permissions one.
         authz.require_writable(db, user.id, body.project_id)
     row, plaintext = generate_api_key(
-        db, user.id, body.name, body.scopes, body.project_id, body.expires_in_days
+        db, user.id, body.name, body.scopes, body.project_id, body.expires_in_days,
+        tool_tiers=body.tool_tiers,
     )
     events_svc.record_user(db, user, action="create_api_key", target_type="api_key",
                            target_id=row.id, project_id=row.project_id,
-                           meta={"name": row.name, "scopes": row.scopes})
+                           meta={"name": row.name, "scopes": row.scopes,
+                                 "tool_tiers": row.tool_tiers})
     out = ApiKeyCreated.model_validate({**ApiKeyOut.model_validate(row).model_dump(), "plaintext": plaintext})
     return out
 

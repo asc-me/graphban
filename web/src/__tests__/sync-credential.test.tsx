@@ -79,7 +79,14 @@ describe("minting a sync credential", () => {
     await user.click(screen.getByRole("button", { name: /Mint credential/ }));
 
     await waitFor(() =>
-      expect(api.createApiKey).toHaveBeenCalledWith("laptop — core", "core", null, ["sync"]),
+      expect(api.createApiKey).toHaveBeenCalledWith(
+        "laptop — core",
+        "core",
+        null,
+        ["sync"],
+        // A sync credential calls no MCP tools, so it is minted with no tier (GRPH-571).
+        undefined,
+      ),
     );
   });
 
@@ -105,8 +112,9 @@ describe("minting a sync credential", () => {
     await user.click(screen.getByRole("button", { name: /Create key/ }));
 
     await waitFor(() =>
-      // undefined scopes → the backend default ["read","write"]
-      expect(api.createApiKey).toHaveBeenCalledWith("ci-agent", "core", null, undefined),
+      // undefined scopes → the backend default ["read","write"]; `[]` tiers → the core MCP
+      // manifest, which is likewise the backend default (GRPH-571).
+      expect(api.createApiKey).toHaveBeenCalledWith("ci-agent", "core", null, undefined, []),
     );
   });
 });

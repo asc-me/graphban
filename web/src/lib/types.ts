@@ -446,6 +446,8 @@ export interface ApiKey {
   name: string;
   prefix: string;
   scopes: string[];
+  /** Optional MCP tool tiers (GRPH-571). Absent/empty = the core manifest. */
+  tool_tiers?: string[] | null;
   project_id: string | null;
   last_used: string | null;
   created_at: string;

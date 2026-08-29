@@ -94,7 +94,8 @@ def mint_fleet_key(body: FleetKeyIn, db: Session = Depends(get_db),
                            target_id=row.id, project_id=body.project_id,
                            meta={"role": body.role, "wave": body.wave})
     return {"id": row.id, "plaintext": plaintext, "role": body.role, "wave": body.wave,
-            "expires_at": row.expires_at, "prefix": row.prefix}
+            "expires_at": row.expires_at, "prefix": row.prefix,
+            "tool_tiers": row.tool_tiers or []}
 
 
 class SeatsIn(BaseModel):

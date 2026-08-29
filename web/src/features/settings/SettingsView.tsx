@@ -651,6 +651,21 @@ function GateKeyInstall({ apiKey }: { apiKey: string }) {
   );
 }
 
+/**
+ * The optional MCP tool tiers (GRPH-571), mirroring `app/services/tool_tiers.TIER_PURPOSE`.
+ *
+ * Duplicated rather than fetched, and that is a real trade: the server is authoritative and
+ * these can drift. Fetching would need an endpoint that exists only for this list. The guard
+ * against drift is that the server REFUSES an unknown tier with a 422 naming the allowed set,
+ * so a stale entry here fails loudly at mint rather than minting a key that never widens.
+ */
+const TOOL_TIERS: ReadonlyArray<readonly [string, string, string]> = [
+  ["prd", "PRDs", "Authoring and grilling specs — write, grill, decompose, close. A coding agent reads specs; it does not write them."],
+  ["codegraph", "Code graph writes", "Describing symbols and linking them. Reading the graph is core and always present."],
+  ["fleet", "Fleet admin", "Running a fleet — allocation, roles, enrolment codes, waves. Being IN a fleet needs none of this."],
+  ["misc", "Occasional", "Projects, digests, lessons, memory review. Rare, and none of it mid-task."],
+];
+
 export function ApiKeysPanel() {
   const { data: apiKeys = [] } = useApiKeys();
   const syncKeys = apiKeys.filter((k) => k.scopes?.includes("sync"));
@@ -663,6 +678,10 @@ export function ApiKeysPanel() {
   const { active, projects } = useProjectCtx();
   const qc = useQueryClient();
   const [kind, setKind] = React.useState<KeyKind>("agent");
+  // Optional MCP tool tiers (GRPH-571). Empty is the default and not a degraded state: a key
+  // gets the core manifest, and a tool left out of it still works when called — the tier
+  // decides only what `tools/list` advertises.
+  const [tiers, setTiers] = React.useState<string[]>([]);
   const [name, setName] = React.useState("");
   const [global, setGlobal] = React.useState(false);
   const [expiryDays, setExpiryDays] = React.useState<number | null>(null);
@@ -696,7 +715,10 @@ export function ApiKeysPanel() {
       // stored as a CI secret, and 403 on the first real attestation. `fleet.mint` already
       // carries read+write alongside `gate` for exactly this reason; this matches it.
       const scopes = kind === "sync" ? ["sync"] : kind === "gate" ? ["read", "write", "gate"] : undefined;
-      const res = await api.createApiKey(name.trim(), projectId, expiryDays, scopes);
+      // Tiers only mean anything for an agent key: a sync credential calls no MCP tools, and
+      // a gate key calls exactly one, which is core.
+      const res = await api.createApiKey(name.trim(), projectId, expiryDays, scopes,
+        kind === "agent" ? tiers : undefined);
       setCreated({ plaintext: res.plaintext, kind, projectId: projectId ?? "" });
       setName("");
       qc.invalidateQueries({ queryKey: keys.apiKeys });
@@ -795,6 +817,38 @@ export function ApiKeysPanel() {
         </Button>
       </div>
       {error && <p className="mb-2 text-[12px] text-st-blocked">{error}</p>}
+      {kind === "agent" && (
+        <div className="mb-3">
+          <div className="mb-1.5 text-[12px] text-muted">
+            Tool tiers — an agent key is shipped the{" "}
+            <span className="text-fg-2">core</span> tools by default. These are specialist and
+            cost manifest tokens every turn, so they are opt-in. A tool left out is still{" "}
+            <em className="not-italic text-fg-2">callable</em>; it just is not advertised.
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {TOOL_TIERS.map(([id, label, desc]) => {
+              const on = tiers.includes(id);
+              return (
+                <button
+                  key={id}
+                  title={desc}
+                  onClick={() =>
+                    setTiers((cur) => (on ? cur.filter((x) => x !== id) : [...cur, id]))
+                  }
+                  className={cn(
+                    "rounded-md border px-2.5 py-1 text-[11.5px] transition-colors",
+                    on
+                      ? "border-accent/50 bg-surface-3 text-fg"
+                      : "border-line-2 text-muted hover:text-fg-2",
+                  )}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {kind === "sync" ? (
         <p className="mb-4 text-[12px] text-muted">
           Pinned to <span className="text-fg-2">{projectName(syncTarget)}</span> — a sync credential targets exactly one

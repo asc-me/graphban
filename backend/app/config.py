@@ -275,6 +275,23 @@ class Settings(BaseSettings):
     def required_predicate_list(self) -> list[str]:
         return [p.strip() for p in self.required_predicates.split(",") if p.strip()]
 
+    # Tool tiers every key gets on top of its own (GRPH-571). EMPTY BY DEFAULT — the whole
+    # point of tiering is that the default manifest is smaller.
+    #
+    # This exists as the operator's undo. Tiering shrinks the manifest of keys that already
+    # exist, since a key minted before 0093 has no tiers; setting this to
+    # `prd,codegraph,fleet,misc` restores exactly the pre-GRPH-571 manifest for the whole
+    # deployment, with no code change and no re-minting, for someone who wants the old
+    # behaviour back while they work out which keys need what.
+    #
+    # Deliberately additive rather than a replacement: it can only widen what a key already
+    # has, so turning it on can never take a tier away from a key that was minted with one.
+    mcp_default_tool_tiers: str = ""
+
+    @property
+    def default_tool_tier_list(self) -> list[str]:
+        return [t.strip() for t in self.mcp_default_tool_tiers.split(",") if t.strip()]
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
