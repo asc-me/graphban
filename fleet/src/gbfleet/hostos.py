@@ -150,9 +150,20 @@ def lock_exclusive(fd: int) -> None:
 # does not stop the fleet. It is reported instead — the whole defect was that it kept
 # quiet.
 
-_OWNER_ONLY = 0o600
+#: Owner-only, for a FILE and for a DIRECTORY, and the difference is not cosmetic.
+#:
+#: `0o600` on a directory strips the execute bit, and a directory without `x` cannot be
+#: traversed — nothing inside it can be created, opened or listed. Applying the file mode
+#: to `state_root()` left the supervisor unable to open its own lock file, so `up` and
+#: `stdio` could not start at all (GRPH-600). `_DIR_MODE = 0o700` existed for exactly
+#: this reason before it was replaced with a file-shaped constant.
+_OWNER_ONLY_FILE = 0o600
+_OWNER_ONLY_DIR = 0o700
+
 #: Every permission bit that must NOT be set. Checking this rather than `== 0o600` is
-#: what lets the same assertion mean the same thing on a platform with no group bits.
+#: what lets the same assertion mean the same thing on a platform with no group bits —
+#: and it is the same question for a file and a directory, which is why `is_owner_only`
+#: needs no such split.
 _GROUP_AND_OTHER = 0o077
 
 
@@ -164,11 +175,23 @@ def restrict_to_owner(path: Path) -> bool:
     `/grant:r <user>:(F)` leaves exactly one. Verified on the box — a temp file that
     began with SYSTEM, Administrators and the user ended with a single entry for the
     user, still readable by them.
+
+    **A directory gets `0o700`, not `0o600`.** Windows never had this problem, because
+    `(F)` is full control and includes traverse; POSIX does, and getting it wrong makes
+    the directory unusable by the owner too. That is not a hypothetical — it broke the
+    supervisor's lock (GRPH-600).
     """
     path = Path(path)
     if not WINDOWS:
+        # A directory keeps its execute bit, or the owner cannot get into it either.
+        # "Nobody else can read this" and "and I can still use it" are two properties,
+        # and only the first was being asserted.
         try:
-            os.chmod(path, _OWNER_ONLY)
+            mode = _OWNER_ONLY_DIR if path.is_dir() else _OWNER_ONLY_FILE
+        except OSError:
+            return False
+        try:
+            os.chmod(path, mode)
         except OSError:
             return False
         return is_owner_only(path)

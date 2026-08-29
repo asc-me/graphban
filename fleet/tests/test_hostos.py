@@ -407,6 +407,43 @@ def test_a_directory_can_be_restricted_too(tmp_path: Path):
     assert hostos.is_owner_only(d)
 
 
+def test_a_restricted_directory_is_still_usable_by_its_owner(tmp_path: Path):
+    """The half that was missing, and it cost the whole tool.
+
+    `0o600` on a directory strips the execute bit, and a directory without `x` cannot be
+    traversed. `state_root()` got the file mode, so the supervisor could not open its own
+    lock file and neither `up` nor `stdio` could start — while three tests stayed green,
+    because every one of them asked "can anyone else read this" and none asked "and can
+    I still use it" (GRPH-600).
+
+    Found by `gbfleet doctor` on its first run, not by this suite.
+    """
+    d = tmp_path / "state"
+    d.mkdir()
+    assert hostos.restrict_to_owner(d) is True
+
+    inside = d / "repo.lock"
+    inside.write_text("holder record", encoding="utf-8")
+    assert inside.read_text(encoding="utf-8") == "holder record"
+    assert [p.name for p in d.iterdir()] == ["repo.lock"], "the directory cannot be listed"
+
+    if not hostos.WINDOWS:
+        mode = d.stat().st_mode & 0o777
+        assert mode & 0o100, f"the owner's execute bit is gone: {oct(mode)}"
+
+
+def test_a_restricted_file_does_not_get_the_directory_mode(tmp_path: Path):
+    """The control on the split. Handing every path `0o700` would also make both tests
+    above pass, while quietly marking every seat file executable."""
+    if hostos.WINDOWS:  # pragma: no cover - POSIX modes; icacls has no such distinction
+        pytest.skip("POSIX modes; Windows grants full control either way")
+
+    seat = tmp_path / "config.toml"
+    seat.write_text("gb_sk_live", encoding="utf-8")
+    assert hostos.restrict_to_owner(seat) is True
+    assert seat.stat().st_mode & 0o777 == 0o600, "a credential file was made executable"
+
+
 @posix_only
 def test_restrict_to_owner_does_not_trust_chmod_to_have_worked(tmp_path: Path, monkeypatch):
     """It verifies its own work, and says False when the filesystem ignored it.
