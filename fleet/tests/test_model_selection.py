@@ -27,7 +27,7 @@ from gbfleet.adapters.cursor import CursorAgent
 from gbfleet.adapters.grok import Grok
 from gbfleet.seat import Seat
 from gbfleet.worktree import Worktree
-from conftest import make_stub_binary  # noqa: E402
+from conftest import console_script, make_stub_binary  # noqa: E402
 
 SEAT = Seat(code="PLANNER-AAAAAA", server_url="http://localhost:8099", api_key="gb_sk_x")
 
@@ -231,7 +231,10 @@ def _installed(name: str) -> Path | None:
     import sys
 
     if name == "gbagent":
-        candidate = Path(sys.executable).parent / ADAPTERS[name].binary
+        # `console_script`, not a bare join: pip writes `gbagent.exe` on Windows, so
+        # looking beside the interpreter for the extensionless name finds nothing and
+        # this test concludes the build is broken when it is not.
+        candidate = console_script(ADAPTERS[name].binary)
         return candidate if candidate.exists() else None
     found = shutil.which(ADAPTERS[name].binary)
     return Path(found) if found else None

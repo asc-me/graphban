@@ -368,7 +368,9 @@ def test_a_run_with_no_code_and_no_agent_id_refuses_rather_than_going_unregister
     """An unregistered child is one the supervisor kills for looking like a broken adapter.
     Refusing here names which it actually was."""
     (tmp_path / "backend").mkdir()
-    (tmp_path / ".gbagent.toml").write_text('[tests]\ncommand = "echo hi"\n')
+    # `git`, not `echo`: `echo` is a cmd BUILTIN on Windows and not on PATH, so the
+    # config is refused before this test reaches the refusal it is actually about.
+    (tmp_path / ".gbagent.toml").write_text('[tests]\ncommand = "git hi"\n')
     (tmp_path / "instr.txt").write_text("no seat in here at all\n")
     seat_file = tmp_path / "seat.json"
     seat_file.write_text(json.dumps({"mcpServers": {"graphban": {

@@ -36,6 +36,7 @@ from gbagent.llm import (
     ToolTurn,
 )
 from gbagent.toolset import Toolset
+from conftest import make_stub_script, stub_argv  # noqa: E402
 from gbfleet.client import Graphban, NotPermitted
 
 SPEC = ToolSpec(name="read_file", description="read", input_schema={"type": "object"})
@@ -198,12 +199,13 @@ def wt(tmp_path: Path) -> Path:
     return root
 
 
-def _toolset(root: Path, script: str = "#!/bin/sh\necho '3 passed in 1.0s'\n") -> Toolset:
-    runner = root / "backend" / "r.sh"
-    runner.write_text(script, encoding="utf-8")
-    runner.chmod(runner.stat().st_mode | stat.S_IEXEC)
-    return Toolset(root=root, cfg=VerifyConfig(argv=[str(runner)], cwd=root / "backend",
-                                               source="r.sh"))
+def _toolset(root: Path, **stub) -> Toolset:
+    """A toolset whose `run_tests` is an interpreter-run stub rather than a shell script,
+    which Windows has no way to execute (GRPH-589)."""
+    stub = stub or {"prints": ("3 passed in 1.0s",)}
+    runner = make_stub_script(root / "backend" / "r.py", **stub)
+    return Toolset(root=root, cfg=VerifyConfig(argv=stub_argv(runner), cwd=root / "backend",
+                                               source="r.py"))
 
 
 def test_a_path_outside_the_worktree_comes_back_as_a_correctable_error(wt):
@@ -265,7 +267,7 @@ def test_the_toolset_records_what_actually_ran(wt):
 
 def test_unreadable_test_counts_are_reported_as_unreadable_not_as_zero(wt):
     """Carrying S2's honesty through to the string the model reads."""
-    ts = _toolset(wt, script="#!/bin/sh\necho 'kaboom'\nexit 3\n")
+    ts = _toolset(wt, prints=("kaboom",), exit_code=3)
 
     content = ts.execute(ToolCall(id="1", name="run_tests", input={})).content
 
@@ -429,9 +431,10 @@ def test_a_note_for_a_run_that_never_tested_says_so_rather_than_going_quiet(wt):
 
 
 def test_a_note_for_a_failing_run_names_the_failing_tests(wt):
-    ts = _toolset(wt, script=(
-        "#!/bin/sh\necho 'FAILED tests/test_a.py::test_boundary'\n"
-        "echo '1 failed, 2 passed in 1.0s'\nexit 1\n"))
+    ts = _toolset(wt, prints=(
+        "FAILED tests/test_a.py::test_boundary",
+        "1 failed, 2 passed in 1.0s",
+    ), exit_code=1)
     coordinator = FakeCoordinator()
 
     loop.run(FakeSession([_wants("run_tests")]), ts, coordinator=coordinator, window=WINDOW, budget=2)
