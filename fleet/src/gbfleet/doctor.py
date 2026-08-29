@@ -222,15 +222,12 @@ def check_adapter(report: Report, name: str) -> None:
         report.add("adapter", FAIL, f"{name!r} is not one of {sorted(ADAPTERS)}")
         return
     adapter = ADAPTERS[name]
-    try:
-        found = resolve(name)
-    except AdapterError as exc:
-        report.add(f"adapter {name}", FAIL, str(exc))
-        return
-    report.add(f"adapter {name}", PASS, f"{found.binary} — {found.version}")
 
-    # Stated up front rather than per-wave, because "I turned debug on" and "this vendor
-    # has no debug flag" produce the same quiet log.
+    # Answered BEFORE resolve, and regardless of whether it succeeds. Whether a vendor
+    # has a debug flag is a property of the adapter, not of the binary being installed —
+    # and an operator choosing a vendor wants to know before installing it, which is
+    # exactly when resolve fails. Reporting it only on success made the answer available
+    # only to people who did not need it yet (found by CI, where cursor-agent is absent).
     if adapter.debug_argv(Path("probe.log")):
         report.add(f"adapter {name} supports --debug", PASS)
     else:
@@ -239,6 +236,13 @@ def check_adapter(report: Report, name: str) -> None:
             "this vendor has no debug flag",
             "--debug will give this adapter output sampling only, nothing more",
         )
+
+    try:
+        found = resolve(name)
+    except AdapterError as exc:
+        report.add(f"adapter {name}", FAIL, str(exc))
+        return
+    report.add(f"adapter {name}", PASS, f"{found.binary} — {found.version}")
 
 
 def check_server(report: Report, server: str, api_key: str | None) -> None:

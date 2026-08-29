@@ -43,7 +43,20 @@ def _git(root: Path, *args: str) -> str:
 
 
 def _status(report: Report, name: str) -> str:
-    return next(f.status for f in report.findings if f.name == name)
+    """The outcome for one check, or a failure that says the check is MISSING.
+
+    `next(...)` on its own raises `StopIteration`, which is how a check that was never
+    reported at all arrives looking like a broken iterator. That is what CI showed when
+    `check_adapter` returned early on an uninstalled vendor and the debug line was never
+    added — the test failed for the right reason and said the wrong thing.
+    """
+    for finding in report.findings:
+        if finding.name == name:
+            return finding.status
+    raise AssertionError(
+        f"no check named {name!r} was reported at all. Present: "
+        f"{[f.name for f in report.findings]}"
+    )
 
 
 def _run(repo: Path, **kw) -> Report:
@@ -155,10 +168,35 @@ def test_a_reachable_server_passes(git_repo: Path, monkeypatch):
 
 def test_an_adapter_without_a_debug_flag_is_unknown_not_pass(git_repo: Path):
     """`cursor-agent` and `gbagent` have no debug flag. An operator who reads a green
-    line here and then turns `--debug` on would be reading an empty log wondering why."""
+    line here and then turns `--debug` on would be reading an empty log wondering why.
+
+    Deliberately does NOT require the vendor to be installed. The first version passed
+    on my machine and failed in CI for that reason — and the fix was in the product, not
+    here: whether a vendor has a debug flag is a property of the adapter, and an operator
+    choosing between vendors wants it before installing one.
+    """
     report = _run(git_repo, adapter="cursor-agent")
     status = _status(report, "adapter cursor-agent supports --debug")
     assert status == UNKNOWN, f"reported {status}, so --debug looks available when it is not"
+
+
+def test_debug_support_is_reported_even_when_the_binary_is_missing(git_repo: Path, monkeypatch):
+    """The property CI actually caught. `resolve` failing must not take the answer with
+    it — that is the moment the answer is most wanted."""
+    from gbfleet import doctor as doctor_mod
+    from gbfleet.adapters import AdapterUnavailable
+
+    def missing(name, **kw):
+        raise AdapterUnavailable(f"{name}: not installed here")
+
+    monkeypatch.setattr(doctor_mod, "resolve", missing)
+
+    report = _run(git_repo, adapter="grok")
+    assert _status(report, "adapter grok") == FAIL, "an absent binary should still fail"
+    assert _status(report, "adapter grok supports --debug") == PASS, (
+        "the binary was missing and the doctor forgot whether the vendor can do debug "
+        "at all — which it knows without looking at any binary"
+    )
 
 
 def test_an_unknown_adapter_name_fails(git_repo: Path):
