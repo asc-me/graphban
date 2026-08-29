@@ -33,6 +33,16 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-agentledger}:${POSTGRES_PASSWORD:-agentledger}@db:5432/${POSTGRES_DB:-agentledger}
       GIT_SHA: ${GIT_SHA:-unknown}
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me-in-production-0123456789abcdef}
+      # One proxy in front (nginx), so the rate limiter reads one hop from the RIGHT of
+      # X-Forwarded-For — what nginx actually observed, rather than the client-supplied
+      # prefix it appends to (GRPH-553). This is the value that makes per-IP limits
+      # per-IP on the self-host; leaving it 0 means every caller shares one bucket.
+      TRUSTED_HOPS: ${TRUSTED_HOPS:-1}
+      # Deprecated, and it was never forwarded here at all before GRPH-553 — so the
+      # flag docs/deploy.md told an operator to consider had no effect on this
+      # stack whatever they set it to. Passed through now so the documented knob
+      # and the running process agree.
+      TRUSTED_PROXY: ${TRUSTED_PROXY:-false}
       SEED_ON_START: ${SEED_ON_START:-false}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080,http://localhost:5173}
       EMBED_DIM: ${EMBED_DIM:-384}

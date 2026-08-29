@@ -30,12 +30,21 @@ from app.security import net
 
 
 @pytest.fixture(autouse=True)
+def _hops_off(monkeypatch):
+    """`TRUSTED_HOPS` off by default here, so every test below still measures the legacy
+    `TRUSTED_PROXY` path it was written for. Without this the new setting would silently
+    change what the old tests mean, and they would keep passing while asserting something
+    else."""
+    monkeypatch.setattr(settings, "trusted_hops", 0)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_warning():
     """The warning is once per process, so it has to be re-armed between tests — otherwise
     every test after the first would assert against a flag another test already tripped."""
-    net._warned_shared_bucket = False
+    net._warned.clear()
     yield
-    net._warned_shared_bucket = False
+    net._warned.clear()
 
 
 class _Req:
@@ -135,3 +144,148 @@ def test_a_configured_proxy_does_not_warn_even_when_a_request_bypasses_it(monkey
     with caplog.at_level(logging.WARNING, logger="app.security"):
         assert net.client_ip(_Req("172.20.0.4")) == "172.20.0.4"
     assert "shares one bucket" not in caplog.text
+
+
+# ── the fix: counting hops from the RIGHT (GRPH-553) ──────────────────────────
+
+def test_a_forged_prefix_cannot_choose_its_bucket_on_the_compose_stack(monkeypatch):
+    """THE ONE THE TICKET IS ABOUT. Compose is client -> nginx -> app, and nginx APPENDS with
+    `$proxy_add_x_forwarded_for`, so a browser sending its own header produces
+    `<forged>, <real>`. Reading the first hop hands the caller its bucket key; reading one
+    from the right reads what nginx actually saw."""
+    monkeypatch.setattr(settings, "trusted_hops", 1)
+    assert net.client_ip(_Req("172.20.0.4", xff="9.9.9.9, 203.0.113.7")) == "203.0.113.7"
+
+
+def test_a_caller_behind_no_proxy_still_gets_its_own_bucket(monkeypatch):
+    monkeypatch.setattr(settings, "trusted_hops", 1)
+    assert net.client_ip(_Req("172.20.0.4", xff="203.0.113.7")) == "203.0.113.7"
+
+
+def test_the_edge_topology_reads_one_further_left(monkeypatch):
+    """Railway is client -> edge -> nginx -> app. The same template appends, so the header is
+    `<real>, <edge>` and the rightmost entry is the EDGE. Taking it would collapse every
+    hosted caller into one bucket — the exact breakage that makes the naive nginx fix wrong."""
+    monkeypatch.setattr(settings, "trusted_hops", 2)
+    assert net.client_ip(_Req("172.20.0.4", xff="203.0.113.7, 100.64.0.1")) == "203.0.113.7"
+
+
+def test_a_forged_prefix_cannot_choose_its_bucket_behind_an_edge(monkeypatch):
+    """The same attack one topology along: the client sends a header, the edge appends the
+    real address, nginx appends the edge. Two from the right is still what the edge saw."""
+    monkeypatch.setattr(settings, "trusted_hops", 2)
+    got = net.client_ip(_Req("172.20.0.4", xff="9.9.9.9, 203.0.113.7, 100.64.0.1"))
+    assert got == "203.0.113.7"
+
+
+def test_a_header_shorter_than_the_chain_fails_CLOSED(monkeypatch):
+    """A request that did not come through the configured chain — a direct hit on the app
+    port, which GRPH-478 says is reachable. Trusting a short header here would let anyone who
+    reaches the app directly pick a bucket by sending one entry."""
+    monkeypatch.setattr(settings, "trusted_hops", 2)
+    assert net.client_ip(_Req("172.20.0.4", xff="9.9.9.9")) == "172.20.0.4"
+
+
+def test_no_header_at_all_fails_closed(monkeypatch):
+    monkeypatch.setattr(settings, "trusted_hops", 1)
+    assert net.client_ip(_Req("172.20.0.4")) == "172.20.0.4"
+
+
+@pytest.mark.parametrize("junk", ["not-an-ip", "a" * 400, "203.0.113.7; rm -rf /"])
+def test_a_hop_that_is_not_an_address_is_never_a_bucket_key(monkeypatch, junk):
+    """An unvalidated key is attacker-chosen and unbounded: a few thousand junk values are a
+    few thousand buckets, which is a memory question rather than only a fairness one."""
+    monkeypatch.setattr(settings, "trusted_hops", 1)
+    assert net.client_ip(_Req("172.20.0.4", xff=f"9.9.9.9, {junk}")) == "172.20.0.4"
+
+
+def test_the_short_header_case_says_which_of_the_two_things_went_wrong(monkeypatch, caplog):
+    """Fails closed AND says so. Silent fallback is how the original defect survived: a
+    misconfigured deployment behaves like a working one with strict limits."""
+    monkeypatch.setattr(settings, "trusted_hops", 3)
+    with caplog.at_level(logging.WARNING, logger="app.security"):
+        net.client_ip(_Req("172.20.0.4", xff="9.9.9.9"))
+    assert "TRUSTED_HOPS=3" in caplog.text
+    assert "bypassed" in caplog.text and "hop count is wrong" in caplog.text
+
+
+def test_a_correctly_configured_hop_count_does_not_warn(monkeypatch, caplog):
+    """The fixed state must be quiet, or the warning is noise operators learn to skip."""
+    monkeypatch.setattr(settings, "trusted_hops", 1)
+    with caplog.at_level(logging.WARNING, logger="app.security"):
+        net.client_ip(_Req("172.20.0.4", xff="203.0.113.7"))
+    assert not caplog.text.strip()
+
+
+def test_hops_takes_precedence_over_the_legacy_flag(monkeypatch):
+    """Both set is what an upgrading deployment looks like mid-migration. The correct
+    mechanism must win, not the one that reads the spoofable end."""
+    monkeypatch.setattr(settings, "trusted_hops", 1)
+    monkeypatch.setattr(settings, "trusted_proxy", True)
+    assert net.client_ip(_Req("172.20.0.4", xff="9.9.9.9, 203.0.113.7")) == "203.0.113.7"
+
+
+def test_the_legacy_flag_now_says_it_is_spoofable(monkeypatch, caplog):
+    """`TRUSTED_PROXY` still works, because silently changing what a live deployment's config
+    means is worse than a footgun with a label on it. But it no longer says nothing."""
+    monkeypatch.setattr(settings, "trusted_proxy", True)
+    with caplog.at_level(logging.WARNING, logger="app.security"):
+        assert net.client_ip(_Req("172.20.0.4", xff="9.9.9.9, 203.0.113.7")) == "9.9.9.9"
+    assert "choose its own bucket" in caplog.text
+    assert "TRUSTED_HOPS" in caplog.text
+
+
+def test_the_shared_bucket_warning_still_fires_with_neither_set(monkeypatch, caplog):
+    """The GRPH-439 detection is not traded away for the fix."""
+    monkeypatch.setattr(settings, "trusted_proxy", False)
+    monkeypatch.setattr(settings, "trusted_hops", 0)
+    with caplog.at_level(logging.WARNING, logger="app.security"):
+        net.client_ip(_Req("172.20.0.4"))
+    assert "shares one bucket" in caplog.text
+
+
+def test_a_direct_caller_bypassing_the_proxy_cannot_pick_its_bucket(monkeypatch):
+    """FOUND BY THE TEST ABOVE, and it is the hole hop counting does not close on its own.
+
+    With `TRUSTED_HOPS=1`, one entry in the header is exactly what nginx produces for a real
+    client — so a caller hitting the app port DIRECTLY and sending one entry is
+    indistinguishable from it. GRPH-478 says that port is publicly reachable, so this is a
+    live path rather than a thought experiment. The socket peer is what tells them apart: a
+    real proxied request comes from the container network, a direct one does not.
+    """
+    monkeypatch.setattr(settings, "trusted_hops", 1)
+    # A genuinely routable peer. `198.51.100.x` and `203.0.113.x` read as PRIVATE to
+    # `ipaddress` — Python counts the RFC 5737 documentation ranges as private — so using the
+    # conventional example addresses here would have made this test pass by taking the
+    # trusted-proxy branch, proving the opposite of what it claims.
+    assert net.client_ip(_Req("8.8.8.8", xff="9.9.9.9")) == "8.8.8.8"
+
+
+def test_a_public_peer_is_its_own_bucket_rather_than_a_shared_one(monkeypatch):
+    """The control: refusing the header must not collapse direct callers together. Each still
+    buckets on its own socket address, which is the one value it cannot forge."""
+    monkeypatch.setattr(settings, "trusted_hops", 1)
+    a = net.client_ip(_Req("8.8.8.8", xff="9.9.9.9"))
+    b = net.client_ip(_Req("1.1.1.1", xff="9.9.9.9"))
+    assert a != b
+
+
+def test_two_different_warnings_are_both_emitted(caplog):
+    """The `_warn_once` contract, tested directly because nothing else can reach it.
+
+    The three call sites are mutually exclusive by configuration, so a single boolean flag
+    would behave identically today and a sabotage run proved it — replacing the dict with one
+    flag passes every other test in this file. That makes this the guard for the FOURTH
+    warning, which would otherwise be swallowed by whichever of the three had already fired,
+    and swallowed silently.
+    """
+    net._warned.clear()
+    with caplog.at_level(logging.WARNING, logger="app.security"):
+        net._warn_once("first problem: %s", "a")
+        net._warn_once("first problem: %s", "b")   # same message, suppressed
+        net._warn_once("second, unrelated problem")
+
+    assert caplog.text.count("first problem") == 1, "the same warning repeated"
+    assert "second, unrelated problem" in caplog.text, (
+        "a distinct warning was swallowed by an earlier one"
+    )
