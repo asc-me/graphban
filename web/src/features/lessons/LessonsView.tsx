@@ -1,8 +1,9 @@
 import { ArrowLeft, ArrowDown, ArrowRight, ArrowUp } from "lucide-react";
 import * as React from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 
 import { cn } from "@/lib/cn";
+import { errorDetail } from "@/lib/errors";
 import { useProjectCtx } from "@/features/ProjectContext";
 import {
   useLesson,
@@ -10,6 +11,7 @@ import {
   usePromoteOrgLesson,
   useRecordLessonOutcome,
 } from "@/lib/queries";
+import { projectPath, tagFromPath } from "@/lib/routes";
 import type {
   Eligibility,
   LessonDetail,
@@ -30,17 +32,29 @@ function LessonListPage() {
   const [filters, setFilters] = React.useState<LessonFilters>({});
   const compact = compactFilters(filters);
   const filtered = Object.keys(compact).length > 0;
-  const { data: catalog } = useLessons(activeId);
-  const { data, isLoading } = useLessons(activeId, filtered ? compact : undefined);
+  const catalogQ = useLessons(activeId);
+  const listQ = useLessons(activeId, filtered ? compact : undefined);
+  const { data, isLoading, isError } = listQ;
 
+  if (isError || catalogQ.isError) {
+    return (
+      <div className="flex h-full items-center justify-center text-[13px] text-muted">
+        The lesson catalog could not be loaded.
+      </div>
+    );
+  }
   if (isLoading || !data) {
     return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
   }
 
-  const enums = data.enums ?? catalog?.enums;
-  const all = catalog?.results ?? data.results;
-  const published = catalog?.total ?? data.total;
-  const unmeasured = all.filter((r) => r.caught_state === "unknown").length;
+  const enums = data.enums ?? catalogQ.data?.enums;
+  // Counts from the page we actually rendered. total is the catalog size; has_more
+  // means UNMEASURED/DROPPING of this page are not the rest of the catalog.
+  const page = catalogQ.data ?? data;
+  const all = page.results;
+  const published = page.total;
+  const hasMore = page.has_more;
+  const unmeasured = all.filter(rowIsUnmeasured).length;
   const dropping = all.filter((r) => r.effectiveness?.trend === "dropping").length;
   const empty = published === 0;
   const allUnmeasured = !empty && all.length > 0 && unmeasured === all.length;
@@ -57,8 +71,12 @@ function LessonListPage() {
         </div>
         <div className="ml-auto flex items-center gap-3 font-mono text-[10.5px] text-faint">
           <span>{published} PUBLISHED</span>
-          <span>{unmeasured} UNMEASURED</span>
-          <span>{dropping} DROPPING</span>
+          <span>
+            {unmeasured} UNMEASURED{hasMore ? " THIS PAGE" : ""}
+          </span>
+          <span>
+            {dropping} DROPPING{hasMore ? " THIS PAGE" : ""}
+          </span>
         </div>
       </div>
 
@@ -74,10 +92,18 @@ function LessonListPage() {
             <>
               {allUnmeasured && (
                 <div className="rounded-[10px] border border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-[#e0b34a]">
-                  {published} published lesson{published === 1 ? " has" : "s have"} no outcomes yet.
+                  {hasMore
+                    ? `At least ${unmeasured} of this page of published lessons have no outcomes yet.`
+                    : `${published} published lesson${published === 1 ? " has" : "s have"} no outcomes yet.`}{" "}
                   That is <span className="font-semibold">unknown</span>, not effective — nothing has
                   caught or missed since they were published.
                 </div>
+              )}
+              {hasMore && (
+                <p className="text-[12px] text-faint">
+                  More lessons exist beyond this page — counts above are this page, not the rest of
+                  the catalog.
+                </p>
               )}
               {data.results.length === 0 ? (
                 <div className="py-16 text-center text-[13px] text-muted">
@@ -97,10 +123,15 @@ function LessonListPage() {
 }
 
 function EmptyCatalog() {
+  const { active } = useProjectCtx();
+  const { pathname } = useLocation();
+  const tag = tagFromPath(pathname);
+  // Flat /memory-review on hosted FlatRedirects via last-used, not this project's tag.
+  const memoryTo = tag && active?.tag ? projectPath(active.tag, "memory-review") : "/memory-review";
   return (
     <div className="py-16 text-center text-[13px] leading-relaxed text-muted">
       No published lessons in this project. Agent-written notes queue in{" "}
-      <Link to="/memory-review" className="text-fg underline decoration-line-hover underline-offset-2 hover:text-ink">
+      <Link to={memoryTo} className="text-fg underline decoration-line-hover underline-offset-2 hover:text-ink">
         Memory
       </Link>{" "}
       until you publish them. This page is the catalog of what you have already stood behind — it is
@@ -346,7 +377,11 @@ function LessonDetailPage({ id }: { id: string }) {
 function LessonDetailBody({ lesson }: { lesson: LessonDetail }) {
   const navigate = useNavigate();
   const score = lesson.effectiveness?.score;
-  const trend = lesson.effectiveness?.trend ?? "unmeasured";
+  // gone + missing effectiveness is dropping, not the unmeasured default — quiet path is a miss.
+  const trend =
+    lesson.origin_path === "gone"
+      ? (lesson.effectiveness?.trend ?? "dropping")
+      : (lesson.effectiveness?.trend ?? "unmeasured");
   const history = lesson.effectiveness?.history ?? [];
   const dropReasons = lesson.effectiveness?.drop_reasons ?? [];
 
@@ -420,6 +455,11 @@ function LessonDetailBody({ lesson }: { lesson: LessonDetail }) {
             {lesson.origin_path === "unindexed" && (
               <p className="mt-2 text-[12.5px] text-muted">
                 code graph has not been indexed — not the same as a deleted path.
+              </p>
+            )}
+            {lesson.origin_path === "gone" && !dropReasons.includes("origin_path_gone") && (
+              <p className="mt-2 text-[12.5px] text-muted">
+                originating code path no longer resolves
               </p>
             )}
           </section>
@@ -498,7 +538,8 @@ function ClusterSection({ lesson }: { lesson: LessonDetail }) {
   const scan = lesson.eligibility?.cluster_scan;
   const others = (lesson.cluster ?? []).filter((s) => s.id !== lesson.id);
   const unread = lesson.unread_cluster_tags ?? [];
-  if (scan === "cluster_scope_unmeasured") {
+  // Anything other than a completed scan is "we did not look", not "we looked and found none".
+  if (scan !== "scanned") {
     return (
       <p className="mt-2 text-[12.5px] text-muted">
         Other-project recurrence was not scanned. That is <span className="font-medium text-fg-2">unverifiable</span>,
@@ -603,6 +644,7 @@ function OutcomesSection({ lesson }: { lesson: LessonDetail }) {
               Cancel
             </button>
           </div>
+          <MutationError err={record.error} fallback="Could not record outcome." />
         </form>
       ) : (
         <button
@@ -613,6 +655,7 @@ function OutcomesSection({ lesson }: { lesson: LessonDetail }) {
           Record outcome
         </button>
       )}
+      {!open && <MutationError err={record.error} fallback="Could not record outcome." />}
     </div>
   );
 }
@@ -650,20 +693,26 @@ function PromotePanel({ lesson }: { lesson: LessonDetail }) {
   const promote = usePromoteOrgLesson(activeId);
   const [reason, setReason] = React.useState("");
   const elig = lesson.eligibility;
-  const reasonText = elig?.reason || "";
+  const missingElig = !elig || !elig.state;
+  const reasonText = elig?.reason || (missingElig ? "eligibility was not returned" : "");
 
   if (lesson.reach === "org") {
     const overridden = lesson.transferability === "overridden";
+    const evidenced = lesson.transferability === "evidenced";
     return (
       <section className="rounded-[10px] border border-line-2 bg-surface-2 p-3.5">
         <div className="font-mono text-[10.5px] uppercase tracking-wide text-faint">Org promotion</div>
         <div className="mt-2">
-          <Chip tone="accent">{overridden ? "org (overridden)" : "org · evidenced"}</Chip>
+          <Chip tone="accent">
+            {overridden ? "org (overridden)" : evidenced ? "org · evidenced" : "org"}
+          </Chip>
         </div>
         <p className="mt-2 text-[12.5px] text-muted">
           {overridden
             ? "Promoted with a written override — the independence formula did not pass."
-            : "Already org-reach. Visible on sibling projects via retrieval widening."}
+            : evidenced
+              ? "Already org-reach. Visible on sibling projects via retrieval widening."
+              : "transferability was not recorded"}
         </p>
       </section>
     );
@@ -671,7 +720,7 @@ function PromotePanel({ lesson }: { lesson: LessonDetail }) {
 
   const failing = isFailing(lesson);
   const state = elig?.state;
-  const unverifiable = state === "unverifiable";
+  const unverifiable = missingElig || state === "unverifiable";
   const ineligible = state === "ineligible";
   const eligible = state === "eligible";
   const canDirect = eligible && !failing;
@@ -724,17 +773,29 @@ function PromotePanel({ lesson }: { lesson: LessonDetail }) {
           </div>
         )}
       </div>
+      <MutationError err={promote.error} fallback="Promote was refused." />
     </section>
   );
 }
 
 /** Spreading a known miss needs a written acknowledgement — unmeasured does not. */
 function isFailing(lesson: LessonDetail): boolean {
+  if (lesson.origin_path === "gone") return true;
   const trend = lesson.effectiveness?.trend;
   const caught = lesson.caught_state;
   if (trend === "dropping") return true;
   if (caught === "missed" || caught === "mixed") return true;
   return (lesson.outcomes ?? []).some((o) => o.kind === "contradicted");
+}
+
+function MutationError({ err, fallback }: { err: unknown; fallback: string }) {
+  if (!err) return null;
+  return <p className="mt-2 text-[12.5px] text-st-blocked">{errorDetail(err, fallback)}</p>;
+}
+
+/** Missing caught_state is unknown — omitting it must not make the catalog look measured. */
+function rowIsUnmeasured(r: LessonListRow): boolean {
+  return !r.caught_state || r.caught_state === "unknown";
 }
 
 function dropReasonCopy(reason: string): string {

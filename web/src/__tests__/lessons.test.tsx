@@ -86,10 +86,25 @@ function detail(over: Partial<LessonDetail> = {}): LessonDetail {
   };
 }
 
-const { lessonsSpy, lessonSpy, promoteSpy } = vi.hoisted(() => ({
+function without<T extends object, K extends keyof T>(obj: T, key: K): Omit<T, K> {
+  const { [key]: _, ...rest } = obj;
+  return rest;
+}
+
+const eligible: Eligibility = {
+  state: "eligible",
+  independence: 3,
+  distinct_projects: 3,
+  distinct_users: 1,
+  cluster_scan: "scanned",
+  reason: "3 project(s) × 1 user(s) → independence 3 ≥ 3",
+};
+
+const { lessonsSpy, lessonSpy, promoteSpy, recordSpy } = vi.hoisted(() => ({
   lessonsSpy: vi.fn(async () => emptyList()),
   lessonSpy: vi.fn(async () => detail()),
   promoteSpy: vi.fn(async () => detail({ reach: "org" })),
+  recordSpy: vi.fn(async () => detail()),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -97,7 +112,7 @@ vi.mock("@/lib/api", () => ({
     projects: vi.fn(async () => [project]),
     lessons: lessonsSpy,
     lesson: lessonSpy,
-    recordLessonOutcome: vi.fn(async () => detail()),
+    recordLessonOutcome: recordSpy,
     promoteOrgLesson: promoteSpy,
   },
 }));
@@ -112,6 +127,9 @@ function renderAt(path: string) {
             <Route path="/lessons/:id" element={<LessonsView />} />
             <Route path="/lessons" element={<LessonsView />} />
             <Route path="/memory-review" element={<div>memory inbox</div>} />
+            <Route path="/p/:tag/lessons/:id" element={<LessonsView />} />
+            <Route path="/p/:tag/lessons" element={<LessonsView />} />
+            <Route path="/p/:tag/memory-review" element={<div>memory inbox</div>} />
           </Routes>
         </ProjectProvider>
       </MemoryRouter>
@@ -124,9 +142,11 @@ describe("Lessons catalog", () => {
     lessonsSpy.mockReset();
     lessonSpy.mockReset();
     promoteSpy.mockReset();
+    recordSpy.mockReset();
     lessonsSpy.mockResolvedValue(emptyList());
     lessonSpy.mockResolvedValue(detail());
     promoteSpy.mockResolvedValue(detail({ reach: "org" }));
+    recordSpy.mockResolvedValue(detail());
   });
 
   it("uses the catalog empty copy and links to Memory, not a scoreboard", async () => {
@@ -196,6 +216,54 @@ describe("Lessons catalog", () => {
     await userEvent.click(screen.getByRole("button", { name: "Unclassified" }));
     expect(lessonsSpy).toHaveBeenCalledWith("core", expect.objectContaining({ lesson_class: "unclassified" }));
   });
+
+  it("counts omitted caught_state as unknown, so the banner still fires", async () => {
+    const stripped = without(row({ text: "No caught_state on the wire." }), "caught_state");
+    lessonsSpy.mockResolvedValue({
+      enums: ENUMS,
+      results: [stripped as unknown as LessonListRow],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+    });
+    renderAt("/lessons");
+    expect(await screen.findByText(/No caught_state on the wire/)).toBeInTheDocument();
+    expect(screen.getByText("1 UNMEASURED")).toBeInTheDocument();
+    expect(screen.queryByText("0 UNMEASURED")).not.toBeInTheDocument();
+    const banner = screen.getByText(/1 published lesson has no outcomes yet/);
+    expect(banner.closest("div")).toHaveTextContent(/unknown, not effective/);
+  });
+
+  it("does not claim total in the unmeasured banner when has_more", async () => {
+    lessonsSpy.mockResolvedValue({
+      enums: ENUMS,
+      results: [row()],
+      total: 80,
+      limit: 50,
+      offset: 0,
+      has_more: true,
+    });
+    renderAt("/lessons");
+    expect(await screen.findByText(/At least 1 of this page/)).toBeInTheDocument();
+    expect(screen.queryByText(/80 published lesson/)).not.toBeInTheDocument();
+    expect(screen.getByText(/More lessons exist beyond this page/)).toBeInTheDocument();
+    expect(screen.getByText(/1 UNMEASURED THIS PAGE/)).toBeInTheDocument();
+  });
+
+  it("names a failed catalog fetch instead of spinning or showing empty", async () => {
+    lessonsSpy.mockRejectedValue(new Error("network down"));
+    renderAt("/lessons");
+    expect(await screen.findByText(/The lesson catalog could not be loaded/)).toBeInTheDocument();
+    expect(screen.queryByText("Loading…")).not.toBeInTheDocument();
+    expect(screen.queryByText(/No published lessons in this project/)).not.toBeInTheDocument();
+  });
+
+  it("keeps the Memory empty-state link on the current hosted project", async () => {
+    renderAt("/p/CORE/lessons");
+    const memory = await screen.findByRole("link", { name: "Memory" });
+    expect(memory).toHaveAttribute("href", "/p/CORE/memory-review");
+  });
 });
 
 describe("Lesson detail — promote is always visible with the real reason", () => {
@@ -203,8 +271,10 @@ describe("Lesson detail — promote is always visible with the real reason", () 
     lessonsSpy.mockReset();
     lessonSpy.mockReset();
     promoteSpy.mockReset();
+    recordSpy.mockReset();
     lessonsSpy.mockResolvedValue(emptyList());
     promoteSpy.mockResolvedValue(detail({ reach: "org" }));
+    recordSpy.mockResolvedValue(detail());
   });
 
   it("disables promote with eligibility.reason and has no override when unverifiable", async () => {
@@ -245,14 +315,7 @@ describe("Lesson detail — promote is always visible with the real reason", () 
 
   it("lets eligible + ok promote without an override", async () => {
     lessonSpy.mockResolvedValue(detail({
-      eligibility: {
-        state: "eligible",
-        independence: 3,
-        distinct_projects: 3,
-        distinct_users: 1,
-        cluster_scan: "scanned",
-        reason: "3 project(s) × 1 user(s) → independence 3 ≥ 3",
-      },
+      eligibility: eligible,
       caught_state: "unknown",
       effectiveness: { score: null, trend: "unmeasured", drop_reasons: [], history: [] },
     }));
@@ -266,14 +329,7 @@ describe("Lesson detail — promote is always visible with the real reason", () 
 
   it("blocks eligible + failing behind override", async () => {
     lessonSpy.mockResolvedValue(detail({
-      eligibility: {
-        state: "eligible",
-        independence: 3,
-        distinct_projects: 3,
-        distinct_users: 1,
-        cluster_scan: "scanned",
-        reason: "3 project(s) × 1 user(s) → independence 3 ≥ 3",
-      },
+      eligibility: eligible,
       caught_state: "missed",
       effectiveness: { score: 0, trend: "dropping", drop_reasons: ["contradicted"], history: [] },
     }));
@@ -298,6 +354,65 @@ describe("Lesson detail — promote is always visible with the real reason", () 
     lessonSpy.mockResolvedValue(detail({ origin_path: "unindexed" }));
     renderAt("/lessons/sh_1");
     expect(await screen.findByText(/code graph has not been indexed — not the same as a deleted path/)).toBeInTheDocument();
+  });
+
+  it("treats a missing cluster_scan as unmeasured, not an empty cluster", async () => {
+    lessonSpy.mockResolvedValue(detail({
+      eligibility: { ...unverifiable, cluster_scan: undefined as unknown as string },
+    }));
+    renderAt("/lessons/sh_1");
+    await userEvent.click(await screen.findByText(/Corroborating shards/));
+    expect(screen.getByText(/Other-project recurrence was not scanned/)).toBeInTheDocument();
+    expect(screen.queryByText(/no corroborating shards/)).not.toBeInTheDocument();
+  });
+
+  it("treats a dropped eligibility as unverifiable, with no override", async () => {
+    lessonSpy.mockResolvedValue(without(detail({ reach: "project" }), "eligibility") as unknown as LessonDetail);
+    renderAt("/lessons/sh_1");
+    expect(await screen.findByRole("button", { name: "Promote to org" })).toBeDisabled();
+    expect(screen.getByText("eligibility was not returned")).toBeInTheDocument();
+    expect(screen.getByText(/not "ineligible/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Override with reason/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText(/Corroborating shards/));
+    expect(screen.getByText(/Other-project recurrence was not scanned/)).toBeInTheDocument();
+    expect(screen.queryByText(/no corroborating shards/)).not.toBeInTheDocument();
+  });
+
+  it("does not stamp evidenced when transferability is omitted on an org-reach lesson", async () => {
+    lessonSpy.mockResolvedValue(without(detail({ reach: "org" }), "transferability") as unknown as LessonDetail);
+    renderAt("/lessons/sh_1");
+    expect(await screen.findByText(/transferability was not recorded/)).toBeInTheDocument();
+    expect(screen.queryByText(/evidenced/)).not.toBeInTheDocument();
+  });
+
+  it("keeps gone-path eligible lessons behind override even if effectiveness is dropped", async () => {
+    lessonSpy.mockResolvedValue({
+      ...without(detail({
+        origin_path: "gone",
+        eligibility: eligible,
+        caught_state: "unknown",
+      }), "effectiveness"),
+    } as unknown as LessonDetail);
+    renderAt("/lessons/sh_1");
+    expect(await screen.findByText(/originating code path no longer resolves/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Promote to org" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Override with reason" })).toBeInTheDocument();
+  });
+
+  it("surfaces a promote 422 reason instead of looking like a no-op", async () => {
+    lessonSpy.mockResolvedValue(detail({
+      eligibility: eligible,
+      caught_state: "unknown",
+      effectiveness: { score: null, trend: "unmeasured", drop_reasons: [], history: [] },
+    }));
+    promoteSpy.mockRejectedValue(
+      new Error(JSON.stringify({
+        detail: { state: "unverifiable", reason: "unmeasured: cluster_scope_unmeasured" },
+      })),
+    );
+    renderAt("/lessons/sh_1");
+    await userEvent.click(await screen.findByRole("button", { name: "Promote to org" }));
+    expect(await screen.findByText("unmeasured: cluster_scope_unmeasured")).toBeInTheDocument();
   });
 });
 
