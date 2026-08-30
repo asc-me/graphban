@@ -32,6 +32,7 @@ is why nothing here needs to know how much work is outstanding.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import json
@@ -47,7 +48,7 @@ from .lock import Acquired
 from .seat import Seat
 from .spawn import Child, LaunchFailed, Reason, stop
 from .progress import NEVER_WROTE
-from .supervisor import Limits, LaunchFactory, Partition, _tree_for, start_one
+from .supervisor import Limits, LaunchFactory, Partition, Wave, _tree_for, start_one, watch_tick
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "gbfleet"
@@ -157,6 +158,19 @@ class Fleet:
     partition: Partition = field(default_factory=Partition)
     children: list[Child] = field(default_factory=list)
     started: int = 0
+    #: Same record `up` uses, so the MCP watch tick writes wall-clock and disown
+    #: failures somewhere `ps` and a later `until` can read (P30 D6).
+    wave: Wave = field(default_factory=Wave)
+
+    def __post_init__(self) -> None:
+        # One partition object. `start_one` is given `fleet.partition`; `watch_tick`
+        # reads `wave.partition`. Two copies would mean MCP never learned the presence
+        # TTL that `await_registration` just fetched.
+        self.wave.partition = self.partition
+
+    def tick(self, *, debug: bool = False) -> None:
+        """One pass of the same watch loop `up` runs. Tests call this; `serve` ticks it."""
+        watch_tick(self.wave, self.children, self.limits, self.client, debug=debug)
 
     def find(self, agent_id: str | None, pid: int | None) -> Child | None:
         for child in self.children:
@@ -204,11 +218,10 @@ def _describe(child: Child) -> dict:
     `spawn()` had already attached an output watcher to every child and nothing here
     ever read it.
 
-    Sampling mutates the watcher: it records when output was last seen. If the wave loop
-    and this were both sampling one child they would split `new_bytes` between them,
-    each seeing only the delta the other had not consumed. `silent_for` stays right
-    either way, because it derives from the shared last-seen timestamp — and in practice
-    the two do not overlap, since stdio has no wave loop.
+    Sampling mutates the watcher: it records when output was last seen. If the watch
+    tick and this both sample one child they split `new_bytes` between them, each
+    seeing only the delta the other had not consumed. `silent_for` stays right either
+    way, because it derives from the shared last-seen timestamp.
     """
     described = {
         "agent_id": child.agent_id,
@@ -255,6 +268,13 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
         code = args.get("enrolment_code") or ""
         if not adapter or not code:
             raise ValueError("spawn needs both `adapter` and `enrolment_code`")
+
+        live = sum(1 for child in fleet.children if child.running)
+        if live >= fleet.limits.max_workers:
+            raise ValueError(
+                f"already {live} live worker(s); max_workers is {fleet.limits.max_workers}. "
+                "stop one, or wait for one to exit"
+            )
 
         wave = args.get("wave") or "wave"
         fleet.started += 1
@@ -365,27 +385,47 @@ def _version() -> str:
     return __version__
 
 
-def serve(fleet: Fleet, stdin: TextIO | None = None, stdout: TextIO | None = None) -> None:
-    """Read JSON-RPC lines, write JSON-RPC lines. That is the whole transport."""
+def serve(fleet: Fleet, stdin: TextIO | None = None, stdout: TextIO | None = None,
+          *, poll: float = 1.0) -> None:
+    """Read JSON-RPC lines, write JSON-RPC lines. That is the whole transport.
+
+    A daemon ticks `watch_tick` while stdin is open (P30 D6). `spawn` used to return
+    and leave wall-clock, disowned-after and reap only in `up`'s `_wait_out`, so a
+    hung child on this surface ran until a human called `stop`.
+    """
     source = stdin or sys.stdin
     sink = stdout or sys.stdout
+    halt = threading.Event()
 
-    for line in source:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            message = json.loads(line)
-        except ValueError:
-            _write(sink, _rpc_error(None, PARSE_ERROR, "request is not valid JSON"))
-            continue
-        if not isinstance(message, dict):
-            _write(sink, _rpc_error(None, INVALID_REQUEST, "request must be a JSON object"))
-            continue
+    def _ticks() -> None:
+        # First pass immediately, then on `poll`. `wait` rather than sleep so close
+        # of stdin does not spend a full interval being tidy.
+        while not halt.is_set():
+            fleet.tick()
+            halt.wait(poll)
 
-        reply = handle(fleet, message)
-        if reply is not None:
-            _write(sink, reply)
+    watcher = threading.Thread(target=_ticks, name="gbfleet-watch", daemon=True)
+    watcher.start()
+    try:
+        for line in source:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except ValueError:
+                _write(sink, _rpc_error(None, PARSE_ERROR, "request is not valid JSON"))
+                continue
+            if not isinstance(message, dict):
+                _write(sink, _rpc_error(None, INVALID_REQUEST, "request must be a JSON object"))
+                continue
+
+            reply = handle(fleet, message)
+            if reply is not None:
+                _write(sink, reply)
+    finally:
+        halt.set()
+        watcher.join(timeout=5.0)
 
 
 def _write(sink: TextIO, message: dict) -> None:

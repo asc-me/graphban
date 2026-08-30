@@ -376,6 +376,41 @@ def test_a_child_that_overruns_is_stopped_and_said_so(
     assert wave.reaped and wave.reaped[0].removed
 
 
+def test_a_child_that_cannot_write_its_handoff_fails_the_wave(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """P30 D6. Exit 70 is handoff-failed: the item is still claimed. That is a
+    supervisor failure, not idle.
+    """
+    workspace = tmp_path / "ws"
+    wave = up(
+        git_repo, _seats(1), _factory(scripts, "exits_handoff_failed"),
+        _server(workspace), limits=Limits(max_workers=1),
+        state=state, workspace=workspace,
+    )
+    assert wave.ok is False
+    assert wave.reason != "idle"
+    assert any("handoff-failed" in f and "70" in f for f in wave.failures)
+
+
+def test_a_stuck_give_up_is_not_a_supervisor_failure(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """P30 D6. Exit 75 is a completed give-up: evidence written, item released.
+    Visible in the report, not a supervisor failure by itself.
+    """
+    workspace = tmp_path / "ws"
+    wave = up(
+        git_repo, _seats(1), _factory(scripts, "exits_stuck"),
+        _server(workspace), limits=Limits(max_workers=1),
+        state=state, workspace=workspace,
+    )
+    assert wave.ok is True
+    assert wave.reason == "idle"
+    assert wave.give_ups and any("75" in g for g in wave.give_ups)
+    assert not any("75" in f for f in wave.failures)
+
+
 def test_a_second_supervisor_on_the_same_repo_is_refused(
     git_repo: Path, tmp_path: Path, scripts, state: Path
 ):
