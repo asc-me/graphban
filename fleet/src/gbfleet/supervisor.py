@@ -230,6 +230,10 @@ class Wave:
     #: Child exit 75 — stuck, evidence written, item released. Visible, not a
     #: supervisor failure (P30 D6). Exit 70 is a failure and lives in `failures`.
     give_ups: list[str] = field(default_factory=list)
+    #: Salvage branches this wave checked out instead of cutting from HEAD (P30 D9).
+    resumed: list[str] = field(default_factory=list)
+    #: Resume attempted and abandoned — spawn from HEAD, leftover ref stays listed.
+    resume_misses: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -322,6 +326,7 @@ def up(
     poll: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
     debug: bool = False,
+    items: dict | None = None,
 ) -> Wave:
     """Run one wave to completion and return what happened.
 
@@ -361,7 +366,7 @@ def up(
 
         children = leftover + list(_start(
             wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
-            limits, debug=debug, occupied=occupied,
+            limits, debug=debug, occupied=occupied, items=items,
         ))
         roster_path = adopt_mod.children_path(repo, state)
 
@@ -454,6 +459,7 @@ def _start(
     limits: Limits,
     debug: bool = False,
     occupied: set[str] | None = None,
+    items: dict | None = None,
 ) -> Iterable[Child]:
     """Create a worktree per seat, spawn into it, and wait for it to register.
 
@@ -468,13 +474,28 @@ def _start(
     planned = len(seats)
     taken = set(occupied or ())
     slot_n = 1
+    resumes = list(wt_mod.choose_resume(wt_mod.orphans(repo), items or {}))
 
     for index, seat in enumerate(seats):
         tree: Worktree | None = None
         slot = "1"
         agent_slot = f"{wave_name}-{slot}"
         try:
-            while True:
+            if resumes:
+                orphan = resumes.pop(0)
+                slot = orphan.branch.rsplit("-", 1)[-1] or slot
+                agent_slot = f"{wave_name}-{slot}"
+                try:
+                    tree = wt_mod.resume(
+                        repo, workspace / f"{wave_name}-{slot}-resume", orphan,
+                    )
+                    wave.resumed.append(orphan.branch)
+                    taken.add(orphan.branch)
+                except wt_mod.ResumeFailed as exc:
+                    # Do not abort. Spawn from HEAD; leave the leftover ref listed.
+                    wave.resume_misses.append(str(exc))
+                    observe.emit("resume_miss", detail=str(exc), branch=orphan.branch)
+            while tree is None:
                 slot = str(slot_n)
                 slot_n += 1
                 agent_slot = f"{wave_name}-{slot}"
@@ -819,7 +840,10 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
         tree = Worktree(
             path=child.worktree, branch=child.branch, repo=_repo_of(child), base=child.base
         )
-        reaped = wt_mod.reap(tree, message=f"WIP: salvaged by gbfleet ({child.adapter})")
+        held = [i for i in (wave.partition.held.get(child.agent_id) or []) if i]
+        reaped = wt_mod.reap(
+            tree, message=wt_mod.salvage_message(child.adapter, held),
+        )
         wave.reaped.append(reaped)
 
         # AFTER the reap, deliberately: salvage has just committed whatever the worker

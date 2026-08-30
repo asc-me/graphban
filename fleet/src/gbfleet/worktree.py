@@ -71,6 +71,10 @@ class SeatPathIsTracked(GitError):
     """
 
 
+class ResumeFailed(RuntimeError):
+    """Could not check out a salvage branch. Spawn from HEAD instead; do not abort."""
+
+
 class BranchExists(RuntimeError):
     """Refuse to spawn onto a branch somebody else already owns.
 
@@ -403,6 +407,11 @@ def reap(wt: Worktree, message: str | None = None) -> Reaped:
     return Reaped(disposition=disposition, branch=wt.branch, salvage=result, removed=True)
 
 
+#: Salvage commits name the items they held, so the next spawn can resume the
+#: right branch (P30 D9). `WIP: salvaged by gbfleet (fake) items=GRPH-1,GRPH-2`
+_ITEMS_IN_SUBJECT = re.compile(r"\bitems=([A-Za-z0-9][A-Za-z0-9_,-]*)")
+
+
 @dataclass(frozen=True)
 class Orphan:
     """A branch a worker left behind, with no worktree checked out on it."""
@@ -411,6 +420,11 @@ class Orphan:
     commit: str
     subject: str
     salvaged: bool
+    #: Item keys parsed from the salvage subject. Empty when the commit pre-dates
+    #: D9 or the child held nothing. Several orphans may name one item.
+    item_keys: tuple[str, ...] = ()
+    #: Unix committer time. Newest salvage for one item is the one to resume.
+    committed_at: int = 0
 
 
 def _checked_out_branches(repo: Path) -> set[str]:
@@ -434,7 +448,7 @@ def orphans(repo: Path) -> list[Orphan]:
     rows = _git(
         repo,
         "for-each-ref",
-        "--format=%(refname:short)%09%(objectname)%09%(subject)",
+        "--format=%(refname:short)%09%(objectname)%09%(committerdate:unix)%09%(subject)",
         f"refs/heads/{BRANCH_PREFIX}",
     ).splitlines()
 
@@ -442,7 +456,7 @@ def orphans(repo: Path) -> list[Orphan]:
     for row in rows:
         if not row.strip():
             continue
-        branch, commit, subject = (row.split("\t", 2) + ["", ""])[:3]
+        branch, commit, when, subject = (row.split("\t", 3) + ["", "", "", ""])[:4]
         if branch in attached:
             continue
         found.append(
@@ -451,6 +465,94 @@ def orphans(repo: Path) -> list[Orphan]:
                 commit=commit,
                 subject=subject,
                 salvaged=subject.startswith("WIP: salvaged by gbfleet"),
+                item_keys=_item_keys(subject),
+                committed_at=int(when) if str(when).isdigit() else 0,
             )
         )
     return sorted(found, key=lambda o: o.branch)
+
+
+def _item_keys(subject: str) -> tuple[str, ...]:
+    found = _ITEMS_IN_SUBJECT.search(subject or "")
+    if not found:
+        return ()
+    return tuple(k for k in found.group(1).split(",") if k)
+
+
+def salvage_message(adapter: str, item_ids: list[str] | tuple[str, ...] = ()) -> str:
+    """The salvage commit subject. Item keys make D9 resume possible."""
+    msg = f"WIP: salvaged by gbfleet ({adapter})"
+    if item_ids:
+        msg += " items=" + ",".join(item_ids)
+    return msg
+
+
+def is_ancestor(repo: Path, ancestor: str, commit: str) -> bool:
+    """True when `ancestor` is `commit` or an ancestor of it."""
+    proc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, commit],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    return proc.returncode == 0
+
+
+def resume(repo: Path, path: Path, orphan: Orphan) -> Worktree:
+    """`git worktree add` of an existing salvage branch (P30 D9).
+
+    The dirty tree is already gone; salvage committed first. Missing branch, a
+    branch that is not a descendant of the recorded salvage commit, or add
+    failing: ResumeFailed — the caller spawns from HEAD and leaves this ref listed.
+    Never force, never auto-suffix, never rebase.
+    """
+    repo = Path(repo)
+    path = Path(path)
+    if not branch_exists(repo, orphan.branch):
+        raise ResumeFailed(f"{orphan.branch} is gone; not resuming")
+    if orphan.commit and not is_ancestor(repo, orphan.commit, orphan.branch):
+        raise ResumeFailed(
+            f"{orphan.branch} is not a descendant of salvage {orphan.commit[:12]}; "
+            "not resuming"
+        )
+    try:
+        _git(repo, "worktree", "add", "-q", str(path), orphan.branch)
+    except GitError as exc:
+        raise ResumeFailed(f"{orphan.branch}: worktree add failed ({exc})") from exc
+    sha = _git(repo, "rev-parse", f"refs/heads/{orphan.branch}").strip()
+    return Worktree(path=path, branch=orphan.branch, repo=repo, base=sha)
+
+
+def choose_resume(
+    found: list[Orphan],
+    items: dict[str, dict],
+) -> list[Orphan]:
+    """Newest salvage orphan per open unclaimed item (P30 D9).
+
+    `items` is id -> {status, claimed_by}. Missing, done, review, claimed, or
+    blocked: leave the branch listed, do not reuse. `blocked` at death does not
+    burn the branch — once the item is next/backlog and unclaimed, it is eligible.
+    """
+    eligible: dict[str, list[Orphan]] = {}
+    for orphan in found:
+        if not orphan.salvaged or not orphan.item_keys:
+            continue
+        for key in orphan.item_keys:
+            row = items.get(key)
+            if not row:
+                continue
+            status = str(row.get("status") or "")
+            if status in ("done", "review", "blocked", "in_progress"):
+                continue
+            if row.get("claimed_by"):
+                continue
+            if status not in ("next", "backlog"):
+                continue
+            eligible.setdefault(key, []).append(orphan)
+    picked: list[Orphan] = []
+    seen: set[str] = set()
+    for key, group in eligible.items():
+        newest = max(group, key=lambda o: o.committed_at)
+        if newest.branch in seen:
+            continue
+        seen.add(newest.branch)
+        picked.append(newest)
+    return picked

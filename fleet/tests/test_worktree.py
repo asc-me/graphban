@@ -17,14 +17,18 @@ from gbfleet.worktree import (
     BranchExists,
     Disposition,
     Orphan,
+    ResumeFailed,
     SEAT_FILES,
     branch_name,
+    choose_resume,
     create,
     is_dirty,
     orphans,
     porcelain,
     reap,
+    resume,
     salvage,
+    salvage_message,
     agent_slug,
 )
 
@@ -312,6 +316,53 @@ def test_a_branch_with_no_salvage_commit_is_listed_but_not_called_salvaged(
     row = next(o for o in orphans(git_repo) if o.branch == wt.branch)
     assert row.salvaged is False
     assert row.subject == "real work"
+
+
+def test_resume_checks_out_the_salvage_branch_not_head(git_repo: Path, tmp_path: Path):
+    """P30 D9. Overnight retries used to cut from HEAD and redo the work."""
+    wt = create(git_repo, tmp_path / "dead", "wave-1", "GRPH-A2")
+    (wt.path / "wip.py").write_text("keep-me\n", encoding="utf-8")
+    reaped = reap(wt, message=salvage_message("fake", ["GRPH-1"]))
+    assert reaped.removed and not wt.path.exists()
+
+    found = orphans(git_repo)
+    row = next(o for o in found if o.branch == wt.branch)
+    assert row.item_keys == ("GRPH-1",)
+    assert row.salvaged
+
+    picked = choose_resume(found, {"GRPH-1": {"status": "next", "claimed_by": ""}})
+    assert [o.branch for o in picked] == [wt.branch]
+
+    again = resume(git_repo, tmp_path / "again", row)
+    assert again.branch == wt.branch
+    assert (again.path / "wip.py").read_text(encoding="utf-8") == "keep-me\n"
+
+
+def test_choose_resume_skips_done_review_claimed_and_blocked(git_repo: Path, tmp_path: Path):
+    wt = create(git_repo, tmp_path / "dead", "wave-1", "GRPH-A2")
+    (wt.path / "wip.py").write_text("x\n", encoding="utf-8")
+    reap(wt, message=salvage_message("fake", ["GRPH-1"]))
+    found = orphans(git_repo)
+    for status in ("done", "review", "blocked", "in_progress"):
+        assert choose_resume(found, {"GRPH-1": {"status": status}}) == []
+    assert choose_resume(found, {"GRPH-1": {"status": "next", "claimed_by": "AGT"}}) == []
+    assert choose_resume(found, {}) == []  # unknown item: do not resume
+
+
+def test_resume_refuses_when_the_branch_is_not_a_descendant(
+    git_repo: Path, tmp_path: Path
+):
+    """Recorded salvage commit no longer on the branch → spawn from HEAD, leave the ref."""
+    wt = create(git_repo, tmp_path / "dead", "wave-1", "GRPH-A2")
+    (wt.path / "wip.py").write_text("x\n", encoding="utf-8")
+    reap(wt, message=salvage_message("fake", ["GRPH-1"]))
+    row = next(o for o in orphans(git_repo) if o.branch == wt.branch)
+    fake = Orphan(
+        branch=row.branch, commit="0" * 40, subject=row.subject,
+        salvaged=True, item_keys=row.item_keys, committed_at=row.committed_at,
+    )
+    with pytest.raises(ResumeFailed):
+        resume(git_repo, tmp_path / "again", fake)
 
 
 def test_two_ids_that_sanitise_to_one_name_are_refused_not_shared(

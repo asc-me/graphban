@@ -22,7 +22,7 @@ from gbfleet.lock import RepoLocked, hold
 from gbfleet.seat import Seat
 from gbfleet.spawn import Launch, Reason
 from gbfleet.supervisor import AllocationRead, Limits, up
-from gbfleet.worktree import Disposition, SEAT_FILES, Worktree, orphans
+from gbfleet.worktree import Disposition, SEAT_FILES, Worktree, create, orphans, reap, salvage_message
 from gbfleet.hostos import is_owner_only  # noqa: E402
 
 CODE = "WORKER-7F3K"
@@ -130,6 +130,30 @@ def test_a_wave_spawns_a_child_per_seat_and_reaps_them(
     # The work survives as branches, which is the whole point of salvaging.
     branches = {o.branch for o in orphans(git_repo)}
     assert branches == {r.branch for r in wave.reaped}
+
+
+def test_the_next_child_of_an_open_item_starts_on_the_salvage_branch(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """P30 D9. Cutting from HEAD redoes the work. Sabotage: ignore `items`; this
+    child lands on a new gb/wave-* from HEAD and wip.py is missing.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    dead = create(git_repo, workspace / "dead", "wave", "1")
+    (dead.path / "wip.py").write_text("keep-me\n", encoding="utf-8")
+    reap(dead, message=salvage_message("fake", ["GRPH-1"]))
+
+    wave = up(
+        git_repo, _seats(1), _factory(scripts, "works_then_exits"),
+        _server(workspace), limits=Limits(max_workers=1),
+        state=state, workspace=workspace,
+        items={"GRPH-1": {"status": "next", "claimed_by": ""}},
+    )
+    assert wave.resumed == [dead.branch], wave.resume_misses
+    assert wave.spawned[0].branch == dead.branch
+    # The salvage file was in the tree the child started with.
+    assert any(r.branch == dead.branch for r in wave.reaped)
 
 
 def test_the_work_a_child_did_is_recoverable_and_carries_no_credential(
