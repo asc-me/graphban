@@ -26,10 +26,12 @@ def db(client):
         s.close()
 
 
-def _write_repo(root, project_id: str, session: str, text: str = LESSON) -> None:
-    d = root / f"-Users-test-src-{project_id}"
+def _write_repo(root, folder: str, session: str, text: str = LESSON,
+                cwd: str | None = None) -> None:
+    d = root / f"-Users-test-src-{folder}"
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{session}.jsonl").write_text(_line(text, sessionId=session))
+    cwd = cwd or f"/Users/test/src/{folder}"
+    (d / f"{session}.jsonl").write_text(_line(text, sessionId=session, cwd=cwd))
 
 
 def _transcript_shards(db) -> list[MemoryShard]:
@@ -43,8 +45,8 @@ def _publish(client, auth, shard_id: str) -> None:
     assert r.status_code == 200, r.text
 
 
-def _elig(client, auth, shard_id: str) -> dict:
-    r = client.get(f"/api/memory/lessons/{shard_id}?project_id=core", headers=auth)
+def _elig(client, auth, shard_id: str, project_id: str = "core") -> dict:
+    r = client.get(f"/api/memory/lessons/{shard_id}?project_id={project_id}", headers=auth)
     assert r.status_code == 200, r.text
     return r.json()["eligibility"]
 
@@ -198,3 +200,100 @@ def test_mapped_one_user_two_projects_cannot_promote(client, auth, db, tmp_path)
     assert promo.json()["detail"]["state"] == "ineligible"
     db.refresh(shards[0])
     assert shards[0].reach == "project"
+
+
+@pytest.mark.parametrize("folder,forbidden", [
+    ("acme-core", "core"),
+    ("acme-web", "web"),
+])
+def test_acme_core_and_acme_web_are_not_seed_projects(
+    client, db, tmp_path, folder, forbidden,
+):
+    """Suffix match on the encoded folder would stamp seed `core`/`web`.
+
+    cwd last component is `acme-core` / `acme-web`, which is not those ids.
+    """
+    _write_repo(tmp_path, folder, f"sess-{folder}")
+    ingest(db, ClaudeCodeAdapter(root=str(tmp_path)), project_id="core")
+    shards = _transcript_shards(db)
+    assert len(shards) == 1
+    shard = shards[0]
+    assert shard.attributed_project_id is None
+    assert shard.attributed_project_id != forbidden
+    assert mem_svc._project_of(shard) is None
+
+
+def test_hosted_ingest_does_not_attribute_a_foreign_org(
+    client, auth, db, tmp_path, monkeypatch,
+):
+    """Attribution is an independence input. A unique name in org B must not
+    stamp org A's ingest — that would let a 1×3 of foreign ids fire the formula.
+    """
+    from app.config import settings
+    from app.models import Organization, OrgMembership
+    from app.services import projects as proj_svc
+
+    db.add_all([
+        Organization(id="orgIngestA", name="Org Ingest A"),
+        Organization(id="orgIngestB", name="Org Ingest B"),
+    ])
+    db.flush()
+    a = proj_svc.create_project(
+        db, name="Tenant A Ingest", owner_user_id="u1", tag="ITA",
+        org_id="orgIngestA",
+    )
+    b = proj_svc.create_project(
+        db, name="Tenant B Unique", owner_user_id="u1", tag="ITB",
+        org_id="orgIngestB",
+    )
+    db.add_all([
+        OrgMembership(org_id="orgIngestA", user_id="u1", role="owner"),
+        OrgMembership(org_id="orgIngestB", user_id="u1", role="owner"),
+    ])
+    db.commit()
+
+    monkeypatch.setattr(settings, "hosted_mode", True)
+    _write_repo(tmp_path, b.id, "sess-foreign")
+    ingest(db, ClaudeCodeAdapter(root=str(tmp_path)), project_id=a.id)
+    shards = _transcript_shards(db)
+    assert len(shards) == 1
+    shard = shards[0]
+    assert shard.project_id == a.id
+    assert shard.attributed_project_id is None
+    assert shard.attributed_project_id != b.id
+    _publish(client, auth, shard.id)
+    db.refresh(shard)
+    elig = _elig(client, auth, shard.id, project_id=a.id)
+    assert elig["state"] == "unverifiable"
+    assert elig["state"] != "ineligible"
+    assert "distinct_projects" in elig["reason"]
+    promo = client.post(
+        f"/api/memory/lessons/{shard.id}/promote-org", json={}, headers=auth,
+    )
+    assert promo.status_code == 422, promo.text
+    assert promo.json()["detail"]["state"] == "unverifiable"
+
+
+def test_ambiguous_equal_length_hits_stay_null_not_a_guess(client, auth, db, tmp_path):
+    """Two projects named Alpha (ids alpha / alpha-2, both name-slug alpha).
+
+    Returning winners[0] would stamp a guessed id and read as ineligible
+    (we 'looked') instead of unverifiable.
+    """
+    first = client.post("/api/projects", json={"name": "Alpha"}, headers=auth).json()["id"]
+    second = client.post("/api/projects", json={"name": "Alpha"}, headers=auth).json()["id"]
+    assert first != second
+    _write_repo(tmp_path, "alpha", "sess-alpha", cwd="/Users/test/src/alpha")
+    ingest(db, ClaudeCodeAdapter(root=str(tmp_path)), project_id="core")
+    shards = _transcript_shards(db)
+    assert len(shards) == 1
+    shard = shards[0]
+    assert shard.attributed_project_id is None
+    assert shard.attributed_project_id not in {first, second}
+    _publish(client, auth, shard.id)
+    db.refresh(shard)
+    assert shard.attributed_project_id is None
+    elig = _elig(client, auth, shard.id)
+    assert elig["state"] == "unverifiable"
+    assert elig["state"] != "ineligible"
+    assert "distinct_projects" in elig["reason"]

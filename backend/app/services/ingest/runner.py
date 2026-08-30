@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -68,7 +69,9 @@ def ingest(db: Session, adapter: IngestAdapter, *, project_id: str = "core",
         stats["events"] += len(events)
         # Per-directory attribution (GRPH-356). `project_id` is storage locality —
         # often "core" for every transcript — and must not become a counted project.
-        attributed = _attributed_project_id(db, adapter, source)
+        cwd = next((ev.project for ev in events if (ev.project or "").strip()), None)
+        attributed = _attributed_project_id(
+            db, adapter, source, project_id=project_id, cwd=cwd)
         for ev in events:
             if _record(db, mem_svc, ev, project_id, attributed_project_id=attributed):
                 stats["recorded"] += 1
@@ -142,7 +145,10 @@ def is_evidence(ev: Event) -> bool:
     return False
 
 
-def _attributed_project_id(db: Session, adapter: IngestAdapter, source: str) -> str | None:
+def _attributed_project_id(
+    db: Session, adapter: IngestAdapter, source: str, *,
+    project_id: str, cwd: str | None,
+) -> str | None:
     """Map a Claude Code transcript directory onto a known Graphban project.
 
     None when the directory does not uniquely match. Never falls back to the
@@ -151,20 +157,48 @@ def _attributed_project_id(db: Session, adapter: IngestAdapter, source: str) -> 
     """
     lookup = getattr(adapter, "repo_dir_for", None)
     repo_dir = lookup(source) if callable(lookup) else None
-    return _map_transcript_dir(db, repo_dir)
+    return _map_transcript_dir(db, repo_dir, project_id=project_id, cwd=cwd)
 
 
-def _map_transcript_dir(db: Session, repo_dir: str | None) -> str | None:
-    """Longest unique suffix match of the encoded repo folder against project ids.
+def _last_component(cwd: str | None) -> str | None:
+    if not isinstance(cwd, str) or not cwd.strip():
+        return None
+    name = Path(cwd.strip()).name
+    return name.lower() if name else None
 
-    Ambiguous (two projects tied) → None, not a guess. Unmapped → None, not "core".
+
+def _project_tokens(project: Project) -> set[str]:
+    tokens = {project.id.lower()}
+    name_slug = re.sub(r"[^a-z0-9]+", "-", project.name.lower()).strip("-")[:32]
+    if name_slug:
+        tokens.add(name_slug)
+    return {t for t in tokens if t}
+
+
+def _map_transcript_dir(
+    db: Session, repo_dir: str | None, *, project_id: str, cwd: str | None,
+) -> str | None:
+    """Map a per-repo transcript folder onto a sibling project.
+
+    Candidates are `sibling_project_ids` of the ingest storage project — a
+    foreign org id is an independence input, not a folder name. Ambiguous
+    (two projects tied) → None, not a guess. Unmapped → None, not "core".
     """
     if not isinstance(repo_dir, str) or not repo_dir.strip():
         return None
+    # Lazy: memory imports nothing from ingest; ingest already lazy-imports
+    # add_memory. A top-level import would cycle through that same load.
+    from app.services.memory import sibling_project_ids
+
+    sibling_ids = sibling_project_ids(db, project_id)
+    if not sibling_ids:
+        return None
     encoded = repo_dir.strip().lower()
+    last = _last_component(cwd)
     hits: list[tuple[int, str]] = []
-    for project in db.scalars(select(Project)).all():
-        n = _transcript_dir_match_len(encoded, project)
+    for project in db.scalars(select(Project).where(Project.id.in_(sibling_ids))).all():
+        n = _transcript_dir_match_len(
+            encoded, project, last=last, storage_id=project_id)
         if n:
             hits.append((n, project.id))
     if not hits:
@@ -174,14 +208,21 @@ def _map_transcript_dir(db: Session, repo_dir: str | None) -> str | None:
     return winners[0] if len(winners) == 1 else None
 
 
-def _transcript_dir_match_len(encoded: str, project: Project) -> int:
-    tokens = {project.id.lower()}
-    name_slug = re.sub(r"[^a-z0-9]+", "-", project.name.lower()).strip("-")[:32]
-    if name_slug:
-        tokens.add(name_slug)
+def _transcript_dir_match_len(
+    encoded: str, project: Project, *, last: str | None, storage_id: str,
+) -> int:
+    tokens = _project_tokens(project)
     best = 0
     for token in tokens:
-        if not token:
+        if last is not None:
+            # Encoded suffix treats `acme-core` as seed `core`. cwd's last
+            # component is the real folder name and is not lossy.
+            if last == token:
+                best = max(best, len(token))
+            continue
+        # No cwd: suffix-match siblings, but never the storage id — we cannot
+        # prove the last component equals it, and inventing that is the collapse.
+        if project.id == storage_id:
             continue
         if encoded == token or encoded.endswith("-" + token):
             best = max(best, len(token))
