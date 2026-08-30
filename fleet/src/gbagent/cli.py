@@ -215,16 +215,6 @@ def _trace(event: "loop.Trace") -> None:
 
 def _run(args: argparse.Namespace) -> int:
     root = Path(args.worktree).resolve()
-    try:
-        # BEFORE `load`, because the executable check inside it is exactly what an unbuilt
-        # worktree fails. A fresh `git worktree` is what PRD-22 hands every child (GRPH-502).
-        built = prepare(root)
-        for command in built:
-            print(f"gbagent: setup ran {command!r}", file=sys.stderr)
-        cfg = load(root)
-    except ConfigRefused as exc:
-        print(f"gbagent: {exc}", file=sys.stderr)
-        return 78  # EX_CONFIG. Distinct from a crash, and from giving up.
 
     try:
         base_url, api_key = read_seat(Path(args.mcp_config))
@@ -236,10 +226,11 @@ def _run(args: argparse.Namespace) -> int:
     # The registration sentence is the harness's job and names a tool the model does not have.
     task = task_from(written)
 
-    # REGISTER FIRST (GRPH-503). `spawn.await_registration` polls the roster for an agent whose
-    # `worktree` matches this child and kills it when none appears, blaming the adapter. Every
-    # walk before this invoked the CLI directly with `--agent-id`, so the adapter's argv was
-    # verified and the thing the argv is FOR never was.
+    # REGISTER BEFORE PREPARE (P30 D8 / GRPH-503). `spawn.await_registration` polls the
+    # roster for 90s and kills an unregistered child, blaming the adapter. `prepare()`
+    # can run `uv pip install` for 900s. Counting that against the 90s window makes a
+    # cold worktree look like a broken adapter. Presence-only heartbeats (no item id)
+    # keep the roster alive during setup. Do not stretch registration to 900s.
     agent_id = args.agent_id
     if not agent_id:
         code = enrolment_code(written)
@@ -263,38 +254,49 @@ def _run(args: argparse.Namespace) -> int:
     assignment = assignment_for(args.item)
     coordinator = Coordinator.connect(base_url, api_key, item_id=args.item,
                                       agent_id=agent_id)
-    try:
-        orientation = build_orientation(coordinator.client, extra=COORDINATION_TOOLS,
-                                        agent_id=agent_id)
-    except OrientationUnavailable as exc:
-        print(f"gbagent: {exc}", file=sys.stderr)
-        return 78
-    toolset = Toolset(root=root, cfg=cfg, orientation=orientation)
-    session = OllamaSession(
-        args.base_url, args.model,
-        system=SYSTEM,
-        task=f"{task}\n\n{assignment}".strip(),
-    )
-    # Started BEFORE the loop and stopped in the same `finally` as the session, because the
-    # window it exists to cover opens on the first blocking tool call (GRPH-496). Nothing
-    # else refreshes `last_seen_at`, so without this the agent reads `offline` to the whole
-    # fleet one presence TTL in — 150s by default — while its item lease quietly expires.
     heartbeat = Heartbeat(coordinator)
     heartbeat.start()
+    session = None
     try:
-        outcome = loop.run(session, toolset, coordinator=coordinator,
-                           window=args.window, budget=args.turns, heartbeat=heartbeat,
-                           trace=_trace)
-    except ModelUnreachable as exc:
-        print(f"gbagent: {exc}", file=sys.stderr)
-        return 69  # EX_UNAVAILABLE. The endpoint, not this agent, and not a give-up.
+        try:
+            # AFTER register. The executable check inside `load` is what an unbuilt
+            # worktree fails; a fresh `git worktree` is what PRD-22 hands every child
+            # (GRPH-502). The heartbeat above is presence-only until a claim lands.
+            built = prepare(root)
+            for command in built:
+                print(f"gbagent: setup ran {command!r}", file=sys.stderr)
+            cfg = load(root)
+        except ConfigRefused as exc:
+            print(f"gbagent: {exc}", file=sys.stderr)
+            return 78  # EX_CONFIG. Distinct from a crash, and from giving up.
+
+        try:
+            orientation = build_orientation(coordinator.client, extra=COORDINATION_TOOLS,
+                                            agent_id=agent_id)
+        except OrientationUnavailable as exc:
+            print(f"gbagent: {exc}", file=sys.stderr)
+            return 78
+        toolset = Toolset(root=root, cfg=cfg, orientation=orientation)
+        session = OllamaSession(
+            args.base_url, args.model,
+            system=SYSTEM,
+            task=f"{task}\n\n{assignment}".strip(),
+        )
+        try:
+            outcome = loop.run(session, toolset, coordinator=coordinator,
+                               window=args.window, budget=args.turns, heartbeat=heartbeat,
+                               trace=_trace)
+        except ModelUnreachable as exc:
+            print(f"gbagent: {exc}", file=sys.stderr)
+            return 69  # EX_UNAVAILABLE. The endpoint, not this agent, and not a give-up.
+
+        print(_summary(outcome, graph_calls=orientation.calls, beats=heartbeat.beats),
+              file=sys.stderr)
+        return outcome.exit_code
     finally:
         heartbeat.stop()
-        session.close()
-
-    print(_summary(outcome, graph_calls=orientation.calls, beats=heartbeat.beats),
-          file=sys.stderr)
-    return outcome.exit_code
+        if session is not None:
+            session.close()
 
 
 def _summary(outcome, *, graph_calls: int, beats: int) -> str:

@@ -251,6 +251,26 @@ def test_the_cli_starts_and_stops_the_heartbeat_around_the_loop():
     assert "heartbeat.stop()" in tail.split("return")[0]
 
 
+def test_the_child_registers_and_heartbeats_before_a_long_setup():
+    """P30 D8. `prepare()` can run `uv pip install` for 900s. The supervisor kills
+    an unregistered child at 90s. Registering after setup makes a cold worktree look
+    like a broken adapter. Presence-only beats during setup keep the roster alive.
+
+    Asserted against `_run` source: a version that still called prepare first would
+    pass every runtime test that stubs setup as a no-op.
+    """
+    import inspect
+
+    from gbagent import cli
+
+    src = inspect.getsource(cli._run)
+    prepare_at = src.index("prepare(root)")
+    assert src.index("register(") < prepare_at, "register is not before prepare"
+    assert src.index("heartbeat.start()") < prepare_at, (
+        "heartbeat starts after setup, so a 900s prepare still reads offline"
+    )
+
+
 # ---- P30 D4: the beat after a claim carries the claimed id, not "" ----------------------
 #
 # Spawned gbagent starts with `item_id=""` (`cli.py`, `--item` defaults to empty).
