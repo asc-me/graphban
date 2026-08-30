@@ -233,6 +233,30 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "get_lessons",
+        "description": (
+            "The published lesson catalog for a project, with computed effectiveness, "
+            "caught-issues, and org-eligibility. Candidates are Memory review, not this. "
+            "score is null and caught_state is unknown when nothing has been measured — "
+            "that is not a high score. eligibility is unverifiable when distinct_users or "
+            "distinct_projects have not been attributed, or when the published cluster "
+            "was not scanned across sibling projects. Pass shard_id for one lesson's "
+            "provenance, outcomes, and history."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "shard_id": {"type": "string"},
+                "trend": {"type": "string", "enum": list(mem_svc.TRENDS)},
+                "caught_state": {"type": "string", "enum": list(mem_svc.CAUGHT_STATES)},
+                "eligibility": {"type": "string", "enum": list(mem_svc.ELIGIBILITIES)},
+                "lesson_class": {"type": "string"},
+                "limit": {"type": "integer"},
+                "offset": {"type": "integer"},
+            },
+        },
+    },
+    {
         "name": "publish_memory",
         "description": (
             "SUBMIT one of your candidate shards for adjudication — you do not publish it, an "
@@ -1069,7 +1093,7 @@ TOOLS: list[dict[str, Any]] = [
 
 # Project-scoped tools accept an optional `project_id` that overrides the key's project.
 _PROJECT_SCOPED = {
-    "create_item", "search_items", "add_memory", "search_memory",
+    "create_item", "search_items", "add_memory", "search_memory", "get_lessons",
     "get_backlog", "suggest_next", "generate_digest", "link_items", "unlink_items", "claim_next", "next_cluster",
     "describe_code", "get_code_map", "code_neighbors", "search_code", "graph_query",
     "link_code", "unlink_code", "create_prd",
@@ -1108,6 +1132,7 @@ _ITEM_WRITE_TOOLS = {"create_item", "update_item", "claim_next", "heartbeat", "r
 # Read-only tools never mutate state.
 _READ_ONLY = {
     "get_context", "list_projects", "setup_project", "search_items", "search_memory",
+    "get_lessons",
     "get_backlog", "get_item_details", "suggest_next", "generate_digest", "related_work",
     "prd_coverage", "grill_prd", "get_code_map", "code_neighbors", "search_code",
     "graph_query",
@@ -1244,6 +1269,33 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             }},
             "returned": {"type": "integer"},
             "top_k": {"type": "integer"},
+        },
+    },
+    "get_lessons": {
+        "type": "object",
+        "properties": {
+            "enums": {"type": "object"},
+            "results": {"type": "array", "items": {
+                "type": "object",
+                "required": ["caught_state", "effectiveness", "eligibility"],
+                "properties": {
+                    "caught_state": _STR,
+                    "effectiveness": {
+                        "type": "object",
+                        "required": ["score"],
+                        "properties": {"score": {"type": ["number", "null"]}, "trend": _STR},
+                    },
+                    "eligibility": {
+                        "type": "object",
+                        "required": ["state"],
+                        "properties": {"state": _STR, "reason": _STR},
+                    },
+                },
+            }},
+            "total": {"type": "integer"},
+            "limit": {"type": "integer"},
+            "offset": {"type": "integer"},
+            "has_more": {"type": "boolean"},
         },
     },
     "get_item_details": {
@@ -2172,6 +2224,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             project_id=pid,
             status="candidate",
             origin=f"agent:{key.name or key.id}",
+            actor_user_id=key.user_id,
+            attributed_project_id=pid,
         )
         _idempotent_remember(db, args, "add_memory", shard.id)
         return _shard_dict(shard)
@@ -2223,6 +2277,38 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             for s, score in hits
         ]
         return {"results": results, "returned": len(results), "top_k": top_k}
+    if name == "get_lessons":
+        readable_ids = set(readable)
+        if args.get("shard_id"):
+            row = mem_svc.get_lesson(
+                db, args["shard_id"],
+                readable_project_ids=readable_ids,
+                viewer_project_id=pid,
+            )
+            if row is None:
+                raise errors.NotFound(f"lesson not found: {args['shard_id']}")
+            payload = {
+                "enums": mem_svc.lesson_enums(),
+                "results": [row],
+                "total": 1,
+                "limit": 1,
+                "offset": 0,
+                "has_more": False,
+            }
+        else:
+            payload = mem_svc.list_lessons(
+                db, pid,
+                readable_project_ids=readable_ids,
+                filters={
+                    "trend": args.get("trend"),
+                    "caught_state": args.get("caught_state"),
+                    "eligibility": args.get("eligibility"),
+                    "lesson_class": args.get("lesson_class"),
+                },
+                limit=int(args["limit"]) if args.get("limit") is not None else 50,
+                offset=int(args["offset"]) if args.get("offset") is not None else 0,
+            )
+        return json.loads(json.dumps(payload, default=str))
     if name == "get_backlog":
         ranked = prio_svc.prioritized(db, pid, statuses=("backlog", "next"), include_blocked=True)
         # The ranking signal (ready/blocked_by/unblocks/votes/score) is the reason to

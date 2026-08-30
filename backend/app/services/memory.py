@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.embeddings import cosine_similarity, get_embedder, safe_embed
-from app.models import CodeNode, Item, LessonOutcome, MemoryShard, Project
+from app.models import CodeNode, Event, Item, LessonOutcome, MemoryShard, Project
 from app.services import events as events_svc
 
 logger = logging.getLogger("graphban.memory")
@@ -955,6 +955,8 @@ def agent_publish(db: Session, shard: MemoryShard, *, origin: str) -> tuple[Memo
         meta={"source": "agent", "confidence": verdict["quality"],
               "reason": verdict.get("reason", ""), "kept": keep},
     )
+    if keep:
+        maybe_record_recurrence_miss(db, shard)
     return shard, verdict
 
 
@@ -965,9 +967,13 @@ def set_status(db: Session, shard_id: str, status: str) -> MemoryShard | None:
     shard = db.get(MemoryShard, shard_id)
     if shard is None:
         return None
+    prev = shard.status
     shard.status = status
     db.commit()
     db.refresh(shard)
+    # A second publish of an already-published row is not a new stand-behind.
+    if status == "published" and prev != "published":
+        maybe_record_recurrence_miss(db, shard)
     return shard
 
 
@@ -1254,7 +1260,7 @@ def published_cluster(
     shard: MemoryShard,
     *,
     readable_project_ids: set[str],
-    viewer_project_id: str,
+    viewer_project_id: str | None,
 ) -> dict:
     """Eligibility/transferability scan. Not retrieval.
 
@@ -1434,18 +1440,62 @@ def _outcomes_for(db: Session, shard_ids: list[str]) -> dict[str, list[LessonOut
     return by
 
 
+def _promote_overrides(db: Session, shard_ids: list[str]) -> set[str]:
+    """Shard ids whose promote Event carried a written override_reason.
+
+    Transferability is computed on read; override must not look like evidenced
+    just because reach is already org.
+    """
+    if not shard_ids:
+        return set()
+    rows = list(db.scalars(
+        select(Event).where(
+            Event.action == "promote_org_lesson",
+            Event.target_type == "shard",
+            Event.target_id.in_(shard_ids),
+        )
+    ).all())
+    return {e.target_id for e in rows if (e.meta or {}).get("override_reason")}
+
+
+def _history_wire(history: list[dict]) -> list[dict]:
+    out = []
+    for h in history:
+        at = h.get("at")
+        out.append({
+            "at": at.isoformat() if isinstance(at, datetime) else at,
+            "score": h.get("score"),
+            "caught_state": h.get("caught_state"),
+            "outcome_id": h.get("outcome_id"),
+        })
+    return out
+
+
 def _lesson_row(
     shard: MemoryShard,
     outcomes: list[LessonOutcome],
     cluster: dict,
     *,
     now: datetime | None = None,
+    origin_path: str | None = None,
+    include_history: bool = False,
+    overridden: bool = False,
 ) -> dict:
     # Empty outcomes still go through the scorer; unknown is a result, not a skip.
-    eff = lesson_effectiveness(shard, outcomes, origin_path="unknown", now=now)
+    path = "unknown" if origin_path is None else origin_path
+    eff = lesson_effectiveness(shard, outcomes, origin_path=path, now=now)
     elig = org_eligibility(shard, cluster["members"], scan=cluster["scan"])
-    xfer = transferability(shard, cluster["members"], scan=cluster["scan"])
-    return {
+    xfer = transferability(
+        shard, cluster["members"], scan=cluster["scan"], overridden=overridden,
+    )
+    effectiveness = {
+        "score": eff["score"],
+        "trend": eff["trend"],
+        "drop_reasons": eff["drop_reasons"],
+    }
+    if include_history:
+        effectiveness["history"] = _history_wire(eff["history"])
+    row = {
         "id": shard.id,
         "text": shard.text,
         "scope": shard.scope,
@@ -1463,14 +1513,13 @@ def _lesson_row(
         "suggested_class": "correction" if _is_correction(shard) else None,
         "age_state": age_state(shard, now=now),
         "caught_state": eff["caught_state"],
-        "effectiveness": {
-            "score": eff["score"],
-            "trend": eff["trend"],
-            "drop_reasons": eff["drop_reasons"],
-        },
+        "effectiveness": effectiveness,
         "eligibility": elig,
         "transferability": xfer,
     }
+    if include_history:
+        row["origin_path"] = path
+    return row
 
 
 def list_lessons(
@@ -1507,6 +1556,7 @@ def list_lessons(
         rows = [r for r in rows if (r.lesson_class or "") == stored]
 
     outcomes_by = _outcomes_for(db, [r.id for r in rows])
+    overridden_ids = _promote_overrides(db, [r.id for r in rows])
     computed = []
     for shard in rows:
         cluster = published_cluster(
@@ -1514,7 +1564,10 @@ def list_lessons(
             readable_project_ids=readable_project_ids,
             viewer_project_id=project_id,
         )
-        computed.append(_lesson_row(shard, outcomes_by.get(shard.id, []), cluster, now=now))
+        computed.append(_lesson_row(
+            shard, outcomes_by.get(shard.id, []), cluster, now=now,
+            overridden=shard.id in overridden_ids,
+        ))
 
     if trend := filters.get("trend"):
         computed = [r for r in computed if r["effectiveness"]["trend"] == trend]
@@ -1534,4 +1587,341 @@ def list_lessons(
         "limit": limit,
         "offset": offset,
         "has_more": offset + len(page) < total,
+    }
+
+
+class PromoteRefused(Exception):
+    """Typed refusal from promote_org. Router maps payload to HTTP 422.
+
+    Unverifiable is never overridable. A 200 that leaves reach=project is the defect.
+    """
+
+    def __init__(self, payload: dict):
+        self.payload = payload
+        super().__init__(payload.get("reason") or payload.get("blocked_by") or "promote refused")
+
+
+def stamp_publish_attribution(shard: MemoryShard, *, actor_user_id: str | None) -> None:
+    """On human (or agent) publish. Never overwrite a non-NULL column.
+
+    Ingest collapse must not become a trusted count of 1 at the moment a human
+    stands behind the row.
+    """
+    if shard.actor_user_id is None and actor_user_id:
+        shard.actor_user_id = actor_user_id
+    if (
+        shard.attributed_project_id is None
+        and not (shard.origin or "").startswith("ingest:")
+    ):
+        shard.attributed_project_id = shard.project_id
+
+
+def record_outcome(
+    db: Session,
+    shard_id: str,
+    *,
+    kind: str,
+    source: str,
+    related_item_id: str | None = None,
+    related_shard_id: str | None = None,
+    detail: str = "",
+) -> LessonOutcome:
+    """Append-only. Effectiveness reads this list; an empty list is unknown."""
+    from app import errors as app_errors
+
+    if kind not in OUTCOME_KINDS:
+        raise ValueError(f"invalid outcome kind: {kind}")
+    if source not in OUTCOME_SOURCES:
+        raise ValueError(f"invalid outcome source: {source}")
+    shard = db.get(MemoryShard, shard_id)
+    if shard is None or shard.status != "published":
+        raise app_errors.NotFound(f"lesson not found: {shard_id}")
+    row = LessonOutcome(
+        shard_id=shard_id,
+        kind=kind,
+        source=source,
+        related_item_id=related_item_id,
+        related_shard_id=related_shard_id,
+        detail=detail or "",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def maybe_record_recurrence_miss(db: Session, newly_published: MemoryShard) -> None:
+    """A human or agent-judge stood behind a second similar row instead of merging.
+
+    No-op unless scoring_source is human (`""`) or `agent`. Trusted / similarity / llm
+    auto-publish is corroboration-absorption, not a miss. ≥ _SIM_DUP is a merge.
+    Same-session restatement is not independent.
+    """
+    if newly_published.scoring_source not in ("", "agent"):
+        return
+    if newly_published.status != "published" or newly_published.embedding is None:
+        return
+    new_vec = list(newly_published.embedding)
+    new_origin = newly_published.item_id or _origin_of(newly_published)
+    new_at = _aware(newly_published.created_at)
+    pool = [
+        s for s in list_shards(db, project_id=newly_published.project_id, status="published")
+        if s.id != newly_published.id and s.embedding is not None
+    ]
+    for older in pool:
+        older_at = _aware(older.created_at)
+        if new_at is not None and older_at is not None and older_at >= new_at:
+            continue
+        sim = cosine_similarity(new_vec, list(older.embedding))
+        if sim >= _SIM_DUP or sim < _SIM_STRONG:
+            continue
+        older_origin = older.item_id or _origin_of(older)
+        if new_origin and older_origin and new_origin == older_origin:
+            continue
+        record_outcome(
+            db, older.id,
+            kind="missed", source="recurrence",
+            related_shard_id=newly_published.id,
+            detail="similar candidate published as its own row",
+        )
+
+
+def lesson_visible_from(db: Session, shard: MemoryShard, project_id: str) -> bool:
+    """Would this published shard already surface in search_memory for project_id?"""
+    if not project_id or shard.status != "published":
+        return False
+    if shard.project_id == project_id:
+        return True
+    if shard.reach == "org" and shard.project_id in sibling_project_ids(db, project_id):
+        return True
+    if shard.project_id is None and _includes_global(db, project_id):
+        return True
+    return False
+
+
+def lesson_reload_viewer(
+    db: Session, shard: MemoryShard, readable_project_ids: set[str],
+) -> str | None:
+    """A real project from which this shard is visible. Never '' — empty is not a project."""
+    if shard.project_id:
+        return shard.project_id
+    for pid in readable_project_ids:
+        if pid and lesson_visible_from(db, shard, pid):
+            return pid
+    return next((p for p in readable_project_ids if p), None)
+
+
+def _shard_public(shard: MemoryShard) -> dict:
+    return {
+        "id": shard.id,
+        "text": shard.text,
+        "scope": shard.scope,
+        "source": shard.source,
+        "status": shard.status,
+        "origin": shard.origin,
+        "item_id": shard.item_key,
+        "project_id": shard.project_id,
+        "fresh": shard.fresh,
+        "scoring_source": shard.scoring_source,
+        "auto_confidence": shard.auto_confidence,
+        "created_at": shard.created_at,
+    }
+
+
+def _outcome_public(db: Session, o: LessonOutcome) -> dict:
+    related = o.related_item_id
+    if related:
+        item = db.get(Item, related)
+        # Rendered key on the wire. Stored id stays frozen for the log (PRD-13).
+        related = item.key if item is not None else related
+    return {
+        "id": o.id,
+        "shard_id": o.shard_id,
+        "kind": o.kind,
+        "source": o.source,
+        "related_item_id": related,
+        "related_shard_id": o.related_shard_id,
+        "detail": o.detail or "",
+        "created_at": o.created_at,
+    }
+
+
+def _display_cluster(
+    db: Session,
+    shard: MemoryShard,
+    cluster: dict,
+    *,
+    readable_project_ids: set[str],
+    viewer_project_id: str | None,
+) -> tuple[list[dict], list[str]]:
+    """Readable members (with text) plus same-project candidates. Unreadable: chips only."""
+    readable = [
+        _shard_public(m) for m in cluster["members"]
+        if m.id in cluster["readable_ids"]
+    ]
+    if shard.embedding is not None and viewer_project_id:
+        seed = list(shard.embedding)
+        seen = {m["id"] for m in readable}
+        for cand in list_shards(db, project_id=viewer_project_id, status="candidate"):
+            if cand.id in seen or cand.embedding is None:
+                continue
+            if cosine_similarity(seed, list(cand.embedding)) >= _SIM_STRONG:
+                readable.append(_shard_public(cand))
+                seen.add(cand.id)
+    unread_projects = [
+        pid for pid in cluster["counted_project_ids"]
+        if pid and pid not in readable_project_ids
+    ]
+    unread_chips = ["unread project"] * len(unread_projects)
+    return readable, unread_chips
+
+
+def get_lesson(
+    db: Session,
+    shard_id: str,
+    *,
+    readable_project_ids: set[str],
+    viewer_project_id: str | None,
+    now: datetime | None = None,
+    overridden: bool | None = None,
+    skip_visibility: bool = False,
+) -> dict | None:
+    """Detail. None if not visible (project-local of another project). Org-reach sibling is.
+
+    `skip_visibility` is the post-write reload: the caller already authorized the
+    mutation, and a 404 after commit would hide a write that happened (or 500 an
+    override Event). Never pass "" as viewer_project_id.
+    """
+    shard = db.get(MemoryShard, shard_id)
+    if shard is None or shard.status != "published":
+        return None
+    if not skip_visibility:
+        if not viewer_project_id or not lesson_visible_from(db, shard, viewer_project_id):
+            return None
+    cluster = published_cluster(
+        db, shard,
+        readable_project_ids=readable_project_ids,
+        viewer_project_id=viewer_project_id,
+    )
+    outcomes = _outcomes_for(db, [shard.id]).get(shard.id, [])
+    path = origin_path_state(db, shard)
+    if overridden is None:
+        overridden = shard.id in _promote_overrides(db, [shard.id])
+    row = _lesson_row(
+        shard, outcomes, cluster, now=now,
+        origin_path=path, include_history=True, overridden=overridden,
+    )
+    members, unread = _display_cluster(
+        db, shard, cluster,
+        readable_project_ids=readable_project_ids,
+        viewer_project_id=viewer_project_id,
+    )
+    events = list(db.scalars(
+        select(Event).where(
+            Event.target_type == "shard",
+            Event.target_id == shard.id,
+        ).order_by(Event.ts.asc())
+    ).all())
+    item = db.get(Item, shard.item_id) if shard.item_id else None
+    row.update({
+        "cluster": members,
+        "unread_cluster_tags": unread,
+        "outcomes": [_outcome_public(db, o) for o in outcomes],
+        "events": [
+            {
+                "action": e.action,
+                "actor_type": e.actor_type,
+                "actor_label": e.actor_label,
+                "ts": e.ts,
+                "meta": e.meta,
+            }
+            for e in events
+        ],
+        "originating_item": (
+            {"id": item.key, "title": item.title, "status": item.status}
+            if item is not None else None
+        ),
+    })
+    return row
+
+
+def _effectiveness_blocks_promote(eff: dict, outcomes: list[LessonOutcome]) -> bool:
+    """Unmeasured is score is None AND trend != dropping — gone+empty is blocked."""
+    if eff["trend"] == "dropping":
+        return True
+    if eff["caught_state"] in ("missed", "mixed"):
+        return True
+    if any(o.kind == "contradicted" for o in outcomes):
+        return True
+    return False
+
+
+def promote_org(
+    db: Session,
+    shard_id: str,
+    *,
+    override_reason: str | None,
+    readable_project_ids: set[str],
+) -> dict:
+    """Principal-free. Router records the Event. Unverifiable cannot be overridden."""
+    from app import errors as app_errors
+
+    shard = db.get(MemoryShard, shard_id)
+    if shard is None or shard.status != "published":
+        raise app_errors.NotFound(f"lesson not found: {shard_id}")
+    viewer = lesson_reload_viewer(db, shard, readable_project_ids)
+    if shard.reach == "org":
+        detail = get_lesson(
+            db, shard_id,
+            readable_project_ids=readable_project_ids,
+            viewer_project_id=viewer,
+            skip_visibility=True,
+        )
+        return {"wrote": False, "overridden": False, "eligibility": None, "lesson": detail}
+
+    cluster = published_cluster(
+        db, shard,
+        readable_project_ids=readable_project_ids,
+        viewer_project_id=viewer or shard.project_id,
+    )
+    elig = org_eligibility(shard, cluster["members"], scan=cluster["scan"])
+    outcomes = _outcomes_for(db, [shard.id]).get(shard.id, [])
+    path = origin_path_state(db, shard)
+    eff = lesson_effectiveness(shard, outcomes, origin_path=path)
+    reason = (override_reason or "").strip()
+    failing = _effectiveness_blocks_promote(eff, outcomes)
+
+    if elig["state"] == "unverifiable":
+        logger.info("promote_org refused: %s %s", elig["state"], elig["reason"])
+        raise PromoteRefused({**elig, "reach": shard.reach})
+    if elig["state"] == "ineligible" and not reason:
+        logger.info("promote_org refused: %s %s", elig["state"], elig["reason"])
+        raise PromoteRefused({**elig, "reach": shard.reach})
+    if elig["state"] == "eligible" and failing and not reason:
+        logger.info("promote_org refused: effectiveness %s %s", eff["trend"], eff["caught_state"])
+        raise PromoteRefused({
+            "blocked_by": "effectiveness",
+            "trend": eff["trend"],
+            "caught_state": eff["caught_state"],
+            "score": eff["score"],
+            "drop_reasons": eff["drop_reasons"],
+            "reach": shard.reach,
+        })
+
+    overridden = bool(reason) and (elig["state"] == "ineligible" or failing)
+    shard.reach = "org"
+    db.commit()
+    db.refresh(shard)
+    detail = get_lesson(
+        db, shard_id,
+        readable_project_ids=readable_project_ids,
+        viewer_project_id=viewer,
+        overridden=overridden,
+        skip_visibility=True,
+    )
+    return {
+        "wrote": True,
+        "overridden": overridden,
+        "eligibility": elig,
+        "lesson": detail,
     }

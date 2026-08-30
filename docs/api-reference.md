@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 97 of the 170 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 100 of the 173 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -70,6 +70,9 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | --- | --- | --- | --- |
 | GET | `/api/memory/shards` | JWT | (optional `?status=candidate\|published\|rejected`) |
 | GET | `/api/memory/lessons` | JWT | Published catalog with computed effectiveness; empty is "no published lessons", not a score |
+| GET | `/api/memory/lessons/{id}` | JWT | Lesson detail: history, origin path, readable cluster, unread-project chips, outcomes, events. Project-local of another project 404s; org-reach sibling 200s |
+| POST | `/api/memory/lessons/{id}/outcomes` | JWT | Record caught / missed / contradicted. Human only |
+| POST | `/api/memory/lessons/{id}/promote-org` | JWT | Promote `reach` to org. Unverifiable cannot be overridden. X-API-Key → 401 |
 | GET | `/api/memory/candidates` | JWT | The review queue — agent shards awaiting publish (AL-49) |
 | POST | `/api/memory/shards` | JWT | Human-authored → published immediately |
 | PATCH | `/api/memory/shards/{id}` | JWT | |

@@ -146,7 +146,7 @@ def create_item(
     return item
 
 
-_EVIDENCE_KINDS = {"test", "url", "screenshot", "health", "note", "sabotage", "attestation"}
+_EVIDENCE_KINDS = {"test", "url", "screenshot", "health", "note", "sabotage", "attestation", "lesson"}
 
 # What a `sabotage` receipt must carry to be one (GRPH-321). Without these it is a `note`
 # wearing a stronger name, and a gate that counted it would be satisfied by prose.
@@ -190,11 +190,12 @@ def normalize_evidence(raw) -> list[dict]:
     `kind` is advisory (test | url | screenshot | health | note) and falls back to `note`; a
     receipt with neither detail nor url is dropped.
 
-    **`sabotage` is the one kind that is not advisory (GRPH-321).** It carries the claim under
-    test, the mutation applied, and how many tests failed — and a receipt claiming to be one
-    without that structure is demoted to `note` rather than accepted. A structured kind that
-    accepts unstructured input is the free-text field with a new name, and anything gating on
-    it would be checking a label rather than a fact.
+    **`sabotage`, `attestation`, and `lesson` are not advisory.** A structured kind that
+    accepts unstructured input is the free-text field with a new name, and anything gating
+    on it would be checking a label rather than a fact. `sabotage` needs claim / mutation /
+    tests_failed (GRPH-321); `attestation` needs adapter / commit / predicates; `lesson`
+    needs `shard_id` of a published shard this item's project can already search. Missing
+    structure demotes to `note`, never drops.
 
     Graphban owns the RECEIPT, not the run. It cannot verify the mutation happened; what it
     can do is make the claim falsifiable and queryable, which is the same trade PRD-12 already
@@ -266,10 +267,66 @@ def normalize_evidence(raw) -> list[dict]:
                             if e.get(k) is not None]
                     row["detail"] = ("incomplete attestation receipt (" + ", ".join(said) + ")"
                                      if said else "")
+        elif kind == "lesson":
+            # shard_id is the structure. Visibility of the shard is checked in update_item
+            # after persist (needs the item's project); missing id demotes here so a
+            # structured kind never stores unstructured input.
+            shard_id = str(e.get("shard_id") or "").strip()
+            if shard_id:
+                row["shard_id"] = shard_id
+                if not detail:
+                    row["detail"] = f"applied lesson {shard_id}"
+            else:
+                row["kind"] = "note"
+                if not row["detail"]:
+                    row["detail"] = "incomplete lesson receipt (no shard_id)"
         if not row["detail"] and not row["url"]:
             continue
         out.append(row)
     return out
+
+
+def _prepare_lesson_evidence(db: Session, item: Item, old_len: int) -> list[str]:
+    """Demote non-visible kind=lesson receipts on the newly appended rows.
+
+    Gate preview uses append_evidence alone and must not write outcomes, so
+    visibility lives here — after the merge, only on rows this call added.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models import MemoryShard
+    from app.services import memory as mem_svc
+
+    pending: list[str] = []
+    new_rows = list(item.evidence or [])[old_len:]
+    dirty = False
+    for row in new_rows:
+        if not isinstance(row, dict) or row.get("kind") != "lesson":
+            continue
+        sid = row.get("shard_id")
+        shard = db.get(MemoryShard, sid) if sid else None
+        if shard is None or not mem_svc.lesson_visible_from(db, shard, item.project_id):
+            row["kind"] = "note"
+            if not row.get("detail"):
+                row["detail"] = "lesson is not visible to this project"
+            dirty = True
+            continue
+        pending.append(sid)
+    if dirty:
+        flag_modified(item, "evidence")
+    return pending
+
+
+def _record_applied_lessons(db: Session, item: Item, shard_ids: list[str]) -> None:
+    """After a successful persist. Incoming well-formed lesson rows only."""
+    from app.services import memory as mem_svc
+
+    for sid in shard_ids:
+        mem_svc.record_outcome(
+            db, sid, kind="applied", source="evidence",
+            related_item_id=item.id,
+            detail=f"cited from {item.key}",
+        )
 
 
 def append_evidence(existing, incoming) -> list[dict]:
@@ -684,13 +741,16 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
                 "github_url", "assignee", "touchpoints", "prd_id", "prd_section", "fidelity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
+    pending_lesson_applies: list[str] = []
     if fields.get("evidence") is not None:
         # Appends. See `append_evidence` — a write here must never remove a receipt somebody
         # else left, because `sign_off` gates on the stored ones (GRPH-494).
+        old_len = len(item.evidence or [])
         item.evidence = append_evidence(item.evidence, fields["evidence"])
         # Stamped from the INCOMING rows, not the merged record, so the clock starts when the
         # link actually arrived (GRPH-567). First link wins — see `pr_linked_at`.
         item.pr_linked_at = pr_linked_at(fields["evidence"], item.pr_linked_at)
+        pending_lesson_applies = _prepare_lesson_evidence(db, item, old_len)
     if fields.get("ack_section_drift"):
         # "I have read what changed in the PRD and this item is right as it stands"
         # (GRPH-360). A FLAG, not a value: the caller cannot supply the hash, so it can only
@@ -704,6 +764,9 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         item.prd_section_ack = prd_svc.section_fingerprint(prd.body or "", item.prd_section)
     db.commit()
     db.refresh(item)
+
+    if pending_lesson_applies:
+        _record_applied_lessons(db, item, pending_lesson_applies)
 
     if "touchpoints" in fields and fields["touchpoints"] is not None and item.touchpoints:
         from app.services.clustering import sync_code_links

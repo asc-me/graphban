@@ -542,6 +542,40 @@ class LessonListOut(BaseModel):
     has_more: bool
 
 
+class EffectivenessDetailOut(EffectivenessListOut):
+    history: list[dict]
+
+
+class OutcomeOut(BaseModel):
+    id: int
+    shard_id: str
+    kind: str
+    source: str
+    related_item_id: str | None = None
+    related_shard_id: str | None = None
+    detail: str = ""
+    created_at: datetime
+
+
+class LessonDetail(LessonListRow):
+    effectiveness: EffectivenessDetailOut  # type: ignore[assignment]
+    origin_path: str
+    cluster: list[ShardOut]
+    unread_cluster_tags: list[str]
+    outcomes: list[OutcomeOut]
+    events: list[dict]
+    originating_item: dict | None = None
+
+
+class LessonOutcomeIn(BaseModel):
+    kind: str
+    detail: str = Field(min_length=1)
+
+
+class PromoteOrgIn(BaseModel):
+    override_reason: str | None = None
+
+
 # ---- Requests ----
 class RequestCreate(BaseModel):
     type: str

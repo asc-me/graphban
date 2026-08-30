@@ -2,7 +2,7 @@
 
 Graphban is an agent-native dev tool: linear tracker + pgvector agent memory +
 request triage + a code-structure graph, all operable by coding agents through
-55 MCP tools (`POST /api/mcp`, JSON-RPC) that share one service layer with the
+56 MCP tools (`POST /api/mcp`, JSON-RPC) that share one service layer with the
 REST API and web UI. Local-Docker-first; stays fully offline by default (stub
 embeddings/chat — real providers are opt-in env config).
 

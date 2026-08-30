@@ -6,8 +6,11 @@ from app.config import settings
 from app.db import get_db
 from app.models import MemoryShard, User
 from app.schemas import (
+    LessonDetail,
     LessonListOut,
+    LessonOutcomeIn,
     MemorySearchIn,
+    PromoteOrgIn,
     ScoredCandidate,
     ShardCreate,
     ShardHit,
@@ -58,6 +61,105 @@ def list_lessons(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/lessons/{shard_id}", response_model=LessonDetail)
+def get_lesson(
+    shard_id: str,
+    project_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Published lesson detail. Project-local of another project 404s; org-reach sibling 200s."""
+    authz.require_readable(db, user.id, project_id)
+    row = mem_svc.get_lesson(
+        db, shard_id,
+        readable_project_ids=set(authz.readable_project_ids(db, user.id)),
+        viewer_project_id=project_id,
+    )
+    if row is None:
+        raise HTTPException(404, "lesson not found")
+    return row
+
+
+@router.post("/lessons/{shard_id}/outcomes", response_model=LessonDetail)
+def record_lesson_outcome(
+    shard_id: str,
+    body: LessonOutcomeIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Human-recorded caught / missed / contradicted. JWT only — copy publish_shard."""
+    existing = db.get(MemoryShard, shard_id)
+    if existing is None or existing.status != "published":
+        raise HTTPException(404, "lesson not found")
+    if existing.project_id is not None:
+        authz.require_writable(db, user.id, existing.project_id, "shard")
+    elif not authz.writable_project_ids(db, user.id):
+        raise HTTPException(403, "no write access to any project")
+    if body.kind not in ("caught", "missed", "contradicted"):
+        raise HTTPException(422, f"invalid outcome kind: {body.kind}")
+    mem_svc.record_outcome(
+        db, shard_id, kind=body.kind, source="human", detail=body.detail,
+    )
+    events_svc.record_user(
+        db, user, action="record_lesson_outcome", target_type="shard",
+        target_id=shard_id, project_id=existing.project_id,
+        meta={"kind": body.kind},
+    )
+    readable = set(authz.readable_project_ids(db, user.id))
+    row = mem_svc.get_lesson(
+        db, shard_id,
+        readable_project_ids=readable,
+        viewer_project_id=mem_svc.lesson_reload_viewer(db, existing, readable),
+        skip_visibility=True,
+    )
+    if row is None:
+        raise HTTPException(404, "lesson not found")
+    return row
+
+
+@router.post("/lessons/{shard_id}/promote-org", response_model=LessonDetail)
+def promote_org_lesson(
+    shard_id: str,
+    body: PromoteOrgIn | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Human-only org promotion. X-API-Key → 401. Unverifiable cannot be overridden."""
+    existing = db.get(MemoryShard, shard_id)
+    if existing is None or existing.status != "published":
+        raise HTTPException(404, "lesson not found")
+    if existing.project_id is not None:
+        authz.require_writable(db, user.id, existing.project_id, "shard")
+    elif not authz.writable_project_ids(db, user.id):
+        raise HTTPException(403, "no write access to any project")
+    body = body or PromoteOrgIn()
+    try:
+        result = mem_svc.promote_org(
+            db, shard_id,
+            override_reason=body.override_reason,
+            readable_project_ids=set(authz.readable_project_ids(db, user.id)),
+        )
+    except mem_svc.PromoteRefused as e:
+        raise HTTPException(422, e.payload) from e
+    lesson = result.get("lesson")
+    if lesson is None:
+        raise HTTPException(500, "lesson could not be reloaded after promote")
+    if result["wrote"]:
+        events_svc.record_user(
+            db, user, action="promote_org_lesson", target_type="shard",
+            target_id=shard_id, project_id=existing.project_id,
+            meta={
+                "eligibility": result["eligibility"],
+                "override_reason": (
+                    (body.override_reason or "").strip() or None
+                    if result["overridden"] else None
+                ),
+                "transferability": lesson["transferability"],
+            },
+        )
+    return lesson
 
 
 @router.get("/shards", response_model=list[ShardOut])
@@ -182,6 +284,8 @@ def _review_shard(shard_id: str, to_status: str, action: str, db: Session, user:
         authz.require_writable(db, user.id, existing.project_id, "shard")
     elif not authz.writable_project_ids(db, user.id):
         raise HTTPException(403, "no write access to any project")
+    if to_status == "published":
+        mem_svc.stamp_publish_attribution(existing, actor_user_id=user.id)
     shard = mem_svc.set_status(db, shard_id, to_status)
     events_svc.record_user(db, user, action=action, target_type="shard",
                            target_id=shard_id, project_id=existing.project_id)
