@@ -281,6 +281,8 @@ def report(wave: Wave, out=None) -> None:
         print(f"{wave.unused_seats} seat(s) never redeemed", file=out)
     for failure in wave.failures:
         print(f"FAILED {failure}", file=out)
+    for give_up in wave.give_ups:
+        print(f"STUCK {give_up}", file=out)
 
 
 def _serve_stdio(args) -> int:

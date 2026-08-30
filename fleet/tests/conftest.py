@@ -203,6 +203,21 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
 
     write("exits_immediately", "pass\n")
 
+    # P30 D6: gbagent.loop EXIT_HANDOFF_FAILED / EXIT_STUCK. Distinct from a supervisor
+    # crash — 70 is a failed run (item still claimed); 75 is a completed give-up.
+    write(
+        "exits_handoff_failed",
+        "import pathlib, sys\n"
+        "pathlib.Path('feature.py').write_text('x\\n')\n"
+        "sys.exit(70)\n",
+    )
+    write(
+        "exits_stuck",
+        "import pathlib, sys\n"
+        "pathlib.Path('feature.py').write_text('x\\n')\n"
+        "sys.exit(75)\n",
+    )
+
     # A child that is ALIVE and says nothing, which is the case the roster cannot
     # distinguish from a busy one and `progress` exists to surface (GRPH-579).
     write("silent_then_exits", "import time\ntime.sleep(1.5)\n")

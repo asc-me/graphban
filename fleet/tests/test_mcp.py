@@ -19,6 +19,7 @@ import pytest
 from gbfleet import mcp
 from gbfleet.mcp import METHOD_NOT_FOUND, PARSE_ERROR, TOOLS, Fleet, handle, serve
 from gbfleet.spawn import Reason
+from gbfleet.supervisor import Limits
 from gbfleet.worktree import create, reap
 
 from tests.test_supervisor import _factory, _seats, _server
@@ -381,3 +382,63 @@ def test_spawn_actually_hands_the_debug_path_down(git_repo: Path, tmp_path: Path
 
     _call(fleet, "spawn", adapter="fake", enrolment_code="e2")
     assert captured["debug_file"] is None, "a path was passed without debug being asked for"
+
+
+# --- P30 D6: spawn is watched, and the cap binds here not only on `up` --------------------
+
+
+def test_spawn_refuses_past_max_workers(fleet: Fleet):
+    """THE LOAD-BEARING HALF. `max_workers` used to live only in `up`'s seat slice.
+    `gbfleet mcp` stored the number and never consulted it on spawn, so a planner
+    that called spawn in a loop ran past the cap.
+    """
+    fleet.limits = Limits(max_workers=1)
+    first = _value(_call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-1"))
+    try:
+        result = _call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-2")
+        assert result["isError"] is True
+        assert "max_workers" in result["content"][0]["text"]
+        assert len([c for c in fleet.children if c.running]) == 1
+    finally:
+        _call(fleet, "stop", agent_id=first["agent_id"])
+
+
+def test_an_mcp_child_is_stopped_when_it_overruns(git_repo: Path, tmp_path: Path, scripts):
+    """THE OTHER HALF. spawn returned and `_wait_out` never ran, so wall-clock,
+    disowned-after and the lease ceiling were `up`-only. A hung child on this
+    surface ran until a human called stop.
+
+    Sabotage: leave watch_tick only inside `_wait_out`; this must fail.
+    """
+    workspace = tmp_path / "ws"
+    fleet = Fleet(
+        repo=git_repo,
+        workspace=workspace,
+        client=_server(workspace),
+        launch_for=lambda name, model="", tuning=None: _factory(scripts, "sleeper", adapter=name),
+        limits=Limits(child_wall_clock=0.0),
+    )
+    described = _value(_call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-1"))
+    try:
+        fleet.tick()
+        child = fleet.children[0]
+        assert child.stopped_because is Reason.WALL_CLOCK, (
+            f"mcp spawn was not watched (stopped_because={child.stopped_because})"
+        )
+        assert any("stopped" in f for f in fleet.wave.failures)
+    finally:
+        _call(fleet, "stop", pid=described["pid"])
+
+
+def test_the_stdio_server_ticks_the_watch_loop():
+    """A tick nothing starts is the defect D6 names, wearing a helper's name.
+
+    Asserted against source rather than by running serve with a live sleeper: serve
+    blocks on stdin, and the claim is about the WIRING.
+    """
+    import inspect
+
+    src = inspect.getsource(serve)
+    assert "fleet.tick(" in src or "watch_tick(" in src, (
+        "serve() never ticks the watch loop, so mcp children are unwatched"
+    )

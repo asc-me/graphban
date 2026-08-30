@@ -221,10 +221,25 @@ class Wave:
     #: Adapters in this wave that have no debug flag, when debug was asked for. Named so
     #: `--debug` cannot quietly mean "debug for some of them".
     debug_gaps: list[str] = field(default_factory=list)
+    #: Why this wave ended. `ok` is true only for the two idle reasons (P30 D6).
+    #: Empty until something decides: `up` writes `idle` when the children left and
+    #: nothing failed; `until` (D1) writes `idle-with-waits` when only typed human
+    #: waits remain.
+    reason: str = ""
+    #: Child exit 75 — stuck, evidence written, item released. Visible, not a
+    #: supervisor failure (P30 D6). Exit 70 is a failure and lives in `failures`.
+    give_ups: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        return not self.failures and not self.offline
+        """True only for idle and idle-with-waits (P30 D6).
+
+        A wave that exits 0 with leftover unsigned `review` is a failed run; that
+        check is `until`'s (D1). `up` writes `idle` when every child left and the
+        supervisor itself did not fail — a completed one-shot, not a leftover
+        backlog.
+        """
+        return self.reason in ("idle", "idle-with-waits")
 
 
 #: Builds the argv and config for one child. GRPH-449 replaces the caller-supplied
@@ -343,6 +358,8 @@ def up(
         _reap_all(wave, children)
 
         wave.after = _read_allocation(client, wave)
+        if not wave.failures and not wave.offline:
+            wave.reason = "idle"
 
     return wave
 
@@ -508,6 +525,38 @@ def _logs(workspace: Path, slot: str) -> Path:
     return workspace / "logs" / slot
 
 
+def watch_tick(
+    wave: Wave,
+    children: list[Child],
+    limits: Limits,
+    client: Graphban,
+    *,
+    debug: bool = False,
+) -> None:
+    """One pass of the watch loop: wall-clock, output pulse, lease, disowned.
+
+    Shared by `up`'s `_wait_out` and `gbfleet mcp` (P30 D6). Silence is a report, not
+    a kill — a long `run_tests` is legitimate quiet. The kill conditions stay the
+    PRD-22 four (wall-clock, never-registered, seat-gone, lease-lapsed), plus the
+    planner's `stop`.
+    """
+    roster = _roster(client, wave.partition)
+
+    for child in children:
+        if not child.running:
+            continue
+        if time.monotonic() - child.started_at > limits.child_wall_clock:
+            stop(child, Reason.WALL_CLOCK)
+            wave.failures.append(
+                f"{child.adapter} pid {child.pid}: over {limits.child_wall_clock:.0f}s, stopped"
+            )
+
+    _watch_output(wave, children, limits, debug=debug)
+    _enforce_the_lease(wave, children)
+    if roster is not None:
+        _catch_the_disowned(wave, children, roster, limits)
+
+
 def _wait_out(
     wave: Wave,
     children: list[Child],
@@ -531,22 +580,7 @@ def _wait_out(
     the item to somebody else and a second agent is already working it.
     """
     while any(child.running for child in children):
-        roster = _roster(client, wave.partition)
-
-        for child in children:
-            if not child.running:
-                continue
-            if time.monotonic() - child.started_at > limits.child_wall_clock:
-                stop(child, Reason.WALL_CLOCK)
-                wave.failures.append(
-                    f"{child.adapter} pid {child.pid}: over {limits.child_wall_clock:.0f}s, stopped"
-                )
-
-        _watch_output(wave, children, limits, debug=debug)
-        _enforce_the_lease(wave, children)
-        if roster is not None:
-            _catch_the_disowned(wave, children, roster, limits)
-
+        watch_tick(wave, children, limits, client, debug=debug)
         if any(child.running for child in children):
             sleep(poll)
 
@@ -758,6 +792,21 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
             wave.failures.append(f"{child.branch}: {exc}")
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
+
+        code = child.process.returncode
+        # gbagent.loop: 70 = handoff could not be written (item still claimed);
+        # 75 = stuck, evidence written, item released. P30 D6: 70 is a supervisor
+        # failure; 75 is a completed give-up, visible, not a failure by itself.
+        if code == 70:
+            wave.failures.append(
+                f"{child.adapter} pid {child.pid}: handoff-failed (exit 70); "
+                "the item is still claimed"
+            )
+        elif code == 75:
+            wave.give_ups.append(
+                f"{child.adapter} pid {child.pid}: stuck (exit 75); item released, "
+                "worktree salvaged"
+            )
 
         observe.child(ChildRecord(
             adapter=child.adapter,
