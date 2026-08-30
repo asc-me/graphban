@@ -137,6 +137,100 @@ def test_import_leaves_reach_project_and_attribution_null(db):
     assert imported[0].attributed_project_id is None
 
 
+CLUSTER_TEXT = (
+    "ELIG-CLUSTER-NEEDLE three independent observations of the same correction "
+    "about never promoting an unattributed ingest collapse as a counted project"
+)
+
+
+def test_get_lessons_three_attributed_siblings_are_eligible(client, auth, db):
+    """Eligibility at the GET caller, not only org_eligibility.
+
+    Three attributed human publishes in three sibling projects must come back
+    eligible. Replacing published_cluster with [shard] and scan=scanned reports
+    independence-1 ineligible and must fail this. Hardcoding unverifiable in
+    _lesson_row must fail this too.
+    """
+    p2 = client.post("/api/projects", json={"name": "Elig Two"}, headers=auth).json()["id"]
+    p3 = client.post("/api/projects", json={"name": "Elig Three"}, headers=auth).json()["id"]
+    shards = []
+    for pid in ("core", p2, p3):
+        shards.append(mem_svc.add_memory(
+            db, text_body=CLUSTER_TEXT, project_id=pid, status="published",
+            origin="user:ascme", actor_user_id="u1", attributed_project_id=pid,
+        ))
+    r = client.get("/api/memory/lessons?project_id=core", headers=auth)
+    assert r.status_code == 200, r.text
+    row = next(x for x in r.json()["results"] if x["id"] == shards[0].id)
+    assert row["eligibility"]["state"] == "eligible", row["eligibility"]
+    assert row["eligibility"]["cluster_scan"] == "scanned"
+    assert row["eligibility"]["distinct_projects"] == 3
+    assert row["eligibility"]["distinct_users"] == 1
+    assert row["eligibility"]["independence"] == 3
+
+
+def test_ingest_record_leaves_attribution_unmeasured(db):
+    """Collapsed ingest project_id must not become a counted project.
+
+    Filling attributed_project_id=project_id on _record must fail this.
+    """
+    from sqlalchemy import select
+
+    from app.services.ingest import Event
+    from app.services.ingest.runner import _record
+    from tests.test_transcript_ingest import LESSON
+
+    ev = Event(
+        session_id="sess-unmeasured", harness="claude-code", project="core",
+        ts="2026-08-29T00:00:00Z", kind="user", text=LESSON,
+    )
+    assert _record(db, mem_svc, ev, "core")
+    shard = db.scalars(
+        select(MemoryShard).where(MemoryShard.source == "transcript:claude-code:sess-unmeasured")
+    ).first()
+    assert shard is not None
+    assert shard.origin.startswith("ingest:")
+    assert shard.attributed_project_id is None
+    assert shard.actor_user_id is None
+    assert mem_svc._project_of(shard) is None
+    assert shard.project_id == "core"
+
+
+def test_hosted_null_org_id_does_not_match_other_null_org_ids(db, monkeypatch):
+    """Hosted isolation is a matching non-NULL org_id. Two NULL org_ids are not siblings.
+
+    Deleting the org_id is None → {pid} guard still passes the two-real-orgs test
+    below; this one fails, because SQLAlchemy `org_id == None` is IS NULL.
+    """
+    from app.config import settings
+    from app.services import projects as proj_svc
+
+    a = proj_svc.create_project(db, name="Hosted Null A", owner_user_id="u1", tag="HNA")
+    b = proj_svc.create_project(db, name="Hosted Null B", owner_user_id="u1", tag="HNB")
+    assert a.org_id is None and b.org_id is None
+    needle = mem_svc.add_memory(
+        db, text_body="NULL-ORG-NEEDLE must not leak across hosted empties",
+        project_id=a.id, status="published",
+    )
+    _promote_reach(db, needle, "org")
+
+    monkeypatch.setattr(settings, "hosted_mode", True)
+    listed_b = [s.id for s in mem_svc.list_shards(db, project_id=b.id)]
+    assert needle.id not in listed_b
+    hits_b = mem_svc.search_memory(
+        db, "NULL-ORG-NEEDLE must not leak across hosted empties",
+        top_k=20, project_id=b.id,
+    )
+    assert all(s.id != needle.id for s, _ in hits_b)
+    lessons_b = mem_svc.list_lessons(
+        db, b.id, readable_project_ids={a.id, b.id},
+        filters={}, limit=50, offset=0,
+    )
+    assert needle.id not in [r["id"] for r in lessons_b["results"]]
+    listed_a = [s.id for s in mem_svc.list_shards(db, project_id=a.id)]
+    assert needle.id in listed_a
+
+
 def test_hosted_org_reach_does_not_cross_tenants(db, monkeypatch):
     """NULL org_id matching other NULL org_ids would leak. Same-org only."""
     from app.config import settings

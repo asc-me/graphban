@@ -934,7 +934,7 @@ class MemoryShard(Base):
     # recorded rather than inferred from the text looking fine.
     scrubbed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
                                            nullable=False)
-    # Not `scope` (`global|item` is identity). Org-promoted shards keep project_id.
+    # Not `scope`. Promoting does not clear project_id.
     reach: Mapped[str] = mapped_column(
         String, default="project", server_default="project", nullable=False, index=True
     )

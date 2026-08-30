@@ -43,9 +43,7 @@ ORIGIN_PATH_STATES = ("ok", "gone", "unknown", "unindexed")
 TRANSFERABILITY_STATES = ("unverified", "evidenced", "unverifiable", "overridden")
 CLUSTER_SCAN_STATES = ("scanned", "cluster_scope_unmeasured")
 
-ORG_INDEPENDENCE_NEED = 3  # grilled, unchanged
-# Effectiveness is NOT age. Age is time since created_at.
-# A shard can be fresh and already failing; quiet must not raise the score.
+ORG_INDEPENDENCE_NEED = 3
 _MISS_KINDS = ("missed", "contradicted")
 
 
@@ -1443,8 +1441,7 @@ def _lesson_row(
     *,
     now: datetime | None = None,
 ) -> dict:
-    # Always call, including with []. Hardcoding unknown here would leave the GET
-    # green if lesson_effectiveness started returning 1.0 on empty input.
+    # Empty outcomes still go through the scorer; unknown is a result, not a skip.
     eff = lesson_effectiveness(shard, outcomes, origin_path="unknown", now=now)
     elig = org_eligibility(shard, cluster["members"], scan=cluster["scan"])
     xfer = transferability(shard, cluster["members"], scan=cluster["scan"])
@@ -1488,8 +1485,8 @@ def list_lessons(
 ) -> dict:
     """Published catalog. Reach-aware. Computes judgements after fetch, before limit.
 
-    Skips origin_path_state: a code-graph walk per row would paint the first paint,
-    and v1 has no origin-path chip. Empty outcomes still go through lesson_effectiveness.
+    Skips origin_path_state (a code-graph walk per originating item). Empty
+    outcomes still go through lesson_effectiveness.
     """
     filters = filters or {}
     stmt = (

@@ -499,7 +499,6 @@ class EffectivenessListOut(BaseModel):
     score: float | None
     trend: str
     drop_reasons: list[str]
-    # no history — that is a detail-page field
 
 
 class EligibilityOut(BaseModel):
