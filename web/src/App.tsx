@@ -18,6 +18,7 @@ import { LinksGraphView } from "@/features/links/LinksGraphView";
 import { FleetView } from "@/features/fleet/FleetView";
 import { GalaxyView } from "@/features/galaxy/GalaxyView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
+import { LessonsView } from "@/features/lessons/LessonsView";
 import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
 import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
 import { OrgAdminShell } from "@/features/orgadmin/OrgAdminShell";
@@ -81,6 +82,8 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["fleet", <FleetView />],
   ["activity", <ActivityView />],
   ["memory-review", <MemoryReviewView />],
+  ["lessons", <LessonsView />],
+  ["lessons/:id", <LessonsView />],
   ["prds", <PrdListView />],
   ["prds/:id", <PrdEditorView />],
   ["feedback-kit", <FeedbackKitView />],

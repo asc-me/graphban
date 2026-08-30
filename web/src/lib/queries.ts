@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { Item, RequestItem } from "./types";
+import type { Item, LessonFilters, RequestItem } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -15,6 +15,9 @@ export const keys = {
   items: ["items"] as const,
   counts: (projectId?: string) => ["counts", projectId] as const,
   shards: ["shards"] as const,
+  lessons: (projectId: string, filters?: LessonFilters) =>
+    ["lessons", projectId, filters ?? {}] as const,
+  lesson: (projectId: string, id: string) => ["lesson", projectId, id] as const,
   requests: ["requests"] as const,
   apiKeys: ["api-keys"] as const,
   prds: ["prds"] as const,
@@ -580,6 +583,51 @@ export function usePromoteCluster() {
     mutationFn: (v: { publishId: string; rejectIds: string[] }) =>
       api.promoteCluster(v.publishId, v.rejectIds),
     onSuccess: () => invalidateReview(qc),
+  });
+}
+
+export function useLessons(projectId?: string, filters?: LessonFilters) {
+  return useQuery({
+    queryKey: keys.lessons(projectId ?? "", filters),
+    queryFn: () => api.lessons(projectId!, filters),
+    enabled: !!projectId,
+  });
+}
+
+export function useLesson(projectId?: string, id?: string) {
+  return useQuery({
+    queryKey: keys.lesson(projectId ?? "", id ?? ""),
+    queryFn: () => api.lesson(projectId!, id!),
+    enabled: !!projectId && !!id,
+  });
+}
+
+function invalidateLessons(qc: ReturnType<typeof useQueryClient>, projectId: string, id: string) {
+  qc.invalidateQueries({ queryKey: ["lessons", projectId] });
+  qc.invalidateQueries({ queryKey: keys.lesson(projectId, id) });
+}
+
+export function useRecordLessonOutcome(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; kind: string; detail: string }) =>
+      api.recordLessonOutcome(v.id, { kind: v.kind, detail: v.detail }),
+    onSuccess: (row, v) => {
+      qc.setQueryData(keys.lesson(projectId, v.id), row);
+      invalidateLessons(qc, projectId, v.id);
+    },
+  });
+}
+
+export function usePromoteOrgLesson(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; override_reason?: string }) =>
+      api.promoteOrgLesson(v.id, v.override_reason),
+    onSuccess: (row, v) => {
+      qc.setQueryData(keys.lesson(projectId, v.id), row);
+      invalidateLessons(qc, projectId, v.id);
+    },
   });
 }
 

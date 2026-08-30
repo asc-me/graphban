@@ -86,6 +86,38 @@ describe("P28 self-host rail", () => {
     expect(await screen.findByText("Code graph")).toBeInTheDocument();
     expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
   });
+
+  it("shows Memory and Lessons under Observe on /lessons (children are collapsed on /tracker)", async () => {
+    wrap(<LeftNav />, "/lessons");
+    expect(await screen.findByText("Lessons")).toBeInTheDocument();
+    expect(screen.getByText("Memory")).toBeInTheDocument();
+    expect(screen.getByText("Activity")).toBeInTheDocument();
+  });
+
+  it("keeps Lessons in OBSERVE next to Memory, and does not land Observe on /lessons", () => {
+    const sources = import.meta.glob("../components/shell/LeftNav.tsx", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    const src = Object.values(sources)[0] ?? "";
+    const observe = src.match(/const OBSERVE = \[[\s\S]*?\];/)?.[0] ?? "";
+    expect(observe).toContain('to: "/lessons"');
+    expect(observe).toContain('to: "/memory-review"');
+
+    const hostedStart = src.indexOf("const WORKSPACE");
+    const hosted = src.slice(hostedStart, src.indexOf("as const", hostedStart));
+    const mem = hosted.indexOf('to: "memory-review"');
+    const les = hosted.indexOf('to: "lessons"');
+    expect(mem).toBeGreaterThan(-1);
+    expect(les).toBeGreaterThan(mem);
+    expect(hosted.slice(mem, les).match(/to:/g)?.length).toBe(1);
+
+    const def = src.slice(src.indexOf("observeDefault"), src.indexOf("observeDefault") + 180);
+    expect(def).toContain("/memory-review");
+    expect(def).toContain("/activity");
+    expect(def).not.toContain("/lessons");
+  });
 });
 
 describe("P28 hosted rail is untouched", () => {
@@ -97,6 +129,8 @@ describe("P28 hosted rail is untouched", () => {
     expect(screen.getByText("MCP Tools")).toBeInTheDocument();
     expect(screen.getByText("Feedback Kit")).toBeInTheDocument();
     expect(screen.getByText("Galaxy")).toBeInTheDocument();
+    expect(screen.getByText("Lessons")).toBeInTheDocument();
+    expect(screen.getByText("Memory review")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Plan" })).not.toBeInTheDocument();
   });
 

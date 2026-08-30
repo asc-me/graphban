@@ -317,6 +317,113 @@ export interface ShardHit {
   score: number;
 }
 
+// ── Lessons catalog (Observe → Lessons). Enums travel on the list envelope;
+//    the page renders data.enums rather than a parallel copy. ────────────────
+export interface LessonFilters {
+  trend?: string;
+  caught_state?: string;
+  eligibility?: string;
+  lesson_class?: string;
+}
+
+export interface LessonEnums {
+  reaches: string[];
+  lesson_classes: string[];
+  unclassified_filter: string;
+  caught_states: string[];
+  eligibilities: string[];
+  trends: string[];
+  transferability_states: string[];
+}
+
+export interface EffectivenessList {
+  score: number | null;
+  trend: string;
+  drop_reasons: string[];
+}
+
+export interface EffectivenessHistoryPoint {
+  at: string;
+  score: number | null;
+  caught_state: string;
+  outcome_id: number | null;
+}
+
+export interface EffectivenessDetail extends EffectivenessList {
+  history: EffectivenessHistoryPoint[];
+}
+
+export interface Eligibility {
+  state: string;
+  independence: number | null;
+  distinct_projects: number | null;
+  distinct_users: number | null;
+  cluster_scan: string;
+  reason: string;
+}
+
+/** List row. history / origin_path are detail-only — do not chart them here. */
+export interface LessonListRow {
+  id: string;
+  text: string;
+  scope: string;
+  source: string;
+  status: string;
+  origin: string;
+  item_id: string | null;
+  project_id: string | null;
+  fresh: boolean;
+  scoring_source: string;
+  auto_confidence: number | null;
+  created_at: string;
+  reach: string;
+  lesson_class: string;
+  suggested_class: string | null;
+  age_state: string;
+  caught_state: string;
+  effectiveness: EffectivenessList;
+  eligibility: Eligibility;
+  transferability: string;
+}
+
+export interface LessonOutcomeRow {
+  id: number;
+  shard_id: string;
+  kind: string;
+  source: string;
+  related_item_id: string | null;
+  related_shard_id: string | null;
+  detail: string;
+  created_at: string;
+}
+
+export interface LessonEvent {
+  action: string;
+  actor_type: string;
+  actor_label: string;
+  ts: string;
+  meta: Record<string, unknown> | null;
+}
+
+export interface LessonDetail extends LessonListRow {
+  effectiveness: EffectivenessDetail;
+  origin_path: string;
+  cluster: Shard[];
+  unread_cluster_tags: string[];
+  outcomes: LessonOutcomeRow[];
+  events: LessonEvent[];
+  originating_item: { id: string; title: string; status: string } | null;
+}
+
+export interface LessonList {
+  enums: LessonEnums;
+  results: LessonListRow[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+}
+
 // ── In-app AI assistant (AL-175) ───────────────────────────────────────────
 export interface AssistantThread {
   id: string;
