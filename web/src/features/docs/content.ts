@@ -141,7 +141,25 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 2, h: "Publish or reject", b: "Publish promotes a shard into the trusted retrieval path every future agent searches. Reject keeps it for provenance but never surfaces it. Both are recorded in Activity." },
       { num: 3, h: "Recurring lessons", b: "When the same correction shows up several times, it's grouped as a recurring lesson — publish it once as a principle and drop the duplicates in a single action." },
     ],
-    related: [{ label: "Activity", to: "/activity" }],
+    related: [
+      { label: "Lessons", to: "/lessons" },
+      { label: "Activity", to: "/activity" },
+    ],
+  },
+
+  "/lessons": {
+    badge: "LESSONS",
+    title: "Lessons",
+    tagline: "Published memory, scored against whether it is still catching anything.",
+    sections: [
+      { num: 1, h: "Catalog, not inbox", b: "This is the published set. Candidates stay in Memory review until you stand behind them. An empty catalog is not a high score." },
+      { num: 2, h: "Unknown is a real state", b: "Caught-issues and effectiveness stay unknown until something is counted. Quiet time does not raise the score. A missing measurement is unverifiable, not ineligible." },
+      { num: 3, h: "Org promotion", b: "The Promote control is always on the detail page when the lesson is still project-reach. It shows the real reason it is disabled. Unverifiable cannot be overridden. There is no separate org-catalog page in this slice — a successful promote is visible on sibling project lists." },
+    ],
+    related: [
+      { label: "Memory review", to: "/memory-review" },
+      { label: "Activity", to: "/activity" },
+    ],
   },
 
   "/activity": {
@@ -198,6 +216,8 @@ export const GLOBAL_SHORTCUTS: DocShortcut[] = [
 
 export function docFor(pathname: string): DocEntry {
   if (/^\/prds\/[^/]+$/.test(pathname)) return CONTENT["prd-editor"];
+  // Hosted prefix + list/detail. Exact map would drop /lessons/:id and /p/:tag/lessons to default.
+  if (/^\/(?:p\/[^/]+\/)?lessons(?:\/[^/]+)?$/.test(pathname)) return CONTENT["/lessons"];
   if (pathname === "/home") return CONTENT["/dashboard"];
   if (pathname.startsWith("/settings/project/mcp")) return CONTENT["/mcp-tools"];
   if (pathname.startsWith("/settings/project/feedback-kit")) return CONTENT["/feedback-kit"];

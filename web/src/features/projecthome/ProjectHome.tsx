@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  BookMarked,
   Inbox,
   ListChecks,
   Network,
@@ -122,7 +123,9 @@ const SURFACES = [
   { to: "code", label: "Code graph", icon: <Network size={15} />,
     desc: "The structure agents describe as they work, and the arrows that leave the repo." },
   { to: "memory-review", label: "Memory", icon: <Inbox size={15} />,
-    desc: "Lessons waiting for a human to vouch for them." },
+    desc: "Candidates until you publish them." },
+  { to: "lessons", label: "Lessons", icon: <BookMarked size={15} />,
+    desc: "Published memory, scored against whether it is still catching anything." },
   { to: "fleet", label: "Agents", icon: <Users size={15} />,
     desc: "Who is working here right now, what they hold, and for how long." },
 ];

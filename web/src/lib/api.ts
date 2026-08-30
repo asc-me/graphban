@@ -39,6 +39,9 @@ import type {
   Item,
   EventPage,
   GrillMessage,
+  LessonDetail,
+  LessonFilters,
+  LessonList,
   GrillState,
   IntentDiff,
   McpToolInfo,
@@ -465,6 +468,30 @@ export const api = {
     request<Shard[]>(`/memory/auto-actions${projectId ? `?project_id=${projectId}` : ""}`),
   undoAutoShard: (id: string) =>
     request<Shard>(`/memory/shards/${id}/undo-auto`, { method: "POST" }),
+
+  lessons: (projectId: string, filters: LessonFilters = {}) => {
+    const q = new URLSearchParams({ project_id: projectId });
+    if (filters.trend) q.set("trend", filters.trend);
+    if (filters.caught_state) q.set("caught_state", filters.caught_state);
+    if (filters.eligibility) q.set("eligibility", filters.eligibility);
+    if (filters.lesson_class) q.set("lesson_class", filters.lesson_class);
+    return request<LessonList>(`/memory/lessons?${q.toString()}`);
+  },
+  lesson: (projectId: string, id: string) =>
+    request<LessonDetail>(
+      `/memory/lessons/${encodeURIComponent(id)}?project_id=${encodeURIComponent(projectId)}`,
+    ),
+  // JWT only, same as publishShard — no project_id on the wire.
+  recordLessonOutcome: (id: string, body: { kind: string; detail: string }) =>
+    request<LessonDetail>(`/memory/lessons/${encodeURIComponent(id)}/outcomes`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  promoteOrgLesson: (id: string, override_reason?: string) =>
+    request<LessonDetail>(`/memory/lessons/${encodeURIComponent(id)}/promote-org`, {
+      method: "POST",
+      body: JSON.stringify(override_reason ? { override_reason } : {}),
+    }),
 
   requests: (projectId?: string) =>
     request<RequestItem[]>(`/requests${projectId ? `?project_id=${projectId}` : ""}`),
