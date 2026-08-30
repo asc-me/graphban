@@ -934,11 +934,47 @@ class MemoryShard(Base):
     # recorded rather than inferred from the text looking fine.
     scrubbed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
                                            nullable=False)
+    # Not `scope` (`global|item` is identity). Org-promoted shards keep project_id.
+    reach: Mapped[str] = mapped_column(
+        String, default="project", server_default="project", nullable=False, index=True
+    )
+    # "" = unclassified. Empty is a state, not a missing value.
+    lesson_class: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False
+    )
+    # NULL is unmeasured. SET NULL so a deleted user does not stay a countable ghost.
+    actor_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # NULL is unmeasured. Ingest leaves this NULL; do not backfill from project_id.
+    attributed_project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     @property
     def item_key(self) -> str | None:
         return _key_of(self, self.item_id, "item")
+
+
+class LessonOutcome(Base):
+    """One counted thing that happened to a published lesson.
+
+    Not a score. Effectiveness reads this list; an empty list is unknown, not 1.0.
+    """
+
+    __tablename__ = "lesson_outcomes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    shard_id: Mapped[str] = mapped_column(ForeignKey("memory_shards.id"), index=True)
+    # caught | missed | applied | contradicted
+    kind: Mapped[str] = mapped_column(String)
+    # human | recurrence | evidence
+    source: Mapped[str] = mapped_column(String)
+    related_item_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    related_shard_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Request(Base):

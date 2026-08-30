@@ -495,6 +495,54 @@ class ScoredCandidate(BaseModel):
     duplicate_of: str | None = None
 
 
+class EffectivenessListOut(BaseModel):
+    score: float | None
+    trend: str
+    drop_reasons: list[str]
+    # no history — that is a detail-page field
+
+
+class EligibilityOut(BaseModel):
+    state: str
+    independence: int | None
+    distinct_projects: int | None
+    distinct_users: int | None
+    cluster_scan: str
+    reason: str
+
+
+class LessonListRow(BaseModel):
+    id: str
+    text: str
+    scope: str
+    source: str
+    status: str
+    origin: str
+    item_id: str | None = None
+    project_id: str | None
+    fresh: bool
+    scoring_source: str = ""
+    auto_confidence: float | None = None
+    created_at: datetime
+    reach: str
+    lesson_class: str
+    suggested_class: str | None = None
+    age_state: str
+    caught_state: str
+    effectiveness: EffectivenessListOut
+    eligibility: EligibilityOut
+    transferability: str
+
+
+class LessonListOut(BaseModel):
+    enums: dict
+    results: list[LessonListRow]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
 # ---- Requests ----
 class RequestCreate(BaseModel):
     type: str

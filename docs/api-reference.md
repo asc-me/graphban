@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 96 of the 169 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 97 of the 170 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -69,6 +69,7 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
 | GET | `/api/memory/shards` | JWT | (optional `?status=candidate\|published\|rejected`) |
+| GET | `/api/memory/lessons` | JWT | Published catalog with computed effectiveness; empty is "no published lessons", not a score |
 | GET | `/api/memory/candidates` | JWT | The review queue — agent shards awaiting publish (AL-49) |
 | POST | `/api/memory/shards` | JWT | Human-authored → published immediately |
 | PATCH | `/api/memory/shards/{id}` | JWT | |
