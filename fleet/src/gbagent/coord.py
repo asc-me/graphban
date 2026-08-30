@@ -160,7 +160,12 @@ class Coordinator:
         So this is not only about being seen. Without it the lease expires mid-build and
         another agent can be handed work this one is actively doing.
         """
-        arguments = {"id": self.item_id}
+        # Empty id is presence-only. Sending `id=""` is the same as omitting it on the
+        # server (`if not args.get("id")`), but recording the id we *meant* is how a
+        # test catches a run that claimed and never adopted (GRPH-605 / P30 D4).
+        arguments: dict = {}
+        if self.item_id:
+            arguments["id"] = self.item_id
         if self.agent_id:
             arguments["agent_id"] = self.agent_id
         return self.client.call("heartbeat", **arguments)

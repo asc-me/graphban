@@ -207,6 +207,10 @@ def run(
             results.append(result)
             report(Trace(turn=turns, kind="tool", name=call.name, ok=not result.is_error,
                          text=_clip(result.content)))
+            # P30 D4: the turn that claims is the turn the lease heartbeat learns the
+            # id. Waiting until give-up leaves every beat as presence-only for the
+            # whole successful run (600s lease, 1800s run_tests).
+            coordinator.adopt(toolset.claimed_item)
         session.add_results(results)
         if first_write is None and toolset.written:
             # The turn the work started on. Recorded here rather than counted afterwards

@@ -672,6 +672,33 @@ def test_a_beat_carries_the_item_id_so_the_LEASE_is_extended_too(wt):
     assert sent[0]["arguments"] == {"id": "GRPH-1", "agent_id": "agt_9"}
 
 
+def test_a_beat_with_no_item_omits_id_rather_than_sending_empty(wt):
+    """P30 D4. Empty id is presence-only. Sending `id=""` is the same as omitting it
+    on the server (`if not args.get("id")`), but a recorded empty string is how a
+    claimed-and-never-adopted run hides: the call looks like a lease beat and is not.
+
+    This is the other half of `test_a_beat_carries_the_item_id_so_the_LEASE_is_extended_too`.
+    That one constructs the coordinator WITH an id already — which is the hole D4 names.
+    Together they pin: no item → no `id` key; an item → that id, not `""`.
+    """
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sent.append(body["params"])
+        return _mcp({}, id_=body["id"])
+
+    Coordinator(client=_graphban(handler), item_id="", agent_id="agt_9").beat()
+
+    assert sent[0]["name"] == "heartbeat"
+    assert "id" not in sent[0]["arguments"], (
+        f"empty item_id was sent as {sent[0]['arguments'].get('id')!r} — the server "
+        "treats that as presence-only, so a later claim that never adopted looks like "
+        "a healthy idle agent while its lease expires"
+    )
+    assert sent[0]["arguments"] == {"agent_id": "agt_9"}
+
+
 def test_the_cadence_call_is_presence_only(wt):
     """The mirror. Asking for the cadence must NOT carry an item id — that call is made at
     start-up before any work, and `idle` is what this agent honestly is at that moment. It is
