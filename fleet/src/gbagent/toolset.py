@@ -122,7 +122,8 @@ class Toolset:
 
     @property
     def claimed_item(self) -> str | None:
-        """What the model claimed, so the give-up path can write a handoff about it."""
+        """What the model claimed, so the heartbeat can extend that lease (P30 D4)
+        and the give-up path can write a handoff about it."""
         return getattr(self.orientation, "claimed_item", None)
 
     @property

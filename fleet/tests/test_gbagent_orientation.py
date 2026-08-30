@@ -52,10 +52,19 @@ def _listing(names, calls: list | None = None):
         if body["method"] == "tools/list":
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
                                              "result": {"tools": _manifest(names)}})
-        # `claim_next` answers with the ITEM, which is what the harness has to remember.
-        payload = ({"id": "GRPH-1", "title": "a claimed item", "status": "in_progress"}
-                   if body["params"]["name"] == "claim_next"
-                   else {"hits": [{"path": "app/items.py", "line": 12}]})
+        # Real wire shapes: `claim_next` is `{claimed, item}`; `claim_cluster` is
+        # `{claimed, items}`. A mock that returned a bare `{id}` hid a parser that
+        # never read the wrapper the server actually sends (P30 D4).
+        name = body["params"]["name"]
+        if name == "claim_next":
+            payload = {"claimed": True,
+                       "item": {"id": "GRPH-1", "title": "a claimed item", "status": "in_progress"}}
+        elif name == "claim_cluster":
+            payload = {"claimed": True,
+                       "items": [{"id": "GRPH-1", "title": "a claimed item"},
+                                 {"id": "GRPH-2", "title": "its neighbour"}]}
+        else:
+            payload = {"hits": [{"path": "app/items.py", "line": 12}]}
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
                                          "result": {"structuredContent": payload}})
     return handler
@@ -502,6 +511,27 @@ def test_a_successful_claim_is_remembered():
     orientation.execute(ToolCall(id="c", name="claim_next", input={"wait_seconds": 0}))
 
     assert orientation.claimed_item == "GRPH-1"
+
+
+def test_a_cluster_claim_is_remembered():
+    """P30 D3/D4. `claim_cluster` answers `{items: [...]}`, seed first. Remembering only
+    `claim_next` would leave a fleet worker's heartbeat without an id after the tool the
+    PRD says to call. Advertised here via `extra` so D4 can land without D3 widening
+    `COORDINATION_TOOLS` in the same commit.
+    """
+    from gbagent.coord import WORKER_TOOLS
+    from gbagent.orient import COORDINATION_TOOLS
+
+    extra = (*COORDINATION_TOOLS, "claim_cluster")
+    client = Graphban("http://graphban.invalid", "gbk_seat",
+                      allowed=WORKER_TOOLS | {"claim_cluster"},
+                      transport=httpx.MockTransport(
+                          _listing([*ORIENTATION_TOOLS, *extra])))
+    orientation = orient.build(client, extra=extra)
+
+    orientation.execute(ToolCall(id="c", name="claim_cluster", input={"wait_seconds": 0}))
+
+    assert orientation.claimed_item == "GRPH-1", "the seed, not the neighbour"
 
 
 def test_an_empty_queue_leaves_nothing_claimed():

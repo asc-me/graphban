@@ -13,19 +13,24 @@ not work.
 """
 from __future__ import annotations
 
+import json
 import stat
 import threading
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 
+from gbagent import loop, orient
 from gbagent.config import VerifyConfig
+from gbagent.coord import WORKER_TOOLS, Coordinator
 from gbagent.heartbeat import FALLBACK_INTERVAL, Heartbeat
-from gbagent.llm import ToolCall
+from gbagent.llm import ToolCall, ToolTurn
+from gbagent.orient import COORDINATION_TOOLS, ORIENTATION_TOOLS
 from gbagent.toolset import Toolset
 from conftest import make_stub_script, stub_argv  # noqa: E402
-from gbfleet.client import ProtocolError, ServerUnreachable, ToolFailed
+from gbfleet.client import Graphban, ProtocolError, ServerUnreachable, ToolFailed
 
 
 class FakeCoord:
@@ -37,6 +42,10 @@ class FakeCoord:
         self.beat_ids: list[object] = []
         self._interval = interval
         self._beat_raises = beat_raises
+        # Pre-set. Every test below that only counts beats is satisfied by this, which is
+        # the hole P30 D4 names: a coordinator constructed WITH an id is not a test of
+        # "the model claimed and the next beat carried it". See
+        # `test_a_claim_then_the_next_beat_carries_the_claimed_id`.
         self.item_id = "GRPH-999"
         self.agent_id = "GRPH-A9"
         self._lock = threading.Lock()
@@ -240,3 +249,127 @@ def test_the_cli_starts_and_stops_the_heartbeat_around_the_loop():
     # leave a thread beating for an item nobody is working.
     tail = src[src.index("finally:", run_at):]
     assert "heartbeat.stop()" in tail.split("return")[0]
+
+
+# ---- P30 D4: the beat after a claim carries the claimed id, not "" ----------------------
+#
+# Spawned gbagent starts with `item_id=""` (`cli.py`, `--item` defaults to empty).
+# `adopt()` used to run only on give-up, so a successful run's every beat was
+# presence-only. The lease is 600s; `run_tests` may block 1800s. Tests that
+# construct a coordinator WITH an id already (FakeCoord above, and
+# `test_a_beat_carries_the_item_id_so_the_LEASE_is_extended_too`) cannot catch this.
+#
+# Sabotage: leave `adopt` only on give-up. This test must fail.
+
+
+class _ClaimSession:
+    def __init__(self, turns):
+        self._turns = list(turns)
+        self.calls = 0
+
+    def run_turn(self, specs):
+        turn = self._turns[min(self.calls, len(self._turns) - 1)]
+        self.calls += 1
+        return turn
+
+    def add_results(self, results):
+        pass
+
+
+def _mcp(payload: dict, id_: int = 1) -> httpx.Response:
+    return httpx.Response(200, json={"jsonrpc": "2.0", "id": id_,
+                                     "result": {"structuredContent": payload}})
+
+
+def _claim_then_beat(wt: Path, *, tool: str, payload: dict, extra: tuple[str, ...] = ()):
+    """Run a loop that claims, finishes (does NOT give up), then beat. Returns the
+    heartbeat arguments sent on that beat, and the coordinator.
+    """
+    sent: list[dict] = []
+    wanted = (*ORIENTATION_TOOLS, *COORDINATION_TOOLS, *extra)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "tools/list":
+            tools = [{"name": n, "description": n,
+                      "inputSchema": {"type": "object", "properties": {}}}
+                     for n in wanted]
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
+                                             "result": {"tools": tools}})
+        name = body["params"]["name"]
+        arguments = body["params"].get("arguments") or {}
+        if name == "heartbeat":
+            sent.append(arguments)
+            return _mcp({}, id_=body["id"])
+        if name == tool:
+            return _mcp(payload, id_=body["id"])
+        return _mcp({}, id_=body["id"])
+
+    allowed = WORKER_TOOLS | set(extra)
+    client = Graphban("http://graphban.invalid", "gbk_seat", allowed=allowed,
+                      transport=httpx.MockTransport(handler))
+    coordinator = Coordinator(client=client, item_id="", agent_id="agt_9")
+    orientation = orient.build(client, extra=(*COORDINATION_TOOLS, *extra))
+    runner = make_stub_script(wt / "backend" / "r.py", prints=("1 passed in 1.0s",))
+    toolset = Toolset(root=wt, cfg=VerifyConfig(argv=stub_argv(runner), cwd=wt / "backend",
+                                                source="r.py"), orientation=orientation)
+    outcome = loop.run(
+        _ClaimSession([
+            ToolTurn(tool_calls=[ToolCall(id="c", name=tool, input={})], wants_tools=True),
+            ToolTurn(text="DONE", wants_tools=False),
+        ]),
+        toolset, coordinator=coordinator, window=100_000, budget=9,
+    )
+    assert outcome.status == "finished", (
+        f"the load-bearing path is a successful claim-and-finish, not a give-up "
+        f"(got {outcome.status})"
+    )
+    coordinator.beat()
+    assert sent, "the beat after the claim never reached the server"
+    return sent[-1], coordinator
+
+
+def test_a_claim_then_the_next_beat_carries_the_claimed_id(wt):
+    """THE LOAD-BEARING TEST for P30 D4.
+
+    `claim_next` with `item_id=""`, then the next `beat()` carries the claimed id.
+    Sabotage: leave `adopt` only on give-up; a successful finish never hits that
+    path, so this fails, and the 600s lease dies under `run_tests`.
+    """
+    arguments, coordinator = _claim_then_beat(
+        wt, tool="claim_next",
+        payload={"claimed": True,
+                 "item": {"id": "GRPH-1", "title": "a claimed item", "status": "in_progress"}},
+    )
+
+    assert coordinator.item_id == "GRPH-1"
+    assert arguments.get("id") == "GRPH-1"
+    assert arguments.get("agent_id") == "agt_9"
+
+
+def test_a_cluster_claim_then_the_next_beat_carries_the_seed_id(wt):
+    """The same, through `claim_cluster`. Remembering only `claim_next` would leave a
+    fleet worker's heartbeat presence-only after the tool the PRD says to call.
+    """
+    arguments, coordinator = _claim_then_beat(
+        wt, tool="claim_cluster", extra=("claim_cluster",),
+        payload={"claimed": True,
+                 "items": [{"id": "GRPH-1", "title": "seed"},
+                           {"id": "GRPH-2", "title": "neighbour"}]},
+    )
+
+    assert coordinator.item_id == "GRPH-1"
+    assert arguments.get("id") == "GRPH-1"
+
+
+def test_an_empty_claim_leaves_the_next_beat_presence_only(wt):
+    """The mirror. Remembering a phantom from `{claimed: false}` would send a lease
+    beat for a row that does not exist.
+    """
+    arguments, coordinator = _claim_then_beat(
+        wt, tool="claim_next",
+        payload={"claimed": False, "item": None},
+    )
+
+    assert coordinator.item_id == ""
+    assert "id" not in arguments

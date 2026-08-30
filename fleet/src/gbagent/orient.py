@@ -151,13 +151,24 @@ class Orientation:
             payload = self.client.call(call.name, **arguments)
         except Exception as exc:  # noqa: BLE001 — refusals, tool errors and outages all read back
             return ToolResult(id=call.id, content=f"{call.name}: {exc}", is_error=True)
-        if call.name == "claim_next":
+        if call.name in ("claim_next", "claim_cluster"):
             self._remember_claim(payload)
         return ToolResult(id=call.id, content=_render(payload))
 
     def _remember_claim(self, payload: dict) -> None:
-        """`claim_next` answers with the item, or with nothing when the queue is empty."""
-        item = payload.get("item") if isinstance(payload.get("item"), dict) else payload
+        """A successful claim, or nothing when the queue is empty.
+
+        `claim_next` answers `{item: {id}}`; `claim_cluster` answers `{items: [{id}, ...]}`.
+        Remembering only `claim_next` would leave a fleet worker's heartbeat without an
+        id after the tool the PRD says to call (P30 D3/D4).
+        """
+        item = payload.get("item") if isinstance(payload.get("item"), dict) else None
+        if item is None:
+            items = payload.get("items")
+            if isinstance(items, list) and items and isinstance(items[0], dict):
+                item = items[0]
+        if item is None and isinstance(payload, dict) and payload.get("id"):
+            item = payload
         key = item.get("id") if isinstance(item, dict) else None
         if key:
             self.claimed_item = str(key)
