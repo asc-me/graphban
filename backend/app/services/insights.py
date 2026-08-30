@@ -83,6 +83,7 @@ def extract_lessons(db: Session, item_id: str) -> list[dict]:
             db, text_body=text, scope="item", source=f"lesson from {item.id}",
             item_id=item.id, project_id=item.project_id, fresh=True,
             status="candidate", origin="agent:auto-extract",
+            attributed_project_id=item.project_id,
         )
         created.append({"id": shard.id, "text": shard.text, "status": shard.status})
     return created

@@ -1,18 +1,19 @@
 """Memory shard service — semantic search over pgvector with a SQLite fallback."""
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import re
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import bindparam, func, or_, select, text
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.embeddings import cosine_similarity, get_embedder, safe_embed
-from app.models import MemoryShard, Project
+from app.models import CodeNode, Item, LessonOutcome, MemoryShard, Project
 from app.services import events as events_svc
 
 logger = logging.getLogger("graphban.memory")
@@ -28,6 +29,66 @@ def _includes_global(db: Session, project_id: str) -> bool:
         return False
     project = db.get(Project, project_id)
     return bool(project and project.share_global_memory)
+
+
+REACHES = ("project", "org")
+LESSON_CLASSES = ("correction", "drift", "preference", "observation")  # "" is unclassified
+UNCLASSIFIED_FILTER = "unclassified"
+CAUGHT_STATES = ("caught", "missed", "unknown", "mixed")
+ELIGIBILITIES = ("ineligible", "eligible", "unverifiable", "promoted")
+TRENDS = ("dropping", "stable", "rising", "unmeasured")
+OUTCOME_KINDS = ("caught", "missed", "applied", "contradicted")
+OUTCOME_SOURCES = ("human", "recurrence", "evidence")
+ORIGIN_PATH_STATES = ("ok", "gone", "unknown", "unindexed")
+TRANSFERABILITY_STATES = ("unverified", "evidenced", "unverifiable", "overridden")
+CLUSTER_SCAN_STATES = ("scanned", "cluster_scope_unmeasured")
+
+ORG_INDEPENDENCE_NEED = 3
+_MISS_KINDS = ("missed", "contradicted")
+
+
+def sibling_project_ids(db: Session, project_id: str | None) -> set[str]:
+    """Projects whose org-reach shards may surface for `project_id`.
+
+    Hosted isolation is `org_id`, not "every NULL org_id": empty org_id matching
+    other empty org_ids would leak across tenants. Self-host has no tenants, so
+    every project on the instance is a sibling.
+    """
+    if not project_id:
+        return set()
+    project = db.get(Project, project_id)
+    if project is None:
+        return {project_id}
+    if settings.hosted_mode:
+        if project.org_id is None:
+            return {project_id}
+        return set(db.scalars(select(Project.id).where(Project.org_id == project.org_id)).all())
+    return set(db.scalars(select(Project.id)).all())
+
+
+def _project_match_where(project_id: str, sibling_ids: set[str], include_global: bool):
+    """SQLAlchemy predicate for list_shards / list_lessons."""
+    clauses = [MemoryShard.project_id == project_id]
+    if sibling_ids:
+        clauses.append(
+            (MemoryShard.reach == "org") & MemoryShard.project_id.in_(sibling_ids)
+        )
+    if include_global:
+        clauses.append(MemoryShard.project_id.is_(None))
+    return or_(*clauses)
+
+
+def _project_match_sql(include_global: bool) -> str:
+    """Raw AND … clause for Postgres search_memory (`<=>` path).
+
+    Bind :pid and :sibling_ids the same way today's :pid is bound.
+    """
+    extra = " OR project_id IS NULL" if include_global else ""
+    return (
+        "AND (project_id = :pid"
+        " OR (reach = 'org' AND project_id IN :sibling_ids)"
+        f"{extra})"
+    )
 
 
 def age_state(shard: MemoryShard, *, now: datetime | None = None) -> str:
@@ -68,12 +129,11 @@ def list_shards(
     hard-deleted", and a row nothing can fetch is deleted in every way that matters."""
     stmt = select(MemoryShard)
     if project_id:
-        if _includes_global(db, project_id):
-            stmt = stmt.where(
-                (MemoryShard.project_id == project_id) | (MemoryShard.project_id.is_(None))
-            )
-        else:
-            stmt = stmt.where(MemoryShard.project_id == project_id)
+        stmt = stmt.where(_project_match_where(
+            project_id,
+            sibling_project_ids(db, project_id),
+            _includes_global(db, project_id),
+        ))
     if status is not None:
         stmt = stmt.where(MemoryShard.status == status)
     stmt = stmt.order_by(MemoryShard.created_at.desc())
@@ -100,6 +160,8 @@ def add_memory(
     origin: str = "",
     auto_triage: bool = True,
     embed_text: str | None = None,
+    actor_user_id: str | None = None,
+    attributed_project_id: str | None = None,
 ) -> MemoryShard:
     """`embed_text` lets a producer store a READABLE shard while the ladder compares only
     its content (GRPH-350).
@@ -138,6 +200,8 @@ def add_memory(
         fresh=fresh,
         status=status,
         origin=origin,
+        actor_user_id=actor_user_id,
+        attributed_project_id=attributed_project_id,
     )
     db.add(shard)
     db.commit()
@@ -938,6 +1002,8 @@ def export_shards(db: Session, project_id: str | None = None) -> list[dict]:
 
 
 def import_shards(db: Session, rows: list[dict], project_id: str = "core") -> int:
+    # Old dumps have no reach/attribution. The column default is project + NULL;
+    # inferring org on import would promote unexamined rows.
     for row in rows:
         add_memory(
             db,
@@ -970,14 +1036,13 @@ def search_memory(
         # pgvector: cosine distance operator `<=>`; similarity = 1 - distance.
         params: dict = {"qv": _vector_literal(qvec), "k": top_k}
         project_clause = ""
+        expanding = False
         if project_id is not None:
             params["pid"] = project_id
-            # Honor share_global_memory: only fold in global (NULL) shards when the
-            # project opts in and we're not in hosted mode (AL-71).
-            if _includes_global(db, project_id):
-                project_clause = "AND (project_id = :pid OR project_id IS NULL)"
-            else:
-                project_clause = "AND project_id = :pid"
+            sibs = list(sibling_project_ids(db, project_id) or [project_id])
+            params["sibling_ids"] = sibs
+            project_clause = _project_match_sql(_includes_global(db, project_id))
+            expanding = True
         # Bind the allowed statuses as an IN-list (never surface `rejected`).
         status_names = [f":st{i}" for i in range(len(allowed))]
         for i, st in enumerate(allowed):
@@ -993,6 +1058,8 @@ def search_memory(
             LIMIT :k
             """
         )
+        if expanding:
+            sql = sql.bindparams(bindparam("sibling_ids", expanding=True))
         rows = db.execute(sql, params).all()
         out: list[tuple[MemoryShard, float]] = []
         for row in rows:
@@ -1008,3 +1075,463 @@ def search_memory(
     ]
     scored.sort(key=lambda t: t[1], reverse=True)
     return scored[:top_k]
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _user_of(shard: MemoryShard) -> str | None:
+    return shard.actor_user_id  # None until populated; origin strings do not count
+
+
+def _project_of(shard: MemoryShard) -> str | None:
+    # Ingest without per-source attribution is unmeasured, even though project_id
+    # is always filled (often "core").
+    if (shard.origin or "").startswith("ingest:"):
+        return shard.attributed_project_id
+    return shard.attributed_project_id or shard.project_id
+
+
+def _touchpoint_hits(paths: set[str], touchpoint: str) -> int:
+    """Code-graph nodes that sit at `touchpoint`.
+
+    Sibling-directory match would treat a leftover file as the claimed path still
+    existing. Exact path, a symbol beneath it, or an explicit glob — same bar as
+    evidence_rollup.
+    """
+    tp = (touchpoint or "").strip()
+    if not tp:
+        return 0
+    if "*" in tp:
+        return sum(1 for p in paths if fnmatch.fnmatch(p, tp))
+    return sum(1 for p in paths if p == tp or p.startswith(f"{tp}::"))
+
+
+def _caught_state(n_caught: int, n_missed: int) -> str:
+    if n_caught == 0 and n_missed == 0:
+        return "unknown"
+    if n_caught > 0 and n_missed == 0:
+        return "caught"
+    if n_caught == 0 and n_missed > 0:
+        return "missed"
+    return "mixed"
+
+
+def lesson_effectiveness(
+    shard: MemoryShard,
+    outcomes: list[LessonOutcome],
+    *,
+    origin_path: str,
+    now: datetime | None = None,
+) -> dict:
+    """Recompute from evidence. Never writes the shard.
+
+    An empty list is a first-class input: score is None, not 1.0. Quiet does not
+    raise. origin_path=gone forces trend=dropping even when score is None;
+    unindexed/unknown do not — an empty code graph is not a deleted path.
+    """
+    now = now or datetime.now(timezone.utc)
+    now = _aware(now) or now
+    ordered = sorted(outcomes, key=lambda o: _aware(o.created_at) or datetime.min.replace(tzinfo=timezone.utc))
+
+    n_caught = 0
+    n_missed = 0
+    history: list[dict] = []
+    last_counted_kind: str | None = None
+    applied_at: list[datetime] = []
+    drop_reasons: list[str] = []
+
+    for o in ordered:
+        kind = o.kind
+        at = _aware(o.created_at)
+        if kind == "applied":
+            if at is not None:
+                applied_at.append(at)
+            continue
+        if kind == "caught":
+            n_caught += 1
+            last_counted_kind = "caught"
+        elif kind in _MISS_KINDS:
+            n_missed += 1
+            last_counted_kind = kind
+        else:
+            continue
+        denom = n_caught + n_missed
+        history.append({
+            "at": at,
+            "score": n_caught / denom,
+            "caught_state": _caught_state(n_caught, n_missed),
+            "outcome_id": getattr(o, "id", None),
+        })
+
+    if any(o.kind == "contradicted" for o in ordered):
+        drop_reasons.append("contradicted")
+
+    missed_times = [_aware(o.created_at) for o in ordered if o.kind in _MISS_KINDS]
+    missed_times = [t for t in missed_times if t is not None]
+    if applied_at and missed_times:
+        first_applied = min(applied_at)
+        if any(t > first_applied for t in missed_times):
+            drop_reasons.append("applied_and_recurred")
+
+    if applied_at:
+        last_corroboration = max(applied_at)
+        if (now - last_corroboration).days >= PUBLISHED_STALE_DAYS and any(
+            t > last_corroboration for t in missed_times
+        ):
+            drop_reasons.append("quiet_while_defects")
+
+    if origin_path == "gone":
+        drop_reasons.append("origin_path_gone")
+
+    counted = n_caught + n_missed
+    if counted == 0:
+        trend = "dropping" if origin_path == "gone" else "unmeasured"
+        return {
+            "score": None,
+            "caught_state": "unknown",
+            "trend": trend,
+            "drop_reasons": list(drop_reasons),
+            "history": [],
+        }
+
+    score = n_caught / counted
+    if drop_reasons:
+        trend = "dropping"
+    elif len(history) >= 2 and history[-1]["score"] < history[-2]["score"]:
+        trend = "dropping"
+    elif (
+        len(history) >= 2
+        and history[-1]["score"] > history[-2]["score"]
+        and last_counted_kind == "caught"
+    ):
+        trend = "rising"
+    else:
+        trend = "stable"
+
+    return {
+        "score": score,
+        "caught_state": _caught_state(n_caught, n_missed),
+        "trend": trend,
+        "drop_reasons": list(drop_reasons),
+        "history": history,
+    }
+
+
+def origin_path_state(db: Session, shard: MemoryShard) -> str:
+    """ok | gone | unknown | unindexed.
+
+    Walks CodeNode for the originating item's project, never the viewer's.
+    An empty graph is unindexed, not gone — absence of an index is not a deleted path.
+    """
+    if not shard.item_id:
+        return "unknown"
+    item = db.get(Item, shard.item_id)
+    if item is None or not item.touchpoints:
+        return "unknown"
+    n_nodes = db.scalar(
+        select(func.count()).select_from(CodeNode).where(CodeNode.project_id == item.project_id)
+    ) or 0
+    if n_nodes == 0:
+        return "unindexed"
+    paths = {
+        p for (p,) in db.execute(
+            select(CodeNode.path).where(CodeNode.project_id == item.project_id)
+        ).all()
+    }
+    if any(_touchpoint_hits(paths, tp) > 0 for tp in item.touchpoints):
+        return "ok"
+    return "gone"
+
+
+def published_cluster(
+    db: Session,
+    shard: MemoryShard,
+    *,
+    readable_project_ids: set[str],
+    viewer_project_id: str,
+) -> dict:
+    """Eligibility/transferability scan. Not retrieval.
+
+    A missing scan is cluster_scope_unmeasured, not independence 1. Unreadable
+    members are counted, never serialised as text/source/origin/tag.
+    """
+    del viewer_project_id  # listing context; authz redaction is readable_project_ids
+    if shard.embedding is None or not shard.project_id:
+        return {
+            "members": [shard],
+            "scan": "cluster_scope_unmeasured",
+            "readable_ids": {shard.id} if shard.project_id in readable_project_ids else set(),
+            "counted_project_ids": [shard.project_id] if shard.project_id else [],
+        }
+
+    sibling_ids = sibling_project_ids(db, shard.project_id)
+    if not sibling_ids:
+        return {
+            "members": [shard],
+            "scan": "cluster_scope_unmeasured",
+            "readable_ids": {shard.id} if shard.project_id in readable_project_ids else set(),
+            "counted_project_ids": [shard.project_id] if shard.project_id else [],
+        }
+
+    pool = list(db.scalars(
+        select(MemoryShard).where(
+            MemoryShard.status == "published",
+            MemoryShard.project_id.in_(sibling_ids),
+        )
+    ).all())
+    seed_vec = list(shard.embedding)
+    members = [shard]
+    seen = {shard.id}
+    for other in pool:
+        if other.id in seen or other.embedding is None:
+            continue
+        if cosine_similarity(seed_vec, list(other.embedding)) >= _SIM_STRONG:
+            members.append(other)
+            seen.add(other.id)
+
+    counted = []
+    for m in members:
+        if m.project_id and m.project_id not in counted:
+            counted.append(m.project_id)
+    readable_ids = {m.id for m in members if m.project_id in readable_project_ids}
+    return {
+        "members": members,
+        "scan": "scanned",
+        "readable_ids": readable_ids,
+        "counted_project_ids": counted,
+    }
+
+
+def org_eligibility(shard: MemoryShard, cluster: list[MemoryShard], *, scan: str) -> dict:
+    """eligible | ineligible | unverifiable | promoted.
+
+    Independence only. Missing inputs or scan != scanned → unverifiable, not
+    ineligible. A cluster-of-one that was never expanded is not independence 1.
+    """
+    if shard.reach == "org":
+        return {
+            "state": "promoted",
+            "independence": None,
+            "distinct_projects": None,
+            "distinct_users": None,
+            "cluster_scan": scan,
+            "reason": "already org-reach",
+        }
+
+    if scan != "scanned":
+        return {
+            "state": "unverifiable",
+            "independence": None,
+            "distinct_projects": None,
+            "distinct_users": None,
+            "cluster_scan": "cluster_scope_unmeasured",
+            "reason": "unmeasured: cluster_scope_unmeasured",
+        }
+
+    users = [_user_of(s) for s in cluster]
+    projects = [_project_of(s) for s in cluster]
+
+    users_measured = bool(users) and all(u is not None for u in users)
+    projects_measured = bool(projects) and all(p is not None for p in projects)
+
+    missing = []
+    if not users_measured:
+        missing.append("distinct_users")
+    if not projects_measured:
+        missing.append("distinct_projects")
+    if missing:
+        return {
+            "state": "unverifiable",
+            "independence": None,
+            "distinct_projects": (
+                len(set(p for p in projects if p is not None)) if projects_measured else None
+            ),
+            "distinct_users": (
+                len(set(u for u in users if u is not None)) if users_measured else None
+            ),
+            "cluster_scan": scan,
+            "reason": "unmeasured: " + ", ".join(missing),
+        }
+
+    n_projects = len(set(projects))
+    n_users = len(set(users))
+    independence = n_projects + max(0, n_users - 1)
+    state = "eligible" if independence >= ORG_INDEPENDENCE_NEED else "ineligible"
+    return {
+        "state": state,
+        "independence": independence,
+        "distinct_projects": n_projects,
+        "distinct_users": n_users,
+        "cluster_scan": scan,
+        "reason": (
+            f"{n_projects} project(s) × {n_users} user(s) → independence {independence}"
+            + (f" ≥ {ORG_INDEPENDENCE_NEED}" if state == "eligible"
+               else f" < {ORG_INDEPENDENCE_NEED}")
+        ),
+    }
+
+
+def transferability(
+    shard: MemoryShard,
+    cluster: list[MemoryShard],
+    *,
+    scan: str,
+    overridden: bool = False,
+) -> str:
+    """Recurrence evidence from published_cluster, not an LLM guess.
+
+    Override stamps overridden, never evidenced. A missing scan is unverifiable.
+    """
+    if overridden:
+        return "overridden"
+    if scan != "scanned":
+        return "unverifiable"
+    if shard.reach == "org":
+        return "evidenced"
+    if any(
+        (s.origin or "").startswith("ingest:") and s.attributed_project_id is None
+        for s in cluster
+    ):
+        return "unverifiable"
+    origin = shard.project_id
+    if any(
+        s.attributed_project_id is not None and s.attributed_project_id != origin
+        for s in cluster
+    ):
+        return "evidenced"
+    return "unverified"
+
+
+def lesson_enums() -> dict:
+    return {
+        "reaches": list(REACHES),
+        "lesson_classes": list(LESSON_CLASSES),
+        "unclassified_filter": UNCLASSIFIED_FILTER,
+        "caught_states": list(CAUGHT_STATES),
+        "eligibilities": list(ELIGIBILITIES),
+        "trends": list(TRENDS),
+        "transferability_states": list(TRANSFERABILITY_STATES),
+    }
+
+
+def _outcomes_for(db: Session, shard_ids: list[str]) -> dict[str, list[LessonOutcome]]:
+    by: dict[str, list[LessonOutcome]] = {sid: [] for sid in shard_ids}
+    if not shard_ids:
+        return by
+    rows = list(db.scalars(
+        select(LessonOutcome)
+        .where(LessonOutcome.shard_id.in_(shard_ids))
+        .order_by(LessonOutcome.created_at.asc())
+    ).all())
+    for o in rows:
+        by.setdefault(o.shard_id, []).append(o)
+    return by
+
+
+def _lesson_row(
+    shard: MemoryShard,
+    outcomes: list[LessonOutcome],
+    cluster: dict,
+    *,
+    now: datetime | None = None,
+) -> dict:
+    # Empty outcomes still go through the scorer; unknown is a result, not a skip.
+    eff = lesson_effectiveness(shard, outcomes, origin_path="unknown", now=now)
+    elig = org_eligibility(shard, cluster["members"], scan=cluster["scan"])
+    xfer = transferability(shard, cluster["members"], scan=cluster["scan"])
+    return {
+        "id": shard.id,
+        "text": shard.text,
+        "scope": shard.scope,
+        "source": shard.source,
+        "status": shard.status,
+        "origin": shard.origin,
+        "item_id": shard.item_key,
+        "project_id": shard.project_id,
+        "fresh": shard.fresh,
+        "scoring_source": shard.scoring_source,
+        "auto_confidence": shard.auto_confidence,
+        "created_at": shard.created_at,
+        "reach": shard.reach or "project",
+        "lesson_class": shard.lesson_class or "",
+        "suggested_class": "correction" if _is_correction(shard) else None,
+        "age_state": age_state(shard, now=now),
+        "caught_state": eff["caught_state"],
+        "effectiveness": {
+            "score": eff["score"],
+            "trend": eff["trend"],
+            "drop_reasons": eff["drop_reasons"],
+        },
+        "eligibility": elig,
+        "transferability": xfer,
+    }
+
+
+def list_lessons(
+    db: Session,
+    project_id: str,
+    *,
+    readable_project_ids: set[str],
+    filters: dict | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    now: datetime | None = None,
+) -> dict:
+    """Published catalog. Reach-aware. Computes judgements after fetch, before limit.
+
+    Skips origin_path_state (a code-graph walk per originating item). Empty
+    outcomes still go through lesson_effectiveness.
+    """
+    filters = filters or {}
+    stmt = (
+        select(MemoryShard)
+        .where(MemoryShard.status == "published")
+        .where(_project_match_where(
+            project_id,
+            sibling_project_ids(db, project_id),
+            _includes_global(db, project_id),
+        ))
+        .order_by(MemoryShard.created_at.desc())
+    )
+    rows = [r for r in db.scalars(stmt).all() if age_state(r, now=now) != "expired"]
+
+    wanted_class = filters.get("lesson_class")
+    if wanted_class is not None:
+        stored = "" if wanted_class in (UNCLASSIFIED_FILTER, "") else wanted_class
+        rows = [r for r in rows if (r.lesson_class or "") == stored]
+
+    outcomes_by = _outcomes_for(db, [r.id for r in rows])
+    computed = []
+    for shard in rows:
+        cluster = published_cluster(
+            db, shard,
+            readable_project_ids=readable_project_ids,
+            viewer_project_id=project_id,
+        )
+        computed.append(_lesson_row(shard, outcomes_by.get(shard.id, []), cluster, now=now))
+
+    if trend := filters.get("trend"):
+        computed = [r for r in computed if r["effectiveness"]["trend"] == trend]
+    if caught := filters.get("caught_state"):
+        computed = [r for r in computed if r["caught_state"] == caught]
+    if elig := filters.get("eligibility"):
+        computed = [r for r in computed if r["eligibility"]["state"] == elig]
+
+    total = len(computed)
+    offset = max(0, offset)
+    limit = max(0, limit)
+    page = computed[offset:offset + limit] if limit else computed[offset:]
+    return {
+        "enums": lesson_enums(),
+        "results": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(page) < total,
+    }

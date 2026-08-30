@@ -5,7 +5,14 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import get_db
 from app.models import MemoryShard, User
-from app.schemas import MemorySearchIn, ScoredCandidate, ShardCreate, ShardHit, ShardOut
+from app.schemas import (
+    LessonListOut,
+    MemorySearchIn,
+    ScoredCandidate,
+    ShardCreate,
+    ShardHit,
+    ShardOut,
+)
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import events as events_svc
@@ -22,6 +29,35 @@ class ShardEdit(BaseModel):
 class ImportIn(BaseModel):
     shards: list[dict]
     project_id: str = "core"
+
+
+@router.get("/lessons", response_model=LessonListOut)
+def list_lessons(
+    project_id: str,
+    trend: str | None = None,
+    caught_state: str | None = None,
+    eligibility: str | None = None,
+    lesson_class: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Published lesson catalog. Empty results are 'no published lessons', not a score."""
+    authz.require_readable(db, user.id, project_id)
+    return mem_svc.list_lessons(
+        db,
+        project_id,
+        readable_project_ids=set(authz.readable_project_ids(db, user.id)),
+        filters={
+            "trend": trend,
+            "caught_state": caught_state,
+            "eligibility": eligibility,
+            "lesson_class": lesson_class,
+        },
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/shards", response_model=list[ShardOut])
@@ -133,6 +169,8 @@ def add_shard(body: ShardCreate, db: Session = Depends(get_db), user: User = Dep
         project_id=body.project_id,
         status="published",
         origin=f"user:{user.handle or user.id}",
+        actor_user_id=user.id,
+        attributed_project_id=body.project_id,
     )
 
 

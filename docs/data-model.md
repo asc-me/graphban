@@ -12,7 +12,8 @@ Alembic; SQLite (tests / zero-infra dev) uses `create_all`.
 | `password_resets` | `id` (`pwr_…`) | A single-use way back into an account: **`token_hash`** (sha256 — the plaintext exists only in the email), `expires_at`, `used_at` set on success, `requested_ip` for provenance |
 | `memberships` | `id` | User ↔ project with `role` (owner/admin/member) + `access` (write/read/none) |
 | `items` | `id` (frozen at issue) | Tracker item: **`number`** (unique per project), title, description, `status`, tags, effort, `sort_order`, blocker, reporter, `pr` (JSON), date |
-| `memory_shards` | `id` (`m1`, `m_…`) | Shard: text, `scope`, source, optional `item_id`, `embedding` (vector), `fresh` |
+| `memory_shards` | `id` (`m1`, `m_…`) | Shard: text, `scope`, `reach` (`project\|org`), `lesson_class`, source, optional `item_id`, `embedding` (vector), `fresh`. Attribution (`actor_user_id`, `attributed_project_id`) is NULL until measured |
+| `lesson_outcomes` | `id` | Counted evidence on a published shard (`caught\|missed\|applied\|contradicted`). Effectiveness reads this list; empty is unknown, not 1.0 |
 | `requests` | `id` (frozen at issue) | Triage: **`number`**, type, title, by, votes, status, `linked_to` |
 | `links` | `id` | Typed edge: `a`, `b`, `type` (dependency/code/semantic/tag), `confidence`, `reason` |
 | `prds` | `id` (frozen at issue) | PRD: **`number`**, title, status, version, body (markdown), `linked` (item ids), updated |
