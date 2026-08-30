@@ -72,6 +72,21 @@ class ClaudeCodeAdapter:
         """
         return sorted(str(p) for p in self.root.rglob("*.jsonl") if p.is_file())
 
+    def repo_dir_for(self, source: str) -> str | None:
+        """The per-repo folder Claude Code used for this transcript, or None.
+
+        Transcripts live one directory per repo path (encoded with separators as '-').
+        A jsonl sitting at the adapter root has no repo identity — treating the root
+        folder name as one would invent a project mapping from a test fixture.
+        """
+        try:
+            rel = Path(source).resolve().relative_to(self.root.resolve())
+        except ValueError:
+            return None
+        if len(rel.parts) < 2:
+            return None
+        return rel.parts[0]
+
     def parse(self, source: str, watermark: str | None) -> tuple[list[Event], str | None]:
         """Events after line `watermark`, and the new line count.
 
