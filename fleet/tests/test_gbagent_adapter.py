@@ -217,14 +217,15 @@ def test_a_bare_invocation_says_what_is_wrong(tmp_path):
 
 
 def test_with_no_item_the_model_is_told_to_claim_one(tmp_path):
-    """AC-5. Through S5 this refused with exit 78, because `claim_next` was not in
-    `WORKER_TOOLS` and an agent that starts, achieves nothing and exits 0 is the failure
-    PRD-22 keeps naming. S7 wired the claim, so the refusal became the instruction."""
+    """AC-5 + P30 D3. The model is taught `claim_cluster`, which reserves files.
+    `claim_next` stays on the server for humans; a fleet child must not be taught it.
+    """
     from gbagent.cli import assignment_for
 
     claim = assignment_for("")
 
-    assert "claim_next" in claim
+    assert "claim_cluster" in claim
+    assert "claim_next" not in claim, "a fleet child taught claim_next reserves no files"
     assert "wait_seconds=0" in claim, "waiting is how a worker becomes an idle process"
     assert "not a failure" in claim, "D-c: exiting on empty is the normal end of a run"
 
@@ -234,6 +235,7 @@ def test_with_an_item_the_model_is_told_not_to_claim_anything_else(tmp_path):
 
     assert "GRPH-1" in assignment_for("GRPH-1")
     assert "claim_next" not in assignment_for("GRPH-1")
+    assert "claim_cluster" not in assignment_for("GRPH-1")
 
 
 def test_run_refuses_a_repository_it_cannot_verify(tmp_path):
@@ -435,7 +437,7 @@ def test_a_registration_the_server_refuses_is_not_papered_over():
 
 
 def test_a_registration_returning_no_id_is_refused_rather_than_used_empty():
-    """An empty agent_id would reach `claim_next` as a caller nobody can identify."""
+    """An empty agent_id would reach `claim_cluster` as a caller nobody can identify."""
     import httpx
 
     def handler(request):

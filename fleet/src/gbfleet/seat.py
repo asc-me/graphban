@@ -88,8 +88,9 @@ INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    "Then claim work with wait_seconds=0 and EXIT when there is nothing to claim. "
-    "Exiting on empty is the normal end of your run, not a failure."
+    "Then claim work with claim_cluster (wait_seconds=0) and EXIT when there is "
+    "nothing to claim. Do not call claim_next — it reserves no files. Exiting on "
+    "empty is the normal end of your run, not a failure."
 )
 
 

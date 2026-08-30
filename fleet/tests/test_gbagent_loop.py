@@ -543,12 +543,12 @@ def test_the_docstring_guard_matches_the_sentence_it_was_written_for():
     stop matching anything — a regex that finds nothing reports a clean docstring."""
     from gbagent.coord import WORKER_TOOLS
 
-    original = ("It can orient itself — S6 advertises the graph reads — but `claim_next` is "
+    original = ("It can orient itself — S6 advertises the graph reads — but `claim_cluster` is "
                 "deliberately absent from `coord.WORKER_TOOLS`, so it cannot pick up its own "
                 "work.")
     found = _tools_claimed_absent(original)
 
-    assert "claim_next" in found, "the pattern no longer matches the sentence this exists for"
+    assert "claim_cluster" in found, "the pattern no longer matches the sentence this exists for"
     assert found & WORKER_TOOLS, "the guard would not have flagged the original docstring"
 
 
@@ -590,10 +590,13 @@ def test_the_agent_still_cannot_claim_or_judge_its_own_work():
     """The set grew by seven reads in S6 and three writes in S7, and this is the assertion
     that says what it did NOT grow by.
 
-    `claim_next` is here now — an agent that cannot take its own work is not a fleet member.
+    `claim_cluster` is here now (P30 D3) — an agent that cannot take its own work is not a
+    fleet member, and `claim_next` is not taught because it reserves no files.
     What is still absent is every verb that JUDGES: done is not the agent's word (D5), and the
     server enforces that on authorship regardless of what this set says.
     """
+    assert "claim_cluster" in WORKER_TOOLS
+    assert "claim_next" not in WORKER_TOOLS
     for forbidden in ("claim_review", "sign_off", "bounce", "mint_enrolment",
                       "assign_role", "retire_wave", "close_prd"):
         assert forbidden not in WORKER_TOOLS

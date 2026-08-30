@@ -337,7 +337,7 @@ def test_a_claim_then_the_next_beat_carries_the_claimed_id(wt):
     path, so this fails, and the 600s lease dies under `run_tests`.
     """
     arguments, coordinator = _claim_then_beat(
-        wt, tool="claim_next",
+        wt, tool="claim_next", extra=("claim_next",),
         payload={"claimed": True,
                  "item": {"id": "GRPH-1", "title": "a claimed item", "status": "in_progress"}},
     )
@@ -352,7 +352,7 @@ def test_a_cluster_claim_then_the_next_beat_carries_the_seed_id(wt):
     fleet worker's heartbeat presence-only after the tool the PRD says to call.
     """
     arguments, coordinator = _claim_then_beat(
-        wt, tool="claim_cluster", extra=("claim_cluster",),
+        wt, tool="claim_cluster",
         payload={"claimed": True,
                  "items": [{"id": "GRPH-1", "title": "seed"},
                            {"id": "GRPH-2", "title": "neighbour"}]},
@@ -367,8 +367,8 @@ def test_an_empty_claim_leaves_the_next_beat_presence_only(wt):
     beat for a row that does not exist.
     """
     arguments, coordinator = _claim_then_beat(
-        wt, tool="claim_next",
-        payload={"claimed": False, "item": None},
+        wt, tool="claim_cluster",
+        payload={"claimed": False, "items": []},
     )
 
     assert coordinator.item_id == ""

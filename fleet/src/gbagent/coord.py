@@ -84,7 +84,7 @@ class Coordinator:
         """Learn the item the MODEL claimed, when the harness was not given one.
 
         Only ever fills a blank: a coordinator constructed with `--item` is working that item,
-        and a `claim_next` the model made anyway must not silently redirect the handoff.
+        and a claim the model made anyway must not silently redirect the handoff.
         """
         if item_id and not self.item_id:
             self.item_id = item_id

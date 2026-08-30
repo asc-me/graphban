@@ -505,33 +505,29 @@ def test_the_guard_covers_done_as_well_as_review(wt):
 def test_a_successful_claim_is_remembered():
     """FOUND BY THE S7 WALK. When the model claims its own work the harness was never told
     what it claimed, so the give-up path called `update_item(id="")`, the server refused, and
-    the run exited 70 with the item stuck claimed until its lease expired."""
-    orientation = _with_coordination()
+    the run exited 70 with the item stuck claimed until its lease expired.
 
-    orientation.execute(ToolCall(id="c", name="claim_next", input={"wait_seconds": 0}))
-
-    assert orientation.claimed_item == "GRPH-1"
-
-
-def test_a_cluster_claim_is_remembered():
-    """P30 D3/D4. `claim_cluster` answers `{items: [...]}`, seed first. Remembering only
-    `claim_next` would leave a fleet worker's heartbeat without an id after the tool the
-    PRD says to call. Advertised here via `extra` so D4 can land without D3 widening
-    `COORDINATION_TOOLS` in the same commit.
+    P30 D3: the advertised claim is `claim_cluster` (seed first).
     """
-    from gbagent.coord import WORKER_TOOLS
-    from gbagent.orient import COORDINATION_TOOLS
-
-    extra = (*COORDINATION_TOOLS, "claim_cluster")
-    client = Graphban("http://graphban.invalid", "gbk_seat",
-                      allowed=WORKER_TOOLS | {"claim_cluster"},
-                      transport=httpx.MockTransport(
-                          _listing([*ORIENTATION_TOOLS, *extra])))
-    orientation = orient.build(client, extra=extra)
+    orientation = _with_coordination()
 
     orientation.execute(ToolCall(id="c", name="claim_cluster", input={"wait_seconds": 0}))
 
     assert orientation.claimed_item == "GRPH-1", "the seed, not the neighbour"
+
+
+def test_claim_next_is_not_advertised_to_a_fleet_child():
+    """P30 D3. `claim_next` stays on the server for humans and solo sessions. Teaching it
+    to a fleet child is how four overnight workers take items that share a directory.
+    """
+    from gbagent.orient import COORDINATION_TOOLS
+
+    orientation = _with_coordination()
+
+    assert "claim_cluster" in COORDINATION_TOOLS
+    assert "claim_next" not in COORDINATION_TOOLS
+    assert orientation.handles("claim_cluster")
+    assert not orientation.handles("claim_next")
 
 
 def test_an_empty_queue_leaves_nothing_claimed():
@@ -549,7 +545,7 @@ def test_an_empty_queue_leaves_nothing_claimed():
     from gbagent.orient import COORDINATION_TOOLS
     orientation = orient.build(_server(handler), extra=COORDINATION_TOOLS)
 
-    orientation.execute(ToolCall(id="c", name="claim_next", input={}))
+    orientation.execute(ToolCall(id="c", name="claim_cluster", input={}))
 
     assert orientation.claimed_item is None
 
@@ -558,7 +554,7 @@ def test_the_give_up_path_adopts_the_claimed_item(wt):
     """The whole point: a run that claimed its own work can still write a handoff."""
     orientation = _with_coordination()
     toolset = _toolset(wt, orientation)
-    toolset.execute(ToolCall(id="c", name="claim_next", input={}))
+    toolset.execute(ToolCall(id="c", name="claim_cluster", input={}))
     coordinator = Coord()
 
     loop.run(Session([_wants("read_file", path="README.md")]), toolset,
@@ -615,7 +611,7 @@ def test_an_agent_id_the_model_made_up_is_overwritten_not_kept():
     from gbagent.orient import COORDINATION_TOOLS
     orientation = orient.build(_server(handler), extra=COORDINATION_TOOLS, agent_id="GRPH-A99")
 
-    orientation.execute(ToolCall(id="c", name="claim_next", input={"agent_id": "gbagent"}))
+    orientation.execute(ToolCall(id="c", name="claim_cluster", input={"agent_id": "gbagent"}))
 
     assert sent[0]["agent_id"] == "GRPH-A99", "the model's guess must not survive"
 
@@ -640,7 +636,7 @@ def test_an_agent_with_no_identity_does_not_inject_an_empty_one():
     from gbagent.orient import COORDINATION_TOOLS
     orientation = orient.build(_server(handler), extra=COORDINATION_TOOLS)
 
-    orientation.execute(ToolCall(id="c", name="claim_next", input={"agent_id": "mine"}))
+    orientation.execute(ToolCall(id="c", name="claim_cluster", input={"agent_id": "mine"}))
 
     assert sent[0]["agent_id"] == "mine", "nothing to substitute, so nothing is taken away"
 
