@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
+from . import adopt as adopt_mod
 from . import worktree as wt_mod
 from .client import Graphban, ServerUnreachable
 from .hostos import restrict_to_owner
@@ -331,17 +332,21 @@ def up(
     workspace = Path(workspace) if workspace else repo.parent / f"{repo.name}-gbfleet"
     wave = Wave()
 
-    wanted = min(len(seats), limits.max_workers, limits.max_children)
-    wave.unused_seats = len(seats) - wanted
-
     observe.configure(state)
 
     with hold(repo, state) as acquired:
         wave.lock = acquired
+        leftover: list[Child] = []
+        occupied: set[str] = set()
         if acquired.takeover:
-            # A supervisor died here. Said before anything else happens, because
-            # everything after it may be running beside children nobody is watching.
+            # A supervisor died here. Adopt live PIDs and salvage the rest (P30 D7)
+            # rather than logging takeover and starting a new wave beside them.
             observe.emit("takeover", detail=acquired.takeover.describe())
+            leftover, occupied, notes = adopt_mod.recover(repo, workspace, state)
+            for note in notes:
+                observe.emit("adopt", detail=note)
+            for child in leftover:
+                wave.spawned.append(child)
         wave.before = _read_allocation(client, wave)
         if wave.offline:
             # D-i: no new spawns while the server is unreachable. A child that cannot
@@ -350,12 +355,24 @@ def up(
             wave.unused_seats = len(seats)
             return wave
 
-        children = list(_start(
+        cap = max(0, min(limits.max_workers, limits.max_children) - len(leftover))
+        wanted = min(len(seats), cap)
+        wave.unused_seats = len(seats) - wanted
+
+        children = leftover + list(_start(
             wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
-            limits, debug=debug,
+            limits, debug=debug, occupied=occupied,
         ))
-        _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug)
+        roster_path = adopt_mod.children_path(repo, state)
+
+        def persist() -> None:
+            adopt_mod.persist(roster_path, children)
+
+        persist()
+        _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
+                  persist=persist)
         _reap_all(wave, children)
+        persist()
 
         wave.after = _read_allocation(client, wave)
         if not wave.failures and not wave.offline:
@@ -436,6 +453,7 @@ def _start(
     client: Graphban,
     limits: Limits,
     debug: bool = False,
+    occupied: set[str] | None = None,
 ) -> Iterable[Child]:
     """Create a worktree per seat, spawn into it, and wait for it to register.
 
@@ -448,13 +466,32 @@ def _start(
     workspace.mkdir(parents=True, exist_ok=True)
     started: list[Child] = []
     planned = len(seats)
+    taken = set(occupied or ())
+    slot_n = 1
 
     for index, seat in enumerate(seats):
-        slot = str(index + 1)
-        agent_slot = f"{wave_name}-{slot}"
         tree: Worktree | None = None
+        slot = "1"
+        agent_slot = f"{wave_name}-{slot}"
         try:
-            tree = _tree_for(repo, workspace, wave_name, slot)
+            while True:
+                slot = str(slot_n)
+                slot_n += 1
+                agent_slot = f"{wave_name}-{slot}"
+                branch = wt_mod.branch_name(wave_name, slot)
+                if branch in taken or wt_mod.branch_exists(repo, branch):
+                    taken.add(branch)
+                    if slot_n > 1000:
+                        raise wt_mod.BranchExists(
+                            f"no free gb/{wave_name}-* slot under 1000"
+                        )
+                    continue
+                try:
+                    tree = _tree_for(repo, workspace, wave_name, slot)
+                except wt_mod.BranchExists:
+                    taken.add(branch)
+                    continue
+                break
             def remember(child: Child) -> None:
                 started.append(child)
                 wave.spawned.append(child)
@@ -477,7 +514,7 @@ def _start(
                 workspace=workspace, wave_name=wave_name, slot=slot,
                 on_spawned=remember, debug_file=debug_file,
             )
-        except (LaunchFailed, wt_mod.BranchExists, wt_mod.GitError) as exc:
+        except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
             if tree is not None and tree.path.exists() and not any(
                 c.worktree == tree.path for c in started
@@ -532,6 +569,7 @@ def watch_tick(
     client: Graphban,
     *,
     debug: bool = False,
+    persist: Callable[[], None] | None = None,
 ) -> None:
     """One pass of the watch loop: wall-clock, output pulse, lease, disowned.
 
@@ -555,6 +593,8 @@ def watch_tick(
     _enforce_the_lease(wave, children)
     if roster is not None:
         _catch_the_disowned(wave, children, roster, limits)
+    if persist is not None:
+        persist()
 
 
 def _wait_out(
@@ -566,6 +606,7 @@ def _wait_out(
     poll: float,
     sleep: Callable[[float], None],
     debug: bool = False,
+    persist: Callable[[], None] | None = None,
 ) -> None:
     """Wait for children to exit on their own, stopping any that overrun or outlive their claim.
 
@@ -580,7 +621,7 @@ def _wait_out(
     the item to somebody else and a second agent is already working it.
     """
     while any(child.running for child in children):
-        watch_tick(wave, children, limits, client, debug=debug)
+        watch_tick(wave, children, limits, client, debug=debug, persist=persist)
         if any(child.running for child in children):
             sleep(poll)
 

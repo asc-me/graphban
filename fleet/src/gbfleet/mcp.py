@@ -48,6 +48,7 @@ from .lock import Acquired
 from .seat import Seat
 from .spawn import Child, LaunchFailed, Reason, stop
 from .progress import NEVER_WROTE
+from . import adopt as adopt_mod
 from .supervisor import Limits, LaunchFactory, Partition, Wave, _tree_for, start_one, watch_tick
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -171,6 +172,7 @@ class Fleet:
     def tick(self, *, debug: bool = False) -> None:
         """One pass of the same watch loop `up` runs. Tests call this; `serve` ticks it."""
         watch_tick(self.wave, self.children, self.limits, self.client, debug=debug)
+        adopt_mod.persist(adopt_mod.children_path(self.repo), self.children)
 
     def find(self, agent_id: str | None, pid: int | None) -> Child | None:
         for child in self.children:
@@ -277,8 +279,15 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             )
 
         wave = args.get("wave") or "wave"
-        fleet.started += 1
-        tree = _tree_for(fleet.repo, fleet.workspace, wave, str(fleet.started))
+        tree = None
+        while tree is None:
+            fleet.started += 1
+            if fleet.started > 1000:
+                raise ValueError("no free gb/ slot under 1000")
+            try:
+                tree = _tree_for(fleet.repo, fleet.workspace, wave, str(fleet.started))
+            except wt_mod.BranchExists:
+                continue
         seat = Seat(code=code, server_url=fleet.client.base_url, api_key=fleet.client.api_key)
         child = start_one(
             tree, seat,
@@ -299,6 +308,7 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 else None
             ),
         )
+        adopt_mod.persist(adopt_mod.children_path(fleet.repo), fleet.children)
         described = _describe(child)
         # Said once, at spawn, for the same reason the wave summary says it: an operator
         # who asked for debug and gets a quiet log from an adapter that has no debug flag

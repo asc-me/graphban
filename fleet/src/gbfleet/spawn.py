@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 from . import seat as seat_mod
 from . import observe
-from .hostos import ProcessTree, is_owner_only, spawn_kwargs
+from .hostos import ProcessTree, is_owner_only, pid_is_alive, process_start_token, spawn_kwargs
 from .progress import Output
 from .seat import Seat
 
@@ -72,6 +72,43 @@ class Reason(str, Enum):
     #: thing operationally — the claim is gone and the process is spending money without
     #: one. Naming it for the cause would be asserting something unmeasured.
     SEAT_GONE = "seat_gone"
+
+
+class AttachedProcess:
+    """A pid another supervisor spawned, duck-typed as `Popen` for `stop` / `running`.
+
+    P30 D7. The original `Popen` died with the previous supervisor. `poll` is false
+    while the pid is alive AND the start token still matches — a reused pid is dead
+    to us, not ours to signal.
+    """
+
+    def __init__(self, pid: int, start_token: str | None) -> None:
+        self.pid = pid
+        self._token = start_token
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        if self.returncode is not None:
+            return self.returncode
+        if not pid_is_alive(self.pid):
+            self.returncode = 0
+            return 0
+        now = process_start_token(self.pid)
+        if self._token and now is not None and now != self._token:
+            self.returncode = 0
+            return 0
+        return None
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.poll() is not None:
+            return int(self.returncode or 0)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            if self.poll() is not None:
+                return int(self.returncode or 0)
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(f"pid {self.pid}", timeout)
+            time.sleep(0.05)
 
 
 class LaunchFailed(RuntimeError):
@@ -159,6 +196,9 @@ class Child:
     #: quiet spells are never summed into one.
     offline_since: float | None = None
     stopped_because: Reason | None = None
+    #: True when this Child was rebuilt around a pid another supervisor spawned
+    #: (P30 D7). `stop` must not try to put it in a new Windows job.
+    attached: bool = False
 
     @property
     def pid(self) -> int:
@@ -350,7 +390,7 @@ def stop(child: Child, reason: Reason, grace: float = TERM_GRACE) -> Stopped:
     if not child.running:
         return Stopped(reason=reason, escalated=False, exit_code=child.process.returncode)
 
-    tree = child.tree or ProcessTree(child.process)
+    tree = child.tree or ProcessTree(child.process, attached=child.attached)
     tree.terminate()
     try:
         code = child.process.wait(timeout=grace)
