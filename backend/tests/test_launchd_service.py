@@ -89,10 +89,25 @@ def test_the_port_is_a_real_environment_variable_not_left_to_dotenv():
 
     assert env.get("PORT") == "8234", ".env cannot supply PORT; the plist must"
     assert env.get("HOST") == "127.0.0.1"
+    assert "GIT_SHA" in env, (
+        "without GIT_SHA in the environment /health reports unknown and an upgrade cannot verify"
+    )
 
 
 def test_it_does_not_run_as_root(plist):
     assert plist["UserName"] == "graphban"
+
+
+def test_the_revision_is_a_real_environment_variable():
+    p = gs.plist_dict(root=ROOT, python=ROOT / "p", user="graphban", git_sha="abc1234")
+    assert p["EnvironmentVariables"]["GIT_SHA"] == "abc1234"
+
+
+def test_a_user_domain_plist_does_not_name_a_user():
+    """UserName is a LaunchDaemon key. Naming one on an agent is a privilege launchd
+    will not grant, and the job dies looking installed."""
+    p = gs.plist_dict(root=ROOT, python=ROOT / "p", user="graphban", user_domain=True)
+    assert "UserName" not in p
 
 
 def test_logs_go_somewhere_an_operator_already_looks(plist):

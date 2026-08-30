@@ -42,7 +42,8 @@ SECRET_MARKERS = ("secret", "password", "token", "api_key", "apikey", "private")
 
 def unit_text(*, root: pathlib.Path, python: pathlib.Path, user: str,
               port: int = 8000, host: str = "127.0.0.1",
-              restart_sec: int = 5, user_scope: bool = False) -> str:
+              restart_sec: int = 5, user_scope: bool = False,
+              git_sha: str = "unknown") -> str:
     """The unit file.
 
     `After=network-online.target` and deliberately NO `Requires=` on Postgres: the database may
@@ -66,8 +67,10 @@ Type=simple
 {account}# How `.env` is found at all — pydantic-settings reads it relative to the cwd.
 WorkingDirectory={root / "current" / "backend"}
 # `app.serve` reads these from the environment itself; `.env` cannot supply them.
+# GIT_SHA is identity: `/health` reports it, and an upgrade verifies against it.
 Environment=PORT={port}
 Environment=HOST={host}
+Environment=GIT_SHA={git_sha}
 # The venv's interpreter, not whatever `python3` resolves to today.
 ExecStart={python} -m app.serve
 # The KeepAlive equivalent. RestartSec matters: without a delay a service that fails at

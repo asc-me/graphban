@@ -6,6 +6,7 @@ step here has been run in anger.
 
 > The hosted (Railway) path is separate and tracked under the `railway` items;
 > this runbook covers the current `rsync` + `docker compose` self-host deploy.
+> A native launchd/systemd install (no Docker) is [native-install.md](native-install.md).
 
 ## What runs where
 
