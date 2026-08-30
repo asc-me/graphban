@@ -1292,12 +1292,23 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     return _try_claim(db, it, agent_id)
 
 
-def heartbeat(db: Session, item_id: str, agent_id: str) -> Item | None:
-    """Extend the lease on a claimed item. Returns the item, or None if the agent isn't the holder."""
+def heartbeat(db: Session, item_id: str, agent_id: str,
+              lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
+    """Extend the lease on a claimed item. Returns the item, or None if the agent isn't the holder.
+
+    Also recomputes area-reservation expiry for this agent and this item (P30 D5).
+    `claimed_at` alone left reservations dying at the original `lease_seconds` while
+    the worker was still building. The server clock is the one that moves `expires_at`.
+    """
+    from app.services import fleet as fleet_svc
+
     item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if item is None or item.claimed_by != agent_id:
         return None
-    item.claimed_at = utcnow()
+    now = utcnow()
+    item.claimed_at = now
+    fleet_svc.extend_reservations(
+        db, agent_id=agent_id, item_id=item.id, now=now, lease_seconds=lease_seconds)
     db.commit()
     db.refresh(item)
     return item

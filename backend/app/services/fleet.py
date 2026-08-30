@@ -1524,6 +1524,39 @@ def bounce_pin_holder(item: Item, *, now: datetime | None = None) -> str | None:
 
 # ---- D4: the divvy, and reservations over a moving partition -------------------------------
 
+def extend_reservations(db: Session, *, agent_id: str, item_id: str,
+                        now: datetime | None = None,
+                        lease_seconds: int = DEFAULT_LEASE_SECONDS) -> None:
+    """Recompute expiry for still-held rows using the server clock (P30 D5).
+
+    Heartbeat of a holder already stamps `claimed_at`. Reservations used to keep the
+    `expires_at` they were born with, so after `lease_seconds` the leftover items in
+    that cluster were claimable again while the first worker was still editing those
+    files. There is no `extend_reservation` MCP: this is the one write, and it uses
+    `utcnow()` (or the caller-supplied server `now`), never a timestamp the worker sent.
+
+    `expires_at = max(current expiry, now + lease_seconds)`. A late beat must not
+    shrink a reservation that already outlives the new window. Only rows for this
+    agent and this item move — releasing B must not drop A/C.
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    floor = now + timedelta(seconds=lease_seconds)
+    rows = db.scalars(
+        select(AreaReservation).where(
+            AreaReservation.agent_id == agent_id,
+            AreaReservation.item_id == item_id,
+        )
+    ).all()
+    for row in rows:
+        current = row.expires_at
+        if current is not None and current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        if current is None or current < floor:
+            row.expires_at = floor
+
+
 def active_reservations(db: Session, project_id: str | None = None, *,
                         now: datetime | None = None) -> list[AreaReservation]:
     """Reservations that have not expired.

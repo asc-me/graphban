@@ -209,6 +209,88 @@ def test_an_agents_own_reservation_does_not_block_it(client, key, db):
 
 # ---- reservation lifecycle ------------------------------------------------------------------
 
+def test_a_heartbeat_keeps_the_leftover_items_reserved(client, key, db):
+    """P30 D5. THE LOAD-BEARING TEST.
+
+    `claim_cluster(max_items=1)` still reserves the whole cluster's areas against
+    claimed[0]. Heartbeat used to stamp `claimed_at` and leave `expires_at` alone, so
+    after `lease_seconds` the leftover item was claimable while the first worker was
+    still editing those files. A test that only proves the lock at t=0 is not this
+    test.
+
+    Sabotage: heartbeat `claimed_at` only; this must fail.
+    """
+    a = _item(client, key, "A", ["backend/app/services/items.py"])
+    b = _item(client, key, "B", ["backend/app/services/items.py"])
+    w1 = _worker(client, key, "w1")
+    w2 = _worker(client, key, "w2")
+    got = _ok(client, key, "claim_cluster",
+              {"agent_id": w1["agent_id"], "max_items": 1, "lease_seconds": 30})
+    assert got["claimed"] and got["items"][0]["id"] == a["id"]
+    assert b["id"] not in [it["id"] for it in got["items"]]
+
+    for row in db.query(AreaReservation).all():
+        row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit()
+    assert fleet.active_reservations(db) == [], "the clock has lapsed — premise of the test"
+
+    _ok(client, key, "heartbeat", {"id": a["id"], "agent_id": w1["agent_id"]})
+
+    out = _ok(client, key, "claim_cluster", {"agent_id": w2["agent_id"]})
+    assert out["claimed"] is False, (
+        "heartbeat extended claimed_at and not reservation expiry — leftover items "
+        "in the cluster are free while the first worker is still in those files"
+    )
+    assert out["held_by"] == [w1["agent_id"]]
+
+
+def test_a_late_heartbeat_does_not_shrink_a_reservation(client, key, db):
+    """P30 D5. `expires_at = max(current, now + lease_seconds)`. A beat with a shorter
+    window than the remaining hold must not pull expiry backward.
+    """
+    _item(client, key, "A", ["backend/app/services/items.py"])
+    w1 = _worker(client, key, "w1")
+    got = _ok(client, key, "claim_cluster", {"agent_id": w1["agent_id"]})
+    far = datetime.now(timezone.utc) + timedelta(hours=2)
+    for row in db.query(AreaReservation).all():
+        row.expires_at = far
+    db.commit()
+
+    _ok(client, key, "heartbeat", {"id": got["items"][0]["id"], "agent_id": w1["agent_id"]})
+    db.expire_all()
+
+    for row in db.query(AreaReservation).all():
+        current = row.expires_at
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        assert current >= far.replace(tzinfo=timezone.utc) - timedelta(seconds=1), (
+            f"a heartbeat shrank expiry from {far} to {current}"
+        )
+
+
+def test_heartbeating_one_item_does_not_drop_a_sibling_reservation(client, key, db):
+    """P30 D5. Releasing (or beating) B must not drop A/C. Reservations are per
+    (agent, item, area); only the heartbeated item's rows move.
+    """
+    _item(client, key, "A", ["backend/app/services/items.py"])
+    _item(client, key, "C", ["web/src/features/tracker"])
+    w1 = _worker(client, key, "w1")
+    first = _ok(client, key, "claim_cluster", {"agent_id": w1["agent_id"], "max_items": 1})
+    second = _ok(client, key, "claim_cluster", {"agent_id": w1["agent_id"], "max_items": 1})
+    assert first["claimed"] and second["claimed"]
+    sibling = next(r for r in db.query(AreaReservation).all()
+                   if "tracker" in r.area)
+    sibling_pk, sibling_exp = sibling.id, sibling.expires_at
+
+    _ok(client, key, "heartbeat",
+        {"id": first["items"][0]["id"], "agent_id": w1["agent_id"]})
+    db.expire_all()
+
+    again = db.get(AreaReservation, sibling_pk)
+    assert again is not None, "heartbeating A dropped C's reservation"
+    assert again.expires_at == sibling_exp, "heartbeating A moved C's expiry"
+
+
 def test_an_expired_reservation_stops_blocking_without_a_sweeper(client, key, db):
     """Lazy at read time. A sweeper would add a failure mode this cannot have: stop it and the
     divvy freezes with every cluster looking permanently taken and nothing to explain it."""
