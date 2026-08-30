@@ -239,9 +239,17 @@ def test_with_an_item_the_model_is_told_not_to_claim_anything_else(tmp_path):
 
 
 def test_run_refuses_a_repository_it_cannot_verify(tmp_path):
-    """D3, reaching the CLI: no `.gbagent.toml`, no spawn."""
+    """D3, reaching the CLI: no `.gbagent.toml`, no spawn.
+
+    A seat and `--agent-id` get past registration (P30 D8: register before
+    prepare), so this still asserts the config refusal, not a missing MCP file.
+    """
+    seat_file = tmp_path / "seat.json"
+    seat_file.write_text(json.dumps({"mcpServers": {"graphban": {
+        "url": "https://graphban.invalid/api/mcp", "headers": {"X-API-Key": "k"}}}}))
     result = subprocess.run(
-        [str(BINARY), "run", "--worktree", str(tmp_path), "--mcp-config", "/nope.json",
+        [str(BINARY), "run", "--worktree", str(tmp_path), "--mcp-config", str(seat_file),
+         "--agent-id", "GRPH-A1",
          "--model", "m", "--turns", "5", "--window", "1000",
          "--base-url", "http://model.invalid/v1"],
         capture_output=True, text=True, timeout=60,
