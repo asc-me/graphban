@@ -92,3 +92,10 @@ same.
 - **Dependency changes across an upgrade.** The venv lives outside the release and is not
   refreshed by `upgrade`, so a release needing new packages would start against the old ones.
   Named here rather than discovered later.
+
+## Since S7 (GRPH-601)
+
+`scripts/graphban_host.py` is the command the PRD named. It places `root/current`, creates
+`root/venv`, puts `GIT_SHA` on the unit, keeps the operator's `.env` across a swap, and
+refreshes the venv from the new tree. The four measurements above are still measurements —
+S7 closed the holes in the code, not the walks that were not run.

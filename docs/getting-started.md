@@ -10,6 +10,9 @@ docker compose up --build
 The stack is **Postgres (pgvector) + FastAPI + an nginx-served SPA**. On first boot the API
 enables the `vector` extension and runs Alembic migrations. The database starts **empty**.
 
+To run a team server on a Mac or a Linux box **without Docker**, see
+[Native install](native-install.md). Compose stays the default.
+
 | Surface | URL |
 | --- | --- |
 | Web app | http://localhost:8080 |

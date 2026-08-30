@@ -10,6 +10,7 @@ fully offline with `docker compose up`.
 - **[Product overview](product-overview.md)** — vision, goals, target users, philosophy, licensing
 - **[Design philosophy](design-philosophy.md)** — the harness-engineering principles the codebase is built to, and how they're enforced
 - **[Getting started](getting-started.md)** — install, run, first login, a guided tour
+- **[Native install](native-install.md)** — launchd / systemd team server, no Docker
 - **[Architecture](ARCHITECTURE.md)** — how the system fits together and why
 
 ## Feature guides

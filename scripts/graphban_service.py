@@ -41,7 +41,8 @@ SECRET_MARKERS = ("secret", "password", "token", "api_key", "apikey", "private")
 
 def plist_dict(*, root: pathlib.Path, python: pathlib.Path, user: str,
                label: str = LABEL, logs: pathlib.Path | None = None,
-               port: int = 8000, host: str = "127.0.0.1") -> dict:
+               port: int = 8000, host: str = "127.0.0.1",
+               git_sha: str = "unknown", user_domain: bool = False) -> dict:
     """The launchd job description.
 
     `ProgramArguments` runs `app.serve` — the same entrypoint the container uses — so there is
@@ -59,7 +60,16 @@ def plist_dict(*, root: pathlib.Path, python: pathlib.Path, user: str,
     Neither is a secret, so both belong here rather than in the `.env` the plist must not read.
     """
     logs = logs or pathlib.Path("/usr/local/var/log")
-    return {
+    # `GIT_SHA` is identity, not a secret: `/health` reports it, and S5's upgrade check
+    # compares it to `--sha`. Leaving it out makes every native upgrade look like a
+    # healthy box serving `unknown`.
+    env = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
+        "PORT": str(port),
+        "HOST": host,
+        "GIT_SHA": git_sha,
+    }
+    job = {
         "Label": label,
         # The venv's python, not the system one: a service that resolves `python3` from PATH
         # picks up whatever the last installer put there.
@@ -69,21 +79,21 @@ def plist_dict(*, root: pathlib.Path, python: pathlib.Path, user: str,
         # service must read THAT, not a fixed `backend/` beside it — pointing them at
         # different directories makes an upgrade replace code nobody serves.
         "WorkingDirectory": str(root / "current" / "backend"),
-        "UserName": user,
         # Start at boot AND come back after a crash. See the module docstring: either alone
         # produces a service that looks installed and is not running.
         "RunAtLoad": True,
         "KeepAlive": True,
         "StandardOutPath": str(logs / "graphban.log"),
         "StandardErrorPath": str(logs / "graphban.err.log"),
-        # PATH, and the two `app.serve` reads from the environment. Nothing here is a secret,
-        # and nothing here may become one — the file is world-readable.
-        "EnvironmentVariables": {
-            "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
-            "PORT": str(port),
-            "HOST": host,
-        },
+        # PATH, PORT/HOST, and the revision. Nothing here is a secret, and nothing here
+        # may become one — the file is world-readable.
+        "EnvironmentVariables": env,
     }
+    # UserName is a LaunchDaemon key. A LaunchAgent already runs as the logged-in user;
+    # naming one is how you ask launchd for a privilege it will not give.
+    if not user_domain:
+        job["UserName"] = user
+    return job
 
 
 def secrets_in(plist: dict) -> list[str]:
@@ -243,7 +253,8 @@ def main(argv: list[str] | None = None) -> int:
     root = pathlib.Path(args.root).resolve()
     python = pathlib.Path(args.python) if args.python else root / "venv" / "bin" / "python"
     data = plist_dict(root=root, python=python, user=args.user, label=args.label,
-                      logs=pathlib.Path(args.logs), port=args.port, host=args.bind)
+                      logs=pathlib.Path(args.logs), port=args.port, host=args.bind,
+                      user_domain=args.user_domain)
 
     leaked = secrets_in(data)
     if leaked:

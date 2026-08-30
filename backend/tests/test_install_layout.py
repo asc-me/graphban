@@ -25,6 +25,7 @@ import pathlib
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "scripts"))
+import graphban_host as gh  # noqa: E402
 import graphban_service as gs  # noqa: E402
 import graphban_systemd as gsd  # noqa: E402
 import graphban_upgrade as up  # noqa: E402
@@ -76,6 +77,24 @@ def test_the_interpreter_lives_outside_the_swapped_release():
     assert not exec_start.startswith(swapped), "the interpreter is inside the swapped release"
     assert exec_start.startswith(str(ROOT / "venv"))
     assert f"ExecStart={ROOT / 'venv'}" in _unit()
+
+
+def test_the_host_cli_renders_the_same_working_directory():
+    """S7 is the CALL. A helper that agrees with S3/S4 while the command that operators
+    run points somewhere else is the S6 defect wearing a dispatcher."""
+    _, plist, kind = gh.write_service(
+        platform="darwin", root=ROOT, python=PYTHON, user="graphban",
+        port=8000, host="127.0.0.1", git_sha="x", user_scope=False)
+    assert kind == "plist"
+    import plistlib
+    job = plistlib.loads(plist)
+    assert job["WorkingDirectory"] == str(ROOT / "current" / "backend")
+
+    _, unit, kind = gh.write_service(
+        platform="linux", root=ROOT, python=PYTHON, user="graphban",
+        port=8000, host="127.0.0.1", git_sha="x", user_scope=False)
+    assert kind == "unit"
+    assert f"WorkingDirectory={ROOT / 'current' / 'backend'}" in unit
 
 
 def test_uninstall_removes_the_paths_the_installers_create():

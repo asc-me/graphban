@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -119,6 +120,64 @@ def verify(base: str, expected_sha: str, *, root: pathlib.Path, python: pathlib.
     return ok, facts
 
 
+def preserve_env(previous: pathlib.Path, current: pathlib.Path) -> None:
+    """Keep the operator's `.env` across a swap.
+
+    WorkingDirectory is `current/backend`, which is how pydantic-settings finds `.env`.
+    `copytree` of the incoming release would replace that file with whatever the tarball
+    happened to include — usually nothing, occasionally a different secret. The operator's
+    file wins; the incoming one is discarded.
+    """
+    src = previous / "backend" / ".env"
+    if not src.is_file():
+        return
+    dest_dir = current / "backend"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest_dir / ".env")
+
+
+def write_sha(tree: pathlib.Path, sha: str) -> None:
+    tree.mkdir(parents=True, exist_ok=True)
+    (tree / "GIT_SHA").write_text(sha + "\n", encoding="utf-8")
+
+
+def read_sha(tree: pathlib.Path) -> str:
+    path = tree / "GIT_SHA"
+    return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+
+def platform_restart(*, user_scope: bool, platform: str | None = None):
+    """The supervisor command for this install's domain — not always `system`.
+
+    S3/S4/S6 were walked in the user domain. Hardcoding `system/dev.graphban.api` (and
+    ignoring the exit code) meant stop of the wrong domain "succeeded" and KeepAlive
+    restarted the user job after the swap crashed it. That is not the restart the
+    upgrade believed it issued.
+    """
+    plat = platform or sys.platform
+
+    def restart(action: str) -> None:
+        if plat == "darwin":
+            label = "dev.graphban.api"
+            domain = f"gui/{os.getuid()}" if user_scope else "system"
+            if action == "stop":
+                cmd = ["launchctl", "bootout", f"{domain}/{label}"]
+            else:
+                plist = (pathlib.Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+                         if user_scope else
+                         pathlib.Path("/Library/LaunchDaemons") / f"{label}.plist")
+                cmd = ["launchctl", "bootstrap", domain, str(plist)]
+        else:
+            ctl = ["systemctl", "--user"] if user_scope else ["systemctl"]
+            cmd = ctl + [action, "graphban.service"]
+        p = subprocess.run(cmd, capture_output=True, text=True)
+        if p.returncode != 0 and action != "stop":
+            print(f"service {action} failed: {(p.stdout + p.stderr).strip()}",
+                  file=sys.stderr)
+
+    return restart
+
+
 def stop(restart, *, drain: float = 10.0) -> None:
     """Ask the service manager to stop, and give in-flight work a bounded moment.
 
@@ -132,8 +191,13 @@ def stop(restart, *, drain: float = 10.0) -> None:
 
 def upgrade(root: pathlib.Path, release: pathlib.Path, sha: str, *, base: str,
             python: pathlib.Path, restart, probe=health, web=web_sha,
-            head=alembic_head) -> int:
-    """Swap in a release, restart, verify — and put the old one back if it did not come up."""
+            head=alembic_head, rewire=None, sync_deps=None) -> int:
+    """Swap in a release, restart, verify — and put the old one back if it did not come up.
+
+    `rewire(sha)` rewrites the supervisor unit so the next start carries this revision's
+    `GIT_SHA`. `sync_deps(root, current)` refreshes `root/venv` from the new tree. Both
+    are optional so the layout tests stay free of a real pip and a real launchd.
+    """
     current = root / "current"
     previous = root / "previous"
 
@@ -150,9 +214,24 @@ def upgrade(root: pathlib.Path, release: pathlib.Path, sha: str, *, base: str,
     if current.exists():
         current.rename(previous)
     shutil.copytree(release, current)
+    if previous.exists():
+        preserve_env(previous, current)
+    write_sha(current, sha)
 
-    restart("start")
-    ok, facts = verify(base, sha, root=root, python=python, probe=probe, web=web, head=head)
+    deps_failed = False
+    if sync_deps is not None:
+        deps_rc = sync_deps(root, current)
+        if deps_rc not in (0, None):
+            deps_failed = True
+            print("upgrade: dependency install into the venv failed", file=sys.stderr)
+    if rewire is not None:
+        rewire(sha)
+
+    ok, facts = False, {"api": "", "web": "", "alembic": ""}
+    if not deps_failed:
+        restart("start")
+        ok, facts = verify(base, sha, root=root, python=python, probe=probe, web=web,
+                           head=head)
     if ok:
         for fact in IDENTITY_FACTS:
             print(f"    {fact:<8} {facts[fact]}")
@@ -160,17 +239,23 @@ def upgrade(root: pathlib.Path, release: pathlib.Path, sha: str, *, base: str,
         return EXIT_OK
 
     # ROLL BACK, and say what was wrong rather than only that something was.
-    checked = ("api", "web") if not facts["web"].startswith("n/a") else ("api",)
+    checked = ("api", "web") if not str(facts.get("web", "")).startswith("n/a") else ("api",)
     problems = [f"{f} serves {facts[f]!r}, expected {sha!r}"
-                for f in checked if facts[f] != sha]
-    if not facts["api"]:
+                for f in checked if facts.get(f) != sha]
+    if not facts.get("api"):
         problems.insert(0, "the api never became healthy")
+    if deps_failed:
+        problems.insert(0, "dependency install into the venv failed")
     print("upgrade failed: " + "; ".join(problems), file=sys.stderr)
 
     if previous.exists():
         stop(restart)
         shutil.rmtree(current, ignore_errors=True)
         previous.rename(current)
+        if sync_deps is not None:
+            sync_deps(root, current)
+        if rewire is not None:
+            rewire(read_sha(current) or "unknown")
         restart("start")
         back = wait_healthy(base, probe=probe)
         print(f"rolled back to the previous release; it is "
@@ -219,20 +304,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base", default="http://127.0.0.1:8000")
     ap.add_argument("--python", default="")
     ap.add_argument("--purge", action="store_true")
+    ap.add_argument("--user-domain", action="store_true")
+    ap.add_argument("--user-scope", action="store_true")
     args = ap.parse_args(argv)
 
     root = pathlib.Path(args.root).resolve()
     python = pathlib.Path(args.python) if args.python else root / "venv" / "bin" / "python"
-
-    def restart(action: str) -> None:
-        """Whatever the platform uses. Resolved here so this file does not branch on the OS."""
-        if sys.platform == "darwin":
-            cmd = {"stop": ["launchctl", "bootout", "system/dev.graphban.api"],
-                   "start": ["launchctl", "bootstrap", "system",
-                             "/Library/LaunchDaemons/dev.graphban.api.plist"]}[action]
-        else:
-            cmd = ["systemctl", action, "graphban.service"]
-        subprocess.run(cmd, capture_output=True, text=True)
+    restart = platform_restart(user_scope=args.user_domain or args.user_scope)
 
     if args.command == "uninstall":
         return uninstall(root, restart=restart, purge=args.purge)

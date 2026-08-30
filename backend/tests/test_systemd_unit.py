@@ -67,6 +67,14 @@ def test_the_port_is_an_environment_assignment_not_left_to_dotenv(unit):
     """
     assert "Environment=PORT=8000" in unit
     assert "Environment=HOST=" in unit
+    assert "Environment=GIT_SHA=" in unit, (
+        "without GIT_SHA in the unit /health reports unknown and an upgrade cannot verify"
+    )
+
+
+def test_the_revision_is_an_environment_assignment():
+    text = gsd.unit_text(root=ROOT, python=ROOT / "p", user="graphban", git_sha="abc1234")
+    assert "Environment=GIT_SHA=abc1234" in text
 
 
 def test_the_working_directory_is_where_dotenv_lives(unit):
