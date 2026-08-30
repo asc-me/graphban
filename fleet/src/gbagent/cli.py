@@ -10,8 +10,8 @@ The adapter cannot ask an endpoint itself (only two modules in this package may 
 so it shells out to here.
 
 **`run` can pick up its own work.** `--item` is optional from S7 on: without one the model
-calls `claim_next` itself, which is in `coord.WORKER_TOOLS` along with the rest of
-`COORDINATION_TOOLS`.
+calls `claim_cluster` itself, which is in `coord.WORKER_TOOLS` along with the rest of
+`COORDINATION_TOOLS` (P30 D3). `claim_next` is not advertised: it reserves no files.
 
 This paragraph used to say the opposite, and was true when written — a later slice wired the
 thing it described as unwired, and the prose did not follow (GRPH-562). Corrected rather than
@@ -69,9 +69,11 @@ SYSTEM = (
 def assignment_for(item: str) -> str:
     """What the model is told to work on.
 
-    `--item` is optional from S7 on. Without one the model calls `claim_next` itself, which is
-    what AC-5 asks for — an agent that cannot take its own work is not a fleet member. With one
-    it works the item it was handed, which is what a re-run of a stuck item needs.
+    `--item` is optional from S7 on. Without one the model calls `claim_cluster` itself,
+    which is what AC-5 asks for — an agent that cannot take its own work is not a fleet
+    member — and what P30 D3 requires, so two workers are not handed items that share
+    files. With one it works the item it was handed, which is what a re-run of a stuck
+    item needs.
 
     The claim instruction says `wait_seconds=0` and what to do with nothing: PRD-22 D-c makes
     exiting on an empty queue the normal end of a worker's life, and a model that waits instead
@@ -80,9 +82,9 @@ def assignment_for(item: str) -> str:
     if item:
         return f"You are working on {item}. Do not claim anything else."
     return (
-        "Call claim_next with wait_seconds=0 to take the next ready item, then build it. "
-        "If there is nothing to claim, say DONE and stop — exiting on an empty queue is the "
-        "normal end of your run, not a failure."
+        "Call claim_cluster with wait_seconds=0 to take the next ready non-colliding "
+        "cluster, then build it. If there is nothing to claim, say DONE and stop — "
+        "exiting on an empty queue is the normal end of your run, not a failure."
     )
 
 

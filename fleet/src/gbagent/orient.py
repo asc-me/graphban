@@ -63,19 +63,21 @@ NOT_ORIENTATION: tuple[str, ...] = ("describe_code",)
 #: reads above, because the argument that makes orientation safe to hand to a weak model —
 #: nothing here changes server state — stops being true the moment these are mixed in.
 #:
-#: `claim_next` takes the work. `update_item` moves it to `review` with evidence, and the
-#: server clamps a worker at `review`: `done` is the reviewer's word (WORKER_STATUS_CEILING).
-#: `heartbeat` keeps the lease alive across a `run_tests` that takes minutes.
+#: `claim_cluster` takes the work (P30 D3). `claim_next` stays on the server for humans
+#: and solo sessions; a fleet child is not taught it, because it reserves no files.
+#: `update_item` moves the item to `review` with evidence, and the server clamps a worker
+#: at `review`: `done` is the reviewer's word (WORKER_STATUS_CEILING). `heartbeat` keeps
+#: the lease alive across a `run_tests` that takes minutes.
 #:
 #: Absent, and the server would refuse them anyway: `sign_off`, `bounce`, `claim_review`,
 #: `mint_enrolment`. D5 — done is not the agent's word.
-COORDINATION_TOOLS: tuple[str, ...] = ("claim_next", "update_item", "heartbeat")
+COORDINATION_TOOLS: tuple[str, ...] = ("claim_cluster", "update_item", "heartbeat")
 
 #: Arguments the AGENT owns and the model does not get to invent. **Overwritten, not
 #: defaulted**, wherever the tool's schema has the field.
 #:
 #: Filling only a BLANK was the first version and it was wrong, which the GRPH-506 trace showed
-#: on turn 1 of a spawned run: `claim_next` came back "needs to know which agent is calling"
+#: on turn 1 of a spawned run: the claim call came back "needs to know which agent is calling"
 #: because the model had supplied an `agent_id` of its own — plausible, truthy, and not this
 #: agent. Truthy meant the real one was never substituted. It recovered by reading the refusal
 #: and spent two of twelve turns doing it.
@@ -123,7 +125,7 @@ class Orientation:
     names: tuple[str, ...] = ORIENTATION_TOOLS
     #: This agent's server-side identity, injected into calls that take one.
     agent_id: str = ""
-    #: The item a successful `claim_next` handed back, or None.
+    #: The item a successful claim handed back, or None.
     #:
     #: **FOUND BY THE S7 WALK.** When the model claims its own work, the harness was never
     #: told what it claimed — so the give-up path had no item id, `write_handoff` called

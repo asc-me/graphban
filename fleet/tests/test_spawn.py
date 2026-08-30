@@ -104,6 +104,9 @@ def test_the_child_is_told_it_has_no_parent():
     assert "gb/wave-1-grph-a1" in text
     # D-c: exit on empty is the normal end of a run.
     assert "wait_seconds=0" in text and "EXIT" in text
+    # P30 D3: vendor children are taught the collision-safe claim, not claim_next.
+    assert "claim_cluster" in text
+    assert "Do not call claim_next" in text
 
 
 def test_removing_a_seat_says_whether_there_was_one(tmp_path: Path):
