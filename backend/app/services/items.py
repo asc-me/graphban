@@ -190,11 +190,12 @@ def normalize_evidence(raw) -> list[dict]:
     `kind` is advisory (test | url | screenshot | health | note) and falls back to `note`; a
     receipt with neither detail nor url is dropped.
 
-    **`sabotage` is the one kind that is not advisory (GRPH-321).** It carries the claim under
-    test, the mutation applied, and how many tests failed — and a receipt claiming to be one
-    without that structure is demoted to `note` rather than accepted. A structured kind that
-    accepts unstructured input is the free-text field with a new name, and anything gating on
-    it would be checking a label rather than a fact.
+    **`sabotage`, `attestation`, and `lesson` are not advisory.** A structured kind that
+    accepts unstructured input is the free-text field with a new name, and anything gating
+    on it would be checking a label rather than a fact. `sabotage` needs claim / mutation /
+    tests_failed (GRPH-321); `attestation` needs adapter / commit / predicates; `lesson`
+    needs `shard_id` of a published shard this item's project can already search. Missing
+    structure demotes to `note`, never drops.
 
     Graphban owns the RECEIPT, not the run. It cannot verify the mutation happened; what it
     can do is make the claim falsifiable and queryable, which is the same trade PRD-12 already

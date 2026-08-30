@@ -967,10 +967,12 @@ def set_status(db: Session, shard_id: str, status: str) -> MemoryShard | None:
     shard = db.get(MemoryShard, shard_id)
     if shard is None:
         return None
+    prev = shard.status
     shard.status = status
     db.commit()
     db.refresh(shard)
-    if status == "published":
+    # A second publish of an already-published row is not a new stand-behind.
+    if status == "published" and prev != "published":
         maybe_record_recurrence_miss(db, shard)
     return shard
 
@@ -1258,7 +1260,7 @@ def published_cluster(
     shard: MemoryShard,
     *,
     readable_project_ids: set[str],
-    viewer_project_id: str,
+    viewer_project_id: str | None,
 ) -> dict:
     """Eligibility/transferability scan. Not retrieval.
 
@@ -1686,7 +1688,7 @@ def maybe_record_recurrence_miss(db: Session, newly_published: MemoryShard) -> N
 
 def lesson_visible_from(db: Session, shard: MemoryShard, project_id: str) -> bool:
     """Would this published shard already surface in search_memory for project_id?"""
-    if shard.status != "published":
+    if not project_id or shard.status != "published":
         return False
     if shard.project_id == project_id:
         return True
@@ -1695,6 +1697,18 @@ def lesson_visible_from(db: Session, shard: MemoryShard, project_id: str) -> boo
     if shard.project_id is None and _includes_global(db, project_id):
         return True
     return False
+
+
+def lesson_reload_viewer(
+    db: Session, shard: MemoryShard, readable_project_ids: set[str],
+) -> str | None:
+    """A real project from which this shard is visible. Never '' — empty is not a project."""
+    if shard.project_id:
+        return shard.project_id
+    for pid in readable_project_ids:
+        if pid and lesson_visible_from(db, shard, pid):
+            return pid
+    return next((p for p in readable_project_ids if p), None)
 
 
 def _shard_public(shard: MemoryShard) -> dict:
@@ -1714,13 +1728,18 @@ def _shard_public(shard: MemoryShard) -> dict:
     }
 
 
-def _outcome_public(o: LessonOutcome) -> dict:
+def _outcome_public(db: Session, o: LessonOutcome) -> dict:
+    related = o.related_item_id
+    if related:
+        item = db.get(Item, related)
+        # Rendered key on the wire. Stored id stays frozen for the log (PRD-13).
+        related = item.key if item is not None else related
     return {
         "id": o.id,
         "shard_id": o.shard_id,
         "kind": o.kind,
         "source": o.source,
-        "related_item_id": o.related_item_id,
+        "related_item_id": related,
         "related_shard_id": o.related_shard_id,
         "detail": o.detail or "",
         "created_at": o.created_at,
@@ -1733,14 +1752,14 @@ def _display_cluster(
     cluster: dict,
     *,
     readable_project_ids: set[str],
-    viewer_project_id: str,
+    viewer_project_id: str | None,
 ) -> tuple[list[dict], list[str]]:
     """Readable members (with text) plus same-project candidates. Unreadable: chips only."""
     readable = [
         _shard_public(m) for m in cluster["members"]
         if m.id in cluster["readable_ids"]
     ]
-    if shard.embedding is not None:
+    if shard.embedding is not None and viewer_project_id:
         seed = list(shard.embedding)
         seen = {m["id"] for m in readable}
         for cand in list_shards(db, project_id=viewer_project_id, status="candidate"):
@@ -1762,16 +1781,23 @@ def get_lesson(
     shard_id: str,
     *,
     readable_project_ids: set[str],
-    viewer_project_id: str,
+    viewer_project_id: str | None,
     now: datetime | None = None,
     overridden: bool | None = None,
+    skip_visibility: bool = False,
 ) -> dict | None:
-    """Detail. None if not visible (project-local of another project). Org-reach sibling is."""
+    """Detail. None if not visible (project-local of another project). Org-reach sibling is.
+
+    `skip_visibility` is the post-write reload: the caller already authorized the
+    mutation, and a 404 after commit would hide a write that happened (or 500 an
+    override Event). Never pass "" as viewer_project_id.
+    """
     shard = db.get(MemoryShard, shard_id)
     if shard is None or shard.status != "published":
         return None
-    if not lesson_visible_from(db, shard, viewer_project_id):
-        return None
+    if not skip_visibility:
+        if not viewer_project_id or not lesson_visible_from(db, shard, viewer_project_id):
+            return None
     cluster = published_cluster(
         db, shard,
         readable_project_ids=readable_project_ids,
@@ -1800,7 +1826,7 @@ def get_lesson(
     row.update({
         "cluster": members,
         "unread_cluster_tags": unread,
-        "outcomes": [_outcome_public(o) for o in outcomes],
+        "outcomes": [_outcome_public(db, o) for o in outcomes],
         "events": [
             {
                 "action": e.action,
@@ -1843,19 +1869,20 @@ def promote_org(
     shard = db.get(MemoryShard, shard_id)
     if shard is None or shard.status != "published":
         raise app_errors.NotFound(f"lesson not found: {shard_id}")
-    viewer = shard.project_id or ""
+    viewer = lesson_reload_viewer(db, shard, readable_project_ids)
     if shard.reach == "org":
         detail = get_lesson(
             db, shard_id,
             readable_project_ids=readable_project_ids,
             viewer_project_id=viewer,
+            skip_visibility=True,
         )
         return {"wrote": False, "overridden": False, "eligibility": None, "lesson": detail}
 
     cluster = published_cluster(
         db, shard,
         readable_project_ids=readable_project_ids,
-        viewer_project_id=viewer,
+        viewer_project_id=viewer or shard.project_id,
     )
     elig = org_eligibility(shard, cluster["members"], scan=cluster["scan"])
     outcomes = _outcomes_for(db, [shard.id]).get(shard.id, [])
@@ -1890,6 +1917,7 @@ def promote_org(
         readable_project_ids=readable_project_ids,
         viewer_project_id=viewer,
         overridden=overridden,
+        skip_visibility=True,
     )
     return {
         "wrote": True,

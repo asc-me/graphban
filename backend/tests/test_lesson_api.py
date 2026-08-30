@@ -207,6 +207,39 @@ def test_record_outcome_caught(client, auth, db):
     assert "caught" in kinds
 
 
+def test_empty_caught_detail_is_422(client, auth, db):
+    """Empty caught is a 1.0 trophy with no sentence. Detail is required."""
+    shard = mem_svc.add_memory(
+        db, text_body="empty caught must not score", project_id="core",
+        status="published", actor_user_id="u1", attributed_project_id="core",
+    )
+    r = client.post(
+        f"/api/memory/lessons/{shard.id}/outcomes",
+        json={"kind": "caught", "detail": ""},
+        headers=auth,
+    )
+    assert r.status_code == 422, r.text
+    assert _outcomes(db, shard.id) == []
+
+
+def test_global_shard_outcome_reloads_instead_of_404(client, auth, db):
+    """viewer_project_id must not be "". The write already committed."""
+    shard = mem_svc.add_memory(
+        db, text_body="global published lesson outcome", project_id=None,
+        status="published", actor_user_id="u1",
+    )
+    assert shard.project_id is None
+    r = client.post(
+        f"/api/memory/lessons/{shard.id}/outcomes",
+        json={"kind": "caught", "detail": "it fired in core too"},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["caught_state"] == "caught"
+    assert r.json()["effectiveness"]["score"] == 1.0
+    assert len(_outcomes(db, shard.id)) == 1
+
+
 def test_promote_unverifiable_422_with_and_without_override(client, auth, db):
     shard = mem_svc.add_memory(
         db, text_body="ingest collapse still unmeasured", project_id="core",
@@ -413,10 +446,9 @@ def test_mcp_pinned_key_does_not_leak_foreign_cluster_text(client, auth, db):
     assert b.id not in cluster_ids
     assert all(c.get("project_id") != p2 for c in row["cluster"])
     assert "unread project" in row["unread_cluster_tags"]
-    # Eligibility may still count the sibling the human can read but the key cannot.
-    assert row["eligibility"]["distinct_projects"] in (1, 2)
-    if row["eligibility"]["state"] == "ineligible":
-        assert row["eligibility"]["cluster_scan"] == "scanned"
+    assert row["eligibility"]["cluster_scan"] == "scanned"
+    assert row["eligibility"]["distinct_projects"] == 2
+    assert b.id not in cluster_ids
 
 
 # ---- miss-on-publish --------------------------------------------------------------------
@@ -438,6 +470,23 @@ def test_set_status_publish_writes_missed_on_older(db):
     kinds = [o.kind for o in _outcomes(db, older.id)]
     assert "missed" in kinds, kinds
     assert all(o.source == "recurrence" for o in _outcomes(db, older.id) if o.kind == "missed")
+
+
+def test_republish_does_not_write_a_second_miss(db):
+    """Hook fires on the transition, not on every POST publish of an already-published row."""
+    older = mem_svc.add_memory(
+        db, text_body="older published lesson miss-once", project_id="core",
+        status="published", origin="user:ascme",
+    )
+    newer = mem_svc.add_memory(
+        db, text_body="newer candidate lesson miss-once", project_id="core",
+        status="candidate", origin="user:ascme", auto_triage=False,
+    )
+    _force_sim(db, older, newer, 0.90)
+    mem_svc.set_status(db, newer.id, "published")
+    assert len([o for o in _outcomes(db, older.id) if o.kind == "missed"]) == 1
+    mem_svc.set_status(db, newer.id, "published")
+    assert len([o for o in _outcomes(db, older.id) if o.kind == "missed"]) == 1
 
 
 def test_agent_publish_keep_writes_missed_independently(db, monkeypatch):
@@ -579,7 +628,7 @@ def test_mcp_add_memory_stamps_attribution(client, auth, db):
 # ---- evidence kind=lesson ---------------------------------------------------------------
 
 
-def test_update_item_lesson_evidence_writes_applied(db):
+def test_update_item_lesson_evidence_writes_applied(client, auth, db):
     shard = mem_svc.add_memory(
         db, text_body="applied lesson", project_id="core", status="published",
     )
@@ -591,6 +640,14 @@ def test_update_item_lesson_evidence_writes_applied(db):
     assert "applied" in kinds
     db.refresh(item)
     assert any(e.get("kind") == "lesson" and e.get("shard_id") == shard.id for e in item.evidence)
+    stored = next(o for o in _outcomes(db, shard.id) if o.kind == "applied")
+    assert stored.related_item_id == item.id
+    r = client.get(f"/api/memory/lessons/{shard.id}?project_id=core", headers=auth)
+    assert r.status_code == 200, r.text
+    applied = next(o for o in r.json()["outcomes"] if o["kind"] == "applied")
+    assert applied["related_item_id"] == item.key
+    if item.id != item.key:
+        assert applied["related_item_id"] != item.id
 
 
 def test_gate_preview_does_not_write_applied_outcomes(db):

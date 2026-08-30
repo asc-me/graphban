@@ -569,7 +569,7 @@ class LessonDetail(LessonListRow):
 
 class LessonOutcomeIn(BaseModel):
     kind: str
-    detail: str = ""
+    detail: str = Field(min_length=1)
 
 
 class PromoteOrgIn(BaseModel):

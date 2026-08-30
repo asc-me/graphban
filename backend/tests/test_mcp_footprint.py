@@ -60,10 +60,17 @@ CEILING = 14200
 # that works and cannot be discovered — so it is the last thing that should have been trimmed
 # to make the number fit.
 #
-# The ceiling is 14000 rather than 13650 for one reason: this number now bounds TOTAL SURFACE
+# The ceiling is 14200 rather than 13650 because this number now bounds TOTAL SURFACE
 # rather than per-agent cost, and total surface is allowed to grow — that is the point of
 # having tiers to put it in. It is not slack for core. Core cannot move by a single token
 # without `CORE_TOKENS` failing.
+#
+# 14000 -> 14200 (`get_lessons` CORE). The tool is ~458 tokens after slimming nested
+# outputSchema enums. MEASURED 14079 cannot fit in 14000. Slack shrank (381 → 121). The
+# third-state sentences in the description are load-bearing (score null is not a high
+# score; eligibility unverifiable until attributed and scanned) — trimming them would
+# not claw back 80+ tokens. CORE_TOKENS 8497 → 8956 is the bill every key pays; this
+# raise is not a licence to grow core without that equality.
 MEASURED_TOKENS = 14079
 
 

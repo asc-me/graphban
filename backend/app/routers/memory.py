@@ -100,18 +100,19 @@ def record_lesson_outcome(
     if body.kind not in ("caught", "missed", "contradicted"):
         raise HTTPException(422, f"invalid outcome kind: {body.kind}")
     mem_svc.record_outcome(
-        db, shard_id, kind=body.kind, source="human", detail=body.detail or "",
+        db, shard_id, kind=body.kind, source="human", detail=body.detail,
     )
     events_svc.record_user(
         db, user, action="record_lesson_outcome", target_type="shard",
         target_id=shard_id, project_id=existing.project_id,
         meta={"kind": body.kind},
     )
-    viewer = existing.project_id or ""
+    readable = set(authz.readable_project_ids(db, user.id))
     row = mem_svc.get_lesson(
         db, shard_id,
-        readable_project_ids=set(authz.readable_project_ids(db, user.id)),
-        viewer_project_id=viewer,
+        readable_project_ids=readable,
+        viewer_project_id=mem_svc.lesson_reload_viewer(db, existing, readable),
+        skip_visibility=True,
     )
     if row is None:
         raise HTTPException(404, "lesson not found")
@@ -142,6 +143,9 @@ def promote_org_lesson(
         )
     except mem_svc.PromoteRefused as e:
         raise HTTPException(422, e.payload) from e
+    lesson = result.get("lesson")
+    if lesson is None:
+        raise HTTPException(500, "lesson could not be reloaded after promote")
     if result["wrote"]:
         events_svc.record_user(
             db, user, action="promote_org_lesson", target_type="shard",
@@ -152,10 +156,10 @@ def promote_org_lesson(
                     (body.override_reason or "").strip() or None
                     if result["overridden"] else None
                 ),
-                "transferability": result["lesson"]["transferability"],
+                "transferability": lesson["transferability"],
             },
         )
-    return result["lesson"]
+    return lesson
 
 
 @router.get("/shards", response_model=list[ShardOut])
