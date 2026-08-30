@@ -570,7 +570,7 @@ OPEN_TOOLS: dict[str, str] = {
         "code_neighbors", "fleet_status", "generate_digest", "get_backlog", "get_code_map",
         "get_context", "get_item_details", "get_prd", "graph_query", "learning_loop",
         "list_projects", "prd_acceptance", "prd_coverage", "related_work", "search_code",
-        "search_items", "search_memory", "suggest_next",
+        "search_items", "search_memory", "get_lessons", "suggest_next",
     )},
     "setup_project": "a read despite the name — returns a checklist, changes nothing",
     "collision_clusters": "the divvy a planner allocates FROM; seeing the partition is not "

@@ -104,6 +104,9 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # project can only be conjured where it cannot reach anyone else's tenant.
         "create_project",
         "update_item", "search_items", "add_memory", "search_memory",
+        # A read of whether a published lesson is still worth following. Not a write and
+        # not an authority gate — promote-to-org is REST/JWT only.
+        "get_lessons",
         # PRD-17 D1. Both are QUALITY, not authority: `register_agent` announces a process
         # and gets told its role — it cannot choose one its credential does not permit, and
         # the role ceiling lives on the key a human minted. `fleet_status` is a read.

@@ -143,6 +143,9 @@ CORE_TOOLS: dict[str, str] = {
     # ---- memory: context is what makes the rest work ----------------------------------------
     "add_memory": "writing context mid-task",
     "search_memory": "reading context mid-task",
+    "get_lessons": "reading whether a lesson is still worth following mid-task; following a "
+                   "contradicted shard is worse than not finding it. Same class as "
+                   "search_memory",
 
     # ---- being IN a fleet, as opposed to running one ---------------------------------------
     "next_cluster": "a worker's verb — `TOOL_ROLES` gates it to the worker, so tiering it "
