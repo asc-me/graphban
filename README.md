@@ -36,7 +36,21 @@ opt-in. A hosted multi-tenant service is a later, additive layer.
 | **Auth** | JWT login (users/roles/memberships) + scoped API keys for agents |
 | **Integrations** | Inbound **GitHub issues webhook** → tracker items (live); GitHub/Drive connection config |
 
-## Quick start (Docker — one command)
+## Install options
+
+Four ways to run it. Compose is the default; the others are not replacements for it.
+
+| | Use when | Starts |
+| --- | --- | --- |
+| **Docker Compose** | Default. A laptop, or any box that already runs Docker. | `docker compose up --build` |
+| **Native service** | A team server on a Mac or a Linux box, no Docker VM. launchd / systemd. | `python3 scripts/graphban_host.py install` |
+| **Dev processes** | Hacking on this repo. | `uvicorn` + `pnpm dev` |
+| **Self-host / Railway** | An existing deployment. | [docs/deploy.md](docs/deploy.md) · [docs/deploy-railway.md](docs/deploy-railway.md) |
+
+There is no `.app`. A menu-bar wrapper around a headless team server is a worse version of
+a system service. Native means a LaunchDaemon or a systemd unit.
+
+### Docker Compose (default)
 
 ```bash
 cp .env.example .env      # optional; defaults work with zero external services
@@ -55,6 +69,27 @@ To explore a populated app instead, set `SEED_ON_START=true` before the first `d
 up` — it loads a demo dataset (9 items, 5 requests, 5 memory shards, 3 PRDs with history, a
 typed link graph, a roadmap, MCP call counts, and platform config; seeded users share the
 password `graphban`). See [Getting started](docs/getting-started.md).
+
+### Native service (macOS / Linux, no Docker)
+
+A team server on hardware you own — typically a Mac Studio or a spare Linux box. Postgres
+with `pgvector` is required and verified, never installed.
+
+```bash
+# backend/.env must already exist, with DATABASE_URL and a JWT_SECRET you have recorded.
+# The installer will not generate a secret.
+python3 scripts/graphban_host.py install --root /opt/graphban --from .
+```
+
+One process: the API serves the SPA when `web/dist` is present. Upgrade and uninstall:
+
+```bash
+python3 scripts/graphban_host.py upgrade --root /opt/graphban --release ./new --sha <rev>
+python3 scripts/graphban_host.py uninstall --root /opt/graphban   # never drops the database
+```
+
+Full layout, user-domain vs privileged, and what has been walked:
+**[Native install](docs/native-install.md)**.
 
 ## AI providers (F1)
 
@@ -129,7 +164,9 @@ pnpm typecheck
 Two services from one repo — the API (`backend/`) and an nginx-served SPA (`web/`), each with
 its own `railway.json`. The general runbook is **[docs/deploy.md](docs/deploy.md)** (build,
 release identity, invariants, recover, rollback); Railway specifics live in
-**[docs/deploy-railway.md](docs/deploy-railway.md)**.
+**[docs/deploy-railway.md](docs/deploy-railway.md)**. A native launchd/systemd install (no
+Docker) is **[docs/native-install.md](docs/native-install.md)** — different path, same
+release-identity check.
 
 **Postgres must have the `vector` extension.** Migration `0001_initial` opens with
 `CREATE EXTENSION IF NOT EXISTS vector`, migrations run on API startup, and Railway's stock
@@ -172,7 +209,8 @@ cd backend && alembic revision --autogenerate -m "describe change" && alembic up
 backend/   FastAPI app; services shared by REST + MCP; provider abstraction; Alembic; tests
 web/       Vite + React 19 + TS SPA; Tailwind v4 tokens; TanStack Query; shadcn-style UI
 docker-compose.yml   postgres(pgvector) + api + web
-docs/      PRD · IMPLEMENTATION_PLAN.md · ARCHITECTURE.md
+scripts/graphban_host.py   native install / upgrade / uninstall (launchd, systemd)
+docs/      PRD · IMPLEMENTATION_PLAN.md · ARCHITECTURE.md · native-install.md
 ```
 
 ## License
