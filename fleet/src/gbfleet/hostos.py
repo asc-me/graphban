@@ -309,6 +309,57 @@ def user_tag() -> str:
     return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name) or "user"
 
 
+# --- whether a pid is still the process we spawned ----------------------------------
+
+def pid_is_alive(pid: int) -> bool:
+    """Whether this pid exists. Not whether it is the process we spawned — see
+    `process_start_token` for the reuse check (P30 D7).
+    """
+    if WINDOWS:
+        listed = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True, check=False,
+        ).stdout
+        return str(pid) in listed
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def process_start_token(pid: int) -> str | None:
+    """Opaque token that changes if this pid is reused. None if we cannot tell.
+
+    Adoption needs this: `os.kill(pid, 0)` is true of a reused pid too. A missing
+    token on a live pid is unadoptable — we cannot tell live from reused (P30 D7).
+    A sandbox that refuses `ps`/`wmic` is that case, not a crash.
+    """
+    try:
+        if WINDOWS:
+            listed = subprocess.run(
+                ["wmic", "process", "where", f"ProcessId={pid}", "get", "CreationDate",
+                 "/value"],
+                capture_output=True, text=True, check=False,
+            )
+            for line in listed.stdout.splitlines():
+                if line.startswith("CreationDate=") and line.strip() != "CreationDate=":
+                    return line.strip()
+            return None
+        listed = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, text=True, check=False,
+        )
+        if listed.returncode != 0:
+            return None
+        token = listed.stdout.strip()
+        return token or None
+    except OSError:
+        return None
+
+
 # --- controlling a process AND everything it spawned -------------------------------
 
 def spawn_kwargs() -> dict:
@@ -334,10 +385,13 @@ class ProcessTree:
     `subprocess` does not expose. Said plainly rather than left for someone to discover.
     """
 
-    def __init__(self, process: subprocess.Popen) -> None:
+    def __init__(self, process: subprocess.Popen, *, attached: bool = False) -> None:
         self.process = process
         self._job = None
-        if WINDOWS:
+        # An adopted pid is already in the job its original supervisor made (or in
+        # none). Assigning it here would fail or steal; stop() then falls back to
+        # signalling the pid (P30 D7).
+        if WINDOWS and not attached:
             self._job = _make_job()
             if self._job is not None:
                 _assign(self._job, process.pid)

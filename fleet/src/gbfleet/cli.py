@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import __version__
+from . import adopt as adopt_mod
 from .adapters import ADAPTERS, AdapterError, Tuning, resolve
 from .client import Graphban
 from . import doctor
@@ -316,6 +317,15 @@ def _serve_stdio(args) -> int:
                 lock=acquired,
                 limits=Limits(max_workers=args.max_workers),
             )
+            if acquired.takeover:
+                leftover, _occupied, notes = adopt_mod.recover(root, workspace)
+                fleet.children.extend(leftover)
+                for child in leftover:
+                    tail = child.branch.rsplit("-", 1)[-1]
+                    if tail.isdigit():
+                        fleet.started = max(fleet.started, int(tail))
+                for note in notes:
+                    print(f"gbfleet mcp: {note}", file=sys.stderr)
             serve(fleet)
     except RepoLocked as exc:
         print(f"gbfleet mcp: {exc}", file=sys.stderr)
