@@ -157,8 +157,12 @@ def install(path: pathlib.Path, data: bytes, *, user_domain: bool, label: str = 
     # So: wait for the label to actually disappear before handing launchd the new one. The
     # retry underneath covers the same race from the other side, because "wait until it is
     # gone" is a poll and a poll can be unlucky.
+    #
+    # `_loaded` is the wrong question here (GRPH-582 bounce). A listed-with-no-pid job
+    # (`-  1  label`) is not running, but it is also not gone — bootstrapping into that
+    # listing is the async-bootout race. Wait until the row is absent.
     for _ in range(50):
-        if not _loaded(label):
+        if _list_row(label) is None:
             break
         time.sleep(0.1)
 
@@ -190,6 +194,16 @@ def install(path: pathlib.Path, data: bytes, *, user_domain: bool, label: str = 
     return 0
 
 
+def _list_row(label: str) -> list[str] | None:
+    """The `PID Status Label` row for this job, or None if launchd does not list it."""
+    _, out = _run(["launchctl", "list"])
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == label:
+            return parts
+    return None
+
+
 def _loaded(label: str) -> bool:
     """Is this job RUNNING — not merely known to launchd?
 
@@ -206,12 +220,8 @@ def _loaded(label: str) -> bool:
     A real pid is the whole test: launchd gives one to a process that is up, and a `-` to one
     that is not.
     """
-    _, out = _run(["launchctl", "list"])
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) >= 3 and parts[2] == label:
-            return parts[0].isdigit()
-    return False
+    parts = _list_row(label)
+    return bool(parts and parts[0].isdigit())
 
 
 def uninstall(path: pathlib.Path, *, user_domain: bool, label: str = LABEL) -> int:
