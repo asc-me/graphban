@@ -251,9 +251,23 @@ def _loop(
                 return _finish(wave, "handoff-failed", 1, minted, planner)
 
         live = [c for c in children if c.running]
-        reviews = _review_ids(planner)
-        waits = _wait_ids(planner)
         holdings = _any_holdings(supervisor)
+        try:
+            reviews = _review_ids(planner)
+            waits = _wait_ids(planner)
+        except NotPermitted as exc:
+            raise ConfigError(f"cannot classify review/waits: {exc}") from exc
+        except ToolFailed as exc:
+            raise ConfigError(f"cannot classify review/waits: {exc}") from exc
+        except ServerUnreachable as exc:
+            # Unknown is not empty: leftover review must not look like idle.
+            if live or holdings:
+                sleep(poll)
+                continue
+            raise CapError(
+                "cap",
+                f"search_items unreachable; leftover review is unknown, not empty ({exc})",
+            ) from exc
 
         try:
             need = _wanted_workers(planner, supervisor, live_n=len(live),
@@ -321,8 +335,16 @@ def _finish(
     wave: Wave, reason: str, exit_code: int, minted: int, planner: Graphban,
     *, review: list[str] | None = None, waits: list[str] | None = None,
 ) -> Report:
-    waits = waits if waits is not None else _wait_ids(planner)
-    review = review if review is not None else _review_ids(planner)
+    if waits is None:
+        try:
+            waits = _wait_ids(planner)
+        except (NotPermitted, ToolFailed, ServerUnreachable):
+            waits = []
+    if review is None:
+        try:
+            review = _review_ids(planner)
+        except (NotPermitted, ToolFailed, ServerUnreachable):
+            review = []
     return Report(
         ok=exit_code == 0,
         reason=reason,
@@ -422,21 +444,17 @@ def _is_config(exc: ToolFailed) -> bool:
 
 
 def _review_ids(planner: Graphban) -> list[str]:
-    try:
-        payload = planner.call("search_items", status="review", limit=10_000)
-    except (NotPermitted, ToolFailed, ServerUnreachable):
-        return []
+    """Raises on a failed read. An empty list means looked and found none."""
+    payload = planner.call("search_items", status="review", limit=10_000)
     rows = payload.get("results") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
-        return []
+        raise ToolFailed("search_items", "error", "review listing carried no results list")
     return [str(r["id"]) for r in rows if isinstance(r, dict) and r.get("id")]
 
 
 def _wait_ids(planner: Graphban) -> list[str]:
-    try:
-        return wait_mod.ids(planner)
-    except (NotPermitted, ToolFailed, ServerUnreachable):
-        return []
+    """Raises on a failed read. An empty list means looked and found none."""
+    return wait_mod.ids(planner)
 
 
 def _any_holdings(supervisor: Graphban) -> bool:

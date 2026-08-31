@@ -53,6 +53,7 @@ def _clients(
     waits: list | None = None,
     mint_code: str = "WORKER-UNTIL",
     mint_fails: str | None = None,
+    search_fails: str | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban."""
     seen_agents = {"yes": False}
@@ -88,6 +89,8 @@ def _clients(
                 return _error(mint_fails, f"cannot mint ({mint_fails})", rid)
             return _mcp({"enrolment_code": mint_code, "role": "worker", "seat_id": "s1"}, rid)
         if tool == "search_items":
+            if search_fails:
+                return _error(search_fails, f"search failed ({search_fails})", rid)
             if args.get("status") == "review":
                 return _mcp({"results": list(review or [])}, rid)
             if args.get("status") == "blocked":
@@ -254,12 +257,72 @@ def test_a_quota_mint_is_config_not_idle(
     assert "quota" in result.detail
 
 
-def test_cli_until_exists_and_does_not_widen_allowed_tools():
-    from gbfleet.cli import build_parser
-    ns = parser = build_parser()
-    args = ns.parse_args(["until", "--server", "http://x", "--adapter", "gbagent"])
-    assert args.command == "until"
-    assert "mint_enrolment" not in ALLOWED_TOOLS
+def test_main_until_is_the_call(monkeypatch, capsys, git_repo: Path):
+    """P30 D1 bounce. parse_args is not the CALL. Returning 0 from the until
+    branch and giving both clients ALLOWED_TOOLS left the helper tests green.
+    """
+    import inspect
+    from gbfleet import cli
+    from gbfleet.until import Report
+
+    src = inspect.getsource(cli._until)
+    assert "allowed=PLANNER_TOOLS" in src
+    assert "allowed=ALLOWED_TOOLS" in src
+
+    seen: dict = {}
+
+    class FakeGB:
+        def __init__(self, base_url, api_key, allowed=None, **_kw):
+            self.allowed = allowed if allowed is not None else ALLOWED_TOOLS
+            self.base_url = base_url
+            self.api_key = api_key
+
+        def close(self):
+            pass
+
+    def fake_run(repo, factory, planner, supervisor, **kw):
+        seen["called"] = True
+        seen["planner"] = planner.allowed
+        seen["supervisor"] = supervisor.allowed
+        return Report(ok=True, reason="idle", exit=0, waits=["GRPH-W1"])
+
+    monkeypatch.setenv("GBFLEET_API_KEY", KEY)
+    monkeypatch.setattr(cli, "Graphban", FakeGB)
+    monkeypatch.setattr(cli, "run_until", fake_run)
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: object())
+
+    code = cli.main([
+        "until", "--repo", str(git_repo),
+        "--server", "http://gb.invalid", "--adapter", "gbagent",
+    ])
+    assert seen.get("called"), "main(['until']) never called run_until"
+    assert seen["planner"] == PLANNER_TOOLS
+    assert "mint_enrolment" in seen["planner"]
+    assert seen["supervisor"] == ALLOWED_TOOLS
+    assert "mint_enrolment" not in seen["supervisor"]
+    assert code == 0
+    last = capsys.readouterr().out.strip().splitlines()[-1]
+    payload = json.loads(last)
+    assert payload["reason"] == "idle"
+    assert payload["exit"] == 0
+    assert payload["waits"] == ["GRPH-W1"]
+
+
+def test_a_failed_search_is_not_idle(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """Absence as clean: search_items failing used to look like no review."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, search_fails="error")
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+    )
+    assert result.reason != "idle", result.as_json()
+    assert result.reason != "idle-with-waits", result.as_json()
+    assert result.exit != 0
+    assert result.ok is False
 
 
 def test_three_empty_ticks_are_required(
