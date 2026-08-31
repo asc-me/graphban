@@ -278,6 +278,23 @@ describe("Org gitops editor", () => {
     expect(src).toContain('source === "project"');
   });
 
+  it("is mounted on the hosted admin route — a correct editor nobody registers 404s", () => {
+    // Render tests mount <OrgGitops /> directly. Dropping the App.tsx Route
+    // leaves every component pin green and the hosted page 404 (GRPH-619).
+    const sources = import.meta.glob("../App.tsx", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    const src = Object.values(sources)[0] ?? "";
+    expect(src, "App.tsx must be readable").toBeTruthy();
+    const gate = src.indexOf("{hosted && (");
+    expect(gate, "the hosted gate must exist").toBeGreaterThan(0);
+    const hosted = src.slice(gate);
+    expect(hosted).toMatch(/<Route path="gitops" element=\{<OrgGitops \/>\} \/>/);
+    expect(src.slice(0, gate)).not.toMatch(/path="gitops"/);
+  });
+
   it("matches docs via adminPath, not a literal org prefix", () => {
     expect(docFor(adminPath("gitops")).title).toBe("Org gitops");
     expect(docFor(adminPath("gitops")).badge).toBe("GITOPS");
