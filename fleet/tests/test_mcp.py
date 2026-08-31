@@ -20,7 +20,7 @@ from gbfleet import mcp
 from gbfleet.mcp import METHOD_NOT_FOUND, PARSE_ERROR, TOOLS, Fleet, handle, serve
 from gbfleet.spawn import Reason
 from gbfleet.supervisor import Limits
-from gbfleet.worktree import create, reap
+from gbfleet.worktree import create, orphans, reap, salvage_message
 
 from tests.test_supervisor import _factory, _seats, _server
 
@@ -238,8 +238,39 @@ def test_the_supervisor_does_not_decide_whether_to_resume(fleet: Fleet, tmp_path
     """`orphans` reports; it offers no resume, no delete, no ranking. The planner
     decides, and there is nothing here for it to defer to."""
     assert [t["name"] for t in TOOLS] == ["spawn", "stop", "ps", "orphans"]
-    orphans = next(t for t in TOOLS if t["name"] == "orphans")
-    assert orphans["inputSchema"]["properties"] == {}
+    listing = next(t for t in TOOLS if t["name"] == "orphans")
+    assert listing["inputSchema"]["properties"] == {}
+
+
+def test_spawn_resumes_a_salvage_orphan_without_injected_items(
+    git_repo: Path, tmp_path: Path, scripts
+):
+    """P30 D9 bounce. MCP spawn never called choose_resume, so a planner that
+    minted the next seat still cut from HEAD."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    dead = create(git_repo, workspace / "dead", "wave", "1")
+    (dead.path / "wip.py").write_text("keep-me\n", encoding="utf-8")
+    reap(dead, message=salvage_message("fake", ["GRPH-1"]))
+    assert any(o.item_keys == ("GRPH-1",) for o in orphans(git_repo))
+
+    fleet = Fleet(
+        repo=git_repo,
+        workspace=workspace,
+        client=_server(
+            workspace,
+            items=[{"id": "GRPH-1", "status": "next", "claimed_by": ""}],
+        ),
+        launch_for=lambda name, model="", tuning=None: _factory(
+            scripts, "works_then_waits", adapter=name
+        ),
+    )
+    value = _value(_call(fleet, "spawn", adapter="fake", enrolment_code="WORKER-1"))
+    try:
+        assert value["branch"] == dead.branch, value
+        assert (Path(value["worktree"]) / "wip.py").read_text(encoding="utf-8") == "keep-me\n"
+    finally:
+        _call(fleet, "stop", agent_id=value["agent_id"])
 
 
 # --- GRPH-586: the surface can answer "is it stuck?" ---------------------------------

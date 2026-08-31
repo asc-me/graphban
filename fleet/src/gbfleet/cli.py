@@ -15,7 +15,7 @@ from pathlib import Path
 from . import __version__
 from . import adopt as adopt_mod
 from .adapters import ADAPTERS, AdapterError, Tuning, resolve
-from .client import Graphban
+from .client import ALLOWED_TOOLS, Graphban
 from . import doctor
 from .lock import RepoLocked
 from .seat import Seat
@@ -44,6 +44,12 @@ the Graphban server issued, to do work the Graphban server arbitrates.
 PLACEHOLDERS = ("{seat_file}", "{instruction_file}", "{worktree}", "{branch}")
 
 API_KEY_ENV = "GBFLEET_API_KEY"
+
+#: `ALLOWED_TOOLS` stays two reads (P30 G5). Resume (D9) needs item status so a
+#: salvage branch is reused without the caller injecting `items=`. `search_items`
+#: is a read; this set is the CLI/MCP process, not a widening of the supervisor
+#: authority table.
+SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset({"search_items"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -303,7 +309,7 @@ def _serve_stdio(args) -> int:
         return 2
 
     repo = Path(args.repo)
-    client = Graphban(base_url=args.server, api_key=api_key)
+    client = Graphban(base_url=args.server, api_key=api_key, allowed=SPAWN_READS)
     try:
         root = repo_root(repo)
     except NotARepository as exc:
@@ -388,7 +394,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"gbfleet up: no seats in {args.seats_file}", file=sys.stderr)
         return 2
 
-    client = Graphban(base_url=args.server, api_key=api_key)
+    client = Graphban(base_url=args.server, api_key=api_key, allowed=SPAWN_READS)
     try:
         wave = up(
             Path(args.repo),

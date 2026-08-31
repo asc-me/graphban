@@ -151,3 +151,80 @@ def test_takeover_does_not_spawn_onto_the_previous_slot(
     assert all(c.branch != tree.branch for c in second.spawned), (
         f"spawned onto the leftover branch: {[c.branch for c in second.spawned]}"
     )
+
+
+def test_takeover_attaches_the_leftover_pid(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """P30 D7 bounce. Skipping recover used to pass: `_start` skipped the existing
+    branch and spawned an unattached sibling. The CALL is attach of the leftover pid.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sleeper = subprocess.Popen(
+        [str(scripts["python"]), str(scripts["sleeper"])],
+        cwd=str(git_repo),
+        start_new_session=True,
+    )
+    try:
+        monkeypatch.setattr(adopt, "process_start_token", lambda pid: "tok")
+        monkeypatch.setattr(adopt, "pid_is_alive", lambda pid: pid == sleeper.pid)
+        tree = create(git_repo, workspace / "wave-1", "wave", "1")
+        path = adopt.children_path(git_repo, state)
+        save(path, [Snapshot(
+            pid=sleeper.pid, start_token="tok",
+            worktree=str(tree.path), branch=tree.branch, adapter="fake",
+            slot="1", base=tree.base, log_dir=str(tmp_path / "logs"),
+            started_wall=time.time(),
+        )])
+        with hold(git_repo, state) as first:
+            lock, holder = first.path, first.holder
+        lock.write_text(holder.as_json(), encoding="utf-8")
+
+        import gbfleet.supervisor as sup
+        monkeypatch.setattr(sup, "_wait_out", lambda *a, **k: None)
+        monkeypatch.setattr(sup, "_reap_all", lambda *a, **k: None)
+
+        second = up(
+            git_repo, _seats(1), _factory(scripts, "works_then_exits"),
+            _server(workspace), limits=Limits(max_workers=2),
+            state=state, workspace=workspace, poll=0.05,
+        )
+        attached = [c for c in second.spawned if c.attached and c.pid == sleeper.pid]
+        assert attached, (
+            f"takeover did not attach pid {sleeper.pid}; spawned "
+            f"{[(c.pid, c.attached, c.branch) for c in second.spawned]}"
+        )
+        assert all(c.branch != tree.branch or c.attached for c in second.spawned)
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=10)
+
+
+def test_a_child_is_in_the_children_file_before_it_registers(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """Crash during await_registration must not leave a live pid with no JSON record."""
+    from gbfleet import spawn as spawn_mod
+    import gbfleet.supervisor as sup
+
+    seen: list[list[int]] = []
+    real_await = spawn_mod.await_registration
+
+    def await_and_check(child, *args, **kwargs):
+        path = adopt.children_path(git_repo, state)
+        assert path.exists(), "children file was not written before registration"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        pids = [int(row["pid"]) for row in data.get("children") or []]
+        seen.append(pids)
+        assert child.pid in pids, f"pid {child.pid} missing from {pids}"
+        return real_await(child, *args, **kwargs)
+
+    monkeypatch.setattr(sup, "await_registration", await_and_check)
+    workspace = tmp_path / "ws"
+    up(
+        git_repo, _seats(1), _factory(scripts, "works_then_exits"),
+        _server(workspace), limits=Limits(max_workers=1),
+        state=state, workspace=workspace, poll=0.05,
+    )
+    assert seen, "await_registration was never reached"

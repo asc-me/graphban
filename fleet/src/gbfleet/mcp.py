@@ -49,7 +49,10 @@ from .seat import Seat
 from .spawn import Child, LaunchFailed, Reason, stop
 from .progress import NEVER_WROTE
 from . import adopt as adopt_mod
-from .supervisor import Limits, LaunchFactory, Partition, Wave, _tree_for, start_one, watch_tick
+from .supervisor import (
+    Limits, LaunchFactory, Partition, Wave, _tree_for, item_status, start_one,
+    watch_tick,
+)
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "gbfleet"
@@ -280,15 +283,33 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
 
         wave = args.get("wave") or "wave"
         tree = None
+        slot = str(fleet.started + 1)
+        resumes = list(wt_mod.choose_resume(wt_mod.orphans(fleet.repo), item_status(fleet.client)))
+        if resumes:
+            orphan = resumes[0]
+            slot = orphan.branch.rsplit("-", 1)[-1] or slot
+            try:
+                tree = wt_mod.resume(
+                    fleet.repo, fleet.workspace / f"{wave}-{slot}-resume", orphan,
+                )
+                fleet.wave.resumed.append(orphan.branch)
+            except wt_mod.ResumeFailed:
+                tree = None
         while tree is None:
             fleet.started += 1
             if fleet.started > 1000:
                 raise ValueError("no free gb/ slot under 1000")
+            slot = str(fleet.started)
             try:
-                tree = _tree_for(fleet.repo, fleet.workspace, wave, str(fleet.started))
+                tree = _tree_for(fleet.repo, fleet.workspace, wave, slot)
             except wt_mod.BranchExists:
                 continue
         seat = Seat(code=code, server_url=fleet.client.base_url, api_key=fleet.client.api_key)
+
+        def remember(child: Child) -> None:
+            fleet.children.append(child)
+            adopt_mod.persist(adopt_mod.children_path(fleet.repo), fleet.children)
+
         child = start_one(
             tree, seat,
             fleet.launch_for(
@@ -301,9 +322,9 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             ),
             fleet.client, fleet.limits,
             fleet.partition, workspace=fleet.workspace, wave_name=wave,
-            slot=str(fleet.started), on_spawned=fleet.children.append,
+            slot=slot, on_spawned=remember,
             debug_file=(
-                fleet.workspace / "logs" / f"{wave}-{fleet.started}" / "debug.log"
+                fleet.workspace / "logs" / f"{wave}-{slot}" / "debug.log"
                 if args.get("debug")
                 else None
             ),

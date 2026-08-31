@@ -199,6 +199,10 @@ class Child:
     #: True when this Child was rebuilt around a pid another supervisor spawned
     #: (P30 D7). `stop` must not try to put it in a new Windows job.
     attached: bool = False
+    #: Last non-empty holdings the roster reported for this agent (P30 D9 bounce).
+    #: `_roster` is overwritten after `release_item`, so reap must not read live
+    #: holdings — those are empty and the salvage subject would have no item keys.
+    held_items: list = field(default_factory=list)
 
     @property
     def pid(self) -> int:
@@ -323,6 +327,9 @@ def await_registration(
                 # its own child had redeemed.
                 child.seat_id = agent.get("enrolment_id")
                 child.registration_latency = time.monotonic() - child.started_at
+                held = [h.get("id") for h in (agent.get("holdings") or []) if h.get("id")]
+                if held:
+                    child.held_items = held
                 return agent
         return None
 

@@ -30,7 +30,7 @@ from typing import Callable, Iterable, Sequence
 
 from . import adopt as adopt_mod
 from . import worktree as wt_mod
-from .client import Graphban, ServerUnreachable
+from .client import Graphban, NotPermitted, ServerUnreachable, ToolFailed
 from .hostos import restrict_to_owner
 from .lock import Acquired, hold
 from . import observe
@@ -296,6 +296,41 @@ def _roster(client: Graphban, partition: Partition) -> dict | None:
     return payload
 
 
+def _remember_holdings(children: Sequence[Child], partition: Partition) -> None:
+    """Keep the last non-empty holdings per child. Live roster after release is empty."""
+    for child in children:
+        if not child.agent_id:
+            continue
+        items = [i for i in (partition.held.get(child.agent_id) or []) if i]
+        if items:
+            child.held_items = list(items)
+
+
+def item_status(client: Graphban) -> dict[str, dict]:
+    """id -> {status, claimed_by} for `choose_resume`. Empty if this client may not read items.
+
+    D9 bounce: CLI `up` and MCP `spawn` must resume without the caller injecting `items=`.
+    `search_items` is a read; ALLOWED_TOOLS stays two. Callers that permit this extra
+    read get resume; a pure supervisor client gets {}.
+    """
+    try:
+        payload = client.call("search_items", fields="full", limit=10_000)
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        return {}
+    rows = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    out: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("id"):
+            continue
+        out[str(row["id"])] = {
+            "status": row.get("status") or "",
+            "claimed_by": row.get("claimed_by") or "",
+        }
+    return out
+
+
 def _holdings(roster: dict) -> dict[str, list[str]]:
     return {
         a["id"]: [h.get("id") for h in (a.get("holdings") or [])]
@@ -364,15 +399,23 @@ def up(
         wanted = min(len(seats), cap)
         wave.unused_seats = len(seats) - wanted
 
-        children = leftover + list(_start(
-            wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
-            limits, debug=debug, occupied=occupied, items=items,
-        ))
+        children: list[Child] = list(leftover)
         roster_path = adopt_mod.children_path(repo, state)
 
         def persist() -> None:
             adopt_mod.persist(roster_path, children)
 
+        # Before `_start`, and again on every spawn (P30 D7 bounce). Waiting until
+        # the whole start loop returns means a crash in `await_registration` leaves
+        # a live pid with no JSON record.
+        persist()
+        if items is None:
+            items = item_status(client)
+        _start(
+            wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
+            limits, debug=debug, occupied=occupied, items=items,
+            into=children, persist=persist,
+        )
         persist()
         _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
                   persist=persist)
@@ -460,6 +503,8 @@ def _start(
     debug: bool = False,
     occupied: set[str] | None = None,
     items: dict | None = None,
+    into: list[Child] | None = None,
+    persist: Callable[[], None] | None = None,
 ) -> Iterable[Child]:
     """Create a worktree per seat, spawn into it, and wait for it to register.
 
@@ -470,7 +515,7 @@ def _start(
     more salvage branches and tells nobody anything new.
     """
     workspace.mkdir(parents=True, exist_ok=True)
-    started: list[Child] = []
+    started: list[Child] = into if into is not None else []
     planned = len(seats)
     taken = set(occupied or ())
     slot_n = 1
@@ -516,6 +561,8 @@ def _start(
             def remember(child: Child) -> None:
                 started.append(child)
                 wave.spawned.append(child)
+                if persist is not None:
+                    persist()
                 # Asked for, and the adapter had no flag for it. Said here, once, per
                 # child — the alternative is an operator reading a quiet log and
                 # concluding the child is fine when nothing was ever going to be written.
@@ -600,6 +647,7 @@ def watch_tick(
     planner's `stop`.
     """
     roster = _roster(client, wave.partition)
+    _remember_holdings(children, wave.partition)
 
     for child in children:
         if not child.running:
@@ -649,6 +697,7 @@ def _wait_out(
     # One last read, so a partition that ended just as the children did is still
     # reconciled rather than left as the last thing that happened.
     _roster(client, wave.partition)
+    _remember_holdings(children, wave.partition)
 
 
 def _child_key(child: Child) -> str:
@@ -840,7 +889,9 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
         tree = Worktree(
             path=child.worktree, branch=child.branch, repo=_repo_of(child), base=child.base
         )
-        held = [i for i in (wave.partition.held.get(child.agent_id) or []) if i]
+        held = list(child.held_items) or [
+            i for i in (wave.partition.held.get(child.agent_id) or []) if i
+        ]
         reaped = wt_mod.reap(
             tree, message=wt_mod.salvage_message(child.adapter, held),
         )
