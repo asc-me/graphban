@@ -461,15 +461,39 @@ def test_an_mcp_child_is_stopped_when_it_overruns(git_repo: Path, tmp_path: Path
         _call(fleet, "stop", pid=described["pid"])
 
 
-def test_the_stdio_server_ticks_the_watch_loop():
-    """A tick nothing starts is the defect D6 names, wearing a helper's name.
+def test_serve_starts_the_watch_loop(fleet: Fleet, monkeypatch):
+    """P30 D6 bounce. THE CALL. A source match on `fleet.tick(` still passed if
+    `watcher.start()` was skipped: the overrun test invokes `fleet.tick()` itself.
 
-    Asserted against source rather than by running serve with a live sleeper: serve
-    blocks on stdin, and the claim is about the WIRING.
+    `serve` must actually start the watcher. Stdin stays open until tick runs,
+    so a race with `halt.set()` cannot hide a thread that never started.
     """
-    import inspect
+    import os
+    import threading
 
-    src = inspect.getsource(serve)
-    assert "fleet.tick(" in src or "watch_tick(" in src, (
-        "serve() never ticks the watch loop, so mcp children are unwatched"
+    ticked = threading.Event()
+    original = fleet.tick
+
+    def mark(*, debug: bool = False):
+        ticked.set()
+        return original(debug=debug)
+
+    monkeypatch.setattr(fleet, "tick", mark)
+
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd)
+    stdout = io.StringIO()
+    writer = os.fdopen(write_fd, "w")
+    worker = threading.Thread(
+        target=serve, kwargs={"fleet": fleet, "stdin": stdin, "stdout": stdout, "poll": 0.05},
+        daemon=True,
     )
+    worker.start()
+    try:
+        assert ticked.wait(timeout=2.0), (
+            "serve() never called tick — skipping watcher.start() used to pass"
+        )
+    finally:
+        writer.close()
+        worker.join(timeout=2.0)
+        stdin.close()
