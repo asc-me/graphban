@@ -236,13 +236,16 @@ def test_with_no_previous_release_it_says_so_rather_than_pretending(tmp_path, re
 def test_the_identity_facts_match_deploy_sh():
     """Two checkers that drift is the real risk, and it drifts silently — each looks correct
     on its own. `deploy.sh` is the older one; this asserts the native path checks what it does.
+
+    Against the CODE, not echo labels (GRPH-585 bounce). Commenting out the LIVE_SHA
+    comparison left this green when it grepped `    api` in the report line.
     """
     sh = DEPLOY_SH.read_text(encoding="utf-8")
+    code = "\n".join(ln for ln in sh.splitlines() if not ln.lstrip().startswith("#"))
     assert set(up.IDENTITY_FACTS) == {"api", "web", "alembic"}
-    for fact in up.IDENTITY_FACTS:
-        assert f'"    {fact}' in sh or f"    {fact}" in sh, (
-            f"deploy.sh no longer reports {fact}; the two verifications have diverged"
-        )
+    assert 'LIVE_SHA" = "$GIT_SHA' in code, "deploy.sh no longer compares the api sha"
+    assert 'WEB_SHA" = "$GIT_SHA' in code, "deploy.sh no longer compares the web sha"
+    assert "alembic_version" in code, "deploy.sh no longer asks the database its head"
 
 
 def test_the_alembic_head_is_asked_of_the_database_not_the_tree():
@@ -269,6 +272,33 @@ def test_the_alembic_head_is_asked_of_the_database_not_the_tree():
     assert not any("versions" in s for s in literals), (
         f"it reads the tree rather than asking the database: {literals}"
     )
+
+
+def test_alembic_head_runs_against_the_live_tree(tmp_path, monkeypatch):
+    """THE CALL (GRPH-585 bounce). After S6 the live tree is root/current/backend.
+    alembic_head still used root/backend. Every up.upgrade injects head=lambda, so
+    pointing cwd at THIS_PATH_DOES_NOT_EXIST left test_upgrade + host_install +
+    install_layout green.
+    """
+    import types
+
+    seen: dict = {}
+
+    def run(cmd, **kw):
+        seen["cwd"] = kw.get("cwd")
+        seen["cmd"] = cmd
+        return types.SimpleNamespace(returncode=0, stdout="0093 (head)\n", stderr="")
+
+    monkeypatch.setattr(up.subprocess, "run", run)
+    got = up.alembic_head(tmp_path, tmp_path / "py")
+
+    assert seen["cwd"] == str(tmp_path / "current" / "backend"), (
+        f"alembic current ran in {seen.get('cwd')!r} — not the live tree"
+    )
+    assert got == "0093"
+    import inspect
+    assert inspect.signature(up.upgrade).parameters["head"].default is up.alembic_head
+    assert inspect.signature(up.verify).parameters["head"].default is up.alembic_head
 
 
 # ---- uninstall -------------------------------------------------------------------------------
