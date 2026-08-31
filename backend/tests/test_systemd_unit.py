@@ -126,6 +126,21 @@ def test_a_user_scope_unit_omits_the_user_directive():
     assert "User=graphban" in system, "the system unit still needs it"
 
 
+def test_the_cli_user_scope_unit_omits_user(capsys):
+    """THE CALL (GRPH-583 bounce). unit_text(..., user_scope=True) is pinned; main()
+    used to drop user_scope=args.user_scope, and
+    `python3 scripts/graphban_systemd.py unit --user-scope` emitted User=graphban —
+    the 216/GROUP crash loop. File parses, systemd-analyze verify accepts,
+    systemctl start returns 0, service never runs.
+    """
+    assert gsd.main(["unit", "--user-scope", "--user", "alex"]) == 0
+    out = capsys.readouterr().out
+    assert "User=" not in out, "the operator CLI put User= on a --user-scope unit"
+
+    assert gsd.main(["unit", "--user", "graphban"]) == 0
+    assert "User=graphban" in capsys.readouterr().out, "the system unit still needs it"
+
+
 def test_install_refuses_a_crash_looping_unit(monkeypatch, tmp_path, capsys):
     """THE GUARD THAT WAS ITSELF FOOLED, and the reason this test exists.
 

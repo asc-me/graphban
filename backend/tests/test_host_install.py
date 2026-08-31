@@ -243,6 +243,27 @@ def test_the_linux_unit_carries_the_revision(src, tmp_path):
     assert not written["user_scope"]
 
 
+def test_the_linux_user_scope_unit_omits_user(src, tmp_path):
+    """write_service is the host dispatcher. Linux tests only used user_scope=False,
+    so dropping user_scope= from the unit_text CALL left User=graphban on a --user
+    unit — the same 216/GROUP crash loop (GRPH-583 bounce).
+    """
+    written = {}
+
+    def service(kind, path, payload, *, user_scope):
+        written.update(kind=kind, payload=payload, user_scope=user_scope)
+        return _ok_service(kind, path, payload, user_scope=user_scope)
+
+    gh.install(src, tmp_path / "root", "abc1234", port=8000, host="127.0.0.1",
+               user="alex", user_scope=True, platform="linux",
+               preflight=_ok_preflight, venv=_ok_venv, service=service)
+    assert written["kind"] == "unit"
+    assert written["user_scope"] is True
+    assert "User=" not in written["payload"], (
+        "the host dispatcher put User= on a --user-scope Linux unit"
+    )
+
+
 def test_ensure_venv_creates_then_installs_the_backend(tmp_path):
     """Skip the pip and the venv is a directory nobody can import `app` from."""
     seen = []
