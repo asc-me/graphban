@@ -34,6 +34,8 @@ import type {
   CodeRef,
   DashboardData,
   GraphLink,
+  GitopsPatch,
+  GitopsView,
   Invite,
   InvitePreview,
   Item,
@@ -785,6 +787,10 @@ export const api = {
   updateProject: (id: string, body: Partial<Project>) =>
     request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   members: (id: string) => request<Member[]>(`/projects/${id}/members`),
+
+  gitops: (projectId: string) => request<GitopsView>(`/projects/${projectId}/gitops`),
+  updateGitops: (projectId: string, body: GitopsPatch) =>
+    request<GitopsView>(`/projects/${projectId}/gitops`, { method: "PATCH", body: JSON.stringify(body) }),
 
   chat: (message: string, projectId?: string) =>
     request<ChatResponse>("/agent/chat", {

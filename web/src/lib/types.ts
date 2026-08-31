@@ -635,6 +635,63 @@ export interface SyncStatus {
   projects: SyncProjectState[];
 }
 
+// ── Gitops delivery contract (GRPH-P31) ────────────────────────────────────
+export type GitopsSource = "project" | "org" | "unmeasured";
+export type GitopsControlState = "local" | "linked_set" | "linked_unset" | "linked_unreachable";
+
+export interface GitopsField {
+  value: string | boolean | null;
+  source: GitopsSource;
+}
+
+export interface GitopsFields {
+  base_branch: GitopsField;
+  no_push_to_base: GitopsField;
+  branch_name_pattern: GitopsField;
+  pr_title_pattern: GitopsField;
+  reviewer_bar: GitopsField;
+}
+
+export interface GitopsControl {
+  state: GitopsControlState;
+  writable: boolean;
+  message: string;
+}
+
+export interface GitopsWas {
+  base_branch: string | null;
+  no_push_to_base: boolean | null;
+  branch_name_pattern: string | null;
+  pr_title_pattern: string | null;
+  reviewer_bar: string | null;
+}
+
+export interface GitopsProjectRef {
+  id: string;
+  name: string;
+  tag: string;
+}
+
+export interface GitopsView {
+  project_id: string | null;
+  org_id: string | null;
+  fields: GitopsFields;
+  control: GitopsControl;
+  was: GitopsWas | null;
+  version_from: GitopsField;
+  projects?: GitopsProjectRef[];
+}
+
+/** Omit a key = no change. JSON `null` = clear to unmeasured/inherit. */
+export interface GitopsPatch {
+  base_branch?: string | null;
+  no_push_to_base?: boolean | null;
+  branch_name_pattern?: string | null;
+  pr_title_pattern?: string | null;
+  reviewer_bar?: string | null;
+  version_from?: string | null;
+}
+
 export type ProviderKind = "stub" | "anthropic" | "openai" | "ollama";
 
 export interface AiProvider {
