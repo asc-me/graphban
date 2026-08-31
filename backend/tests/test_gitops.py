@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -11,7 +12,9 @@ from app.services import gitops as gitops_svc
 
 FIELDS = gitops_svc.FIELDS
 UNMEASURED = {"value": None, "source": "unmeasured"}
-LINKED_403 = {"detail": gitops_svc.LINKED_PATCH_DETAIL}
+# Literal, not gitops.LINKED_PATCH_DETAIL — coupling the test to the callee constant
+# leaves a changed message green (GRPH-617 bounce).
+LINKED_403_DETAIL = "gitops on a linked instance is owned by the org admin"
 TOKENS = list(gitops_svc.NAMING_TOKENS)
 
 
@@ -350,7 +353,7 @@ def test_linked_patch_is_403_real_json(client, auth, monkeypatch, how):
     _mock_cloud(monkeypatch, _cloud_body())
     r = _patch(client, auth, {"base_branch": "stage"})
     assert r.status_code == 403
-    assert r.json() == LINKED_403
+    assert r.json() == {"detail": LINKED_403_DETAIL}
     from app.db import SessionLocal
     from app.models import Project
     db = SessionLocal()
@@ -465,7 +468,7 @@ def test_linked_unreachable_patch_still_403(client, auth, monkeypatch):
     _mock_cloud(monkeypatch, error=httpx.TimeoutException("x"))
     r = _patch(client, auth, {"base_branch": "stage"})
     assert r.status_code == 403
-    assert r.json() == LINKED_403
+    assert r.json() == {"detail": LINKED_403_DETAIL}
 
 
 # ---- GET /api/sync/gitops is resolve_local, no outbound ----------------------------------
@@ -723,3 +726,88 @@ def test_get_context_description_pins_unmeasured_sentences(client, auth):
     ).json()["result"]["tools"]
     listed_desc = next(t["description"] for t in listed if t["name"] == "get_context")
     assert listed_desc == desc
+
+
+# ---- GRPH-617: sync gitops is GET only; a PATCH handler stays green without this ----------
+
+
+def test_sync_gitops_rejects_patch_and_is_not_in_openapi(client, auth):
+    """Owned threat: a sync key must not write org policy. GET-only is not a pin
+    unless PATCH is asserted absent at the CALL (OpenAPI + HTTP)."""
+    key = _sync_key(client, auth)
+    r = client.patch(
+        "/api/sync/gitops", json={"base_branch": "stage"}, headers={"X-API-Key": key},
+    )
+    assert r.status_code in (404, 405), r.text
+
+    spec = client.get("/openapi.json").json()
+    gitops = spec["paths"].get("/api/sync/gitops") or spec["paths"].get("/sync/gitops")
+    assert gitops is not None, "GET /api/sync/gitops must be documented"
+    assert "get" in gitops
+    assert "patch" not in gitops, "a PATCH route on /api/sync/gitops is a write of org policy"
+
+
+# ---- GRPH-618: resolve logs and org PATCH events at the CALL -----------------------------
+
+
+def test_resolve_logs_project_state_and_link_source_on_get(client, auth, caplog):
+    """Deleting the logger.info lines in resolve() must fail this — GET is the CALL."""
+    caplog.set_level(logging.INFO, logger="graphban.gitops")
+    assert _get(client, auth).status_code == 200
+    msgs = [r.getMessage() for r in caplog.records if "gitops.resolve" in r.getMessage()]
+    assert msgs, "gitops.resolve must log on GET /api/projects/{id}/gitops"
+    last = msgs[-1]
+    assert "project_id=core" in last
+    assert "state=local" in last
+    assert "linked_source=" in last
+
+
+def test_fetch_failure_warning_does_not_log_the_key(client, auth, monkeypatch, caplog):
+    caplog.set_level(logging.WARNING, logger="graphban.gitops")
+    _link_web(client, auth)
+    _mock_cloud(monkeypatch, error=httpx.TimeoutException("timed out"))
+    assert _get(client, auth).status_code == 200
+    dumped = " ".join(r.getMessage() for r in caplog.records)
+    assert "gitops cloud fetch" in dumped
+    assert "X-API-Key" not in dumped
+    assert "api_key" not in dumped.lower()
+
+
+def test_org_patch_update_gitops_is_audited(client, auth, monkeypatch):
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Event
+
+    org, _a, _b = _hosted_org(client, auth, monkeypatch)
+    r = client.patch(
+        f"/api/orgs/{org['id']}/gitops", json={"base_branch": "stage"}, headers=auth,
+    )
+    assert r.status_code == 200
+    db = SessionLocal()
+    try:
+        rows = db.scalars(
+            select(Event).where(
+                Event.action == "update_gitops",
+                Event.target_type == "org",
+                Event.target_id == org["id"],
+            )
+        ).all()
+        assert rows, "org PATCH must record update_gitops"
+        meta = rows[0].meta or {}
+        assert "base_branch" in meta.get("fields", [])
+        assert "stage" not in json.dumps(meta), "event meta is field names, not values"
+    finally:
+        db.close()
+
+
+def test_linked_403_is_not_an_update_gitops_event(client, auth, monkeypatch):
+    assert _patch(client, auth, {"base_branch": "test"}).status_code == 200
+    before = client.get("/api/events", params={"project_id": "core"}, headers=auth).json()
+    n = sum(1 for e in before["results"] if e["action"] == "update_gitops")
+    _link_web(client, auth)
+    r = _patch(client, auth, {"base_branch": "stage"})
+    assert r.status_code == 403
+    after = client.get("/api/events", params={"project_id": "core"}, headers=auth).json()
+    n_after = sum(1 for e in after["results"] if e["action"] == "update_gitops")
+    assert n_after == n, "linked 403 must not record update_gitops"

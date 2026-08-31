@@ -156,10 +156,12 @@ function renderPage(path = settingsPath("deployment/gitops"), tag = "APP", qc?: 
 }
 
 describe("Gitops Settings page", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     sessionStorage.removeItem(GITOPS_PRELINK_KEY);
     localStorage.removeItem("gb_last_project_tag");
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.config).mockResolvedValue({ hosted_mode: false, signup_mode: "closed" });
     projectsSpy.mockResolvedValue([projA, projB]);
     gitopsSpy.mockImplementation(async (id: string) =>
       id === "prj_b" ? view({ project_id: "prj_b" }) : state1,
@@ -420,5 +422,43 @@ describe("Gitops nav group source", () => {
     expect(src).toContain('label: "Gitops"');
     expect(src).toContain('settingsPath("deployment/gitops")');
     expect(src).not.toMatch(/group:\s*"Deployment"/);
+  });
+
+  it("SelfHostPane returns GitopsPanel bare — grey is control.writable, not a wrapper", () => {
+    const sources = import.meta.glob("../features/settings/SettingsView.tsx", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    const src = Object.values(sources)[0] ?? "";
+    expect(src).toMatch(
+      /if \(pathname\.startsWith\(settingsPath\("deployment\/gitops"\)\)\) return <GitopsPanel \/>;/,
+    );
+    expect(src).not.toMatch(/opacity-60[^;]{0,120}GitopsPanel/);
+    expect(src).not.toMatch(/pointer-events-none[^;]{0,120}GitopsPanel/);
+  });
+
+  it("HostedSettingsTabs does not mount GitopsPanel — house process is Admin → Gitops", () => {
+    const sources = import.meta.glob("../features/settings/SettingsView.tsx", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    const src = Object.values(sources)[0] ?? "";
+    const hosted = src.slice(src.indexOf("function HostedSettingsTabs"));
+    expect(hosted.length, "HostedSettingsTabs must exist").toBeGreaterThan(40);
+    expect(hosted).not.toContain("<GitopsPanel");
+  });
+});
+
+describe("hosted Settings does not serve the self-host gitops pane", () => {
+  it("renders tabs without GitopsPanel when hosted_mode is true", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.config).mockResolvedValue({ hosted_mode: true, signup_mode: "closed" });
+    renderPage("/settings");
+    expect(await screen.findByRole("button", { name: "AI Providers" })).toBeInTheDocument();
+    expect(screen.queryByText(UNTIL_LINKED)).not.toBeInTheDocument();
+    expect(screen.queryByText("This box")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Gitops" })).not.toBeInTheDocument();
   });
 });
