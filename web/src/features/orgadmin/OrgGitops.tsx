@@ -57,6 +57,7 @@ function shown(edits: Edits, key: PatchKey, bound: string): string {
 }
 
 function setEdit(edits: Edits, key: PatchKey, bound: string, next: string | boolean | null): Edits {
+  // Only × passes null. Keyboard-empty is omit (D21) — it must not look like a clear.
   if (next === null) return { ...edits, [key]: null };
   const asStr = typeof next === "boolean" ? (next ? "true" : "false") : next;
   if (asStr === bound || (typeof next === "string" && next === "")) {
@@ -155,7 +156,8 @@ function OverlayRoster({ projects }: { projects: GitopsProjectRef[] }) {
     <section className="mt-6">
       <h2 className="text-[15px] font-semibold">Project overlay</h2>
       <p className="mt-1 max-w-[70ch] text-[12.5px] leading-relaxed text-muted">
-        Empty means inherit. × clears the overlay. Saving with no edits sends nothing.
+        An overlay that has not been set inherits the house value. × clears a set overlay
+        back to inherit. Saving with no edits sends nothing.
       </p>
       {projects.length === 0 ? (
         <div className="mt-3 rounded-[13px] border border-line bg-surface-2 px-5 py-6 font-mono text-[11px] text-faint-2">

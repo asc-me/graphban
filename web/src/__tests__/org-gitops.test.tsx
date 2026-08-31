@@ -137,6 +137,7 @@ function renderNav(ui: ReactNode, path = "/p/APP/tracker") {
 
 describe("Org gitops editor", () => {
   beforeEach(() => {
+    for (const s of Object.values(spies)) s.mockReset();
     spies.orgs.mockResolvedValue([{ id: "org_1", name: "Acme", plan: "team", role: "owner" }]);
     spies.orgGitops.mockResolvedValue(houseStage);
     spies.updateOrgGitops.mockImplementation(async (_id: string, body: unknown) => ({
@@ -177,6 +178,43 @@ describe("Org gitops editor", () => {
     expect(spies.updateGitops).not.toHaveBeenCalledWith(
       "prj_app",
       expect.objectContaining({ base_branch: "stage" }),
+    );
+  });
+
+  it("clears a set overlay with × as JSON null, not omit", async () => {
+    const appSet = view({
+      project_id: "prj_app",
+      fields: fields({ base_branch: { value: "main", source: "project" } }),
+      projects: [],
+    });
+    spies.gitops.mockImplementation(async (id: string) => {
+      if (id === "prj_lib") return libOverlay;
+      if (id === "prj_app") return appSet;
+      throw new Error(`unexpected gitops GET ${id}`);
+    });
+    const user = userEvent.setup();
+    renderPage();
+    const input = await screen.findByLabelText("APP overlay base branch");
+    expect(input).toHaveValue("main");
+    await user.click(screen.getByRole("button", { name: "Clear APP overlay base branch" }));
+    expect(input).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Save APP overlay" }));
+    expect(spies.updateGitops).toHaveBeenCalledTimes(1);
+    expect(spies.updateGitops).toHaveBeenCalledWith("prj_app", { base_branch: null });
+  });
+
+  it("does not send null when a set overlay is keyboard-emptied — only × clears", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    const input = await screen.findByLabelText("LIB overlay base branch");
+    expect(input).toHaveValue("main");
+    await user.clear(input);
+    expect(input).toHaveValue("main");
+    await user.click(screen.getByRole("button", { name: "Save LIB overlay" }));
+    expect(spies.updateGitops).toHaveBeenCalledWith("prj_lib", {});
+    expect(spies.updateGitops).not.toHaveBeenCalledWith(
+      "prj_lib",
+      expect.objectContaining({ base_branch: null }),
     );
   });
 
