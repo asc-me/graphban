@@ -80,11 +80,16 @@ scenario() {  # $1 = template, $2 = label; echoes PASS or FAIL
     [ "${IP1}" != "${IP2}" ] || { echo "  ${2}: FIXTURE TOOTHLESS — B reused ${IP1}" >&2; return 3; }
     echo "  ${2}: A=${IP1} B=${IP2} (nginx NOT restarted)" >&2
     sleep 14
-    if curl -sf --max-time 12 http://127.0.0.1:18099/health 2>/dev/null | grep -q '"who":"B"'; then
-        echo "PASS"
-    else
-        echo "FAIL"
-    fi
+    # who=B is re-resolution. uri: is routing — a URI part on proxy_pass still
+    # follows the move (who=B) while /health and /api/items?x=1 both arrive as
+    # uri:/ (GRPH-523 bounce).
+    health=$(curl -sf --max-time 12 http://127.0.0.1:18099/health 2>/dev/null || true)
+    items=$(curl -sf --max-time 12 "http://127.0.0.1:18099/api/items?x=1" 2>/dev/null || true)
+    echo "$health" | grep -q '"who":"B"' \
+        && echo "$health" | grep -q '"uri":"/health"' \
+        && echo "$items" | grep -q '"who":"B"' \
+        && echo "$items" | grep -q '"uri":"/api/items?x=1"' \
+        && echo "PASS" || echo "FAIL"
 }
 
 docker network rm ${NET} >/dev/null 2>&1 || true
