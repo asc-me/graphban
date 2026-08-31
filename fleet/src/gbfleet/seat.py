@@ -45,6 +45,19 @@ from .hostos import restrict_to_owner
 #: writes it, and `INSTRUCTION` below tells the child not to either.
 FORBIDDEN_KEYS = frozenset({"parent_agent_id", "parentAgentId", "parent"})
 
+
+def codes_from_text(text: str) -> list[str]:
+    """Enrolment codes in a seats file.
+
+    Blank lines and `#` comments are not seats. `up` skips them; a doctor that
+    counted them would PASS a first-run trap `up` then exits 2 on (GRPH-599).
+    """
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
 _FILE_MODE = 0o600
 
 

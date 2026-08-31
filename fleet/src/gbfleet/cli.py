@@ -18,7 +18,7 @@ from .adapters import ADAPTERS, AdapterError, Tuning, resolve
 from .client import ALLOWED_TOOLS, Graphban
 from . import doctor
 from .lock import RepoLocked
-from .seat import Seat
+from .seat import Seat, codes_from_text
 from dataclasses import replace
 
 from .spawn import Launch
@@ -201,12 +201,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def read_seats(source: str, server: str, api_key: str) -> list[Seat]:
     text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
-    codes = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
+    return [
+        Seat(code=c, server_url=server, api_key=api_key) for c in codes_from_text(text)
     ]
-    return [Seat(code=c, server_url=server, api_key=api_key) for c in codes]
 
 
 def make_adapter_factory(name: str, binary: str | None, model: str = "",

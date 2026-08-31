@@ -33,7 +33,8 @@ from pathlib import Path
 from . import __version__, hostos
 from .adapters import ADAPTERS, AdapterError, resolve
 from .client import Graphban, ServerUnreachable
-from .lock import RepoLocked, hold
+from .lock import RepoLocked, probe
+from .seat import codes_from_text
 from .state import NotARepository, UnsupportedPlatform, repo_root, state_root
 from .worktree import SEAT_FILES, _tracked_at
 
@@ -195,8 +196,12 @@ def check_state_and_lock(report: Report, repo: Path | None) -> None:
         report.add("supervisor lock is free", UNKNOWN, "no repository to lock")
         return
     try:
-        with hold(repo):
-            report.add("supervisor lock is free", PASS)
+        # `probe`, not `hold`. hold() writes our pid and truncates on the way out, so a
+        # planted crash record would vanish and the next `up` would start blind beside
+        # live children. Asking whether the flock is taken does not need to become the
+        # holder (GRPH-599).
+        probe(repo)
+        report.add("supervisor lock is free", PASS)
     except RepoLocked as exc:
         # Named, not merely refused: "someone has this" sends the operator looking for a
         # stale file, and the pid is what actually ends the search.
@@ -278,15 +283,18 @@ def check_seats(report: Report, seats_file: str | None) -> None:
         report.add("seats file", FAIL, f"{path} does not exist")
         return
     try:
-        lines = [l for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+        # Same rule `up` uses (`cli.read_seats` → `codes_from_text`). Counting every
+        # non-blank line made a file of only `#` comments PASS with N seats while
+        # `up` read [] and exited 2 (GRPH-599).
+        codes = codes_from_text(path.read_text(encoding="utf-8"))
     except OSError as exc:
         report.add("seats file", FAIL, f"{path}: {exc}")
         return
-    if not lines:
-        report.add("seats file", FAIL, f"{path} is empty",
+    if not codes:
+        report.add("seats file", FAIL, f"{path} has no seats",
                    "a wave with no seats spawns nothing and reports nothing")
         return
-    report.add("seats file", PASS, f"{len(lines)} seat(s) in {path}")
+    report.add("seats file", PASS, f"{len(codes)} seat(s) in {path}")
 
 
 def run(

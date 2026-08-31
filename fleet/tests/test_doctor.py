@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -31,9 +32,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from gbfleet import doctor  # noqa: E402
-from gbfleet.cli import main  # noqa: E402
+from gbfleet.cli import main, read_seats  # noqa: E402
 from gbfleet.client import Graphban  # noqa: E402
 from gbfleet.doctor import FAIL, PASS, UNKNOWN, Report  # noqa: E402
+from gbfleet.lock import hold  # noqa: E402
+from gbfleet.state import lock_path, repo_root  # noqa: E402
 
 
 def _git(root: Path, *args: str) -> str:
@@ -218,6 +221,69 @@ def test_a_missing_seats_file_fails_and_an_empty_one_too(git_repo: Path, tmp_pat
     real.write_text("CODE-1\nCODE-2\n", encoding="utf-8")
     report = _run(git_repo, seats_file=str(real))
     assert _status(report, "seats file") == PASS
+
+
+def test_a_seats_file_of_only_comments_fails_the_same_way_up_does(
+    git_repo: Path, tmp_path: Path,
+):
+    """THE CALL. `read_seats` skips `#` comments; doctor used to count them, so a
+    first-run trap `up` exits 2 on was reported as passed (GRPH-599)."""
+    comments = tmp_path / "seats.txt"
+    comments.write_text("# CODE-1\n  # CODE-2\n\n", encoding="utf-8")
+
+    assert read_seats(str(comments), "http://gb.invalid", "k") == []
+    report = _run(git_repo, seats_file=str(comments))
+    assert _status(report, "seats file") == FAIL
+    assert not report.ok
+    assert main(["doctor", "--repo", str(git_repo), "--seats-file", str(comments)]) == 1
+
+
+def test_a_held_lock_fails_and_names_the_holder(git_repo: Path):
+    """THE CALL. The held-lock FAIL path was untested, which is how the lock wipe
+    shipped: doctor used `hold()`, released cleanly, and truncated a crash record
+    a live supervisor had not written yet — or one a dead one had (GRPH-599)."""
+    with hold(git_repo) as acquired:
+        report = _run(git_repo)
+        assert _status(report, "supervisor lock is free") == FAIL
+        finding = next(f for f in report.findings if f.name == "supervisor lock is free")
+        assert str(acquired.holder.pid) in finding.detail
+        assert not report.ok
+        # Asking must not become holding: the live record stays the live record.
+        on_disk = json.loads(acquired.path.read_text(encoding="utf-8"))
+        assert on_disk["pid"] == acquired.holder.pid == os.getpid()
+
+
+def test_doctor_does_not_wipe_a_crash_record(git_repo: Path):
+    """Reproduced the bounce: planted holder JSON, doctor.run left the lock file
+    empty, subsequent hold() had takeover is None, adopt.recover never runs."""
+    path = lock_path(repo_root(git_repo))
+    planted = json.dumps(
+        {
+            "pid": 99999,
+            "repo": str(repo_root(git_repo)),
+            "acquired_at": "2026-01-01T00:00:00+00:00",
+            "version": "test",
+        }
+    )
+    path.write_text(planted, encoding="utf-8")
+    try:
+        report = _run(git_repo)
+        assert _status(report, "supervisor lock is free") == PASS, (
+            "the flock is free — a leftover crash record is not a live holder"
+        )
+        assert path.read_text(encoding="utf-8").strip() == planted, (
+            "doctor cleared the crash record; the next up would start blind"
+        )
+
+        with hold(git_repo) as acquired:
+            assert acquired.takeover is not None, (
+                "doctor.run left the lock empty, so the next supervisor would not "
+                "adopt — adopt.recover never runs"
+            )
+            assert acquired.takeover.holder is not None
+            assert acquired.takeover.holder.pid == 99999
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def test_a_directory_that_cannot_be_written_fails(git_repo: Path, tmp_path: Path):

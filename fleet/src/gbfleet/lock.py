@@ -195,3 +195,28 @@ def hold(repo: Path | str, state: Path | str | None = None) -> Iterator[Acquired
         # Safe on the refused path too: flock is held per open file description, so
         # closing ours does not release theirs.
         os.close(fd)
+
+
+def probe(repo: Path | str, state: Path | str | None = None) -> None:
+    """Raise `RepoLocked` if a live supervisor holds this repository.
+
+    Never writes a holder record and never truncates. `hold` empties the file on a
+    clean release so the next supervisor can tell a crash from a shutdown; a
+    diagnostic that used `hold` would clear a crash record, and the next `up` would
+    start blind beside live children (GRPH-599). Closing the fd is what releases
+    the flock we take to ask — the file contents are left as they were.
+    """
+    root = repo_root(repo)
+    path = lock_path(root, state)
+    try:
+        fd = os.open(path, os.O_RDWR)
+    except FileNotFoundError:
+        return
+    try:
+        try:
+            lock_exclusive(fd)
+        except AlreadyLocked:
+            raw = read_at(fd, 4096, 0).decode("utf-8", "replace").strip()
+            raise RepoLocked(path, Holder.parse(raw) if raw else None) from None
+    finally:
+        os.close(fd)
