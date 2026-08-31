@@ -161,6 +161,46 @@ def test_an_item_this_graphban_does_not_have_does_not_fail_the_build(monkeypatch
     assert "cannot reach `done`" in out
 
 
+def test_mode_head_does_not_write_an_attestation(monkeypatch):
+    """THE CALL. `--mode head` records the observed commit even when CI failed; `post`
+    is the attestation and must not run on this path (GRPH-555 bounce). The existing
+    head test patches both post and post_head to the same handler, so a head run
+    that called post() still looked correct.
+    """
+    posted = {"attest": 0, "head": 0}
+
+    monkeypatch.setenv("GRAPHBAN_URL", "https://example.invalid")
+    monkeypatch.setenv("GRAPHBAN_GATE_KEY", "gb_sk_x")
+    monkeypatch.setattr(attest_ci, "post",
+                        lambda *a, **k: posted.__setitem__("attest", posted["attest"] + 1))
+    monkeypatch.setattr(attest_ci, "post_head",
+                        lambda *a, **k: posted.__setitem__("head", posted["head"] + 1))
+
+    rc = attest_ci.main(["--commit", "e" * 40, "--text", "GRPH-611", "--mode", "head"])
+
+    assert rc == 0
+    assert posted["head"] == 1 and posted["attest"] == 0, (
+        f"--mode head posted attest={posted['attest']} head={posted['head']} — "
+        "a failing run would be attested"
+    )
+
+
+def test_mcp_update_item_forwards_head_commit():
+    """THE OTHER CALL. Deleting head_commit=args.get from the dispatcher left 56 tests
+    green: CI can exit 0 while item.head_commit stays empty and the weaker check remains
+    (GRPH-555 bounce). schema_probe wraps _call_tool, so this reads the file.
+    """
+    from pathlib import Path
+
+    from app import mcp_server
+
+    src = Path(mcp_server.__file__).read_text()
+    assert 'head_commit=args.get("head_commit")' in src, (
+        "MCP update_item no longer forwards head_commit — the currency gate has "
+        "nothing to compare against"
+    )
+
+
 def test_not_found_from_the_server_is_item_missing(monkeypatch):
     """Sabotage the CALL: a handler that only special-cases a raised ItemMissing, while
     `_call` still wraps not_found as RuntimeError, would leave the CI failure in place."""
