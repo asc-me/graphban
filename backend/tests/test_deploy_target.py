@@ -135,12 +135,37 @@ def test_it_still_refuses_a_dirty_worktree(source):
     assert "status --short" in source
 
 
-def test_it_still_verifies_release_identity_on_both_surfaces(source):
+def test_it_still_verifies_release_identity_on_both_surfaces(code):
     """A deploy that builds cleanly and serves the PREVIOUS revision looks identical to a
     successful one from the outside. Both the api and the web bundle are checked, because the
-    web bundle is baked at build time and can lag independently."""
-    assert 'LIVE_SHA" = "$GIT_SHA' in source, "the api sha is not compared"
-    assert 'WEB_SHA" = "$GIT_SHA' in source, "the web sha is not compared"
+    web bundle is baked at build time and can lag independently.
+
+    Against `code`, not `source` (GRPH-573 bounce). Commenting out the LIVE_SHA
+    comparison left this green when it grepped the full file, because the
+    commented line still contained the substring.
+    """
+    assert 'LIVE_SHA" = "$GIT_SHA' in code, "the api sha is not compared"
+    assert 'WEB_SHA" = "$GIT_SHA' in code, "the web sha is not compared"
+
+
+def test_tilde_is_expanded_only_for_a_local_deploy(code):
+    """THE CALL. Unguarded `${TARGET_DIR/#\\~/$HOME}` rewrote the default
+    `~/agentledger/` to this machine's home before rsync, so a remote deploy
+    targeted `ubuntu-srv:/Users/alex/agentledger/`.
+    """
+    assert re.search(
+        r'\[ -n "\$LOCAL" \]; then\n(?:[^\n]*\n)*?[^\n]*TARGET_DIR="\$\{TARGET_DIR/#\\~/\$HOME\}"',
+        code,
+    ), "tilde expansion is not gated on --local"
+    unguarded = [
+        ln for ln in code.splitlines()
+        if "TARGET_DIR=" in ln and "/#\\~/$HOME}" in ln.replace(" ", "")
+        and "LOCAL" not in ln
+    ]
+    # The rewrite line itself does not mention LOCAL; the `if` above must be
+    # the only one. Fail if a second, unguarded rewrite exists.
+    rewrites = [ln for ln in code.splitlines() if "/#\\~/$HOME}" in ln.replace(" ", "")]
+    assert len(rewrites) == 1, f"tilde rewrite should appear once, found {rewrites}"
 
 
 def test_the_env_file_is_still_excluded_from_the_sync(source):

@@ -105,6 +105,36 @@ def test_two_projects_with_the_same_key_collapse_to_one_credential(db):
     assert db.get(Project, "p1").credential_id == db.get(Project, "p2").credential_id
 
 
+def test_two_independently_encrypted_copies_of_the_same_key_collapse(db, monkeypatch):
+    """THE CALL. Fernet is non-deterministic. `_identity` used to compare the stored
+    blob, so the collapse test above only passed because encryption is off by default
+    — encrypt is a no-op and the ciphertexts are identical. Turning the key on, with
+    no source change, split one shared secret into two credentials (GRPH-512 bounce).
+    """
+    from app.config import settings
+    from app.security import secrets as sec
+
+    monkeypatch.setattr(settings, "secret_encryption_key", "unit-test-encryption-key")
+    sec._fernet.cache_clear()
+
+    _project(db, "p1", _blob(key="sk-shared"))
+    _project(db, "p2", _blob(key="sk-shared"))
+    stored = [
+        platform_svc.get_config(db, pid).providers["anthropic"]["api_key"]
+        for pid in ("p1", "p2")
+    ]
+    assert stored[0] != stored[1], "precondition: two encrypts of the same secret must differ"
+    assert stored[0].startswith("enc::")
+
+    report = mig.migrate(db)
+
+    assert report["credentials_created"] == 1, (
+        f"created {report['credentials_created']} — ciphertext was compared, not plaintext"
+    )
+    assert db.get(Project, "p1").credential_id == db.get(Project, "p2").credential_id
+    sec._fernet.cache_clear()
+
+
 def test_two_projects_with_DIFFERENT_keys_stay_two_credentials(db):
     """The opposite error, and just as plausible-looking: merging two credentials that only
     share a provider kind would hand one project another project's key."""

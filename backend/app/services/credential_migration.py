@@ -70,8 +70,15 @@ def normalise_url(raw: str) -> str:
 
 def _identity(kind: str, base_url: str, api_key: str) -> tuple[str, str, str]:
     """What makes two entries the same credential. Deliberately NOT the model — that is the
-    thing two projects are allowed to disagree about while sharing a key."""
-    return (kind, normalise_url(base_url), api_key)
+    thing two projects are allowed to disagree about while sharing a key.
+
+    **The key is compared as PLAINTEXT** (GRPH-512). Fernet is non-deterministic: two
+    `encrypt()` calls of the same secret produce different tokens. Comparing the stored
+    blob split one shared key into two credentials the moment `SECRET_ENCRYPTION_KEY`
+    was set, and the collapse tests could not fail because encryption is off by default
+    in this suite.
+    """
+    return (kind, normalise_url(base_url), secrets.decrypt(api_key))
 
 
 def choose_model(models: list[str]) -> str:
