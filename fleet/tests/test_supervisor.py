@@ -38,6 +38,8 @@ def _server(
     allocation: dict | None = None,
     unreachable: bool = False,
     blind: bool = False,
+    holdings: list | None = None,
+    items: list | None = None,
 ) -> Graphban:
     """A Graphban that reports every worktree under `workspace` as a registered agent.
 
@@ -59,6 +61,8 @@ def _server(
                 "mapping": [],
                 "rationale": "no agents online — nothing to allocate",
             }
+        elif tool == "search_items":
+            payload = {"results": list(items or [])}
         else:
             # `blind` is a server that is up and answering, and simply never sees the
             # child — which is what a broken adapter looks like from here, and is a
@@ -76,6 +80,7 @@ def _server(
                         # omits it lets anything reading it look like it works.
                         "enrolled": True,
                         "enrolment_id": f"seat-{i + 1}",
+                        "holdings": list(holdings or []),
                     }
                     for i, p in enumerate(trees)
                 ]
@@ -92,7 +97,12 @@ def _server(
             },
         )
 
-    return Graphban("http://gb.invalid", KEY, transport=httpx.MockTransport(handler))
+    from gbfleet.client import ALLOWED_TOOLS
+    return Graphban(
+        "http://gb.invalid", KEY,
+        allowed=ALLOWED_TOOLS | frozenset({"search_items"}),
+        transport=httpx.MockTransport(handler),
+    )
 
 
 def _factory(scripts, which: str, adapter: str = "fake"):
@@ -154,6 +164,104 @@ def test_the_next_child_of_an_open_item_starts_on_the_salvage_branch(
     assert wave.spawned[0].branch == dead.branch
     # The salvage file was in the tree the child started with.
     assert any(r.branch == dead.branch for r in wave.reaped)
+
+
+def test_up_resumes_a_salvage_orphan_without_injected_items(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """P30 D9 bounce. Production `gbfleet up` never passed `items=`; choose_resume
+    then always saw {} and cut from HEAD. Salvage keys come from last holdings, and
+    `up` fetches item status itself.
+    """
+    from gbfleet.client import ALLOWED_TOOLS
+    from gbfleet.cli import SPAWN_READS
+
+    workspace = tmp_path / "ws"
+    first = up(
+        git_repo, _seats(1), _factory(scripts, "works_then_exits"),
+        _server(
+            workspace,
+            holdings=[{"id": "GRPH-1"}],
+            items=[{"id": "GRPH-1", "status": "next", "claimed_by": ""}],
+        ),
+        limits=Limits(max_workers=1),
+        state=state, workspace=workspace,
+    )
+    assert first.reaped, first.failures
+    assert first.spawned[0].held_items == ["GRPH-1"], first.spawned[0].held_items
+    found = orphans(git_repo)
+    assert any(o.item_keys == ("GRPH-1",) for o in found), [o.subject for o in found]
+
+    second = up(
+        git_repo, _seats(1), _factory(scripts, "works_then_exits"),
+        _server(
+            workspace,
+            items=[{"id": "GRPH-1", "status": "next", "claimed_by": ""}],
+        ),
+        limits=Limits(max_workers=1),
+        state=state, workspace=workspace,
+    )
+    assert second.resumed, (
+        f"did not resume; misses={second.resume_misses} spawned="
+        f"{[c.branch for c in second.spawned]}"
+    )
+    assert ALLOWED_TOOLS == frozenset({"fleet_status", "propose_allocation"})
+    assert "search_items" not in ALLOWED_TOOLS
+    assert "search_items" in SPAWN_READS
+
+
+def test_remember_holdings_keeps_the_last_non_empty():
+    """Live roster after release_item is empty; reap must not read that."""
+    import subprocess
+    import sys
+    from gbfleet.spawn import Child
+    from gbfleet.supervisor import Partition, _remember_holdings
+
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait(timeout=10)
+    child = Child(
+        adapter="fake", worktree=Path("/wt"), branch="gb/w-1", base="",
+        seat_path=Path("/s"), process=proc, started_at=0.0, log_dir=Path("/l"),
+        agent_id="GRPH-A1", held_items=["GRPH-1"],
+    )
+    part = Partition()
+    part.held = {"GRPH-A1": []}
+    _remember_holdings([child], part)
+    assert child.held_items == ["GRPH-1"]
+    part.held = {"GRPH-A1": ["GRPH-2"]}
+    _remember_holdings([child], part)
+    assert child.held_items == ["GRPH-2"]
+    import inspect
+    from gbfleet import supervisor as sup
+    assert "child.held_items" in inspect.getsource(sup._reap_all)
+
+
+def test_item_status_is_empty_when_search_items_is_not_permitted():
+    """A supervisor-only client must not crash; resume then sees {} and cuts from HEAD."""
+    from gbfleet.client import ALLOWED_TOOLS
+    from gbfleet.supervisor import item_status
+
+    def never(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("search_items reached the network")
+
+    client = Graphban(
+        "http://gb.invalid", KEY,
+        allowed=ALLOWED_TOOLS,
+        transport=httpx.MockTransport(never),
+    )
+    assert item_status(client) == {}
+
+
+def test_cli_up_does_not_inject_items_and_uses_spawn_reads():
+    """THE CALL. `up()` used to need `items=`; the CLI never passed it."""
+    import inspect
+    from gbfleet import cli
+
+    src = inspect.getsource(cli.main)
+    assert "items=" not in src
+    assert "allowed=SPAWN_READS" in src
+    src_mcp = inspect.getsource(cli._serve_stdio)
+    assert "allowed=SPAWN_READS" in src_mcp
 
 
 def test_the_work_a_child_did_is_recoverable_and_carries_no_credential(
