@@ -4,7 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { GITOPS_PRELINK_KEY } from "@/features/settings/GitopsPanel";
 import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
+import { keys } from "@/lib/queries";
 import type { SyncStatus } from "@/lib/types";
 
 const unlinked: SyncStatus = {
@@ -37,18 +39,22 @@ vi.mock("@/lib/api", () => ({ api }));
 
 function renderPanel() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter>
-        <SyncLinkPanel />
-      </MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return {
+    qc,
+    ...render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SyncLinkPanel />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    ),
+  };
 }
 
 describe("SyncLinkPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.removeItem(GITOPS_PRELINK_KEY);
     api.syncStatus.mockResolvedValue(unlinked);
     api.syncLink.mockResolvedValue(linked);
     api.syncUnlink.mockResolvedValue(unlinked);
@@ -95,5 +101,45 @@ describe("SyncLinkPanel", () => {
 
     await user.click(screen.getByText(/Sync this project.s code graph to the cloud/));
     await waitFor(() => expect(api.syncSetGraph).toHaveBeenCalledWith("core", false));
+  });
+
+  it("unlink drops the gitops cache and notes a pre-link restore", async () => {
+    const user = userEvent.setup();
+    api.syncStatus.mockResolvedValue(linked);
+    const { qc } = renderPanel();
+    qc.setQueryData(keys.gitops("core"), { control: { state: "local" } });
+    expect(qc.getQueryData(keys.gitops("core"))).toBeTruthy();
+
+    await user.click(await screen.findByRole("button", { name: "Unlink" }));
+    await waitFor(() => expect(api.syncUnlink).toHaveBeenCalled());
+    expect(qc.getQueryData(keys.gitops("core"))).toBeUndefined();
+    expect(sessionStorage.getItem(GITOPS_PRELINK_KEY)).toBe("1");
+  });
+
+  it("link drops the gitops cache and does not note an unlink restore", async () => {
+    const user = userEvent.setup();
+    const { qc } = renderPanel();
+    qc.setQueryData(keys.gitops("core"), { fields: { base_branch: { value: "test" } } });
+    await screen.findByText("not linked");
+
+    await user.type(screen.getByPlaceholderText("cloud.graphban.dev"), "cloud.agentldgr.dev");
+    await user.type(screen.getByPlaceholderText("paste key…"), "gb_sk_secret");
+    await user.type(screen.getByPlaceholderText("acme"), "acme");
+    await user.click(screen.getByRole("button", { name: "Link instance" }));
+
+    await waitFor(() => expect(api.syncLink).toHaveBeenCalled());
+    expect(qc.getQueryData(keys.gitops("core"))).toBeUndefined();
+    expect(sessionStorage.getItem(GITOPS_PRELINK_KEY)).toBeNull();
+  });
+
+  it("graph-sync toggle does not drop gitops", async () => {
+    const user = userEvent.setup();
+    api.syncStatus.mockResolvedValue(linked);
+    const { qc } = renderPanel();
+    qc.setQueryData(keys.gitops("core"), { keep: true });
+    await user.click(await screen.findByRole("button", { name: /Core/ }));
+    await user.click(screen.getByText(/Sync this project.s code graph to the cloud/));
+    await waitFor(() => expect(api.syncSetGraph).toHaveBeenCalled());
+    expect(qc.getQueryData(keys.gitops("core"))).toEqual({ keep: true });
   });
 });

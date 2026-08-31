@@ -9,11 +9,14 @@ import { ProjectProvider } from "@/features/ProjectContext";
 import {
   GITOPS_BASE_CHIPS,
   GITOPS_NAMING_TOKENS,
+  GITOPS_PRELINK_KEY,
   UNLINK_WARNING,
   UNMEASURED_PLACEHOLDER,
   UNTIL_LINKED,
+  noteGitopsUnlinked,
 } from "@/features/settings/GitopsPanel";
 import { SettingsView } from "@/features/settings/SettingsView";
+import { keys } from "@/lib/queries";
 import { settingsPath } from "@/lib/routes";
 import type { GitopsField, GitopsView, GitopsWas, Project } from "@/lib/types";
 
@@ -125,13 +128,20 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
-function renderPage(path = settingsPath("deployment/gitops"), tag = "APP") {
+/** Same defaults as `web/src/main.tsx`. The cache/link tests must use these. */
+const PRODUCTION_QUERIES = {
+  retry: false as const,
+  refetchOnWindowFocus: false as const,
+  staleTime: 15_000,
+};
+
+function renderPage(path = settingsPath("deployment/gitops"), tag = "APP", qc?: QueryClient) {
   localStorage.setItem("gb_last_project_tag", tag);
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = qc ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return {
-    qc,
+    qc: client,
     ...render(
-      <QueryClientProvider client={qc}>
+      <QueryClientProvider client={client}>
         <MemoryRouter initialEntries={[path]}>
           <ProjectProvider>
             <Routes>
@@ -147,7 +157,7 @@ function renderPage(path = settingsPath("deployment/gitops"), tag = "APP") {
 describe("Gitops Settings page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    sessionStorage.removeItem("gb_gitops_prelink");
+    sessionStorage.removeItem(GITOPS_PRELINK_KEY);
     localStorage.removeItem("gb_last_project_tag");
     projectsSpy.mockResolvedValue([projA, projB]);
     gitopsSpy.mockImplementation(async (id: string) =>
@@ -285,6 +295,64 @@ describe("Gitops Settings page", () => {
     expect(screen.getByLabelText("Base branch")).toBeEnabled();
     expect(screen.getByLabelText("Base branch")).toHaveValue("test");
     expect(screen.getByRole("button", { name: "Save gitops" })).toBeEnabled();
+  });
+
+  it("unlink warning fires from the unlink call — Gitops need not have been visited while linked", async () => {
+    noteGitopsUnlinked();
+    gitopsSpy.mockResolvedValue(state2);
+    renderPage();
+    expect(await screen.findByRole("alert")).toHaveTextContent(UNLINK_WARNING);
+    expect(screen.getByLabelText("Base branch")).toBeEnabled();
+    expect(screen.getByLabelText("Base branch")).toHaveValue("test");
+    expect(screen.getByRole("button", { name: "Save gitops" })).toBeEnabled();
+  });
+
+  it("does not first-paint a pre-link cache after link drops the row (production staleTime)", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: PRODUCTION_QUERIES } });
+    gitopsSpy.mockResolvedValue(state2);
+    const first = renderPage(settingsPath("deployment/gitops"), "APP", qc);
+    expect(await screen.findByLabelText("Base branch")).toHaveValue("test");
+    first.unmount();
+    qc.removeQueries({ queryKey: ["gitops"] });
+
+    // A GET must not hide the cache: if the 15s-fresh row survived, this hang
+    // never runs and `test` stays on screen.
+    gitopsSpy.mockImplementation(() => new Promise(() => {}));
+    const second = renderPage(settingsPath("deployment/gitops"), "APP", qc);
+    expect(await screen.findByText(/Loading gitops/)).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("test")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Base branch")).not.toBeInTheDocument();
+    second.unmount();
+  });
+
+  it("gcTime 0 drops the row on unmount so remount cannot serve cached test", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: PRODUCTION_QUERIES } });
+    gitopsSpy.mockResolvedValue(state2);
+    const first = renderPage(settingsPath("deployment/gitops"), "APP", qc);
+    expect(await screen.findByLabelText("Base branch")).toHaveValue("test");
+    first.unmount();
+    await waitFor(() => expect(qc.getQueryData(keys.gitops("prj_a"))).toBeUndefined());
+
+    gitopsSpy.mockImplementation(() => new Promise(() => {}));
+    const second = renderPage(settingsPath("deployment/gitops"), "APP", qc);
+    expect(await screen.findByText(/Loading gitops/)).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("test")).not.toBeInTheDocument();
+    second.unmount();
+  });
+
+  it("after the pane unmounts, a live GET is state 4, not cached test", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: PRODUCTION_QUERIES } });
+    gitopsSpy.mockResolvedValue(state2);
+    const first = renderPage(settingsPath("deployment/gitops"), "APP", qc);
+    expect(await screen.findByLabelText("Base branch")).toHaveValue("test");
+    first.unmount();
+    await waitFor(() => expect(qc.getQueryData(keys.gitops("prj_a"))).toBeUndefined());
+
+    gitopsSpy.mockResolvedValue(state4);
+    renderPage(settingsPath("deployment/gitops"), "APP", qc);
+    expect(await screen.findByRole("status")).toHaveTextContent("Controlled by the org admin.");
+    expect(screen.getByLabelText("Base branch")).toHaveValue("stage");
+    expect(screen.queryByDisplayValue("test")).not.toBeInTheDocument();
   });
 
   it("saves sparse: only the edited field, and × sends JSON null", async () => {

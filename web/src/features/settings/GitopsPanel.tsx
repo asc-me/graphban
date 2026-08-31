@@ -19,7 +19,16 @@ export const UNTIL_LINKED = "This is this project's process until the box is lin
 export const UNLINK_WARNING =
   "These are this box's pre-link values, not the org's last contract.";
 
-const PRELINK_KEY = "gb_gitops_prelink";
+/** Set by Cloud / Sync unlink — the usual path never visits Gitops while linked. */
+export const GITOPS_PRELINK_KEY = "gb_gitops_prelink";
+
+export function noteGitopsUnlinked() {
+  try {
+    sessionStorage.setItem(GITOPS_PRELINK_KEY, "1");
+  } catch {
+    /* private mode */
+  }
+}
 
 const REVIEWER_OPTIONS = [
   ["", "Unmeasured"],
@@ -67,16 +76,12 @@ function fromView(view: GitopsView): Draft {
 
 function rememberLinked(view: GitopsView) {
   if (view.control.state === "local") return;
-  try {
-    sessionStorage.setItem(PRELINK_KEY, "1");
-  } catch {
-    /* private mode */
-  }
+  noteGitopsUnlinked();
 }
 
-function hadPrelink(): boolean {
+function gitopsPrelinkRestored(): boolean {
   try {
-    return sessionStorage.getItem(PRELINK_KEY) === "1";
+    return sessionStorage.getItem(GITOPS_PRELINK_KEY) === "1";
   } catch {
     return false;
   }
@@ -210,7 +215,7 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
     });
   }
 
-  const showUnlinkWarning = view.control.state === "local" && writable && hadPrelink();
+  const showUnlinkWarning = view.control.state === "local" && writable && gitopsPrelinkRestored();
   const localUntilLinked = view.control.state === "local";
 
   return (

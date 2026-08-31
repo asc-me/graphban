@@ -432,6 +432,12 @@ export function useGitops(projectId: string) {
     queryKey: keys.gitops(projectId),
     queryFn: () => api.gitops(projectId),
     enabled: !!projectId,
+    // Production QueryClient is staleTime 15s. A cached local `test` after
+    // link, or a grey org row after unlink, is the lie this page exists to
+    // prevent — drop the row when the pane unmounts so remount cannot
+    // first-paint it. Sync link/unlink also removeQueries(["gitops"]).
+    staleTime: 0,
+    gcTime: 0,
   });
 }
 
