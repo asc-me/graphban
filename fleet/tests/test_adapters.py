@@ -209,10 +209,10 @@ def test_seat_key_canonicalises_separators_and_is_what_salvage_calls():
     is_src = inspect.getsource(wt.is_seat_file)
     assert "seat_key(" in is_src, "is_seat_file does not call seat_key"
     salvage_src = inspect.getsource(wt.salvage)
-    assert "is_seat_file(" in salvage_src, "salvage never calls is_seat_file"
+    assert "is_seat_relative(" in salvage_src, "salvage never canonicalises staged names"
 
     from gbfleet.touchpoints import measure
-    assert "is_seat_file(" in inspect.getsource(measure), (
+    assert "is_seat_relative(" in inspect.getsource(measure), (
         "touchpoints still does `f not in SEAT_FILES`"
     )
 

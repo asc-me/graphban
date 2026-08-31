@@ -146,7 +146,15 @@ class GbAgent(Adapter):
     def exit_meaning(self, code: int) -> str:
         """AC-7's other half: the supervisor tells surrender from failure without reading
         stderr. The words come from `gbagent.loop`, so there is one definition of what 75
-        means rather than two that can drift."""
-        from gbagent.loop import exit_meaning
+        means rather than two that can drift.
 
+        An OS-imposed status is not a crash. The loop's default is `crashed (exit N)`,
+        and STATUS_CONTROL_C_EXIT (3221225786) — what a polite Windows stop reports —
+        would otherwise be recorded as a crash (GRPH-588 bounce).
+        """
+        from gbagent.loop import exit_meaning
+        from ..hostos import terminated_by_signal
+
+        if terminated_by_signal(code):
+            return f"stopped by signal ({code})"
         return exit_meaning(code)

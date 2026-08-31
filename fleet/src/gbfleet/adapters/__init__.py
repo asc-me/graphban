@@ -262,11 +262,26 @@ class Adapter:
         shut down exactly as asked reports `STATUS_CONTROL_C_EXIT` — 3221225786 — and
         printing that raw makes every clean stop look like a crash.
         """
-        if code == 0:
-            return "finished"
-        if terminated_by_signal(code):
-            return f"stopped by signal ({code})"
-        return f"exited {code}"
+        return default_exit_meaning(code)
+
+
+def default_exit_meaning(code: int) -> str:
+    """The Adapter default, callable when the child is not a named vendor (tests)."""
+    if code == 0:
+        return "finished"
+    if terminated_by_signal(code):
+        return f"stopped by signal ({code})"
+    return f"exited {code}"
+
+
+def explain_exit(adapter: str, code: int | None) -> str | None:
+    """What the supervisor records: the vendor's words, not the raw status."""
+    if code is None:
+        return None
+    impl = ADAPTERS.get(adapter)
+    if impl is not None:
+        return impl.exit_meaning(code)
+    return default_exit_meaning(code)
 
 
 def _run_version(binary: Path, argv: tuple[str, ...]) -> str:
@@ -370,5 +385,6 @@ ADAPTERS: dict[str, Adapter] = {
 
 __all__ = [
     "ADAPTERS", "Adapter", "AdapterError", "AdapterUnavailable", "Resolved", "Support",
-    "UnknownAdapter", "VersionUnsupported", "parse_version", "resolve",
+    "UnknownAdapter", "VersionUnsupported", "default_exit_meaning", "explain_exit",
+    "parse_version", "resolve",
 ]

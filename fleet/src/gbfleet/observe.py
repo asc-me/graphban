@@ -59,6 +59,10 @@ class ChildRecord:
     agent_id: str | None = None
     registration_latency: float | str = NEVER_REGISTERED
     exit_code: int | None = None
+    #: Vendor words for `exit_code` (`finished`, `stopped by signal (...)`, …).
+    #: The raw Windows CTRL_BREAK status is 3221225786; recording only that number
+    #: makes every clean stop look like a crash (GRPH-588 bounce).
+    exit_meaning: str | None = None
     stopped_because: str | None = None
     reap: str | None = None
     salvage_commit: str | None = None

@@ -30,6 +30,7 @@ from typing import Callable, Iterable, Sequence
 
 from . import adopt as adopt_mod
 from . import worktree as wt_mod
+from .adapters import explain_exit
 from .client import Graphban, NotPermitted, ServerUnreachable, ToolFailed
 from .hostos import restrict_to_owner
 from .lock import Acquired, hold
@@ -947,6 +948,7 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
                 else NEVER_REGISTERED
             ),
             exit_code=child.process.returncode,
+            exit_meaning=explain_exit(child.adapter, child.process.returncode),
             stopped_because=child.stopped_because.value if child.stopped_because else None,
             reap=reaped.disposition.value,
             salvage_commit=reaped.salvage.commit if reaped.salvage else None,

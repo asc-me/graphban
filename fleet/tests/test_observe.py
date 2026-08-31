@@ -168,7 +168,7 @@ def test_the_record_names_the_build_not_just_the_vendor(
 
 
 @pytest.mark.parametrize(
-    "field", ["adapter", "worktree", "branch", "pid", "exit_code", "reap"]
+    "field", ["adapter", "worktree", "branch", "pid", "exit_code", "exit_meaning", "reap"]
 )
 def test_every_field_s6_asks_for_is_present(
     field: str, git_repo: Path, tmp_path: Path, scripts, state: Path
@@ -180,6 +180,23 @@ def test_every_field_s6_asks_for_is_present(
     )
     record = next(r for r in _lines(state / LOG_FILE) if r["event"] == "child")
     assert record.get(field) is not None, f"S6 names {field} and the record omits it"
+
+
+def test_the_child_record_uses_exit_meaning_not_the_raw_status(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """THE CALL (GRPH-588 bounce). ChildRecord.exit_code is the number; the operator
+    facing spelling is Adapter.exit_meaning. Recording only the raw Windows
+    CTRL_BREAK status (3221225786) makes every clean stop look like a crash.
+    """
+    workspace = tmp_path / "ws"
+    up(
+        git_repo, _seats(1), _factory(scripts, "works_then_exits"), _server(workspace),
+        state=state, workspace=workspace,
+    )
+    record = next(r for r in _lines(state / LOG_FILE) if r["event"] == "child")
+    assert record.get("exit_meaning") == "finished"
+    assert "3221225786" not in str(record.get("exit_meaning"))
 
 
 def test_a_salvaged_reap_is_reported_as_salvaged(
