@@ -297,8 +297,22 @@ def test_takeover_ticks_the_leftover_pid(
         start_new_session=True,
     )
     try:
-        monkeypatch.setattr(adopt, "process_start_token", lambda pid: "tok")
-        monkeypatch.setattr(adopt, "pid_is_alive", lambda pid: pid == sleeper.pid)
+        # classify() reads adopt.*; AttachedProcess.poll / persist's running
+        # check read spawn.* (imported from hostos). Mocking only adopt lets a
+        # Linux hostos token ≠ "tok" mark leftover dead, so persist drops it
+        # while wave.spawned still reports attach — the same hole as children=[].
+        from gbfleet import spawn as spawn_mod
+
+        def _tok(_pid: int) -> str:
+            return "tok"
+
+        def _alive(pid: int) -> bool:
+            return pid == sleeper.pid
+
+        monkeypatch.setattr(adopt, "process_start_token", _tok)
+        monkeypatch.setattr(adopt, "pid_is_alive", _alive)
+        monkeypatch.setattr(spawn_mod, "process_start_token", _tok)
+        monkeypatch.setattr(spawn_mod, "pid_is_alive", _alive)
         tree = create(git_repo, workspace / "wave-1", "wave", "1")
         path = adopt.children_path(git_repo, state)
         save(path, [Snapshot(
