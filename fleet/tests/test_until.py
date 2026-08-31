@@ -1,0 +1,278 @@
+"""P30 D1 — `gbfleet until` is a planner loop, not a thicker supervisor."""
+from __future__ import annotations
+
+import json
+import httpx
+import pytest
+
+from gbfleet.cli import make_launch_factory
+from gbfleet.client import ALLOWED_TOOLS, Graphban
+from gbfleet.seat import Seat
+from gbfleet.supervisor import Limits
+from gbfleet.until import PLANNER_TOOLS, Report, run
+
+from tests.test_supervisor import KEY, _factory, _seats
+
+
+def _mcp(payload: dict, id_: int) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "jsonrpc": "2.0",
+            "id": id_,
+            "result": {
+                "content": [{"type": "text", "text": json.dumps(payload)}],
+                "structuredContent": payload,
+            },
+        },
+    )
+
+
+def _error(code: str, message: str, id_: int) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "jsonrpc": "2.0",
+            "id": id_,
+            "result": {
+                "isError": True,
+                "content": [{"type": "text", "text": message}],
+                "structuredContent": {"error": {"code": code, "message": message}},
+            },
+        },
+    )
+
+
+def _clients(
+    workspace: Path,
+    *,
+    off_limits: list[str] | None = None,
+    clusters: int = 0,
+    workers: int = 0,
+    review: list | None = None,
+    waits: list | None = None,
+    mint_code: str = "WORKER-UNTIL",
+    mint_fails: str | None = None,
+):
+    """Planner + supervisor clients sharing one mock Graphban."""
+    seen_agents = {"yes": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        tool = body["params"]["name"]
+        args = body["params"].get("arguments") or {}
+        rid = body["id"]
+        if tool == "register_agent":
+            return _mcp({
+                "agent_id": "GRPH-P1",
+                "active_role": "planner",
+                "eligible_roles": ["planner"],
+                "tools_off_limits": list(off_limits or []),
+            }, rid)
+        if tool == "collision_clusters":
+            total = 0 if seen_agents["yes"] else clusters
+            return _mcp({
+                "clusters": [{}] * total,
+                "total": total,
+            }, rid)
+        if tool == "propose_allocation":
+            mapping = [{"agent_id": "GRPH-A1"}] if workers else []
+            return _mcp({
+                "workers": workers,
+                "reviewers": 0,
+                "mapping": mapping,
+                "rationale": "fixture",
+            }, rid)
+        if tool == "mint_enrolment":
+            if mint_fails:
+                return _error(mint_fails, f"cannot mint ({mint_fails})", rid)
+            return _mcp({"enrolment_code": mint_code, "role": "worker", "seat_id": "s1"}, rid)
+        if tool == "search_items":
+            if args.get("status") == "review":
+                return _mcp({"results": list(review or [])}, rid)
+            if args.get("status") == "blocked":
+                tag = (args.get("tags") or [""])[0]
+                rows = [w for w in (waits or []) if tag in (w.get("tags") or [])]
+                return _mcp({"results": rows}, rid)
+            return _mcp({"results": []}, rid)
+        if tool == "retire_wave":
+            return _mcp({"seats_revoked": 0, "agents": 0}, rid)
+        trees = sorted(p for p in workspace.glob("*") if p.is_dir() and p.name != "logs")
+        if trees:
+            seen_agents["yes"] = True
+        return _mcp({
+            "agents": [
+                {
+                    "id": f"GRPH-A{i + 1}",
+                    "worktree": str(p),
+                    "state": "idle",
+                    "enrolled": True,
+                    "enrolment_id": f"seat-{i + 1}",
+                    "holdings": [],
+                }
+                for i, p in enumerate(trees)
+            ]
+        }, rid)
+
+    transport = httpx.MockTransport(handler)
+    planner = Graphban("http://gb.invalid", KEY, allowed=PLANNER_TOOLS, transport=transport)
+    supervisor = Graphban("http://gb.invalid", KEY, allowed=ALLOWED_TOOLS, transport=transport)
+    return planner, supervisor
+
+
+def test_allowed_tools_stays_two_and_planner_holds_mint():
+    assert ALLOWED_TOOLS == frozenset({"fleet_status", "propose_allocation"})
+    assert "mint_enrolment" in PLANNER_TOOLS
+    assert "mint_enrolment" not in ALLOWED_TOOLS
+    assert "collision_clusters" in PLANNER_TOOLS
+    assert PLANNER_TOOLS & ALLOWED_TOOLS == ALLOWED_TOOLS
+
+
+def test_a_key_that_cannot_mint_is_refused_at_start(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, off_limits=["mint_enrolment"])
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.reason == "config"
+    assert result.exit == 2
+    assert result.ok is False
+    assert "mint_enrolment" in result.detail
+
+
+def test_idle_when_there_is_no_work_no_review_and_no_lease(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """THE CALL. Idle is not 'the last child exited' — three empty ticks with nothing."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=0)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+    )
+    assert result.reason == "idle"
+    assert result.exit == 0
+    assert result.ok is True
+    assert result.spawned == 0
+    assert result.as_json()["reason"] == "idle"
+
+
+def test_only_typed_waits_is_idle_with_waits(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(
+        workspace,
+        waits=[{"id": "GRPH-W1", "tags": ["wait:merge"], "status": "blocked"}],
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+    )
+    assert result.reason == "idle-with-waits"
+    assert result.exit == 0
+    assert result.ok is True
+    assert result.waits == ["GRPH-W1"]
+
+
+def test_leftover_review_is_not_idle(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """A wave that exits 0 with unsigned review is a failed run."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(
+        workspace, review=[{"id": "GRPH-9", "status": "review"}],
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+    )
+    assert result.reason == "review-unsigned"
+    assert result.exit == 1
+    assert result.ok is False
+    assert result.review == ["GRPH-9"]
+    assert result.wave is not None and result.wave.ok is False
+
+
+def test_until_spawns_a_worker_from_a_cold_cluster(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """Cold start reads collision_clusters, mints just in time, then goes idle."""
+    workspace = tmp_path / "ws"
+    # First cluster read is 1; after a child exists the roster is live and
+    # propose_allocation.workers is 0, so we do not mint a second.
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert result.spawned == 1, result.detail
+    assert result.minted == 1
+    assert result.reason == "idle"
+    assert result.exit == 0
+
+
+def test_pre_minted_seats_are_consumed_before_minting(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, mint_code="MUST-NOT-MINT")
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        seats=_seats(1, "http://gb.invalid"),
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert result.spawned == 1
+    assert result.minted == 0
+    assert result.reason == "idle"
+
+
+def test_a_quota_mint_is_config_not_idle(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, mint_fails="quota")
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert result.reason == "config"
+    assert result.exit == 2
+    assert "quota" in result.detail
+
+
+def test_cli_until_exists_and_does_not_widen_allowed_tools():
+    from gbfleet.cli import build_parser
+    ns = parser = build_parser()
+    args = ns.parse_args(["until", "--server", "http://x", "--adapter", "gbagent"])
+    assert args.command == "until"
+    assert "mint_enrolment" not in ALLOWED_TOOLS
+
+
+def test_three_empty_ticks_are_required(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """Sabotage: idle on the first empty tick. This must fail if EMPTY_TICKS is ignored."""
+    workspace = tmp_path / "ws"
+    sleeps: list[float] = []
+    planner, supervisor = _clients(workspace, clusters=0)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0.01, sleep=sleeps.append, empty_ticks=3,
+    )
+    assert result.reason == "idle"
+    assert len(sleeps) >= 2, f"idled after {len(sleeps)} sleeps; need two gaps for three ticks"

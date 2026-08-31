@@ -27,6 +27,7 @@ from .lock import hold
 from .mcp import Fleet, serve
 from .state import repo_root
 from .supervisor import DEFAULT_MAX_WORKERS, Limits, Wave, up
+from .until import PLANNER_TOOLS, emit as emit_until, run as run_until
 from .worktree import Worktree
 
 _DESCRIPTION = """\
@@ -155,6 +156,42 @@ def build_parser() -> argparse.ArgumentParser:
     stdio.add_argument("--server", required=True, help="Graphban base URL")
     stdio.add_argument("--workspace", default=None, help="where worktrees go")
     stdio.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
+
+    until = sub.add_parser(
+        "until",
+        help="planner loop: mint, spawn, watch, until idle or a cap",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Planner-mode, in-process. Holds a planner key and the supervisor allowlist\n"
+            "as two clients. Minting is just in time. Idle is no ready work, no unsigned\n"
+            "review, and no live lease — not merely that the last child exited.\n\n"
+            "Stdout: human lines, then one JSON object keyed on reason + exit."
+        ),
+    )
+    until.add_argument("--repo", default=".", help="repository to supervise (default: cwd)")
+    until.add_argument("--server", required=True, help="Graphban base URL")
+    until.add_argument(
+        "--seats-file", default=None,
+        help="optional pre-minted enrolment codes, consumed before minting",
+    )
+    until.add_argument(
+        "--adapter", required=True,
+        help="which vendor to run: " + ", ".join(sorted(ADAPTERS)),
+    )
+    until.add_argument("--binary", default=None, help="override the resolved path for --adapter")
+    until.add_argument("--wave", default="wave", help="wave name, used in branch names")
+    until.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
+    until.add_argument("--max-children", type=int, default=8)
+    until.add_argument("--child-wall-clock", type=float, default=3600.0)
+    until.add_argument("--workspace", default=None, help="where worktrees go")
+    until.add_argument("--debug", action="store_true")
+    until.add_argument(
+        "--quiet-after", type=float, default=Limits.quiet_after,
+        help="seconds of no output before a child is REPORTED as quiet",
+    )
+    until.add_argument(
+        "argv", nargs=argparse.REMAINDER, help="-- followed by the command to run per child"
+    )
     return parser
 
 
@@ -296,6 +333,64 @@ def report(wave: Wave, out=None) -> None:
         print(f"STUCK {give_up}", file=out)
 
 
+def _until(args) -> int:
+    """Planner loop. Two clients, one key: minting never goes through ALLOWED_TOOLS."""
+    api_key = os.environ.get(API_KEY_ENV)
+    if not api_key:
+        print(f"gbfleet until: ${API_KEY_ENV} is not set", file=sys.stderr)
+        return 2
+
+    template = [a for a in (args.argv or []) if a != "--"]
+    try:
+        factory = (
+            make_launch_factory(args.adapter, template)
+            if template
+            else make_adapter_factory(args.adapter, args.binary)
+        )
+    except AdapterError as exc:
+        print(f"gbfleet until: {exc}", file=sys.stderr)
+        return 2
+
+    pool: list[Seat] = []
+    if args.seats_file:
+        pool = read_seats(args.seats_file, args.server, api_key)
+
+    planner = Graphban(base_url=args.server, api_key=api_key, allowed=PLANNER_TOOLS)
+    supervisor = Graphban(base_url=args.server, api_key=api_key, allowed=ALLOWED_TOOLS)
+    try:
+        result = run_until(
+            Path(args.repo),
+            factory,
+            planner,
+            supervisor,
+            api_key=api_key,
+            server=args.server,
+            adapter=args.adapter,
+            seats=pool,
+            wave_name=args.wave,
+            limits=Limits(
+                max_workers=args.max_workers,
+                max_children=args.max_children,
+                child_wall_clock=args.child_wall_clock,
+                quiet_after=args.quiet_after,
+            ),
+            workspace=Path(args.workspace) if args.workspace else None,
+            debug=args.debug,
+        )
+    except RepoLocked as exc:
+        print(f"gbfleet until: {exc}", file=sys.stderr)
+        return 3
+    except NotARepository as exc:
+        print(f"gbfleet until: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        planner.close()
+        supervisor.close()
+
+    emit_until(result)
+    return result.exit
+
+
 def _serve_stdio(args) -> int:
     """Hold the repository and serve the local surface until stdin closes.
 
@@ -369,6 +464,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # FAIL only. An UNKNOWN is loud in the report and does not stop a run — refusing
         # on a check that could not be made would ground the fleet on a slow network.
         return 0 if report.ok else 1
+
+    if args.command == "until":
+        return _until(args)
 
     template = [a for a in (args.argv or []) if a != "--"]
     try:
