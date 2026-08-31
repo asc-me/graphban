@@ -114,10 +114,11 @@ const unreachable = view({
   was: { ...emptyWas(), base_branch: "test" },
 });
 
-const { gitopsSpy, updateSpy, projectsSpy } = vi.hoisted(() => ({
+const { gitopsSpy, updateSpy, projectsSpy, configSpy } = vi.hoisted(() => ({
   gitopsSpy: vi.fn(async (_id: string) => state1),
   updateSpy: vi.fn(async (_id: string, _body: unknown) => state1),
   projectsSpy: vi.fn(async () => [projA, projB]),
+  configSpy: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -125,7 +126,14 @@ vi.mock("@/lib/api", () => ({
     projects: projectsSpy,
     gitops: gitopsSpy,
     updateGitops: updateSpy,
-    config: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
+    config: configSpy,
+    // Hosted Settings tabs other than Gitops still mount; they must not throw
+    // or the CALL pin never reaches HostedSettingsTabs.
+    credentials: vi.fn(async () => []),
+    platform: vi.fn(async () => null),
+    syncStatus: vi.fn(async () => ({ linked: false, url: "", projects: [] })),
+    members: vi.fn(async () => []),
+    apiKeys: vi.fn(async () => []),
   },
 }));
 
@@ -161,6 +169,7 @@ describe("Gitops Settings page", () => {
     sessionStorage.removeItem(GITOPS_PRELINK_KEY);
     localStorage.removeItem("gb_last_project_tag");
     projectsSpy.mockResolvedValue([projA, projB]);
+    configSpy.mockResolvedValue({ hosted_mode: false, signup_mode: "closed" });
     gitopsSpy.mockImplementation(async (id: string) =>
       id === "prj_b" ? view({ project_id: "prj_b" }) : state1,
     );
@@ -399,6 +408,49 @@ describe("Gitops Settings page", () => {
     await waitFor(() => expect(updateSpy).toHaveBeenCalledWith("prj_a", { no_push_to_base: null }));
   });
 
+  it("hosted Settings never mounts GitopsPanel", async () => {
+    // THE CALL (GRPH-620). This file always mocked hosted_mode:false, so putting
+    // <GitopsPanel /> inside HostedSettingsTabs left every gitops-settings test
+    // green. Render the hosted view; gitops must not load on any tab.
+    configSpy.mockResolvedValue({ hosted_mode: true, signup_mode: "closed" });
+    const user = userEvent.setup();
+    renderPage("/settings");
+
+    expect(await screen.findByRole("button", { name: /^AI Providers$/ })).toBeInTheDocument();
+    expect(screen.queryByText("This box")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Gitops" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Gitops" })).not.toBeInTheDocument();
+
+    for (const tab of [
+      "AI Providers",
+      "Integrations",
+      "Sync / Link",
+      "Project",
+      "Members",
+      "API Keys",
+      "Account",
+    ]) {
+      await user.click(screen.getByRole("button", { name: tab }));
+      expect(screen.queryByRole("button", { name: "Save gitops" })).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Base branch")).not.toBeInTheDocument();
+    }
+    expect(gitopsSpy).not.toHaveBeenCalled();
+  });
+
+  it("SelfHostPane does not grey Gitops with a wrapper — only control.writable does", async () => {
+    // THE CALL (GRPH-620). Wrapping <GitopsPanel /> in opacity-60 pointer-events-none
+    // at SelfHostPane left every callee test green: inputs stay enabled, the banner
+    // still comes from control.message. Greying a writable page is the lie.
+    renderPage();
+    expect(await screen.findByLabelText("Base branch")).toBeEnabled();
+    const heading = screen.getByRole("heading", { name: /^Gitops$/ });
+    for (let el: HTMLElement | null = heading; el && el !== document.body; el = el.parentElement) {
+      const cls = typeof el.className === "string" ? el.className : "";
+      expect(cls).not.toMatch(/\bopacity-60\b/);
+      expect(cls).not.toMatch(/\bpointer-events-none\b/);
+    }
+  });
+
   it("docs overlay matches gitops before the /settings catch-all", () => {
     const gitops = docFor(settingsPath("deployment/gitops"));
     expect(gitops.title).toBe("Gitops");
@@ -420,5 +472,21 @@ describe("Gitops nav group source", () => {
     expect(src).toContain('label: "Gitops"');
     expect(src).toContain('settingsPath("deployment/gitops")');
     expect(src).not.toMatch(/group:\s*"Deployment"/);
+  });
+
+  it("SelfHostPane returns GitopsPanel directly, and HostedSettingsTabs never names it", () => {
+    const sources = import.meta.glob("../features/settings/SettingsView.tsx", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    const src = Object.values(sources)[0] ?? "";
+    const live = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    expect(live).toMatch(
+      /if \(pathname\.startsWith\(settingsPath\("deployment\/gitops"\)\)\) return <GitopsPanel \/>/,
+    );
+    const hosted = live.split("function HostedSettingsTabs")[1] ?? "";
+    expect(hosted).toContain("AI Providers");
+    expect(hosted).not.toContain("GitopsPanel");
   });
 });
