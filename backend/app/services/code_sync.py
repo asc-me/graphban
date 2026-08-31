@@ -116,6 +116,14 @@ def _target(db: Session, cloud_url: str, api_key: str) -> tuple[str, str]:
     raise NotLinked("no cloud sync target configured — link an instance or set SYNC_CLOUD_URL / SYNC_API_KEY")
 
 
+def cloud_credentials(db: Session) -> tuple[str, str] | None:
+    """The link+env cloud URL and key, or None when this box has no cloud target."""
+    try:
+        return _target(db, "", "")
+    except NotLinked:
+        return None
+
+
 def push(db: Session, *, project_id: str, cloud_url: str = "", api_key: str = "",
          batch_size: int = _BATCH) -> dict:
     """Push the local code graph for `project_id` to the linked cloud tenant, incrementally."""

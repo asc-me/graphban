@@ -805,6 +805,59 @@ class SyncStatusOut(BaseModel):
     projects: list[SyncProjectState] = []
 
 
+class GitopsField(BaseModel):
+    value: str | bool | None = None
+    source: str
+
+
+class GitopsFields(BaseModel):
+    base_branch: GitopsField
+    no_push_to_base: GitopsField
+    branch_name_pattern: GitopsField
+    pr_title_pattern: GitopsField
+    reviewer_bar: GitopsField
+
+
+class GitopsControl(BaseModel):
+    state: str
+    writable: bool = False
+    message: str = ""
+
+
+class GitopsWas(BaseModel):
+    base_branch: str | None = None
+    no_push_to_base: bool | None = None
+    branch_name_pattern: str | None = None
+    pr_title_pattern: str | None = None
+    reviewer_bar: str | None = None
+
+
+class GitopsProjectRef(BaseModel):
+    id: str
+    name: str
+    tag: str
+
+
+class GitopsView(BaseModel):
+    project_id: str | None = None
+    org_id: str | None = None
+    fields: GitopsFields
+    control: GitopsControl
+    was: GitopsWas | None = None
+    version_from: GitopsField
+    projects: list[GitopsProjectRef] | None = None
+
+
+class GitopsPatch(BaseModel):
+    """Omit a key = no change. JSON null = clear to unmeasured/inherit."""
+    base_branch: str | None = None
+    no_push_to_base: bool | None = None
+    branch_name_pattern: str | None = None
+    pr_title_pattern: str | None = None
+    reviewer_bar: str | None = None
+    version_from: str | None = None
+
+
 class GithubConnectIn(BaseModel):
     account: str
     repo: str

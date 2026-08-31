@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 100 of the 173 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 103 of the 176 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -44,6 +44,18 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | POST | `/api/projects/{id}/retag` | JWT (write) | Move the project's tag. One UPDATE + one tag-history row + one audit event; **no other row in the database changes**. Retired tags are never reusable |
 | PATCH | `/api/projects/{id}` | JWT | Update project config. **Not** the tag — changing that has to record tag history |
 | GET | `/api/projects/{id}/members` | JWT | List members (role/access) |
+| GET | `/api/projects/{id}/gitops` | JWT | Live delivery contract (fetches the org when this box is linked). Unset is unmeasured, not `main` |
+| PATCH | `/api/projects/{id}/gitops` | JWT | Project overlay / local columns. Omit = no change; JSON `null` = clear. Linked self-host is **403** |
+
+## Gitops
+
+Sparse process: org house + project overlay. Agents consume the resolved contract on `get_context`.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/orgs/{id}/gitops` | JWT (org member) | House process + every org project (identity only). Calls `resolve_org` |
+| PATCH | `/api/orgs/{id}/gitops` | JWT (org admin) | House process. Overlay is the project PATCH |
+| GET | `/api/sync/gitops` | MCP (sync key) | Cloud receiver. `resolve_local` of `targets[0]` — never outbound, never a query-string project |
 
 ## Items (tracker)
 

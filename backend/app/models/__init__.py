@@ -185,6 +185,15 @@ class Project(Base):
     # to belong to this org, so a project never leaks outside its tenant.
     org_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True, index=True)
 
+    # Gitops overlay. Not part of ProjectOut. NULL = inherit (or unmeasured with no org).
+    # Boolean is three-state: NULL is not false.
+    gitops_base_branch: Mapped[str | None] = mapped_column(String, nullable=True)
+    gitops_no_push_to_base: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    gitops_branch_name_pattern: Mapped[str | None] = mapped_column(String, nullable=True)
+    gitops_pr_title_pattern: Mapped[str | None] = mapped_column(String, nullable=True)
+    gitops_reviewer_bar: Mapped[str | None] = mapped_column(String, nullable=True)
+    gitops_version_scheme: Mapped[str | None] = mapped_column(String, nullable=True)
+
     memberships: Mapped[list[Membership]] = relationship(back_populates="project")
 
 
@@ -204,6 +213,14 @@ class Organization(Base):
     # fact, who administers it is a mutable role.** Conflating the two is what made the
     # role immutable in the first place. Nullable for orgs that predate the column.
     created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    # Gitops house process. Not part of ProjectOut. NULL = unmeasured. Boolean is three-state.
+    gitops_base_branch: Mapped[str | None] = mapped_column(String, nullable=True)
+    gitops_no_push_to_base: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    gitops_branch_name_pattern: Mapped[str | None] = mapped_column(String, nullable=True)
+    gitops_pr_title_pattern: Mapped[str | None] = mapped_column(String, nullable=True)
+    gitops_reviewer_bar: Mapped[str | None] = mapped_column(String, nullable=True)
+    gitops_version_scheme: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class OrgMembership(Base):

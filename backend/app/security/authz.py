@@ -77,11 +77,17 @@ def require_org_member(db: Session, user_id: str, org_id: str) -> str:
     return role
 
 
+def org_admin_rank(role: str | None) -> bool:
+    """True when `role` is admin or owner. A GET uses this instead of require_org_admin
+    so a member is not 403'd for reading."""
+    return _ORG_RANK.get(role or "", 0) >= _ORG_RANK["admin"]
+
+
 def require_org_admin(db: Session, user_id: str, org_id: str) -> str:
     """Guard for org administration (invite/revoke/manage). Needs owner or admin;
     a plain member gets an honest 403 (they can already see the org)."""
     role = require_org_member(db, user_id, org_id)
-    if _ORG_RANK.get(role, 0) < _ORG_RANK["admin"]:
+    if not org_admin_rank(role):
         raise HTTPException(403, "requires an owner or admin role in this organization")
     return role
 
