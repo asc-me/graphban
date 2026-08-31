@@ -66,6 +66,12 @@ MESSAGES = {
         "Linked; the org could not be reached. Git process is unmeasured — not the local values."
     ),
 }
+NOTE_UNMEASURED = (
+    "unset fields are unmeasured — not 'use main' and not 'no requirements'"
+)
+NOTE_UNREACHABLE = (
+    "linked; the org could not be reached — do not treat unset fields as no process"
+)
 
 
 def _unmeasured() -> GitopsField:
@@ -112,7 +118,7 @@ def _view(*, project_id, org_id, fields, version_from, state, was=None, projects
         version_from=version_from,
         control=_control(state, writable=writable),
         was=was,
-        projects=projects,
+        projects=list(projects) if projects is not None else [],
     )
 
 
@@ -284,14 +290,9 @@ def for_agent(view: GitopsView) -> dict:
     if view.control.state != "local":
         out["control"] = view.control.state
     if view.control.state == "linked_unreachable":
-        out["note"] = (
-            "linked; the org could not be reached — do not treat unset fields "
-            "as no process"
-        )
+        out["note"] = NOTE_UNREACHABLE
     elif any(out[f]["source"] == "unmeasured" for f in FIELDS):
-        out["note"] = (
-            "unset fields are unmeasured — not 'use main' and not 'no requirements'"
-        )
+        out["note"] = NOTE_UNMEASURED
     return out
 
 

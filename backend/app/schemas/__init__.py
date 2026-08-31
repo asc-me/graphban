@@ -845,7 +845,7 @@ class GitopsView(BaseModel):
     control: GitopsControl
     was: GitopsWas | None = None
     version_from: GitopsField
-    projects: list[GitopsProjectRef] | None = None
+    projects: list[GitopsProjectRef] = Field(default_factory=list)
 
 
 class GitopsPatch(BaseModel):

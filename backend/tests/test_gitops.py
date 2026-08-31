@@ -153,7 +153,7 @@ def test_state1_get_context_is_unmeasured_not_main(client, auth):
     assert "main" not in _field_values(g).values()
     assert g["tokens"] == TOKENS
     assert g["version_from"] == UNMEASURED
-    assert g.get("note")
+    assert g["note"] == gitops_svc.NOTE_UNMEASURED
 
 
 def test_state1_rest_get_is_unmeasured_editable(client, auth):
@@ -166,6 +166,7 @@ def test_state1_rest_get_is_unmeasured_editable(client, auth):
     assert body["control"]["writable"] is True
     assert body["control"]["message"] == ""
     assert body["was"] is None
+    assert body["projects"] == []
     assert "main" not in json.dumps(body["fields"])
 
 
@@ -435,6 +436,7 @@ def test_timeout_is_linked_unreachable_not_ai_provider(client, auth, monkeypatch
                 else body["result"])
     _assert_unmeasured_fields(g)
     assert g["control"] == "linked_unreachable"
+    assert g["note"] == gitops_svc.NOTE_UNREACHABLE
     assert g["base_branch"]["value"] != "test"
     assert "control" in g
     state1 = {"base_branch": UNMEASURED, "control": None}
@@ -544,6 +546,37 @@ def _hosted_org(client, auth, monkeypatch):
         "/api/projects", json={"name": "Lib", "org_id": org["id"]}, headers=auth,
     ).json()
     return org, a, b
+
+
+def test_org_patch_empty_does_not_wipe_null_clears(client, auth, monkeypatch):
+    """Sabotage the org PATCH caller: {} must not wipe house process; null clears."""
+    from app.db import SessionLocal
+    from app.models import Organization
+
+    org, _a, _b = _hosted_org(client, auth, monkeypatch)
+    assert client.patch(
+        f"/api/orgs/{org['id']}/gitops", json={"base_branch": "stage"}, headers=auth,
+    ).status_code == 200
+
+    r = client.patch(f"/api/orgs/{org['id']}/gitops", json={}, headers=auth)
+    assert r.status_code == 200
+    assert r.json()["fields"]["base_branch"] == {"value": "stage", "source": "org"}
+    db = SessionLocal()
+    try:
+        assert db.get(Organization, org["id"]).gitops_base_branch == "stage"
+    finally:
+        db.close()
+
+    r = client.patch(
+        f"/api/orgs/{org['id']}/gitops", json={"base_branch": None}, headers=auth,
+    )
+    assert r.status_code == 200
+    assert r.json()["fields"]["base_branch"] == UNMEASURED
+    db = SessionLocal()
+    try:
+        assert db.get(Organization, org["id"]).gitops_base_branch is None
+    finally:
+        db.close()
 
 
 def test_org_get_is_resolve_org_not_first_project(client, auth, monkeypatch):
@@ -671,3 +704,22 @@ def test_get_context_omitting_a_field_would_fail(client, auth):
     assert set(FIELDS) <= set(g)
     assert g["tokens"] == TOKENS
     assert "version_from" in g
+
+
+def test_get_context_description_pins_unmeasured_sentences(client, auth):
+    """Length pins cannot catch flavour replacing the unmeasured / not-main sentences."""
+    from app.mcp_server import TOOLS
+
+    desc = next(t["description"] for t in TOOLS if t["name"] == "get_context")
+    assert "unmeasured" in desc
+    assert "not 'use main'" in desc
+    assert "linked_unreachable" in desc
+
+    key = _mcp_key(client, auth)
+    listed = client.post(
+        "/api/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        headers={"X-API-Key": key},
+    ).json()["result"]["tools"]
+    listed_desc = next(t["description"] for t in listed if t["name"] == "get_context")
+    assert listed_desc == desc
