@@ -311,6 +311,62 @@ def test_the_system_prompt_actually_carries_it():
     assert "worktree root" in SYSTEM, "the boundary is still stated too"
 
 
+def test_the_instruction_names_measured_base_branch_and_does_not_guess_main():
+    """GRPH-P31 D18 / open question 2. Warn only; do not invent main when unmeasured."""
+    assert "gitops.base_branch.value" in orient.INSTRUCTION
+    assert "`get_context`" in orient.INSTRUCTION
+    assert "do not guess main" in orient.INSTRUCTION
+    assert "linked_unreachable" in orient.INSTRUCTION
+    assert "unmeasured" in orient.INSTRUCTION
+
+
+def test_get_context_orientation_carries_gitops_and_does_not_invent_main():
+    """json.loads the dump — D18: unmeasured must not look chosen.
+
+    A substring pin missed compact separators, an appended "use main" line, and a
+    renderer that invents main only under linked_unreachable. The object is the pin;
+    there is still no gitops parser in production.
+    """
+    unmeasured = {"value": None, "source": "unmeasured"}
+    fields = {
+        "base_branch": unmeasured,
+        "no_push_to_base": unmeasured,
+        "branch_name_pattern": unmeasured,
+        "pr_title_pattern": unmeasured,
+        "reviewer_bar": unmeasured,
+        "tokens": ["item_id", "tag", "slug", "version", "date"],
+        "version_from": unmeasured,
+    }
+
+    def dumped_get_context(gitops: dict) -> dict:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            if body["method"] == "tools/list":
+                return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
+                                                 "result": {"tools": _manifest(ORIENTATION_TOOLS)}})
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+                "structuredContent": {"project_id": "core", "gitops": gitops}}})
+
+        orientation = orient.build(_server(handler))
+        result = orientation.execute(ToolCall(id="c", name="get_context", input={}))
+        assert result.is_error is False
+        return json.loads(result.content)
+
+    local = dumped_get_context({
+        **fields,
+        "note": "unset fields are unmeasured — not 'use main' and not 'no requirements'",
+    })
+    assert local["gitops"]["base_branch"] == {"value": None, "source": "unmeasured"}
+
+    unreachable = dumped_get_context({
+        **fields,
+        "control": "linked_unreachable",
+        "note": "linked; the org could not be reached — do not treat unset fields as no process",
+    })
+    assert unreachable["gitops"]["base_branch"] == {"value": None, "source": "unmeasured"}
+    assert unreachable["gitops"]["control"] == "linked_unreachable"
+
+
 # ---- the metric (PRD-24 §9.3) -------------------------------------------------------------
 
 

@@ -1,3 +1,5 @@
+import { adminPath } from "@/lib/routes";
+
 /** Context-aware content for the inline docs reader, keyed by route.
  *  Distilled from the docs/ guides into the reader's structured format. */
 
@@ -220,6 +222,17 @@ const CONTENT: Record<string, DocEntry> = {
     ],
     related: [{ label: "Settings", to: "/settings" }],
   },
+
+  "org-gitops": {
+    badge: "GITOPS",
+    title: "Org gitops",
+    tagline: "House process and per-project overlay.",
+    sections: [
+      { num: 1, h: "House process", b: "The org default: integration base, whether agents may push to it, branch/PR naming, reviewer bar. Unset is unmeasured — not main and not no requirements." },
+      { num: 2, h: "Project overlay", b: "Empty overlay inherits the house value. Sparse fields are inheritance. Clearing a field returns it to inherit. Overlay rows come from every org project, not the readable subset." },
+      { num: 3, h: "Linked boxes", b: "A linked self-host box reads this contract live. Gitops is not a property of a deployment credential, so it is not on Deployments cards." },
+    ],
+  },
 };
 
 /** Global shortcuts shown on every page (these are actually wired). */
@@ -234,6 +247,7 @@ export function docFor(pathname: string): DocEntry {
   if (/^\/(?:p\/[^/]+\/)?lessons(?:\/[^/]+)?$/.test(pathname)) return CONTENT["/lessons"];
   if (pathname === "/home") return CONTENT["/dashboard"];
   if (pathname.startsWith(settingsPath("deployment/gitops"))) return CONTENT["/settings/deployment/gitops"];
+  if (pathname.startsWith(adminPath("gitops"))) return CONTENT["org-gitops"];
   if (pathname.startsWith(settingsPath("project/mcp"))) return CONTENT["/mcp-tools"];
   if (pathname.startsWith(settingsPath("project/feedback-kit"))) return CONTENT["/feedback-kit"];
   if (pathname.startsWith("/settings")) return CONTENT["/settings"];

@@ -341,6 +341,18 @@ export const api = {
     request<Org>("/invites/accept", { method: "POST", body: JSON.stringify({ token }) }),
   deployments: (orgId: string) => request<Deployment[]>(`/orgs/${orgId}/deployments`),
   orgOverview: (orgId: string) => request<OrgOverview>(`/orgs/${orgId}/overview`),
+  orgGitops: (orgId: string) => request<GitopsView>(`/orgs/${orgId}/gitops`),
+  updateOrgGitops: (orgId: string, body: GitopsPatch) =>
+    request<GitopsView>(`/orgs/${orgId}/gitops`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  gitops: (projectId: string) => request<GitopsView>(`/projects/${projectId}/gitops`),
+  updateGitops: (projectId: string, body: GitopsPatch) =>
+    request<GitopsView>(`/projects/${projectId}/gitops`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   teams: (orgId: string) => request<Team[]>(`/orgs/${orgId}/teams`),
   createTeam: (orgId: string, name: string, description = "") =>
     request<Team>(`/orgs/${orgId}/teams`, {
@@ -788,10 +800,6 @@ export const api = {
     request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   members: (id: string) => request<Member[]>(`/projects/${id}/members`),
 
-  gitops: (projectId: string) => request<GitopsView>(`/projects/${projectId}/gitops`),
-  updateGitops: (projectId: string, body: GitopsPatch) =>
-    request<GitopsView>(`/projects/${projectId}/gitops`, { method: "PATCH", body: JSON.stringify(body) }),
-
   chat: (message: string, projectId?: string) =>
     request<ChatResponse>("/agent/chat", {
       method: "POST",
@@ -936,4 +944,4 @@ export const api = {
   },
 };
 
-export type { Status };
+export type { GitopsPatch, GitopsView, Status };

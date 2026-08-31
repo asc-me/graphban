@@ -125,6 +125,24 @@ prefixes only ever grow, so nothing needs re-issuing ([configuration](configurat
 Your account card (name, handle, email, avatar) and **project access** — each project you
 belong to with your role and access level. Reachable from the top-bar user menu.
 
+## Hosted Admin → Gitops
+
+On a hosted org, **Admin → Gitops** is the write surface for the delivery contract after a
+box is linked. The page is org-scoped (`adminPath("gitops")`); it is **not** a field on
+Deployments cards — the sync credential is identity (PRD-21 D6), gitops is house process.
+
+- **House process** (top) is `GET/PATCH /api/orgs/{id}/gitops`. Unset is **unmeasured**, never
+  `main`. Sparse fields are inheritance; `{}` does not wipe.
+- **Per-project overlay** iterates `GitopsView.projects` from that org GET — every org
+  project, including ones the admin does not sit on. It does **not** use the readable-only
+  project list (`useProjects` / galaxy overview). Each row `GET`s `/api/projects/{id}/gitops`.
+- Overlay inputs bind to `source === "project"`. An inherited org `stage` is an empty input
+  plus muted “inherits stage”, not `stage` in the field. Saving with no edits sends `{}` and
+  does not copy the house value onto the project. × sends JSON `null` (clear → inherit).
+- One failed overlay GET leaves that row unmeasured with “could not load overlay”; the house
+  form still loads.
+- Members do not see the Admin group, including Gitops. PATCH is `require_org_admin` (403).
+
 ## How it works
 
 - Config: the `platform_config` table (Alembic migration `0004`), one row per project.
