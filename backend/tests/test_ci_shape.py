@@ -42,6 +42,23 @@ def test_ci_gate_covers_every_job():
     )
 
 
+def test_the_gate_job_runs_where_the_ledger_is():
+    """Attestation posts to GRAPHBAN_URL from the runner.
+
+    This repository's items live on ubuntu-srv. GitHub-hosted runners cannot reach
+    that box, and cloud.graphban.dev is a different database — pointing there 404s
+    every GRPH-* key (PR #451). The gate job has to run on the self-hosted runner
+    that shares the box with the ledger.
+    """
+    runs_on = _workflow()["jobs"][GATE]["runs-on"]
+    if isinstance(runs_on, str):
+        runs_on = [runs_on]
+    assert "graphban-ledger" in runs_on, (
+        f"`{GATE}` runs-on {runs_on!r} — it will attest a Graphban that does not "
+        "have this repository's items. The runner label is `graphban-ledger`."
+    )
+
+
 def test_the_filter_job_is_gated_too():
     """Named separately because it is the one entry someone would call redundant.
 
