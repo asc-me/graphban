@@ -335,12 +335,13 @@ def test_signing_off_frees_the_areas(client, key, db):
 
 # ---- the capture loop -------------------------------------------------------------------------
 
-def test_actual_touchpoints_replace_the_prediction(client, key, db):
+def test_actual_touchpoints_correct_the_prediction(client, key, db):
     """A prediction never corrected keeps mis-partitioning the same files forever, while
     `collision_clusters` reports clean separation and the fleet keeps colliding on them.
 
-    No new tool for this: `update_item(touchpoints=…)` already replaces them, and a second
-    write path would be a fork of the same field.
+    No new tool for this: `update_item(touchpoints=…)` unions measured paths onto the
+    stored list (P30 D10). An empty stored list plus a measured write is the first
+    actual, and that is what flips `predicted`.
     """
     created = _item(client, key, "A", [])
     before = _ok(client, key, "collision_clusters", {})

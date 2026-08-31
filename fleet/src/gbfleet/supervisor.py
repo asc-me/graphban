@@ -202,9 +202,9 @@ class Wave:
     unused_seats: int = 0
     offline: bool = False
     partition: Partition = field(default_factory=Partition)
-    #: Files each worker actually changed, by branch. MEASURED, not written back —
-    #: `touchpoints` on the item is the PREDICTION, and overwriting it would leave walk
-    #: step 17's comparison with one operand. See `touchpoints.py`.
+    #: Files each worker actually changed, by branch. MEASURED here, written back by a
+    #: holder with standing (`gbfleet.record.measured`) — the supervisor still cannot
+    #: call `update_item`. Empty is reported and is not a write. See `touchpoints.py`.
     touched: dict[str, list[str]] = field(default_factory=dict)
     #: Children the roster currently reads `offline` that have NOT been stopped, by agent
     #: id, with how long they have been quiet. Reported rather than acted on: a quiet

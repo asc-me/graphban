@@ -11,6 +11,7 @@ matters most — that the attestation cannot be reached unless CI actually passe
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 
@@ -132,6 +133,55 @@ def test_a_run_naming_no_item_is_not_an_error(monkeypatch, capsys):
 
     assert attest_ci.main(["--commit", "d" * 40, "--text", "no keys here"]) == 0
     assert "nothing to attest" in capsys.readouterr().out
+
+
+def test_an_item_this_graphban_does_not_have_does_not_fail_the_build(monkeypatch, capsys):
+    """PR #451. Suites green; the gate failed because CI's Graphban did not have GRPH-611.
+
+    `not_found` is an answer, not a misconfigured key. Failing the required check after
+    the suite has already passed blocks merge over a ledger this instance does not hold.
+    Unauthorized still fails — that is the next test.
+    """
+    def missing(url, key, item_key, receipt=None, commit=None, timeout=15.0):
+        raise attest_ci.ItemMissing(
+            f"{item_key} is not on this Graphban, so this run did not attest it. "
+            "It cannot reach `done` via CI until it exists here"
+        )
+
+    monkeypatch.setenv("GRAPHBAN_URL", "https://example.invalid")
+    monkeypatch.setenv("GRAPHBAN_GATE_KEY", "gb_sk_x")
+    monkeypatch.setattr(attest_ci, "post", missing)
+    monkeypatch.setattr(attest_ci, "post_head", missing)
+
+    rc = attest_ci.main(["--commit", "e" * 40, "--text", "GRPH-611", "--mode", "head"])
+    out = capsys.readouterr().out
+    assert rc == 0, "a missing item failed the required CI check after a green suite"
+    assert "::warning" in out and "GRPH-611" in out
+    assert "::error" not in out
+    assert "cannot reach `done`" in out
+
+
+def test_not_found_from_the_server_is_item_missing(monkeypatch):
+    """Sabotage the CALL: a handler that only special-cases a raised ItemMissing, while
+    `_call` still wraps not_found as RuntimeError, would leave the CI failure in place."""
+    payload = {
+        "jsonrpc": "2.0", "id": 1,
+        "result": {"isError": True, "structuredContent": {
+            "error": {"code": "not_found", "message": "item not found: GRPH-611",
+                      "hint": "use search_items to find a valid id"}}},
+    }
+
+    class _Resp:
+        def read(self):
+            return json.dumps(payload).encode()
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(attest_ci.urllib.request, "urlopen", lambda *a, **k: _Resp())
+    with pytest.raises(attest_ci.ItemMissing, match="GRPH-611"):
+        attest_ci._call("https://example.invalid", "k", {"id": "GRPH-611"})
 
 
 def test_a_refused_attestation_fails_the_step(monkeypatch, capsys):

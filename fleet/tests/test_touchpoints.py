@@ -120,14 +120,12 @@ def test_salvaged_work_is_included(git_repo: Path, tmp_path: Path):
 
 
 def test_the_supervisor_still_cannot_write_an_item():
-    """S5 says "write it back as `touchpoints`", and this deliberately does not.
+    """S5 said "write it back as `touchpoints`". P30 D10 still does not let the
+    supervisor do it: the allowlist is two reads, this module measures, and the
+    writer with standing lives in `gbfleet.record`.
 
-    The authority rule is the lesser reason. The real one is that `touchpoints` on an
-    item is the PREDICTION — declared when the item is filed, and what clustering divvies
-    work by. Overwrite it with the measurement and walk step 17's comparison ("which
-    files each worker touched versus what the cluster predicted") has one operand
-    forever, and every future run looks perfectly predicted because prediction and
-    outcome became the same field.
+    Union (not replace) is why walk step 17 still has both operands: `touched` on
+    the child record is the measurement, the item's stored prediction stays.
     """
     assert "update_item" not in ALLOWED_TOOLS
     assert ALLOWED_TOOLS == frozenset({"fleet_status", "propose_allocation"})

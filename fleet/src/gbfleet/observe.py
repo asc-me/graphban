@@ -65,9 +65,10 @@ class ChildRecord:
     #: Seat files found in the branch's history. Loud on purpose: salvage cannot undo a
     #: credential the worker committed itself, so the only useful thing left is to say so.
     credential_in_history: list[str] = field(default_factory=list)
-    #: Files this worker actually changed (S5). Measured off its branch, never written
-    #: back to the item — the item's `touchpoints` are the prediction this is meant to be
-    #: compared against, and overwriting them collapses the comparison.
+    #: Files this worker actually changed (S5 / P30 D10). Measured off its branch. The
+    #: supervisor reports this and does not patch the item; a writer with standing unions
+    #: a non-empty list onto `touchpoints`. Empty here is "changed nothing", not "safe to
+    #: parallelise", and is not a write.
     touched: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:

@@ -44,6 +44,17 @@ NOT_KEYS = {"UTF-8", "SHA-1", "SHA-256", "AES-256", "RFC-2119", "ISO-8601", "BAS
             "HTTP-1", "TLS-1", "IPV-4", "IPV-6"}
 
 
+class ItemMissing(RuntimeError):
+    """The item is not on this Graphban. This run cannot attest it.
+
+    Distinct from a refused write: unauthorized / validation still fail the step, because
+    a misconfigured key that looked like success would leave the item uncompletable with
+    nothing saying why. `not_found` is an answer — the key is not here — and failing the
+    required CI check for it blocks a green suite over a ledger this instance does not
+    hold (GRPH-611 on a LAN tracker, CI pointed at cloud.graphban.dev).
+    """
+
+
 def item_keys(*texts: str) -> list[str]:
     """Every distinct Graphban item key mentioned, in first-seen order.
 
@@ -114,6 +125,12 @@ def _call(url: str, key: str, arguments: dict, *, timeout: float = 15.0) -> None
     result = payload.get("result") or {}
     if result.get("isError") or "error" in payload:
         detail = (result.get("structuredContent") or {}).get("error") or payload.get("error")
+        code = detail.get("code") if isinstance(detail, dict) else None
+        if code == "not_found":
+            raise ItemMissing(
+                f"{item_key} is not on this Graphban, so this run did not attest it. "
+                "It cannot reach `done` via CI until it exists here"
+            )
         raise RuntimeError(f"{item_key}: graphban refused the write: {detail}")
 
 
@@ -156,6 +173,10 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             post(url, key, item_key, receipt)
             print(f"attested {item_key} at {args.commit[:12]}")
+        except ItemMissing as e:
+            # Loud skip, same family as a missing secret. Must be caught BEFORE
+            # RuntimeError — ItemMissing is one.
+            print(f"::warning title=CI attestation skipped::{e}")
         except (urllib.error.URLError, RuntimeError, ValueError) as e:
             # Every item is attempted before anything is reported. Stopping at the first
             # failure would leave a multi-item PR half attested with no record of which half.

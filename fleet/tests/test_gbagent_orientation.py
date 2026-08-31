@@ -331,7 +331,7 @@ class Session:
 
 class Coord:
     def adopt(self, item_id): self.adopted = item_id
-    def write_handoff(self, note): return {}
+    def write_handoff(self, note, touchpoints=None): return {}
     def release(self): return {}
 
 
@@ -474,6 +474,61 @@ def test_moving_to_review_after_writing_is_allowed(wt):
 
     assert result.is_error is False
     assert orientation.calls == 1
+
+
+def test_moving_to_review_sends_the_files_this_run_wrote(wt):
+    """P30 D10. The harness owns the measurement. A model that moves to review without
+    naming touchpoints still writes what it actually changed; the server unions."""
+    from gbagent.orient import COORDINATION_TOOLS
+    calls: list = []
+    orientation = orient.build(
+        _server(_listing([*ORIENTATION_TOOLS, *COORDINATION_TOOLS], calls)),
+        extra=COORDINATION_TOOLS,
+    )
+    toolset = _toolset(wt, orientation)
+    toolset.execute(ToolCall(id="1", name="write_file",
+                             input={"path": "a.py", "content": "x = 1\n"}))
+    toolset.execute(ToolCall(id="2", name="update_item",
+                             input={"id": "GRPH-1", "status": "review"}))
+
+    update = next(c for c in calls if c.get("method") == "tools/call"
+                  and c["params"]["name"] == "update_item")
+    assert update["params"]["arguments"]["touchpoints"] == ["a.py"]
+
+
+def test_empty_touchpoints_are_stripped_so_they_cannot_wipe_a_prediction(wt):
+    """Zero files touched is not a write. Sending `[]` would otherwise replace
+    declared paths and read as no collision."""
+    from gbagent.orient import COORDINATION_TOOLS
+    calls: list = []
+    orientation = orient.build(
+        _server(_listing([*ORIENTATION_TOOLS, *COORDINATION_TOOLS], calls)),
+        extra=COORDINATION_TOOLS,
+    )
+    _toolset(wt, orientation).execute(ToolCall(
+        id="c", name="update_item",
+        input={"id": "GRPH-1", "blocker": "waiting", "touchpoints": []}))
+
+    update = next(c for c in calls if c.get("method") == "tools/call"
+                  and c["params"]["name"] == "update_item")
+    assert "touchpoints" not in update["params"]["arguments"]
+
+
+def test_the_model_cannot_invent_touchpoints_it_did_not_write(wt):
+    """The client sends this reap's measured paths only. Guessed paths are not measured."""
+    from gbagent.orient import COORDINATION_TOOLS
+    calls: list = []
+    orientation = orient.build(
+        _server(_listing([*ORIENTATION_TOOLS, *COORDINATION_TOOLS], calls)),
+        extra=COORDINATION_TOOLS,
+    )
+    _toolset(wt, orientation).execute(ToolCall(
+        id="c", name="update_item",
+        input={"id": "GRPH-1", "touchpoints": ["invented.py"]}))
+
+    update = next(c for c in calls if c.get("method") == "tools/call"
+                  and c["params"]["name"] == "update_item")
+    assert "touchpoints" not in update["params"]["arguments"]
 
 
 def test_the_guard_does_not_block_ordinary_updates(wt):

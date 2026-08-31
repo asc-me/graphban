@@ -1,29 +1,19 @@
 """What a worker actually changed, measured off the worktree it changed it in.
 
-PRD-22 S5. One worker, one worktree, one branch means the diff boundary is already
-exact: everything on that branch since it was cut is this worker's doing and nothing
-else is. Phase 1 of the AL-201 spike, which called it the highest-value lowest-risk
-slice on its own.
+PRD-22 S5 / P30 D10. One worker, one worktree, one branch means the diff boundary is
+already exact: everything on that branch since it was cut is this worker's doing and
+nothing else is.
 
-**Measured and reported — deliberately NOT written back as `touchpoints`, which is what
-S5 says to do.** Two reasons, and the second is the one that matters.
+**This module measures and reports. It does not patch the item.** The supervisor's
+allowlist is still two reads (PRD-22 §4 / P30 G5). Write-back is done by whoever has
+standing — `gbagent` during the run, `until` (planner) after a reap — via
+`gbfleet.record.measured`. The server unions, so the client sends this reap's measured
+paths only. Empty is reported as `touched: []` on the child record and is not a write:
+wiping declared paths would read as "no collision".
 
-The first: §4 says the supervisor may not write items, and its outbound allowlist is two
-reads. Widening it is a designed act, not a forbidden one, so this alone would only be an
-argument to have.
-
-The second is that writing the measurement into `touchpoints` **destroys the thing the
-acceptance walk exists to check**. Walk step 17 asks to "read what it actually did —
-which files each worker touched *versus what the cluster predicted*". `touchpoints` IS
-the prediction: it is declared when the item is filed and it is what clustering divvies
-work by. Overwrite it with the measurement and the comparison has one operand, forever,
-and every future run looks perfectly predicted because prediction and outcome became the
-same field.
-
-So the supervisor measures, and reports. Whoever holds both halves — the planner, which
-has the authority the supervisor deliberately does not — does the comparison and decides
-what to record. That is D-j's shape applied to measurement rather than allocation: the
-supervisor produces the fact, somebody with standing acts on it.
+Walk step 17 still has both operands: the child record's `touched` is the measurement,
+the item's stored prediction stays (unioned with later measurements). The comparison
+that overwrite would have collapsed is why the server unions rather than replaces.
 """
 
 from __future__ import annotations

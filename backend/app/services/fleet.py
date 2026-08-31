@@ -1723,9 +1723,10 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     """Lease a whole non-colliding cluster and reserve its touch-areas.
 
     **Checked against IN-FLIGHT reservations, not only the static partition.**
-    `collision_clusters` partitions a snapshot; as work lands, actual touchpoints replace
-    predicted ones and the partition moves under the fleet's feet. Handing clusters out from a
-    stale snapshot re-introduces exactly the collisions the divvy exists to prevent.
+    `collision_clusters` partitions a snapshot; as work lands, measured touchpoints union
+    with declared ones (P30 D10) and the partition moves under the fleet's feet. Handing
+    clusters out from a stale snapshot re-introduces exactly the collisions the divvy exists
+    to prevent.
 
     Reservations are written in the SAME transaction as the claims that justify them, so there
     is no window in which items are claimed but their areas unreserved — a window a second
