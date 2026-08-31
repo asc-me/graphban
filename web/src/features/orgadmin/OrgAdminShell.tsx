@@ -22,6 +22,7 @@ const TABS = [
   { to: "deployments", label: "Deployments", backed: true },
   { to: "branding", label: "Branding", backed: false },
   { to: "integrations", label: "Integrations", backed: true },
+  { to: "gitops", label: "Gitops", backed: true },
   { to: "billing", label: "Billing", backed: true },
 ];
 

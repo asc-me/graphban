@@ -1,4 +1,4 @@
-import { BarChart3, BookMarked, Building2, Check, ChevronDown, CreditCard, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
+import { BarChart3, BookMarked, Building2, Check, ChevronDown, CreditCard, GitBranch, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
 import * as React from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
@@ -171,6 +171,7 @@ function HostedLeftNav() {
               <NavItem to={adminPath("branding")} icon={<Palette size={16} />} label="Branding" />
             )}
             <NavItem to={adminPath("integrations")} icon={<Plug size={16} />} label="Integrations" />
+            <NavItem to={adminPath("gitops")} icon={<GitBranch size={16} />} label="Gitops" />
             <NavItem to={adminPath("billing")} icon={<CreditCard size={16} />} label="Billing" />
           </nav>
         </>
