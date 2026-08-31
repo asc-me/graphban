@@ -225,21 +225,73 @@ def test_install_polls_loaded_until_the_previous_job_is_gone_before_bootstrap(
 ):
     """The wait test used to assert only that bootout is invoked before bootstrap,
     which remains true if the wait-until-gone loop is deleted. The async-bootout
-    fix is the poll of `_loaded` between those two calls.
+    fix is a poll of the listing between those two calls (not a mocked `_loaded`:
+    that seam is how a listed-with-no-pid job skipped the wait).
     """
     calls: list[str] = []
-    states = iter([True, True, False])
 
     monkeypatch.setattr(gs, "_run", lambda cmd: (calls.append(cmd[1]), (0, ""))[1])
-    monkeypatch.setattr(gs, "_loaded", lambda label: (calls.append("loaded"), next(states, False))[1])
     monkeypatch.setattr(gs.time, "sleep", lambda s: None)
 
     gs.install(tmp_path / "x.plist", b"<plist/>", user_domain=True, label="dev.test")
 
     bootout = calls.index("bootout")
     bootstrap = calls.index("bootstrap")
-    assert "loaded" in calls[bootout:bootstrap], (
+    assert "list" in calls[bootout:bootstrap], (
         "install bootstrapped without waiting for the previous job to leave launchctl list"
+    )
+
+
+def test_install_treats_a_crash_loop_listing_as_not_running(monkeypatch, tmp_path, capsys):
+    """THE CALL (GRPH-582 bounce). Tests that mock `_loaded` cannot catch replacing
+    `if not _loaded(label)` with `if label not in listing` — a crash-loop is listed
+    and would report as running. Drive the real pid-column check via `_run`.
+    """
+    listing = "- \t1\tdev.test\n"
+
+    def run(cmd):
+        if cmd[1] == "list":
+            return 0, listing
+        return 0, ""
+
+    monkeypatch.setattr(gs, "_run", run)
+    monkeypatch.setattr(gs.time, "sleep", lambda s: None)
+
+    rc = gs.install(tmp_path / "x.plist", b"<plist/>", user_domain=True, label="dev.test")
+
+    assert rc == 1
+    assert "not running" in capsys.readouterr().err
+
+
+def test_install_waits_while_the_previous_job_is_listed_even_without_a_pid(
+    monkeypatch, tmp_path
+):
+    """A listed-with-no-pid job is not gone. `_loaded` is False for `-  1  label`,
+    so a wait that only asks `_loaded` skips the async-bootout race (GRPH-582 bounce).
+    """
+    seen: list[str] = []
+    listings = iter([
+        "- \t1\tdev.test\n",
+        "- \t1\tdev.test\n",
+        "",
+        "45316\t0\tdev.test\n",
+    ])
+
+    def run(cmd):
+        seen.append(cmd[1])
+        if cmd[1] == "list":
+            return 0, next(listings, "")
+        return 0, ""
+
+    monkeypatch.setattr(gs, "_run", run)
+    monkeypatch.setattr(gs.time, "sleep", lambda s: None)
+
+    rc = gs.install(tmp_path / "x.plist", b"<plist/>", user_domain=True, label="dev.test")
+
+    assert rc == 0
+    lists_before = seen[:seen.index("bootstrap")].count("list")
+    assert lists_before >= 3, (
+        f"wait was {lists_before} list(s) — a listed-with-no-pid job skipped the poll"
     )
 
 

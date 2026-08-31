@@ -75,7 +75,7 @@ def alembic_head(root: pathlib.Path, python: pathlib.Path) -> str:
     that is right by construction and therefore worth nothing — the question is what ran.
     """
     p = subprocess.run([str(python), "-m", "alembic", "current"],
-                       cwd=str(root / "backend"), capture_output=True, text=True)
+                       cwd=str(root / "current" / "backend"), capture_output=True, text=True)
     for token in (p.stdout + p.stderr).split():
         if token.isdigit() and len(token) >= 4:
             return token

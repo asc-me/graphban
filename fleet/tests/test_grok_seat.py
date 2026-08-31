@@ -47,9 +47,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from dataclasses import replace  # noqa: E402
+
 from gbfleet import seat as seat_mod  # noqa: E402
 from gbfleet.adapters import ADAPTERS  # noqa: E402
 from gbfleet.seat import Seat, UnrenderableSeat, WouldDeclareParentage  # noqa: E402
+from gbfleet.spawn import Reason, spawn, stop  # noqa: E402
 from gbfleet.worktree import SEAT_FILES, is_seat_file  # noqa: E402
 from gbfleet.hostos import is_owner_only  # noqa: E402
 
@@ -120,6 +123,40 @@ def test_grok_launches_with_trust(tmp_path: Path, git_repo: Path):
         "MCP server is never started, and the child runs to completion with no tools "
         f"and no complaint. argv={launch.argv}"
     )
+    assert launch.seat_path == tree.path / ".grok" / "config.toml", (
+        f"launch.seat_path is {launch.seat_path}; spawn writes THAT path, not "
+        "adapter.seat_path(). Changing only launch() to .grok/mcp.json left the "
+        "method tests green (GRPH-575 bounce)"
+    )
+
+
+def test_spawn_writes_the_grok_seat_as_toml_mcp_servers(
+    tmp_path: Path, git_repo: Path, scripts: dict, log_dir: Path
+):
+    """THE CALL (GRPH-575 bounce). Tests called seat.write(..., TOML) directly.
+    Dropping launch.seat_format in spawn.write stayed green and wrote JSON into
+    .toml — a file grok cannot parse.
+    """
+    from gbfleet.worktree import create
+
+    tree = create(git_repo, tmp_path / "w-spawn", "wave", "1")
+    launch = ADAPTERS["grok"].launch(SEAT, tree, tmp_path / "prompt.txt", Path("grok"))
+    launch = replace(
+        launch,
+        argv=[str(scripts["python"]), str(scripts["sleeper"])],
+    )
+
+    child = spawn(launch, tree.path, tree.branch, log_dir, base=tree.base)
+    try:
+        text = launch.seat_path.read_text(encoding="utf-8")
+        parsed = tomllib.loads(text)
+        assert "mcp_servers" in parsed, (
+            f"spawn wrote {sorted(parsed)}; grok's table is mcp_servers, and "
+            "JSON-into-.toml is a seat the child never loads"
+        )
+        assert parsed["mcp_servers"]["graphban"]["headers"]["X-API-Key"] == SEAT.api_key
+    finally:
+        stop(child, Reason.SHUTDOWN, grace=2)
 
 
 # --- the format must not be silently defaulted -------------------------------------

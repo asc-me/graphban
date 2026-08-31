@@ -133,6 +133,33 @@ def test_a_pass_reports_what_it_found(monkeypatch):
     assert "port" in joined
 
 
+def test_a_pass_prints_what_it_found(monkeypatch, capsys):
+    """THE CALL. Result.found is the callee; pf.main is what the operator sees.
+    Deleting the prints left test_a_pass_reports_what_it_found green, so exit 0
+    with empty stdout was unpinned (GRPH-578 bounce)."""
+    monkeypatch.setattr(
+        pf, "preflight",
+        lambda *a, **k: pf.Result(
+            pf.EXIT_OK, found=["PostgreSQL 16.4", "pgvector 0.7.4 enabled", "port 8000 free"]),
+    )
+    assert pf.main(["--database-url", URL]) == pf.EXIT_OK
+    out = capsys.readouterr().out
+    assert "preflight: ready" in out
+    assert "PostgreSQL 16.4" in out
+    assert "pgvector" in out
+
+
+def test_production_asks_which_for_psql(monkeypatch):
+    """have_psql is a test seam. Production shutil.which('psql') is the CALL;
+    replacing it with True stayed green because every unit test injects have_psql
+    (GRPH-578 bounce)."""
+    seen: list[str] = []
+    monkeypatch.setattr(pf.shutil, "which", lambda name: seen.append(name) or None)
+    r = pf.preflight(URL)
+    assert seen == ["psql"], "production did not ask shutil.which for psql"
+    assert r.code == pf.EXIT_NO_PSQL
+
+
 def test_no_database_url_is_a_refusal_not_a_pass(monkeypatch, capsys):
     """The sharpest version of the same trap: with nothing to check, the quiet reading is the
     reassuring one. Exit non-zero and say so."""
@@ -152,10 +179,19 @@ def test_the_cli_exits_with_the_refusals_code(monkeypatch, capsys):
 
 # ---- against the real thing ----------------------------------------------------------------
 
+_pg_dsn = os.environ.get("GRAPHBAN_PREFLIGHT_PG", "")
 pg_only = pytest.mark.skipif(
-    shutil.which("psql") is None or not os.environ.get("GRAPHBAN_PREFLIGHT_PG"),
-    reason="needs psql and a reachable Postgres; set GRAPHBAN_PREFLIGHT_PG=1 to run",
+    shutil.which("psql") is None or "://" not in _pg_dsn,
+    reason="needs psql and GRAPHBAN_PREFLIGHT_PG set to a Postgres DSN, "
+           "e.g. postgresql://postgres:postgres@localhost:5544/graphban_test",
 )
+
+
+def test_the_live_pg_skip_reason_names_a_dsn_not_the_digit_one():
+    """Following 'set GRAPHBAN_PREFLIGHT_PG=1' ran preflight('1') (GRPH-578 bounce)."""
+    reason = pg_only.kwargs["reason"]
+    assert "=1" not in reason
+    assert "DSN" in reason or "postgresql://" in reason
 
 
 @pg_only

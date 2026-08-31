@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import shlex
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -476,11 +477,11 @@ def test_setup_commands_run_in_the_worktree(tmp_path):
 
     ran = config.prepare(root)
 
-    # Compared as argv, not as text. `prepare` reports what it ran by re-joining the
-    # split command, so the quoting the config needed does not survive — and asserting
-    # on the raw string would be asserting about quotes rather than about what ran.
-    assert [shlex.split(c) for c in ran] == [shlex.split(c) for c in commands]
+    # Side effect, not a shlex round-trip of prepare's `' '.join(argv)`. That join
+    # re-splits `C:\Program Files\...` into two tokens even when setup succeeded
+    # (built.txt existed, assertion False) — GRPH-589 bounce.
     assert (root / "built.txt").exists(), "it ran somewhere else"
+    assert len(ran) == len(commands)
 
 
 def test_setup_runs_every_command_in_order(tmp_path):
@@ -661,19 +662,38 @@ def test_run_tests_does_not_take_counts_from_trailing_stderr(tmp_path):
 
 
 def test_a_setup_command_survives_a_space_in_the_interpreter_path(tmp_path):
-    """The case neither of my machines reproduces, which is why sabotage found nothing.
-
-    `stub_command` quotes because `[setup].commands` are shlex-split, and the commonest
-    Windows Python lives under `C:\\Program Files\\...`. Here the interpreter path has no
-    space and the quoted and unquoted forms split identically — so dropping the quoting
-    changed nothing anywhere, and a real operator would have hit it on their first run.
+    """THE CALL (GRPH-589 bounce). The previous version put the space in the SCRIPT
+    path and never called prepare. stub_command quotes because [setup] is
+    shlex-split, and the commonest Windows Python lives under
+    `C:\\Program Files\\...`.
     """
-    spaced = tmp_path / "a directory with spaces"
-    spaced.mkdir()
-    script = make_stub_script(spaced / "s.py", touch=("made.txt",))
+    interp_dir = tmp_path / "Program Files" / "Python"
+    interp_dir.mkdir(parents=True)
+    # A copy of the interpreter binary fails (rpath / libpython). A wrapper in the
+    # spaced directory is argv[0] with a space; it delegates to the real python.
+    if os.name == "nt":
+        interp = interp_dir / "python.cmd"
+        interp.write_text(f'@echo off\r\n"{sys.executable}" %*\r\n', encoding="utf-8")
+    else:
+        interp = interp_dir / "python"
+        interp.write_text(
+            f"#!{sys.executable}\nimport runpy, sys\nrunpy.run_path(sys.argv[1])\n",
+            encoding="utf-8",
+        )
+        interp.chmod(interp.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    argv = shlex.split(stub_command(script))
+    root = tmp_path / "repo"
+    root.mkdir()
+    script = make_stub_script(root / "s.py", touch=("made.txt",))
+    cmd = stub_command(script, interpreter=interp)
+    (root / CONFIG_NAME).write_text(
+        '[tests]\ncommand = "git hi"\n\n'
+        f"[setup]\ncommands = ['{cmd}']\n",
+        encoding="utf-8",
+    )
 
-    assert len(argv) == 2, f"the command split into {len(argv)} parts: {argv}"
-    assert argv[1].endswith("s.py")
-    assert Path(argv[0]).name.startswith("python")
+    config.prepare(root)
+
+    assert (root / "made.txt").exists(), (
+        "prepare did not run the setup command whose interpreter path contains a space"
+    )

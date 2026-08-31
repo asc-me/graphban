@@ -156,6 +156,41 @@ def test_install_runs_preflight_against_the_env_dsn(src, tmp_path):
     assert "8234" in seen
 
 
+def test_install_defaults_to_preflight_main():
+    """The helper default. Without this, gh.main can omit the kwarg and still
+    bind a stub if someone changes the default."""
+    import inspect
+    default = inspect.signature(gh.install).parameters["preflight"].default
+    assert default is gh.pf.main
+
+
+def test_the_install_cli_binds_preflight_main(src, tmp_path, monkeypatch):
+    """THE CALL (GRPH-578 bounce). Tests drive gh.install(..., preflight=stub).
+    The operator types `python3 scripts/graphban_host.py install`, which is
+    gh.main → install(...) with no override. Passing preflight=lambda a: 0
+    THERE left test_preflight + test_host_install + test_install_layout green.
+    """
+    seen: dict = {}
+
+    def capture(*_a, **k):
+        seen["kwargs"] = k
+        return 0
+
+    monkeypatch.setattr(gh, "install", capture)
+    rc = gh.main([
+        "install",
+        "--root", str(tmp_path / "root"),
+        "--from", str(src),
+        "--sha", "abc1234",
+        "--user-domain",
+    ])
+    assert rc == 0
+    bound = seen["kwargs"].get("preflight", gh.pf.main)
+    assert bound is gh.pf.main, (
+        "gh.main overrode preflight — the operator CLI is no longer bound to pf.main"
+    )
+
+
 def test_install_creates_the_venv_from_the_placed_backend(src, tmp_path):
     seen = []
 
@@ -206,6 +241,27 @@ def test_the_linux_unit_carries_the_revision(src, tmp_path):
     assert "Environment=GIT_SHA=abc1234" in written["payload"]
     assert "User=graphban" in written["payload"]
     assert not written["user_scope"]
+
+
+def test_the_linux_user_scope_unit_omits_user(src, tmp_path):
+    """write_service is the host dispatcher. Linux tests only used user_scope=False,
+    so dropping user_scope= from the unit_text CALL left User=graphban on a --user
+    unit — the same 216/GROUP crash loop (GRPH-583 bounce).
+    """
+    written = {}
+
+    def service(kind, path, payload, *, user_scope):
+        written.update(kind=kind, payload=payload, user_scope=user_scope)
+        return _ok_service(kind, path, payload, user_scope=user_scope)
+
+    gh.install(src, tmp_path / "root", "abc1234", port=8000, host="127.0.0.1",
+               user="alex", user_scope=True, platform="linux",
+               preflight=_ok_preflight, venv=_ok_venv, service=service)
+    assert written["kind"] == "unit"
+    assert written["user_scope"] is True
+    assert "User=" not in written["payload"], (
+        "the host dispatcher put User= on a --user-scope Linux unit"
+    )
 
 
 def test_ensure_venv_creates_then_installs_the_backend(tmp_path):
