@@ -181,6 +181,10 @@ def build_parser() -> argparse.ArgumentParser:
     until.add_argument("--binary", default=None, help="override the resolved path for --adapter")
     until.add_argument("--wave", default="wave", help="wave name, used in branch names")
     until.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
+    until.add_argument(
+        "--max-reviewers", type=int, default=1,
+        help="v1 default 1. Spawn-when-needed; do not start a reviewer cohort at t=0",
+    )
     until.add_argument("--max-children", type=int, default=8)
     until.add_argument("--child-wall-clock", type=float, default=3600.0)
     until.add_argument("--workspace", default=None, help="where worktrees go")
@@ -370,6 +374,7 @@ def _until(args) -> int:
             wave_name=args.wave,
             limits=Limits(
                 max_workers=args.max_workers,
+                max_reviewers=args.max_reviewers,
                 max_children=args.max_children,
                 child_wall_clock=args.child_wall_clock,
                 quiet_after=args.quiet_after,

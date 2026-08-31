@@ -47,6 +47,9 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
 EMPTY_TICKS = 3
 MINT_TRIES = 3
 MINT_BUDGET_S = 30.0
+#: Consecutive reviewer register/claim failures on a still-non-empty review queue
+#: before until stops minting reviewers (P30 D2).
+REVIEWER_FAILS = 3
 
 #: 4xx-shaped server refusals that will not change this process. Quota is config, not idle.
 _CONFIG_CODES = frozenset({
@@ -238,11 +241,18 @@ def _loop(
     minted = minted_start
     mint_deadline = time.monotonic() + mint_budget
     mint_left = mint_tries
+    reviewer_fails = 0
 
     while True:
         watch_tick(wave, children, limits, supervisor, debug=debug, persist=persist)
         finished = [c for c in children if not c.running]
         if finished:
+            for child in finished:
+                if child.role == "reviewer":
+                    if child.held_items:
+                        reviewer_fails = 0
+                    else:
+                        reviewer_fails += 1
             _reap_all(wave, finished)
             children[:] = [c for c in children if c.running]
             persist()
@@ -251,9 +261,12 @@ def _loop(
                 return _finish(wave, "handoff-failed", 1, minted, planner)
 
         live = [c for c in children if c.running]
+        live_workers = [c for c in live if c.role != "reviewer"]
+        live_reviewers = [c for c in live if c.role == "reviewer"]
         holdings = _any_holdings(supervisor)
         try:
-            reviews = _review_ids(planner)
+            rows = _review_rows(planner)
+            reviews = [str(r["id"]) for r in rows]
             waits = _wait_ids(planner)
         except NotPermitted as exc:
             raise ConfigError(f"cannot classify review/waits: {exc}") from exc
@@ -270,7 +283,7 @@ def _loop(
             ) from exc
 
         try:
-            need = _wanted_workers(planner, supervisor, live_n=len(live),
+            need = _wanted_workers(planner, supervisor, live_n=len(live_workers),
                                    max_workers=limits.max_workers)
         except ServerUnreachable:
             # D-i: no new spawns while unreachable. Live children run to their lease.
@@ -284,7 +297,7 @@ def _loop(
             empty = 0
             # Re-read before minting into a cluster that just filled (allocation race).
             try:
-                need = _wanted_workers(planner, supervisor, live_n=len(live),
+                need = _wanted_workers(planner, supervisor, live_n=len(live_workers),
                                        max_workers=limits.max_workers)
             except ServerUnreachable:
                 sleep(poll)
@@ -295,20 +308,38 @@ def _loop(
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
+                role="worker",
+            )
+            if minted_one:
+                minted += 1
+                mint_left -= 1
+            _spawn_one(
+                wave, children, occupied, persist, seat, launch_factory,
+                repo, workspace, wave_name, supervisor, limits, planner, debug,
+            )
+            continue
+
+        if _need_reviewer(rows, live_reviewers, limits.max_reviewers):
+            empty = 0
+            if reviewer_fails >= REVIEWER_FAILS:
+                wave.reason = "review-unsigned"
+                return _finish(wave, "review-unsigned", 1, minted, planner,
+                               review=reviews, waits=waits)
+            seat, minted_one = _take_seat(
+                pool, planner, agent_id, wave_name, server, api_key,
+                mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
+                role="reviewer",
             )
             if minted_one:
                 minted += 1
                 mint_left -= 1
             before = len(wave.spawned)
-            _start(
-                wave, [seat], launch_factory, repo, workspace, wave_name, supervisor,
-                limits, debug=debug, occupied=occupied, items=item_status(planner),
-                into=children, persist=persist,
+            _spawn_one(
+                wave, children, occupied, persist, seat, launch_factory,
+                repo, workspace, wave_name, supervisor, limits, planner, debug,
             )
-            occupied.update(c.branch for c in children)
-            persist()
-            if len(wave.spawned) == before and wave.failures:
-                raise ConfigError(wave.failures[-1])
+            if len(wave.spawned) == before:
+                reviewer_fails += 1
             continue
 
         if live or holdings:
@@ -316,7 +347,8 @@ def _loop(
             sleep(poll)
             continue
 
-        if reviews:
+        unheld = [r for r in rows if not r.get("claimed_by")]
+        if unheld:
             wave.reason = "review-unsigned"
             return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
                            waits=waits)
@@ -357,6 +389,47 @@ def _finish(
     )
 
 
+def _spawn_one(
+    wave: Wave,
+    children: list[Child],
+    occupied: set[str],
+    persist: Callable[[], None],
+    seat: Seat,
+    launch_factory: LaunchFactory,
+    repo: Path,
+    workspace: Path,
+    wave_name: str,
+    supervisor: Graphban,
+    limits: Limits,
+    planner: Graphban,
+    debug: bool,
+) -> None:
+    before = len(wave.spawned)
+    _start(
+        wave, [seat], launch_factory, repo, workspace, wave_name, supervisor,
+        limits, debug=debug, occupied=occupied, items=item_status(planner),
+        into=children, persist=persist,
+    )
+    occupied.update(c.branch for c in children)
+    persist()
+    if len(wave.spawned) == before and wave.failures:
+        raise ConfigError(wave.failures[-1])
+
+
+def _need_reviewer(
+    rows: list[dict], live_reviewers: list[Child], max_reviewers: int,
+) -> bool:
+    """Spawn-when-needed. Unheld review, no in-flight reviewer, under the cap."""
+    if max_reviewers <= 0:
+        return False
+    unheld = [r for r in rows if not r.get("claimed_by")]
+    if not unheld:
+        return False
+    if live_reviewers:
+        return False
+    return True
+
+
 def _wanted_workers(
     planner: Graphban, supervisor: Graphban, *, live_n: int, max_workers: int,
 ) -> int:
@@ -386,13 +459,14 @@ def _take_seat(
     mint_left: int,
     mint_deadline: float,
     sleep: Callable[[float], None],
+    role: str = "worker",
 ) -> tuple[Seat, bool]:
-    """Pre-minted pool first. Else mint just in time. One seat per spawn."""
-    if pool:
+    """Pre-minted pool first (workers). Reviewers always mint role=reviewer."""
+    if role == "worker" and pool:
         return pool.pop(0), False
     code = _mint(planner, agent_id, wave_name, mint_left=mint_left,
-                 mint_deadline=mint_deadline, sleep=sleep)
-    return Seat(code=code, server_url=server, api_key=api_key), True
+                 mint_deadline=mint_deadline, sleep=sleep, role=role)
+    return Seat(code=code, server_url=server, api_key=api_key, role=role), True
 
 
 def _mint(
@@ -403,6 +477,7 @@ def _mint(
     mint_left: int,
     mint_deadline: float,
     sleep: Callable[[float], None],
+    role: str = "worker",
 ) -> str:
     last: Exception | None = None
     tries = max(1, mint_left)
@@ -411,7 +486,7 @@ def _mint(
             break
         try:
             payload = planner.call(
-                "mint_enrolment", agent_id=agent_id, role="worker", wave=wave_name,
+                "mint_enrolment", agent_id=agent_id, role=role, wave=wave_name,
             )
         except NotPermitted as exc:
             raise ConfigError(str(exc)) from exc
@@ -443,13 +518,17 @@ def _is_config(exc: ToolFailed) -> bool:
     return False
 
 
-def _review_ids(planner: Graphban) -> list[str]:
+def _review_rows(planner: Graphban) -> list[dict]:
     """Raises on a failed read. An empty list means looked and found none."""
-    payload = planner.call("search_items", status="review", limit=10_000)
+    payload = planner.call("search_items", status="review", fields="full", limit=10_000)
     rows = payload.get("results") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         raise ToolFailed("search_items", "error", "review listing carried no results list")
-    return [str(r["id"]) for r in rows if isinstance(r, dict) and r.get("id")]
+    return [r for r in rows if isinstance(r, dict) and r.get("id")]
+
+
+def _review_ids(planner: Graphban) -> list[str]:
+    return [str(r["id"]) for r in _review_rows(planner)]
 
 
 def _wait_ids(planner: Graphban) -> list[str]:

@@ -607,6 +607,18 @@ def test_the_agent_still_cannot_claim_or_judge_its_own_work():
         assert forbidden not in WORKER_TOOLS
 
 
+def test_a_reviewer_is_not_a_worker_that_also_reviews():
+    """P30 D2. Different tool set, not a widening of WORKER_TOOLS."""
+    from gbagent.coord import REVIEWER_TOOLS
+    from gbfleet.client import ALLOWED_TOOLS
+
+    assert "claim_review" in REVIEWER_TOOLS
+    assert "sign_off" in REVIEWER_TOOLS
+    assert "claim_cluster" not in REVIEWER_TOOLS
+    assert "claim_next" not in REVIEWER_TOOLS
+    assert not REVIEWER_TOOLS & ALLOWED_TOOLS
+
+
 def test_the_agent_cannot_sign_off_its_own_work_at_the_client_either():
     """D5 is enforced by the server — `independent()` refuses the author whatever role it
     holds. This is the near half: the agent does not even carry the verb."""

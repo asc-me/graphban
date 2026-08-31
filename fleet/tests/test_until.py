@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
 import httpx
 import pytest
 
@@ -54,6 +56,7 @@ def _clients(
     mint_code: str = "WORKER-UNTIL",
     mint_fails: str | None = None,
     search_fails: str | None = None,
+    minted_roles: list | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban."""
     seen_agents = {"yes": False}
@@ -87,7 +90,10 @@ def _clients(
         if tool == "mint_enrolment":
             if mint_fails:
                 return _error(mint_fails, f"cannot mint ({mint_fails})", rid)
-            return _mcp({"enrolment_code": mint_code, "role": "worker", "seat_id": "s1"}, rid)
+            role = args.get("role") or "worker"
+            if minted_roles is not None:
+                minted_roles.append(role)
+            return _mcp({"enrolment_code": mint_code, "role": role, "seat_id": "s1"}, rid)
         if tool == "search_items":
             if search_fails:
                 return _error(search_fails, f"search failed ({search_fails})", rid)
@@ -202,6 +208,7 @@ def test_leftover_review_is_not_idle(
     assert result.ok is False
     assert result.review == ["GRPH-9"]
     assert result.wave is not None and result.wave.ok is False
+    # D2: spawn-when-needed, then three failed claim attempts, then this reason.
 
 
 def test_until_spawns_a_worker_from_a_cold_cluster(
@@ -339,3 +346,90 @@ def test_three_empty_ticks_are_required(
     )
     assert result.reason == "idle"
     assert len(sleeps) >= 2, f"idled after {len(sleeps)} sleeps; need two gaps for three ticks"
+
+
+def test_until_mints_a_reviewer_for_unheld_review(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """P30 D2. Spawn-when-needed, not a t=0 reviewer cohort."""
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": ""}],
+        minted_roles=roles,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1, max_reviewers=1),
+    )
+    assert "reviewer" in roles, roles
+    assert all(c.role == "reviewer" for c in (result.wave.spawned if result.wave else [])), (
+        [c.role for c in result.wave.spawned] if result.wave else []
+    )
+    assert result.reason == "review-unsigned"
+
+
+def test_until_does_not_mint_a_reviewer_when_claim_review_is_held(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-R1"}],
+        minted_roles=roles,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_reviewers=1),
+    )
+    assert "reviewer" not in roles, roles
+    assert result.reason == "idle"
+    assert result.spawned == 0
+
+
+def test_workers_and_reviewers_are_not_a_simultaneous_cohort(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """Worker first, then reviewer. Never both from the same tick."""
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    planner, supervisor = _clients(
+        workspace, clusters=1,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": ""}],
+        minted_roles=roles,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1, max_reviewers=1),
+    )
+    assert roles, "expected at least one mint"
+    assert roles[0] == "worker", roles
+    if len(roles) > 1:
+        assert "reviewer" in roles
+
+
+def test_cli_until_advertises_max_reviewers():
+    from gbfleet.cli import build_parser
+    args = build_parser().parse_args(
+        ["until", "--server", "http://x", "--adapter", "gbagent"]
+    )
+    assert args.max_reviewers == 1
+
+
+def test_reviewer_instruction_does_not_teach_claim_cluster():
+    from gbfleet.seat import Seat, instruction_for
+    text = instruction_for(
+        Seat(code="R-1", server_url="https://x", api_key="k", role="reviewer"),
+        Path("/wt"), "gb/w-1",
+    )
+    assert "Call claim_review" in text
+    assert "sign_off" in text
+    assert "Then claim work with claim_cluster" not in text

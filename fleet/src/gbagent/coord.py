@@ -51,6 +51,17 @@ WORKER_TOOLS: frozenset[str] = frozenset(
      *ORIENTATION_TOOLS, *COORDINATION_TOOLS}
 )
 
+#: P30 D2. A reviewer is not a worker that also reviews. claim_review and sign_off
+#: belong here; claim_cluster does not. The server still refuses the author on
+#: sign_off (independent()).
+REVIEWER_COORDINATION: tuple[str, ...] = (
+    "claim_review", "sign_off", "update_item", "heartbeat",
+)
+REVIEWER_TOOLS: frozenset[str] = frozenset(
+    {"register_agent", "update_item", "release_item", "heartbeat",
+     *ORIENTATION_TOOLS, *REVIEWER_COORDINATION}
+)
+
 
 class HandoffFailed(RuntimeError):
     """The handoff could not be written, so the item must NOT be released.
@@ -75,9 +86,13 @@ class Coordinator:
     agent_id: str = ""
 
     @classmethod
-    def connect(cls, base_url: str, api_key: str, item_id: str, agent_id: str = "", **kw):
+    def connect(cls, base_url: str, api_key: str, item_id: str, agent_id: str = "",
+                allowed: frozenset[str] | None = None, **kw):
         return cls(
-            client=Graphban(base_url=base_url, api_key=api_key, allowed=WORKER_TOOLS, **kw),
+            client=Graphban(
+                base_url=base_url, api_key=api_key,
+                allowed=allowed if allowed is not None else WORKER_TOOLS, **kw,
+            ),
             item_id=item_id,
             agent_id=agent_id,
         )
