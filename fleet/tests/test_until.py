@@ -57,6 +57,7 @@ def _clients(
     mint_fails: str | None = None,
     search_fails: str | None = None,
     minted_roles: list | None = None,
+    on_mint=None,
 ):
     """Planner + supervisor clients sharing one mock Graphban."""
     seen_agents = {"yes": False}
@@ -93,6 +94,8 @@ def _clients(
             role = args.get("role") or "worker"
             if minted_roles is not None:
                 minted_roles.append(role)
+            if on_mint is not None:
+                on_mint(role)
             return _mcp({"enrolment_code": mint_code, "role": role, "seat_id": "s1"}, rid)
         if tool == "search_items":
             if search_fails:
@@ -370,6 +373,9 @@ def test_until_mints_a_reviewer_for_unheld_review(
         [c.role for c in result.wave.spawned] if result.wave else []
     )
     assert result.reason == "review-unsigned"
+    # THE CALL. works_then_exits dies with empty holdings. Three of those, then
+    # review-unsigned. REVIEWER_FAILS=1 still yielded this reason (GRPH-603).
+    assert roles.count("reviewer") == 3, roles
 
 
 def test_until_does_not_mint_a_reviewer_when_claim_review_is_held(
@@ -414,6 +420,80 @@ def test_workers_and_reviewers_are_not_a_simultaneous_cohort(
     assert roles[0] == "worker", roles
     if len(roles) > 1:
         assert "reviewer" in roles
+
+
+def test_a_worker_spawn_does_not_fall_through_to_a_reviewer_in_the_same_tick(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """THE CALL (GRPH-603). Dropping `continue` after the worker spawn left
+    `test_workers_and_reviewers_are_not_a_simultaneous_cohort` green — it only
+    checked roles[0]==worker, which is still true when both mint in one pass.
+
+    Clear the review queue on the worker mint. With continue, the next tick
+    re-reads and does not mint a reviewer. Without it, the same tick's `rows`
+    still say unheld and a reviewer is minted beside the worker.
+    """
+    workspace = tmp_path / "ws"
+    roles: list[str] = []
+    review = [{"id": "GRPH-9", "status": "review", "claimed_by": ""}]
+
+    def on_mint(role: str) -> None:
+        if role == "worker":
+            review.clear()
+
+    planner, supervisor = _clients(
+        workspace, clusters=1, review=review, minted_roles=roles, on_mint=on_mint,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1, max_reviewers=1),
+    )
+    assert roles == ["worker"], roles
+    assert result.reason == "idle"
+
+
+def test_a_live_reviewer_child_blocks_a_second_mint(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """THE CALL (GRPH-603). until tests used works_then_exits, so live_reviewers
+    was always [] by the next tick. Ignoring it and minting a second reviewer
+    while the first is still running (and has not claimed) stayed green.
+
+    works_then_waits stays live for a moment. Two reviewer mints with no sleep
+    between them is the same-tick / ignored-live path.
+    """
+    workspace = tmp_path / "ws"
+    events: list[str] = []
+
+    def on_mint(role: str) -> None:
+        if role == "reviewer":
+            if events and events[-1] == "mint":
+                raise AssertionError(
+                    "second reviewer minted with no tick between — live_reviewers "
+                    f"was not consulted: {events}"
+                )
+            events.append("mint")
+
+    def sleep_fn(_dt: float) -> None:
+        events.append("sleep")
+
+    planner, supervisor = _clients(
+        workspace,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": ""}],
+        on_mint=on_mint,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_waits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=sleep_fn, empty_ticks=3,
+        limits=Limits(max_reviewers=1),
+    )
+    assert "mint" in events, events
+    for a, b in zip(events, events[1:]):
+        assert not (a == "mint" and b == "mint"), events
+    assert result.reason == "review-unsigned"
 
 
 def test_cli_until_advertises_max_reviewers():
