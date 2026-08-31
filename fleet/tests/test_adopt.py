@@ -13,7 +13,7 @@ import pytest
 from gbfleet import adopt
 from gbfleet.adopt import Snapshot, UnadoptableFile, classify, load, save
 from gbfleet.lock import hold
-from gbfleet.supervisor import Limits, up
+from gbfleet.supervisor import Limits, up, watch_tick
 from gbfleet.worktree import create
 
 from tests.test_supervisor import _factory, _seats, _server
@@ -32,6 +32,15 @@ def test_a_missing_file_is_empty_and_a_corrupt_file_is_not(tmp_path: Path):
     got = load(path)
     assert isinstance(got, UnadoptableFile)
     assert "generation" in str(got)
+
+    # Missing required fields is unadoptable, not a skipped row (P30 D7 bounce).
+    path.write_text(
+        json.dumps({"generation": 1, "children": [{"pid": 1, "worktree": "/wt"}]}),
+        encoding="utf-8",
+    )
+    got = load(path)
+    assert isinstance(got, UnadoptableFile)
+    assert "required" in str(got)
 
 
 def test_save_is_atomic_and_round_trips(tmp_path: Path):
@@ -121,6 +130,76 @@ def test_recover_attaches_a_live_pid(
         sleeper.wait(timeout=10)
 
 
+def test_recover_treats_a_corrupt_file_as_unadoptable_not_empty(
+    git_repo: Path, tmp_path: Path, state: Path
+):
+    """P30 D7 bounce. load() already rejects corrupt JSON; recover() used to be
+    untested, so treating UnadoptableFile as [] stayed green — `_start` still skips
+    existing gb/ branches on its own. Partial file ≠ empty roster.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    path = adopt.children_path(git_repo, state)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    leftover, occupied, notes = adopt.recover(git_repo, workspace, state)
+    assert leftover == []
+    assert tree.branch in occupied, (
+        f"corrupt file read as an empty roster; occupied={occupied!r}"
+    )
+    assert notes, "unadoptable recover must say why"
+
+
+def test_recover_treats_missing_required_fields_as_unadoptable(
+    git_repo: Path, tmp_path: Path, state: Path
+):
+    """A child row missing branch/adapter is the whole file, not a skipped row."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    path = adopt.children_path(git_repo, state)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({
+            "generation": 1,
+            "children": [{"pid": 1, "worktree": str(tree.path)}],
+        }),
+        encoding="utf-8",
+    )
+    leftover, occupied, notes = adopt.recover(git_repo, workspace, state)
+    assert leftover == []
+    assert tree.branch in occupied, (
+        f"partial row read as empty roster; occupied={occupied!r}"
+    )
+    assert notes
+
+
+def test_recover_does_not_attach_a_reused_token(
+    git_repo: Path, tmp_path: Path, state: Path, monkeypatch
+):
+    """classify() already says unadoptable; recover() used to be untested, so
+    attaching a reused token still left 9/9 green.
+    """
+    monkeypatch.setattr(adopt, "process_start_token", lambda pid: "real-token")
+    monkeypatch.setattr(adopt, "pid_is_alive", lambda pid: True)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tree = create(git_repo, workspace / "wave-1", "wave", "1")
+    path = adopt.children_path(git_repo, state)
+    save(path, [Snapshot(
+        pid=os.getpid(), start_token="not-this-process",
+        worktree=str(tree.path), branch=tree.branch, adapter="fake",
+        slot="1", base=tree.base,
+    )])
+    leftover, occupied, notes = adopt.recover(git_repo, workspace, state)
+    assert leftover == [], (
+        f"reused token was attached: {[(c.pid, c.attached) for c in leftover]}"
+    )
+    assert tree.branch in occupied
+    assert notes
+
+
 def test_takeover_does_not_spawn_onto_the_previous_slot(
     git_repo: Path, tmp_path: Path, scripts, state: Path
 ):
@@ -196,6 +275,84 @@ def test_takeover_attaches_the_leftover_pid(
             f"{[(c.pid, c.attached, c.branch) for c in second.spawned]}"
         )
         assert all(c.branch != tree.branch or c.attached for c in second.spawned)
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=10)
+
+
+def test_takeover_ticks_the_leftover_pid(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """P30 D7 second bounce. leftover on wave.spawned is a report, not consumption.
+    Setting `children = []` instead of `list(leftover)` left the attach test green:
+    the leftover pid sat on wave.spawned while persist-before-start and `_wait_out`
+    never saw it. The CALL is leftover in the list the watch loop actually ticks,
+    still in the children file after persist.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sleeper = subprocess.Popen(
+        [str(scripts["python"]), str(scripts["sleeper"])],
+        cwd=str(git_repo),
+        start_new_session=True,
+    )
+    try:
+        # classify() reads adopt.*; AttachedProcess.poll / persist's running
+        # check read spawn.* (imported from hostos). Mocking only adopt lets a
+        # Linux hostos token ≠ "tok" mark leftover dead, so persist drops it
+        # while wave.spawned still reports attach — the same hole as children=[].
+        from gbfleet import spawn as spawn_mod
+
+        def _tok(_pid: int) -> str:
+            return "tok"
+
+        def _alive(pid: int) -> bool:
+            return pid == sleeper.pid
+
+        monkeypatch.setattr(adopt, "process_start_token", _tok)
+        monkeypatch.setattr(adopt, "pid_is_alive", _alive)
+        monkeypatch.setattr(spawn_mod, "process_start_token", _tok)
+        monkeypatch.setattr(spawn_mod, "pid_is_alive", _alive)
+        tree = create(git_repo, workspace / "wave-1", "wave", "1")
+        path = adopt.children_path(git_repo, state)
+        save(path, [Snapshot(
+            pid=sleeper.pid, start_token="tok",
+            worktree=str(tree.path), branch=tree.branch, adapter="fake",
+            slot="1", base=tree.base, log_dir=str(tmp_path / "logs"),
+            started_wall=time.time(),
+        )])
+        with hold(git_repo, state) as first:
+            lock, holder = first.path, first.holder
+        lock.write_text(holder.as_json(), encoding="utf-8")
+
+        import gbfleet.supervisor as sup
+        ticked: list = []
+
+        def capture_wait(wave, children, limits, client, **kwargs):
+            ticked.extend(children)
+            watch_tick(
+                wave, children, limits, client,
+                debug=kwargs.get("debug", False),
+                persist=kwargs.get("persist"),
+            )
+
+        monkeypatch.setattr(sup, "_wait_out", capture_wait)
+        monkeypatch.setattr(sup, "_reap_all", lambda *a, **k: None)
+
+        second = up(
+            git_repo, _seats(1), _factory(scripts, "works_then_exits"),
+            _server(workspace), limits=Limits(max_workers=2),
+            state=state, workspace=workspace, poll=0.05,
+        )
+        attached = [c for c in ticked if c.attached and c.pid == sleeper.pid]
+        assert attached, (
+            f"watch loop never ticked leftover pid {sleeper.pid}; ticked "
+            f"{[(c.pid, c.attached, c.branch) for c in ticked]}; spawned "
+            f"{[(c.pid, c.attached, c.branch) for c in second.spawned]}"
+        )
+        data = json.loads(path.read_text(encoding="utf-8"))
+        pids = [int(row["pid"]) for row in data.get("children") or []]
+        assert sleeper.pid in pids, f"persist dropped leftover pid; file has {pids}"
     finally:
         sleeper.kill()
         sleeper.wait(timeout=10)

@@ -264,15 +264,22 @@ def _slot_of(branch: str) -> str:
 
 
 def _existing_gb_branches(repo: Path) -> set[str]:
+    """Every `gb/` branch, including those checked out in a worktree.
+
+    `git branch --list` prefixes a worktree checkout with `+ `, so a leftover child's
+    own branch occupied `+ gb/wave-1` and `_start` would still spawn onto `gb/wave-1`.
+    `for-each-ref` is the same listing `orphans()` already uses.
+    """
     from .worktree import BRANCH_PREFIX
     try:
         out = __import__("subprocess").run(
-            ["git", "branch", "--list", f"{BRANCH_PREFIX}*"],
+            ["git", "for-each-ref", "--format=%(refname:short)",
+             f"refs/heads/{BRANCH_PREFIX}"],
             cwd=repo, capture_output=True, text=True, check=False,
         ).stdout
     except OSError:
         return set()
-    return {line.strip().lstrip("* ").strip() for line in out.splitlines() if line.strip()}
+    return {line.strip() for line in out.splitlines() if line.strip()}
 
 
 def _salvage_snapshot(repo: Path, snap: Snapshot, notes: list[str]) -> None:
