@@ -153,6 +153,47 @@ def test_a_failing_required_predicate_does_not_satisfy_the_requirement(db, requi
         items_svc.update_item(db, item.id, status="done")
 
 
+def test_a_failing_required_predicate_is_reported_as_failed_not_never_run(db, require):
+    """THE CALL (GRPH-569 bounce). GREEN suite_green gets past has_valid_attestation, so
+    the first gate never sees the failing conformance receipt. The required-predicate
+    branch used to always say "nobody has run" — which sends the operator to run an
+    adapter that already ran. Absent and failing call for opposite actions."""
+    require("conformance")
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[
+        GREEN, _attestation(("conformance", False), adapter="reviewer")])
+
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done")
+
+    message = str(exc.value)
+    assert "conformance" in message
+    assert "ran and failed" in message, (
+        "a required predicate that ran and failed was reported as never run"
+    )
+    assert "nobody has run" not in message, (
+        "failing must not borrow the absent wording — that sends the reader to "
+        "the adapter instead of the failure"
+    )
+    assert "suite_green" in message
+
+
+def test_a_mixed_required_set_names_which_failed_and_which_never_ran(db, require):
+    """Two required names, two answers. Collapsing them into one wording would
+    send the operator to the wrong place for half the set."""
+    require("conformance,adversarial")
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[
+        GREEN, _attestation(("conformance", False), adapter="reviewer")])
+
+    with pytest.raises(items_svc.MissingAttestation) as exc:
+        items_svc.update_item(db, item.id, status="done")
+
+    message = str(exc.value)
+    assert "conformance" in message and "ran and failed" in message
+    assert "adversarial" in message and "nobody has run" in message
+
+
 def test_a_predicate_riding_on_a_receipt_with_a_failure_does_not_count(db, require):
     """The subtle one. `conformance` PASSED — but on an attestation whose other predicate
     failed, so the receipt as a whole is not sound and nothing on it may be relied on."""
@@ -201,6 +242,18 @@ def test_missing_predicates_is_stable_and_empty_when_satisfied():
     assert items_svc.missing_predicates(ev, ["b", "a", "c"]) == ["b", "c"]
     assert items_svc.missing_predicates(ev, ["a"]) == []
     assert items_svc.missing_predicates(ev, []) == []
+
+
+def test_failing_predicates_names_what_ran_and_failed():
+    """The helper the CALL splits on. Without it, missing_predicates cannot tell
+    a failure from an absence because valid_attestations dropped the receipt."""
+    ev = [_attestation(("a", True)), _attestation(("b", False)),
+          _attestation(("c", True), ("d", False))]
+    assert items_svc.failing_predicates(ev) == {"b", "d"}
+    assert items_svc.failing_predicates(ev, commit=SHA) == {"b", "d"}
+    assert items_svc.failing_predicates(
+        ev + [_attestation(("e", False), commit="b" * 40)], commit=SHA
+    ) == {"b", "d"}
 
 
 def test_the_setting_parses_a_comma_list(require):

@@ -504,8 +504,36 @@ def missing_predicates(evidence, required, *, commit: str | None = None) -> list
     ran and found a problem — go and read it. The completion gate reports them separately for
     that reason; collapsing them would send half its readers to the wrong place, which is the
     defect GRPH-543 already fixed once for stale-versus-missing.
+
+    This helper answers only the absent half. `failing_predicates` answers the other; the
+    CALL in `update_item` splits the two so a required name that ran and failed is not
+    reported as never run (GRPH-569 bounce).
     """
     return sorted(set(required or []) - attested_predicates(evidence, commit=commit))
+
+
+def failing_predicates(evidence, *, commit: str | None = None) -> set[str]:
+    """Predicate names that something RAN and reported as failing (GRPH-569).
+
+    Distinct from `missing_predicates`: those are names nobody attested as passing. A
+    name can sit in both — required, never passed, but DID fail — and that is a third
+    answer, not "nobody looked". `valid_attestations` drops the whole receipt, so
+    reading names only from there would make every failure look like an absence.
+
+    `commit` narrows the same way the rest of the gate does: a failure at another
+    revision is not a failure of the head being completed.
+    """
+    names: set[str] = set()
+    for a in attestation_receipts(evidence):
+        if commit is not None and a.get("commit") != commit:
+            continue
+        for q in a.get("predicates") or []:
+            if not isinstance(q, dict):
+                continue
+            name = str(q.get("name") or "")
+            if name and q.get("passed") is False:
+                names.add(name)
+    return names
 
 
 def record_refusal(db: Session, item: Item, *, predicate: str, detail: str) -> None:
@@ -772,15 +800,42 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         absent = missing_predicates(merged_for_gate, required, commit=head or None)
         if absent:
             attested = sorted(attested_predicates(merged_for_gate, commit=head or None))
-            record_refusal(db, item, predicate="attestation_incomplete",
-                           detail=f"nothing has attested {', '.join(absent)}.")
+            failed = [n for n in absent
+                      if n in failing_predicates(merged_for_gate, commit=head or None)]
+            never_run = [n for n in absent if n not in failed]
+            # Split here, not in missing_predicates. A GREEN suite_green receipt makes
+            # has_valid_attestation true, so the gate above never sees the failing
+            # conformance receipt — and without this split the CALL always said
+            # "nobody has run" for a check that ran and failed (GRPH-569 bounce).
+            bits: list[str] = []
+            if failed:
+                bits.append(
+                    f"{', '.join(failed)} ran and failed — that is a check that "
+                    "failed, so read what it found rather than running the adapter again"
+                )
+            if never_run:
+                bits.append(
+                    f"nothing has attested {', '.join(never_run)}. That is a check "
+                    "nobody has run rather than a check that failed — the adapter that "
+                    "answers it has not reported, so run it rather than looking for a "
+                    "problem in what did"
+                )
+            what = ". ".join(bits)
+            if failed and not never_run:
+                detail = f"{', '.join(failed)} ran and failed."
+            elif never_run and not failed:
+                detail = f"nothing has attested {', '.join(never_run)}."
+            else:
+                detail = (
+                    f"{', '.join(failed)} ran and failed; "
+                    f"nothing has attested {', '.join(never_run)}."
+                )
+            record_refusal(db, item, predicate="attestation_incomplete", detail=detail)
             raise MissingAttestation(
                 f"{item.key} cannot move to done: this deployment requires the predicate(s) "
-                f"{', '.join(required)}, and nothing has attested {', '.join(absent)}. "
+                f"{', '.join(required)}. "
                 + (f"What IS attested: {', '.join(attested)}. " if attested else "")
-                + "That is a check nobody has run rather than a check that failed — the "
-                "adapter that answers it has not reported, so run it rather than looking "
-                "for a problem in what did"
+                + what
             )
         # THE PR COOLDOWN (GRPH-567, PRD-26). Shared with `fleet.sign_off` — that path
         # used to write `done` directly and skip this, which is the reviewer CALL the
