@@ -352,7 +352,8 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
     if name == "orphans":
         found = wt_mod.orphans(fleet.repo)
         return {"orphans": [
-            {"branch": o.branch, "commit": o.commit, "subject": o.subject, "salvaged": o.salvaged}
+            {"branch": o.branch, "commit": o.commit, "subject": o.subject,
+             "salvaged": o.salvaged, "item_keys": list(o.item_keys)}
             for o in found
         ]}
 

@@ -241,6 +241,10 @@ def report(wave: Wave, out=None) -> None:
         print(f"server proposed {wave.before.workers}w/{wave.before.reviewers}r{note}", file=out)
         print(f"  {wave.before.rationale}", file=out)
 
+    for branch in wave.resumed:
+        print(f"RESUMED {branch}", file=out)
+    for miss in wave.resume_misses:
+        print(f"RESUME MISS {miss}", file=out)
     print(f"spawned {len(wave.spawned)}", file=out)
     for child in wave.spawned:
         latency = (
