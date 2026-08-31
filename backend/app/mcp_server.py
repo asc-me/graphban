@@ -35,6 +35,7 @@ from app.services import clustering as cluster_svc
 from app.services import code_graph as code_svc
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
+from app.services import gitops
 from app.services import idempotency as idem_svc
 from app.services import insights as insights_svc
 from app.services import items as items_svc
@@ -74,8 +75,13 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_context",
         "description": (
-            "Orient yourself: returns the project this API key writes to, your scopes, and how "
-            "many projects and tools exist. Call this first when you start."
+            "Orient yourself: the project this API key writes to, your scopes, how many "
+            "projects and tools exist, and gitops (base branch, push-to-base, branch/PR "
+            "naming, reviewer bar). Unset gitops fields are unmeasured — not 'use main' "
+            "and not 'no requirements'. gitops.control is present when this box is "
+            "linked (linked_set | linked_unset | linked_unreachable); if "
+            "linked_unreachable, the org could not be reached — do not treat unset as "
+            "no process. Call this first when you start."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -1210,6 +1216,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "missing_tiers": {"type": "array", "items": {"type": "object"}},
             "widen_hint": _STR,
             "empty": {"type": "boolean"},
+            "gitops": {"type": "object"},
         },
     },
     "list_projects": {
@@ -2068,6 +2075,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
 
     if name == "get_context":
         proj = db.get(Project, pid) if pid else None
+        view = gitops.resolve(db, pid)
         return {
             "project_id": pid,
             "project_name": proj.name if proj else None,
@@ -2102,6 +2110,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                if _missing_tiers(key) else {}),
             # First-run signal (AL-133): an empty project → call setup_project for a bootstrap.
             "empty": setup_svc.is_empty(db, pid) if pid else False,
+            "gitops": gitops.for_agent(view),
         }
     if name == "create_project":
         # An AUTHORITY gate, narrowly opened (PRD-14 D4). Both refusals below are the

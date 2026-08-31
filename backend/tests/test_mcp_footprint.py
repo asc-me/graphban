@@ -71,10 +71,10 @@ CEILING = 14200
 # score; eligibility unverifiable until attributed and scanned) — trimming them would
 # not claw back 80+ tokens. CORE_TOKENS 8497 → 8956 is the bill every key pays; this
 # raise is not a licence to grow core without that equality.
-MEASURED_TOKENS = 14097
-# 14079 -> 14097 (GRPH-611 / P30 D10). `update_item.touchpoints` now says it UNIONS and
-# that empty is not a write — the same load-bearing sentence evidence already carries
-# (APPENDS). Without it an agent sends `[]` and the next cluster reads "no collision".
+MEASURED_TOKENS = 14189
+# 14097 -> 14189 (GRPH-P31 / GRPH-616). `get_context` gitops block: compact schema plus
+# unmeasured / linked_unreachable sentences. Headroom is 11 under CEILING 14200; do not
+# raise the ceiling — nested {value, source} schema is how this would have blown it.
 
 
 def _mint(client, auth, scopes):

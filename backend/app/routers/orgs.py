@@ -31,6 +31,8 @@ from app.models import (
 )
 from app.schemas import (
     BillingOut,
+    GitopsPatch,
+    GitopsView,
     InviteAcceptIn,
     InviteCreate,
     InviteOut,
@@ -58,6 +60,7 @@ from app.security import authz
 from app.security.deps import get_current_user
 from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
+from app.services import gitops
 from app.services import orgs as orgs_svc
 from app.services import teams as teams_svc
 from app.services import quotas
@@ -199,6 +202,37 @@ def org_deployments(org_id: str, db: Session = Depends(get_db),
     """
     authz.require_org_member(db, user.id, org_id)
     return galaxy_svc.deployments(db, org_id)
+
+
+@router.get("/orgs/{org_id}/gitops", response_model=GitopsView)
+def get_org_gitops(org_id: str, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    authz.require_org_member(db, user.id, org_id)
+    if db.get(Organization, org_id) is None:
+        raise HTTPException(404, "organization not found")
+    view = gitops.resolve_org(db, org_id)
+    return gitops.fill_writable(view, db, user.id)
+
+
+@router.patch("/orgs/{org_id}/gitops", response_model=GitopsView)
+def patch_org_gitops(org_id: str, body: GitopsPatch, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    authz.require_org_admin(db, user.id, org_id)
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(404, "organization not found")
+    try:
+        changed = gitops.apply_patch(org, {k: getattr(body, k) for k in body.model_fields_set})
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    db.commit()
+    db.refresh(org)
+    events_svc.record_user(
+        db, user, action="update_gitops", target_type="org", target_id=org_id,
+        meta={"fields": changed},
+    )
+    view = gitops.resolve_org(db, org_id)
+    return gitops.fill_writable(view, db, user.id)
 
 
 @router.get("/orgs/{org_id}/overview")

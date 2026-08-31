@@ -24,13 +24,14 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import ApiKey, Project, User
-from app.schemas import SyncLinkIn, SyncStatusOut
+from app.schemas import GitopsView, SyncLinkIn, SyncStatusOut
 from app.security import authz
 from app.security.deps import get_agent_key, get_current_user
 from app.services import code_graph
 from app.services import code_sync
 from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
+from app.services import gitops
 
 router = APIRouter(prefix="/sync", tags=["sync"])
 
@@ -122,6 +123,8 @@ def ingest_code_graph(
             "needs write access to the target project",
         )
     project_id = targets[0]  # a sync credential is pinned to one project
+    # GET /sync/gitops uses the same isolation and resolve_local ONLY: never resolve(),
+    # so a box whose SYNC_CLOUD_URL points at itself cannot recurse.
     result = code_graph.describe_code(
         db, project_id=project_id, nodes=body.nodes, edges=body.edges, prune=body.prune
     )
@@ -173,6 +176,16 @@ def purge_code_graph(db: Session = Depends(get_db), key: ApiKey = Depends(get_ag
     events_svc.record_key(db, key, action="purge_code_graph", target_type="project",
                           target_id=project_id, project_id=project_id, meta=result)
     return {"project_id": project_id, **result}
+
+
+@router.get("/gitops", response_model=GitopsView)
+def sync_gitops(db: Session = Depends(get_db), key: ApiKey = Depends(get_agent_key)):
+    targets = authz.key_sync_ids(db, key)
+    if not targets:
+        raise HTTPException(403, "this key can't sync gitops — it needs the 'sync' scope")
+    # Isolation: project from the key, never a query-string id. resolve_local only —
+    # never resolve() / never outbound (see comment next to ingest key_sync_ids).
+    return gitops.resolve_local(db, targets[0])
 
 
 class PushIn(BaseModel):

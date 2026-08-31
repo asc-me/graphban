@@ -9,11 +9,14 @@ from app.config import settings
 from app.db import get_db
 from app.models import Membership, Project, User
 from app.schemas import (
-    MemberOut, ProjectCreate, ProjectOut, ProjectRetagIn, ProjectUpdate, UserOut,
+    GitopsPatch, GitopsView, MemberOut, ProjectCreate, ProjectOut, ProjectRetagIn,
+    ProjectUpdate, UserOut,
 )
 from app.security import authz
 from app.security.deps import get_current_user
+from app.services import code_sync
 from app.services import events as events_svc
+from app.services import gitops
 from app.services import projects as projects_svc
 from app.services import quotas
 
@@ -138,6 +141,57 @@ def project_counts(project_id: str, db: Session = Depends(get_db),
     collections it used to fetch on every route (GRPH-431)."""
     authz.require_readable(db, user.id, project_id)
     return projects_svc.shell_counts(db, project_id)
+
+
+def _load_project(db: Session, project_id: str) -> Project:
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "project not found")
+    return project
+
+
+def _require_gitops_read(db: Session, user: User, project: Project) -> None:
+    if settings.hosted_mode:
+        if not project.org_id:
+            raise HTTPException(404, "project not found")
+        authz.require_org_member(db, user.id, project.org_id)
+        return
+    authz.require_readable(db, user.id, project.id)
+
+
+@router.get("/{project_id}/gitops", response_model=GitopsView)
+def get_gitops(project_id: str, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    project = _load_project(db, project_id)
+    _require_gitops_read(db, user, project)
+    view = gitops.resolve(db, project_id)
+    return gitops.fill_writable(view, db, user.id)
+
+
+@router.patch("/{project_id}/gitops", response_model=GitopsView)
+def patch_gitops(project_id: str, body: GitopsPatch, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    project = _load_project(db, project_id)
+    if settings.hosted_mode:
+        if not project.org_id:
+            raise HTTPException(404, "project not found")
+        authz.require_org_admin(db, user.id, project.org_id)
+    else:
+        if code_sync.link_status(db)["linked"]:
+            raise HTTPException(403, gitops.LINKED_PATCH_DETAIL)
+        authz.require_writable(db, user.id, project_id)
+    try:
+        changed = gitops.apply_patch(project, {k: getattr(body, k) for k in body.model_fields_set})
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    db.commit()
+    db.refresh(project)
+    events_svc.record_user(
+        db, user, action="update_gitops", target_type="project", target_id=project_id,
+        project_id=project_id, meta={"fields": changed},
+    )
+    view = gitops.resolve(db, project_id)
+    return gitops.fill_writable(view, db, user.id)
 
 
 @router.get("/{project_id}/members", response_model=list[MemberOut])

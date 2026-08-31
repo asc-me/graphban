@@ -80,6 +80,46 @@ def test_unlinked_runs_everything_local(client, auth, monkeypatch):
     assert "result" in r  # local dispatch
 
 
+def test_linked_get_context_stays_local_and_pulls_gitops(client, auth, monkeypatch):
+    """Key meta stays local; gitops is fetched, not proxied as the whole tool."""
+    from app.services import gitops as gitops_svc
+
+    hits = {"mcp": 0, "gitops": 0}
+
+    def fake_post(*a, **k):
+        hits["mcp"] += 1
+        raise AssertionError("get_context must not proxy")
+
+    def fake_get(url, *a, **k):
+        hits["gitops"] += 1
+        class R:
+            status_code = 200
+            def json(self):
+                fields = {f: {"value": None, "source": "unmeasured"}
+                          for f in gitops_svc.FIELDS}
+                return {
+                    "project_id": "cloud",
+                    "fields": fields,
+                    "control": {"state": "local", "writable": True, "message": ""},
+                    "was": None,
+                    "version_from": {"value": None, "source": "unmeasured"},
+                }
+        return R()
+
+    monkeypatch.setattr(mcp_proxy.httpx, "post", fake_post)
+    monkeypatch.setattr(gitops_svc.httpx, "get", fake_get)
+    _link(monkeypatch)
+
+    assert not mcp_proxy.should_proxy("get_context")
+    r = _mcp(client, _key(client, auth), "get_context")
+    assert "result" in r and not r["result"].get("isError")
+    g = r["result"]["structuredContent"]["gitops"]
+    assert hits["mcp"] == 0 and hits["gitops"] == 1
+    assert g["control"] == "linked_unset"
+    for f in gitops_svc.FIELDS:
+        assert f in g
+
+
 def test_cloud_error_is_surfaced_as_a_tool_error(client, auth, monkeypatch):
     monkeypatch.setattr(mcp_proxy.httpx, "post",
                         lambda *a, **k: _Resp({"jsonrpc": "2.0", "id": 1,

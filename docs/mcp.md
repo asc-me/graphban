@@ -290,7 +290,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 
 | Tool | Params | Does |
 | --- | --- | --- |
-| `get_context` | — | Orient: the key's project, scopes, project/tool counts. Call this first. |
+| `get_context` | — | Orient: the key's project, scopes, project/tool counts, and **gitops** (base branch, push-to-base, naming, reviewer bar). Unset gitops fields are **unmeasured** — not `main` and not "no requirements". `gitops.control` is present when the box is linked (`linked_set` / `linked_unset` / `linked_unreachable`). Call this first. |
 | `list_projects` | — | All projects (`id`, `name`, `tag`, `accent`, `description`) — ids for the `project_id` override; `tag` is the short prefix its item/request/PRD keys render with |
 | `create_project` | `name`, `tag`, `description` | Create a project so `setup_project` has somewhere to bootstrap. **Self-host only, and only while unlinked** — refused in hosted mode and once the instance is linked to a cloud org, since a project created here would reach that org's tenant (AL-284) |
 | `setup_project` | `project_id` | **First-run bootstrap** — an ordered, resumable checklist (confirm project → build graph → load memories → propose items). Read-only; call it when `get_context` reports an empty project |
