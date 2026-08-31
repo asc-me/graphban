@@ -143,7 +143,7 @@ function AddCredentialDialog({
   const needs = picked ? needsOf(picked) : { endpoint: false, key: false };
   const missing = picked
     ? [
-        needs.endpoint && !baseUrl.trim() && !picked.base_url ? "an endpoint" : "",
+        needs.endpoint && !baseUrl.trim() ? "an endpoint" : "",
         needs.key && !apiKey.trim() ? "an API key" : "",
         !model.trim() && !picked.chat_model ? "a model" : "",
       ].filter(Boolean)
@@ -160,7 +160,11 @@ function AddCredentialDialog({
           <div className="grid grid-cols-2 gap-2" data-testid="provider-picker">
             {choices.map((p) => (
               <button key={p.id} type="button"
-                onClick={() => { setPicked(p); setModel(p.chat_model || ""); }}
+                onClick={() => {
+                  setPicked(p);
+                  setModel(p.chat_model || "");
+                  setBaseUrl(p.base_url || "");
+                }}
                 className="flex items-center gap-2 rounded border border-line px-3 py-2.5 text-left hover:border-accent/50">
                 <span className="text-[13px] font-medium text-fg">{p.label}</span>
                 <span className={cn(chip, "ml-auto text-faint")}>

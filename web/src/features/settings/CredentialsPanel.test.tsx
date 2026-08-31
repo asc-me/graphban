@@ -22,7 +22,9 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
+import { SettingsView } from "@/features/settings/SettingsView";
 import { ProjectProvider } from "@/features/ProjectContext";
+import { api } from "@/lib/api";
 import type { Credential, Project } from "@/lib/types";
 
 const cred = (over: Partial<Credential> = {}): Credential => ({
@@ -98,6 +100,7 @@ vi.mock("@/lib/api", () => ({
       ],
     })),
     reindexStatus: vi.fn(async () => ({ running: false, tables: [] })),
+    config: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
     createCredential: (...a: unknown[]) => createCredential(...(a as [])),
     deleteCredential: (...a: unknown[]) => deleteCredential(...(a as [])),
     retryCredential: (...a: unknown[]) => retryCredential(...(a as [])),
@@ -284,6 +287,21 @@ describe("CredentialsPanel", () => {
     expect(createCredential).not.toHaveBeenCalled();
   });
 
+  it("cannot save an ollama credential with an empty endpoint even when the catalog has a default", async () => {
+    // THE BOUNCE. needsOf skipped the URL check whenever the catalog had a default,
+    // then create posted the empty form field. The saved row was pending_validation
+    // and the edit dialog hides the endpoint when base_url is empty, so it could
+    // not be repaired (GRPH-511).
+    show();
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByText("Ollama"));
+    const endpoint = await screen.findByLabelText(/endpoint/i);
+    await userEvent.clear(endpoint);
+
+    expect(screen.getByRole("button", { name: /add credential/i })).toBeDisabled();
+    expect(createCredential).not.toHaveBeenCalled();
+  });
+
   it("saves once the required fields are present", async () => {
     show();
     await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
@@ -318,14 +336,38 @@ describe("CredentialsPanel", () => {
   });
 });
 
-describe("wiring", () => {
-  it("is mounted in the settings view, not merely written", async () => {
-    // A panel nothing renders is the GRPH-496 shape — correct, and unreachable from the
-    // product. Asserted against the view's source because rendering SettingsView needs the
-    // whole tab shell; the claim here is that the component is referenced at all.
-    const src = await import("@/features/settings/SettingsView?raw").then((m) => m.default as string);
+function showSettings(path: string, hosted: boolean) {
+  vi.mocked(api.config).mockResolvedValue({ hosted_mode: hosted, signup_mode: "closed" });
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={qc}>
+        <ProjectProvider>
+          <SettingsView />
+        </ProjectProvider>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+}
 
-    expect(src).toContain("CredentialsPanel");
+describe("wiring", () => {
+  it("the hosted AI Providers tab actually renders the panel", async () => {
+    // THE CALL (GRPH-511 bounce). A source grep of the identifier stays green if the
+    // hosted `{tab === "AI Providers" && <CredentialsPanel />}` is deleted — the import
+    // and the SelfHostPane still mention the name. Rendering the hosted view is what
+    // pins the tab.
+    showSettings("/settings", true);
+
+    expect(await screen.findByRole("button", { name: /^AI Providers$/ })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /^credentials$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add provider/i })).toBeInTheDocument();
+  });
+
+  it("the self-host providers route actually renders the panel", async () => {
+    showSettings("/settings/project/providers", false);
+
+    expect(await screen.findByText("This box")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /^credentials$/i })).toBeInTheDocument();
   });
 });
 
