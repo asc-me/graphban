@@ -27,6 +27,7 @@ export const keys = {
   prdEvidence: (id: string) => ["prd-evidence", id] as const,
   auditCoverage: (id: string) => ["audit-coverage", id] as const,
   gitops: (projectId: string) => ["gitops", projectId] as const,
+  orgGitops: (orgId: string) => ["org-gitops", orgId] as const,
 };
 
 // ── Deploy config + Organizations (hosted-only, AL-74b) ────────────────────
@@ -152,6 +153,25 @@ export function useOrgOverview(orgId?: string) {
     queryKey: ["org-overview", orgId],
     queryFn: () => api.orgOverview(orgId!),
     enabled: !!orgId,
+  });
+}
+
+export function useOrgGitops(orgId?: string) {
+  return useQuery({
+    queryKey: keys.orgGitops(orgId ?? ""),
+    queryFn: () => api.orgGitops(orgId!),
+    enabled: !!orgId,
+  });
+}
+
+export function useUpdateOrgGitops(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: GitopsPatch) => api.updateOrgGitops(orgId, body),
+    onSuccess: (view) => {
+      qc.setQueryData(keys.orgGitops(orgId), view);
+      qc.invalidateQueries({ queryKey: ["gitops"] });
+    },
   });
 }
 

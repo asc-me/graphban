@@ -8,7 +8,8 @@ Alembic; SQLite (tests / zero-infra dev) uses `create_all`.
 | Table | Key | Purpose |
 | --- | --- | --- |
 | `users` | `id` (`u1`, `u_…`) | Account: name, handle, email, avatar, initials, password hash |
-| `projects` | `id` (`core`) | Project: name, **`tag`** (unique, 2–4 chars), accent, visibility, description, flags (`share_global_memory`, `auto_extract`, `mcp_enabled`, `embed_model`) |
+| `projects` | `id` (`core`) | Project: name, **`tag`** (unique, 2–4 chars), accent, visibility, description, flags (`share_global_memory`, `auto_extract`, `mcp_enabled`, `embed_model`). Gitops overlay: `gitops_base_branch`, `gitops_no_push_to_base`, `gitops_branch_name_pattern`, `gitops_pr_title_pattern`, `gitops_reviewer_bar`, `gitops_version_scheme` (NULL = inherit; **not** on `ProjectOut`) |
+| `organizations` | `id` | Hosted tenant. House gitops columns match the project overlay set (NULL = unmeasured) |
 | `password_resets` | `id` (`pwr_…`) | A single-use way back into an account: **`token_hash`** (sha256 — the plaintext exists only in the email), `expires_at`, `used_at` set on success, `requested_ip` for provenance |
 | `memberships` | `id` | User ↔ project with `role` (owner/admin/member) + `access` (write/read/none) |
 | `items` | `id` (frozen at issue) | Tracker item: **`number`** (unique per project), title, description, `status`, tags, effort, `sort_order`, blocker, reporter, `pr` (JSON), date |
@@ -67,6 +68,12 @@ users ─< api_keys
   their note/date only. New snapshots (via the editor) always store the body.
 - **Links** — `a`/`b` are plain id strings (items or requests), not foreign keys, so an edge
   can span either kind.
+- **Gitops** — six nullable columns on **both** `organizations` (house process) and
+  `projects` (overlay). NULL is unmeasured (org) or inherit (project). Sparse fields **are**
+  inheritance; there is no extra toggle. The boolean is three-state: NULL is not `false`.
+  Columns, not a JSON blob, so a missing key cannot look like “no requirements”. Not part of
+  `ProjectOut` — that would serve a linked box's local `test` as live on `GET /api/projects`.
+  Migration `0095`.
 
 ## Migrations
 

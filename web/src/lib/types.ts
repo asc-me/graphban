@@ -1309,3 +1309,58 @@ export type ReindexStatus = {
   running: boolean;
   tables: { table: string; total: number; done: number; finished: boolean }[];
 };
+
+// ── Gitops (GRPH-P31) ──────────────────────────────────────────────────────
+// Unset is unmeasured, never "use main". `source` is how overlay bind works:
+// only `project` is this row's overlay; `org` must render empty + inherit.
+
+export type GitopsSource = "project" | "org" | "unmeasured";
+export type GitopsControlState = "local" | "linked_set" | "linked_unset" | "linked_unreachable";
+
+export interface GitopsField<T = string | boolean | null> {
+  value: T;
+  source: GitopsSource;
+}
+
+export interface GitopsProjectRef {
+  id: string;
+  name: string;
+  tag: string;
+}
+
+export interface GitopsView {
+  project_id: string | null;
+  org_id: string | null;
+  fields: {
+    base_branch: GitopsField<string | null>;
+    no_push_to_base: GitopsField<boolean | null>;
+    branch_name_pattern: GitopsField<string | null>;
+    pr_title_pattern: GitopsField<string | null>;
+    reviewer_bar: GitopsField<string | null>;
+  };
+  control: {
+    state: GitopsControlState;
+    writable: boolean;
+    message: string;
+  };
+  was: {
+    base_branch: string | null;
+    no_push_to_base: boolean | null;
+    branch_name_pattern: string | null;
+    pr_title_pattern: string | null;
+    reviewer_bar: string | null;
+  } | null;
+  version_from: GitopsField<string | null>;
+  /** Org GET roster. Identity only; overlay values stay on per-project GET. */
+  projects: GitopsProjectRef[];
+}
+
+/** Omit a key = no change. JSON `null` = clear to unmeasured/inherit. */
+export type GitopsPatch = {
+  base_branch?: string | null;
+  no_push_to_base?: boolean | null;
+  branch_name_pattern?: string | null;
+  pr_title_pattern?: string | null;
+  reviewer_bar?: string | null;
+  version_from?: string | null;
+};

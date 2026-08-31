@@ -27,6 +27,7 @@ import { OrgBranding } from "@/features/orgadmin/OrgBranding";
 import { SPECULATIVE_ENABLED } from "@/features/orgadmin/Speculative";
 import { OrgBilling } from "@/features/orgadmin/OrgBilling";
 import { OrgIntegrations } from "@/features/orgadmin/OrgIntegrations";
+import { OrgGitops } from "@/features/orgadmin/OrgGitops";
 import { OrgDeployments } from "@/features/orgadmin/OrgDeployments";
 import { OrgTeams } from "@/features/orgadmin/OrgTeams";
 import { OrgUsers } from "@/features/orgadmin/OrgUsers";
@@ -150,6 +151,7 @@ function AuthedApp() {
                 <Route path="branding" element={<OrgBranding />} />
               )}
               <Route path="integrations" element={<OrgIntegrations />} />
+              <Route path="gitops" element={<OrgGitops />} />
               <Route path="billing" element={<OrgBilling />} />
             </Route>
             {/* Legacy flat paths resolve to the tag route rather than 404. */}
