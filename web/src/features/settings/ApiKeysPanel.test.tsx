@@ -126,6 +126,21 @@ describe("minting a gate key", () => {
     expect(scopes).toContain("write"); // else `update_item` 403s at attest time
   });
 
+  it("pins the key to a project — a global gate key attests everywhere", async () => {
+    // THE BOUNCE. `key_gate_ids` falls back to every writable project when
+    // project_id is null, so a leaked CI secret would complete work across all of
+    // them. Sync already refused to be global; the UI still offered the checkbox
+    // for gate and never asserted createApiKey's projectId.
+    view();
+    await mint("Gate key");
+
+    await waitFor(() => expect(createApiKey).toHaveBeenCalled());
+    const projectId = createApiKey.mock.calls[0][1];
+    expect(projectId).toBe("core");
+    expect(screen.queryByText(/make it global/i)).toBeNull();
+    expect(screen.getByText(/exactly one project/i)).toBeInTheDocument();
+  });
+
   it("tells the operator to store it as a CI secret, not in an MCP config", async () => {
     view();
     await mint("Gate key");

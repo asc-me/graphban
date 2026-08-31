@@ -1308,6 +1308,11 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             ],
         }])
         fresh, merged = fresh + attestation, merged + attestation
+    # THE CALL (GRPH-567). `update_item` already refuses `done` inside the cooldown;
+    # this path used to write the status directly, so a reviewer who linked a PR and
+    # signed it off in the same minute — the defect the cooldown tests name — sailed
+    # through. Same helper, same message.
+    items_svc.refuse_if_pr_cooling_down(db, item, evidence or [])
     release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
     # The hold is spent by the verdict. Leaving it set would keep a `done` item looking like

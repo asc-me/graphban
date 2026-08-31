@@ -26,16 +26,21 @@ def create_key(body: ApiKeyCreate, db: Session = Depends(get_db), user: User = D
         # A key inherits its power from its owner's memberships; minting one for a
         # project the owner can't read would only produce a dead key.
         authz.require_readable(db, user.id, body.project_id)
-    if "sync" in body.scopes:
+    if "sync" in body.scopes or "gate" in body.scopes:
         # A sync credential MUST pin to one project (AL-219 D6). Left global, the
         # `key_sync_ids` fallback would resolve the ingest target to EVERY project its
         # owner can write — so one leaked key distributed to a Cursor Team could push a
         # code graph into all of them. Pinning is the blast radius.
+        #
+        # Gate keys get the same treatment (GRPH-580). `key_gate_ids` falls back to every
+        # writable project when `project_id` is null, so one leaked CI secret would attest
+        # completions across all of them. Sync already refused to be global for this
+        # reason; gate was not given the same rule.
+        kind = "gate" if "gate" in body.scopes else "sync"
         if body.project_id is None:
-            raise HTTPException(422, "a 'sync' credential must target one project")
-        # Ingest writes; require_readable above is not enough. Without this a key minted
-        # on a read-only project mints fine and then 403s at push time, which reads as a
-        # sync bug rather than a permissions one.
+            raise HTTPException(422, f"a {kind!r} credential must target one project")
+        # Ingest / attestation writes; require_readable above is not enough. Without this
+        # a key minted on a read-only project mints fine and then 403s at use time.
         authz.require_writable(db, user.id, body.project_id)
     row, plaintext = generate_api_key(
         db, user.id, body.name, body.scopes, body.project_id, body.expires_in_days,

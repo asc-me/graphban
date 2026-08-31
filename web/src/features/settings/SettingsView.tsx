@@ -805,10 +805,10 @@ export function ApiKeysPanel() {
   async function create() {
     if (!name.trim()) return;
     setError(null);
-    const isSync = kind === "sync";
-    const projectId = isSync ? syncTarget : global ? null : active?.id ?? null;
-    if (isSync && !projectId) {
-      setError("Pick a project — a sync credential must target exactly one.");
+    const isPinned = kind === "sync" || kind === "gate";
+    const projectId = isPinned ? syncTarget : global ? null : active?.id ?? null;
+    if (isPinned && !projectId) {
+      setError(`Pick a project — a ${kind} credential must target exactly one.`);
       return;
     }
     try {
@@ -891,12 +891,12 @@ export function ApiKeysPanel() {
           }
           className="max-w-xs"
         />
-        {kind === "sync" && (
+        {(kind === "sync" || kind === "gate") && (
           <select
             value={syncTarget}
             onChange={(e) => setSyncProject(e.target.value)}
             className="rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
-            aria-label="Sync target project"
+            aria-label={kind === "gate" ? "Gate target project" : "Sync target project"}
           >
             {projects.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
@@ -955,6 +955,11 @@ export function ApiKeysPanel() {
         <p className="mb-4 text-[12px] text-muted">
           Pinned to <span className="text-fg-2">{projectName(syncTarget)}</span> — a sync credential targets exactly one
           project, so a key distributed to a fleet can only ever push there.
+        </p>
+      ) : kind === "gate" ? (
+        <p className="mb-4 text-[12px] text-muted">
+          Pinned to <span className="text-fg-2">{projectName(syncTarget)}</span> — a gate key attests in exactly one
+          project, so a leaked CI secret cannot complete work across every project you can write.
         </p>
       ) : (
         <label className="mb-4 flex items-center gap-2 text-[12px] text-muted">

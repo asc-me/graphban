@@ -24,7 +24,8 @@ ATTESTED_SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
 
 
 def _mint(client, auth, scopes):
-    return client.post("/api/api-keys", json={"name": "t", "scopes": scopes},
+    return client.post("/api/api-keys", json={"name": "t", "scopes": scopes,
+                                              "project_id": "core"},
                        headers=auth).json()["plaintext"]
 
 
@@ -392,6 +393,19 @@ def test_mcp_sign_off_forwards_the_commit():
         "MCP sign_off no longer forwards commit=args.get('commit') — reviewers using "
         "the tool mint nothing even when they name a SHA"
     )
+
+
+def test_a_global_gate_key_is_rejected(client, auth):
+    """THE BOUNCE (GRPH-580). `key_gate_ids` falls back to every writable project when
+    project_id is null. Sync already 422s; gate did not. Curl could still mint a global
+    gate key even after the UI pinned one.
+    """
+    r = client.post("/api/api-keys",
+                    json={"name": "everywhere", "scopes": ["read", "write", "gate"],
+                          "project_id": None},
+                    headers=auth)
+    assert r.status_code == 422, r.text
+    assert "one project" in r.text
 
 
 # ---- the refusal (GRPH-543) ----------------------------------------------------------

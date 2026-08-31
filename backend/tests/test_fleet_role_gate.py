@@ -154,7 +154,8 @@ def test_an_unregistered_caller_on_a_full_key_is_unaffected(client, auth, agent_
     assert claimed["claimed"]
 
     gated = client.post("/api/api-keys",
-                        json={"name": "full", "scopes": ["read", "write", "gate"]},
+                        json={"name": "full", "scopes": ["read", "write", "gate"],
+                              "project_id": "core"},
                         headers=auth).json()["plaintext"]
     moved = _ok(client, gated, "update_item",
                 {"id": claimed["item"]["id"], **attest.complete_body()})
