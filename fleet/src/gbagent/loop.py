@@ -310,7 +310,7 @@ def _give_up(
     coordinator.adopt(toolset.claimed_item)
     note = handoff_note(toolset, turns, budget, turn, compactions, why)
     try:
-        coordinator.write_handoff(note)
+        coordinator.write_handoff(note, touchpoints=toolset.written)
     except HandoffFailed as exc:
         # NOT released. See EXIT_HANDOFF_FAILED — a release now would clear `built_by` and
         # throw away the only record of who made the diff sitting in the worktree.

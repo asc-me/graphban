@@ -325,7 +325,9 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 8956
+CORE_TOKENS = 8974
+# 8956 -> 8974 (GRPH-611 / P30 D10). `update_item.touchpoints` gained the union/empty
+# contract. Every key pays this; it is the same class of sentence as evidence APPENDS.
 
 #: Per tier, so a tier cannot quietly grow back to the untiered weight — the item's
 #: acceptance, in a form that fails when it stops being true.

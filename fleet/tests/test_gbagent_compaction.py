@@ -300,7 +300,10 @@ class ScriptedSession:
 class FakeCoordinator:
     def __init__(self): self.order, self.note = [], ""
     def adopt(self, item_id): self.adopted = item_id
-    def write_handoff(self, note): self.order.append("write_handoff"); self.note = note; return {}
+    def write_handoff(self, note, touchpoints=None):
+        self.order.append("write_handoff")
+        self.note = note
+        return {}
     def release(self): self.order.append("release"); return {}
 
 

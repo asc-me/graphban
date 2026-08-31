@@ -304,9 +304,10 @@ class FakeCoordinator:
     def adopt(self, item_id):
         self.adopted = item_id
 
-    def write_handoff(self, note: str):
+    def write_handoff(self, note: str, touchpoints=None):
         self.order.append("write_handoff")
         self.note = note
+        self.touchpoints = list(touchpoints or [])
         if self._fail:
             raise HandoffFailed("server said no")
         return {}
@@ -416,6 +417,9 @@ def test_the_handoff_note_says_what_ran_where_the_tests_stand_and_what_is_next(w
     assert "passing as of the last run" in note
     assert "stuck on the import cycle" in note
     assert "nothing was committed" in note
+    assert coordinator.touchpoints == ["a.py"], (
+        "give-up must write measured paths onto the item, not only name them in the note"
+    )
 
 
 def test_a_note_for_a_run_that_never_tested_says_so_rather_than_going_quiet(wt):
@@ -428,6 +432,7 @@ def test_a_note_for_a_run_that_never_tested_says_so_rather_than_going_quiet(wt):
 
     assert "NEVER RUN" in coordinator.note
     assert "not the same as passing" in coordinator.note
+    assert coordinator.touchpoints == [], "empty is not a write"
 
 
 def test_a_note_for_a_failing_run_names_the_failing_tests(wt):
@@ -627,6 +632,24 @@ def test_the_handoff_sends_only_its_own_note(wt):
     Coordinator(client=_graphban(handler), item_id="GRPH-1").write_handoff("second agent")
 
     assert [p["name"] for p in sent] == ["update_item"], "one call, no read"
+    assert sent[0]["arguments"]["evidence"] == [{"kind": "note", "detail": "second agent"}]
+    assert "touchpoints" not in sent[0]["arguments"], "empty is not a write"
+
+
+def test_a_handoff_that_changed_files_sends_them_as_touchpoints(wt):
+    """P30 D10. The note names the files; the item row must too, or the next cluster
+    is still predicted. One call — the give-up path must not grow a second round trip."""
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sent.append(body["params"])
+        return _mcp({"id": "GRPH-1"}, id_=body["id"])
+
+    Coordinator(client=_graphban(handler), item_id="GRPH-1").write_handoff(
+        "second agent", touchpoints=["a.py", "a.py", "  b.py  "])
+
+    assert sent[0]["arguments"]["touchpoints"] == ["a.py", "b.py"]
     assert sent[0]["arguments"]["evidence"] == [{"kind": "note", "detail": "second agent"}]
 
 

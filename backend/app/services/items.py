@@ -329,6 +329,37 @@ def _record_applied_lessons(db: Session, item: Item, shard_ids: list[str]) -> No
         )
 
 
+def union_touchpoints(existing, incoming) -> list[str]:
+    """Add measured paths without removing declared ones (GRPH-611 / P30 D10).
+
+    `update_item(touchpoints=[...])` used to assign the incoming list straight over the
+    stored one. An empty write then read as "this item collides with nothing", which is
+    the absence that looks like a clean partition — predicted/declared paths gone, the
+    next `claim_cluster` treating the item as unconstrained. The client sends **this
+    reap's measured paths only**; the server keeps what was already there.
+
+    Same reason as `append_evidence`: there is no way to remove a path through this
+    verb. A wrong one is corrected by adding the real one, which leaves both readable.
+    An identical path is a retry, not a second entry.
+
+    Empty incoming is a no-op on the list itself — callers should skip the write, and
+    `update_item` does.
+    """
+    if isinstance(incoming, str):
+        incoming = [incoming]
+    out: list[str] = []
+    seen: set[str] = set()
+    for path in list(existing or []) + list(incoming or []):
+        if not isinstance(path, str):
+            continue
+        cleaned = path.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        out.append(cleaned)
+    return out
+
+
 def append_evidence(existing, incoming) -> list[dict]:
     """Add receipts to an item's record without removing any already there (GRPH-494).
 
@@ -738,10 +769,18 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
             item.prd_linked_at = utcnow()
     for key in ("title", "description", "status", "tags", "effort", "blocker", "pr", "date",
                 "head_commit",
-                "github_url", "assignee", "touchpoints", "prd_id", "prd_section", "fidelity"):
+                "github_url", "assignee", "prd_id", "prd_section", "fidelity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
     pending_lesson_applies: list[str] = []
+    if fields.get("touchpoints") is not None:
+        # Unions. See `union_touchpoints` — a write here must never remove a declared or
+        # earlier-measured path, because the next partition reads this list as the item's
+        # actual areas (P30 D10). Empty is not a write: `[]` would otherwise replace
+        # predicted/declared paths and read as "no collision".
+        incoming_tps = fields["touchpoints"]
+        if incoming_tps:
+            item.touchpoints = union_touchpoints(item.touchpoints, incoming_tps)
     if fields.get("evidence") is not None:
         # Appends. See `append_evidence` — a write here must never remove a receipt somebody
         # else left, because `sign_off` gates on the stored ones (GRPH-494).

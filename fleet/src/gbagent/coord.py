@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from gbfleet.client import Graphban
+from gbfleet.record import cleaned_paths, measured as record_measured
 
 from .orient import COORDINATION_TOOLS, ORIENTATION_TOOLS
 
@@ -89,7 +90,7 @@ class Coordinator:
         if item_id and not self.item_id:
             self.item_id = item_id
 
-    def write_handoff(self, note: str) -> dict:
+    def write_handoff(self, note: str, touchpoints: list[str] | None = None) -> dict:
         """Record what happened, as a substantive write to the ITEM ROW.
 
         This is the call `built_by` survives on. `release_item` clears authorship when
@@ -106,6 +107,10 @@ class Coordinator:
         forward would now be a round trip on the give-up path to re-send rows the server
         already keeps, and a second failure mode on the one call that must not fail.
 
+        **Measured paths ride along when this run changed files** (P30 D10). The server
+        unions, so this sends this run's paths only. Empty is omitted — `[]` would
+        otherwise read as "no collision".
+
         Raises `HandoffFailed` rather than degrading: a release that follows a failed write is
         the outcome D6 exists to prevent.
         """
@@ -114,14 +119,21 @@ class Coordinator:
                 "there is no item to write a handoff to. Nothing was claimed, so there is no "
                 "row to record this run against."
             )
+        arguments: dict = {
+            "id": self.item_id,
+            "evidence": [{"kind": "note", "detail": note}],
+        }
+        cleaned = cleaned_paths(touchpoints)
+        if cleaned:
+            arguments["touchpoints"] = cleaned
         try:
-            return self.client.call(
-                "update_item",
-                id=self.item_id,
-                evidence=[{"kind": "note", "detail": note}],
-            )
+            return self.client.call("update_item", **arguments)
         except Exception as exc:  # noqa: BLE001 — every failure here has the same consequence
             raise HandoffFailed(f"could not write the handoff note to {self.item_id}: {exc}") from exc
+
+    def record_measured(self, paths: list[str]) -> dict | None:
+        """Union this run's measured paths onto the item. Empty is not a write (P30 D10)."""
+        return record_measured(self.client, self.item_id, paths)
 
     def release(self) -> dict:
         """Hand the item back. Only ever called AFTER `write_handoff` has returned."""

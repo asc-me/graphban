@@ -147,7 +147,9 @@ TOOLS: list[dict[str, Any]] = [
                 "description": {"type": "string"},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "touchpoints": {"type": "array", "items": {"type": "string"},
-                                "description": "Files/globs/modules this item affects (for clustering)."},
+                                "description": "Files/globs/modules this item affects (for clustering). "
+                                               "UNIONS — sending some never removes the rest. "
+                                               "Empty is not a write."},
                 "effort": {"type": "integer", "description": _EFFORT_DESC},
                 "blocker": {"type": "string", "description": "Free-text blocker; empty string clears it."},
                 "fidelity": {"type": "string", "enum": _FIDELITY_ENUM,

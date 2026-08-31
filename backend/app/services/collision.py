@@ -8,8 +8,9 @@ parallel (one Grok Build worktree each, AL-201).
 
 Touch-areas come from `touch_areas`: an item's own touchpoints when set (human/actual —
 highest confidence), else PREDICTED — code-map semantic inference (`search_code`) plus the
-touchpoints of items linked to it (learned patterns). Once real touchpoints land they
-replace the prediction, so clusters sharpen as work completes. Overlap uses the same
+touchpoints of items linked to it (learned patterns). Measured paths **union** with
+declared ones (`update_item` / P30 D10); they do not replace, and an empty write is not
+a write — wiping the list would read as "no collision". Overlap uses the same
 glob/dir-aware match as code-locality clustering (`clustering.shared_touchpoints`).
 """
 from __future__ import annotations

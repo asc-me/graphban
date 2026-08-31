@@ -142,6 +142,7 @@ class Toolset:
             refusal = self._completion_guard(call)
             if refusal is not None:
                 return refusal
+            call = self._with_measured_touchpoints(call)
             return self.orientation.execute(call)
         handler = getattr(self, f"_do_{call.name}", None)
         if handler is None or not call.name:
@@ -236,6 +237,22 @@ class Toolset:
         if out["empty"]:
             return f"no changes under {path}"
         return out["diff"] + ("\n... truncated" if out["truncated"] else "")
+
+    def _with_measured_touchpoints(self, call: ToolCall) -> ToolCall:
+        """P30 D10. The harness owns the measurement; the model does not get to invent it.
+
+        Sends this run's written paths only. Empty is not a write — stripping `[]` (and
+        any paths the model guessed) is what stops a completion from wiping declared
+        / predicted areas and reading as "no collision".
+        """
+        if call.name != "update_item":
+            return call
+        arguments = dict(call.input)
+        if self.written:
+            arguments["touchpoints"] = list(self.written)
+        else:
+            arguments.pop("touchpoints", None)
+        return ToolCall(id=call.id, name=call.name, input=arguments)
 
     def _completion_guard(self, call: ToolCall) -> ToolResult | None:
         """Refuse to hand work over as finished when nothing was changed.

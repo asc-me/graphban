@@ -311,7 +311,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `heartbeat` | `id`, `agent_id` | Extend the lease on an item you hold **and** your agent presence (so neither is reclaimed while you work) |
 | `release_item` | `id`, `agent_id`, `to_status` | Return a claimed item to the queue |
 | `create_item` | `title`, `description`, `tags`, `touchpoints`, `effort`, `status`, `fidelity`, `project_id` | Create a tracker item (returns its `project_id`) |
-| `update_item` | `id`, `status`, `title`, `description`, `tags`, `touchpoints`, `effort`, `blocker`, `fidelity`, `prd_id`, `prd_section` | Patch / advance an item |
+| `update_item` | `id`, `status`, `title`, `description`, `tags`, `touchpoints`, `effort`, `blocker`, `fidelity`, `prd_id`, `prd_section` | Patch / advance an item. `touchpoints` **unions** (like evidence appends); an empty list is not a write |
 | `search_items` | `query`, `tags`, `status`, `fields`, `project_id` | Query the stream (query matches title, description, **and** tags); lean rows by default, `fields="full"` for all |
 | `add_memory` | `text`, `scope`, `item_id`, `project_id` | Record a memory shard. Resolved `status` follows the project's memory write mode: `review` → **`candidate`** pending human publish (AL-49, the default), `auto` → published only when strongly corroborated, `trusted` → published on write so an agent can read its own writes back (AL-280) |
 | `publish_memory` | `shard_id` | **Submit** a candidate for independent adjudication — the judge decides, not the caller. Returns `{shard, verdict}`; `kept: false` is a normal outcome. Needs `agent_adjudication` on the project **and** a real chat model, else `unavailable` and the shard is untouched (AL-282) |
@@ -503,9 +503,11 @@ linked item, effort, and staleness. Each `get_backlog` row carries `ready`, `blo
 ### Code-locality clustering (pick up related work at once)
 
 Give items **touchpoints** — the files/globs/modules they affect (`backend/app/routers/*`,
-`web/src/lib/api.ts`, a symbol name) — on `create_item`/`update_item`. Two items relate when
-their touchpoints overlap (exact, glob, or same directory), and sharing a touchpoint
-**auto-creates a `code` link** between them. Then:
+`web/src/lib/api.ts`, a symbol name) — on `create_item`/`update_item`. `update_item`
+**unions** the list (P30 D10): the client sends this reap's measured paths only, and an
+empty list is not a write — wiping declared paths would read as "no collision". Two items
+relate when their touchpoints overlap (exact, glob, or same directory), and sharing a
+touchpoint **auto-creates a `code` link** between them. Then:
 
 - `related_work(id)` shows the code-neighborhood around a task (shared touchpoints + link types),
   best-first — read-only.
