@@ -404,10 +404,12 @@ def test_the_model_table_keeps_its_caveats():
     # index only carries PRDs with a repo copy, and PRD-11 is ledger-only. So it cannot be
     # pinned to a value; it is DATED instead, which keeps it true as a historical
     # observation and tells the reader to re-check (GRPH-527).
-    assert "as measured on" in text, (
-        "the PRD-11 ownership claim lost its date. Stated flat it becomes false the moment "
-        "PRD-11 is approved, and no test in this repository can notice — there is no "
-        "committed record of a ledger-only PRD's status to compare against."
+    assert "as measured on 2026-08-26" in text, (
+        "the PRD-11 ownership claim lost its date. 'as measured on' also appears in the "
+        "GRPH-557 heading, so deleting this dated clause left the test green. Stated flat "
+        "the claim becomes false the moment PRD-11 is approved, and no test in this "
+        "repository can notice — there is no committed record of a ledger-only PRD's "
+        "status to compare against."
     )
 
     assert "thin evidence and should be read as thin" in text, (
@@ -416,6 +418,18 @@ def test_the_model_table_keeps_its_caveats():
     assert "Nothing owns the routing question" in text, (
         "PRD-24 §4 defers model routing to PRD-11, which has no approved baseline — dropping "
         "that leaves the arc's load-bearing variable looking owned when it is not"
+    )
+
+
+def test_the_measured_model_finding_has_its_own_heading():
+    """GRPH-557. The finding lived in a walk record. Putting it in fleet-adapters.md
+    is the location claim; the older gbagent subsection already named both models, so
+    deleting this heading left test_the_model_table_keeps_its_caveats green.
+    """
+    text = MATRIX.read_text(encoding="utf-8")
+    assert "## Which model, and what that was measured on (GRPH-557)" in text, (
+        "the measured-model section is gone — operators sent here from the Fleet "
+        "supervisor panel will not see it"
     )
 
 
@@ -452,7 +466,11 @@ def test_the_model_table_agrees_with_the_adapters_about_who_can_be_checked():
 
     for name, adapter in ADAPTERS.items():
         attempts = type(adapter).known_models is not Adapter.known_models
-        says_no = rows[name].lower().split("|")[3].strip().startswith("**no.")
+        cell = rows[name].lower().split("|")[3].strip()
+        # Strip markdown so `no.`, `**no**`, and `**no.` all read as the operator
+        # would. startswith("**no.") left a plain `no.` looking like a yes.
+        first = cell.replace("*", "").replace("`", "").split()[0].rstrip(".,;:")
+        says_no = first == "no"
         assert says_no is not attempts, (
             f"{name}: the table says {'it cannot be checked' if says_no else 'it can be'}, "
             f"but the adapter {'does not' if not attempts else 'does'} attempt a listing. "

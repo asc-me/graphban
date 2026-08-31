@@ -271,3 +271,60 @@ def test_a_dangling_embed_pointer_falls_back_rather_than_failing_boot(db):
     db.commit()
 
     assert emb.apply_embedder(db) == "environment"
+
+
+# ---- the CALL: PUT /credentials/defaults must hit the gate -------------------------------
+
+
+def test_the_defaults_endpoint_refuses_an_embedder_while_vectors_exist(
+    client, auth, db, monkeypatch,
+):
+    """THE BOUNCE. `set_embed_credential` refused while vectors exist; PUT defaults
+    wrote `embed_credential_id` through `set_scope_defaults` and returned 200.
+
+    Seeded tests already have vectors, so this is the real deployment case, not a
+    fixture we had to invent.
+    """
+    _returns(monkeypatch, dim=settings.embed_dim)
+    _cred(db, "cred_e")
+
+    r = client.put(
+        "/api/platform/credentials/defaults",
+        json={"embed_credential_id": "cred_e"},
+        headers=auth,
+    )
+
+    assert r.status_code == 409, r.text
+    assert "vector" in r.json()["detail"].lower()
+    row = db.get(DeploymentConfig, "")
+    assert row is None or row.embed_credential_id != "cred_e"
+
+
+def test_set_scope_defaults_routes_embed_through_the_gate(db, monkeypatch):
+    """Same hole at the service layer the router calls. setattr on embed_credential_id
+    is the mutation that must fail this.
+    """
+    from app.services import platform as platform_svc
+
+    _returns(monkeypatch, dim=settings.embed_dim)
+    _cred(db, "cred_e")
+    _a_vector(db)
+
+    with pytest.raises(emb.EmbedderRefused, match="vectors"):
+        platform_svc.set_scope_defaults(db, "", embed_credential_id="cred_e")
+
+
+def test_a_legal_embedder_change_is_live_without_restart(db, monkeypatch):
+    """Saving a form that is allowed must not wait for process restart to take effect.
+    get_embedder() is cached from boot; apply_embedder is what clears it.
+    """
+    from app import providers
+
+    _no_vectors(db)
+    _returns(monkeypatch, dim=settings.embed_dim)
+    _cred(db, "cred_e", model="live-now")
+    emb.set_embed_credential(db, "", "cred_e")
+
+    assert providers._active_embed.get("model") == "live-now", (
+        "the row was saved but get_embedder() is still the boot embedder"
+    )

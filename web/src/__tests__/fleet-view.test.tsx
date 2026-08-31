@@ -742,6 +742,8 @@ describe("Fleet view", () => {
     expect(cmd.textContent).toContain("--seats-file seats.txt");
     expect(cmd.textContent).toContain("--adapter claude");
     expect(cmd.textContent).toContain("--wave wave-7");
+    expect(cmd.textContent).toContain("--server");
+    expect(cmd.textContent).toMatch(/--server\s+\S+/);
   });
 
   it("only offers adapters the supervisor can resolve", async () => {
@@ -766,6 +768,15 @@ describe("Fleet view", () => {
 
     const note = screen.getByText(/not\s+a seat/);
     expect(note.textContent).toMatch(/API key/);
+  });
+
+  it("points the supervisor path at the measured-model document", async () => {
+    // GRPH-557. The finding is in docs/fleet-adapters.md. A pointer nobody asserts
+    // is the walk-record problem again: operators never leave this panel for it.
+    const user = userEvent.setup();
+    await _issueTwo(user);
+    await user.click(screen.getByText(/under a supervisor/));
+    expect(screen.getByText("docs/fleet-adapters.md")).toBeInTheDocument();
   });
 
   it("says what a wave is where the wave is named", async () => {

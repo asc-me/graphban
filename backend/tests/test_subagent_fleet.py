@@ -93,6 +93,21 @@ def test_readme_invariants_are_verbatim_from_agents_md():
     assert invariants in readme, "fleet README invariants drifted from AGENTS.md"
 
 
+def test_sabotage_the_call_reaches_spawned_agents():
+    """GRPH-537. The paragraph is the instruction; spawned agents never saw it
+    because nothing pinned the needle. Deleting it from AGENTS.md and regenerating
+    left test_docs_sync and test_subagent_fleet green.
+    """
+    needle = "Sabotage the CALL, not only the callee."
+    agents = (REPO / "AGENTS.md").read_text()
+    assert needle in agents, "AGENTS.md lost the CALL sabotage instruction"
+    readme = (REPO / ".cursor" / "agents" / "README.md").read_text()
+    assert needle in readme, (
+        "generated fleet README lost the CALL sabotage instruction — spawned "
+        "agents will not see it"
+    )
+
+
 # ---- the Cursor plugin (GRPH-364) -------------------------------------------------------
 
 def _plugin(name):

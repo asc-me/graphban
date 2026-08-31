@@ -374,6 +374,26 @@ def test_the_minted_attestation_records_why_adversarial_evidence_was_not_require
         f"the receipt does not say why the predicate passed: {adv}"
 
 
+def test_mcp_sign_off_forwards_the_commit():
+    """THE CALL. 544 tests drive fleet_svc.sign_off directly; MCP tests sign_off without a
+    commit. Dropping commit=args.get('commit') from the dispatcher left 7 green
+    (GRPH-544 bounce). The adapter can be correct and the only surface reviewers use
+    still mints nothing.
+
+    Read from the file, not inspect.getsource(_call_tool): schema_probe wraps that
+    function for the session, so inspect would see the wrapper.
+    """
+    from pathlib import Path
+
+    from app import mcp_server
+
+    src = Path(mcp_server.__file__).read_text()
+    assert 'commit=args.get("commit")' in src, (
+        "MCP sign_off no longer forwards commit=args.get('commit') — reviewers using "
+        "the tool mint nothing even when they name a SHA"
+    )
+
+
 # ---- the refusal (GRPH-543) ----------------------------------------------------------
 #
 # These must NOT use tests/attest.py. It exists so the rest of the suite can step past this

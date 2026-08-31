@@ -341,6 +341,39 @@ def test_an_inactive_entry_does_not_create_a_spurious_override(db):
     assert db.get(Project, "p2").model_override == ""
 
 
+def test_repair_path_pointer_follows_active_not_the_reused_credential(db):
+    """THE CALL the bounce found. First-run create-path is pinned. Repair is: credentials
+    already exist, migrate joins them. Every reuse fixture is a single-entry blob, so
+    last-writer-wins on a two-entry repair was unobservable (GRPH-539 bounce).
+
+    p1 migrates ollama-only (creates the ollama row). p2 then has xai (active) plus an
+    ollama entry matching p1. The reuse path must not claim p2's pointer.
+    """
+    _project(db, "p1", {
+        "ollama": {"base_url": "http://o:11434", "api_key": "", "chat_model": "qwen"},
+    })
+    mig.migrate(db)
+    ollama_id = db.get(Project, "p1").credential_id
+    assert ollama_id
+
+    # xai first so the ollama reuse is the LAST group written — last-wins is the defect.
+    _project(db, "p2", {
+        "xai": {"base_url": "", "api_key": secrets.encrypt("sk-xai"), "chat_model": "grok"},
+        "ollama": {"base_url": "http://o:11434", "api_key": "", "chat_model": "qwen"},
+    })
+    platform_svc.get_config(db, "p2").active_chat_provider = "xai"
+    db.commit()
+
+    mig.migrate(db)
+
+    pointed = db.get(Credential, db.get(Project, "p2").credential_id)
+    assert pointed is not None and pointed.kind == "xai", (
+        f"p2 was using xai and now points at {getattr(pointed, 'kind', None)} — "
+        "the reuse path claimed the pointer from the inactive ollama entry"
+    )
+    assert db.get(Project, "p2").credential_id != ollama_id
+
+
 # ---- dedupe against what already exists (GRPH-545) -------------------------------------------
 
 

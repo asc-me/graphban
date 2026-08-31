@@ -735,7 +735,6 @@ def set_scope_defaults(db: Session, scope: str, *, default_credential_id: str | 
     for field, value, what in (
         ("default_credential_id", default_credential_id, "default"),
         ("fallback_credential_id", fallback_credential_id, "fallback"),
-        ("embed_credential_id", embed_credential_id, "embedding credential"),
     ):
         if value is ...:
             continue
@@ -751,6 +750,28 @@ def set_scope_defaults(db: Session, scope: str, *, default_credential_id: str | 
                 "Test connection, or correct and resave it, first."
             )
         setattr(row, field, value)
+
+    # The embedder gate is a callee nobody called if this field is setattr'd like the
+    # other two. PUT /credentials/defaults used to return 200 while vectors_exist was
+    # true; `set_embed_credential` is the probe + dimension + vectors_exist check.
+    if embed_credential_id is not ...:
+        from app.services import embedder as emb_svc
+        if embed_credential_id is None:
+            row.embed_credential_id = None
+            db.commit()
+            db.refresh(row)
+            emb_svc.apply_embedder(db, scope)
+            return row
+        cred = credential_in_scope(db, embed_credential_id, scope)
+        if cred is None:
+            raise LookupError(embed_credential_id)
+        if cred.state == UNPROVEN:
+            raise ValueError(
+                f"{embed_credential_id} has never been validated, so it cannot be the "
+                "embedding credential. Use Test connection, or correct and resave it, first."
+            )
+        db.commit()
+        return emb_svc.set_embed_credential(db, scope, embed_credential_id)
 
     db.commit()
     db.refresh(row)

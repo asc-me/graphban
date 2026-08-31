@@ -139,6 +139,9 @@ def set_embed_credential(db: Session, scope: str, credential_id: str, *,
     db.refresh(row)
     logger.info("embedding credential for scope %r set to %s (%s, dim %d)",
                 scope, credential_id, cred.model, dimension)
+    # A legal change that only writes the row leaves get_embedder() on boot state
+    # until restart. Apply now so the next embed uses what was just accepted.
+    apply_embedder(db, scope)
     return row
 
 
@@ -179,12 +182,14 @@ def apply_embedder(db: Session, scope: str = "") -> str:
     row = db.get(DeploymentConfig, scope or "")
     credential_id = row.embed_credential_id if row else None
     if not credential_id:
+        providers.set_active_embedder("")
         return "environment"
 
     cred = db.get(Credential, credential_id)
     if cred is None or (cred.org_id or "") != (scope or ""):
         logger.warning("embedding credential %s is not readable in scope %r; keeping the "
                        "environment's embedder", credential_id, scope)
+        providers.set_active_embedder("")
         return "environment"
 
     providers.set_active_embedder(

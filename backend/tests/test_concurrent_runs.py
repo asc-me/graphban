@@ -140,3 +140,18 @@ def test_releasing_lets_the_next_run_in(scratch):
         assert claim_sqlite(scratch) is True
     finally:
         release_sqlite(scratch)
+
+
+def test_the_session_setup_actually_claims_the_sqlite_file():
+    """THE CALL. Concurrent-run tests drive claim_sqlite directly, so deleting
+    claim_sqlite(...) from conftest left them green (GRPH-554 bounce). A second
+    pytest in the same worktree would again unlink .pytest.db under an open connection.
+    """
+    src = Path(__file__).resolve().parent.joinpath("conftest.py").read_text()
+    live = [ln for ln in src.splitlines()
+            if "claim_sqlite" in ln and not ln.lstrip().startswith("#")]
+    assert any("claim_sqlite(os.environ" in ln for ln in live), (
+        "conftest no longer claims the SQLite file this session will open — the "
+        "helper can be correct and two pytest processes still share one database. "
+        "A comment is not the claim."
+    )

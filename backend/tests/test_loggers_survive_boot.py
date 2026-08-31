@@ -81,3 +81,34 @@ def test_a_warning_actually_reaches_a_handler_after_startup(client):
     assert seen == ["canary"], (
         "a WARNING emitted after startup reached no handler — the app cannot report anything"
     )
+
+
+def test_the_app_migrate_path_skips_fileconfig():
+    """THE PRODUCTION SKIP. `disable_existing_loggers=False` is the CLI `alembic upgrade`
+    path. The app sets `configure_logger=False` so `fileConfig` is not called at all;
+    reverting only the flag left both tests above green on Postgres.
+    """
+    import ast
+    import inspect
+
+    from app import migrate
+
+    tree = ast.parse(inspect.getsource(migrate.run_migrations))
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Constant):
+            continue
+        if node.value.value is not False:
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Subscript):
+                continue
+            sl = target.slice
+            key = sl.value if isinstance(sl, ast.Constant) else None
+            if key == "configure_logger":
+                found = True
+    assert found, (
+        "run_migrations no longer assigns configure_logger=False — app loggers would "
+        "be silenced on every Postgres boot. A comment containing the string is not "
+        "the skip."
+    )
