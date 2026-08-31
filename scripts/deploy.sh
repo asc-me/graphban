@@ -52,7 +52,22 @@ while [ $# -gt 0 ]; do
   esac
 done
 REF="${REF:-origin/main}"
-TARGET_DIR="${TARGET_DIR/#\~/$HOME}"
+if [ -n "$LOCAL" ]; then
+  # ~ is THIS machine's home only for a local deploy (GRPH-573 bounce). The
+  # unguarded rewrite turned no-args `ubuntu-srv:~/agentledger/` into
+  # `ubuntu-srv:/Users/alex/agentledger/`.
+  TARGET_DIR="${TARGET_DIR/#\~/$HOME}"
+fi
+
+# Path as it must appear in a command that RUNS ON THE TARGET. A leading tilde
+# stays unquoted so the far shell expands it; anything else is single-quoted.
+on_target_path() {
+  local p="${1:-$TARGET_DIR}"
+  case "$p" in
+    ~*) printf '%s' "$p" ;;
+    *)  printf "'%s'" "$p" ;;
+  esac
+}
 
 # One place that knows whether there is an ssh hop, so every later step reads the same for a
 # remote and a local deploy and neither can drift from the other.
@@ -64,7 +79,7 @@ on_target() {
 # fails a good deploy, which teaches people to ignore the verification.
 target_env() {
   local key="$1" default="$2" val=""
-  val="$(on_target "grep -sE '^${key}=' '${TARGET_DIR%/}/.env' | tail -1 | cut -d= -f2-" 2>/dev/null || true)"
+  val="$(on_target "grep -sE '^${key}=' $(on_target_path "${TARGET_DIR%/}")/.env | tail -1 | cut -d= -f2-" 2>/dev/null || true)"
   val="$(printf '%s' "$val" | tr -d '[:space:]\"'"'"'')"
   printf '%s' "${val:-$default}"
 }
@@ -112,7 +127,7 @@ else
 fi
 
 echo "==> building on $REMOTE"
-on_target "cd '$TARGET_DIR' && GIT_SHA=$GIT_SHA docker compose up -d --build" >/dev/null
+on_target "cd $(on_target_path) && GIT_SHA=$GIT_SHA docker compose up -d --build" >/dev/null
 
 # Read AFTER the sync, so a first deploy to a fresh box sees the .env it just arrived beside.
 # Defaults are compose's own, so an install that sets nothing still verifies correctly.
@@ -130,7 +145,7 @@ done
 
 LIVE_SHA="$(echo "$LIVE" | sed -n 's/.*"git_sha":"\([^"]*\)".*/\1/p')"
 WEB_SHA="$(on_target "curl -s http://localhost:$WEB_PORT/version.txt" 2>/dev/null | tr -d '[:space:]')"
-MIGRATION="$(on_target "cd '$TARGET_DIR' && docker compose exec -T db \
+MIGRATION="$(on_target "cd $(on_target_path) && docker compose exec -T db \
   psql -U '$PG_USER' -d '$PG_DB' -tAc 'select version_num from alembic_version'" | tr -d '[:space:]')"
 
 echo "    api      $LIVE_SHA"
