@@ -103,6 +103,8 @@ INSTRUCTION = (
     "- `get_item_details` and `related_work` say what the work is and what has already "
     "touched it.\n"
     "- `search_memory` is what earlier agents learned here. It is worth one turn.\n"
+    "Open PRs against gitops.base_branch when it is measured; unset, unmeasured, or "
+    "linked_unreachable means do not guess main.\n"
     "Read files when you have a specific file and a specific reason. Then edit, then "
     "run_tests."
 )

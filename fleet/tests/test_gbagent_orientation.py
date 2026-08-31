@@ -311,6 +311,48 @@ def test_the_system_prompt_actually_carries_it():
     assert "worktree root" in SYSTEM, "the boundary is still stated too"
 
 
+def test_the_instruction_names_measured_base_branch_and_does_not_guess_main():
+    """GRPH-P31 D18 / open question 2. Warn only; do not invent main when unmeasured."""
+    assert "gitops.base_branch" in orient.INSTRUCTION
+    assert "do not guess main" in orient.INSTRUCTION
+    assert "linked_unreachable" in orient.INSTRUCTION
+
+
+def test_get_context_orientation_carries_gitops_and_does_not_invent_main():
+    """JSON dump is enough — do not parse gitops. D18: unmeasured must not look chosen.
+
+    Sabotage the CALL: if `_render` (or a helper) substituted `main` for a null
+    `base_branch`, the suite must fail. The honest note may mention 'use main';
+    a fabricated chosen value is `"value": "main"`.
+    """
+    gitops = {
+        "base_branch": {"value": None, "source": "unmeasured"},
+        "no_push_to_base": {"value": None, "source": "unmeasured"},
+        "branch_name_pattern": {"value": None, "source": "unmeasured"},
+        "pr_title_pattern": {"value": None, "source": "unmeasured"},
+        "reviewer_bar": {"value": None, "source": "unmeasured"},
+        "tokens": ["item_id", "tag", "slug", "version", "date"],
+        "version_from": {"value": None, "source": "unmeasured"},
+        "note": "unset fields are unmeasured — not 'use main' and not 'no requirements'",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "tools/list":
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
+                                             "result": {"tools": _manifest(ORIENTATION_TOOLS)}})
+        payload = {"project_id": "core", "gitops": gitops}
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+            "structuredContent": payload}})
+
+    orientation = orient.build(_server(handler))
+    result = orientation.execute(ToolCall(id="c", name="get_context", input={}))
+
+    assert result.is_error is False
+    assert "gitops" in result.content
+    assert '"value": "main"' not in result.content
+
+
 # ---- the metric (PRD-24 §9.3) -------------------------------------------------------------
 
 
