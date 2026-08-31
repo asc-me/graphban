@@ -21,7 +21,7 @@ from .orient import COORDINATION_TOOLS, ORIENTATION_TOOLS
 
 #: Every Graphban tool `gbagent` may call, pinned by `test_gbagent_loop.py`.
 #:
-#: Two writes and eight reads, and the split is the point.
+#: Writes and reads, and the split is the point.
 #:
 #: The WRITES are what the loop itself initiates: the give-up path writes a note and releases
 #: (D6). The READS are S6's orientation layer, which the MODEL calls — every one of them
@@ -29,7 +29,8 @@ from .orient import COORDINATION_TOOLS, ORIENTATION_TOOLS
 #: handing them to a weak model needs no further argument.
 #:
 #: S7 adds `COORDINATION_TOOLS` — claim, move to review, heartbeat — because an agent that
-#: cannot claim its own work is not a fleet member.
+#: cannot claim its own work is not a fleet member. P30 D11 adds `create_item` and
+#: `link_items` so a worker can file a typed human wait on this tracker.
 #:
 #: `heartbeat` is the one the LOOP makes on a timer rather than at a decision point
 #: (GRPH-496). Presence is derived from `last_seen_at` and only `heartbeat` refreshes it, so
@@ -181,3 +182,41 @@ class Coordinator:
         if self.agent_id:
             arguments["agent_id"] = self.agent_id
         return self.client.call("heartbeat", **arguments)
+
+    def file_wait(self, kind: str, *, title: str = "", on_self: bool = False) -> dict:
+        """Block this item on a typed human wait. Never moves it to review or done.
+
+        Path 1 (default): create a wait-tagged item, depend on it, set this item
+        `blocked`. Path 2 (`on_self`): this item IS the human act — tag it and block
+        it. Free-text is not a type; `kind` must be one of merge/decision/secret/
+        access/deploy.
+        """
+        from gbfleet.waits import WAIT_TAGS
+
+        if not self.item_id:
+            raise ValueError("there is no item to file a wait against")
+        tag = kind if kind in WAIT_TAGS else f"wait:{kind}"
+        if tag not in WAIT_TAGS:
+            raise ValueError(
+                f"unknown wait type {kind!r}. Typed waits are {', '.join(WAIT_TAGS)}. "
+                "Free-text is not a type."
+            )
+        if on_self:
+            details = self.client.call("get_item_details", id=self.item_id)
+            tags = list(details.get("tags") or [])
+            if tag not in tags:
+                tags.append(tag)
+            return self.client.call(
+                "update_item", id=self.item_id, status="blocked", tags=tags,
+            )
+        wait = self.client.call(
+            "create_item",
+            title=title or f"{tag} for {self.item_id}",
+            tags=[tag],
+            status="blocked",
+        )
+        wait_id = wait.get("id")
+        self.client.call(
+            "link_items", a=self.item_id, b=wait_id, type="dependency", reason=tag,
+        )
+        return self.client.call("update_item", id=self.item_id, status="blocked")

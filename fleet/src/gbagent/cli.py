@@ -131,6 +131,15 @@ def register(client, *, code: str, model: str, worktree: str, branch: str) -> tu
     agent_id = str(me.get("agent_id") or "")
     if not agent_id:
         raise NotRegistered("register_agent returned no agent_id")
+    off = me.get("tools_off_limits") or []
+    if "create_item" in off:
+        # P30 D11. A worker that cannot create cannot file a typed human wait.
+        # That seat is a mis-mint, not a child that should limp on with free-text
+        # `blocker`.
+        raise NotRegistered(
+            "this seat cannot create_item — a worker that cannot file a human wait "
+            "is a mis-mint (P30 D11)"
+        )
     return agent_id, str(me.get("active_role") or "")
 
 

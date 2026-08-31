@@ -444,6 +444,24 @@ def test_a_registration_the_server_refuses_is_not_papered_over():
     assert "seat spent" in str(exc.value)
 
 
+def test_a_seat_that_cannot_create_is_a_mis_mint():
+    """P30 D11. A worker that cannot create_item cannot file a typed wait."""
+    import httpx
+
+    def handler(request):
+        body = json.loads(request.content)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
+            "structuredContent": {
+                "agent_id": "GRPH-A1", "active_role": "worker",
+                "tools_off_limits": ["create_item", "mint_enrolment"],
+            }}})
+
+    with pytest.raises(cli.NotRegistered) as exc:
+        cli.register(_client(handler), code="WORKER-1", model="m", worktree="/w", branch="b")
+    assert "create_item" in str(exc.value)
+    assert "mis-mint" in str(exc.value)
+
+
 def test_a_registration_returning_no_id_is_refused_rather_than_used_empty():
     """An empty agent_id would reach `claim_cluster` as a caller nobody can identify."""
     import httpx
