@@ -71,7 +71,13 @@ NOT_ORIENTATION: tuple[str, ...] = ("describe_code",)
 #:
 #: Absent, and the server would refuse them anyway: `sign_off`, `bounce`, `claim_review`,
 #: `mint_enrolment`. D5 — done is not the agent's word.
-COORDINATION_TOOLS: tuple[str, ...] = ("claim_cluster", "update_item", "heartbeat")
+COORDINATION_TOOLS: tuple[str, ...] = (
+    "claim_cluster", "update_item", "heartbeat",
+    # P30 D11. A worker that cannot create cannot file a typed human wait, and a
+    # wait is an item on this tracker, not a free-text blocker. `link_items` is
+    # how the original depends on that wait.
+    "create_item", "link_items",
+)
 
 #: Arguments the AGENT owns and the model does not get to invent. **Overwritten, not
 #: defaulted**, wherever the tool's schema has the field.

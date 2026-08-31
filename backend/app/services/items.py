@@ -629,6 +629,26 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         if effort_update < 0:
             raise ValueError(f"negative effort: {effort_update}")
     prev_status = item.status
+    if (fields.get("status") in ("review", "done")
+            and fields["status"] != prev_status):
+        # P30 D11. Filing a wait is not finishing the work. An unmet `wait:` dependency
+        # means a human has not acted; `review`/`done` would read as delivered.
+        from app.services.waits import unfinished_wait_deps, wait_tags_on
+
+        waiting_on = unfinished_wait_deps(db, item)
+        if waiting_on:
+            raise ValueError(
+                f"{item.key} is waiting on {', '.join(waiting_on)} — a typed human wait "
+                "is not finished work. Leave this item blocked; do not move it to "
+                f"{fields['status']}"
+            )
+        # The wait ITEM itself going to `done` is the operator clearing it (not refused).
+        # A wait item going to `review` is also not the original pretending to be done.
+        if fields["status"] == "review" and wait_tags_on(item) and prev_status == "blocked":
+            raise ValueError(
+                f"{item.key} is a typed human wait. Mark it done when the human has "
+                "acted; do not send it to review as if it were built work"
+            )
     # THE COMPLETION GATE (GRPH-543). Before this, `update_item` validated a status
     # transition for MEMBERSHIP IN A LIST and nothing else, so an agent working without a
     # reviewer reached `done` by writing the string — and the result was indistinguishable
@@ -648,7 +668,14 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
     #
     # Evidence arriving in THIS call counts, so an adapter can attest and complete in one
     # write rather than needing two round trips to satisfy a gate it is itself satisfying.
-    if fields.get("status") == "done" and prev_status != "done":
+    from app.services.waits import wait_tags_on as _wait_tags_on
+    _completing = fields.get("status") == "done" and prev_status != "done"
+    # A typed wait is a human act, not a delivery claim (P30 D11). The operator marks
+    # it done from Tracker; requiring an attestation would make the wait un-clearable
+    # without CI, which is the opposite of "a human emptied it".
+    if _completing and _wait_tags_on(item):
+        _completing = False
+    if _completing:
         merged_for_gate = append_evidence(item.evidence, fields.get("evidence") or [])
         # THE STALENESS CHECK (GRPH-555). An attestation names the commit it vouches for,
         # and until now nothing read it — so the gate asked "was this ever attested" rather
@@ -818,6 +845,12 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         stamp_baseline_at_start(db, item)
 
     if item.status == "done" and prev_status != "done":
+        from app.services.waits import release_waiters, wait_tags_on
+
+        if wait_tags_on(item):
+            # The wait is the human act. Clearing it unblocks the original unless
+            # another unmet dep remains. Does not rewrite `in_progress`.
+            release_waiters(db, item)
         _record_superseded_intent(db, item, hold_at_completion)
         # The two MODEL calls, moved off the response path (GRPH-399). Measured on the live
         # instance: a trivial prompt to its 24B chat model takes 20s, each call is bounded by
