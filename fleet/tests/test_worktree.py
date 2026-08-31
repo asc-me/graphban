@@ -16,6 +16,7 @@ import pytest
 from gbfleet.worktree import (
     BranchExists,
     Disposition,
+    GitError,
     Orphan,
     ResumeFailed,
     SEAT_FILES,
@@ -184,6 +185,36 @@ def test_salvage_leaves_a_clean_tree_alone(git_repo: Path, tmp_path: Path):
     result = salvage(wt.path)
     assert not result.committed
     assert _git(wt.path, "rev-parse", "HEAD").strip() == before
+
+
+def test_salvage_refuses_a_seat_named_with_backslash_separators(
+    git_repo: Path, tmp_path: Path, monkeypatch
+):
+    """THE CALL (GRPH-588 bounce). Inspect that salvage mentions is_seat_file stayed
+    green when leaked used `set(staged) & set(SEAT_FILES)` — git reports forward
+    slashes, so the intersection still worked. A backslash staged name is what
+    Windows filesystem-derived paths look like.
+    """
+    from gbfleet import worktree as wtmod
+
+    wt = create(git_repo, tmp_path / "w1", "wave-1", "GRPH-A1")
+    (wt.path / "feature.py").write_text("print('work')\n", encoding="utf-8")
+    _plant_seat(wt.path)
+
+    real = wtmod._git
+
+    def git(cwd, *args, **kw):
+        if args and args[0] == "reset" and "--" in args:
+            return ""  # leave the seat in the index
+        out = real(cwd, *args, **kw)
+        if "--name-only" in args:
+            return "\n".join(ln.replace("/", "\\") for ln in out.splitlines())
+        return out
+
+    monkeypatch.setattr(wtmod, "_git", git)
+
+    with pytest.raises(GitError, match="reached the index"):
+        salvage(wt.path)
 
 
 # --- reap -------------------------------------------------------------------------

@@ -190,6 +190,19 @@ def test_the_other_adapters_still_say_nothing_they_cannot_know():
     assert "stuck" not in ADAPTERS["grok"].exit_meaning(75)
 
 
+def test_gbagent_does_not_call_an_os_imposed_stop_a_crash():
+    """gbagent.loop.exit_meaning defaults to crashed (exit N). A polite Windows
+    stop is STATUS_CONTROL_C_EXIT — 3221225786 — which is not a crash
+    (GRPH-588 bounce).
+    """
+    from gbfleet.hostos import CONTROL_C_EXIT, WINDOWS
+
+    code = CONTROL_C_EXIT if WINDOWS else -15
+    text = GBAGENT.exit_meaning(code)
+    assert "stopped by signal" in text
+    assert "crashed" not in text
+
+
 # ---- the binary the adapter resolves ------------------------------------------------------
 
 

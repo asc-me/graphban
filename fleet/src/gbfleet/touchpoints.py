@@ -19,9 +19,8 @@ that overwrite would have collapsed is why the server unions rather than replace
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 
-from .worktree import Worktree, is_seat_file
+from .worktree import Worktree, is_seat_relative
 
 
 def measure(tree: Worktree) -> list[str]:
@@ -52,4 +51,4 @@ def measure(tree: Worktree) -> list[str]:
         raise ValueError(f"could not diff {tree.branch}: {proc.stderr.strip()}")
 
     changed = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-    return sorted(f for f in changed if not is_seat_file(Path(tree.repo) / f, tree.repo))
+    return sorted(f for f in changed if not is_seat_relative(f))

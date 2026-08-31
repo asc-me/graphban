@@ -257,6 +257,16 @@ def is_seat_file(path: Path, worktree: Path) -> bool:
     return key is not None and key in SEAT_FILES
 
 
+def is_seat_relative(name: str) -> bool:
+    """Whether this repo-relative name is a seat file, even with Windows separators.
+
+    Git itself reports forward slashes. A filesystem-derived or Windows-mocked name
+    can carry backslashes; `set(staged) & set(SEAT_FILES)` then misses it and salvage
+    would commit a live credential (GRPH-588 bounce).
+    """
+    return name.replace("\\", "/") in SEAT_FILES
+
+
 def _tracked_at(gitdir: Path, ref: str, paths: tuple[str, ...]) -> list[str]:
     """Which of `paths` the commit `ref` tracks. Empty on a repository with no commits."""
     if not _git(gitdir, "rev-parse", "--quiet", "--verify", ref, check=False):
@@ -311,7 +321,7 @@ def salvage(worktree: Path, message: str | None = None) -> Salvage:
     # The verification, not the staging, is the guarantee. Staging strategies are the
     # kind of thing that quietly stops working across git versions and ignore rules;
     # this is the assertion that notices.
-    leaked = sorted(f for f in staged if is_seat_file(Path(worktree) / f, worktree))
+    leaked = sorted(f for f in staged if is_seat_relative(f))
     if leaked:
         _git(worktree, "reset", "-q")
         raise GitError(
@@ -327,7 +337,7 @@ def salvage(worktree: Path, message: str | None = None) -> Salvage:
     commit = _git(worktree, "rev-parse", "HEAD").strip()
 
     in_commit = _git(worktree, "show", "--pretty=format:", "--name-only", commit).splitlines()
-    still_leaked = sorted(f for f in in_commit if f and is_seat_file(Path(worktree) / f, worktree))
+    still_leaked = sorted(f for f in in_commit if f and is_seat_relative(f))
     if still_leaked:  # pragma: no cover
         raise GitError(f"salvage commit {commit} contains {still_leaked}")
 
