@@ -358,6 +358,155 @@ def test_takeover_ticks_the_leftover_pid(
         sleeper.wait(timeout=10)
 
 
+class _StopLoop(Exception):
+    """until.run has no bounded-tick; tests raise this from sleep once leftover is seen."""
+
+
+def test_until_ticks_the_leftover_pid(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """P30 D7 bounce. until.run() does wave.spawned.extend(leftover) then
+    children=list(leftover). children=[] there left adopt+until green: persist and
+    watch_tick dropped the pid while wave.spawned still reported attach.
+    """
+    from gbfleet import spawn as spawn_mod
+    from gbfleet import until as until_mod
+    from gbfleet.until import run
+    from tests.test_until import KEY, _clients
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sleeper = subprocess.Popen(
+        [str(scripts["python"]), str(scripts["sleeper"])],
+        cwd=str(git_repo),
+        start_new_session=True,
+    )
+    try:
+        def _tok(_pid: int) -> str:
+            return "tok"
+
+        def _alive(pid: int) -> bool:
+            return pid == sleeper.pid
+
+        monkeypatch.setattr(adopt, "process_start_token", _tok)
+        monkeypatch.setattr(adopt, "pid_is_alive", _alive)
+        monkeypatch.setattr(spawn_mod, "process_start_token", _tok)
+        monkeypatch.setattr(spawn_mod, "pid_is_alive", _alive)
+        tree = create(git_repo, workspace / "wave-1", "wave", "1")
+        path = adopt.children_path(git_repo, state)
+        save(path, [Snapshot(
+            pid=sleeper.pid, start_token="tok",
+            worktree=str(tree.path), branch=tree.branch, adapter="fake",
+            slot="1", base=tree.base, log_dir=str(tmp_path / "logs"),
+            started_wall=time.time(),
+        )])
+        with hold(git_repo, state) as first:
+            lock, holder = first.path, first.holder
+        lock.write_text(holder.as_json(), encoding="utf-8")
+
+        ticked: list = []
+        real_watch = until_mod.watch_tick
+
+        def capture_watch(wave, children, limits, supervisor, **kwargs):
+            ticked.extend(children)
+            return real_watch(wave, children, limits, supervisor, **kwargs)
+
+        monkeypatch.setattr(until_mod, "watch_tick", capture_watch)
+
+        def sleep_fn(_dt: float) -> None:
+            if any(c.attached and c.pid == sleeper.pid for c in ticked):
+                raise _StopLoop()
+
+        planner, supervisor = _clients(workspace)
+        try:
+            run(
+                git_repo, _factory(scripts, "works_then_exits"),
+                planner, supervisor, api_key=KEY, server="http://gb.invalid",
+                adapter="fake", state=state, workspace=workspace, poll=0,
+                sleep=sleep_fn, empty_ticks=3, limits=Limits(max_workers=1),
+            )
+        except _StopLoop:
+            pass
+        attached = [c for c in ticked if c.attached and c.pid == sleeper.pid]
+        assert attached, (
+            f"until watch loop never ticked leftover pid {sleeper.pid}; ticked "
+            f"{[(c.pid, c.attached, c.branch) for c in ticked]}"
+        )
+        data = json.loads(path.read_text(encoding="utf-8"))
+        pids = [int(row["pid"]) for row in data.get("children") or []]
+        assert sleeper.pid in pids, f"until persist dropped leftover pid; file has {pids}"
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=10)
+
+
+def test_mcp_ticks_the_leftover_pid(
+    git_repo: Path, tmp_path: Path, scripts, monkeypatch,
+):
+    """P30 D7 bounce. gbfleet mcp extends leftover onto fleet.children; that CALL
+    was untested. children=[] equivalent: serve/ps/tick never see the pid.
+    """
+    from gbfleet import cli
+    from gbfleet import spawn as spawn_mod
+    from tests.test_supervisor import KEY
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sleeper = subprocess.Popen(
+        [str(scripts["python"]), str(scripts["sleeper"])],
+        cwd=str(git_repo),
+        start_new_session=True,
+    )
+    try:
+        def _tok(_pid: int) -> str:
+            return "tok"
+
+        def _alive(pid: int) -> bool:
+            return pid == sleeper.pid
+
+        monkeypatch.setattr(adopt, "process_start_token", _tok)
+        monkeypatch.setattr(adopt, "pid_is_alive", _alive)
+        monkeypatch.setattr(spawn_mod, "process_start_token", _tok)
+        monkeypatch.setattr(spawn_mod, "pid_is_alive", _alive)
+        tree = create(git_repo, workspace / "wave-1", "wave", "1")
+        path = adopt.children_path(git_repo)
+        save(path, [Snapshot(
+            pid=sleeper.pid, start_token="tok",
+            worktree=str(tree.path), branch=tree.branch, adapter="fake",
+            slot="1", base=tree.base, log_dir=str(tmp_path / "logs"),
+            started_wall=time.time(),
+        )])
+        with hold(git_repo) as first:
+            lock, holder = first.path, first.holder
+        lock.write_text(holder.as_json(), encoding="utf-8")
+
+        seen: dict = {}
+
+        def fake_serve(fleet) -> None:
+            seen["children"] = list(fleet.children)
+            fleet.tick()
+            seen["file"] = path.read_text(encoding="utf-8")
+
+        monkeypatch.setattr(cli, "serve", fake_serve)
+        monkeypatch.setenv("GBFLEET_API_KEY", KEY)
+        code = cli.main([
+            "mcp", "--repo", str(git_repo), "--server", "http://gb.invalid",
+            "--workspace", str(workspace),
+        ])
+        assert code == 0, seen
+        attached = [c for c in seen.get("children") or [] if c.attached and c.pid == sleeper.pid]
+        assert attached, (
+            f"mcp serve never received leftover pid {sleeper.pid}; children "
+            f"{[(c.pid, c.attached, c.branch) for c in seen.get('children') or []]}"
+        )
+        data = json.loads(seen["file"])
+        pids = [int(row["pid"]) for row in data.get("children") or []]
+        assert sleeper.pid in pids, f"mcp tick persist dropped leftover pid; file has {pids}"
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=10)
+
+
 def test_a_child_is_in_the_children_file_before_it_registers(
     git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
 ):
