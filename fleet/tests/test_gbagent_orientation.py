@@ -585,6 +585,27 @@ def test_claim_next_is_not_advertised_to_a_fleet_child():
     assert not orientation.handles("claim_next")
 
 
+def test_cli_run_is_what_passes_coordination_tools_into_orientation():
+    """THE CALL, not the constant (P30 D3 bounce).
+
+    Every advertisement test feeds `extra=COORDINATION_TOOLS` into `orient.build` itself.
+    Removing that argument from `cli._run` left those green — the model is then taught a
+    name `Toolset.specs` does not have. Pin the production site.
+    """
+    import inspect
+
+    from gbagent import cli
+    from gbagent.orient import COORDINATION_TOOLS
+
+    src = inspect.getsource(cli._run)
+    assert "extra=COORDINATION_TOOLS" in src, (
+        "cli._run no longer passes COORDINATION_TOOLS into orientation — a spawned "
+        "fleet child will not advertise claim_cluster"
+    )
+    assert "claim_cluster" in COORDINATION_TOOLS
+    assert "claim_next" not in COORDINATION_TOOLS
+
+
 def test_an_empty_queue_leaves_nothing_claimed():
     """`claim_next` on an empty queue answers with no item, and remembering a phantom would
     send the handoff to a row that does not exist."""
