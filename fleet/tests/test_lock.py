@@ -224,6 +224,25 @@ def test_the_state_directory_is_private_to_this_user(tmp_path: Path, monkeypatch
     assert is_owner_only(root)
 
 
+def test_hold_opens_a_lock_inside_the_restricted_state_directory(
+    git_repo: Path, tmp_path: Path, monkeypatch,
+):
+    """THE CALL. `test_a_restricted_directory_is_still_usable_by_its_owner` drives
+    `restrict_to_owner` directly. Every lock test uses an unrestricted `tmp_path`
+    fixture. `_OWNER_ONLY_DIR = 0o600` left those green and `hold()` still
+    PermissionError'd (GRPH-600 bounce).
+    """
+    import tempfile as tempfile_mod
+
+    monkeypatch.setattr(tempfile_mod, "gettempdir", lambda: str(tmp_path))
+    root = state_root()
+
+    with hold(git_repo, root) as acquired:
+        assert acquired.path.parent == root
+        assert acquired.path.exists()
+        acquired.path.read_text(encoding="utf-8")
+
+
 def test_the_lock_file_is_not_world_readable(git_repo: Path, state: Path):
     with hold(git_repo, state) as acquired:
         assert is_owner_only(acquired.path)

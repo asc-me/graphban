@@ -23,6 +23,7 @@ from app.services import items as items_svc
 from app.services import credential_retry
 from app.services import reindex
 from app.services import platform as platform_svc
+from app.services.embedder import EmbedderRefused
 
 router = APIRouter(prefix="/platform", tags=["platform"])
 
@@ -200,6 +201,10 @@ def set_defaults(body: ScopeDefaultsIn, project_id: str = "core",
         raise HTTPException(404, "no such credential") from None
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
+    except EmbedderRefused as e:
+        # 409: the chosen credential is well-formed, the deployment's current vectors
+        # (or column width, or an unanswered probe) refuse it. 200 here was the bounce.
+        raise HTTPException(409, str(e)) from None
     return {"scope": row.scope, "default_credential_id": row.default_credential_id,
             "fallback_credential_id": row.fallback_credential_id,
             "embed_credential_id": row.embed_credential_id}

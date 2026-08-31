@@ -21,7 +21,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from .worktree import SEAT_FILES, Worktree
+from .worktree import Worktree, is_seat_file
 
 
 def measure(tree: Worktree) -> list[str]:
@@ -52,4 +52,4 @@ def measure(tree: Worktree) -> list[str]:
         raise ValueError(f"could not diff {tree.branch}: {proc.stderr.strip()}")
 
     changed = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-    return sorted(f for f in changed if f not in SEAT_FILES)
+    return sorted(f for f in changed if not is_seat_file(Path(tree.repo) / f, tree.repo))

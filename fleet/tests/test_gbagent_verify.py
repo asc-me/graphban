@@ -618,6 +618,48 @@ def test_the_summary_regex_is_actually_consulted():
     )
 
 
+def test_run_tests_hands_concatenated_output_to_read_counts():
+    """The CALL, not the callee. The trailing-count tests above drive `_read_counts`
+    directly; the agent sees `run_tests`. Independently inlining last-wins whole-output
+    parse here left those tests green and shipped the original defect (GRPH-532 bounce).
+    """
+    import inspect
+
+    src = inspect.getsource(verify.run_tests)
+    assert "_read_counts(out)" in src, (
+        "run_tests no longer hands concatenated stdout+stderr to _read_counts — the "
+        "trailing-count tests call the helper directly and would stay green"
+    )
+
+
+def test_run_tests_does_not_take_counts_from_trailing_stderr(tmp_path):
+    """Drive the surface the agent sees: stdout is a pytest summary, stderr is a
+    teardown log matching `N passed`. `run_tests` concatenates them, so a last-wins
+    parse of the whole output reports 99. The count must come from the summary.
+    """
+    root = _repo(tmp_path, None)
+    script = root / "backend" / "r.py"
+    script.write_text(
+        "import sys\n"
+        "print('=== 1 failed, 3 passed in 0.5s ===', flush=True)\n"
+        "sys.stderr.write('teardown log: 99 passed\\n')\n"
+        "sys.stderr.flush()\n"
+        "sys.exit(1)\n",
+        encoding="utf-8",
+    )
+    cfg = VerifyConfig(
+        argv=stub_argv(script), cwd=(root / "backend").resolve(), source="r.py",
+    )
+
+    out = verify.run_tests(root, cfg)
+
+    assert out["passed"] == 3 and out["failed"] == 1, (
+        f"run_tests reported passed={out['passed']} failed={out['failed']} — trailing "
+        "stderr poisoned the count the agent sees. Pinning _read_counts is not enough; "
+        "this is the CALL."
+    )
+
+
 def test_a_setup_command_survives_a_space_in_the_interpreter_path(tmp_path):
     """The case neither of my machines reproduces, which is why sabotage found nothing.
 

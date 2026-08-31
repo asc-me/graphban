@@ -445,7 +445,13 @@ def valid_attestations(evidence, *, commit: str | None = None) -> list[dict]:
     out = []
     for a in attestation_receipts(evidence):
         preds = a.get("predicates") or []
-        if not preds or not all(q.get("passed") for q in preds):
+        # `passed` must be a real bool here too, not only at normalize. Stored rows
+        # predate that check (and other writers skip it); `all(q.get("passed"))` is
+        # True for the JSON-client string `"false"` — the exact case GRPH-542 exists
+        # to stop, and the empty-predicate stored-row hole wearing different clothes.
+        if not preds or not all(
+            isinstance(q, dict) and q.get("passed") is True for q in preds
+        ):
             continue
         if commit is not None and a.get("commit") != commit:
             continue
@@ -615,6 +621,32 @@ def pr_linked_at(evidence, existing=None):
     return None
 
 
+def refuse_if_pr_cooling_down(db, item, incoming_evidence=None) -> None:
+    """Raise PRCooldown when `done` is asked for too soon after a PR link (GRPH-567).
+
+    One function, two writers. `update_item` is tested; `fleet.sign_off` is the other
+    allowed writer of `done` and used to skip this entirely — a reviewer who linked a
+    PR and signed it off in the same minute is the defect the test file names.
+    """
+    cooldown = max(0, int(getattr(settings, "pr_cooldown_seconds", 0) or 0))
+    linked = pr_linked_at(incoming_evidence or [], item.pr_linked_at)
+    if not cooldown or linked is None:
+        return
+    waited = (utcnow() - _aware(linked)).total_seconds()
+    if waited >= cooldown:
+        return
+    remaining = int(cooldown - waited)
+    record_refusal(db, item, predicate="pr_cooldown",
+                   detail=f"its PR was linked {int(waited)}s ago; "
+                          f"{remaining}s of the cooldown remain.")
+    raise PRCooldown(
+        f"{item.key} cannot move to done yet: its PR was linked {int(waited)}s "
+        f"ago and the cooldown is {cooldown}s, so CI has not had time to run. "
+        f"Try again in {remaining}s — this refusal clears itself, and nothing "
+        "needs changing"
+    )
+
+
 def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
     item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if item is None:
@@ -750,32 +782,11 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
                 "adapter that answers it has not reported, so run it rather than looking "
                 "for a problem in what did"
             )
-        # THE PR COOLDOWN (GRPH-567, PRD-26). An attestation proves something was checked;
-        # it does not prove the check had time to happen. A reviewer who links a PR and signs
-        # it off in the same minute records an outcome for a run that has not finished — the
-        # PRD's "reporting green before green existed".
-        #
-        # Read from the INCOMING evidence as well as the stored stamp, so linking and
-        # completing in ONE call is the case this catches rather than the hole it leaves.
-        # That is the worst version of the defect, not an edge of it.
-        #
-        # An item with no linked PR is not delayed at all: this must not become a tax on
-        # every completion in the product, only on the ones making a claim about CI.
-        cooldown = max(0, int(getattr(settings, "pr_cooldown_seconds", 0) or 0))
-        linked = pr_linked_at(fields.get("evidence") or [], item.pr_linked_at)
-        if cooldown and linked is not None:
-            waited = (utcnow() - _aware(linked)).total_seconds()
-            if waited < cooldown:
-                remaining = int(cooldown - waited)
-                record_refusal(db, item, predicate="pr_cooldown",
-                               detail=f"its PR was linked {int(waited)}s ago; "
-                                      f"{remaining}s of the cooldown remain.")
-                raise PRCooldown(
-                    f"{item.key} cannot move to done yet: its PR was linked {int(waited)}s "
-                    f"ago and the cooldown is {cooldown}s, so CI has not had time to run. "
-                    f"Try again in {remaining}s — this refusal clears itself, and nothing "
-                    "needs changing"
-                )
+        # THE PR COOLDOWN (GRPH-567, PRD-26). Shared with `fleet.sign_off` — that path
+        # used to write `done` directly and skip this, which is the reviewer CALL the
+        # bounce found. Incoming evidence is read as well as the stored stamp so linking
+        # and completing in ONE call is the case this catches.
+        refuse_if_pr_cooling_down(db, item, fields.get("evidence") or [])
     # Captured BEFORE the status moves. `intent_hold` is about work in flight and goes
     # quiet once an item is done, so asking after the transition always answers None —
     # which silently turned the completion receipt into dead code.

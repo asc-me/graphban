@@ -320,3 +320,32 @@ def test_the_endpoint_starts_a_run_and_reports_progress(client, auth, db, corpus
     seen = client.get("/api/platform/reindex", headers=auth).json()
     assert seen["running"] is True
     assert {t["table"] for t in seen["tables"]} == {"memory_shards", "code_nodes"}
+
+
+def test_the_endpoint_asks_to_restart_not_resume():
+    """THE CALL. The HTTP test POSTs once on a fresh corpus, so resume-vs-restart is
+    unobservable and the docstring's `restart=True` claim is decoration (GRPH-536 bounce).
+    Dropping it left 13 passed.
+    """
+    import ast
+    import inspect
+
+    from app.routers import platform
+
+    tree = ast.parse(inspect.getsource(platform.start_reindex))
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else (
+            fn.id if isinstance(fn, ast.Name) else "")
+        if name != "plan":
+            continue
+        for kw in node.keywords:
+            if kw.arg == "restart" and isinstance(kw.value, ast.Constant) and kw.value.value is True:
+                found = True
+    assert found, (
+        "POST /reindex no longer calls plan(restart=True) — an operator asking would "
+        "resume leftover progress instead of starting a new run"
+    )

@@ -144,7 +144,47 @@ def test_several_crossers_are_all_reported_worst_first(db, caplog):
 
 # ── it must not be able to keep the app down ──────────────────────────────────
 
-def test_a_broken_tripwire_does_not_stop_the_app(client):
-    """A tripwire is not load-bearing. The lifespan swallows its failure, which is asserted
-    here rather than assumed — the app is already serving by the time this runs."""
-    assert client.get("/health").status_code == 200
+def test_boot_actually_evaluates_the_scaling_trigger():
+    """THE CALL. Every behavioural test drives check_scaling_triggers directly, so removing
+    it from lifespan restores the ticket's own defect: a condition nobody evaluates is
+    always false (GRPH-540 bounce).
+    """
+    import ast
+    import inspect
+
+    from app import main
+
+    tree = ast.parse(inspect.getsource(main.lifespan))
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.id if isinstance(fn, ast.Name) else (
+            fn.attr if isinstance(fn, ast.Attribute) else "")
+        if name == "check_scaling_triggers":
+            found = True
+    assert found, (
+        "lifespan no longer calls check_scaling_triggers — the trigger is a function "
+        "nobody evaluates, which is the defect this ticket exists to close"
+    )
+
+
+def test_a_broken_tripwire_does_not_stop_the_app(monkeypatch, _clean_database):
+    """A tripwire is not load-bearing. Asserted by making it RAISE, not by GET /health
+    on an already-booted client — that is 200 whether the call is swallowed, missing,
+    or never raises (GRPH-540 bounce).
+    """
+    from fastapi.testclient import TestClient
+
+    from app import main, scaling
+
+    def boom(*a, **k):
+        raise RuntimeError("tripwire exploded")
+
+    monkeypatch.setattr(scaling, "check_scaling_triggers", boom)
+
+    with TestClient(main.app) as client:
+        assert client.get("/health").status_code == 200, (
+            "a raising tripwire escaped lifespan and took the app down"
+        )

@@ -201,6 +201,65 @@ def test_install_waits_for_the_previous_job_to_go_before_bootstrapping(monkeypat
     assert seen.index("bootout") < seen.index("bootstrap"), "it bootstrapped before booting out"
 
 
+def test_a_listed_crash_loop_is_not_running(monkeypatch):
+    """A real pid is the whole test. `launchctl list` still prints a crash-loop as
+    `-  1  label`. The first version asked only whether the label APPEARED, so it
+    reported success for a service that had never stayed up. Tests that mock
+    `_loaded` cannot catch `return True` whenever the label is in the listing.
+    """
+    def with_listing(out):
+        monkeypatch.setattr(gs, "_run", lambda cmd: (0, out))
+
+    with_listing("- \t1\tdev.graphban.api\n")
+    assert gs._loaded("dev.graphban.api") is False, (
+        "a crash-loop listed as `-  1  label` was treated as running"
+    )
+    with_listing("45316\t0\tdev.graphban.api\n")
+    assert gs._loaded("dev.graphban.api") is True
+    with_listing("")
+    assert gs._loaded("dev.graphban.api") is False
+
+
+def test_install_polls_loaded_until_the_previous_job_is_gone_before_bootstrap(
+    monkeypatch, tmp_path
+):
+    """The wait test used to assert only that bootout is invoked before bootstrap,
+    which remains true if the wait-until-gone loop is deleted. The async-bootout
+    fix is the poll of `_loaded` between those two calls.
+    """
+    calls: list[str] = []
+    states = iter([True, True, False])
+
+    monkeypatch.setattr(gs, "_run", lambda cmd: (calls.append(cmd[1]), (0, ""))[1])
+    monkeypatch.setattr(gs, "_loaded", lambda label: (calls.append("loaded"), next(states, False))[1])
+    monkeypatch.setattr(gs.time, "sleep", lambda s: None)
+
+    gs.install(tmp_path / "x.plist", b"<plist/>", user_domain=True, label="dev.test")
+
+    bootout = calls.index("bootout")
+    bootstrap = calls.index("bootstrap")
+    assert "loaded" in calls[bootout:bootstrap], (
+        "install bootstrapped without waiting for the previous job to leave launchctl list"
+    )
+
+
+def test_the_cli_install_command_calls_install(monkeypatch, tmp_path):
+    """Tests drive `install()` as a function. The operator command is `main(["install"])`.
+    Returning 0 without calling `install()` left every test green.
+    """
+    seen: list[str] = []
+    monkeypatch.setattr(gs, "plist_dict", lambda **kw: {"Label": "x"})
+    monkeypatch.setattr(gs, "secrets_in", lambda p: [])
+    monkeypatch.setattr(gs, "plist_path", lambda *a, **k: tmp_path / "x.plist")
+    monkeypatch.setattr(gs, "render", lambda d: b"<plist/>")
+    monkeypatch.setattr(
+        gs, "install",
+        lambda *a, **k: seen.append("install") or 0,
+    )
+    assert gs.main(["install", "--root", str(tmp_path), "--user-domain"]) == 0
+    assert seen == ["install"], "the CLI install command never handed the plist to launchd"
+
+
 def test_the_user_domain_path_is_a_launch_agent():
     """Used only to verify the mechanism without a privileged install; the shipped service is
     the daemon, because an agent does not run until that user logs in."""

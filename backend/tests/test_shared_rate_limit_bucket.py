@@ -289,3 +289,45 @@ def test_two_different_warnings_are_both_emitted(caplog):
     assert "second, unrelated problem" in caplog.text, (
         "a distinct warning was swallowed by an earlier one"
     )
+
+
+def test_the_public_rate_limiter_actually_buckets_on_client_ip():
+    """THE CALL. test_shared_rate_limit_bucket drives net.client_ip on a fake Request;
+    replacing _rate_or_429's _client_ip(request) with request.client.host left 48 passed
+    (GRPH-553 bounce). The public form is the ticket's example.
+    """
+    import ast
+    import inspect
+
+    from app.routers import public
+
+    tree = ast.parse(inspect.getsource(public._rate_or_429))
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.id if isinstance(fn, ast.Name) else (
+            fn.attr if isinstance(fn, ast.Attribute) else "")
+        if name == "_client_ip":
+            found = True
+    assert found, (
+        "_rate_or_429 no longer calls _client_ip — the public form buckets on the "
+        "socket peer (nginx) and every caller shares one limit"
+    )
+
+
+def test_self_host_compose_sets_trusted_hops():
+    """THE OTHER CALL. config.py defaults trusted_hops to 0; compose `${TRUSTED_HOPS:-1}`
+    is what stops the self-host sharing one bucket. Removing it from docker-compose.yml
+    left 48 passed (GRPH-553 bounce).
+    """
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()
+    live = [ln for ln in text.splitlines()
+            if "TRUSTED_HOPS" in ln and not ln.lstrip().startswith("#")]
+    assert any("${TRUSTED_HOPS:-1}" in ln for ln in live), (
+        "docker-compose.yml no longer sets TRUSTED_HOPS — the self-host default is 0 "
+        "and every caller shares one rate-limit bucket. A comment is not the setting."
+    )

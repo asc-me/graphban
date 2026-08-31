@@ -221,3 +221,32 @@ def test_the_cli_refuses_with_a_distinct_exit_code(tiny_repo, capsys):
                     "--tests", _pytest_cmd()])
     assert code == 2
     assert "probe refused" in capsys.readouterr().err
+
+
+def test_the_probe_posts_the_attestation_the_gate_would_read(monkeypatch, tiny_repo):
+    """THE CALL. Measurement refusals are pinned; dropping post() so the probe never
+    writes — even with GRAPHBAN_URL and GRAPHBAN_GATE_KEY set — left 18 passed
+    (GRPH-566 bounce). The gate still reads the agent's tests_failed.
+    """
+    posted: list[dict] = []
+
+    def capture(url, key, item, receipt, **kw):
+        posted.append(receipt)
+
+    obs = ps.Observation(
+        file="calc.py", old="return a + b", new="return a - b",
+        landed=1, baseline_failed=0, observed_failed=1, restored_clean=True,
+    )
+    monkeypatch.setenv("GRAPHBAN_URL", "http://example.invalid")
+    monkeypatch.setenv("GRAPHBAN_GATE_KEY", "gb_sk_x")
+    monkeypatch.setattr(ps, "probe", lambda *a, **k: obs)
+    monkeypatch.setattr(ps, "post", capture)
+
+    code = ps.main(["--item", "GRPH-1", "--commit", "d" * 40, "--root", str(tiny_repo),
+                    "--file", "calc.py", "--old", "return a + b", "--new", "return a - b",
+                    "--tests", _pytest_cmd()])
+
+    assert code == 0
+    assert posted, "the probe measured but never posted — the gate still reads a self-report"
+    names = [p["name"] for p in posted[0].get("predicates") or []]
+    assert "sabotage_observed" in names, posted[0]

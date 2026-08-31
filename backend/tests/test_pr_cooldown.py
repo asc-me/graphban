@@ -162,6 +162,52 @@ def test_a_zero_cooldown_disables_it(db, monkeypatch):
     assert items_svc.update_item(db, item.id, status="done").status == "done"
 
 
+def test_sign_off_of_a_just_linked_pr_is_refused(db, cooldown):
+    """THE CALL. Every test above drives `update_item`. `fleet.sign_off` is the other
+    allowed writer of `done`, and it used to set the status directly — so a reviewer
+    who linked a PR and signed it off in the same minute (this file's own docstring)
+    recorded green before CI existed (GRPH-567 bounce).
+    """
+    from app.services import fleet as fleet_svc
+
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[PR, ATTESTATION])
+    item.status = "review"
+    item.built_by = "builder-agent"
+    db.commit()
+
+    with pytest.raises(items_svc.PRCooldown):
+        fleet_svc.sign_off(db, item_id=item.id, agent_id="reviewer-1", commit="a" * 40)
+
+    db.refresh(item)
+    assert item.status == "review", "sign_off still completed it inside the cooldown"
+
+
+def test_sign_off_consults_the_same_cooldown_helper():
+    """Wiring, not behaviour. A reimplementation that inlined a weaker check — or
+    dropped the call — would satisfy a source grep for PRCooldown in a comment.
+    """
+    import ast
+    import inspect
+
+    from app.services import fleet as fleet_svc
+
+    tree = ast.parse(inspect.getsource(fleet_svc.sign_off))
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else (
+            fn.id if isinstance(fn, ast.Name) else "")
+        if name == "refuse_if_pr_cooling_down":
+            found = True
+    assert found, (
+        "sign_off no longer calls refuse_if_pr_cooling_down — the reviewer path "
+        "the cooldown exists for would skip it again"
+    )
+
+
 def test_an_item_already_done_is_not_re_gated(db, cooldown):
     """Gated on the TRANSITION, like the attestation check it sits beside. Re-saving a
     completed item must not re-ask a question it already answered."""

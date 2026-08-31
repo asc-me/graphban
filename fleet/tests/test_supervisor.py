@@ -22,7 +22,7 @@ from gbfleet.lock import RepoLocked, hold
 from gbfleet.seat import Seat
 from gbfleet.spawn import Launch, Reason
 from gbfleet.supervisor import AllocationRead, Limits, up
-from gbfleet.worktree import Disposition, SEAT_FILES, Worktree, create, orphans, reap, salvage_message
+from gbfleet.worktree import Disposition, SEAT_FILES, Worktree, create, is_seat_file, orphans, reap, salvage_message
 from gbfleet.hostos import is_owner_only  # noqa: E402
 
 CODE = "WORKER-7F3K"
@@ -338,7 +338,7 @@ def test_the_instruction_file_is_private_while_it_exists(git_repo: Path, tmp_pat
 
     assert is_owner_only(path)
     assert seat.code in path.read_text(encoding="utf-8")
-    assert path.name in SEAT_FILES or str(path.relative_to(tree.path)) in SEAT_FILES, (
+    assert is_seat_file(path, tree.path), (
         "the instruction file carries a live seat and lives in the worktree, so salvage "
         "must know to exclude it"
     )

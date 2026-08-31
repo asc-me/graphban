@@ -24,7 +24,8 @@ ATTESTED_SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
 
 
 def _mint(client, auth, scopes):
-    return client.post("/api/api-keys", json={"name": "t", "scopes": scopes},
+    return client.post("/api/api-keys", json={"name": "t", "scopes": scopes,
+                                              "project_id": "core"},
                        headers=auth).json()["plaintext"]
 
 
@@ -125,6 +126,25 @@ def test_an_attestation_with_no_predicates_attests_nothing():
         "precondition: this must still LOOK like an attestation, or the check is untested"
     assert not items_svc.valid_attestations(stored), \
         "an attestation carrying zero predicates was treated as proof"
+    assert items_svc.has_valid_attestation(stored) is False
+
+
+def test_a_stored_string_passed_is_not_proof():
+    """The empty-predicate stored-row hole, for non-boolean `passed`.
+
+    `test_a_string_passed_is_not_a_passed_predicate` goes through `normalize_evidence`,
+    which demotes before the gate. `valid_attestations` is what the completion gate
+    actually calls on `item.evidence`. A stored attestation with `passed: "false"` is
+    the JSON-client case this ticket exists to stop, and `all(q.get("passed"))` treats
+    that string as True.
+    """
+    stored = [{"kind": "attestation", "adapter": "ci", "commit": ATTESTED_SHA,
+               "predicates": [{"name": "suite_green", "passed": "false"}]}]
+
+    assert items_svc.attestation_receipts(stored), \
+        "precondition: this must still LOOK like an attestation, or the check is untested"
+    assert not items_svc.valid_attestations(stored), \
+        "a stored attestation with passed='false' was treated as proof"
     assert items_svc.has_valid_attestation(stored) is False
 
 
@@ -353,6 +373,39 @@ def test_the_minted_attestation_records_why_adversarial_evidence_was_not_require
     adv = next(p for p in att["predicates"] if p["name"] == "adversarial_evidence")
     assert "not required" in adv["detail"], \
         f"the receipt does not say why the predicate passed: {adv}"
+
+
+def test_mcp_sign_off_forwards_the_commit():
+    """THE CALL. 544 tests drive fleet_svc.sign_off directly; MCP tests sign_off without a
+    commit. Dropping commit=args.get('commit') from the dispatcher left 7 green
+    (GRPH-544 bounce). The adapter can be correct and the only surface reviewers use
+    still mints nothing.
+
+    Read from the file, not inspect.getsource(_call_tool): schema_probe wraps that
+    function for the session, so inspect would see the wrapper.
+    """
+    from pathlib import Path
+
+    from app import mcp_server
+
+    src = Path(mcp_server.__file__).read_text()
+    assert 'commit=args.get("commit")' in src, (
+        "MCP sign_off no longer forwards commit=args.get('commit') — reviewers using "
+        "the tool mint nothing even when they name a SHA"
+    )
+
+
+def test_a_global_gate_key_is_rejected(client, auth):
+    """THE BOUNCE (GRPH-580). `key_gate_ids` falls back to every writable project when
+    project_id is null. Sync already 422s; gate did not. Curl could still mint a global
+    gate key even after the UI pinned one.
+    """
+    r = client.post("/api/api-keys",
+                    json={"name": "everywhere", "scopes": ["read", "write", "gate"],
+                          "project_id": None},
+                    headers=auth)
+    assert r.status_code == 422, r.text
+    assert "one project" in r.text
 
 
 # ---- the refusal (GRPH-543) ----------------------------------------------------------

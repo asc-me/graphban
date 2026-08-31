@@ -194,3 +194,35 @@ def test_each_pass_opens_and_closes_its_own_session(monkeypatch, _clean_database
         f"the loop opened {loop_opened} session(s) and closed {loop_closed} — it is holding "
         "one open across passes, pinning a connection and serving stale reads"
     )
+
+
+def test_the_retry_loop_calls_the_pass_that_owns_its_session():
+    """THE CALL. Opening and closing a session in `_one_background_pass` is the callee.
+    Restoring the original outer-session shape (SessionLocal in the coroutine, close
+    around `to_thread(run_once, db)`) left the count test green — both open and close
+    once per pass. The loop must actually call `_one_background_pass` inside
+    `to_thread`, which is the shape that owns the session inside the worker thread.
+    """
+    import ast
+    import inspect
+
+    from app import main
+
+    tree = ast.parse(inspect.getsource(main._credential_retry_loop))
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        name = fn.attr if isinstance(fn, ast.Attribute) else (
+            fn.id if isinstance(fn, ast.Name) else ""
+        )
+        if name != "to_thread" or not node.args:
+            continue
+        arg0 = node.args[0]
+        if isinstance(arg0, ast.Name) and arg0.id == "_one_background_pass":
+            found = True
+    assert found, (
+        "the retry loop does not to_thread(_one_background_pass) — a session owned "
+        "outside the worker can be closed underneath it on cancel"
+    )
