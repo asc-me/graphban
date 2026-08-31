@@ -102,7 +102,6 @@
       "org_memberships",
       "org_requests",
       "org_usage",
-      "organizations",
       "project_edges",
       "sync_link",
       "sync_state",
