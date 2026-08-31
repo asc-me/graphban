@@ -18,7 +18,7 @@ import {
 import { SettingsView } from "@/features/settings/SettingsView";
 import { keys } from "@/lib/queries";
 import { settingsPath } from "@/lib/routes";
-import type { GitopsField, GitopsView, GitopsWas, Project } from "@/lib/types";
+import type { GitopsView, GitopsWas, Project } from "@/lib/types";
 
 const projA: Project = {
   id: "prj_a",
@@ -41,7 +41,7 @@ const projA: Project = {
 };
 const projB: Project = { ...projA, id: "prj_b", tag: "LIB", name: "Lib", accent: "#7ca2ff" };
 
-const unmeasured: GitopsField = { value: null, source: "unmeasured" };
+const unmeasured = { value: null, source: "unmeasured" as const };
 
 function emptyWas(): GitopsWas {
   return {
@@ -64,6 +64,7 @@ function view(
     project_id: "prj_a",
     org_id: null,
     was: null,
+    projects: [],
     version_from: version_from ?? unmeasured,
     ...rest,
     fields: {

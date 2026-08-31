@@ -10,8 +10,6 @@ import type {
   Deployment,
   Team,
   Galaxy,
-  GitopsPatch,
-  GitopsView,
   OrgProjectAccess,
   TriageRow,
   AdminInvite,
@@ -946,4 +944,4 @@ export const api = {
   },
 };
 
-export type { Status };
+export type { GitopsPatch, GitopsView, Status };
