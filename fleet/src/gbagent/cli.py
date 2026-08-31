@@ -39,7 +39,7 @@ import gbfleet
 
 from . import loop
 from .config import ConfigRefused, load, prepare
-from .coord import Coordinator
+from .coord import REVIEWER_COORDINATION, REVIEWER_TOOLS, WORKER_TOOLS, Coordinator
 from .heartbeat import Heartbeat
 from .llm import ModelUnreachable, OllamaSession
 from .orient import (
@@ -66,7 +66,7 @@ SYSTEM = (
 )
 
 
-def assignment_for(item: str) -> str:
+def assignment_for(item: str, role: str = "worker") -> str:
     """What the model is told to work on.
 
     `--item` is optional from S7 on. Without one the model calls `claim_cluster` itself,
@@ -79,6 +79,14 @@ def assignment_for(item: str) -> str:
     exiting on an empty queue the normal end of a worker's life, and a model that waits instead
     is a process nobody will notice is idle.
     """
+    if role == "reviewer":
+        if item:
+            return f"You are reviewing {item}. Do not claim anything else."
+        return (
+            "Call claim_review with wait_seconds=0. If there is nothing to review, "
+            "say DONE and stop. You may sign_off work you did not build. Do not call "
+            "claim_cluster."
+        )
     if item:
         return f"You are working on {item}. Do not claim anything else."
     return (
@@ -131,16 +139,17 @@ def register(client, *, code: str, model: str, worktree: str, branch: str) -> tu
     agent_id = str(me.get("agent_id") or "")
     if not agent_id:
         raise NotRegistered("register_agent returned no agent_id")
+    role = str(me.get("active_role") or "")
     off = me.get("tools_off_limits") or []
-    if "create_item" in off:
+    if role != "reviewer" and "create_item" in off:
         # P30 D11. A worker that cannot create cannot file a typed human wait.
         # That seat is a mis-mint, not a child that should limp on with free-text
-        # `blocker`.
+        # `blocker`. Reviewers do not file waits.
         raise NotRegistered(
             "this seat cannot create_item — a worker that cannot file a human wait "
             "is a mis-mint (P30 D11)"
         )
-    return agent_id, str(me.get("active_role") or "")
+    return agent_id, role
 
 
 def enrolment_code(instruction: str) -> str:
@@ -241,6 +250,7 @@ def _run(args: argparse.Namespace) -> int:
     # cold worktree look like a broken adapter. Presence-only heartbeats (no item id)
     # keep the roster alive during setup. Do not stretch registration to 900s.
     agent_id = args.agent_id
+    role = ""
     if not agent_id:
         code = enrolment_code(written)
         if not code:
@@ -260,9 +270,10 @@ def _run(args: argparse.Namespace) -> int:
             print(f"gbagent: {exc}", file=sys.stderr)
             return 78
         print(f"gbagent: registered {agent_id} as {role!r}", file=sys.stderr)
-    assignment = assignment_for(args.item)
+    assignment = assignment_for(args.item, role=role)
+    tools = REVIEWER_TOOLS if role == "reviewer" else WORKER_TOOLS
     coordinator = Coordinator.connect(base_url, api_key, item_id=args.item,
-                                      agent_id=agent_id)
+                                      agent_id=agent_id, allowed=tools)
     heartbeat = Heartbeat(coordinator)
     heartbeat.start()
     session = None
@@ -280,8 +291,14 @@ def _run(args: argparse.Namespace) -> int:
             return 78  # EX_CONFIG. Distinct from a crash, and from giving up.
 
         try:
-            orientation = build_orientation(coordinator.client, extra=COORDINATION_TOOLS,
-                                            agent_id=agent_id)
+            if role == "reviewer":
+                orientation = build_orientation(
+                    coordinator.client, extra=REVIEWER_COORDINATION, agent_id=agent_id,
+                )
+            else:
+                orientation = build_orientation(
+                    coordinator.client, extra=COORDINATION_TOOLS, agent_id=agent_id,
+                )
         except OrientationUnavailable as exc:
             print(f"gbagent: {exc}", file=sys.stderr)
             return 78

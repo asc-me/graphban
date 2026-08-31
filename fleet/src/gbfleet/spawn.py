@@ -203,6 +203,8 @@ class Child:
     #: `_roster` is overwritten after `release_item`, so reap must not read live
     #: holdings — those are empty and the salvage subject would have no item keys.
     held_items: list = field(default_factory=list)
+    #: worker | reviewer (P30 D2). Until must not start both as a simultaneous cohort.
+    role: str = "worker"
 
     @property
     def pid(self) -> int:

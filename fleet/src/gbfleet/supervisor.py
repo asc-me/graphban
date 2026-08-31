@@ -85,6 +85,10 @@ class Limits:
     #: blamed on the network. A child in one long tool call will trip this and that is
     #: fine; it is an observation, not an accusation.
     quiet_after: float = 300.0
+    #: P30 D2. v1 default one reviewer. Several items in review: mint one; claim_review
+    #: picks. In-flight includes a live reviewer child this wave spawned that has not
+    #: claimed yet.
+    max_reviewers: int = 1
 
 
 @dataclass(frozen=True)
@@ -473,6 +477,7 @@ def start_one(
     child = spawn(
         launch, tree.path, tree.branch, _logs(workspace, f"{wave_name}-{slot}"), base=tree.base
     )
+    child.role = seat.role
     if on_spawned is not None:
         on_spawned(child)
     # Through `_roster`, not straight to the client: this is where the partition ceiling

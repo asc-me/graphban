@@ -59,6 +59,9 @@ class Seat:
     code: str
     server_url: str
     api_key: str
+    #: worker | reviewer. The enrolment's role, stamped at mint. Instruction and
+    #: gbagent's tool set follow this, not a guess.
+    role: str = "worker"
 
     def mcp_config(self, name: str = "graphban") -> dict:
         """The vendor-neutral core of every adapter's config file.
@@ -93,9 +96,21 @@ INSTRUCTION = (
     "empty is the normal end of your run, not a failure."
 )
 
+REVIEWER_INSTRUCTION = (
+    "Register with `register_agent` using enrolment_code={code!r}, worktree={worktree!r} "
+    "and branch={branch!r}.\n"
+    "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
+    "no parent. Declaring one would make you and the author count as one call tree, "
+    "and review across this fleet would stop meaning anything.\n"
+    "You are a REVIEWER. Call claim_review with wait_seconds=0. If there is nothing "
+    "to review, EXIT — that is the normal end of your run. You may sign_off work you "
+    "did not build. Do not call claim_cluster or claim_next."
+)
+
 
 def instruction_for(seat: Seat, worktree: Path, branch: str) -> str:
-    return INSTRUCTION.format(code=seat.code, worktree=str(worktree), branch=branch)
+    tmpl = REVIEWER_INSTRUCTION if seat.role == "reviewer" else INSTRUCTION
+    return tmpl.format(code=seat.code, worktree=str(worktree), branch=branch)
 
 
 def _reject_parentage(config: dict) -> None:
