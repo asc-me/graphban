@@ -103,13 +103,14 @@ def stub_argv(path: Path) -> list[str]:
     return [sys.executable, str(path)]
 
 
-def stub_command(path: Path) -> str:
+def stub_command(path: Path, interpreter: Path | None = None) -> str:
     """The same, as a config string a test embeds in TOML.
 
     Quoted and forward-slashed: `shlex.split` eats backslashes as escapes, so a Windows
     interpreter path written raw arrives as `C:UsersAlex...`.
     """
-    return f'"{Path(sys.executable).as_posix()}" "{Path(path).as_posix()}"'
+    exe = Path(interpreter or sys.executable).as_posix()
+    return f'"{exe}" "{Path(path).as_posix()}"'
 
 
 def pid_alive(pid: int) -> bool:
