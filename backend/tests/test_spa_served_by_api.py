@@ -132,3 +132,38 @@ def test_the_header_set_matches_the_one_nginx_sends():
         assert f'add_header {name} "{value}"' in conf, (
             f"{name} does not match what nginx sends, so the two paths have diverged"
         )
+
+
+def test_the_running_app_mounts_the_spa_when_dist_exists():
+    """The CALL, not the callee. These tests drive `_mount_spa` on a fresh FastAPI app.
+    The native install is `app` in this module, gated on `web/dist` existing.
+    `if False and _DIST.is_dir()` left 15 passed; unwiring it restores a process
+    that never serves the SPA.
+    """
+    import ast
+    import inspect
+
+    import app.main as main_mod
+
+    tree = ast.parse(inspect.getsource(main_mod))
+    found = False
+    for node in tree.body:
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (
+            isinstance(test, ast.Call)
+            and isinstance(test.func, ast.Attribute)
+            and test.func.attr == "is_dir"
+        ):
+            continue
+        for stmt in ast.walk(node):
+            if not isinstance(stmt, ast.Call):
+                continue
+            fn = stmt.func
+            if isinstance(fn, ast.Name) and fn.id == "_mount_spa":
+                found = True
+    assert found, (
+        "production app never calls _mount_spa when web/dist exists — tests drive "
+        "the helper on a fresh FastAPI app, so a native install would serve no SPA"
+    )

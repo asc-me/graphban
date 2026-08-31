@@ -355,6 +355,40 @@ def test_both_silences_reach_the_summary(capsys):
     assert "cursor-agent" in printed
 
 
+def test_the_operator_command_wires_quiet_debug_and_the_summary():
+    """Tests drive `up()` and `report()` as functions. The operator command is
+    `gbfleet up`. Dropping `report(wave)`, `quiet_after=args.quiet_after`, or
+    `debug=args.debug` from `main()` left 32 passed.
+    """
+    import ast
+    import inspect
+
+    from gbfleet import cli
+
+    tree = ast.parse(inspect.getsource(cli.main))
+    quiet = debug = reports = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            name = fn.id if isinstance(fn, ast.Name) else (
+                fn.attr if isinstance(fn, ast.Attribute) else ""
+            )
+            keywords = {k.arg: k.value for k in node.keywords if k.arg}
+            if name == "Limits" and "quiet_after" in keywords:
+                q = keywords["quiet_after"]
+                if isinstance(q, ast.Attribute) and q.attr == "quiet_after":
+                    quiet = True
+            if name == "up" and "debug" in keywords:
+                d = keywords["debug"]
+                if isinstance(d, ast.Attribute) and d.attr == "debug":
+                    debug = True
+            if name == "report":
+                reports = True
+    assert quiet, "gbfleet up never passes --quiet-after into Limits"
+    assert debug, "gbfleet up never passes --debug into up()"
+    assert reports, "gbfleet up never calls report(wave) so the operator sees no summary"
+
+
 def test_a_seat_that_could_not_be_restricted_is_reported(
     git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
 ):

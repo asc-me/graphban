@@ -128,6 +128,25 @@ def test_an_attestation_with_no_predicates_attests_nothing():
     assert items_svc.has_valid_attestation(stored) is False
 
 
+def test_a_stored_string_passed_is_not_proof():
+    """The empty-predicate stored-row hole, for non-boolean `passed`.
+
+    `test_a_string_passed_is_not_a_passed_predicate` goes through `normalize_evidence`,
+    which demotes before the gate. `valid_attestations` is what the completion gate
+    actually calls on `item.evidence`. A stored attestation with `passed: "false"` is
+    the JSON-client case this ticket exists to stop, and `all(q.get("passed"))` treats
+    that string as True.
+    """
+    stored = [{"kind": "attestation", "adapter": "ci", "commit": ATTESTED_SHA,
+               "predicates": [{"name": "suite_green", "passed": "false"}]}]
+
+    assert items_svc.attestation_receipts(stored), \
+        "precondition: this must still LOOK like an attestation, or the check is untested"
+    assert not items_svc.valid_attestations(stored), \
+        "a stored attestation with passed='false' was treated as proof"
+    assert items_svc.has_valid_attestation(stored) is False
+
+
 def test_a_failing_predicate_invalidates_the_attestation():
     """The whole point. A recorded failure must not read as a pass just because a receipt
     exists."""

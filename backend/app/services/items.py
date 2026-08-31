@@ -445,7 +445,13 @@ def valid_attestations(evidence, *, commit: str | None = None) -> list[dict]:
     out = []
     for a in attestation_receipts(evidence):
         preds = a.get("predicates") or []
-        if not preds or not all(q.get("passed") for q in preds):
+        # `passed` must be a real bool here too, not only at normalize. Stored rows
+        # predate that check (and other writers skip it); `all(q.get("passed"))` is
+        # True for the JSON-client string `"false"` — the exact case GRPH-542 exists
+        # to stop, and the empty-predicate stored-row hole wearing different clothes.
+        if not preds or not all(
+            isinstance(q, dict) and q.get("passed") is True for q in preds
+        ):
             continue
         if commit is not None and a.get("commit") != commit:
             continue

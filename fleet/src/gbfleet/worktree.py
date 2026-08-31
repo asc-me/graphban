@@ -311,7 +311,7 @@ def salvage(worktree: Path, message: str | None = None) -> Salvage:
     # The verification, not the staging, is the guarantee. Staging strategies are the
     # kind of thing that quietly stops working across git versions and ignore rules;
     # this is the assertion that notices.
-    leaked = sorted(set(staged) & set(SEAT_FILES))
+    leaked = sorted(f for f in staged if is_seat_file(Path(worktree) / f, worktree))
     if leaked:
         _git(worktree, "reset", "-q")
         raise GitError(
@@ -327,7 +327,7 @@ def salvage(worktree: Path, message: str | None = None) -> Salvage:
     commit = _git(worktree, "rev-parse", "HEAD").strip()
 
     in_commit = _git(worktree, "show", "--pretty=format:", "--name-only", commit).splitlines()
-    still_leaked = sorted(set(f for f in in_commit if f) & set(SEAT_FILES))
+    still_leaked = sorted(f for f in in_commit if f and is_seat_file(Path(worktree) / f, worktree))
     if still_leaked:  # pragma: no cover
         raise GitError(f"salvage commit {commit} contains {still_leaked}")
 

@@ -195,6 +195,28 @@ def test_a_seat_written_into_the_worktree_is_one_salvage_knows_about(
     )
 
 
+def test_seat_key_canonicalises_separators_and_is_what_salvage_calls():
+    """On Windows, Path.relative_to yields backslash paths; SEAT_FILES holds
+    forward slashes. `str(relative)` left the suite green on POSIX. Salvage used
+    `set(staged) & set(SEAT_FILES)` and never called seat_key.
+    """
+    import inspect
+
+    from gbfleet import worktree as wt
+
+    key_src = inspect.getsource(wt.seat_key)
+    assert "as_posix" in key_src, "seat_key does not canonicalise separators"
+    is_src = inspect.getsource(wt.is_seat_file)
+    assert "seat_key(" in is_src, "is_seat_file does not call seat_key"
+    salvage_src = inspect.getsource(wt.salvage)
+    assert "is_seat_file(" in salvage_src, "salvage never calls is_seat_file"
+
+    from gbfleet.touchpoints import measure
+    assert "is_seat_file(" in inspect.getsource(measure), (
+        "touchpoints still does `f not in SEAT_FILES`"
+    )
+
+
 def test_claude_keeps_its_seat_out_of_the_repository_entirely(git_repo: Path, tmp_path: Path):
     """Named separately because it is the good case and worth protecting.
 

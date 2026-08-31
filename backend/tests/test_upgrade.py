@@ -109,6 +109,51 @@ def test_it_stops_before_swapping_and_starts_after(install, release, monkeypatch
     assert seen[0] == "stop" and "start" in seen
 
 
+def test_the_operators_env_survives_the_swap(install, tmp_path, monkeypatch):
+    """copytree of the tarball would replace the operator's secret. This slice's
+    suite never noticed `preserve_env` becoming `pass`.
+    """
+    monkeypatch.setattr(up.time, "sleep", lambda s: None)
+    (install / "current" / "backend").mkdir(parents=True)
+    (install / "current" / "backend" / ".env").write_text("JWT_SECRET=keep-me\n", encoding="utf-8")
+    incoming = tmp_path / "incoming-with-env"
+    incoming.mkdir()
+    (incoming / "backend").mkdir()
+    (incoming / "backend" / ".env").write_text("JWT_SECRET=from-the-tarball\n", encoding="utf-8")
+    (incoming / "marker").write_text(NEW, encoding="utf-8")
+    probe, web = serving(NEW)
+    _, restart = calls_recorder()
+
+    up.upgrade(install, incoming, NEW, base="http://x", python=pathlib.Path("py"),
+               restart=restart, probe=probe, web=web, head=lambda r, p: "0091")
+
+    assert (install / "current" / "backend" / ".env").read_text(encoding="utf-8") == "JWT_SECRET=keep-me\n"
+
+
+def test_the_cli_upgrade_command_calls_upgrade(monkeypatch, tmp_path):
+    seen: list[str] = []
+    monkeypatch.setattr(up, "platform_restart", lambda **k: (lambda action: None))
+    monkeypatch.setattr(
+        up, "upgrade",
+        lambda *a, **k: seen.append("upgrade") or up.EXIT_OK,
+    )
+    rc = up.main(["upgrade", "--root", str(tmp_path), "--release", str(tmp_path), "--sha", NEW])
+    assert rc == up.EXIT_OK
+    assert seen == ["upgrade"], "the CLI upgrade command never ran upgrade()"
+
+
+def test_the_cli_uninstall_command_calls_uninstall(monkeypatch, tmp_path):
+    seen: list[str] = []
+    monkeypatch.setattr(up, "platform_restart", lambda **k: (lambda action: None))
+    monkeypatch.setattr(
+        up, "uninstall",
+        lambda *a, **k: seen.append("uninstall") or up.EXIT_OK,
+    )
+    rc = up.main(["uninstall", "--root", str(tmp_path)])
+    assert rc == up.EXIT_OK
+    assert seen == ["uninstall"], "the CLI uninstall command never ran uninstall()"
+
+
 # ---- the rollback, which is the reason this slice exists ------------------------------------
 
 def test_a_release_that_never_becomes_healthy_is_rolled_back(install, release, monkeypatch):
