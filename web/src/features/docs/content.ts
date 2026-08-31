@@ -1,6 +1,8 @@
 /** Context-aware content for the inline docs reader, keyed by route.
  *  Distilled from the docs/ guides into the reader's structured format. */
 
+import { settingsPath } from "@/lib/routes";
+
 export interface DocSection {
   num: number;
   h: string;
@@ -196,6 +198,18 @@ const CONTENT: Record<string, DocEntry> = {
     related: [{ label: "MCP Tools", to: "/mcp-tools" }],
   },
 
+  "/settings/deployment/gitops": {
+    badge: "GITOPS",
+    title: "Gitops",
+    tagline: "This project's delivery contract — unmeasured is not main.",
+    sections: [
+      { num: 1, h: "Unmeasured, not main", b: "Unset fields are unmeasured — not 'use main' and not 'no requirements'. Agents read the resolved contract from get_context." },
+      { num: 2, h: "Grey when linked", b: "A linked box shows the org's live values, filled but not editable. control.message is the banner. Local columns are was, never the form value." },
+      { num: 3, h: "Patterns, not globs", b: "Branch and PR patterns may insert {item_id} {tag} {slug} {version} {date}. base_branch is a literal. Globs are rejected." },
+    ],
+    related: [{ label: "Cloud / Sync", to: settingsPath("deployment/sync") }],
+  },
+
   "/profile": {
     badge: "PROFILE",
     title: "Profile",
@@ -219,8 +233,9 @@ export function docFor(pathname: string): DocEntry {
   // Hosted prefix + list/detail. Exact map would drop /lessons/:id and /p/:tag/lessons to default.
   if (/^\/(?:p\/[^/]+\/)?lessons(?:\/[^/]+)?$/.test(pathname)) return CONTENT["/lessons"];
   if (pathname === "/home") return CONTENT["/dashboard"];
-  if (pathname.startsWith("/settings/project/mcp")) return CONTENT["/mcp-tools"];
-  if (pathname.startsWith("/settings/project/feedback-kit")) return CONTENT["/feedback-kit"];
+  if (pathname.startsWith(settingsPath("deployment/gitops"))) return CONTENT["/settings/deployment/gitops"];
+  if (pathname.startsWith(settingsPath("project/mcp"))) return CONTENT["/mcp-tools"];
+  if (pathname.startsWith(settingsPath("project/feedback-kit"))) return CONTENT["/feedback-kit"];
   if (pathname.startsWith("/settings")) return CONTENT["/settings"];
   return CONTENT[pathname] ?? CONTENT.default;
 }

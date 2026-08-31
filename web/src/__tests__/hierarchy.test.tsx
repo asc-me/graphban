@@ -67,6 +67,7 @@ describe("path helpers", () => {
     expect(adminPath("users")).toBe(`${ORG_BASE}/admin/users`);
     expect(settingsPath()).toBe("/settings");
     expect(settingsPath("project/mcp")).toBe("/settings/project/mcp");
+    expect(settingsPath("deployment/gitops")).toBe("/settings/deployment/gitops");
     expect(usableHttpUrl("https://cloud.graphban.dev")).toBe("https://cloud.graphban.dev/");
     expect(usableHttpUrl("not a url")).toBeNull();
     expect(usableHttpUrl("ftp://x")).toBeNull();

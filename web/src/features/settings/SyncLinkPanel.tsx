@@ -15,6 +15,7 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { noteGitopsUnlinked } from "@/features/settings/GitopsPanel";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useSyncStatus } from "@/lib/queries";
@@ -104,11 +105,18 @@ function CloudLinkCard({
   scopedId: string | null;
   onScope: (id: string) => void;
 }) {
+  const qc = useQueryClient();
   const [cloudUrl, setCloudUrl] = React.useState("");
   const [apiKey, setApiKey] = React.useState("");
   const [org, setOrg] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState<string | null>(null);
+
+  function dropGitopsCache() {
+    // Prefix of keys.gitops(id). Link is instance-wide; do not first-paint a
+    // pre-link (or pre-unlink) GitopsView. Graph-push onChange must not do this.
+    qc.removeQueries({ queryKey: ["gitops"] });
+  }
 
   async function link() {
     setBusy(true);
@@ -118,6 +126,7 @@ function CloudLinkCard({
       setCloudUrl("");
       setApiKey("");
       setOrg("");
+      dropGitopsCache();
       onChange();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Could not link");
@@ -130,6 +139,8 @@ function CloudLinkCard({
     setBusy(true);
     try {
       await api.syncUnlink();
+      noteGitopsUnlinked();
+      dropGitopsCache();
       onChange();
     } finally {
       setBusy(false);

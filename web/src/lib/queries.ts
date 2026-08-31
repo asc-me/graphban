@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { Item, LessonFilters, RequestItem } from "./types";
+import type { GitopsPatch, Item, LessonFilters, RequestItem } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -26,6 +26,7 @@ export const keys = {
   closeReport: (id: string) => ["close-report", id] as const,
   prdEvidence: (id: string) => ["prd-evidence", id] as const,
   auditCoverage: (id: string) => ["audit-coverage", id] as const,
+  gitops: (projectId: string) => ["gitops", projectId] as const,
 };
 
 // ── Deploy config + Organizations (hosted-only, AL-74b) ────────────────────
@@ -424,6 +425,28 @@ export function usePlatform(projectId: string) {
 // is one per instance and the payload already carries every readable project's state.
 export function useSyncStatus() {
   return useQuery({ queryKey: ["sync-status"], queryFn: () => api.syncStatus() });
+}
+
+export function useGitops(projectId: string) {
+  return useQuery({
+    queryKey: keys.gitops(projectId),
+    queryFn: () => api.gitops(projectId),
+    enabled: !!projectId,
+    // Production QueryClient is staleTime 15s. A cached local `test` after
+    // link, or a grey org row after unlink, is the lie this page exists to
+    // prevent — drop the row when the pane unmounts so remount cannot
+    // first-paint it. Sync link/unlink also removeQueries(["gitops"]).
+    staleTime: 0,
+    gcTime: 0,
+  });
+}
+
+export function useUpdateGitops(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: GitopsPatch) => api.updateGitops(projectId, body),
+    onSuccess: (data) => qc.setQueryData(keys.gitops(projectId), data),
+  });
 }
 
 export function useMembers(projectId: string) {

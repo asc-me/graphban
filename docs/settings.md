@@ -3,6 +3,33 @@
 **Settings** (`/settings`, or the top-bar user menu) is a tabbed view; **Profile**
 (`/profile`, from the user menu) shows the current user and their access.
 
+## This box (self-host)
+
+Self-host Settings groups instance-wide items under **This box** (do not rename that
+group). Cloud / Sync is instance-wide; unlinked Gitops is this project's process.
+
+### Gitops
+
+`/settings/deployment/gitops`. Sparse delivery contract: integration base, whether
+agents may push to it, optional branch/PR naming, reviewer bar, version scheme.
+
+- Unset fields are **unmeasured**, never "use main" and never "no requirements".
+  Placeholders say `Unmeasured — not main`.
+- The page renders `GitopsView` from `GET /api/projects/{id}/gitops`.
+  `control.writable` disables inputs; `control.message` is the only banner. The page
+  does not decide linked-ness itself.
+- When linked, fields stay visible and filled but grey. Local columns appear as muted
+  `was:`, not as the form value.
+- `no_push_to_base` is a tri-state (Unmeasured / Yes / No), not a checkbox —
+  unchecked would mean "you may push".
+- Naming tokens `{item_id}` `{tag}` `{slug}` `{version}` `{date}` insert on branch/PR
+  patterns only. `base_branch` is a literal (chips `stage` `test` `main` `develop`).
+  Globs (`*` `?` `[`) are 422.
+- Unlinking restores this box's pre-link values as live, with a warning they are not
+  the org's last contract. They are not wiped.
+
+Hosted orgs edit house process on the org-admin Gitops tab, not this page.
+
 ## AI Providers tab
 
 Switches the **chat & extraction** provider — takes effect immediately.
@@ -115,6 +142,7 @@ belong to with your role and access level. Reachable from the top-bar user menu.
 | POST | `/api/platform/github/create-issue` | Mirror an item as an issue (local; honest stub) |
 | POST | `/api/platform/gdrive/connect` · `/disconnect` | Drive connection state |
 | PATCH | `/api/projects/{id}` | Update project config |
+| GET / PATCH | `/api/projects/{id}/gitops` | This project's gitops contract (linked reads are org-live) |
 | GET | `/api/projects/{id}/members` | List members |
 | GET / POST / DELETE | `/api/api-keys` … | Manage API keys |
 | GET | `/api/auth/me/memberships` | The current user's project access (Profile) |
