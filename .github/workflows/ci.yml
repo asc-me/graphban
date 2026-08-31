@@ -180,8 +180,15 @@ jobs:
     # gate is worse than no job: it burns the minutes and reports nowhere.
     # `test_ci_gate_covers_every_job` in the backend suite is what enforces that.
     needs: [changes, backend-sqlite, backend-postgres, frontend, fleet]
-    if: always()
-    runs-on: ubuntu-latest
+    # `always()` so a failed/skipped suite still runs the gate (otherwise a broken
+    # filter looks like a green PR). Fork PRs are excluded: this job talks to the
+    # LAN ledger on ubuntu-srv, and a public repo must not run untrusted checkout
+    # there. Same-repo PRs and pushes to main are the only callers.
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # The ledger CI attests is ubuntu-srv (http://127.0.0.1:8080 from this runner).
+    # GitHub-hosted runners cannot reach it. cloud.graphban.dev is a different
+    # database — pointing there 404s every GRPH-* item.
+    runs-on: [self-hosted, graphban-ledger]
     steps:
       - name: Fail if anything that ran did not pass
         # `skipped` is a pass here and `failure`/`cancelled` are not. Checking the results
