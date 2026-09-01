@@ -39,6 +39,58 @@ def cfg_path(tmp_path, monkeypatch):
     return p
 
 
+def _fake_provision(captured):
+    def fake(db, **kwargs):
+        captured.update(kwargs)
+        return {"provisioned": True, "email": "op@example.com", "password": "pw",
+                "project_id": "p1", "project_name": "My Project", "project_tag": "MP",
+                "memory_write_mode": "trusted",
+                "key_scope": kwargs.get("key_scope", "project"),
+                "key_tiers": kwargs.get("key_tiers") or [],
+                "api_key": "gb_sk_test"}
+    return fake
+
+
+def test_init_defaults_to_a_project_scoped_key(cfg_path, monkeypatch):
+    from app import bootstrap
+    captured = {}
+    monkeypatch.setattr(bootstrap, "provision", _fake_provision(captured))
+    assert cli.main(["init"]) == 0
+    assert captured["key_scope"] == "project"
+
+
+def test_init_key_scope_global_reaches_provision(cfg_path, monkeypatch, capsys):
+    from app import bootstrap
+    captured = {}
+    monkeypatch.setattr(bootstrap, "provision", _fake_provision(captured))
+    assert cli.main(["init", "--key-scope", "global"]) == 0
+    assert captured["key_scope"] == "global"
+    assert "Global key" in capsys.readouterr().out
+
+
+def test_init_rejects_unknown_key_scope(cfg_path):
+    with pytest.raises(SystemExit) as e:
+        cli.main(["init", "--key-scope", "world"])
+    assert e.value.code == 2  # argparse choice failure, not a traceback
+
+
+def test_init_key_tiers_accepts_comma_list_and_repeats(cfg_path, monkeypatch, capsys):
+    from app import bootstrap
+    captured = {}
+    monkeypatch.setattr(bootstrap, "provision", _fake_provision(captured))
+    assert cli.main(["init", "--key-tiers", "prd,misc", "--key-tiers", "fleet"]) == 0
+    assert captured["key_tiers"] == ["prd", "misc", "fleet"]
+    assert "prd, misc, fleet" in capsys.readouterr().out
+
+
+def test_init_key_tiers_default_is_none(cfg_path, monkeypatch):
+    from app import bootstrap
+    captured = {}
+    monkeypatch.setattr(bootstrap, "provision", _fake_provision(captured))
+    assert cli.main(["init"]) == 0
+    assert captured["key_tiers"] is None
+
+
 def test_link_persists_target_chmod_600(cfg_path):
     assert cli.main(["link", "--cloud-url", "https://c.example/", "--api-key", "gb_sk_x", "--project", "core"]) == 0
     saved = json.loads(cfg_path.read_text())

@@ -790,7 +790,10 @@ export function ApiKeysPanel() {
   // decides only what `tools/list` advertises.
   const [tiers, setTiers] = React.useState<string[]>([]);
   const [name, setName] = React.useState("");
-  const [global, setGlobal] = React.useState(false);
+  // Project|Global, same axis as the CLI's `graphban init --key-scope`. A boolean named
+  // `global` was the old checkbox's shape; as a two-way control the name should say what
+  // the control is.
+  const [scope, setScope] = React.useState<"project" | "global">("project");
   const [expiryDays, setExpiryDays] = React.useState<number | null>(null);
   // A sync credential pins to one cloud project, so it gets its own explicit target rather
   // than riding the active project — a fleet mints one per project (D6).
@@ -811,7 +814,7 @@ export function ApiKeysPanel() {
     if (!name.trim()) return;
     setError(null);
     const isPinned = kind === "sync" || kind === "gate";
-    const projectId = isPinned ? syncTarget : global ? null : active?.id ?? null;
+    const projectId = isPinned ? syncTarget : scope === "global" ? null : active?.id ?? null;
     if (isPinned && !projectId) {
       setError(`Pick a project — a ${kind} credential must target exactly one.`);
       return;
@@ -967,14 +970,36 @@ export function ApiKeysPanel() {
           project, so a leaked CI secret cannot complete work across every project you can write.
         </p>
       ) : (
-        <label className="mb-4 flex items-center gap-2 text-[12px] text-muted">
-          <input type="checkbox" checked={global} onChange={(e) => setGlobal(e.target.checked)} className="accent-accent" />
-          {global ? (
-            <span>Global key — the agent passes <code className="font-mono text-[11px]">project_id</code> per call.</span>
-          ) : (
-            <span>Scoped to <span className="text-fg-2">{active?.name ?? "the active project"}</span> — check to make it global.</span>
-          )}
-        </label>
+        <div className="mb-4">
+          <div className="mb-1.5 text-[12px] text-muted">
+            Scope — {scope === "global" ? (
+              <span>a global key: the agent passes <code className="font-mono text-[11px]">project_id</code> per call, or falls back to its default project.</span>
+            ) : (
+              <span>pinned to <span className="text-fg-2">{active?.name ?? "the active project"}</span>: the agent's writes target it without naming it.</span>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Key scope">
+            {(
+              [
+                ["project", "Project", "Writes default to the active project."],
+                ["global", "Global", "Any project the owner can write; calls pass project_id."],
+              ] as const
+            ).map(([id, label, desc]) => (
+              <button
+                key={id}
+                onClick={() => setScope(id)}
+                title={desc}
+                aria-pressed={scope === id}
+                className={cn(
+                  "rounded-md border px-2.5 py-1 text-[11.5px] transition-colors",
+                  scope === id ? "border-accent/50 bg-surface-3 text-fg" : "border-line-2 text-muted hover:text-fg-2",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
       <KeyGroup
         title="Agent keys"

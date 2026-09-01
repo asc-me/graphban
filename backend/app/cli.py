@@ -96,7 +96,8 @@ def cmd_init(args) -> int:
 
     db = _session()
     try:
-        kwargs = {"project_name": args.project_name, "name": args.operator_name}
+        kwargs = {"project_name": args.project_name, "name": args.operator_name,
+                  "key_scope": args.key_scope, "key_tiers": args.key_tiers}
         if args.email:
             kwargs["email"] = args.email
         result = bootstrap.provision(db, **kwargs)
@@ -114,6 +115,15 @@ def cmd_init(args) -> int:
     print(f"Provisioned project {result['project_name']} ({result['project_tag']}).")
     print(f"Sign in as {result['email']} / {result['password']}")
     print(f"API key: {result['api_key']}")
+    if result.get("key_scope") == "global":
+        print("Global key — MCP calls must pass project_id (or fall back to the default project).")
+    else:
+        print(f"Project-scoped key — the agent's writes default to {result['project_name']}.")
+    tiers = result.get("key_tiers") or []
+    if tiers:
+        print(f"Key tiers: {', '.join(tiers)} — those tools appear in the agent's manifest.")
+    else:
+        print("Key tiers: none (core-only manifest). Tiered tools dispatch but are not advertised.")
     print("This key is stored only as a hash — it cannot be shown again.")
     return 0
 
@@ -400,7 +410,15 @@ def _post_inventory(args, root: str, items: list[dict]) -> dict:
     return r.json()
 
 
+def _comma_list(value: str) -> list[str]:
+    """`--key-tiers prd,fleet` and `--key-tiers prd --key-tiers fleet` both land on a list."""
+    return [t.strip() for t in value.split(",") if t.strip()]
+
+
 def build_parser() -> argparse.ArgumentParser:
+    from app import bootstrap  # for KEY_SCOPES — one source of truth for the scope names
+    from app.services import tool_tiers  # for TIERS — same, for the tier names
+
     p = argparse.ArgumentParser(
         prog="graphban", description="Local code-graph sync for a Graphban self-host (AL-134).")
     sub = p.add_subparsers(dest="command", required=True)
@@ -409,6 +427,16 @@ def build_parser() -> argparse.ArgumentParser:
     it.add_argument("--project-name", default="My Project")
     it.add_argument("--email", default=None, help="operator sign-in address")
     it.add_argument("--operator-name", default="Operator")
+    it.add_argument("--key-scope", choices=bootstrap.KEY_SCOPES, default="project",
+                    help="scope of the provisioned MCP key: project (default) binds it to the "
+                         "new project so the agent's writes target it; global leaves it "
+                         "unbound — calls pass project_id per call (or fall back to the "
+                         "default project)")
+    it.add_argument("--key-tiers", type=_comma_list, action="extend", default=None,
+                    metavar="TIERS",
+                    help="comma-separated optional tool tiers advertised in the key's "
+                         f"manifest ({', '.join(tool_tiers.TIERS)}); repeatable; default is "
+                         "core-only. Visibility, not authorisation")
     it.add_argument("--json", action="store_true", help="machine-readable output for start.sh")
     it.set_defaults(func=cmd_init)
 
