@@ -6,11 +6,19 @@ import { cn } from "@/lib/cn";
 
 type FormKind = "command" | "config";
 
+/** The key's scope, same axis as Settings' mint toggle and `graphban init --key-scope`. */
+export type KeyScope = "project" | "global";
+
+/** What each harness names those two scopes. Only clients with a verified `--scope` use it. */
+const HARNESS_SCOPE: Record<KeyScope, string> = { project: "project", global: "user" };
+
 type Form = {
   /** Shown above the snippet — the file it belongs in. Config forms only. */
   file?: string;
-  note?: string;
-  build: (url: string, key: string) => string;
+  /** A function form varies the note with the key's scope, so it can explain the flag it set. */
+  note?: string | ((scope: KeyScope | "") => string | undefined);
+  /** `scope` is "" when the caller does not know the key's scope — emit no flag then. */
+  build: (url: string, key: string, scope: KeyScope | "") => string;
 };
 
 type Client = {
@@ -30,7 +38,13 @@ type Client = {
 const OPENCLAW_JSON = (u: string, k: string) =>
   JSON.stringify({ url: u, transport: "streamable-http", headers: { "X-API-Key": k } });
 
-// Formats verified against each tool's official MCP docs. Command availability is NOT uniform,
+// Formats verified against each tool's official MCP docs. `--scope` values are from the two
+// tools' own `mcp add --help`: claude takes local|user|project (default local — a per-machine
+// registration, the one thing you do NOT want to guess), grok takes user|project and defaults
+// to USER, so a project-scoped key must say so explicitly. OpenClaw's `mcp set` exposes no
+// scope flag I can verify, so its command stays scope-free — the key's scope goes unmentioned
+// rather than into a flag that may not exist.
+// Command availability is NOT uniform,
 // and having a `mcp add` is not the same as being able to declare THIS server with it: Cursor
 // ships no MCP CLI at all; opencode's `mcp` subcommands cover auth/list/logout; `codex mcp add`
 // takes stdio servers exclusively; `hermes mcp add` installs catalog entries. None of the four
@@ -41,8 +55,14 @@ export const CLIENTS: Client[] = [
     id: "claude",
     label: "Claude Code",
     command: {
-      note: "Add --scope user to make it global.",
-      build: (u, k) => `claude mcp add --transport http graphban ${u} --header "X-API-Key: ${k}"`,
+      note: (s) =>
+        s === "global"
+          ? "--scope user registers it in every project — the key is unbound and names a project per call."
+          : s === "project"
+            ? "--scope project puts it in .mcp.json beside this repo — the key is bound to exactly one project."
+            : "Add --scope project for one repo, --scope user for every project.",
+      build: (u, k, s) =>
+        `claude mcp add --transport http${s ? ` --scope ${HARNESS_SCOPE[s]}` : ""} graphban ${u} --header "X-API-Key: ${k}"`,
     },
     config: {
       file: ".mcp.json",
@@ -120,7 +140,15 @@ export const CLIENTS: Client[] = [
     // `~/.grok/config.toml`, native remote HTTP, `headers` as inline key-value pairs. The
     // bridge worked but shipped an extra `npx` process and a wrong path.
     command: {
-      build: (u, k) => `grok mcp add --transport http graphban ${u} --header "X-API-Key: ${k}"`,
+      // grok defaults to user — the flag is what stops a project key's global install.
+      note: (s) =>
+        s === "global"
+          ? "--scope user writes ~/.grok/config.toml, available in all your projects (grok's default)."
+          : s === "project"
+            ? "--scope project writes ./.grok/config.toml, shared with everyone in the repo — grok would otherwise default to user."
+            : undefined,
+      build: (u, k, s) =>
+        `grok mcp add --transport http${s ? ` --scope ${HARNESS_SCOPE[s]}` : ""} graphban ${u} --header "X-API-Key: ${k}"`,
     },
     config: {
       file: "~/.grok/config.toml",
@@ -132,9 +160,20 @@ export const CLIENTS: Client[] = [
 /**
  * MCP install commands per coding tool. `apiKey` is the value dropped into the snippet — the
  * real one-time key right after creation, or the `<YOUR_API_KEY>` placeholder for an existing
- * key (whose value can't be re-shown). `keyPrefix` labels which key it's for.
+ * key (whose value can't be re-shown). `keyPrefix` labels which key it's for. `keyScope`
+ * drives the harness `--scope` flag: where the tool supports one, project keys register in the
+ * repo and global keys in the user config, so the snippet matches the key without the operator
+ * translating between the two. Unknown scope → no flag, and the note says what to add.
  */
-export function McpInstall({ apiKey, keyPrefix }: { apiKey: string; keyPrefix?: string }) {
+export function McpInstall({
+  apiKey,
+  keyPrefix,
+  keyScope,
+}: {
+  apiKey: string;
+  keyPrefix?: string;
+  keyScope?: KeyScope;
+}) {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const url = `${origin}/api/mcp`;
   const [sel, setSel] = React.useState("claude");
@@ -145,7 +184,9 @@ export function McpInstall({ apiKey, keyPrefix }: { apiKey: string; keyPrefix?: 
   // going back to a client that has both restores the form you had chosen.
   const active = (form === "command" ? client.command : client.config) ?? client.command ?? client.config!;
   const both = Boolean(client.command && client.config);
-  const snippet = active.build(url, apiKey);
+  const scope: KeyScope | "" = keyScope ?? "";
+  const snippet = active.build(url, apiKey, scope);
+  const note = typeof active.note === "function" ? active.note(scope) : active.note;
   const placeholder = apiKey.startsWith("<");
 
   return (
@@ -212,7 +253,7 @@ export function McpInstall({ apiKey, keyPrefix }: { apiKey: string; keyPrefix?: 
           Replace <span className="font-mono text-muted-2">{apiKey}</span> with the key you saved when you created it.
         </p>
       )}
-      {active.note && <p className="mt-1.5 text-[10.5px] text-faint">{active.note}</p>}
+      {note && <p className="mt-1.5 text-[10.5px] text-faint">{note}</p>}
       <p className="mt-1 text-[10.5px] text-faint">
         The URL must be reachable from where the agent runs — <span className="font-mono">{url}</span>
       </p>

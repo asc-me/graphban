@@ -9,7 +9,7 @@ import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
 import { GitopsPanel } from "@/features/settings/GitopsPanel";
-import { McpInstall } from "@/features/settings/McpInstall";
+import { McpInstall, type KeyScope } from "@/features/settings/McpInstall";
 import { SyncCredentialInstall } from "@/features/settings/SyncCredentialInstall";
 import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -793,12 +793,14 @@ export function ApiKeysPanel() {
   // Project|Global, same axis as the CLI's `graphban init --key-scope`. A boolean named
   // `global` was the old checkbox's shape; as a two-way control the name should say what
   // the control is.
-  const [scope, setScope] = React.useState<"project" | "global">("project");
+  const [scope, setScope] = React.useState<KeyScope>("project");
   const [expiryDays, setExpiryDays] = React.useState<number | null>(null);
   // A sync credential pins to one cloud project, so it gets its own explicit target rather
   // than riding the active project — a fleet mints one per project (D6).
   const [syncProject, setSyncProject] = React.useState<string>("");
-  const [created, setCreated] = React.useState<{ plaintext: string; kind: KeyKind; projectId: string } | null>(null);
+  // `scope` rides along so the connect snippet's harness flag matches the key that was just
+  // minted — the toggle's whole point is that nobody re-declares the scope when wiring the agent.
+  const [created, setCreated] = React.useState<{ plaintext: string; kind: KeyKind; projectId: string; scope: KeyScope } | null>(null);
   const [copied, setCopied] = React.useState(false);
   const [connectId, setConnectId] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -829,7 +831,7 @@ export function ApiKeysPanel() {
       // a gate key calls exactly one, which is core.
       const res = await api.createApiKey(name.trim(), projectId, expiryDays, scopes,
         kind === "agent" ? tiers : undefined);
-      setCreated({ plaintext: res.plaintext, kind, projectId: projectId ?? "" });
+      setCreated({ plaintext: res.plaintext, kind, projectId: projectId ?? "", scope });
       setName("");
       qc.invalidateQueries({ queryKey: keys.apiKeys });
     } catch (e) {
@@ -858,7 +860,7 @@ export function ApiKeysPanel() {
           ) : created.kind === "gate" ? (
             <GateKeyInstall apiKey={created.plaintext} />
           ) : (
-            <McpInstall apiKey={created.plaintext} />
+            <McpInstall apiKey={created.plaintext} keyScope={created.scope} />
           )}
         </div>
       )}
@@ -1059,7 +1061,7 @@ export function ApiKeysPanel() {
             </div>
             {connectId === k.id && (
               <div className="border-t border-line px-3 pb-3">
-                <McpInstall apiKey="<YOUR_API_KEY>" keyPrefix={k.prefix} />
+                <McpInstall apiKey="<YOUR_API_KEY>" keyPrefix={k.prefix} keyScope={k.project_id ? "project" : "global"} />
               </div>
             )}
           </div>
@@ -1130,7 +1132,7 @@ export function ApiKeysPanel() {
             </div>
             {connectId === k.id && (
               <div className="border-t border-line px-3 pb-3">
-                <McpInstall apiKey="<YOUR_API_KEY>" keyPrefix={k.prefix} />
+                <McpInstall apiKey="<YOUR_API_KEY>" keyPrefix={k.prefix} keyScope={k.project_id ? "project" : "global"} />
               </div>
             )}
           </div>

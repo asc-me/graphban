@@ -117,6 +117,11 @@ describe("minting a sync credential", () => {
       // manifest, which is likewise the backend default (GRPH-571).
       expect(api.createApiKey).toHaveBeenCalledWith("ci-agent", "core", null, undefined, []),
     );
+    // The snippet's default must match the key's default: a project-scoped key registers
+    // project-scoped, without the operator translating between the two by hand.
+    await waitFor(() =>
+      expect(document.querySelector("pre.max-h-56")?.textContent).toContain("--scope project graphban"),
+    );
   });
 
   it("mints an unbound key when the scope toggle says Global", async () => {
@@ -131,6 +136,11 @@ describe("minting a sync credential", () => {
 
     await waitFor(() =>
       expect(api.createApiKey).toHaveBeenCalledWith("fleet-wide", null, null, undefined, []),
+    );
+    // The toggle's whole point: an unbound key's connect command is user-scoped in the
+    // harness, so no project file ever carries a key that outlives it.
+    await waitFor(() =>
+      expect(document.querySelector("pre.max-h-56")?.textContent).toContain("--scope user graphban"),
     );
   });
 });

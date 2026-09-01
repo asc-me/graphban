@@ -880,7 +880,9 @@ export function FleetView() {
                   note that Grok needs an mcp-remote stdio bridge. This view first shipped a
                   two-branch stub of its own that handed the `claude mcp add` command to
                   Codex, Grok and opencode alike — found on the first real walk. */}
-              <McpInstall apiKey={minted.plaintext} />
+              {/* Fleet keys are minted pinned to the active project (mintFleetKey passes
+                  project_id), so "project" is the key's real scope — not a guess. */}
+              <McpInstall apiKey={minted.plaintext} keyScope="project" />
               <CopyRow label="3. Prime" value={primeSnippet(minted.role, undefined, scope)} />
             </div>
           )}
