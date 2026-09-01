@@ -37,6 +37,9 @@ jobs:
               # generator.
               - 'AGENTS.md'
               - 'docs/**'
+              # Host/pack/upgrade tests import scripts/*. A scripts-only PR
+              # would otherwise skip the suite that exists to keep them honest.
+              - 'scripts/**'
             frontend:
               - 'web/**'
               - '.github/workflows/ci.yml'

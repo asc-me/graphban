@@ -42,6 +42,33 @@ Upgrade keeps the previous `backend/.env`, refreshes the venv from the new
 tree, rewrites the unit with the new sha, and puts the old release back if
 `/health` does not come up serving that sha.
 
+## Packing a release
+
+A git tag is not a release, and GitHub's source zip is not either. Pack the
+directory `upgrade --release` consumes:
+
+```bash
+python3 scripts/graphban_pack.py 2026.09.1
+# dist-release/graphban-2026.09.1/
+# dist-release/graphban-2026.09.1.tar.gz
+```
+
+That tree is backend + Alembic, prebuilt `web/dist` (or an `SPA` file saying
+`n/a` with `--api-only`), a `GIT_SHA` file, and **no** `.env`. The packer
+checks the ref out into a detached worktree first, so uncommitted files in the
+working tree cannot ride along.
+
+Attach the tarball to the GitHub Release (`gh release upload 2026.09.1
+dist-release/graphban-2026.09.1.tar.gz`). The packer does not upload, and it
+does not run the swap.
+
+```bash
+tar xf graphban-2026.09.1.tar.gz
+# write backend/.env from .env.example on a first install
+python3 graphban-2026.09.1/scripts/graphban_host.py upgrade \
+  --root /opt/graphban --release ./graphban-2026.09.1 --sha "$(cat graphban-2026.09.1/GIT_SHA)"
+```
+
 ## Layout
 
 ```
