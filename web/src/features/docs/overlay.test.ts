@@ -103,6 +103,19 @@ describe("docs overlay routes", () => {
     expect(docFor("/settings").title).toBe("Settings");
   });
 
+  it("Cloud / Sync overlay is about minting a link key in the cloud org", () => {
+    const d = docFor(settingsPath("deployment/sync"));
+    expect(d.tagline).toMatch(/cloud org/i);
+    expect(d.sections[0]?.h).toMatch(/cloud org/i);
+    expect(d.sections.map((s) => s.h).join(" ")).not.toMatch(/Incremental graph/);
+    expect(d.sections[0]?.b).toMatch(/sync/i);
+  });
+
+  it("org Deployments overlay names minting a link key", () => {
+    const d = docFor(adminPath("deployments"));
+    expect(d.sections[0]?.h).toMatch(/link key/i);
+  });
+
   it("does not open AI Providers on a page that is not providers", () => {
     const notProviders = [
       settingsPath("project/api-keys"),
