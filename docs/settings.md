@@ -13,11 +13,12 @@ on the published stable cut.
 ### Updates
 
 `/settings/deployment/updates`. **Check for updates** refetches
-`GET /api/platform/update-check`. **Install** is on the self-host page and stays
-disabled until `apply` is true — Compose apply is `scripts/deploy.sh <tag>` on
-the host, not the API container. Native apply needs the packed release
-(`scripts/graphban_pack.py`) attached to the GitHub Release; the source zip is
-not that tree. Hosted has Check and no Install.
+`GET /api/platform/update-check`. **Install** is on the self-host page and is
+enabled when `apply` is true and a newer cut is advertised. Compose apply is a
+**host helper** (`scripts/graphban_compose_host.py`) that runs
+`scripts/deploy.sh --local` — the API container does not get a Docker socket.
+No helper means `apply` is false, not a green Install. Native apply still needs
+the packed release (`scripts/graphban_pack.py`). Hosted has Check and no Install.
 
 Three states: **current** (the page says this box is on the latest release),
 **available**, **unknown**. Unknown is not current: a failed feed fetch, or a

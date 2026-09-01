@@ -61,6 +61,11 @@ services:
     volumes:
       # Drive sync target. Point SYNC_HOST_DIR at a Google Drive Desktop folder to reach Drive.
       - ${SYNC_HOST_DIR:-./sync}:/data/sync
+      # Compose apply helper. Mount the DIRECTORY that contains apply.sock, not
+      # the socket file (inode changes on helper restart would stale a file mount).
+      # Default is an empty local dir — no socket, Install stays disabled. Not
+      # the Docker socket. See docs/deploy.md.
+      - ${GRAPHBAN_APPLY_DIR:-./.graphban-apply}:/run/graphban-apply
     depends_on:
       db:
         condition: service_healthy

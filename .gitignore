@@ -39,6 +39,9 @@ web/*.tsbuildinfo
 # Drive sync target (runtime data / mounted volume)
 sync/
 
+# Compose apply helper socket dir (docker-compose default mount)
+.graphban-apply/
+
 # OS / editor
 .DS_Store
 

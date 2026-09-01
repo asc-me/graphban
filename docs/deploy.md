@@ -85,6 +85,31 @@ scripts/deploy.sh --local              # ships to THIS machine, no ssh hop
 scripts/deploy.sh --dir /srv/graphban  # a target directory other than ~/agentledger
 ```
 
+### Install from Settings (compose helper)
+
+The Updates page Install button cannot run Docker from the API container. A
+**host helper** listens on a unix socket and starts `deploy.sh --local` from a
+real git clone — the rsync target has no `.git`, so `deploy.sh` cannot fetch
+from there.
+
+```bash
+git clone git@github.com:asc-me/graphban.git ~/graphban-src
+mkdir -p ~/.graphban-apply
+python3 ~/graphban-src/scripts/graphban_compose_host.py listen \
+  --repo ~/graphban-src --dir ~/agentledger \
+  --socket ~/.graphban-apply/apply.sock
+```
+
+In the compose project's `.env` (the server's, never rsynced):
+
+```
+GRAPHBAN_APPLY_DIR=/home/YOU/.graphban-apply
+```
+
+Then recreate the API container so it mounts that directory at
+`/run/graphban-apply`. `apply` is true only when `apply.sock` is a unix socket.
+A missing helper is a disabled Install, not a green one. Hosted never applies.
+
 `GRAPHBAN_DEPLOY_HOST` and `GRAPHBAN_DEPLOY_DIR` set the same two things, so a box you deploy
 to often does not need a flag every time. `--local` is what a Mac Studio or a Linux server
 running the stack on itself wants: same worktree, same verification, one fewer hop.

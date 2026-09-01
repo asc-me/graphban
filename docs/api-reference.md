@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 104 of the 177 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 105 of the 178 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -224,7 +224,8 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 
 | Method | Path | Auth |
 | --- | --- | --- |
-| GET | `/api/platform/update-check` | JWT | Whether this instance is current against the published stable GitHub Release. Three states: `current`, `available`, `unknown`. Unknown is not current. `apply` is always false in this slice |
+| GET | `/api/platform/update-check` | JWT | Whether this instance is current against the published stable GitHub Release. Three states: `current`, `available`, `unknown`. Unknown is not current. `apply` is true only when a compose host helper is on the unix socket and this is not hosted |
+| POST | `/api/platform/update-apply` | JWT | Start a compose apply of the advertised latest tag. 202 when the host helper has started `deploy.sh`. Hosted 403. No helper 503. Tag that is not the advertised cut 409. Not MCP |
 | GET / PATCH | `/api/platform` | JWT |
 | GET | `/api/platform/credentials` | JWT | Every credential in the caller's scope with `state`, derived `used_by`, and `falling_back` — projects pointing here that are NOT getting it because the row is unreachable or out of scope (PRD-25 §4). Never returns a key, only `key_set` |
 | POST | `/api/platform/credentials` | JWT |
