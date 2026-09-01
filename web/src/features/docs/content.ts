@@ -241,7 +241,7 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Settings",
     tagline: "Providers, integrations, project, members, keys.",
     sections: [
-      { num: 1, h: "AI Providers", b: "Switch the chat/extraction provider (stub / Ollama / Claude) live. Embeddings are a deploy-time setting." },
+      { num: 1, h: "AI Providers (This box)", b: "Under the deployment section — providers are what the box runs on, not per-project config. Add a credential for Anthropic, OpenAI, Gemini, Grok, Groq, DeepSeek, Mistral, Ollama, Qwen, Kimi, GLM, MiniMax, OpenRouter, Together, Fireworks, Perplexity, Cohere, or any custom OpenAI-compat endpoint; every compat entry carries an editable endpoint so a gateway or local server is one field, not a code change. Embeddings stay a deploy-time setting." },
       { num: 2, h: "Integrations", b: "Connect GitHub/Drive config and copy the inbound issues webhook — opened GitHub issues become tracker items." },
       { num: 3, h: "Project, members, keys", b: "Edit project config and flags, review member roles, and create/revoke API keys (shown once). The mint dialog asks for scope — Project pins the agent's writes to the active project, Global lets the agent name a project per call — and which tool tiers the key advertises. The same axes exist for the first-run key as `graphban init --key-scope` / `--key-tiers`." },
     ],
@@ -268,9 +268,10 @@ const CONTENT: Record<string, DocEntry> = {
     title: "AI providers",
     tagline: "Credentials this box runs on — not Graphban API keys.",
     sections: [
-      { num: 1, h: "One list of credentials", b: "These are LLM provider keys (Anthropic, OpenAI, Grok, Ollama, a custom OpenAI-compat endpoint). They are not the keys agents use to call Graphban. Agent keys live on API keys." },
-      { num: 2, h: "Deployment default, then project", b: "A credential can be the box default. A project may point at one; if that pointer is dead, resolution falls back to the deployment default rather than going silent." },
-      { num: 3, h: "Health is of the credential", b: "The dot is whether this credential answers, labelled in text, not a second tag. Unreachable stays selectable — it was asked and did not answer." },
+      { num: 1, h: "This box, not this project", b: "Self-host: This box → AI providers. Hosted: the AI Providers tab. An LLM credential is what the instance runs on. Agent keys that call Graphban live on API keys." },
+      { num: 2, h: "Catalogue plus a custom endpoint", b: "Pick Anthropic, OpenAI, Gemini, Grok, Groq, DeepSeek, Mistral, Ollama, Qwen, Kimi, GLM, MiniMax, OpenRouter, Together, Fireworks, Perplexity, Cohere, or Custom. Every OpenAI-compat row shows an editable endpoint, pre-filled from the catalogue so the default URL is zero-typing and a gateway or local server is one field." },
+      { num: 3, h: "Deployment default, then project", b: "A credential can be the box default. A project may point at one; if that pointer is dead, resolution falls back to the deployment default rather than going silent." },
+      { num: 4, h: "Health is of the credential", b: "The dot is whether this credential answers, labelled in text, not a second tag. Unreachable stays selectable — it was asked and did not answer. A wrong model name is refused with the list the provider actually offers." },
     ],
     related: [{ label: "API keys", to: settingsPath("project/api-keys") }],
   },
@@ -512,6 +513,7 @@ export function docFor(pathname: string): DocEntry {
   if (path.startsWith(settingsPath("deployment/updates"))) return CONTENT["/settings/deployment/updates"];
   if (path.startsWith(settingsPath("deployment/gitops"))) return CONTENT["/settings/deployment/gitops"];
   if (path.startsWith(settingsPath("deployment/sync"))) return CONTENT["/settings/deployment/sync"];
+  if (path.startsWith(settingsPath("deployment/providers"))) return CONTENT["/settings/project/providers"];
   if (path.startsWith(settingsPath("project/mcp"))) return CONTENT["/mcp-tools"];
   if (path.startsWith(settingsPath("project/feedback-kit"))) return CONTENT["/feedback-kit"];
   if (path.startsWith(settingsPath("project/api-keys"))) return CONTENT["/settings/project/api-keys"];

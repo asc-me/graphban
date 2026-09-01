@@ -106,3 +106,120 @@ def test_chat_provider_resolves_per_project(client, auth):
     # End-to-end: a core PRD command still uses the offline stub despite glyph's openai.
     r = client.post("/api/prds/PRD-1/ai", json={"command": "risks"}, headers=auth).json()
     assert "local stub" in r["text"].lower()
+
+
+# ---- GRPH-625: the catalogue grows past the first five labs ------------------------------
+
+
+def test_the_compat_family_and_the_custom_shape_are_shipped(client, auth):
+    """The CN labs, the hosted open-weights providers, and one generic shape.
+
+    **Kind membership is the contract, not a label** — `openai` kind is what makes an entry
+    probeable (LISTS_MODELS), what the Settings form reads the endpoint default from, and
+    what reuses the compat adapter with zero new transport code. An entry with the wrong
+    kind would render in the picker and then answer "cannot be asked" to every save.
+    """
+    from app.providers import registry
+
+    ids = {p["id"]: p for p in client.get("/api/platform/providers", headers=auth).json()["providers"]}
+    for pid in ("qwen", "kimi", "glm", "minimax", "openrouter", "together",
+                "fireworks", "perplexity", "cohere", "custom"):
+        assert pid in ids, f"{pid} is not in the shipped catalog"
+        assert ids[pid]["kind"] == "openai", f"{pid} is not the compat kind"
+    # `custom` IS the generic shape: empty URL and no default model are what make the form
+    # ask for them. A catalogue default here would pre-fill a lie about someone's gateway.
+    assert ids["custom"]["base_url"] == "" and ids["custom"]["chat_model"] == ""
+    assert registry.is_openai_compat("custom") and "custom" in registry.LISTS_MODELS
+
+
+def test_a_compat_credential_is_probed_at_the_endpoint_it_names(client, auth, monkeypatch):
+    """Saving `qwen` must probe QWEN's url, not api.openai.com. The registry default is
+    carried by the form, but the probe is what proves it arrived on the credential."""
+    from app.services import platform as platform_svc
+
+    seen: list[tuple] = []
+
+    def fake(pid, base_url, api_key=""):
+        seen.append((pid, base_url))
+        return {"qwen-plus"} if pid == "qwen" else None
+
+    monkeypatch.setattr(platform_svc.probe, "known_models", fake)
+    r = client.post("/api/platform/credentials?project_id=core",
+                    json={"kind": "qwen", "label": "DashScope",
+                          "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                          "api_key": "sk-x", "model": "qwen-plus"}, headers=auth)
+    assert r.status_code == 201, r.text
+    assert r.json()["state"] == "valid"
+    assert seen and seen[0][0] == "qwen" and "dashscope" in seen[0][1]
+
+
+def test_a_wrong_model_guess_surfaces_as_a_list_not_a_silence(client, auth, monkeypatch):
+    """The registry defaults are best-known-at-filing (GRPH-625 says so in the file). The
+    contract that makes a wrong guess survivable is this: the provider answers, the save is
+    refused, and the refusal names what IS offered. If this ever returns pending_validation
+    instead, the probe stopped seeing the model check and every wrong default below turns
+    into a runtime failure at the call site — the GRPH-485 incident, un-fixed."""
+    from app.services import platform as platform_svc
+
+    monkeypatch.setattr(platform_svc.probe, "known_models",
+                        lambda *a, **k: frozenset({"kimi-latest", "kimi-k3"}))
+    r = client.post("/api/platform/credentials?project_id=core",
+                    json={"kind": "kimi", "base_url": "https://api.moonshot.ai/v1",
+                          "api_key": "sk-x", "model": "kimi-nope-2027"}, headers=auth)
+    assert r.status_code == 422
+    assert "kimi-latest" in r.json()["detail"]
+
+
+def test_an_unreachable_custom_endpoint_saves_pending_not_refused(client, auth, monkeypatch):
+    """A vLLM on a laptop during a VPN blip must still be a saveable credential —
+    `pending_validation` is the honest state, and refusing the save would be refusing the
+    network rather than the config (the contract probe.py documents)."""
+    from app.services import platform as platform_svc
+
+    monkeypatch.setattr(platform_svc.probe, "known_models", lambda *a, **k: None)
+    r = client.post("/api/platform/credentials?project_id=core",
+                    json={"kind": "custom", "base_url": "http://localhost:1234/v1",
+                          "api_key": "none", "model": "qwen2.5"}, headers=auth)
+    assert r.status_code == 201
+    assert r.json()["state"] == "pending_validation"
+
+
+def test_the_custom_probe_lands_on_the_url_the_form_named(client, auth):
+    """THE CALL (GRPH-625). Monkeypatching `known_models` stays green if create_credential
+    never asks the host — the helper is correct and nobody calls it with the form URL.
+    A local server that records GET /v1/models is the request, not the helper."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    hits: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits.append(self.path)
+            body = json.dumps({"data": [{"id": "qwen2.5"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            return
+
+    httpd = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
+        r = client.post(
+            "/api/platform/credentials?project_id=core",
+            json={"kind": "custom", "label": "laptop vLLM",
+                  "base_url": url, "api_key": "none", "model": "qwen2.5"},
+            headers=auth,
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["state"] == "valid"
+        assert "/v1/models" in hits, f"probe never reached the named host; hits={hits}"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

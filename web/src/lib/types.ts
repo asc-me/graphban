@@ -714,6 +714,8 @@ export interface AiProvider {
   embeds: boolean;
   base_url: string;
   chat_model: string;
+  /** Selectable models the catalogue offers for this provider; absent = just `chat_model`. */
+  models?: string[];
   embed_model: string;
   auth: boolean;
 }

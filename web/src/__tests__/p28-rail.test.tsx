@@ -159,7 +159,7 @@ describe("P28 Home", () => {
 
 describe("P28 Settings (self-host)", () => {
   it("groups This box / This project and has no Org heading", async () => {
-    wrap(<SettingsView />, "/settings/project/providers");
+    wrap(<SettingsView />, "/settings/deployment/providers");
     expect(await screen.findByText("This box")).toBeInTheDocument();
     expect(screen.getByText("This project")).toBeInTheDocument();
     expect(screen.getByText("Cloud / Sync")).toBeInTheDocument();

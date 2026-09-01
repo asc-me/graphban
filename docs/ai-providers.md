@@ -34,6 +34,14 @@ Two independent selectors:
 - **`CHAT_PROVIDER`** — `stub | ollama | anthropic`. Drives chat, auto-extraction, and PRD AI
   commands. **Switchable live** from [Settings → AI Providers](settings.md#ai-providers-tab)
   (or env). Changing it updates the in-memory settings and resets the provider cache.
+- The Settings editor is a list of **credentials** — one row per provider key. The shipped
+  catalogue lives in `backend/app/providers/registry.py`; every OpenAI-compat entry carries
+  an editable endpoint, so a gateway or local server (vLLM, LM Studio, an internal proxy)
+  is configuration rather than a code change (GRPH-625). Defaults named in the catalogue
+  are best-known-at-filing; on save, a provider that answers is asked for its live model
+  list, and a wrong default comes back as a refusal naming what it actually offers (a
+  provider that cannot be asked saves as `pending_validation` and is retried in the
+  background).
 - **`EMBED_PROVIDER`** — `stub | ollama | openai`. Drives memory embedding + search and
   duplicate detection. This is a **deploy-time** setting.
 

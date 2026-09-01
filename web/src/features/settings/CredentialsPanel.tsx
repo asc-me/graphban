@@ -43,9 +43,18 @@ export function selectable(c: Credential): boolean {
   return c.state !== "pending_validation";
 }
 
-/** What this provider needs, read from the registry rather than restated here. */
+/** What this provider needs, read from the registry rather than restated here.
+ *
+ *  The endpoint field belongs to the whole OpenAI-compat family, not just Ollama (GRPH-625).
+ *  It used to be ollama-only on the theory that a compat provider's URL is fixed by the
+ *  catalogue — but picking a provider already pre-fills `base_url` from the registry and the
+ *  form sends it even while the field is hidden, so the gate never protected anyone from a
+ *  wrong default. What it did block is the one case the catalogue cannot cover: pointing a
+ *  compat credential at YOUR url — a LiteLLM gateway, a corporate proxy, a local vLLM. The
+ *  field pre-fills with the registry default, so api.openai.com stays zero-typing.
+ *  Anthropic stays without one: its adapter is the native SDK, not a base_url. */
 export function needsOf(p: AiProvider): { endpoint: boolean; key: boolean } {
-  return { endpoint: p.kind === "ollama", key: p.auth };
+  return { endpoint: p.kind === "ollama" || p.kind === "openai", key: p.auth };
 }
 
 const chip =
@@ -157,7 +166,9 @@ function AddCredentialDialog({
         </DialogHeader>
 
         {!picked ? (
-          <div className="grid grid-cols-2 gap-2" data-testid="provider-picker">
+          // Scrollable: the catalogue outgrew the dialog in one ticket (GRPH-625), and a
+          // provider the grid pushes past the viewport is a provider that does not exist.
+          <div className="grid max-h-[55vh] grid-cols-2 gap-2 overflow-y-auto pr-1" data-testid="provider-picker">
             {choices.map((p) => (
               <button key={p.id} type="button"
                 onClick={() => {
@@ -222,10 +233,13 @@ function EditCredentialDialog({
   projectId: string; credential: Credential | null;
   onOpenChange: (v: boolean) => void; onSaved: () => void;
 }) {
+  const { data: catalog } = useQuery({ queryKey: ["ai-providers"], queryFn: () => api.aiProviders() });
   const [apiKey, setApiKey] = React.useState("");
   const [model, setModel] = React.useState("");
   const [baseUrl, setBaseUrl] = React.useState("");
   const [error, setError] = React.useState("");
+  const meta = catalog?.providers.find((p) => p.id === credential?.kind);
+  const needs = meta ? needsOf(meta) : { endpoint: Boolean(credential?.base_url), key: true };
 
   React.useEffect(() => {
     setApiKey("");
@@ -258,10 +272,10 @@ function EditCredentialDialog({
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder={credential.key_set ? "•••••••• (leave blank to keep)" : "sk-…"} />
             </Field>
-            {credential.base_url && (
+            {needs.endpoint && (
               <Field label="Endpoint URL">
                 <Input aria-label="Endpoint" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
-                  className="font-mono text-[12px]" />
+                  placeholder={meta?.base_url || "https://…"} className="font-mono text-[12px]" />
               </Field>
             )}
             <Field label="Model">
