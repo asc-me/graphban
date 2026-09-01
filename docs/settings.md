@@ -33,6 +33,10 @@ agents may push to it, optional branch/PR naming, reviewer bar, version scheme.
   writes those six fields in one save. `base_branch` is never filled by a preset —
   a model save with an empty base is 422, not a write of `main`. A later hand-edit
   clears the model id.
+- Saving a non-Unmeasured model on a **project** files a tracker parent + children
+  (observe / remote / base_branch / optionally stop-pushing, one PR, tagged cut /
+  contract is live). Re-applying the same model does not duplicate. Org-house apply
+  does not file per-project plans. Graphban still does not run git.
 - Unset fields are **unmeasured**, never "use main" and never "no requirements".
   Placeholders say `Unmeasured — not main`.
 - The page renders `GitopsView` from `GET /api/projects/{id}/gitops`.

@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Organization, Project
+from app.models import Item, Link, Organization, Project
 from app.schemas import (
     GitopsControl,
     GitopsField,
@@ -32,6 +32,12 @@ REVIEWER_BARS = ("sign_off", "forge", "both")
 NAMING_TOKENS = ("item_id", "tag", "slug", "version", "date")
 VERSION_SCHEMES = ("git_tag", "semver", "calver")
 GITOPS_MODELS = ("push_to_base", "prs_to_base", "prs_to_integration")
+GITOPS_MODEL_LABELS = {
+    "push_to_base": "Push to base",
+    "prs_to_base": "PRs to base",
+    "prs_to_integration": "PRs to integration",
+}
+PLAN_TAG = "gitops-plan"
 GLOB_METACHARS = ("*", "?", "[")
 FIELD_SOURCES = ("project", "org", "unmeasured")
 CONTROL_STATES = ("local", "linked_set", "linked_unset", "linked_unreachable")
@@ -440,3 +446,134 @@ def apply_patch(row: Organization | Project, sent: dict) -> list[str]:
             row.gitops_model = None
             changed.append("model")
     return changed
+
+
+def plan_tag(model: str) -> str:
+    return f"{PLAN_TAG}:{model}"
+
+
+def _existing_plan(db: Session, project_id: str, model: str) -> Item | None:
+    tag = plan_tag(model)
+    rows = db.scalars(select(Item).where(Item.project_id == project_id)).all()
+    for it in rows:
+        if tag in (it.tags or []):
+            return it
+    return None
+
+
+def _plan_children(project: Project) -> list[dict[str, str]]:
+    model = project.gitops_model
+    base = project.gitops_base_branch or "the saved base_branch"
+    kids = [
+        {
+            "title": "Observe the repo",
+            "description": (
+                "Is there a git remote? Answer with exactly one of: `remote`, `none`, "
+                "or `unknown`. Unknown is a first-class result — do not skip this child "
+                "and do not treat 'could not look' as 'already matches'. Graphban does "
+                "not run git; record what you see as evidence."
+            ),
+        },
+        {
+            "title": "Confirm the remote",
+            "description": (
+                "Create or record `origin`. You run `git remote`. Graphban does not."
+            ),
+        },
+        {
+            "title": f"Confirm `{base}` exists and is HEAD",
+            "description": (
+                f"The contract's base_branch is `{base}`. Confirm that ref exists on "
+                "the remote and is what HEAD should track. Graphban does not "
+                "`git checkout`."
+            ),
+        },
+    ]
+    if project.gitops_no_push_to_base:
+        kids.append({
+            "title": "Stop pushing to base",
+            "description": (
+                "The contract has no_push_to_base=true. Stop landing on the integration "
+                "branch. Apply forge protection if you can; if you cannot, leave this "
+                "item blocked with that reason — do not close it as done."
+            ),
+        })
+    if model in ("prs_to_base", "prs_to_integration"):
+        kids.append({
+            "title": "One PR from current work",
+            "description": (
+                "Open one pull request from current work against the contract's "
+                f"base_branch (`{base}`) so the next run is not a philosophy lecture. "
+                "You run `gh`. Graphban does not."
+            ),
+        })
+    kids.append({
+        "title": "Contract is live",
+        "description": (
+            "Evidence is `get_context.gitops` matching the saved fields, not a "
+            "screenshot of Settings."
+        ),
+    })
+    if project.gitops_version_scheme:
+        kids.append({
+            "title": "First tagged cut",
+            "description": (
+                f"version_from is `{project.gitops_version_scheme}`. Tag from the "
+                "worktree (`git describe` / CalVer YYYY.MM.N / semver as named). "
+                "No tag stays unmeasured, not 1.0.0. Graphban does not invent the "
+                "number and does not read GitHub Releases to fill it."
+            ),
+        })
+    return kids
+
+
+def file_migration_plan(db: Session, project: Project) -> Item | None:
+    """File the parent+children checklist for a measured model. Idempotent per
+    (project, model). Does not commit — the PATCH caller owns the transaction.
+
+    Org-house apply does not call this (PRD-31 D20: do not spam a 500-project org).
+    """
+    from app.services import items as items_svc
+
+    model = project.gitops_model
+    if not model:
+        return None
+    existing = _existing_plan(db, project.id, model)
+    if existing is not None:
+        return existing
+    label = GITOPS_MODEL_LABELS.get(model, model)
+    parent = items_svc.create_item(
+        db,
+        title=f"Gitops: {label}",
+        description=(
+            f"Graduation checklist for the `{model}` contract on this project. "
+            "Graphban does not run git, open PRs, or install hooks — you (or an "
+            "agent) do. Completing a child because a probe looked green, without "
+            "recording what you saw, is the absence rule. A different model files "
+            "a new parent; this one is not auto-cancelled."
+        ),
+        project_id=project.id,
+        status="next",
+        tags=[PLAN_TAG, plan_tag(model)],
+        reporter={"name": "Gitops", "handle": "gitops", "avatar": "#c6f24e"},
+        commit=False,
+    )
+    for spec in _plan_children(project):
+        child = items_svc.create_item(
+            db,
+            title=spec["title"],
+            description=spec["description"],
+            project_id=project.id,
+            status="next",
+            tags=[PLAN_TAG],
+            reporter={"name": "Gitops", "handle": "gitops", "avatar": "#c6f24e"},
+            commit=False,
+        )
+        db.add(Link(
+            project_id=project.id,
+            a=parent.id,
+            b=child.id,
+            type="dependency",
+            reason="gitops migration checklist",
+        ))
+    return parent

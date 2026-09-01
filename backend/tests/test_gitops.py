@@ -991,3 +991,117 @@ def test_gitops_models_are_not_product_versions():
         assert not m[:4].isdigit()
     assert "base_branch" not in gitops_svc.PRESETS["prs_to_base"]
     assert gitops_svc.PRESETS["prs_to_base"] == gitops_svc.PRESETS["prs_to_integration"]
+
+
+# ---- migration plan (PRD-32 slice 2). Pin PATCH → items, not file_migration_plan() ------
+
+
+def _items(client, auth, project_id="core"):
+    return client.get("/api/items", params={"project_id": project_id}, headers=auth).json()
+
+
+def _plan_parents(client, auth, project_id="core"):
+    return [
+        i for i in _items(client, auth, project_id)
+        if any(str(t).startswith("gitops-plan:") for t in (i.get("tags") or []))
+    ]
+
+
+def _plan_titles(client, auth, project_id="core"):
+    return {
+        i["title"] for i in _items(client, auth, project_id)
+        if gitops_svc.PLAN_TAG in (i.get("tags") or [])
+    }
+
+
+def test_patch_model_files_the_plan_on_the_items_list(client, auth):
+    """THE CALL. Deleting file_migration_plan from the project handler leaves
+    PATCH 200 and an empty checklist."""
+    before = _plan_parents(client, auth)
+    r = _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"})
+    assert r.status_code == 200, r.text
+    parents = _plan_parents(client, auth)
+    assert len(parents) == len(before) + 1
+    parent = next(p for p in parents if gitops_svc.plan_tag("prs_to_base") in p["tags"])
+    assert parent["title"] == "Gitops: PRs to base"
+    assert parent["status"] == "next"
+    titles = _plan_titles(client, auth)
+    assert "Observe the repo" in titles
+    assert "Confirm the remote" in titles
+    assert "Confirm `main` exists and is HEAD" in titles
+    assert "Stop pushing to base" in titles
+    assert "One PR from current work" in titles
+    assert "Contract is live" in titles
+    assert "First tagged cut" in titles
+    assert "Graphban does not run git" in parent["description"]
+
+
+def test_reapplying_the_same_model_does_not_duplicate_the_parent(client, auth):
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    first = _plan_parents(client, auth)
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    assert _plan_parents(client, auth) == first
+
+
+def test_a_different_model_files_a_new_parent_and_leaves_the_old_one(client, auth):
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    assert _patch(client, auth, {"model": "push_to_base", "base_branch": "main"}).status_code == 200
+    parents = _plan_parents(client, auth)
+    tags = {gitops_svc.plan_tag("prs_to_base"), gitops_svc.plan_tag("push_to_base")}
+    got = {t for p in parents for t in p["tags"] if str(t).startswith("gitops-plan:")}
+    assert tags <= got
+    titles = _plan_titles(client, auth)
+    assert "One PR from current work" in titles
+    assert "First tagged cut" in titles
+    # push_to_base does not add a second copy of Observe; the first parent still has it.
+
+
+def test_push_to_base_does_not_file_pr_or_tag_children(client, auth):
+    assert _patch(client, auth, {"model": "push_to_base", "base_branch": "develop"}).status_code == 200
+    titles = _plan_titles(client, auth)
+    assert "Observe the repo" in titles
+    assert "Contract is live" in titles
+    assert "One PR from current work" not in titles
+    assert "First tagged cut" not in titles
+    assert "Stop pushing to base" not in titles
+
+
+def test_org_model_patch_does_not_file_per_project_plans(client, auth, monkeypatch):
+    org, a, _b = _hosted_org(client, auth, monkeypatch)
+    r = client.patch(
+        f"/api/orgs/{org['id']}/gitops",
+        json={"model": "prs_to_base", "base_branch": "stage"},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    assert _plan_parents(client, auth, a["id"]) == []
+
+
+def test_linked_403_does_not_file_a_plan(client, auth, monkeypatch):
+    _link_web(client, auth)
+    _mock_cloud(monkeypatch, _cloud_body())
+    before = _plan_parents(client, auth)
+    r = _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"})
+    assert r.status_code == 403
+    assert _plan_parents(client, auth) == before
+
+
+def test_parent_depends_on_each_child(client, auth):
+    from sqlalchemy import select
+
+    from app.db import SessionLocal
+    from app.models import Link
+
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    parent = next(
+        p for p in _plan_parents(client, auth)
+        if gitops_svc.plan_tag("prs_to_base") in p["tags"]
+    )
+    db = SessionLocal()
+    try:
+        deps = list(db.scalars(
+            select(Link).where(Link.a == parent["id"], Link.type == "dependency")
+        ).all())
+        assert len(deps) == 7
+    finally:
+        db.close()
