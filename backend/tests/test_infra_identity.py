@@ -84,13 +84,23 @@ def test_the_runbook_uses_the_real_postgres_role_and_database():
 
 
 def test_the_runbook_targets_the_real_deploy_directory():
-    """`~/graphban` does not exist on the box. Following it would rsync into a fresh
+    """`cd ~/graphban` does not exist on the box. Following it would rsync into a fresh
     directory with no `.env`, and compose would come up on default ports — the exact
-    port-conflict failure documented a few lines below it."""
-    assert "~/graphban" not in DEPLOY_DOC, (
-        "docs/deploy.md points at ~/graphban; the server directory is ~/agentledger"
+    port-conflict failure documented a few lines below it.
+
+    `~/graphban-src` is a different path: the git clone the compose helper listens
+    from (the rsync target has no `.git`). A substring check of `~/graphban` treats
+    that clone as the deploy directory and fails a green runbook.
+    """
+    import re
+    assert not re.search(r"cd ~/graphban(?:\s|$|/)", DEPLOY_DOC), (
+        "docs/deploy.md says `cd ~/graphban`; the server directory is ~/agentledger"
+    )
+    assert "ubuntu-srv:~/graphban/" not in DEPLOY_DOC, (
+        "docs/deploy.md rsyncs to ~/graphban; the server directory is ~/agentledger"
     )
     assert "ubuntu-srv:~/agentledger/" in DEPLOY_DOC
+    assert "--dir ~/agentledger" in DEPLOY_DOC
 
 
 def test_the_runbook_quotes_the_compose_project_name_correctly():
