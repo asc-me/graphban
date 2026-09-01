@@ -11,12 +11,14 @@ Updates is whether this box is on the published stable cut.
 
 ### Updates
 
-`/settings/deployment/updates`. Check only — there is no Apply button yet.
+`/settings/deployment/updates`. **Check for updates** refetches
+`GET /api/platform/update-check`. **Install** is on the self-host page and stays
+disabled until `apply` is true — Compose apply is `scripts/deploy.sh <tag>` on
+the host, not the API container. Hosted has Check and no Install.
 
-Three states from `GET /api/platform/update-check`: **current**, **available**,
-**unknown**. Unknown is not current: a failed feed fetch, or a running version
-that is still `0.1.0`, must not look up to date. Hosted Settings has the same
-panel as a read-only tab; hosted instances are updated by the operator.
+Three states: **current** (the page says this box is on the latest release),
+**available**, **unknown**. Unknown is not current: a failed feed fetch, or a
+running version that is still `0.1.0`, must not look up to date.
 
 ### Gitops
 
