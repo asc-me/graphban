@@ -742,8 +742,9 @@ describe("Fleet view", () => {
     expect(cmd.textContent).toContain("--seats-file seats.txt");
     expect(cmd.textContent).toContain("--adapter claude");
     expect(cmd.textContent).toContain("--wave wave-7");
-    expect(cmd.textContent).toContain("--server");
-    expect(cmd.textContent).toMatch(/--server\s+\S+/);
+    // THE CALL (GRPH-556 bounce). `--server \S+` matched any token, including a dummy URL
+    // substituted for window.location.origin — the value SupervisorHandoff interpolates.
+    expect(cmd.textContent).toContain(`--server ${window.location.origin}`);
   });
 
   it("only offers adapters the supervisor can resolve", async () => {
