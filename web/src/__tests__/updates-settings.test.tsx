@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -92,14 +93,17 @@ describe("Updates Settings page", () => {
     expect(link).toHaveAttribute("href", settingsPath("deployment/updates"));
   });
 
-  it("current names the running cut and has no Apply", async () => {
+  it("current says this box is on the latest release and has Check plus disabled Install", async () => {
     renderPage();
-    expect(await screen.findByText(/this instance is on/i)).toBeInTheDocument();
+    expect((await screen.findAllByText(/on the latest release/i)).length).toBeGreaterThan(0);
     expect(screen.getByText("2026.09.1")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /apply/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /check for updates/i })).toBeEnabled();
+    const install = screen.getByRole("button", { name: /^install$/i });
+    expect(install).toBeDisabled();
+    expect(screen.getByText(/already on the latest release/i)).toBeInTheDocument();
   });
 
-  it("available names the newer tag and does not say up to date", async () => {
+  it("available names the newer tag and does not say latest release", async () => {
     updateCheckSpy.mockResolvedValue(
       payload({
         state: "available",
@@ -109,8 +113,10 @@ describe("Updates Settings page", () => {
     renderPage();
     expect(await screen.findByText(/is available/i)).toBeInTheDocument();
     expect(screen.getAllByText(/2026\.10\.1/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/on the latest release/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/up to date/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /apply/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /check for updates/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^install$/i })).toBeDisabled();
   });
 
   it("unknown does not look current", async () => {
@@ -124,18 +130,28 @@ describe("Updates Settings page", () => {
     );
     renderPage();
     expect(await screen.findByText(/could not tell whether a newer cut exists/i)).toBeInTheDocument();
-    expect(screen.queryByText(/this instance is on/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/on the latest release/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/up to date/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/is available/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^install$/i })).toBeDisabled();
   });
 
-  it("THE CALL: the pane renders api.updateCheck, not a hardcoded current", async () => {
-    updateCheckSpy.mockResolvedValue(
-      payload({ state: "available", latest: { tag: "2026.10.1", url: "https://example/x" } }),
-    );
+  it("hosted has Check and no Install", async () => {
+    const user = userEvent.setup();
+    updateCheckSpy.mockResolvedValue(payload({ hosted: true }));
+    renderPage("/settings", true);
+    await user.click(await screen.findByRole("button", { name: /^updates$/i }));
+    expect(await screen.findByRole("button", { name: /check for updates/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^install$/i })).not.toBeInTheDocument();
+  });
+
+  it("THE CALL: Check for updates refetches the payload", async () => {
+    const user = userEvent.setup();
     renderPage();
-    expect(await screen.findByText(/is available/i)).toBeInTheDocument();
-    expect(updateCheckSpy).toHaveBeenCalled();
+    const btn = await screen.findByRole("button", { name: /check for updates/i });
+    expect(updateCheckSpy).toHaveBeenCalledTimes(1);
+    await user.click(btn);
+    await waitFor(() => expect(updateCheckSpy).toHaveBeenCalledTimes(2));
   });
 
   it("docs overlay matches Updates before the /settings catch-all", () => {

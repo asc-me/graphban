@@ -205,10 +205,10 @@ const CONTENT: Record<string, DocEntry> = {
   "/settings/deployment/updates": {
     badge: "UPDATES",
     title: "Updates",
-    tagline: "Whether this box is on the published stable cut. Checking is not applying.",
+    tagline: "Whether this box is on the published stable cut.",
     sections: [
-      { num: 1, h: "Three states", b: "current, available, or unknown. Unknown is not current — a failed feed fetch or a placeholder 0.1.0 version must not look up to date." },
-      { num: 2, h: "No Apply yet", b: "This page reports. Compose: scripts/deploy.sh <tag>. Native apply is a later slice. Hosted instances are updated by the operator." },
+      { num: 1, h: "Three states", b: "current, available, or unknown. Current says this box is on the latest release. Unknown is not current — a failed feed fetch or a placeholder 0.1.0 version must not look up to date." },
+      { num: 2, h: "Check and Install", b: "Check for updates refetches the feed. Install is on self-host and stays disabled until apply is true. Compose: scripts/deploy.sh <tag> on the host. Hosted has Check, no Install." },
     ],
     related: [{ label: "Gitops", to: settingsPath("deployment/gitops") }],
   },
