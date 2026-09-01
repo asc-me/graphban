@@ -15,7 +15,9 @@ on the published stable cut.
 `/settings/deployment/updates`. **Check for updates** refetches
 `GET /api/platform/update-check`. **Install** is on the self-host page and stays
 disabled until `apply` is true — Compose apply is `scripts/deploy.sh <tag>` on
-the host, not the API container. Hosted has Check and no Install.
+the host, not the API container. Native apply needs the packed release
+(`scripts/graphban_pack.py`) attached to the GitHub Release; the source zip is
+not that tree. Hosted has Check and no Install.
 
 Three states: **current** (the page says this box is on the latest release),
 **available**, **unknown**. Unknown is not current: a failed feed fetch, or a
