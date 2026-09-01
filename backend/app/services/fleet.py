@@ -1866,17 +1866,30 @@ def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
     scopes = ["read", "write"]
     if role in ("reviewer", ALL_IN_ONE):
         scopes.append("gate")
-    # The `fleet` tool tier (GRPH-571) comes with the credential rather than being asked for.
-    # A planner without `propose_allocation` or `assign_role` cannot do the job it was minted
-    # for, and it would fail by those tools being ABSENT from its manifest, which reads as
-    # them not existing rather than as a missing grant.
+    # The `fleet` and `prd` tool tiers (GRPH-571) come with the credential rather than being
+    # asked for. A planner without `propose_allocation` or `assign_role` cannot do the job it
+    # was minted for, and it would fail by those tools being ABSENT from its manifest, which
+    # reads as them not existing rather than as a missing grant.
+    #
+    # `prd` joins for the same argument applied to the reservation the tiering shipped blind:
+    # TOOL_ROLES gives PRD authorship to the planner ALONE ("PRD authorship is the planner's"),
+    # and the tiering put those verbs behind the `prd` tier — so the two ceilings composed
+    # into "no fleet credential may author", which is not what either one says. The one role
+    # permitted to author was the one role fleet.mint never granted the tier, and the
+    # reservation became dead code the day it landed. All-in-one carries it too: its session
+    # never narrows, and `answer_grill`'s own result tells the caller to record the answer via
+    # `update_prd` — guidance into a tool the credential could not see.
     #
     # ONLY the planner (and all-in-one, which is every role). The reviewer was in this list
     # and the enrolment path is why it is not: a seat is taken on a hand-minted credential
     # that has no tiers, so granting the reviewer its tools HERE would work for a Fleet-view
     # key and silently not work for an enrolled one — the same agent, two ways in, two
-    # different manifests. `review_recommendation` is core instead, which fixes both.
-    tiers = ["fleet"] if role in ("planner", ALL_IN_ONE) else []
+    # different manifests. `review_recommendation` is core instead, which fixes both. The
+    # enrolled planner has the same two ways in and no core fix available — authorship is the
+    # heaviest tier in the product, which is exactly what every key should not be paying for —
+    # so its answer is the mint dialog: select the PRDs tier on the hand-minted key the seat
+    # rides.
+    tiers = ["fleet", "prd"] if role in ("planner", ALL_IN_ONE) else []
     row, plaintext = generate_api_key(
         db, user_id, label or f"fleet {role}", scopes, project_id, FLEET_KEY_DAYS,
         tool_tiers=tiers)
