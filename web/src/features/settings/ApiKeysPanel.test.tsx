@@ -261,7 +261,7 @@ describe("docs overlay", () => {
     expect(body).toMatch(/callable/i);
     expect(body).toMatch(/gate/i);
     expect(body).toMatch(/scope/i);
-    expect(docFor(settingsPath("project/providers")).title).toBe("Settings");
+    expect(docFor(settingsPath("project/providers")).title).toBe("AI providers");
     expect(docFor("/settings").title).toBe("Settings");
   });
 });

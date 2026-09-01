@@ -1,0 +1,117 @@
+/**
+ * Every live page must get its own overlay. A catch-all that opens AI Providers
+ * on API keys (and Graphban-default on /p/:tag/tracker) is the failure this pins.
+ */
+import { describe, expect, it } from "vitest";
+
+import { docFor } from "@/features/docs/content";
+import { adminPath, orgPath, settingsPath } from "@/lib/routes";
+
+const PAGES: [string, string][] = [
+  ["/tracker", "Tracker"],
+  ["/p/CORE/tracker", "Tracker"],
+  ["/triage", "Triage"],
+  ["/p/CORE/triage", "Triage"],
+  ["/requests", "Requests"],
+  ["/p/CORE/requests", "Requests"],
+  ["/prds", "PRDs"],
+  ["/p/CORE/prds", "PRDs"],
+  ["/prds/abc", "PRD editor"],
+  ["/p/CORE/prds/abc", "PRD editor"],
+  ["/roadmap", "Roadmap"],
+  ["/p/CORE/roadmap", "Roadmap"],
+  ["/code", "Code graph"],
+  ["/p/CORE/code", "Code graph"],
+  ["/links", "Links graph"],
+  ["/p/CORE/links", "Links graph"],
+  ["/fleet", "Fleet"],
+  ["/p/CORE/fleet", "Fleet"],
+  ["/activity", "Activity"],
+  ["/p/CORE/activity", "Activity"],
+  ["/memory-review", "Memory review"],
+  ["/p/CORE/memory-review", "Memory review"],
+  ["/lessons", "Lessons"],
+  ["/lessons/sh_1", "Lessons"],
+  ["/p/CORE/lessons", "Lessons"],
+  ["/p/CORE/lessons/sh_1", "Lessons"],
+  ["/home", "Home"],
+  ["/dashboard", "Dashboard"],
+  ["/p/CORE/dashboard", "Dashboard"],
+  ["/p/CORE", "Project home"],
+  ["/p/CORE/", "Project home"],
+  ["/mcp-tools", "MCP Tools"],
+  ["/p/CORE/mcp-tools", "MCP Tools"],
+  ["/feedback-kit", "Feedback Kit"],
+  ["/p/CORE/feedback-kit", "Feedback Kit"],
+  ["/profile", "Profile"],
+  ["/admin", "Operator"],
+  ["/admin/orgs", "Operator"],
+  ["/admin/users", "Operator"],
+  ["/admin/licensing", "Operator"],
+  [settingsPath("project/api-keys"), "API keys"],
+  [settingsPath("project/mcp"), "MCP Tools"],
+  [settingsPath("project/feedback-kit"), "Feedback Kit"],
+  [settingsPath("project/providers"), "AI providers"],
+  [settingsPath("project/integrations"), "Integrations"],
+  [settingsPath("project/members"), "Members"],
+  [settingsPath("project"), "Project"],
+  [settingsPath("account"), "Account"],
+  [settingsPath("deployment/sync"), "Cloud / Sync"],
+  [settingsPath("deployment/gitops"), "Gitops"],
+  [settingsPath("deployment/updates"), "Updates"],
+  ["/settings", "Settings"],
+  [orgPath(), "Organization"],
+  [orgPath("galaxy"), "Galaxy"],
+  [adminPath("gitops"), "Org gitops"],
+  [adminPath("users"), "Users & access"],
+  [adminPath("teams"), "Teams"],
+  [adminPath("deployments"), "Deployments"],
+  [adminPath("integrations"), "Org integrations"],
+  [adminPath("billing"), "Billing"],
+  [adminPath("branding"), "Branding"],
+  [adminPath(), "Users & access"],
+];
+
+describe("docs overlay routes", () => {
+  it("maps every live page, including the hosted /p/:tag prefix", () => {
+    for (const [path, title] of PAGES) {
+      expect(docFor(path).title, path).toBe(title);
+    }
+  });
+
+  it("does not let the /settings catch-all steal a settings subpage", () => {
+    // THE CALL. startsWith("/settings") used to win for every settings path.
+    const stolen = [
+      settingsPath("project/api-keys"),
+      settingsPath("project/providers"),
+      settingsPath("project/integrations"),
+      settingsPath("project/members"),
+      settingsPath("project"),
+      settingsPath("account"),
+      settingsPath("deployment/sync"),
+      settingsPath("deployment/gitops"),
+      settingsPath("deployment/updates"),
+      settingsPath("project/mcp"),
+      settingsPath("project/feedback-kit"),
+    ];
+    for (const path of stolen) {
+      expect(docFor(path).title, path).not.toBe("Settings");
+    }
+    expect(docFor("/settings").title).toBe("Settings");
+  });
+
+  it("does not open AI Providers on a page that is not providers", () => {
+    const notProviders = [
+      settingsPath("project/api-keys"),
+      settingsPath("deployment/sync"),
+      settingsPath("project"),
+      settingsPath("project/members"),
+      "/fleet",
+      "/tracker",
+    ];
+    for (const path of notProviders) {
+      expect(docFor(path).title, path).not.toBe("AI providers");
+      expect(docFor(path).sections[0]?.h ?? "", path).not.toMatch(/AI Providers/);
+    }
+  });
+});
