@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
-import { CLIENTS, McpInstall } from "@/features/settings/McpInstall";
+import { CLIENTS, McpInstall, type KeyScope } from "@/features/settings/McpInstall";
 
 /**
  * The connect snippets are copied verbatim into a config file or a terminal, so a wrong one
@@ -25,16 +25,16 @@ import { CLIENTS, McpInstall } from "@/features/settings/McpInstall";
  */
 const CONFIG_ONLY = ["Cursor", "Codex", "opencode", "Hermes"];
 
-async function open(client: string, form?: "Command" | "Config file") {
+async function open(client: string, form?: "Command" | "Config file", keyScope?: KeyScope) {
   const user = userEvent.setup();
-  const view = render(<McpInstall apiKey="gb_sk_secret" />);
+  const view = render(<McpInstall apiKey="gb_sk_secret" keyScope={keyScope} />);
   await user.click(screen.getByRole("button", { name: client }));
   if (form) await user.click(screen.getByRole("button", { name: form }));
   return { ...view, user, snippet: () => view.container.querySelector("pre")?.textContent ?? "" };
 }
 
-async function snippetFor(client: string, form?: "Command" | "Config file") {
-  const { snippet, unmount } = await open(client, form);
+async function snippetFor(client: string, form?: "Command" | "Config file", keyScope?: KeyScope) {
+  const { snippet, unmount } = await open(client, form, keyScope);
   const text = snippet();
   unmount();
   return text;
@@ -49,6 +49,42 @@ describe("MCP install snippets", () => {
     ] as const) {
       expect(await snippetFor(client)).toContain(command);
     }
+  });
+
+  it("sets the harness scope flag from the key's scope", async () => {
+    // A project key registers beside the repo; a global key in the user config. Both tools
+    // name the values user|project even though they DEFAULT differently — grok defaults to
+    // user, so `--scope project` is the flag earning its keep there. The `/graphban/` tail
+    // pins placement: flags after the positionals could be swallowed by `<args...>`.
+    for (const client of ["Claude Code", "Grok CLI"] as const) {
+      expect(await snippetFor(client, "Command", "project")).toMatch(/--scope project\s+graphban/);
+      expect(await snippetFor(client, "Command", "global")).toMatch(/--scope user\s+graphban/);
+    }
+  });
+
+  it("invents no scope flag for a client whose support is unverified", async () => {
+    // OpenClaw's `mcp set` has no documented --scope. It writes one user-level file either
+    // way, so the honest snippet is the one without a flag that may not exist.
+    expect(await snippetFor("OpenClaw", "Command", "global")).not.toMatch(/--scope/);
+    expect(await snippetFor("OpenClaw", "Command", "project")).not.toMatch(/--scope/);
+  });
+
+  it("omits the flag when nobody passed a scope, and says what to add", async () => {
+    const { snippet, unmount } = await open("Claude Code", "Command");
+    expect(snippet()).not.toContain("--scope");
+    expect(screen.getByText(/Add --scope project for one repo, --scope user/)).toBeInTheDocument();
+    unmount();
+  });
+
+  it("the note names the flag the snippet already set", async () => {
+    // The scope now arrives automatic; the note's job changed from instructing to explaining.
+    const claude = await open("Claude Code", "Command", "global");
+    expect(screen.getByText(/--scope user registers it in every project/)).toBeInTheDocument();
+    claude.unmount();
+
+    const grok = await open("Grok CLI", "Command", "project");
+    expect(screen.getByText(/would otherwise default to user/)).toBeInTheDocument();
+    grok.unmount();
   });
 
   it("never offers a command to a client that has none", async () => {
