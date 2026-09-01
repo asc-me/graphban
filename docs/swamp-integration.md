@@ -1,18 +1,14 @@
 # Running Graphban with Swamp
 
-> **Status: the port is built and armed.** The `gate` scope (GRPH-541), the
-> `attestation` evidence kind (GRPH-542), `fleet.sign_off` as the first adapter
-> (GRPH-544), the refusal itself (GRPH-543), and refusals-become-memory (GRPH-550) have
-> all landed: `update_item` refuses `done` without a valid attestation, and every refusal
-> is written where the next agent will meet it. Everything below about **Swamp** — the
-> model, the mutation probe, the conformance and adversarial predicates, the tripwire
-> workflow — remains design. Swamp is one adapter the port can accept, not a dependency,
-> and none of it is written. This doc exists so the
-> shape is agreed before code is written, and so the licensing boundary in
-> [Licensing](#licensing-the-hard-boundary) is understood *before* an agent starts porting
-> things it should not port. The tracked spec is **GRPH-P26 "Gated completion"**
-> (approved); this document is the design detail behind it, and items that implement it
-> link back here.
+> **Status: the port is built, and the Swamp adapter is live.** The `gate` scope
+> (GRPH-541), the `attestation` evidence kind (GRPH-542), `fleet.sign_off` (GRPH-544),
+> the refusal (GRPH-543), refusals-become-memory (GRPH-550), CI (`scripts/attest_ci.py`),
+> and `@graphban/item-lifecycle` in [graphban-swamp](https://github.com/asc-me/graphban-swamp)
+> (`complete` GRPH-613, `probe` GRPH-623) have all landed. Operator walkthrough:
+> [swamp.md](swamp.md). What remains design in **this** document is conformance,
+> deferral tripwires, a resolvable `run_ref`, and the release gate. The tracked spec is
+> **GRPH-P26**. The licensing boundary in [Licensing](#licensing-the-hard-boundary) still
+> binds anyone extending the adapter: do not copy Swamp source into either repo.
 
 [Swamp](https://swamp-club.com/) is an open-source automation framework: agents author
 typed **models** of external systems, wire them into declarative **workflows**, and every
@@ -201,24 +197,23 @@ green existed* — and is a few lines wherever we record PR state.
 
 ## Running both
 
-Graphban is unchanged: `docker compose up`. Swamp installs separately and keeps its data in
-`.swamp/` in the repo (or a shared filesystem, or an S3 datastore with distributed locking
-for teams; `swamp serve` is the team deployment).
+The commands that actually work — definition names lowercase, `--input` not `--itemKey`,
+origin URL, vaulted gate key — are in [swamp.md](swamp.md). Graphban is unchanged:
+`docker compose up`. Swamp installs separately. The adapter is
+[asc-me/graphban-swamp](https://github.com/asc-me/graphban-swamp), loaded with
+`swamp extension source add`, not copied into this tree.
 
 ```bash
-curl -fsSL https://swamp-club.com/install.sh | sh     # review before piping to a shell
-swamp init --tool claude                              # also: cursor, opencode, codex
-swamp vault set graphban-api-key                      # a gate-scoped key from Settings → API Keys
-swamp model method run @graphban/item-lifecycle complete --itemKey GRPH-123
+swamp model method run grph-123 complete --input commit="$(git rev-parse HEAD)"
 ```
 
-The last command is the whole point: it either writes `done` to Graphban, or it refuses and
-says which predicate failed.
+That command either writes `done` to Graphban or refuses naming the failed predicate.
+`probe` measures a mutation the same way. Do not treat older sketches in this file
+(`swamp init`, `--itemKey` on the type) as a how-to.
 
-Swamp teaches agents through skills (`.claude/skills/`, `.cursor/skills/`) rather than MCP —
-so Graphban's MCP tools and Swamp's CLI sit side by side in the same agent with no conflict.
-Graphban answers *what should I build and what was learned*; Swamp answers *may this
-advance*.
+Swamp teaches agents through skills rather than MCP — so Graphban's MCP tools and Swamp's
+CLI sit side by side with no conflict. Graphban answers *what should I build and what was
+learned*; Swamp answers *may this advance*.
 
 ## Licensing: the hard boundary
 
