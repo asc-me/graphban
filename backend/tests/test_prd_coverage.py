@@ -42,7 +42,9 @@ def test_coverage_rollup_and_gaps(client, auth):
         "title": "Cov", "body": "# Cov\n\n## A\n\n## B\n\n## C\n",
     }, headers=auth).json()
     # Cover A (done) and B (in progress); leave C a gap.
-    client.post("/api/items", json={"title": "do A", "status": "done", "prd_id": prd["id"], "prd_section": "A"}, headers=auth)
+    from tests.attest import complete_body
+    a = client.post("/api/items", json={"title": "do A", "prd_id": prd["id"], "prd_section": "A"}, headers=auth).json()
+    assert client.patch(f"/api/items/{a['id']}", json=complete_body(), headers=auth).status_code == 200
     client.post("/api/items", json={"title": "do B", "status": "in_progress", "prd_id": prd["id"], "prd_section": "B"}, headers=auth)
 
     cov = client.get(f"/api/prds/{prd['id']}/coverage", headers=auth).json()

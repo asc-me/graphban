@@ -506,12 +506,21 @@ def test_only_two_places_in_the_app_may_write_a_done_status():
     app = pathlib.Path(__file__).resolve().parent.parent / "app"
     allowed = {"services/fleet.py"}          # sign_off, deliberately
     offenders = []
+    # Literal `.status = "done"` AND `item.status = to_status` (release_item — the
+    # first ratchet missed it because the RHS is a variable). Comments and lines
+    # that already raise MissingAttestation are not writers.
+    write = re.compile(
+        r'''(?:\.status\s*=\s*["']done["']|\.status\s*=\s*to_status\b)'''
+    )
     for path in app.rglob("*.py"):
         rel = str(path.relative_to(app))
         if rel in allowed:
             continue
         for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            if re.search(r'\.status\s*=\s*["\']done["\']', line):
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue
+            if write.search(line) and "MissingAttestation" not in line:
                 offenders.append(f"{rel}:{i}")
 
     assert not offenders, (
@@ -520,6 +529,58 @@ def test_only_two_places_in_the_app_may_write_a_done_status():
         + " — route them through items.update_item, or add them to `allowed` with the "
           "gate they enforce instead"
     )
+
+
+def test_mcp_create_item_cannot_mint_done_without_attestation(client, auth):
+    """THE CALL (GRPH-543 bounce). A write-only key used to POST status=done and get a
+    done row with empty evidence — constructor assignment, never update_item."""
+    key = _mint(client, auth, ["read", "write"])
+    err = _error(_rpc(client, key, "create_item", {"title": "born done", "status": "done"}))
+    assert err, "create_item(status=done) succeeded without an attestation"
+    assert err.get("code") == "conflict", err
+    assert "attestation" in (err.get("message") or "")
+
+
+def test_rest_create_item_cannot_mint_done_without_attestation(client, auth):
+    r = client.post("/api/items", json={"title": "born done rest", "status": "done"},
+                    headers=auth)
+    assert r.status_code == 409, r.text
+    assert "attestation" in r.text
+
+
+def test_release_item_cannot_complete(db):
+    """THE OTHER CALL. `item.status = to_status` is not `.status = "done"`, so the
+    original ratchet missed it. Releasing is handing the lease back."""
+    it = _item(db)
+    it.status = "in_progress"
+    it.claimed_by = "agent-1"
+    db.commit()
+
+    with pytest.raises(items_svc.MissingAttestation) as e:
+        items_svc.release_item(db, it.id, "agent-1", to_status="done")
+
+    assert "attestation" in str(e.value)
+    db.refresh(it)
+    assert it.status != "done"
+    assert it.claimed_by == "agent-1", "a refused completion must not drop the lease"
+
+
+def test_mcp_release_item_cannot_complete(client, auth, db):
+    key = _mint(client, auth, ["read", "write"])
+    created = _rpc(client, key, "create_item", {"title": "release-done"})
+    assert not created.get("result", {}).get("isError"), created
+    item_id = created["result"]["structuredContent"]["id"]
+    it = items_svc.get_item(db, item_id)
+    it.status = "in_progress"
+    it.claimed_by = "writer-1"
+    db.commit()
+
+    err = _error(_rpc(client, key, "release_item",
+                      {"id": item_id, "agent_id": "writer-1", "to_status": "done"}))
+    assert err, "release_item(to_status=done) succeeded without an attestation"
+    assert err.get("code") == "conflict", err
+    db.refresh(it)
+    assert it.status != "done"
 
 
 # ---- refusals become memory (GRPH-550) -----------------------------------------------
