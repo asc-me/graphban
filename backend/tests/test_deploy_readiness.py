@@ -166,3 +166,18 @@ def test_the_proxy_outlives_a_full_length_park():
     assert int(m.group(1)) > MAX_WAIT_SECONDS, (
         f"proxy_read_timeout {m.group(1)}s must exceed MAX_WAIT_SECONDS {MAX_WAIT_SECONDS}s; "
         "equal values are a coin flip, not a bound")
+
+
+def test_the_proxy_outlives_an_llm_bound_call():
+    """A synchronous tool bounded by `llm_timeout_seconds` must not race nginx's cutoff.
+
+    `extract_lessons` used to block on the model inside POST /api/mcp; with both limits at
+    90s a slow distil returned 504 Gateway Time-out while the upstream was still working.
+    Asserted as a relation so raising either side without the other reintroduces it."""
+    from app.config import settings
+
+    m = re.search(r"proxy_read_timeout\s+(\d+)s", _TEMPLATE)
+    assert m, "no proxy_read_timeout — nginx defaults to 60s"
+    assert int(m.group(1)) > settings.llm_timeout_seconds, (
+        f"proxy_read_timeout {m.group(1)}s must exceed llm_timeout_seconds "
+        f"{settings.llm_timeout_seconds}s; equal values are a coin flip, not a bound")

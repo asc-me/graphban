@@ -171,3 +171,63 @@ def test_the_service_still_enriches_inline_by_default(client, auth, proj, db, mo
     attest.complete(db, item["id"])
 
     assert slow.ran, "with no scheduler the work must happen in the call"
+
+
+def _extract_over_mcp(client, key, item_id):
+    return client.post("/api/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "extract_lessons", "arguments": {"id": item_id}},
+    }, headers={"X-API-Key": key})
+
+
+def test_extract_lessons_hands_the_model_call_to_the_scheduler(client, auth, proj, db,
+                                                               monkeypatch):
+    """THE regression for the nginx 504, asserted where it is observable. Given a scheduler,
+    `_call_tool` returns without running the extractor — the gap that keeps POST /api/mcp
+    inside nginx's read timeout."""
+    slow = _SlowExtractor(2.0)
+    monkeypatch.setattr(platform_svc, "extractor_for", lambda db, pid: slow)
+    item = client.post("/api/items", json={"title": "distil me", "project_id": proj},
+                       headers=auth).json()
+    key_row = client.post("/api/api-keys",
+                          json={"name": "extract", "project_id": proj,
+                                "scopes": ["read", "write"]},
+                          headers=auth).json()
+    from app.models import ApiKey
+    from app.mcp_server import _call_tool
+
+    api_key = db.get(ApiKey, key_row["id"])
+    jobs: list = []
+    started = time.monotonic()
+    result = _call_tool(db, "extract_lessons", {"id": item["id"]}, api_key,
+                        defer=jobs.append, scope_out={})
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5, (
+        f"extract_lessons waited {elapsed:.1f}s on the model — that races nginx's read timeout")
+    assert result == {"results": [], "scheduled": True, "item_id": item["id"]}
+    assert not slow.ran, "the model must not have been called yet"
+    assert len(jobs) == 1
+    jobs[0]()
+    assert slow.ran, "and the scheduled job must be the one that does it"
+
+
+def test_extract_lessons_mcp_still_distils_before_the_client_returns(client, auth, proj, key,
+                                                                     monkeypatch):
+    """Wiring check: the HTTP caller schedules through BackgroundTask, and under Starlette's
+    test client the deferred job runs before the call returns — so shards exist even though
+    the payload says `scheduled`."""
+    slow = _SlowExtractor(0.01)
+    monkeypatch.setattr(platform_svc, "extractor_for", lambda db, pid: slow)
+    item = client.post("/api/items", json={"title": "distil me", "project_id": proj},
+                       headers=auth).json()
+
+    payload = json.loads(_extract_over_mcp(client, key, item["id"]).json()
+                         ["result"]["content"][0]["text"])
+
+    assert payload["scheduled"] is True
+    assert payload["results"] == []
+    shards = client.get(f"/api/memory/shards?project_id={proj}", headers=auth).json()
+    assert any(s["source"] == f"lesson from {item['id']}" for s in shards)
+    assert slow.ran
+

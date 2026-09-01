@@ -357,7 +357,14 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "extract_lessons",
-        "description": "Auto-distill decisions/learnings from an item into memory.",
+        "description": (
+            "Distil decisions/learnings from an item into memory candidate shards. "
+            "Scheduled off the response path (GRPH-399): returns immediately with "
+            "`scheduled: true` and empty `results` — the model call can exceed the "
+            "edge proxy's read timeout. Shards appear on the item's `linked_shards` "
+            "and in memory search once the background job finishes; do not retry on "
+            "an empty result."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {"id": {"type": "string"}},
@@ -1329,9 +1336,14 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
     "extract_lessons": {
         "type": "object",
-        "properties": {"results": {"type": "array", "items": {
-            "type": "object", "properties": {"id": _STR, "text": _STR},
-        }}},
+        "properties": {
+            "results": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"id": _STR, "text": _STR, "status": _STR},
+            }},
+            "scheduled": {"type": "boolean"},
+            "item_id": _STR,
+        },
     },
     "generate_digest": {
         "type": "object",
@@ -2642,7 +2654,25 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return _item_dict(item)
     if name == "extract_lessons":
         _scoped_item(db, args["id"], allowed)
-        return {"results": insights_svc.extract_lessons(db, args["id"])}
+        item_id = args["id"]
+
+        def _run_extract() -> None:
+            from app.db import SessionLocal
+
+            s = SessionLocal()
+            try:
+                insights_svc.extract_lessons(s, item_id)
+            finally:
+                s.close()
+
+        # Same defer path as completion enrichment (GRPH-399): the extractor is a model call
+        # bounded by `llm_timeout_seconds`, and nginx's `proxy_read_timeout` was 90s — equal
+        # values, so a slow distil returned 504 while the work was still running. Schedule
+        # here; shards land on the item whether the caller waits or not.
+        if defer:
+            defer(_run_extract)
+            return {"results": [], "scheduled": True, "item_id": item_id}
+        return {"results": insights_svc.extract_lessons(db, item_id)}
     if name == "generate_digest":
         return {"digest": insights_svc.generate_digest(db, project_id=pid)}
     if name == "prd_coverage":
