@@ -202,6 +202,17 @@ const CONTENT: Record<string, DocEntry> = {
     related: [{ label: "MCP Tools", to: "/mcp-tools" }],
   },
 
+  "/settings/deployment/updates": {
+    badge: "UPDATES",
+    title: "Updates",
+    tagline: "Whether this box is on the published stable cut. Checking is not applying.",
+    sections: [
+      { num: 1, h: "Three states", b: "current, available, or unknown. Unknown is not current — a failed feed fetch or a placeholder 0.1.0 version must not look up to date." },
+      { num: 2, h: "No Apply yet", b: "This page reports. Compose: scripts/deploy.sh <tag>. Native apply is a later slice. Hosted instances are updated by the operator." },
+    ],
+    related: [{ label: "Gitops", to: settingsPath("deployment/gitops") }],
+  },
+
   "/settings/deployment/gitops": {
     badge: "GITOPS",
     title: "Gitops",
@@ -248,6 +259,7 @@ export function docFor(pathname: string): DocEntry {
   // Hosted prefix + list/detail. Exact map would drop /lessons/:id and /p/:tag/lessons to default.
   if (/^\/(?:p\/[^/]+\/)?lessons(?:\/[^/]+)?$/.test(pathname)) return CONTENT["/lessons"];
   if (pathname === "/home") return CONTENT["/dashboard"];
+  if (pathname.startsWith(settingsPath("deployment/updates"))) return CONTENT["/settings/deployment/updates"];
   if (pathname.startsWith(settingsPath("deployment/gitops"))) return CONTENT["/settings/deployment/gitops"];
   if (pathname.startsWith(adminPath("gitops"))) return CONTENT["org-gitops"];
   if (pathname.startsWith(settingsPath("project/mcp"))) return CONTENT["/mcp-tools"];

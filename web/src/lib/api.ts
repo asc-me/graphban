@@ -36,6 +36,7 @@ import type {
   GraphLink,
   GitopsPatch,
   GitopsView,
+  UpdateCheck,
   Invite,
   InvitePreview,
   Item,
@@ -347,6 +348,7 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  updateCheck: () => request<UpdateCheck>("/platform/update-check"),
   gitops: (projectId: string) => request<GitopsView>(`/projects/${projectId}/gitops`),
   updateGitops: (projectId: string, body: GitopsPatch) =>
     request<GitopsView>(`/projects/${projectId}/gitops`, {

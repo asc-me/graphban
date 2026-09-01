@@ -9,6 +9,7 @@ import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
 import { GitopsPanel } from "@/features/settings/GitopsPanel";
+import { UpdatesPanel } from "@/features/settings/UpdatesPanel";
 import { McpInstall, type KeyScope } from "@/features/settings/McpInstall";
 import { SyncCredentialInstall } from "@/features/settings/SyncCredentialInstall";
 import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
@@ -22,7 +23,7 @@ import { settingsPath } from "@/lib/routes";
 import type { ApiKey, PlatformConfig, Project } from "@/lib/types";
 import { NavLink, Navigate, useLocation } from "react-router-dom";
 
-const TABS = ["AI Providers", "Integrations", "Sync / Link", "Project", "Members", "API Keys", "Account"] as const;
+const TABS = ["AI Providers", "Integrations", "Sync / Link", "Project", "Members", "API Keys", "Account", "Updates"] as const;
 type Tab = (typeof TABS)[number];
 
 export function SettingsView() {
@@ -38,6 +39,7 @@ const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: 
     items: [
       { to: settingsPath("deployment/sync"), label: "Cloud / Sync" },
       { to: settingsPath("deployment/gitops"), label: "Gitops" },
+      { to: settingsPath("deployment/updates"), label: "Updates" },
     ],
   },
   {
@@ -113,6 +115,7 @@ function SelfHostSettings() {
 
 function SelfHostPane({ pathname }: { pathname: string }) {
   if (pathname.startsWith(settingsPath("deployment/gitops"))) return <GitopsPanel />;
+  if (pathname.startsWith(settingsPath("deployment/updates"))) return <UpdatesPanel />;
   if (pathname.startsWith(settingsPath("deployment/sync"))) return <SyncLinkPanel />;
   if (pathname.startsWith(settingsPath("project/mcp"))) return <McpToolsView />;
   if (pathname.startsWith(settingsPath("project/feedback-kit"))) return <FeedbackKitView />;
@@ -163,6 +166,7 @@ function HostedSettingsTabs() {
           {tab === "Members" && <MembersPanel />}
           {tab === "API Keys" && <ApiKeysPanel />}
           {tab === "Account" && <AccountPanel />}
+          {tab === "Updates" && <UpdatesPanel />}
         </div>
       </div>
     </div>

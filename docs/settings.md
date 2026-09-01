@@ -6,7 +6,17 @@
 ## This box (self-host)
 
 Self-host Settings groups instance-wide items under **This box** (do not rename that
-group). Cloud / Sync is instance-wide; unlinked Gitops is this project's process.
+group). Cloud / Sync is instance-wide; unlinked Gitops is this project's process;
+Updates is whether this box is on the published stable cut.
+
+### Updates
+
+`/settings/deployment/updates`. Check only — there is no Apply button yet.
+
+Three states from `GET /api/platform/update-check`: **current**, **available**,
+**unknown**. Unknown is not current: a failed feed fetch, or a running version
+that is still `0.1.0`, must not look up to date. Hosted Settings has the same
+panel as a read-only tab; hosted instances are updated by the operator.
 
 ### Gitops
 

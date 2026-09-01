@@ -1,0 +1,161 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { docFor } from "@/features/docs/content";
+import { ProjectProvider } from "@/features/ProjectContext";
+import { SettingsView } from "@/features/settings/SettingsView";
+import { settingsPath } from "@/lib/routes";
+import type { Project, UpdateCheck } from "@/lib/types";
+
+const proj: Project = {
+  id: "prj_a",
+  tag: "APP",
+  name: "App",
+  accent: "#c6f24e",
+  visibility: "private",
+  description: "",
+  share_global_memory: false,
+  auto_extract: true,
+  mcp_enabled: true,
+  embed_model: "",
+  credential_id: null,
+  model_override: "",
+  memory_auto_reject: true,
+  memory_write_mode: "review",
+  memory_llm_judge: false,
+  agent_adjudication: false,
+  allow_self_review: false,
+};
+
+function payload(over: Partial<UpdateCheck> = {}): UpdateCheck {
+  return {
+    state: "current",
+    running: { version: "2026.09.1", git_sha: "d596e57" },
+    latest: { tag: "2026.09.1", url: "https://github.com/asc-me/graphban/releases/tag/2026.09.1" },
+    apply: false,
+    hosted: false,
+    note: "",
+    ...over,
+  };
+}
+
+const { updateCheckSpy, projectsSpy, configSpy } = vi.hoisted(() => ({
+  updateCheckSpy: vi.fn(async () => payload()),
+  projectsSpy: vi.fn(async () => [proj]),
+  configSpy: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
+}));
+
+vi.mock("@/lib/api", () => ({
+  api: {
+    projects: projectsSpy,
+    config: configSpy,
+    updateCheck: updateCheckSpy,
+    credentials: vi.fn(async () => []),
+    platform: vi.fn(async () => null),
+    syncStatus: vi.fn(async () => ({ linked: false, url: "", projects: [] })),
+    members: vi.fn(async () => []),
+    apiKeys: vi.fn(async () => []),
+    gitops: vi.fn(async () => ({ fields: {}, control: { state: "local", writable: true, message: "" } })),
+  },
+}));
+
+function renderPage(path = settingsPath("deployment/updates"), hosted = false) {
+  configSpy.mockResolvedValue({ hosted_mode: hosted, signup_mode: "closed" });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[path]}>
+        <ProjectProvider>
+          <Routes>
+            <Route path="/settings/*" element={<SettingsView />} />
+          </Routes>
+        </ProjectProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe("Updates Settings page", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.setItem("gb_last_project_tag", "APP");
+    projectsSpy.mockResolvedValue([proj]);
+    updateCheckSpy.mockResolvedValue(payload());
+  });
+
+  it("sits under This box as Updates", async () => {
+    renderPage();
+    expect(await screen.findByText("This box")).toBeInTheDocument();
+    const link = screen.getByRole("link", { name: "Updates" });
+    expect(link).toHaveAttribute("href", settingsPath("deployment/updates"));
+  });
+
+  it("current names the running cut and has no Apply", async () => {
+    renderPage();
+    expect(await screen.findByText(/this instance is on/i)).toBeInTheDocument();
+    expect(screen.getByText("2026.09.1")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /apply/i })).not.toBeInTheDocument();
+  });
+
+  it("available names the newer tag and does not say up to date", async () => {
+    updateCheckSpy.mockResolvedValue(
+      payload({
+        state: "available",
+        latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText(/is available/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/2026\.10\.1/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/up to date/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /apply/i })).not.toBeInTheDocument();
+  });
+
+  it("unknown does not look current", async () => {
+    updateCheckSpy.mockResolvedValue(
+      payload({
+        state: "unknown",
+        latest: null,
+        note: "could not reach the update feed — not current",
+        running: { version: "2026.09.1", git_sha: "d596e57" },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText(/could not tell whether a newer cut exists/i)).toBeInTheDocument();
+    expect(screen.queryByText(/this instance is on/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/up to date/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/is available/i)).not.toBeInTheDocument();
+  });
+
+  it("THE CALL: the pane renders api.updateCheck, not a hardcoded current", async () => {
+    updateCheckSpy.mockResolvedValue(
+      payload({ state: "available", latest: { tag: "2026.10.1", url: "https://example/x" } }),
+    );
+    renderPage();
+    expect(await screen.findByText(/is available/i)).toBeInTheDocument();
+    expect(updateCheckSpy).toHaveBeenCalled();
+  });
+
+  it("docs overlay matches Updates before the /settings catch-all", () => {
+    const doc = docFor(settingsPath("deployment/updates"));
+    expect(doc.title).toBe("Updates");
+    expect(doc.badge).toBe("UPDATES");
+    expect(docFor("/settings").title).toBe("Settings");
+  });
+});
+
+describe("Updates nav source", () => {
+  it("adds Updates under This box", () => {
+    const sources = import.meta.glob("../features/settings/SettingsView.tsx", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    const src = Object.values(sources)[0] ?? "";
+    expect(src).toContain('group: "This box"');
+    expect(src).toContain('label: "Updates"');
+    expect(src).toContain('settingsPath("deployment/updates")');
+  });
+});
