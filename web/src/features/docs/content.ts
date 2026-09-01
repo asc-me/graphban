@@ -336,7 +336,7 @@ const CONTENT: Record<string, DocEntry> = {
     tagline: "Whether this box is on the published stable cut.",
     sections: [
       { num: 1, h: "Three states", b: "current, available, or unknown. Current says this box is on the latest release. Unknown is not current — a failed feed fetch or a placeholder 0.1.0 version must not look up to date." },
-      { num: 2, h: "Check and Install", b: "Check for updates refetches the feed. Install is on self-host and stays disabled until apply is true. Compose: scripts/deploy.sh <tag> on the host. Hosted has Check, no Install." },
+      { num: 2, h: "Check and Install", b: "Check for updates refetches the feed. Install is enabled when the compose host helper is on the unix socket and a newer cut is advertised. The API does not get a Docker socket. Hosted has Check, no Install." },
     ],
     related: [{ label: "Gitops", to: settingsPath("deployment/gitops") }],
   },

@@ -349,6 +349,11 @@ export const api = {
       body: JSON.stringify(body),
     }),
   updateCheck: () => request<UpdateCheck>("/platform/update-check"),
+  updateApply: (tag: string) =>
+    request<{ ok: boolean; started: boolean; tag: string }>("/platform/update-apply", {
+      method: "POST",
+      body: JSON.stringify({ tag }),
+    }),
   gitops: (projectId: string) => request<GitopsView>(`/projects/${projectId}/gitops`),
   updateGitops: (projectId: string, body: GitopsPatch) =>
     request<GitopsView>(`/projects/${projectId}/gitops`, {

@@ -42,8 +42,9 @@ function payload(over: Partial<UpdateCheck> = {}): UpdateCheck {
   };
 }
 
-const { updateCheckSpy, projectsSpy, configSpy } = vi.hoisted(() => ({
+const { updateCheckSpy, updateApplySpy, projectsSpy, configSpy } = vi.hoisted(() => ({
   updateCheckSpy: vi.fn(async () => payload()),
+  updateApplySpy: vi.fn(async (tag: string) => ({ ok: true, started: true, tag })),
   projectsSpy: vi.fn(async () => [proj]),
   configSpy: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
 }));
@@ -53,6 +54,7 @@ vi.mock("@/lib/api", () => ({
     projects: projectsSpy,
     config: configSpy,
     updateCheck: updateCheckSpy,
+    updateApply: updateApplySpy,
     credentials: vi.fn(async () => []),
     platform: vi.fn(async () => null),
     syncStatus: vi.fn(async () => ({ linked: false, url: "", projects: [] })),
@@ -117,6 +119,45 @@ describe("Updates Settings page", () => {
     expect(screen.queryByText(/up to date/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /check for updates/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^install$/i })).toBeDisabled();
+  });
+
+  it("available with apply enables Install", async () => {
+    updateCheckSpy.mockResolvedValue(
+      payload({
+        state: "available",
+        apply: true,
+        latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
+      }),
+    );
+    renderPage();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^install$/i })).toBeEnabled());
+  });
+
+  it("THE CALL: Confirm install posts the advertised tag", async () => {
+    const user = userEvent.setup();
+    updateCheckSpy.mockResolvedValue(
+      payload({
+        state: "available",
+        apply: true,
+        latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
+      }),
+    );
+    updateApplySpy.mockImplementation(async (tag: string) => {
+      updateCheckSpy.mockResolvedValue(
+        payload({
+          state: "current",
+          apply: true,
+          running: { version: "2026.10.1", git_sha: "newsha" },
+          latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
+        }),
+      );
+      return { ok: true, started: true, tag };
+    });
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /^install$/i }));
+    await user.click(screen.getByRole("button", { name: /confirm install 2026\.10\.1/i }));
+    await waitFor(() => expect(updateApplySpy).toHaveBeenCalledWith("2026.10.1"));
+    expect((await screen.findAllByText(/on the latest release/i)).length).toBeGreaterThan(0);
   });
 
   it("unknown does not look current", async () => {

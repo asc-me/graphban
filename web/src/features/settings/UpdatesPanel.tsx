@@ -1,11 +1,12 @@
 /**
  * This box → Updates. Three states; unknown is not current.
- * Check refetches. Install is present on self-host and stays disabled until
- * `apply` is true — Compose has no in-API apply (P32: host runs deploy.sh).
+ * Check refetches. Install is enabled when `apply` is true and a cut is
+ * available — compose apply is the host helper, not a Docker socket in the API.
  */
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
+import { api } from "@/lib/api";
 import { useConfig, useUpdateCheck } from "@/lib/queries";
 import type { UpdateCheck } from "@/lib/types";
 
@@ -79,11 +80,13 @@ function installHint(data: UpdateCheck | undefined): string {
   if (data.state === "current") {
     return "Install is disabled — this box is already on the latest release.";
   }
-  if (data.apply) return "";
+  if (data.apply) {
+    return "Install rebuilds this box from the published cut. The API will be down for a few seconds.";
+  }
   const tag = data.latest?.tag;
   return tag
-    ? `Install from this page is not available for Compose. On the host: scripts/deploy.sh ${tag}`
-    : "Install from this page is not available for Compose yet.";
+    ? `Install from this page needs the compose host helper. Until it is running: scripts/deploy.sh ${tag}`
+    : "Install from this page needs the compose host helper.";
 }
 
 export function UpdatesPanel() {
@@ -91,6 +94,36 @@ export function UpdatesPanel() {
   const { data, isError, isPending, isFetching, refetch } = useUpdateCheck();
   const hosted = config?.hosted_mode ?? data?.hosted ?? false;
   const canInstall = Boolean(data?.apply && data.state === "available" && !hosted);
+  const tag = data?.latest?.tag ?? "";
+  const [confirming, setConfirming] = React.useState(false);
+  const [applying, setApplying] = React.useState(false);
+  const [applyError, setApplyError] = React.useState("");
+
+  async function install() {
+    if (!tag) return;
+    setApplying(true);
+    setApplyError("");
+    try {
+      await api.updateApply(tag);
+    } catch {
+      // deploy.sh recreates the API container; a dropped request is the apply starting.
+    }
+    for (let i = 0; i < 45; i++) {
+      try {
+        const next = await refetch();
+        if (next.data?.state === "current") {
+          setApplying(false);
+          setConfirming(false);
+          return;
+        }
+      } catch {
+        /* API is down during rebuild */
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    setApplying(false);
+    setApplyError("The helper started the apply, but this box did not come back on the new cut.");
+  }
 
   return (
     <div className="max-w-2xl">
@@ -112,19 +145,39 @@ export function UpdatesPanel() {
             type="button"
             variant="outline"
             onClick={() => { void refetch(); }}
-            disabled={isFetching}
+            disabled={isFetching || applying}
           >
-            {isFetching ? "Checking…" : "Check for updates"}
+            {isFetching && !applying ? "Checking…" : "Check for updates"}
           </Button>
-          {!hosted && (
-            <Button type="button" disabled={!canInstall}>
-              Install
+          {!hosted && !confirming && (
+            <Button
+              type="button"
+              disabled={!canInstall || applying}
+              onClick={() => setConfirming(true)}
+            >
+              {applying ? "Installing…" : "Install"}
             </Button>
+          )}
+          {!hosted && confirming && (
+            <>
+              <Button type="button" disabled={applying || !tag} onClick={() => { void install(); }}>
+                {applying ? "Installing…" : `Confirm install ${tag}`}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={applying}
+                onClick={() => { setConfirming(false); setApplyError(""); }}
+              >
+                Cancel
+              </Button>
+            </>
           )}
         </div>
         {!hosted && (
           <p className="mt-2 text-[12px] text-muted">{installHint(data)}</p>
         )}
+        {applyError ? <p className="mt-2 text-[12px] text-danger">{applyError}</p> : null}
       </div>
     </div>
   );

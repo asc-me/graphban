@@ -1,6 +1,7 @@
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -38,10 +39,29 @@ def _sync_root(project_id: str, folder: str) -> str:
 def update_check(_: User = Depends(get_current_user)):
     """Whether this instance is current against the published stable cut (P32).
 
-    Check only — `apply` is always false in this slice. Three states; unknown is
-    not current. JWT so it is a Settings fact, not a public oracle beyond `/health`.
+    Three states; unknown is not current. `apply` is true only when a compose
+    host helper is on the unix socket and this is not hosted. JWT so it is a
+    Settings fact, not a public oracle beyond `/health`.
     """
     return instance_update.check()
+
+
+class UpdateApplyIn(BaseModel):
+    tag: str
+
+
+@router.post("/update-apply")
+def update_apply(body: UpdateApplyIn, _: User = Depends(get_current_user)):
+    """Start a compose apply of the advertised latest tag (P32).
+
+    JWT operator only — not MCP. Returns 202 when the host helper has started
+    `deploy.sh`; the API process is about to be recreated. Hosted is 403. No
+    helper is 503. A tag that is not the advertised cut is 409.
+    """
+    got = instance_update.apply(body.tag)
+    if not got.get("ok"):
+        raise HTTPException(got.get("status") or 500, got.get("error") or "apply failed")
+    return JSONResponse(got, status_code=202)
 
 
 @router.get("/providers")

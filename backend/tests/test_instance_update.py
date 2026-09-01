@@ -111,3 +111,119 @@ def test_rest_call_unknown_when_feed_is_down(client, auth, monkeypatch):
 
 def test_rest_requires_jwt(client):
     assert client.get("/api/platform/update-check").status_code in (401, 403)
+
+
+def test_apply_true_only_when_the_helper_socket_exists():
+    got = svc.check(
+        fetch=lambda: {"tag": "2026.10.1", "url": "https://example/x"},
+        run={"version": "2026.09.1", "git_sha": "d596e57"},
+        hosted=False,
+        helper=True,
+    )
+    assert got["state"] == "available"
+    assert got["apply"] is True
+
+
+def test_hosted_never_sets_apply_even_with_a_helper():
+    got = svc.check(
+        fetch=lambda: {"tag": "2026.10.1", "url": "https://example/x"},
+        run={"version": "2026.09.1", "git_sha": "d596e57"},
+        hosted=True,
+        helper=True,
+    )
+    assert got["apply"] is False
+    assert got["hosted"] is True
+
+
+def test_helper_present_is_a_socket_not_a_file(tmp_path):
+    missing = tmp_path / "nope"
+    assert svc.helper_present(str(missing)) is False
+    regular = tmp_path / "file"
+    regular.write_text("x", encoding="utf-8")
+    assert svc.helper_present(str(regular)) is False
+
+
+def test_apply_starts_the_advertised_tag_only():
+    payload = svc.check(
+        fetch=lambda: {"tag": "2026.10.1", "url": "https://example/x"},
+        run={"version": "2026.09.1", "git_sha": "d596e57"},
+        hosted=False,
+        helper=True,
+    )
+    seen: list[dict] = []
+
+    def send(msg, path=None, **kw):
+        seen.append(msg)
+        return {"ok": True, "started": True, "tag": msg["tag"]}
+
+    got = svc.apply("2026.10.1", check_fn=lambda **k: payload, send=send)
+    assert got["ok"] is True
+    assert got["status"] == 202
+    assert seen == [{"op": "apply", "tag": "2026.10.1"}]
+
+    wrong = svc.apply("main", check_fn=lambda **k: payload, send=send)
+    assert wrong["ok"] is False
+    assert wrong["status"] == 409
+    assert len(seen) == 1  # did not call the helper
+
+
+def test_apply_hosted_is_403_and_does_not_talk():
+    payload = svc.check(
+        fetch=lambda: {"tag": "2026.10.1", "url": "https://example/x"},
+        run={"version": "2026.09.1", "git_sha": "d596e57"},
+        hosted=True,
+        helper=True,
+    )
+
+    def send(msg, **kw):
+        raise AssertionError("hosted must not talk to the helper")
+
+    got = svc.apply("2026.10.1", check_fn=lambda **k: payload, send=send)
+    assert got["status"] == 403
+
+
+def test_rest_apply_call_posts_the_tag(client, auth, monkeypatch):
+    """Sabotage the CALL: deleting the router branch would 404 while unit tests pass."""
+    monkeypatch.setattr(
+        svc, "fetch_latest",
+        lambda: {"tag": "2026.10.1", "url": "https://example/x"},
+    )
+    monkeypatch.setattr(
+        svc, "running",
+        lambda: {"version": "2026.09.1", "git_sha": "d596e57"},
+    )
+    monkeypatch.setattr(svc, "helper_present", lambda path=None: True)
+    monkeypatch.setattr(
+        svc, "talk",
+        lambda msg, path=None, **kw: {"ok": True, "started": True, "tag": msg["tag"]},
+    )
+    r = client.post(
+        "/api/platform/update-apply",
+        headers=auth,
+        json={"tag": "2026.10.1"},
+    )
+    assert r.status_code == 202, r.text
+    assert r.json()["started"] is True
+    assert r.json()["tag"] == "2026.10.1"
+
+
+def test_rest_apply_without_helper_is_503(client, auth, monkeypatch):
+    monkeypatch.setattr(
+        svc, "fetch_latest",
+        lambda: {"tag": "2026.10.1", "url": "https://example/x"},
+    )
+    monkeypatch.setattr(
+        svc, "running",
+        lambda: {"version": "2026.09.1", "git_sha": "d596e57"},
+    )
+    monkeypatch.setattr(svc, "helper_present", lambda path=None: False)
+    r = client.post(
+        "/api/platform/update-apply",
+        headers=auth,
+        json={"tag": "2026.10.1"},
+    )
+    assert r.status_code == 503
+
+
+def test_rest_apply_requires_jwt(client):
+    assert client.post("/api/platform/update-apply", json={"tag": "x"}).status_code in (401, 403)

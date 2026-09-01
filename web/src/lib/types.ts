@@ -51,7 +51,7 @@ export interface UpdateCheck {
   state: UpdateCheckState;
   running: { version: string; git_sha: string };
   latest: { tag: string; url: string } | null;
-  apply: false;
+  apply: boolean;
   hosted: boolean;
   note: string;
 }
