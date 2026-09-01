@@ -224,14 +224,26 @@ def test_the_cli_refuses_with_a_distinct_exit_code(tiny_repo, capsys):
 
 
 def test_the_probe_posts_the_attestation_the_gate_would_read(monkeypatch, tiny_repo):
-    """THE CALL. Measurement refusals are pinned; dropping post() so the probe never
-    writes — even with GRAPHBAN_URL and GRAPHBAN_GATE_KEY set — left 18 passed
-    (GRPH-566 bounce). The gate still reads the agent's tests_failed.
+    """THE CALL. Patching `post()` itself left emptying `post()` (return without
+    urlopen) green — the test replaced the thing it claimed to pin (GRPH-566 bounce).
+    The wire is urlopen: with env set, main posts tools/call update_item evidence
+    containing sabotage_observed.
     """
+    import json
+
     posted: list[dict] = []
 
-    def capture(url, key, item, receipt, **kw):
-        posted.append(receipt)
+    class _Resp:
+        def read(self):
+            return json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode()
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    def capture(req, timeout=None):
+        posted.append(json.loads(req.data.decode()))
+        return _Resp()
 
     obs = ps.Observation(
         file="calc.py", old="return a + b", new="return a - b",
@@ -240,13 +252,22 @@ def test_the_probe_posts_the_attestation_the_gate_would_read(monkeypatch, tiny_r
     monkeypatch.setenv("GRAPHBAN_URL", "http://example.invalid")
     monkeypatch.setenv("GRAPHBAN_GATE_KEY", "gb_sk_x")
     monkeypatch.setattr(ps, "probe", lambda *a, **k: obs)
-    monkeypatch.setattr(ps, "post", capture)
+    monkeypatch.setattr(ps.urllib.request, "urlopen", capture)
 
     code = ps.main(["--item", "GRPH-1", "--commit", "d" * 40, "--root", str(tiny_repo),
                     "--file", "calc.py", "--old", "return a + b", "--new", "return a - b",
                     "--tests", _pytest_cmd()])
 
     assert code == 0
-    assert posted, "the probe measured but never posted — the gate still reads a self-report"
-    names = [p["name"] for p in posted[0].get("predicates") or []]
-    assert "sabotage_observed" in names, posted[0]
+    assert posted, (
+        "the probe measured but never wrote over the wire — emptying post() so it "
+        "returns without urlopen would have left a post() stub green"
+    )
+    body = posted[0]
+    assert body.get("method") == "tools/call", body
+    params = body.get("params") or {}
+    assert params.get("name") == "update_item", body
+    args = params.get("arguments") or {}
+    evidence = args.get("evidence") or []
+    names = [p["name"] for e in evidence for p in (e.get("predicates") or [])]
+    assert "sabotage_observed" in names, evidence
