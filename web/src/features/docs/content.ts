@@ -1,9 +1,7 @@
-import { adminPath } from "@/lib/routes";
-
 /** Context-aware content for the inline docs reader, keyed by route.
  *  Distilled from the docs/ guides into the reader's structured format. */
 
-import { settingsPath } from "@/lib/routes";
+import { ORG_BASE, adminPath, orgPath, settingsPath } from "@/lib/routes";
 
 export interface DocSection {
   num: number;
@@ -104,6 +102,17 @@ const CONTENT: Record<string, DocEntry> = {
     ],
   },
 
+  "/home": {
+    badge: "HOME",
+    title: "Home",
+    tagline: "Project health at a glance — items, memory, and who is in flight.",
+    sections: [
+      { num: 1, h: "Counts, not a fetch of everything", b: "Tiles come from the dashboard payload and the shell counts endpoint. Fetching items to call .length is how this page once cost megabytes on every route." },
+      { num: 2, h: "Attention first", b: "Blocked, in review, and live agents sit above the rest. Stale counts say stale — last good numbers, not a quiet zero." },
+    ],
+    related: [{ label: "Tracker", to: "/tracker" }],
+  },
+
   "/dashboard": {
     badge: "DASHBOARD",
     title: "Dashboard",
@@ -113,6 +122,43 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 2, h: "Requests & activity", b: "See requests broken down by type and the most recently updated items." },
     ],
     related: [{ label: "Tracker", to: "/tracker" }],
+  },
+
+  "/triage": {
+    badge: "TRIAGE",
+    title: "Triage",
+    tagline: "What came in, and what a new claim would collide with.",
+    sections: [
+      { num: 1, h: "Per-project only", b: "Collision clustering reasons over this project's code graph. A package name shared across repos is a galaxy edge, not a collision — this screen does not compute that." },
+      { num: 2, h: "Incoming and clusters", b: "The left queue is untriaged requests. The right is non-colliding work already in flight. An empty queue is not 'nothing was ever reported' — history lives in the tracker." },
+    ],
+    related: [
+      { label: "Requests", to: "/requests" },
+      { label: "Fleet", to: "/fleet" },
+    ],
+  },
+
+  "/code": {
+    badge: "CODE GRAPH",
+    title: "Code graph",
+    tagline: "Symbols, files, and who holds them.",
+    sections: [
+      { num: 1, h: "Kinds and edges", b: "Modules, files, symbols, plus muted docs and config. Edges: imports, calls, owns, tested-by, references. Toggle types; collapse components when the graph is too wide." },
+      { num: 2, h: "Held areas are the alarm", b: "Overlapping clouds are two agents on the same files. The fleet legend names who holds what. An area this graph cannot place is still reported — not dropped." },
+    ],
+    related: [{ label: "Fleet", to: "/fleet" }],
+  },
+
+  "/fleet": {
+    badge: "FLEET",
+    title: "Fleet",
+    tagline: "Agents on this project, what they hold, and who must review.",
+    sections: [
+      { num: 1, h: "Roster and posture", b: "Offline agents fade rather than vanish — one that died holding a branch is what you need to see. Fleet posture: specialised roles review themselves. Single-agent: you are the reviewer." },
+      { num: 2, h: "Review queue and clusters", b: "The queue names who built each item — the reason it needs somebody else. Clusters are non-colliding work; anything held back says why." },
+      { num: 3, h: "Waves and seats", b: "Mint a wave or one seat. Ending a wave is irreversible and names which wave. A gate key attests in CI; do not hand it to the agent doing the work." },
+    ],
+    related: [{ label: "API keys", to: settingsPath("project/api-keys") }],
   },
 
   "/roadmap": {
@@ -217,6 +263,72 @@ const CONTENT: Record<string, DocEntry> = {
     ],
   },
 
+  "/settings/project/providers": {
+    badge: "AI PROVIDERS",
+    title: "AI providers",
+    tagline: "Credentials this box runs on — not Graphban API keys.",
+    sections: [
+      { num: 1, h: "One list of credentials", b: "These are LLM provider keys (Anthropic, OpenAI, Grok, Ollama, a custom OpenAI-compat endpoint). They are not the keys agents use to call Graphban. Agent keys live on API keys." },
+      { num: 2, h: "Deployment default, then project", b: "A credential can be the box default. A project may point at one; if that pointer is dead, resolution falls back to the deployment default rather than going silent." },
+      { num: 3, h: "Health is of the credential", b: "The dot is whether this credential answers, labelled in text, not a second tag. Unreachable stays selectable — it was asked and did not answer." },
+    ],
+    related: [{ label: "API keys", to: settingsPath("project/api-keys") }],
+  },
+
+  "/settings/deployment/sync": {
+    badge: "CLOUD / SYNC",
+    title: "Cloud / Sync",
+    tagline: "Link this box to a cloud org, then push the code graph.",
+    sections: [
+      { num: 1, h: "Link, then push", b: "Paste the cloud URL and a sync credential. The credential is pinned to one project — a key handed to a fleet can only ever push there." },
+      { num: 2, h: "Incremental graph", b: "Push now sends only changed nodes and is resumable. Stale vs in-sync is measured, not assumed." },
+      { num: 3, h: "Privacy and a portable bundle", b: "Code-graph privacy is a project setting. A JSON bundle is the offline path when the box cannot reach the cloud." },
+    ],
+    related: [{ label: "API keys", to: settingsPath("project/api-keys") }],
+  },
+
+  "/settings/project": {
+    badge: "PROJECT",
+    title: "Project",
+    tagline: "Flags for this project — memory, MCP, and who may sign off.",
+    sections: [
+      { num: 1, h: "Memory write modes", b: "Review: agent writes wait as candidates. Auto: only corroborated lessons publish. Trusted: publishes on write, labelled and undoable. An empty catalog is not a high score." },
+      { num: 2, h: "Danger mode is conditional", b: "Allow self-review only applies when no other agent could have reviewed the item. With a second agent here, self-review is still refused. Items signed this way say so." },
+    ],
+    related: [{ label: "Memory review", to: "/memory-review" }],
+  },
+
+  "/settings/project/integrations": {
+    badge: "INTEGRATIONS",
+    title: "Integrations",
+    tagline: "GitHub, Drive, and the inbound issues webhook — per project.",
+    sections: [
+      { num: 1, h: "Connectors on this project", b: "GitHub and Google Drive are real. The inbound issues webhook turns opened GitHub issues into tracker items." },
+      { num: 2, h: "Spam on the public form", b: "Rate limit and Turnstile live here because the feedback widget posts to a public endpoint." },
+    ],
+    related: [{ label: "Feedback Kit", to: settingsPath("project/feedback-kit") }],
+  },
+
+  "/settings/project/members": {
+    badge: "MEMBERS",
+    title: "Members",
+    tagline: "People with access to this project, and their roles.",
+    sections: [
+      { num: 1, h: "Role and access", b: "Each row is a person, their role, and whether they can write. This is project membership, not the org seat table." },
+    ],
+    related: [{ label: "Project", to: settingsPath("project") }],
+  },
+
+  "/settings/account": {
+    badge: "ACCOUNT",
+    title: "Account",
+    tagline: "Your password on this box.",
+    sections: [
+      { num: 1, h: "Changing it signs out the rest", b: "That is the point, not a side effect. There is no recovery path that leaves other sessions alive." },
+    ],
+    related: [{ label: "Profile", to: "/profile" }],
+  },
+
   "/settings/deployment/updates": {
     badge: "UPDATES",
     title: "Updates",
@@ -261,6 +373,99 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 3, h: "Linked boxes", b: "A linked self-host box reads this contract live. Gitops is not a property of a deployment credential, so it is not on Deployments cards." },
     ],
   },
+
+  "org-overview": {
+    badge: "ORGANIZATION",
+    title: "Organization",
+    tagline: "How these projects are doing, together.",
+    sections: [
+      { num: 1, h: "A join, not a new write", b: "Every number already exists in a table. A brand-new org and an org whose boxes have all stopped pushing are different facts — never and live are separate words." },
+      { num: 2, h: "Never-synced is shown", b: "A project that has never pushed is on this page, not filtered out. Omitting it would shrink the org and hide the one that needs attention." },
+    ],
+  },
+
+  "org-galaxy": {
+    badge: "GALAXY",
+    title: "Galaxy",
+    tagline: "How this org's repos relate — every edge names the file that proves it.",
+    sections: [
+      { num: 1, h: "Evidence, not similarity", b: "Two repos that both describe authentication are not related. Two repos where one's lockfile names the other are. Hover an edge for the file." },
+      { num: 2, h: "Stale is a filter, not absence", b: "Hiding stale edges does not mean the org has no internal dependencies. The empty state keys off what the org HAS, not what is currently drawn." },
+    ],
+  },
+
+  "org-users": {
+    badge: "USERS",
+    title: "Users & access",
+    tagline: "Memberships and invites — the seat meter runs ahead of the table.",
+    sections: [
+      { num: 1, h: "Seats include pending invites", b: "The meter counts memberships plus outstanding invites, so it looks ahead of the table. Showing the number without that is why the table looks like a lie." },
+    ],
+  },
+
+  "org-teams": {
+    badge: "TEAMS",
+    title: "Teams",
+    tagline: "A grant writes real project memberships. It is not resolved later.",
+    sections: [
+      { num: 1, h: "Grants materialize", b: "Setting a grant writes memberships now. Revoking one removes them. This is not a filter applied when someone asks for a page." },
+    ],
+  },
+
+  "org-deployments": {
+    badge: "DEPLOYMENTS",
+    title: "Deployments",
+    tagline: "The box pushes. The cloud never reaches in.",
+    sections: [
+      { num: 1, h: "Address as text, then a link", b: "The console cannot test reachability — that is the viewer's network. A dead Open button is worse than showing http://ubuntu-srv:8080 first." },
+    ],
+  },
+
+  "org-integrations": {
+    badge: "ORG INTEGRATIONS",
+    title: "Org integrations",
+    tagline: "Connector × project. There is no org-level GitHub toggle.",
+    sections: [
+      { num: 1, h: "PlatformConfig is per project", b: "GitHub and Drive are real. Jira, Linear, Confluence, Trello are not on this row — they carry their own chip so a missing connection is not drawn as off." },
+    ],
+  },
+
+  "org-billing": {
+    badge: "BILLING",
+    title: "Billing",
+    tagline: "Four counters. Display only.",
+    sections: [
+      { num: 1, h: "No Stripe here", b: "Projects, seats, shards, MCP calls this month. Plans are operator-assigned. There is no invoice list and no usage chart — OrgUsage holds one row per period." },
+    ],
+  },
+
+  "org-branding": {
+    badge: "BRANDING",
+    title: "Branding",
+    tagline: "Speculative — gated on the route, not only the nav.",
+    sections: [
+      { num: 1, h: "Not a missing page", b: "If you can open this, the speculative flag is on. A URL that 404s when the flag is off is the decision, not an oversight." },
+    ],
+  },
+
+  "project-home": {
+    badge: "PROJECT",
+    title: "Project home",
+    tagline: "The existing app, from this project's place in the org.",
+    sections: [
+      { num: 1, h: "A landing pad", b: "No new backend. The strip is this project's galaxy edges: what it depends on, and what depends on it. Only one of those is visible from inside the repo." },
+    ],
+  },
+
+  "operator": {
+    badge: "OPERATOR",
+    title: "Operator",
+    tagline: "Every tenant on this deployment, at a glance.",
+    sections: [
+      { num: 1, h: "The same four counters", b: "Numbers here are summed from what an org sees on its own billing screen. A figure only the operator can see is a figure nobody can reconcile." },
+      { num: 2, h: "Orgs, users, licensing", b: "Issue a platform invite from Licensing. The first org appears here when it is redeemed — an empty list is a fresh install, not a fault." },
+    ],
+  },
 };
 
 /** Global shortcuts shown on every page (these are actually wired). */
@@ -269,17 +474,55 @@ export const GLOBAL_SHORTCUTS: DocShortcut[] = [
   { k: "Esc", d: "Close this panel" },
 ];
 
+/** Strip hosted `/p/:tag` so the same overlay keys work on both planes. */
+function hostedView(pathname: string): { path: string; projectRoot: boolean } {
+  const m = /^\/p\/[^/]+(\/.*)?$/.exec(pathname);
+  if (!m) return { path: pathname, projectRoot: false };
+  const rest = m[1];
+  if (!rest || rest === "/") return { path: "/", projectRoot: true };
+  return { path: rest, projectRoot: false };
+}
+
 export function docFor(pathname: string): DocEntry {
-  if (/^\/prds\/[^/]+$/.test(pathname)) return CONTENT["prd-editor"];
-  // Hosted prefix + list/detail. Exact map would drop /lessons/:id and /p/:tag/lessons to default.
-  if (/^\/(?:p\/[^/]+\/)?lessons(?:\/[^/]+)?$/.test(pathname)) return CONTENT["/lessons"];
-  if (pathname === "/home") return CONTENT["/dashboard"];
-  if (pathname.startsWith(settingsPath("deployment/updates"))) return CONTENT["/settings/deployment/updates"];
-  if (pathname.startsWith(settingsPath("deployment/gitops"))) return CONTENT["/settings/deployment/gitops"];
-  if (pathname.startsWith(adminPath("gitops"))) return CONTENT["org-gitops"];
-  if (pathname.startsWith(settingsPath("project/mcp"))) return CONTENT["/mcp-tools"];
-  if (pathname.startsWith(settingsPath("project/feedback-kit"))) return CONTENT["/feedback-kit"];
-  if (pathname.startsWith(settingsPath("project/api-keys"))) return CONTENT["/settings/project/api-keys"];
-  if (pathname.startsWith("/settings")) return CONTENT["/settings"];
-  return CONTENT[pathname] ?? CONTENT.default;
+  const { path, projectRoot } = hostedView(pathname);
+  if (projectRoot) return CONTENT["project-home"];
+
+  if (/^\/prds\/[^/]+$/.test(path)) return CONTENT["prd-editor"];
+  if (/^\/lessons(?:\/[^/]+)?$/.test(path)) return CONTENT["/lessons"];
+  if (path === "/home") return CONTENT["/home"];
+  if (path === "/dashboard") return CONTENT["/dashboard"];
+
+  if (path.startsWith("/admin")) return CONTENT["operator"];
+
+  if (path.startsWith(adminPath("gitops"))) return CONTENT["org-gitops"];
+  if (path.startsWith(adminPath("users"))) return CONTENT["org-users"];
+  if (path.startsWith(adminPath("teams"))) return CONTENT["org-teams"];
+  if (path.startsWith(adminPath("deployments"))) return CONTENT["org-deployments"];
+  if (path.startsWith(adminPath("integrations"))) return CONTENT["org-integrations"];
+  if (path.startsWith(adminPath("billing"))) return CONTENT["org-billing"];
+  if (path.startsWith(adminPath("branding"))) return CONTENT["org-branding"];
+  if (path === adminPath() || path === `${adminPath()}/`) return CONTENT["org-users"];
+  if (path === orgPath("galaxy") || path.startsWith(`${orgPath("galaxy")}/`)) {
+    return CONTENT["org-galaxy"];
+  }
+  if (path === ORG_BASE || path === `${ORG_BASE}/`) return CONTENT["org-overview"];
+
+  // Settings is path-per-item (GRPH-P28 D3). Match the page before the /settings catch-all
+  // or API keys, Sync, Updates, Gitops all open as AI Providers.
+  if (path.startsWith(settingsPath("deployment/updates"))) return CONTENT["/settings/deployment/updates"];
+  if (path.startsWith(settingsPath("deployment/gitops"))) return CONTENT["/settings/deployment/gitops"];
+  if (path.startsWith(settingsPath("deployment/sync"))) return CONTENT["/settings/deployment/sync"];
+  if (path.startsWith(settingsPath("project/mcp"))) return CONTENT["/mcp-tools"];
+  if (path.startsWith(settingsPath("project/feedback-kit"))) return CONTENT["/feedback-kit"];
+  if (path.startsWith(settingsPath("project/api-keys"))) return CONTENT["/settings/project/api-keys"];
+  if (path.startsWith(settingsPath("project/providers"))) return CONTENT["/settings/project/providers"];
+  if (path.startsWith(settingsPath("project/integrations"))) return CONTENT["/settings/project/integrations"];
+  if (path.startsWith(settingsPath("project/members"))) return CONTENT["/settings/project/members"];
+  if (path === settingsPath("project") || path === `${settingsPath("project")}/`) {
+    return CONTENT["/settings/project"];
+  }
+  if (path.startsWith(settingsPath("account"))) return CONTENT["/settings/account"];
+  if (path.startsWith("/settings")) return CONTENT["/settings"];
+
+  return CONTENT[path] ?? CONTENT.default;
 }
