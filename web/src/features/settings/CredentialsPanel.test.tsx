@@ -45,7 +45,10 @@ const proj = (id: string, over: Partial<Project> = {}): Project => ({
 
 let projectList: Project[] = [];
 const setDefaults = vi.fn(async () => ({ scope: "" }));
-const createCredential = vi.fn(async () => ({ id: "cred_new", state: "pending_validation" }));
+const createCredential = vi.fn(
+  async (_projectId: string, _body: Record<string, unknown>) =>
+    ({ id: "cred_new", state: "pending_validation" }),
+);
 const deleteCredential = vi.fn(async () => undefined);
 const retryCredential = vi.fn(async () => ({
   id: "cred_a", state: "valid", last_error: "", validation_attempts: 0,
@@ -95,13 +98,18 @@ vi.mock("@/lib/api", () => ({
           base_url: "", chat_model: "claude-x", embed_model: "", auth: true },
         { id: "ollama", label: "Ollama", kind: "ollama", embeds: true,
           base_url: "http://localhost:11434", chat_model: "llama3.1:8b", embed_model: "bge-m3", auth: false },
+        { id: "openai", label: "OpenAI", kind: "openai", embeds: true,
+          base_url: "https://api.openai.com/v1", chat_model: "gpt-4o-mini",
+          embed_model: "text-embedding-3-small", auth: true },
+        { id: "custom", label: "Custom (OpenAI-compat)", kind: "openai", embeds: false,
+          base_url: "", chat_model: "", embed_model: "", auth: true },
         { id: "stub", label: "Offline stub", kind: "stub", embeds: true,
           base_url: "", chat_model: "", embed_model: "", auth: false },
       ],
     })),
     reindexStatus: vi.fn(async () => ({ running: false, tables: [] })),
     config: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
-    createCredential: (...a: unknown[]) => createCredential(...(a as [])),
+    createCredential: (p: string, body: Record<string, unknown>) => createCredential(p, body),
     deleteCredential: (...a: unknown[]) => deleteCredential(...(a as [])),
     retryCredential: (...a: unknown[]) => retryCredential(...(a as [])),
     setScopeDefaults: (...a: unknown[]) => setDefaults(...(a as [])),
@@ -287,6 +295,50 @@ describe("CredentialsPanel", () => {
     expect(createCredential).not.toHaveBeenCalled();
   });
 
+  it("shows the endpoint for an OpenAI-compat provider, prefilled and editable", async () => {
+    // GRPH-625. The field used to be ollama-only — a compat provider could never be aimed
+    // at a gateway, proxy, or local server. Picking a provider prefills the registry's URL,
+    // so api.openai.com stays zero-typing; editing it is the feature.
+    show();
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByText("OpenAI"));
+
+    const endpoint = await screen.findByLabelText(/endpoint/i);
+    expect(endpoint).toHaveValue("https://api.openai.com/v1");
+    await userEvent.clear(endpoint);
+    await userEvent.type(endpoint, "https://gateway.internal/v1");
+    await userEvent.type(screen.getByLabelText(/api key/i), "sk-x");
+    await userEvent.click(screen.getByRole("button", { name: /add credential/i }));
+
+    expect(createCredential).toHaveBeenCalledTimes(1);
+    expect(createCredential.mock.calls[0][1]).toMatchObject({
+      kind: "openai", base_url: "https://gateway.internal/v1",
+    });
+  });
+
+  it("a custom endpoint demands the URL, the key, and a model before it saves", async () => {
+    // The `custom` shape is all empty defaults, so everything is asked for — and nothing
+    // pre-fills a lie about someone's gateway.
+    show();
+    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByText("Custom (OpenAI-compat)"));
+
+    const endpoint = await screen.findByLabelText(/endpoint/i);
+    expect(endpoint).toHaveValue("");
+    expect(screen.getByRole("button", { name: /add credential/i })).toBeDisabled();
+    expect(screen.getByText(/needs an endpoint/)).toBeInTheDocument();
+
+    await userEvent.type(endpoint, "http://localhost:1234/v1");
+    await userEvent.type(screen.getByLabelText(/api key/i), "none");
+    await userEvent.type(screen.getByLabelText(/^model$/i), "qwen2.5");
+    await userEvent.click(screen.getByRole("button", { name: /add credential/i }));
+
+    expect(createCredential).toHaveBeenCalledTimes(1);
+    expect(createCredential.mock.calls[0][1]).toMatchObject({
+      kind: "custom", base_url: "http://localhost:1234/v1", model: "qwen2.5",
+    });
+  });
+
   it("cannot save an ollama credential with an empty endpoint even when the catalog has a default", async () => {
     // THE BOUNCE. needsOf skipped the URL check whenever the catalog had a default,
     // then create posted the empty form field. The saved row was pending_validation
@@ -363,10 +415,21 @@ describe("wiring", () => {
     expect(screen.getByRole("button", { name: /add provider/i })).toBeInTheDocument();
   });
 
-  it("the self-host providers route actually renders the panel", async () => {
-    showSettings("/settings/project/providers", false);
+  it("the self-host providers route lives under This box (GRPH-625)", async () => {
+    showSettings("/settings/deployment/providers", false);
 
     expect(await screen.findByText("This box")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /^credentials$/i })).toBeInTheDocument();
+    // Nav placement too — "under the deployment section" is a nav fact, not just a route fact.
+    const link = screen.getByRole("link", { name: "AI providers" });
+    expect(link).toHaveAttribute("href", "/settings/deployment/providers");
+  });
+
+  it("the old project-scoped deep link redirects instead of 404-ing into the project form", async () => {
+    // Without the redirect branch, /settings/project/providers matches the project/*
+    // fallback and renders ProjectPanel — plausible-looking, entirely the wrong pane.
+    showSettings("/settings/project/providers", false);
+
     expect(await screen.findByRole("heading", { name: /^credentials$/i })).toBeInTheDocument();
   });
 });
@@ -420,6 +483,17 @@ describe("collapsing, health, editing and overrides", () => {
     // "default" is a tag; "valid" is not one any more.
     expect(within(row).getByText("default")).toBeInTheDocument();
     expect(within(row).queryByText("valid")).not.toBeInTheDocument();
+  });
+
+  it("edit shows the endpoint for a custom credential even when the saved URL is empty", async () => {
+    // GRPH-511/625. Hiding the field when base_url is empty made an unrepaired
+    // custom row: you could not type the URL that the add form had refused to save.
+    state.credentials = [cred({ kind: "custom", base_url: "" })];
+    show();
+    await openRow();
+    await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+
+    expect(await screen.findByLabelText(/endpoint/i)).toBeInTheDocument();
   });
 
   it("edits a credential's model without touching its key", async () => {

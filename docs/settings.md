@@ -6,8 +6,9 @@
 ## This box (self-host)
 
 Self-host Settings groups instance-wide items under **This box** (do not rename that
-group). Cloud / Sync is instance-wide; unlinked Gitops is this project's process;
-Updates is whether this box is on the published stable cut.
+group). AI providers is which model the box runs on (GRPH-625); Cloud / Sync is
+instance-wide; unlinked Gitops is this project's process; Updates is whether this box is
+on the published stable cut.
 
 ### Updates
 
@@ -43,6 +44,11 @@ agents may push to it, optional branch/PR naming, reviewer bar, version scheme.
 Hosted orgs edit house process on the org-admin Gitops tab, not this page.
 
 ## AI Providers tab
+
+**Where it lives:** hosted → the **AI Providers** tab. Self-host → **This box → AI
+providers** (`/settings/deployment/providers`), beside Cloud / Sync, Gitops and Updates — provider
+credentials are what the box runs on, not per-project config (GRPH-625). The old
+`/settings/project/providers` deep link redirects to the new path.
 
 Switches the **chat & extraction** provider — takes effect immediately.
 

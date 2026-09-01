@@ -52,6 +52,8 @@ const PAGES: [string, string][] = [
   [settingsPath("project/mcp"), "MCP Tools"],
   [settingsPath("project/feedback-kit"), "Feedback Kit"],
   [settingsPath("project/providers"), "AI providers"],
+  [settingsPath("deployment/providers"), "AI providers"],
+  ["/p/CORE/settings/deployment/providers", "AI providers"],
   [settingsPath("project/integrations"), "Integrations"],
   [settingsPath("project/members"), "Members"],
   [settingsPath("project"), "Project"],
@@ -84,6 +86,7 @@ describe("docs overlay routes", () => {
     const stolen = [
       settingsPath("project/api-keys"),
       settingsPath("project/providers"),
+      settingsPath("deployment/providers"),
       settingsPath("project/integrations"),
       settingsPath("project/members"),
       settingsPath("project"),

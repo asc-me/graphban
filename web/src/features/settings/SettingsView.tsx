@@ -35,8 +35,13 @@ export function SettingsView() {
 
 const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: boolean }[] }[] = [
   {
+    // "This box" is the deployment section: what this instance RUNS ON belongs here, not
+    // per-project (GRPH-625). Credentials already resolve deployment-default-first with
+    // project pointers on top — the nav said "this project" while the resolution said
+    // "this box".
     group: "This box",
     items: [
+      { to: settingsPath("deployment/providers"), label: "AI providers" },
       { to: settingsPath("deployment/sync"), label: "Cloud / Sync" },
       { to: settingsPath("deployment/gitops"), label: "Gitops" },
       { to: settingsPath("deployment/updates"), label: "Updates" },
@@ -46,7 +51,6 @@ const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: 
     group: "This project",
     items: [
       { to: settingsPath("project"), label: "Project", end: true },
-      { to: settingsPath("project/providers"), label: "AI providers" },
       { to: settingsPath("project/api-keys"), label: "API keys" },
       { to: settingsPath("project/mcp"), label: "MCP" },
       { to: settingsPath("project/integrations"), label: "Integrations" },
@@ -59,7 +63,7 @@ const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: 
 function SelfHostSettings() {
   const { pathname } = useLocation();
   if (pathname === "/settings" || pathname === "/settings/") {
-    return <Navigate to={settingsPath("project/providers")} replace />;
+    return <Navigate to={settingsPath("deployment/providers")} replace />;
   }
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -121,7 +125,12 @@ function SelfHostPane({ pathname }: { pathname: string }) {
   if (pathname.startsWith(settingsPath("project/feedback-kit"))) return <FeedbackKitView />;
   if (pathname.startsWith(settingsPath("project/integrations"))) return <IntegrationsPanel />;
   if (pathname.startsWith(settingsPath("project/api-keys"))) return <ApiKeysPanel />;
-  if (pathname.startsWith(settingsPath("project/providers"))) return <CredentialsPanel />;
+  if (pathname.startsWith(settingsPath("deployment/providers"))) return <CredentialsPanel />;
+  // GRPH-625 moved providers from This project to This box. The old path must redirect,
+  // not fall through: the project-prefix catch-all below would render ProjectPanel at a
+  // providers URL, and a wrong pane that looks like a pane is the worse failure.
+  if (pathname.startsWith(settingsPath("project/providers")))
+    return <Navigate to={settingsPath("deployment/providers")} replace />;
   if (pathname.startsWith(settingsPath("project/members"))) return <MembersPanel />;
   if (pathname === settingsPath("project") || pathname.startsWith(`${settingsPath("project")}/`)) {
     return <ProjectPanel />;

@@ -455,6 +455,7 @@ describe("Gitops Settings page", () => {
     const gitops = docFor(settingsPath("deployment/gitops"));
     expect(gitops.title).toBe("Gitops");
     expect(gitops.badge).toBe("GITOPS");
+    expect(docFor(settingsPath("deployment/providers")).title).toBe("AI providers");
     expect(docFor(settingsPath("project/providers")).title).toBe("AI providers");
     expect(docFor("/settings").title).toBe("Settings");
   });

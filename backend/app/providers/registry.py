@@ -4,7 +4,8 @@ resolves against. One entry per provider; `kind` picks the adapter:
 - `stub`     — deterministic offline (no config)
 - `anthropic`— native Claude SDK
 - `openai`   — any OpenAI-compatible /chat/completions API (OpenAI, Groq, DeepSeek,
-               Mistral, xAI, Gemini's compat endpoint) — base_url + api_key + model
+               Mistral, xAI, Gemini's compat endpoint, the CN labs, the hosted
+               open-weights providers) — base_url + api_key + model
 - `ollama`   — local/self-hosted Ollama (base_url, optional bearer for a Caddy-guarded
                endpoint, chat + embedding models)
 
@@ -42,6 +43,55 @@ PROVIDERS: list[dict] = [
     {"id": "ollama", "label": "Ollama", "kind": "ollama", "embeds": True,
      "base_url": "http://localhost:11434", "chat_model": "qwen2.5-coder",
      "embed_model": "nomic-embed-text", "auth": True},
+    # GRPH-625. The CN labs and the hosted open-weights providers, all OpenAI-compat wire —
+    # registry entries, not new adapters. `chat_model`/`models` are best-known-at-filing
+    # defaults, NOT gospel: every one of them is checked against the provider's live
+    # /v1/models on save (probe.known_models), and a wrong guess surfaces there as a 422
+    # that lists what the provider actually offers. That is why the list errs toward
+    # long-lived aliases (qwen-plus, kimi-latest) over dated snapshot names.
+    {"id": "qwen", "label": "Qwen (DashScope)", "kind": "openai", "embeds": False,
+     "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+     "chat_model": "qwen-plus", "models": ["qwen-plus", "qwen-max", "qwen-turbo"],
+     "embed_model": "", "auth": True},
+    {"id": "kimi", "label": "Kimi (Moonshot)", "kind": "openai", "embeds": False,
+     "base_url": "https://api.moonshot.ai/v1", "chat_model": "kimi-latest",
+     "embed_model": "", "auth": True},
+    {"id": "glm", "label": "GLM (Z.ai)", "kind": "openai", "embeds": False,
+     "base_url": "https://api.z.ai/api/paas/v4", "chat_model": "glm-4.5",
+     "models": ["glm-4.5", "glm-4.5-air"], "embed_model": "", "auth": True},
+    {"id": "minimax", "label": "MiniMax", "kind": "openai", "embeds": False,
+     "base_url": "https://api.minimax.io/v1", "chat_model": "MiniMax-M2",
+     "embed_model": "", "auth": True},
+    {"id": "openrouter", "label": "OpenRouter", "kind": "openai", "embeds": False,
+     "base_url": "https://openrouter.ai/api/v1", "chat_model": "anthropic/claude-sonnet-5",
+     # Verified live against openrouter.ai/api/v1/models on 2026-09-01 (its listing is
+     # public, so these are the only defaults here checked by evidence and not by memory).
+     "models": ["anthropic/claude-sonnet-5", "openai/gpt-5.6-luna", "moonshotai/kimi-k3",
+                "z-ai/glm-5.3", "deepseek/deepseek-v4-pro-0813"],
+     "embed_model": "", "auth": True},
+    {"id": "together", "label": "Together AI", "kind": "openai", "embeds": False,
+     "base_url": "https://api.together.xyz/v1", "chat_model": "deepseek-ai/DeepSeek-V3",
+     "embed_model": "", "auth": True},
+    {"id": "fireworks", "label": "Fireworks AI", "kind": "openai", "embeds": False,
+     # No default model: Fireworks serves per-account endpoints, so guessing a public id
+     # here would be a wrong guess on half the deployments. The form requires the operator
+     # to name one and the probe checks it.
+     "base_url": "https://api.fireworks.ai/inference/v1", "chat_model": "",
+     "embed_model": "", "auth": True},
+    {"id": "perplexity", "label": "Perplexity", "kind": "openai", "embeds": False,
+     # /v1 was 401 (routed) where bare /models was 404 (unknown), and the quickstart
+     # documents /router/v1/chat/completions — probed 2026-09-01.
+     "base_url": "https://api.perplexity.ai/router/v1", "chat_model": "sonar-pro",
+     "models": ["sonar-pro", "sonar"], "embed_model": "", "auth": True},
+    {"id": "cohere", "label": "Cohere", "kind": "openai", "embeds": False,
+     "base_url": "https://api.cohere.com/v2", "chat_model": "command-a-03-2025",
+     "models": ["command-a-03-2025", "command-r-plus"], "embed_model": "", "auth": True},
+    # The generic shape of the `openai` kind finally gets an entry: vLLM, LM Studio,
+    # llama.cpp's server, an internal LiteLLM gateway — anything that speaks the wire but
+    # has no business being in a shipped catalogue. Empty base_url + the visible endpoint
+    # field IS the feature; adding a provider per local server is what this replaces.
+    {"id": "custom", "label": "Custom (OpenAI-compat)", "kind": "openai", "embeds": False,
+     "base_url": "", "chat_model": "", "embed_model": "", "auth": True},
 ]
 
 _BY_ID = {p["id"]: p for p in PROVIDERS}
