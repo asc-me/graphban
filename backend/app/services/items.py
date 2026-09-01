@@ -106,6 +106,16 @@ def create_item(
     """
     if status not in STATUSES:
         raise ValueError(f"invalid status: {status}")
+    if status == "done":
+        # Constructor used to assign `done` with empty evidence (GRPH-543 bounce). Completing
+        # is a transition, not a birth status — create as backlog/next and go through
+        # update_item or sign_off.
+        raise MissingAttestation(
+            "cannot create an item as done: `done` needs an `attestation` receipt naming "
+            "the adapter, the commit it binds to, and at least one predicate that passed — "
+            "written by a key with the `gate` scope (CI, or a reviewer via sign_off). "
+            "Create as backlog or next, then complete it"
+        )
     if fidelity not in FIDELITIES:
         raise ValueError(f"invalid fidelity: {fidelity}")
     if db.get(Project, project_id) is None:
@@ -125,7 +135,7 @@ def create_item(
         tags=tags or [],
         touchpoints=touchpoints or [],
         effort=effort_val,
-        status=status,
+        status=status,  # done refused above via MissingAttestation
         sort_order=max_order + 1,
         reporter=reporter or {},
         date=date,
@@ -1478,6 +1488,16 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
 
     if item.claimed_by != agent_id:
         return None
+    if to_status == "done":
+        # `item.status = to_status` is not `.status = "done"`, so the original ratchet
+        # missed this writer (GRPH-543 bounce). Releasing is handing work back, not
+        # completing — that is update_item / sign_off.
+        raise MissingAttestation(
+            f"{item.key} cannot move to done via release_item: `done` needs an "
+            "`attestation` receipt naming the adapter, the commit it binds to, and at "
+            "least one predicate that passed — written by a key with the `gate` scope "
+            "(CI, or a reviewer via sign_off), not by handing the lease back"
+        )
     # Asked BEFORE the reservations are released, because releasing them destroys the
     # evidence the guard below needs (GRPH-435).
     reserved = fleet_svc.holds_reservation(db, agent_id=agent_id, item_id=item.id)
@@ -1513,7 +1533,7 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
     item.claimed_at = None
     item.assignee = ""
     if item.status == "in_progress" and to_status in STATUSES:
-        item.status = to_status
+        item.status = to_status  # done refused above via MissingAttestation
     db.commit()
     db.refresh(item)
     return item

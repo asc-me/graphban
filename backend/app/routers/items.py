@@ -47,6 +47,8 @@ def create_item(
             prd_section=body.prd_section,
             reporter=reporter,
         )
+    except items_svc.MissingAttestation as e:
+        raise HTTPException(409, str(e))
     except ValueError as e:
         raise HTTPException(422, str(e))
 
