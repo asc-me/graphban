@@ -178,10 +178,8 @@ describe("Updates Settings page", () => {
   });
 
   it("hosted has Check and no Install", async () => {
-    const user = userEvent.setup();
     updateCheckSpy.mockResolvedValue(payload({ hosted: true }));
-    renderPage("/settings", true);
-    await user.click(await screen.findByRole("button", { name: /^updates$/i }));
+    renderPage(settingsPath("deployment/updates"), true);
     expect(await screen.findByRole("button", { name: /check for updates/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^install$/i })).not.toBeInTheDocument();
   });

@@ -138,6 +138,14 @@ vi.mock("@/lib/api", () => ({
     members: vi.fn(async () => []),
     apiKeys: vi.fn(async () => []),
     createApiKey: vi.fn(),
+    updateCheck: vi.fn(async () => ({
+      state: "unknown",
+      running: { version: "0.1.0", git_sha: "" },
+      latest: { tag: "", url: "" },
+      apply: false,
+      hosted: true,
+      note: "",
+    })),
   },
 }));
 
@@ -457,7 +465,7 @@ describe("Gitops Settings page", () => {
     const user = userEvent.setup();
     renderPage("/settings");
 
-    expect(await screen.findByRole("button", { name: /^AI Providers$/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /^AI Providers$/ })).toBeInTheDocument();
     expect(screen.queryByText("This box")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Gitops" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Gitops" })).not.toBeInTheDocument();
@@ -470,8 +478,9 @@ describe("Gitops Settings page", () => {
       "Members",
       "API Keys",
       "Account",
+      "Updates",
     ]) {
-      await user.click(screen.getByRole("button", { name: tab }));
+      await user.click(screen.getByRole("link", { name: tab }));
       expect(screen.queryByRole("button", { name: "Save gitops" })).not.toBeInTheDocument();
       expect(screen.queryByLabelText("Base branch")).not.toBeInTheDocument();
     }
@@ -527,8 +536,8 @@ describe("Gitops nav group source", () => {
     expect(live).toMatch(
       /if \(pathname\.startsWith\(settingsPath\("deployment\/gitops"\)\)\) return <GitopsPanel \/>/,
     );
+    expect(live).toContain('label: "AI Providers"');
     const hosted = live.split("function HostedSettingsTabs")[1] ?? "";
-    expect(hosted).toContain("AI Providers");
     expect(hosted).not.toContain("GitopsPanel");
     expect(hosted).not.toContain("SyncLinkPanel");
     expect(hosted).toContain("CloudOrgLinkPanel");
