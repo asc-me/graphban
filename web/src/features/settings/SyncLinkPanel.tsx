@@ -65,9 +65,10 @@ export function SyncLinkPanel() {
       <div>
         <h2 className="text-[15px] font-semibold tracking-tight">Sync / Link</h2>
         <p className="mt-1 max-w-[60ch] text-[12.5px] leading-relaxed text-muted">
-          Connect this self-hosted instance to a cloud tenant. The local box builds the code
-          graph; the cloud holds items, claims, and memory. Summaries and structure are pushed —
-          vectors never leave the box; the cloud re-embeds.
+          Connect this self-hosted instance to a cloud org. Mint the link key there — Settings
+          → Sync / Link, or API keys → Sync credential — then paste the cloud URL and key
+          below. This box builds the graph; the cloud holds items, claims, and memory.
+          Vectors never leave the box; the cloud re-embeds.
         </p>
         {reason === "missing" && (
           <p className="mt-3 rounded-[11px] border border-st-review/30 bg-st-review/[0.06] px-3 py-2 text-[12.5px] text-st-review">

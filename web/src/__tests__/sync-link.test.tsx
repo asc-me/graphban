@@ -67,6 +67,7 @@ describe("SyncLinkPanel", () => {
     expect(await screen.findByText("not linked")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("cloud.graphban.dev")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("paste key…")).toBeInTheDocument();
+    expect(screen.getByText(/Mint the link key there/)).toBeInTheDocument();
   });
 
   it("submits the link form with URL, key, and org", async () => {

@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SettingsView } from "@/features/settings/SettingsView";
@@ -40,7 +41,9 @@ function renderSettings() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <SettingsView />
+      <MemoryRouter>
+        <SettingsView />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -142,5 +145,41 @@ describe("minting a sync credential", () => {
     await waitFor(() =>
       expect(document.querySelector("pre.max-h-56")?.textContent).toContain("--scope user graphban"),
     );
+  });
+});
+
+describe("hosted Sync / Link is the cloud-org mint, not the self-host paste form", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    api.createApiKey.mockResolvedValue({ plaintext: "gb_sk_minted", project_id: "core" });
+  });
+
+  it("does not tell a cloud org to connect as if it were a self-hosted box", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: "Sync / Link" }));
+
+    expect(await screen.findByRole("heading", { name: /^Cloud link$/ })).toBeInTheDocument();
+    expect(screen.getByText(/Mint a link key/)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("cloud.graphban.dev")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("paste key…")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Connect this self-hosted instance/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Link instance" })).not.toBeInTheDocument();
+  });
+
+  it("mints a sync-scoped key pinned to a project", async () => {
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: "Sync / Link" }));
+    await user.type(screen.getByPlaceholderText(/laptop/), "laptop — core");
+    await user.click(screen.getByRole("button", { name: /Mint link key/ }));
+
+    await waitFor(() =>
+      expect(api.createApiKey).toHaveBeenCalledWith("laptop — core", "core", null, ["sync"]),
+    );
+    await waitFor(() =>
+      expect(document.querySelector("pre")?.textContent).toContain("graphban link"),
+    );
+    expect(document.querySelector("pre")?.textContent).toContain("--api-key gb_sk_minted");
   });
 });

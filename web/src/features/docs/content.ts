@@ -279,11 +279,11 @@ const CONTENT: Record<string, DocEntry> = {
   "/settings/deployment/sync": {
     badge: "CLOUD / SYNC",
     title: "Cloud / Sync",
-    tagline: "Link this box to a cloud org, then push the code graph.",
+    tagline: "A link key from your cloud org is what a local box pastes.",
     sections: [
-      { num: 1, h: "Link, then push", b: "Paste the cloud URL and a sync credential. The credential is pinned to one project — a key handed to a fleet can only ever push there." },
-      { num: 2, h: "Incremental graph", b: "Push now sends only changed nodes and is resumable. Stale vs in-sync is measured, not assumed." },
-      { num: 3, h: "Privacy and a portable bundle", b: "Code-graph privacy is a project setting. A JSON bundle is the offline path when the box cannot reach the cloud." },
+      { num: 1, h: "Mint the key in the cloud org", b: "On the hosted org: Settings → Sync / Link, or API keys → Sync credential. Scope is sync, pinned to one project — that is the only project the box can push. The name is the deployment's identity on Deployments. Shown once." },
+      { num: 2, h: "Paste it on the local box", b: "Self-host Settings → Cloud / Sync takes the cloud URL (the org origin) and the plaintext. Tenant/org is a label. graphban link --cloud-url --api-key --project is the same hand-off." },
+      { num: 3, h: "The box pushes; the org does not reach in", b: "The local box builds the graph and pushes summaries. Vectors stay on the box; the cloud re-embeds. Nothing is linked until that paste happens." },
     ],
     related: [{ label: "API keys", to: settingsPath("project/api-keys") }],
   },
@@ -419,7 +419,8 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Deployments",
     tagline: "The box pushes. The cloud never reaches in.",
     sections: [
-      { num: 1, h: "Address as text, then a link", b: "The console cannot test reachability — that is the viewer's network. A dead Open button is worse than showing http://ubuntu-srv:8080 first." },
+      { num: 1, h: "Mint a link key in this org", b: "Settings → Sync / Link (or API keys → Sync credential). Scope sync, pinned to one project. The key's name is the deployment's identity here. Nothing is linked until that key is pasted on the box." },
+      { num: 2, h: "Address as text, then a link", b: "The console cannot test reachability — that is the viewer's network. A dead Open button is worse than showing http://ubuntu-srv:8080 first." },
     ],
   },
 

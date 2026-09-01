@@ -11,6 +11,7 @@ import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
 import { GitopsPanel } from "@/features/settings/GitopsPanel";
 import { UpdatesPanel } from "@/features/settings/UpdatesPanel";
 import { McpInstall, type KeyScope } from "@/features/settings/McpInstall";
+import { CloudOrgLinkPanel } from "@/features/settings/CloudOrgLinkPanel";
 import { SyncCredentialInstall } from "@/features/settings/SyncCredentialInstall";
 import { SyncLinkPanel } from "@/features/settings/SyncLinkPanel";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -21,7 +22,7 @@ import { errorDetail } from "@/lib/errors";
 import { keys, useApiKeys, useConfig, useMembers, usePlatform } from "@/lib/queries";
 import { settingsPath } from "@/lib/routes";
 import type { ApiKey, PlatformConfig, Project } from "@/lib/types";
-import { NavLink, Navigate, useLocation } from "react-router-dom";
+import { NavLink, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 const TABS = ["AI Providers", "Integrations", "Sync / Link", "Project", "Members", "API Keys", "Account", "Updates"] as const;
 type Tab = (typeof TABS)[number];
@@ -140,7 +141,22 @@ function SelfHostPane({ pathname }: { pathname: string }) {
 }
 
 function HostedSettingsTabs() {
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
   const [tab, setTab] = React.useState<Tab>("AI Providers");
+  const onSync = pathname.startsWith(settingsPath("deployment/sync"));
+  const selected: Tab = onSync ? "Sync / Link" : tab === "Sync / Link" ? "AI Providers" : tab;
+
+  function select(t: Tab) {
+    if (t === "Sync / Link") {
+      // Own path so the docs overlay is Cloud / Sync, not the /settings catch-all.
+      navigate(settingsPath("deployment/sync"));
+      return;
+    }
+    if (onSync) navigate(settingsPath());
+    setTab(t);
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-none border-b border-line px-5 py-4">
@@ -152,10 +168,10 @@ function HostedSettingsTabs() {
           {TABS.map((t) => (
             <button
               key={t}
-              onClick={() => setTab(t)}
+              onClick={() => select(t)}
               className={cn(
                 "rounded-[9px] px-3 py-2 text-left text-[13px] transition-colors",
-                tab === t ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-3 hover:text-fg-2",
+                selected === t ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-3 hover:text-fg-2",
               )}
             >
               {t}
@@ -168,14 +184,14 @@ function HostedSettingsTabs() {
               that step and migrated every blob into a credential row, so the old panel became
               a second editor for configuration nothing consults — two lists of the same thing,
               free to disagree. */}
-          {tab === "AI Providers" && <CredentialsPanel />}
-          {tab === "Integrations" && <IntegrationsPanel />}
-          {tab === "Sync / Link" && <SyncLinkPanel />}
-          {tab === "Project" && <ProjectPanel />}
-          {tab === "Members" && <MembersPanel />}
-          {tab === "API Keys" && <ApiKeysPanel />}
-          {tab === "Account" && <AccountPanel />}
-          {tab === "Updates" && <UpdatesPanel />}
+          {selected === "AI Providers" && <CredentialsPanel />}
+          {selected === "Integrations" && <IntegrationsPanel />}
+          {selected === "Sync / Link" && <CloudOrgLinkPanel />}
+          {selected === "Project" && <ProjectPanel />}
+          {selected === "Members" && <MembersPanel />}
+          {selected === "API Keys" && <ApiKeysPanel />}
+          {selected === "Account" && <AccountPanel />}
+          {selected === "Updates" && <UpdatesPanel />}
         </div>
       </div>
     </div>

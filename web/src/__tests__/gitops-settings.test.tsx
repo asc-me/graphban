@@ -137,6 +137,7 @@ vi.mock("@/lib/api", () => ({
     syncStatus: vi.fn(async () => ({ linked: false, url: "", projects: [] })),
     members: vi.fn(async () => []),
     apiKeys: vi.fn(async () => []),
+    createApiKey: vi.fn(),
   },
 }));
 
@@ -529,5 +530,7 @@ describe("Gitops nav group source", () => {
     const hosted = live.split("function HostedSettingsTabs")[1] ?? "";
     expect(hosted).toContain("AI Providers");
     expect(hosted).not.toContain("GitopsPanel");
+    expect(hosted).not.toContain("SyncLinkPanel");
+    expect(hosted).toContain("CloudOrgLinkPanel");
   });
 });
