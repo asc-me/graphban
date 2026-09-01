@@ -38,6 +38,10 @@ GITOPS_MODEL_LABELS = {
     "prs_to_integration": "PRs to integration",
 }
 PLAN_TAG = "gitops-plan"
+OBSERVE_TITLE = "Observe the repo"
+OBSERVE_ANSWERS = ("remote", "none", "unknown")
+OBSERVE_WAITING = "waiting on Observe: remote / none / unknown"
+OBSERVE_UNKNOWN_BLOCK = "Observe answered unknown — look again before the rest"
 GLOB_METACHARS = ("*", "?", "[")
 FIELD_SOURCES = ("project", "org", "unmeasured")
 CONTROL_STATES = ("local", "linked_set", "linked_unset", "linked_unreachable")
@@ -559,16 +563,19 @@ def file_migration_plan(db: Session, project: Project) -> Item | None:
         commit=False,
     )
     for spec in _plan_children(project):
+        is_observe = spec["title"] == OBSERVE_TITLE
         child = items_svc.create_item(
             db,
             title=spec["title"],
             description=spec["description"],
             project_id=project.id,
-            status="next",
+            status="next" if is_observe else "blocked",
             tags=[PLAN_TAG],
             reporter={"name": "Gitops", "handle": "gitops", "avatar": "#c6f24e"},
             commit=False,
         )
+        if not is_observe:
+            child.blocker = OBSERVE_WAITING
         db.add(Link(
             project_id=project.id,
             a=parent.id,
@@ -577,3 +584,108 @@ def file_migration_plan(db: Session, project: Project) -> Item | None:
             reason="gitops migration checklist",
         ))
     return parent
+
+
+def observe_answer_from(evidence) -> str | None:
+    """Last named answer in evidence. First token of `detail`, ticks stripped."""
+    for ev in reversed(evidence or []):
+        detail = (ev.get("detail") or "").strip().lower()
+        if not detail:
+            continue
+        token = detail.split()[0].strip("`")
+        if token in OBSERVE_ANSWERS:
+            return token
+    return None
+
+
+def _is_observe(item: Item) -> bool:
+    return item.title == OBSERVE_TITLE and PLAN_TAG in (item.tags or [])
+
+
+def _is_plan_parent(item: Item) -> bool:
+    return any(str(t).startswith(f"{PLAN_TAG}:") for t in (item.tags or []))
+
+
+def _observe_child(db: Session, parent: Item) -> Item | None:
+    rows = db.scalars(
+        select(Link).where(Link.a == parent.id, Link.type == "dependency")
+    ).all()
+    for lk in rows:
+        child = db.get(Item, lk.b)
+        if child is not None and _is_observe(child):
+            return child
+    return None
+
+
+def _siblings_of_observe(db: Session, observe: Item) -> list[Item]:
+    parents = db.scalars(
+        select(Link).where(Link.b == observe.id, Link.type == "dependency")
+    ).all()
+    out: list[Item] = []
+    for pl in parents:
+        for lk in db.scalars(
+            select(Link).where(Link.a == pl.a, Link.type == "dependency")
+        ).all():
+            if lk.b == observe.id:
+                continue
+            child = db.get(Item, lk.b)
+            if child is not None:
+                out.append(child)
+    return out
+
+
+def refuse_observe_progress(db: Session, item: Item, fields: dict) -> None:
+    """Refuse review/done on Observe without a named answer, and on the parent
+    while Observe is unanswered or unknown. Called from update_item (the CALL)."""
+    from app.services.items import append_evidence
+
+    dest = fields.get("status")
+    if dest not in ("review", "done") or dest == item.status:
+        return
+    if _is_observe(item):
+        merged = append_evidence(item.evidence, fields.get("evidence") or [])
+        if observe_answer_from(merged) is None:
+            raise ValueError(
+                "Observe needs evidence whose first token is remote, none, or unknown "
+                "— unknown is a real answer, not a skip"
+            )
+        return
+    if _is_plan_parent(item):
+        obs = _observe_child(db, item)
+        if obs is None:
+            return
+        answer = observe_answer_from(obs.evidence)
+        if answer is None:
+            raise ValueError(
+                "the Observe child has no remote/none/unknown answer — "
+                "the rest of the plan stays blocked"
+            )
+        if answer == "unknown":
+            raise ValueError(
+                "Observe answered unknown — the rest of the plan stays blocked"
+            )
+
+
+def apply_observe_answer(db: Session, item: Item) -> None:
+    """Unblock siblings on remote/none; keep them blocked on unknown.
+
+    Does not commit. Does not probe git. Does not read github_repo.
+    """
+    if not _is_observe(item):
+        return
+    answer = observe_answer_from(item.evidence)
+    if answer is None:
+        return
+    siblings = _siblings_of_observe(db, item)
+    if answer in ("remote", "none"):
+        for sib in siblings:
+            if sib.blocker in (OBSERVE_WAITING, OBSERVE_UNKNOWN_BLOCK):
+                sib.blocker = ""
+                if sib.status == "blocked":
+                    sib.status = "next"
+        return
+    # unknown — legitimate Observe completion, rest stay blocked
+    for sib in siblings:
+        sib.blocker = OBSERVE_UNKNOWN_BLOCK
+        if sib.status in ("next", "backlog"):
+            sib.status = "blocked"

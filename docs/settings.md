@@ -36,7 +36,9 @@ agents may push to it, optional branch/PR naming, reviewer bar, version scheme.
 - Saving a non-Unmeasured model on a **project** files a tracker parent + children
   (observe / remote / base_branch / optionally stop-pushing, one PR, tagged cut /
   contract is live). Re-applying the same model does not duplicate. Org-house apply
-  does not file per-project plans. Graphban still does not run git.
+  does not file per-project plans. Graphban still does not run git. Observe answers
+  `remote` / `none` / `unknown` as evidence; the rest stay blocked until remote or
+  none. `github_repo` is not a remote.
 - Unset fields are **unmeasured**, never "use main" and never "no requirements".
   Placeholders say `Unmeasured — not main`.
 - The page renders `GitopsView` from `GET /api/projects/{id}/gitops`.

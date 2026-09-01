@@ -699,6 +699,10 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         if effort_update < 0:
             raise ValueError(f"negative effort: {effort_update}")
     prev_status = item.status
+    # THE CALL (GRPH-636). Observe answers live on this write, not a helper the
+    # handler might forget. Deleting this leaves PATCH 200 and siblings still waiting.
+    from app.services import gitops as gitops_svc
+    gitops_svc.refuse_observe_progress(db, item, fields)
     if (fields.get("status") in ("review", "done")
             and fields["status"] != prev_status):
         # P30 D11. Filing a wait is not finishing the work. An unmet `wait:` dependency
@@ -893,6 +897,7 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         # link actually arrived (GRPH-567). First link wins — see `pr_linked_at`.
         item.pr_linked_at = pr_linked_at(fields["evidence"], item.pr_linked_at)
         pending_lesson_applies = _prepare_lesson_evidence(db, item, old_len)
+        gitops_svc.apply_observe_answer(db, item)
     if fields.get("ack_section_drift"):
         # "I have read what changed in the PRD and this item is right as it stands"
         # (GRPH-360). A FLAG, not a value: the caller cannot supply the hash, so it can only

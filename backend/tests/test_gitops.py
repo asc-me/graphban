@@ -1105,3 +1105,115 @@ def test_parent_depends_on_each_child(client, auth):
         assert len(deps) == 7
     finally:
         db.close()
+
+
+def _plan_row(client, auth, title, project_id="core"):
+    return next(
+        i for i in _items(client, auth, project_id)
+        if i["title"] == title and gitops_svc.PLAN_TAG in (i.get("tags") or [])
+    )
+
+
+def test_non_observe_children_are_blocked_until_an_answer(client, auth):
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    observe = _plan_row(client, auth, "Observe the repo")
+    remote = _plan_row(client, auth, "Confirm the remote")
+    assert observe["status"] == "next"
+    assert observe["blocker"] in ("", None)
+    assert remote["status"] == "blocked"
+    assert remote["blocker"] == gitops_svc.OBSERVE_WAITING
+
+
+def test_observe_remote_unblocks_siblings_at_update_item(client, auth):
+    """THE CALL. Deleting apply_observe_answer from update_item leaves PATCH 200
+    and Confirm the remote still waiting."""
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    observe = _plan_row(client, auth, "Observe the repo")
+    r = client.patch(
+        f"/api/items/{observe['id']}",
+        json={"evidence": [{"kind": "note", "detail": "remote origin is github.com/acme/app"}]},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    remote = _plan_row(client, auth, "Confirm the remote")
+    assert remote["status"] == "next"
+    assert remote["blocker"] == ""
+    one_pr = _plan_row(client, auth, "One PR from current work")
+    assert one_pr["status"] == "next"
+
+
+def test_observe_unknown_keeps_siblings_blocked(client, auth):
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    observe = _plan_row(client, auth, "Observe the repo")
+    r = client.patch(
+        f"/api/items/{observe['id']}",
+        json={"evidence": [{"kind": "note", "detail": "unknown — could not look"}]},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    remote = _plan_row(client, auth, "Confirm the remote")
+    assert remote["status"] == "blocked"
+    assert remote["blocker"] == gitops_svc.OBSERVE_UNKNOWN_BLOCK
+
+
+def test_observe_none_unblocks_siblings(client, auth):
+    assert _patch(client, auth, {"model": "push_to_base", "base_branch": "develop"}).status_code == 200
+    observe = _plan_row(client, auth, "Observe the repo")
+    r = client.patch(
+        f"/api/items/{observe['id']}",
+        json={"evidence": [{"kind": "note", "detail": "none"}]},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    remote = _plan_row(client, auth, "Confirm the remote")
+    assert remote["status"] == "next"
+    assert remote["blocker"] == ""
+
+
+def test_observe_review_without_an_answer_is_422(client, auth):
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    observe = _plan_row(client, auth, "Observe the repo")
+    r = client.patch(
+        f"/api/items/{observe['id']}",
+        json={"status": "review"},
+        headers=auth,
+    )
+    assert r.status_code == 422, r.text
+    assert "remote" in r.text and "unknown" in r.text
+    assert _plan_row(client, auth, "Observe the repo")["status"] == "next"
+
+
+def test_parent_review_while_observe_is_unknown_is_422(client, auth):
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    observe = _plan_row(client, auth, "Observe the repo")
+    assert client.patch(
+        f"/api/items/{observe['id']}",
+        json={"evidence": [{"kind": "note", "detail": "unknown"}]},
+        headers=auth,
+    ).status_code == 200
+    parent = next(
+        p for p in _plan_parents(client, auth)
+        if gitops_svc.plan_tag("prs_to_base") in p["tags"]
+    )
+    r = client.patch(f"/api/items/{parent['id']}", json={"status": "review"}, headers=auth)
+    assert r.status_code == 422, r.text
+    assert "unknown" in r.text
+    assert _plan_row(client, auth, "Confirm the remote")["status"] == "blocked"
+
+
+def test_github_repo_is_not_an_observe_answer(client, auth):
+    from app.db import SessionLocal
+    from app.services import platform as platform_svc
+
+    db = SessionLocal()
+    try:
+        platform_svc.connect_github(db, "core", account="acme", repo="app")
+    finally:
+        db.close()
+
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    observe = _plan_row(client, auth, "Observe the repo")
+    assert not (observe.get("evidence") or [])
+    remote = _plan_row(client, auth, "Confirm the remote")
+    assert remote["status"] == "blocked"
+    assert remote["blocker"] == gitops_svc.OBSERVE_WAITING
