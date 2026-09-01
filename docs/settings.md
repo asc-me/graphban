@@ -28,6 +28,10 @@ running version that is still `0.1.0`, must not look up to date.
 `/settings/deployment/gitops`. Sparse delivery contract: integration base, whether
 agents may push to it, optional branch/PR naming, reviewer bar, version scheme.
 
+- A **model** picker (Unmeasured / Push to base / PRs to base / PRs to integration)
+  writes those six fields in one save. `base_branch` is never filled by a preset —
+  a model save with an empty base is 422, not a write of `main`. A later hand-edit
+  clears the model id.
 - Unset fields are **unmeasured**, never "use main" and never "no requirements".
   Placeholders say `Unmeasured — not main`.
 - The page renders `GitopsView` from `GET /api/projects/{id}/gitops`.

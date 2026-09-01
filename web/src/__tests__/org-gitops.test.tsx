@@ -41,6 +41,7 @@ function view(over: Partial<GitopsView> = {}): GitopsView {
     org_id: "org_1",
     fields: fields(),
     version_from: unmeasured,
+    model: unmeasured,
     control: { state: "local", writable: true, message: "" },
     was: null,
     projects: [app, lib],
@@ -152,6 +153,15 @@ describe("Org gitops editor", () => {
     spies.updateGitops.mockResolvedValue(appInherit);
     // B (Lib) is absent from the readable project list — the sabotage for roster source.
     spies.projects.mockResolvedValue([project]);
+  });
+
+  it("house model picker is Unmeasured first and nothing is pre-selected", async () => {
+    renderPage();
+    const picker = await screen.findByLabelText("House gitops model");
+    expect(picker.tagName).toBe("SELECT");
+    expect(picker).toHaveValue("");
+    const labels = [...picker.querySelectorAll("option")].map((o) => o.textContent);
+    expect(labels[0]).toBe("Unmeasured");
   });
 
   it("shows house stage and an inheriting overlay as empty, not stage in the input", async () => {

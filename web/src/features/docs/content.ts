@@ -347,8 +347,9 @@ const CONTENT: Record<string, DocEntry> = {
     tagline: "This project's delivery contract — unmeasured is not main.",
     sections: [
       { num: 1, h: "Unmeasured, not main", b: "Unset fields are unmeasured — not 'use main' and not 'no requirements'. Agents read the resolved contract from get_context." },
-      { num: 2, h: "Grey when linked", b: "A linked box shows the org's live values, filled but not editable. control.message is the banner. Local columns are was, never the form value." },
-      { num: 3, h: "Patterns, not globs", b: "Branch and PR patterns may insert {item_id} {tag} {slug} {version} {date}. base_branch is a literal. Globs are rejected." },
+      { num: 2, h: "Named models", b: "Push to base / PRs to base / PRs to integration write the six fields in one save. Base branch is never filled by a preset. A hand-edit clears the model id so a stale preset name cannot survive." },
+      { num: 3, h: "Grey when linked", b: "A linked box shows the org's live values, filled but not editable. control.message is the banner. Local columns are was, never the form value." },
+      { num: 4, h: "Patterns, not globs", b: "Branch and PR patterns may insert {item_id} {tag} {slug} {version} {date}. base_branch is a literal. Globs are rejected." },
     ],
     related: [{ label: "Cloud / Sync", to: settingsPath("deployment/sync") }],
   },
@@ -369,7 +370,7 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Org gitops",
     tagline: "House process and per-project overlay.",
     sections: [
-      { num: 1, h: "House process", b: "The org default: integration base, whether agents may push to it, branch/PR naming, reviewer bar. Unset is unmeasured — not main and not no requirements." },
+      { num: 1, h: "House process", b: "The org default: a named model writes the six fields, or set them by hand. Unset is unmeasured — not main and not no requirements. Linked boxes stay grey." },
       { num: 2, h: "Project overlay", b: "Empty overlay inherits the house value. Sparse fields are inheritance. Clearing a field returns it to inherit. Overlay rows come from every org project, not the readable subset." },
       { num: 3, h: "Linked boxes", b: "A linked self-host box reads this contract live. Gitops is not a property of a deployment credential, so it is not on Deployments cards." },
     ],
