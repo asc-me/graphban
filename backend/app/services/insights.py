@@ -69,8 +69,10 @@ def extract_lessons(db: Session, item_id: str) -> list[dict]:
     item = items_svc.get_item(db, item_id)
     if item is None:
         raise ValueError(f"item not found: {item_id}")
-    lessons = platform_svc.extractor_for(db, item.project_id).extract(
-        title=item.title, description=_extraction_source(item))
+    from app.providers import llm_meter
+    with llm_meter.llm_context(feature="lessons.extract"):
+        lessons = platform_svc.extractor_for(db, item.project_id).extract(
+            title=item.title, description=_extraction_source(item))
     created = []
     for text in lessons:
         # Auto-extracted lessons are agent telemetry — enter as candidates for

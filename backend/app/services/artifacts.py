@@ -167,9 +167,13 @@ def _classify_batch(chat, batch: list[MemoryShard], index: list[dict]) -> list[d
         "LESSONS:\n" + json.dumps(
             [{"id": s.id, "text": s.text[:600]} for s in batch]),
     ])
+    from app.providers import llm_meter
     try:
-        raw = chat.chat(system=CLASSIFY_SYSTEM, context=context,
-                        question="Classify each lesson.", temperature=0)
+        # Feature only: this chat was built by `resolve_chat`, which binds the project
+        # at construction — the instance is the authority on attribution (GRPH-225).
+        with llm_meter.llm_context(feature="artifacts.classify"):
+            raw = chat.chat(system=CLASSIFY_SYSTEM, context=context,
+                            question="Classify each lesson.", temperature=0)
         match = re.search(r"\[.*\]", raw or "", re.DOTALL)
         parsed = json.loads(match.group(0)) if match else []
     except Exception:  # noqa: BLE001
@@ -339,9 +343,11 @@ def draft(db: Session, rec: ArtifactRecommendation) -> ArtifactRecommendation:
         "LESSONS (everything you may draw on):",
         "\n".join(f"- {s.text}" for s in lessons) or "(none)",
     ])
+    from app.providers import llm_meter
     try:
-        body = chat.chat(system=DRAFT_SYSTEM, context=context,
-                         question="Render the artifact.", temperature=0).strip()
+        with llm_meter.llm_context(feature="artifacts.draft", project_id=rec.project_id or ""):
+            body = chat.chat(system=DRAFT_SYSTEM, context=context,
+                             question="Render the artifact.", temperature=0).strip()
     except Exception:  # noqa: BLE001 — one failed draft must not end a run
         logger.warning("artifact drafting failed for recommendation %s", rec.id,
                        exc_info=True)

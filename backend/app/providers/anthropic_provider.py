@@ -40,6 +40,11 @@ class AnthropicChat:
                 }
             ],
         )
+        from app.providers import llm_meter
+
+        record = _usage(getattr(msg, "usage", None))  # exact counts ride the response (GRPH-225)
+        if record:
+            llm_meter.record_usage(**record)
         return _text(msg)
 
     def stream(self, *, system: str, context: str, question: str,
@@ -54,6 +59,14 @@ class AnthropicChat:
             **({"temperature": temperature} if temperature is not None else {}),
         ) as s:
             yield from s.text_stream
+            # text_stream alone discards the final message; get_final_message() after it
+            # is complete is documented and is the only place the usage lands here —
+            # same call the tool session already makes in stream_turn.
+            from app.providers import llm_meter
+
+            u = _usage(getattr(s.get_final_message(), "usage", None))
+            if u:
+                llm_meter.record_usage(**u)
 
     def tool_session(self, *, system: str, context: str, question: str) -> "AnthropicToolSession":
         return AnthropicToolSession(self, system, context, question)
@@ -161,6 +174,11 @@ class AnthropicExtractor:
             system=system,
             messages=[{"role": "user", "content": f"Task: {title}\n\nDetails: {description}"}],
         )
+        from app.providers import llm_meter
+
+        record = _usage(getattr(msg, "usage", None))
+        if record:
+            llm_meter.record_usage(**record)
         return [ln.strip("-• ").strip() for ln in _text(msg).splitlines() if ln.strip()][:3]
 
 

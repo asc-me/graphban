@@ -20,6 +20,7 @@ from app.models import (
 from app.services import items as items_svc
 from app import errors
 from app.config import settings
+from app.providers import llm_meter
 from app.services import keys
 from app.services import events as events_svc
 from app.services import platform as platform_svc
@@ -691,17 +692,18 @@ def _classify_dimensions(db: Session, prd: Prd, history: list[dict]) -> dict | N
     if not answers:
         return None  # nothing citable exists; the floor in `completion` catches this too
     try:
-        raw = chat.chat(
-            system=GRILL_CLASSIFY_SYSTEM,
-            context=_classify_context(prd, history),
-            question="Classify the four dimensions. Name the answer number that settled "
-                     "each one. Return only the JSON object.",
-            # Deterministic: an identical transcript must yield an identical verdict.
-            # Measured before this was set — three runs of the same input on the same
-            # model gave two different completion states, so whether a PRD approved
-            # depended on when the classifier happened to run.
-            temperature=0,
-        )
+        with llm_meter.llm_context(feature="grill.classify", project_id=prd.project_id):
+            raw = chat.chat(
+                system=GRILL_CLASSIFY_SYSTEM,
+                context=_classify_context(prd, history),
+                question="Classify the four dimensions. Name the answer number that settled "
+                         "each one. Return only the JSON object.",
+                # Deterministic: an identical transcript must yield an identical verdict.
+                # Measured before this was set — three runs of the same input on the same
+                # model gave two different completion states, so whether a PRD approved
+                # depended on when the classifier happened to run.
+                temperature=0,
+            )
     except Exception:  # noqa: BLE001 — a model outage must not break the grill
         logger.exception("grill classify: chat call failed")
         return None
@@ -1395,10 +1397,11 @@ def classify_work(db: Session, item: Item, *, force: bool = False) -> "WorkClass
             "No chat provider configured — alignment was not assessed.", "stub")
     else:
         try:
-            raw = chat.chat(system=JUDGE_SYSTEM,
-                            context=_judge_context(prd, base, item),
-                            question="Classify this work against the goal.",
-                            temperature=0)
+            with llm_meter.llm_context(feature="prd.judge", project_id=prd.project_id):
+                raw = chat.chat(system=JUDGE_SYSTEM,
+                                context=_judge_context(prd, base, item),
+                                question="Classify this work against the goal.",
+                                temperature=0)
             match = re.search(r"\{.*\}", raw or "", re.DOTALL)
             parsed = json.loads(match.group(0)) if match else {}
             outcome = parsed.get("outcome")
