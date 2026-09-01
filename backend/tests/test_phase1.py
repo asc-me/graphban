@@ -102,7 +102,10 @@ def test_mcp_all_new_tools(client, auth):
     assert link["a"] == "CP-12" and link["type"] == "dependency"
 
     lessons = _call(client, key, "extract_lessons", {"id": "AL-11"})
-    assert isinstance(lessons["results"], list) and len(lessons["results"]) >= 1
+    assert lessons.get("scheduled") is True
+    assert lessons["results"] == []
+    details = _call(client, key, "get_item_details", {"id": "AL-11"})
+    assert details.get("linked_shards"), "background extraction should link shards to the item"
 
     digest = _call(client, key, "generate_digest", {})
     # Decision-packet shape (AL-52): state + the five decision-ready sections.

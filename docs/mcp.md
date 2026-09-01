@@ -323,7 +323,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `suggest_next` | `project_id` | Best next item from state + memory |
 | `link_items` | `a`, `b`, `type`, `reason` | Create a typed relationship |
 | `unlink_items` | `a`, `b`, `type` | Remove a typed relationship (inverse of `link_items`); omit `type` to remove all types for the pair. Idempotent — returns `removed` |
-| `extract_lessons` | `id` | Distill lessons from an item into memory |
+| `extract_lessons` | `id` | Distil lessons into memory (returns `scheduled: true` immediately; shards land on `linked_shards`) |
 | `generate_digest` | `project_id` | Compose a progress digest across the project |
 | `prd_coverage` | `prd_id` | Spec-to-task rollup: per-section counts, coverage %, gaps (read-only) |
 | `decompose_prd` | `prd_id`, `create` | Propose (or create) one task per un-covered PRD section, each carrying the PRD's framing prose |

@@ -157,8 +157,13 @@ def test_read_only_member_cannot_promote_cluster(client):
 def test_extract_lessons_are_candidates(client, auth):
     key = _key(client, auth, project_id="core")
     res = _mcp(client, key, "extract_lessons", {"id": "AL-12"})
-    assert res["results"], "stub extractor should produce at least one lesson"
-    assert all(r["status"] == "candidate" for r in res["results"])
+    assert res.get("scheduled") is True
+    assert res["results"] == []
+    # Starlette runs the background task before the test client returns.
+    details = _mcp(client, key, "get_item_details", {"id": "AL-12"})
+    shards = details.get("linked_shards") or []
+    assert shards, "stub extractor should produce at least one lesson"
+    assert all(s["source"] == "lesson from AL-12" for s in shards)
 
 
 # ---- AL-151: advisory accept/reject scoring for the review queue ----
