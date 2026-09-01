@@ -14,6 +14,7 @@ import httpx
 
 from app.config import settings
 from app.services.requests import REQUEST_TYPES
+from app.version import __version__
 
 
 def report_enabled() -> bool:
@@ -47,7 +48,7 @@ def submit_upstream(*, type_: str, title: str, detail: str = "", source: str = "
         "title": title,
         "detail": detail or "",
         "source_url": f"graphban:{source}",
-        "meta": {"reporter": source, "app_version": "0.1.0"},
+        "meta": {"reporter": source, "app_version": __version__},
     }
     if settings.upstream_feedback_token:
         payload["token"] = settings.upstream_feedback_token
