@@ -38,7 +38,7 @@ export function adminPath(sub = ""): string {
   return orgPath(sub ? `admin/${sub.replace(/^\/+/, "")}` : "admin");
 }
 
-/** `/settings`, `/settings/project/mcp` — self-host Settings is path-per-item (GRPH-P28 D3). */
+/** `/settings`, `/settings/project/mcp` — Settings is path-per-item (GRPH-P28 D3), hosted and self-host. */
 export function settingsPath(sub = ""): string {
   const tail = sub.replace(/^\/+/, "");
   return tail ? `/settings/${tail}` : "/settings";

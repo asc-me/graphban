@@ -20,12 +20,9 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { keys, useApiKeys, useConfig, useMembers, usePlatform } from "@/lib/queries";
-import { settingsPath } from "@/lib/routes";
+import { adminPath, settingsPath } from "@/lib/routes";
 import type { ApiKey, PlatformConfig, Project } from "@/lib/types";
-import { NavLink, Navigate, useLocation, useNavigate } from "react-router-dom";
-
-const TABS = ["AI Providers", "Integrations", "Sync / Link", "Project", "Members", "API Keys", "Account", "Updates"] as const;
-type Tab = (typeof TABS)[number];
+import { NavLink, Navigate, useLocation } from "react-router-dom";
 
 export function SettingsView() {
   const { data: config } = useConfig();
@@ -140,23 +137,27 @@ function SelfHostPane({ pathname }: { pathname: string }) {
   return <CredentialsPanel />;
 }
 
+/**
+ * Hosted Settings is path-per-item too (GRPH-P28 D3). In-memory tabs left every
+ * pane on `/settings`, so `?` opened the catch-all — API keys as "AI Providers",
+ * Sync / Link as the self-host paste form until that one tab grew a path.
+ */
+const HOSTED_NAV: { to: string; label: string; end?: boolean }[] = [
+  { to: settingsPath("deployment/providers"), label: "AI Providers" },
+  { to: settingsPath("project/integrations"), label: "Integrations" },
+  { to: settingsPath("deployment/sync"), label: "Sync / Link" },
+  { to: settingsPath("project"), label: "Project", end: true },
+  { to: settingsPath("project/members"), label: "Members" },
+  { to: settingsPath("project/api-keys"), label: "API Keys" },
+  { to: settingsPath("account"), label: "Account" },
+  { to: settingsPath("deployment/updates"), label: "Updates" },
+];
+
 function HostedSettingsTabs() {
   const { pathname } = useLocation();
-  const navigate = useNavigate();
-  const [tab, setTab] = React.useState<Tab>("AI Providers");
-  const onSync = pathname.startsWith(settingsPath("deployment/sync"));
-  const selected: Tab = onSync ? "Sync / Link" : tab === "Sync / Link" ? "AI Providers" : tab;
-
-  function select(t: Tab) {
-    if (t === "Sync / Link") {
-      // Own path so the docs overlay is Cloud / Sync, not the /settings catch-all.
-      navigate(settingsPath("deployment/sync"));
-      return;
-    }
-    if (onSync) navigate(settingsPath());
-    setTab(t);
+  if (pathname === "/settings" || pathname === "/settings/") {
+    return <Navigate to={settingsPath("deployment/providers")} replace />;
   }
-
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-none border-b border-line px-5 py-4">
@@ -165,17 +166,20 @@ function HostedSettingsTabs() {
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr]">
         <div className="flex flex-col gap-0.5 border-r border-line p-3">
-          {TABS.map((t) => (
-            <button
-              key={t}
-              onClick={() => select(t)}
-              className={cn(
-                "rounded-[9px] px-3 py-2 text-left text-[13px] transition-colors",
-                selected === t ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-3 hover:text-fg-2",
-              )}
+          {HOSTED_NAV.map((it) => (
+            <NavLink
+              key={it.to}
+              to={it.to}
+              end={it.end}
+              className={({ isActive }) =>
+                cn(
+                  "block rounded-[9px] px-3 py-2 text-[13px] transition-colors",
+                  isActive ? "bg-surface-3 text-fg" : "text-muted hover:bg-surface-3 hover:text-fg-2",
+                )
+              }
             >
-              {t}
-            </button>
+              {it.label}
+            </NavLink>
           ))}
         </div>
         <div className="min-h-0 overflow-y-auto p-6">
@@ -184,18 +188,33 @@ function HostedSettingsTabs() {
               that step and migrated every blob into a credential row, so the old panel became
               a second editor for configuration nothing consults — two lists of the same thing,
               free to disagree. */}
-          {selected === "AI Providers" && <CredentialsPanel />}
-          {selected === "Integrations" && <IntegrationsPanel />}
-          {selected === "Sync / Link" && <CloudOrgLinkPanel />}
-          {selected === "Project" && <ProjectPanel />}
-          {selected === "Members" && <MembersPanel />}
-          {selected === "API Keys" && <ApiKeysPanel />}
-          {selected === "Account" && <AccountPanel />}
-          {selected === "Updates" && <UpdatesPanel />}
+          <HostedPane pathname={pathname} />
         </div>
       </div>
     </div>
   );
+}
+
+function HostedPane({ pathname }: { pathname: string }) {
+  if (pathname.startsWith(settingsPath("deployment/gitops"))) {
+    return <Navigate to={adminPath("gitops")} replace />;
+  }
+  if (pathname.startsWith(settingsPath("deployment/sync"))) return <CloudOrgLinkPanel />;
+  if (pathname.startsWith(settingsPath("deployment/updates"))) return <UpdatesPanel />;
+  if (pathname.startsWith(settingsPath("deployment/providers"))) return <CredentialsPanel />;
+  if (pathname.startsWith(settingsPath("project/providers"))) {
+    return <Navigate to={settingsPath("deployment/providers")} replace />;
+  }
+  if (pathname.startsWith(settingsPath("project/mcp"))) return <McpToolsView />;
+  if (pathname.startsWith(settingsPath("project/feedback-kit"))) return <FeedbackKitView />;
+  if (pathname.startsWith(settingsPath("project/integrations"))) return <IntegrationsPanel />;
+  if (pathname.startsWith(settingsPath("project/api-keys"))) return <ApiKeysPanel />;
+  if (pathname.startsWith(settingsPath("project/members"))) return <MembersPanel />;
+  if (pathname === settingsPath("project") || pathname.startsWith(`${settingsPath("project")}/`)) {
+    return <ProjectPanel />;
+  }
+  if (pathname.startsWith(settingsPath("account"))) return <AccountPanel />;
+  return <CredentialsPanel />;
 }
 
 function Section({ title, desc, children }: { title: string; desc?: string; children: React.ReactNode }) {

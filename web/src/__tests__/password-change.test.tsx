@@ -49,7 +49,7 @@ function renderSettings() {
 async function openAccountTab() {
   const user = userEvent.setup();
   renderSettings();
-  await user.click(screen.getByRole("button", { name: "Account" }));
+  await user.click(screen.getByRole("link", { name: "Account" }));
   return user;
 }
 

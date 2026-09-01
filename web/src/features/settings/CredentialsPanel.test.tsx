@@ -410,7 +410,7 @@ describe("wiring", () => {
     // pins the tab.
     showSettings("/settings", true);
 
-    expect(await screen.findByRole("button", { name: /^AI Providers$/ })).toBeInTheDocument();
+    expect(await screen.findByRole("link", { name: /^AI Providers$/ })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: /^credentials$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add provider/i })).toBeInTheDocument();
   });
