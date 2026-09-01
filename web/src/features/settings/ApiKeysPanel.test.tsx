@@ -29,8 +29,10 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { docFor } from "@/features/docs/content";
 import { ApiKeysPanel } from "@/features/settings/SettingsView";
 import { ProjectProvider } from "@/features/ProjectContext";
+import { settingsPath } from "@/lib/routes";
 import type { ApiKey, Project } from "@/lib/types";
 
 const key = (over: Partial<ApiKey> = {}): ApiKey => ({
@@ -242,5 +244,24 @@ describe("listing", () => {
     // is the reason the gate is running on its weak path.
     view();
     expect(await screen.findByText(/nothing can attest/i)).toBeInTheDocument();
+  });
+});
+
+describe("docs overlay", () => {
+  it("matches api-keys before the /settings catch-all", () => {
+    // THE CALL. /settings/project/api-keys starts with /settings, so without this
+    // branch the overlay is AI Providers. The page is keys, MCP rights, and
+    // advertisement — not LLM credentials.
+    const keys = docFor(settingsPath("project/api-keys"));
+    expect(keys.title).toBe("API keys");
+    expect(keys.badge).toBe("API KEYS");
+    expect(keys.sections[0].h).not.toMatch(/AI Providers/);
+    const body = keys.sections.map((s) => `${s.h} ${s.b}`).join(" ");
+    expect(body).toMatch(/advertis/i);
+    expect(body).toMatch(/callable/i);
+    expect(body).toMatch(/gate/i);
+    expect(body).toMatch(/scope/i);
+    expect(docFor(settingsPath("project/providers")).title).toBe("Settings");
+    expect(docFor("/settings").title).toBe("Settings");
   });
 });
