@@ -222,7 +222,7 @@ ssh ubuntu-srv 'curl -s http://localhost:8001/health'
 # hosted (Railway) — no ssh; the public endpoint IS the check
 curl -s https://cloud.graphban.dev/health
 
-# {"status":"ok","service":"graphban-api","version":"2026.09.1","git_sha":"<sha>","db":"ok"}
+# {"status":"ok","service":"graphban-api","version":"2026.09.2","git_sha":"<sha>","db":"ok"}
 ```
 
 Or run the whole smoke suite against either one, which checks this and more:

@@ -48,9 +48,9 @@ A git tag is not a release, and GitHub's source zip is not either. Pack the
 directory `upgrade --release` consumes:
 
 ```bash
-python3 scripts/graphban_pack.py 2026.09.1
-# dist-release/graphban-2026.09.1/
-# dist-release/graphban-2026.09.1.tar.gz
+python3 scripts/graphban_pack.py 2026.09.2
+# dist-release/graphban-2026.09.2/
+# dist-release/graphban-2026.09.2.tar.gz
 ```
 
 That tree is backend + Alembic, prebuilt `web/dist` (or an `SPA` file saying
@@ -58,15 +58,15 @@ That tree is backend + Alembic, prebuilt `web/dist` (or an `SPA` file saying
 checks the ref out into a detached worktree first, so uncommitted files in the
 working tree cannot ride along.
 
-Attach the tarball to the GitHub Release (`gh release upload 2026.09.1
-dist-release/graphban-2026.09.1.tar.gz`). The packer does not upload, and it
+Attach the tarball to the GitHub Release (`gh release upload 2026.09.2
+dist-release/graphban-2026.09.2.tar.gz`). The packer does not upload, and it
 does not run the swap.
 
 ```bash
-tar xf graphban-2026.09.1.tar.gz
+tar xf graphban-2026.09.2.tar.gz
 # write backend/.env from .env.example on a first install
-python3 graphban-2026.09.1/scripts/graphban_host.py upgrade \
-  --root /opt/graphban --release ./graphban-2026.09.1 --sha "$(cat graphban-2026.09.1/GIT_SHA)"
+python3 graphban-2026.09.2/scripts/graphban_host.py upgrade \
+  --root /opt/graphban --release ./graphban-2026.09.2 --sha "$(cat graphban-2026.09.2/GIT_SHA)"
 ```
 
 ## Layout
