@@ -184,6 +184,11 @@ def patch_gitops(project_id: str, body: GitopsPatch, db: Session = Depends(get_d
         changed = gitops.apply_patch(project, {k: getattr(body, k) for k in body.model_fields_set})
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
+    # THE CALL (GRPH-631). Filing lives in gitops.file_migration_plan via items.create_item,
+    # not a second create in this handler. Deleting this branch leaves PATCH 200 and no
+    # checklist — the tests assert on GET /api/items, not on the helper.
+    if "model" in changed and project.gitops_model:
+        gitops.file_migration_plan(db, project)
     db.commit()
     db.refresh(project)
     events_svc.record_user(
