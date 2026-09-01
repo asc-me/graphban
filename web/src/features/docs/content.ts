@@ -202,6 +202,21 @@ const CONTENT: Record<string, DocEntry> = {
     related: [{ label: "MCP Tools", to: "/mcp-tools" }],
   },
 
+  "/settings/project/api-keys": {
+    badge: "API KEYS",
+    title: "API keys",
+    tagline: "Who an agent is, what it can see, and what it may call.",
+    sections: [
+      { num: 1, h: "Three kinds", b: "An agent key talks to MCP — read and write on items, memory, and code. A sync credential pushes a code graph from a local box into exactly one project and nothing else. A gate key attests that work was checked so an item may reach done: for CI or a reviewer, never for the agent doing the work. Gate is minted with read+write+gate; gate alone cannot attest." },
+      { num: 2, h: "Scope is the write target", b: "Project pins the agent's writes to the active project. Global is unbound — calls pass project_id or fall back to the default. Connect snippets follow the key: Claude Code and Grok CLI get --scope project or --scope user. Sync and gate always pin to one project." },
+      { num: 3, h: "Advertisement is not permission", b: "An agent key ships the core tools. Tiers (PRDs, code-graph writes, fleet admin, occasional) opt in specialist tools because they cost manifest tokens every turn. A tool left out of tools/list is still callable; scopes and roles decide what may be called. Visibility is not the gate. The symptom of a missing tier is an agent that does not know a tool exists, never an error." },
+      { num: 4, h: "Shown once", b: "The plaintext is shown once and stored as a hash. A lost key is a new mint. Two paths, one key shape: mint here, or graphban init --key-scope / --key-tiers on a virgin instance." },
+    ],
+    related: [
+      { label: "MCP Tools", to: settingsPath("project/mcp") },
+    ],
+  },
+
   "/settings/deployment/updates": {
     badge: "UPDATES",
     title: "Updates",
@@ -264,6 +279,7 @@ export function docFor(pathname: string): DocEntry {
   if (pathname.startsWith(adminPath("gitops"))) return CONTENT["org-gitops"];
   if (pathname.startsWith(settingsPath("project/mcp"))) return CONTENT["/mcp-tools"];
   if (pathname.startsWith(settingsPath("project/feedback-kit"))) return CONTENT["/feedback-kit"];
+  if (pathname.startsWith(settingsPath("project/api-keys"))) return CONTENT["/settings/project/api-keys"];
   if (pathname.startsWith("/settings")) return CONTENT["/settings"];
   return CONTENT[pathname] ?? CONTENT.default;
 }
