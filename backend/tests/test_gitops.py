@@ -1217,3 +1217,91 @@ def test_github_repo_is_not_an_observe_answer(client, auth):
     remote = _plan_row(client, auth, "Confirm the remote")
     assert remote["status"] == "blocked"
     assert remote["blocker"] == gitops_svc.OBSERVE_WAITING
+
+
+def _unblock_observe(client, auth, project_id="core"):
+    observe = _plan_row(client, auth, "Observe the repo", project_id)
+    r = client.patch(
+        f"/api/items/{observe['id']}",
+        json={"evidence": [{"kind": "note", "detail": "remote"}]},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    return observe
+
+
+def test_already_matches_children_are_tagged_and_describe_the_token(client, auth):
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    remote = _plan_row(client, auth, "Confirm the remote")
+    assert gitops_svc.ALREADY_TAG in remote["tags"]
+    assert "`already`" in remote["description"]
+    assert "will not mark this done" in remote["description"]
+    live = _plan_row(client, auth, "Contract is live")
+    assert gitops_svc.ALREADY_TAG not in (live.get("tags") or [])
+
+
+def test_already_evidence_does_not_auto_complete(client, auth):
+    """THE CALL. Writing status=done inside apply_already_evidence fails this."""
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    _unblock_observe(client, auth)
+    remote = _plan_row(client, auth, "Confirm the remote")
+    assert remote["status"] == "next"
+    r = client.patch(
+        f"/api/items/{remote['id']}",
+        json={"evidence": [{"kind": "note", "detail": "already origin exists"}]},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    got = _plan_row(client, auth, "Confirm the remote")
+    assert got["status"] == "next"
+    details = [e.get("detail", "") for e in (got.get("evidence") or [])]
+    assert any(d.lower().startswith("already") for d in details)
+
+
+def test_already_child_review_without_evidence_is_422(client, auth):
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    _unblock_observe(client, auth)
+    remote = _plan_row(client, auth, "Confirm the remote")
+    r = client.patch(
+        f"/api/items/{remote['id']}",
+        json={"status": "review"},
+        headers=auth,
+    )
+    assert r.status_code == 422, r.text
+    assert "already" in r.text
+    assert _plan_row(client, auth, "Confirm the remote")["status"] == "next"
+
+
+def test_already_child_review_with_already_is_not_done(client, auth):
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    _unblock_observe(client, auth)
+    remote = _plan_row(client, auth, "Confirm the remote")
+    r = client.patch(
+        f"/api/items/{remote['id']}",
+        json={
+            "status": "review",
+            "evidence": [{"kind": "note", "detail": "already origin exists"}],
+        },
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    got = _plan_row(client, auth, "Confirm the remote")
+    assert got["status"] == "review"
+    assert got["status"] != "done"
+
+
+def test_github_repo_does_not_write_already(client, auth):
+    from app.db import SessionLocal
+    from app.services import platform as platform_svc
+
+    db = SessionLocal()
+    try:
+        platform_svc.connect_github(db, "core", account="acme", repo="app")
+    finally:
+        db.close()
+
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    remote = _plan_row(client, auth, "Confirm the remote")
+    assert not (remote.get("evidence") or [])
+    assert gitops_svc.ALREADY_TAG in remote["tags"]
+    assert remote["status"] == "blocked"
