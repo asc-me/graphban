@@ -27,6 +27,7 @@ export const keys = {
   prdEvidence: (id: string) => ["prd-evidence", id] as const,
   auditCoverage: (id: string) => ["audit-coverage", id] as const,
   gitops: (projectId: string) => ["gitops", projectId] as const,
+  updateCheck: ["update-check"] as const,
   orgGitops: (orgId: string) => ["org-gitops", orgId] as const,
 };
 
@@ -445,6 +446,16 @@ export function usePlatform(projectId: string) {
 // is one per instance and the payload already carries every readable project's state.
 export function useSyncStatus() {
   return useQuery({ queryKey: ["sync-status"], queryFn: () => api.syncStatus() });
+}
+
+export function useUpdateCheck() {
+  return useQuery({
+    queryKey: keys.updateCheck,
+    queryFn: () => api.updateCheck(),
+    // A cached `current` after the feed goes down is the lie this page exists to prevent.
+    staleTime: 0,
+    retry: false,
+  });
 }
 
 export function useGitops(projectId: string) {

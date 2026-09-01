@@ -44,6 +44,18 @@ export interface AppConfig {
   signup_mode: SignupMode;
 }
 
+/** GET /api/platform/update-check (P32). `unknown` is not current. `apply` is always false in this slice. */
+export type UpdateCheckState = "current" | "available" | "unknown";
+
+export interface UpdateCheck {
+  state: UpdateCheckState;
+  running: { version: string; git_sha: string };
+  latest: { tag: string; url: string } | null;
+  apply: false;
+  hosted: boolean;
+  note: string;
+}
+
 export type OrgRole = "owner" | "admin" | "member";
 
 export interface Org {

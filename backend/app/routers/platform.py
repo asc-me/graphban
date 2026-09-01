@@ -22,6 +22,7 @@ from app.services import events as events_svc
 from app.services import items as items_svc
 from app.services import credential_retry
 from app.services import reindex
+from app.services import instance_update
 from app.services import platform as platform_svc
 from app.services.embedder import EmbedderRefused
 
@@ -31,6 +32,16 @@ router = APIRouter(prefix="/platform", tags=["platform"])
 def _sync_root(project_id: str, folder: str) -> str:
     sub = (folder or project_id).strip().strip("/").replace("..", "") or project_id
     return os.path.join(settings.sync_dir, sub)
+
+
+@router.get("/update-check")
+def update_check(_: User = Depends(get_current_user)):
+    """Whether this instance is current against the published stable cut (P32).
+
+    Check only — `apply` is always false in this slice. Three states; unknown is
+    not current. JWT so it is a Settings fact, not a public oracle beyond `/health`.
+    """
+    return instance_update.check()
 
 
 @router.get("/providers")
