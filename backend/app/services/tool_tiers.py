@@ -62,7 +62,10 @@ TOOL_TIERS: dict[str, str] = {
     # the argument verbatim: `get_prd` once could not be called by a read-only key, and
     # "absent from a manifest looks like a tool that does not exist" — for the tool whose
     # entire purpose is letting an agent read a PRD. Recreating that would have been this
-    # ticket's own subject one level up. The READS are core; authoring is the tier.
+    # ticket's own subject one level up. The READS are core; authoring is the tier. And
+    # `fleet.mint` grants this tier to the planner — the one role TOOL_ROLES reserves
+    # authorship to. A role reservation sitting behind an ungiven tier is a capability
+    # nobody can find; that composition was the bug, once.
     **{name: "prd" for name in (
         "create_prd", "update_prd", "grill_prd", "answer_grill", "decompose_prd",
         "close_prd", "request_rebaseline", "submit_verdict",

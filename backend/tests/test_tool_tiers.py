@@ -26,6 +26,7 @@ import pytest
 
 from app.config import settings
 from app.mcp_server import TOOLS, _READ_ONLY
+from app.services import fleet as fleet_svc
 from app.services import tool_tiers as tt
 
 ALL_TIERS = list(tt.TIERS)
@@ -272,6 +273,34 @@ def test_a_fleet_credential_is_minted_with_the_tier_it_needs(client, auth, role)
     # Intersected with the ROLE gate, which runs first and legitimately removes the other
     # roles' tools: a reviewer never sees `assign_role` however its tiers read.
     assert names & granted, f"a {role} was shipped none of the fleet tier: {sorted(granted)}"
+
+
+#: The verbs `fleet.TOOL_ROLES` reserves to the planner — "PRD authorship is the planner's".
+PLANNER_AUTHORSHIP = ("create_prd", "update_prd", "grill_prd", "answer_grill", "decompose_prd")
+
+
+@pytest.mark.parametrize("role", ["planner", fleet_svc.ALL_IN_ONE])
+def test_the_authority_the_role_grants_the_credential_must_show(client, auth, role):
+    """The dead reservation GRPH-571 shipped with.
+
+    Authorship is planner-ONLY by role and `prd`-gated by tier, and `fleet.mint` granted
+    only `fleet` — so two ceilings that never mention each other composed into "no fleet
+    credential may author", and the role gate's careful reservation became dead code the
+    day it landed. The absence was invisible from either file alone; only the shipped
+    manifest can see it.
+
+    Asserted PER TOOL, not as a non-empty intersection: `names & granted` being truthy is
+    exactly how the test above could pass while this capability was missing from every
+    planner credential in the product.
+    """
+    proj = client.post("/api/projects", json={"name": f"Author{role}"}, headers=auth).json()["id"]
+    key = client.post("/api/fleet/keys",
+                      json={"project_id": proj, "role": role, "wave": "w1"},
+                      headers=auth).json()
+
+    names = set(_list(client, key["plaintext"]))
+    for needed in PLANNER_AUTHORSHIP:
+        assert needed in names, f"a {role} was shipped no {needed}"
 
 
 def test_an_enrolled_reviewer_is_shipped_the_read_its_job_needs(client, auth):
