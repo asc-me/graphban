@@ -50,8 +50,9 @@ export type UpdateCheckState = "current" | "available" | "unknown";
 export interface UpdateCheck {
   state: UpdateCheckState;
   running: { version: string; git_sha: string };
-  latest: { tag: string; url: string } | null;
+  latest: { tag: string; url: string; asset?: string } | null;
   apply: boolean;
+  via: "" | "compose" | "native";
   hosted: boolean;
   note: string;
 }
