@@ -42,6 +42,11 @@ Upgrade keeps the previous `backend/.env`, refreshes the venv from the new
 tree, rewrites the unit with the new sha, and puts the old release back if
 `/health` does not come up serving that sha.
 
+Settings → This box → Updates **Install** on a native box fetches
+`graphban-<tag>.tar.gz` from the GitHub Release (not the source zip) and
+starts that upgrade detached. Confirm names the tag. Hosted never offers
+Install. Compose boxes use the host helper, not this path.
+
 ## Packing a release
 
 A git tag is not a release, and GitHub's source zip is not either. Pack the

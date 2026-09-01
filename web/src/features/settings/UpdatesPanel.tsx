@@ -80,13 +80,16 @@ function installHint(data: UpdateCheck | undefined): string {
   if (data.state === "current") {
     return "Install is disabled — this box is already on the latest release.";
   }
+  if (data.apply && data.via === "native") {
+    return "Install unpacks the published tarball and swaps /opt/graphban/current. The API will be down for a few seconds.";
+  }
   if (data.apply) {
     return "Install rebuilds this box from the published cut. The API will be down for a few seconds.";
   }
   const tag = data.latest?.tag;
   return tag
-    ? `Install from this page needs the compose host helper. Until it is running: scripts/deploy.sh ${tag}`
-    : "Install from this page needs the compose host helper.";
+    ? `Install from this page needs a compose host helper or a native /opt/graphban install. Until then: scripts/deploy.sh ${tag}`
+    : "Install from this page needs a compose host helper or a native /opt/graphban install.";
 }
 
 export function UpdatesPanel() {

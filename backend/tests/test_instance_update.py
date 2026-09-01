@@ -67,7 +67,25 @@ def test_fetch_latest_strips_v_and_drops_empty(monkeypatch):
     assert got == {
         "tag": "2026.09.1",
         "url": "https://github.com/asc-me/graphban/releases/tag/2026.09.1",
+        "asset": "",
     }
+
+
+def test_fetch_latest_names_the_packed_tarball(monkeypatch):
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {
+                "tag_name": "2026.09.3",
+                "html_url": "https://github.com/asc-me/graphban/releases/tag/2026.09.3",
+                "assets": [{
+                    "name": "graphban-2026.09.3.tar.gz",
+                    "browser_download_url": "https://example/graphban-2026.09.3.tar.gz",
+                }],
+            }
+    monkeypatch.setattr(svc.httpx, "get", lambda *a, **k: _Resp())
+    got = svc.fetch_latest()
+    assert got["asset"] == "https://example/graphban-2026.09.3.tar.gz"
 
 
 def test_fetch_latest_none_on_timeout(monkeypatch):
@@ -217,6 +235,7 @@ def test_rest_apply_without_helper_is_503(client, auth, monkeypatch):
         lambda: {"version": "2026.09.1", "git_sha": "d596e57"},
     )
     monkeypatch.setattr(svc, "helper_present", lambda path=None: False)
+    monkeypatch.setattr(svc, "native_present", lambda root=None: False)
     r = client.post(
         "/api/platform/update-apply",
         headers=auth,
@@ -227,3 +246,120 @@ def test_rest_apply_without_helper_is_503(client, auth, monkeypatch):
 
 def test_rest_apply_requires_jwt(client):
     assert client.post("/api/platform/update-apply", json={"tag": "x"}).status_code in (401, 403)
+
+
+def test_native_sets_apply_without_a_helper():
+    got = svc.check(
+        fetch=lambda: {"tag": "2026.10.1", "url": "https://example/x",
+                       "asset": "https://example/graphban-2026.10.1.tar.gz"},
+        run={"version": "2026.09.1", "git_sha": "d596e57"},
+        hosted=False,
+        helper=False,
+        native=True,
+    )
+    assert got["apply"] is True
+    assert got["via"] == "native"
+
+
+def test_compose_helper_wins_over_native():
+    got = svc.check(
+        fetch=lambda: {"tag": "2026.10.1", "url": "https://example/x"},
+        run={"version": "2026.09.1", "git_sha": "d596e57"},
+        hosted=False,
+        helper=True,
+        native=True,
+    )
+    assert got["via"] == "compose"
+
+
+def test_hosted_never_sets_apply_even_when_native():
+    got = svc.check(
+        fetch=lambda: {"tag": "2026.10.1", "url": "https://example/x"},
+        run={"version": "2026.09.1", "git_sha": "d596e57"},
+        hosted=True,
+        helper=False,
+        native=True,
+    )
+    assert got["apply"] is False
+    assert got["via"] == ""
+
+
+def test_native_apply_starts_upgrade_not_the_compose_helper(tmp_path):
+    """THE CALL. Native Install must popen graphban_host.py upgrade with the
+    unpacked tree. A path that talks to the compose socket, or that unpacks
+    GitHub's source zip, is the wrong topology wearing a 202.
+    """
+    root = tmp_path / "opt"
+    (root / "current" / "scripts").mkdir(parents=True)
+    (root / "current" / "backend").mkdir()
+    (root / "current" / "scripts" / "graphban_host.py").write_text("# host\n", encoding="utf-8")
+    packed = tmp_path / "graphban-2026.10.1"
+    packed.mkdir()
+    (packed / "GIT_SHA").write_text("deadbee\n", encoding="utf-8")
+    (packed / "backend").mkdir()
+    import io
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        tf.add(packed, arcname="graphban-2026.10.1")
+    blob = buf.getvalue()
+    seen: list[list[str]] = []
+
+    def popen(cmd, **kw):
+        seen.append(list(cmd))
+        return None
+
+    payload = svc.check(
+        fetch=lambda: {"tag": "2026.10.1", "url": "https://example/x",
+                       "asset": "https://example/graphban-2026.10.1.tar.gz"},
+        run={"version": "2026.09.1", "git_sha": "d596e57"},
+        hosted=False, helper=False, native=True,
+    )
+
+    def starter(tag, asset):
+        return svc.start_native(
+            tag, asset, root=str(root), download=lambda url: blob, popen=popen)
+
+    got = svc.apply("2026.10.1", check_fn=lambda **k: payload, native_start=starter)
+    assert got["ok"] is True
+    assert got["via"] == "native"
+    assert got["sha"] == "deadbee"
+    assert seen, "upgrade was not started"
+    cmd = seen[0]
+    assert "upgrade" in cmd
+    assert "--root" in cmd and str(root) in cmd
+    assert "--release" in cmd
+    assert "--sha" in cmd and "deadbee" in cmd
+    assert "docker.sock" not in " ".join(cmd)
+
+
+def test_native_apply_without_a_tarball_is_not_the_source_zip():
+    payload = svc.check(
+        fetch=lambda: {"tag": "2026.10.1", "url": "https://example/x", "asset": ""},
+        run={"version": "2026.09.1", "git_sha": "d596e57"},
+        hosted=False, helper=False, native=True,
+    )
+    got = svc.apply("2026.10.1", check_fn=lambda **k: payload,
+                    native_start=lambda tag, asset: svc.start_native(tag, asset))
+    assert got["ok"] is False
+    assert got["status"] == 502
+    assert "tarball" in got["error"]
+
+
+def test_rest_native_apply_call(client, auth, monkeypatch):
+    monkeypatch.setattr(
+        svc, "fetch_latest",
+        lambda: {"tag": "2026.10.1", "url": "https://example/x",
+                 "asset": "https://example/graphban-2026.10.1.tar.gz"},
+    )
+    monkeypatch.setattr(svc, "running", lambda: {"version": "2026.09.1", "git_sha": "d596e57"})
+    monkeypatch.setattr(svc, "helper_present", lambda path=None: False)
+    monkeypatch.setattr(svc, "native_present", lambda root=None: True)
+    monkeypatch.setattr(
+        svc, "start_native",
+        lambda tag, asset, **kw: {"ok": True, "started": True, "tag": tag, "sha": "deadbee"},
+    )
+    r = client.post("/api/platform/update-apply", headers=auth, json={"tag": "2026.10.1"})
+    assert r.status_code == 202, r.text
+    assert r.json()["via"] == "native"
+    assert r.json()["sha"] == "deadbee"

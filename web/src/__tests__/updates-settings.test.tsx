@@ -36,6 +36,7 @@ function payload(over: Partial<UpdateCheck> = {}): UpdateCheck {
     running: { version: "2026.09.1", git_sha: "d596e57" },
     latest: { tag: "2026.09.1", url: "https://github.com/asc-me/graphban/releases/tag/2026.09.1" },
     apply: false,
+    via: "",
     hosted: false,
     note: "",
     ...over,

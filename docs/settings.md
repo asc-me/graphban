@@ -17,8 +17,10 @@ on the published stable cut.
 enabled when `apply` is true and a newer cut is advertised. Compose apply is a
 **host helper** (`scripts/graphban_compose_host.py`) that runs
 `scripts/deploy.sh --local` — the API container does not get a Docker socket.
-No helper means `apply` is false, not a green Install. Native apply still needs
-the packed release (`scripts/graphban_pack.py`). Hosted has Check and no Install.
+Native apply fetches the GitHub Release tarball and starts
+`graphban_host.py upgrade` when `/opt/graphban/current` exists. No helper and
+no native tree means `apply` is false, not a green Install. Hosted has Check
+and no Install.
 
 Three states: **current** (the page says this box is on the latest release),
 **available**, **unknown**. Unknown is not current: a failed feed fetch, or a

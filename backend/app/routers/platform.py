@@ -39,9 +39,10 @@ def _sync_root(project_id: str, folder: str) -> str:
 def update_check(_: User = Depends(get_current_user)):
     """Whether this instance is current against the published stable cut (P32).
 
-    Three states; unknown is not current. `apply` is true only when a compose
-    host helper is on the unix socket and this is not hosted. JWT so it is a
-    Settings fact, not a public oracle beyond `/health`.
+    Three states; unknown is not current. `apply` is true when this is not
+    hosted and (a compose host helper is listening, or this is a native
+    `/opt/graphban` install). JWT so it is a Settings fact, not a public
+    oracle beyond `/health`.
     """
     return instance_update.check()
 
@@ -52,11 +53,12 @@ class UpdateApplyIn(BaseModel):
 
 @router.post("/update-apply")
 def update_apply(body: UpdateApplyIn, _: User = Depends(get_current_user)):
-    """Start a compose apply of the advertised latest tag (P32).
+    """Start an apply of the advertised latest tag (P32).
 
-    JWT operator only — not MCP. Returns 202 when the host helper has started
-    `deploy.sh`; the API process is about to be recreated. Hosted is 403. No
-    helper is 503. A tag that is not the advertised cut is 409.
+    JWT operator only — not MCP. Compose: host helper starts `deploy.sh`.
+    Native: fetch the GitHub tarball and start `graphban_host.py upgrade`.
+    Returns 202 when that has started; this process is about to stop. Hosted
+    403. No apply path 503. Tag that is not the advertised cut 409.
     """
     got = instance_update.apply(body.tag)
     if not got.get("ok"):
