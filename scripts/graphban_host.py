@@ -220,6 +220,7 @@ def host_upgrade(root: pathlib.Path, release: pathlib.Path, sha: str, *,
         root, release, sha, base=base, python=python,
         restart=up.platform_restart(user_scope=user_scope, platform=platform),
         rewire=do_rewire, sync_deps=sync_deps,
+        preserve=up.preserve_env,
     )
 
 

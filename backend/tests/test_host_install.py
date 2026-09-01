@@ -98,7 +98,7 @@ def test_install_refuses_when_the_root_is_already_occupied(src, tmp_path, capsys
     assert "already exists" in capsys.readouterr().err
 
 
-def test_install_refuses_without_an_env_and_does_not_place_the_tree(tmp_path):
+def test_install_refuses_without_an_env_and_does_not_place_the_tree(tmp_path, capsys):
     src = tmp_path / "src"
     (src / "backend").mkdir(parents=True)
     root = tmp_path / "root"
@@ -112,6 +112,9 @@ def test_install_refuses_without_an_env_and_does_not_place_the_tree(tmp_path):
     assert rc == 2
     assert called == []
     assert not (root / "current").exists()
+    assert ".env.example" in capsys.readouterr().err, (
+        "missing-.env refusal must name .env.example — the file the operator copies"
+    )
 
 
 def test_install_refuses_an_env_without_a_database_url(tmp_path, capsys):
@@ -373,3 +376,115 @@ def test_platform_restart_system_domain_is_still_the_default(monkeypatch):
     restart = up.platform_restart(user_scope=False, platform="linux")
     restart("start")
     assert seen[0] == ["systemctl", "start", "graphban.service"]
+
+
+# ---- dispatcher CALLs (GRPH-601 bounce) -----------------------------------------------------
+
+def test_the_install_cli_passes_the_detected_sha(src, tmp_path, monkeypatch):
+    """gh.main → install(sha=…). Passing sha="" at the CALL left every helper green."""
+    seen: dict = {}
+
+    def capture(_src, _root, sha, **_k):
+        seen["sha"] = sha
+        return 0
+
+    monkeypatch.setattr(gh, "install", capture)
+    monkeypatch.setattr(gh, "detect_sha", lambda _src, explicit: explicit or "from-git")
+    rc = gh.main([
+        "install",
+        "--root", str(tmp_path / "root"),
+        "--from", str(src),
+        "--sha", "abc1234",
+        "--user-domain",
+    ])
+    assert rc == 0
+    assert seen["sha"] == "abc1234"
+
+
+def test_upgrade_defaults_to_preserve_env():
+    import inspect
+    default = inspect.signature(up.upgrade).parameters["preserve"].default
+    assert default is up.preserve_env
+
+
+def test_host_upgrade_binds_preserve_env_and_user_scope_restart(tmp_path, monkeypatch):
+    """THE CALL. Skip preserve only inside up.upgrade: 1 failed. Skip it at
+    host_upgrade (or force system-domain restart there): suite stayed green."""
+    seen: dict = {}
+
+    def capture_upgrade(*_a, **k):
+        seen["upgrade"] = k
+        return 0
+
+    def capture_restart(**k):
+        seen["restart"] = k
+        return lambda _action: None
+
+    monkeypatch.setattr(gh.up, "upgrade", capture_upgrade)
+    monkeypatch.setattr(gh.up, "platform_restart", capture_restart)
+    rc = gh.host_upgrade(
+        tmp_path / "root", tmp_path / "release", "newsha",
+        base="http://127.0.0.1:8000", port=8000, host="127.0.0.1",
+        user="alex", user_scope=True, platform="darwin",
+    )
+    assert rc == 0
+    bound = seen["upgrade"].get("preserve", up.preserve_env)
+    assert bound is up.preserve_env, (
+        "host_upgrade overrode preserve — operator .env is no longer kept on the CALL"
+    )
+    assert seen["restart"].get("user_scope") is True, (
+        "host_upgrade forced the system domain on a --user-scope upgrade"
+    )
+
+
+def test_host_uninstall_binds_user_scope_restart(tmp_path, monkeypatch):
+    seen: dict = {}
+
+    def capture_restart(**k):
+        seen["restart"] = k
+        return lambda _action: None
+
+    monkeypatch.setattr(gh.up, "platform_restart", capture_restart)
+    monkeypatch.setattr(gh.gs, "uninstall", lambda *_a, **_k: None)
+    monkeypatch.setattr(gh.up, "uninstall", lambda *_a, **_k: 0)
+    rc = gh.host_uninstall(tmp_path / "root", user_scope=True, platform="darwin")
+    assert rc == 0
+    assert seen["restart"].get("user_scope") is True
+
+
+def test_the_upgrade_cli_dispatches_to_host_upgrade(tmp_path, monkeypatch):
+    seen: dict = {}
+
+    def capture(*_a, **k):
+        seen["kwargs"] = k
+        return 0
+
+    monkeypatch.setattr(gh, "host_upgrade", capture)
+    release = tmp_path / "release"
+    release.mkdir()
+    rc = gh.main([
+        "upgrade",
+        "--root", str(tmp_path / "root"),
+        "--release", str(release),
+        "--sha", "abc1234",
+        "--user-domain",
+    ])
+    assert rc == 0
+    assert seen["kwargs"].get("user_scope") is True
+
+
+def test_the_uninstall_cli_dispatches_to_host_uninstall(tmp_path, monkeypatch):
+    seen: dict = {}
+
+    def capture(*_a, **k):
+        seen["kwargs"] = k
+        return 0
+
+    monkeypatch.setattr(gh, "host_uninstall", capture)
+    rc = gh.main([
+        "uninstall",
+        "--root", str(tmp_path / "root"),
+        "--user-domain",
+    ])
+    assert rc == 0
+    assert seen["kwargs"].get("user_scope") is True
