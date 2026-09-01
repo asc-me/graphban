@@ -357,14 +357,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "extract_lessons",
-        "description": (
-            "Distil decisions/learnings from an item into memory candidate shards. "
-            "Scheduled off the response path (GRPH-399): returns immediately with "
-            "`scheduled: true` and empty `results` — the model call can exceed the "
-            "edge proxy's read timeout. Shards appear on the item's `linked_shards` "
-            "and in memory search once the background job finishes; do not retry on "
-            "an empty result."
-        ),
+        "description": "Distil lessons into memory. Async; see linked_shards.",
         "inputSchema": {
             "type": "object",
             "properties": {"id": {"type": "string"}},
@@ -1336,14 +1329,9 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     },
     "extract_lessons": {
         "type": "object",
-        "properties": {
-            "results": {"type": "array", "items": {
-                "type": "object",
-                "properties": {"id": _STR, "text": _STR, "status": _STR},
-            }},
-            "scheduled": {"type": "boolean"},
-            "item_id": _STR,
-        },
+        "properties": {"results": {"type": "array", "items": {
+            "type": "object", "properties": {"id": _STR, "text": _STR},
+        }}},
     },
     "generate_digest": {
         "type": "object",

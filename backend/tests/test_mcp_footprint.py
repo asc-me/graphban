@@ -71,10 +71,9 @@ CEILING = 14200
 # score; eligibility unverifiable until attributed and scanned) — trimming them would
 # not claw back 80+ tokens. CORE_TOKENS 8497 → 8956 is the bill every key pays; this
 # raise is not a licence to grow core without that equality.
-MEASURED_TOKENS = 14189
-# 14097 -> 14189 (GRPH-P31 / GRPH-616). `get_context` gitops block: compact schema plus
-# unmeasured / linked_unreachable sentences. Headroom is 11 under CEILING 14200; do not
-# raise the ceiling — nested {value, source} schema is how this would have blown it.
+MEASURED_TOKENS = 14187
+# 14189 -> 14187. `extract_lessons` deferred off the response path; async hint trimmed to
+# fit under CEILING 14200 (the long description blew the budget in CI).
 
 
 def _mint(client, auth, scopes):
