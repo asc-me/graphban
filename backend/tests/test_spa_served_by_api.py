@@ -21,7 +21,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.main import SPA_SECURITY_HEADERS, _mount_spa
+from app.main import (
+    SPA_ASSET_CACHE_CONTROL,
+    SPA_SECURITY_HEADERS,
+    SPA_SHELL_CACHE_CONTROL,
+    _mount_spa,
+)
 
 NGINX = pathlib.Path(__file__).resolve().parents[2] / "web" / "nginx.conf.template"
 
@@ -167,3 +172,35 @@ def test_the_running_app_mounts_the_spa_when_dist_exists():
         "production app never calls _mount_spa when web/dist exists — tests drive "
         "the helper on a fresh FastAPI app, so a native install would serve no SPA"
     )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/%2e%2e/secret.env",
+        "/%2E%2E/secret.env",
+        "/..%2fsecret.env",
+    ],
+)
+def test_traversal_outside_bundle_returns_404_not_bytes(client, bundle, path):
+    """nginx `root` confines reads to the bundle. Without containment, `dist / '../.env'`
+    resolves to a sibling file and the catch-all serves it (GRPH-577)."""
+    (bundle.parent / "secret.env").write_text("LEAKED")
+    resp = client.get(path)
+    assert resp.status_code == 404
+    assert b"LEAKED" not in resp.content
+
+
+def test_hashed_assets_cache_immutably(client):
+    """Match `web/nginx.conf.template` `location /assets/` — stale index pinning old JS
+    is the failure mode for the shell; hashed assets must cache hard."""
+    resp = client.get("/assets/index-abc123.js")
+    assert resp.status_code == 200
+    assert resp.headers["Cache-Control"] == SPA_ASSET_CACHE_CONTROL
+
+
+def test_shell_and_version_txt_revalidate(client):
+    """Match nginx `location /` — index.html names the hashed bundle and must revalidate."""
+    assert client.get("/").headers["Cache-Control"] == SPA_SHELL_CACHE_CONTROL
+    assert client.get("/version.txt").headers["Cache-Control"] == SPA_SHELL_CACHE_CONTROL
+    assert client.get("/items/GRPH-1").headers["Cache-Control"] == SPA_SHELL_CACHE_CONTROL

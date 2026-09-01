@@ -342,6 +342,27 @@ SPA_SECURITY_HEADERS = {
     "Content-Security-Policy": "frame-ancestors 'self' https:",
 }
 
+#: nginx `location /assets/` and `location /` — asserted against the template in tests.
+SPA_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+SPA_SHELL_CACHE_CONTROL = "no-cache"
+
+
+def _safe_dist_file(dist: pathlib.Path, relative: str) -> pathlib.Path | None:
+    """Resolve `relative` under `dist` and return the file, or None if outside or missing.
+
+    nginx `root` + `try_files` never escapes the bundle directory. Without this check,
+    `dist / "../.env"` resolves to a sibling file and the catch-all serves it (GRPH-577).
+    """
+    if not relative or relative.endswith("/"):
+        return None
+    if relative.startswith("/") or ".." in pathlib.PurePosixPath(relative).parts:
+        return None
+    root = dist.resolve()
+    target = (root / relative).resolve()
+    if not target.is_relative_to(root) or not target.is_file():
+        return None
+    return target
+
 
 def _mount_spa(application: FastAPI, dist: pathlib.Path) -> None:
     """Serve the built SPA, matching what `web/nginx.conf.template` does today.
@@ -358,6 +379,11 @@ def _mount_spa(application: FastAPI, dist: pathlib.Path) -> None:
         response = await call_next(request)
         for name, value in SPA_SECURITY_HEADERS.items():
             response.headers.setdefault(name, value)
+        path = request.url.path
+        if path.startswith("/assets/"):
+            response.headers.setdefault("Cache-Control", SPA_ASSET_CACHE_CONTROL)
+        elif not path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", SPA_SHELL_CACHE_CONTROL)
         return response
 
     # `html=False` so a miss raises 404 rather than falling back to index.html. nginx spells
@@ -371,15 +397,27 @@ def _mount_spa(application: FastAPI, dist: pathlib.Path) -> None:
     @application.get("/{full_path:path}", include_in_schema=False)
     async def _spa(full_path: str):
         """Anything not matched above is a client-side route."""
+        from urllib.parse import unquote
+
         # An unmatched `/api/*` is a MISSING ENDPOINT, and must stay JSON. Returning the SPA
         # would hand an agent an HTML page where it expected an error object, and the 200
         # would read as success.
         if full_path.startswith("api/"):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
-        target = dist / full_path
-        if full_path and target.is_file():
-            return FileResponse(target)
-        return FileResponse(dist / "index.html")
+        if full_path:
+            relative = unquote(full_path)
+            if relative.startswith("/") or ".." in pathlib.PurePosixPath(relative).parts:
+                return JSONResponse({"detail": "Not Found"}, status_code=404)
+            target = _safe_dist_file(dist, relative)
+            if target is not None:
+                return FileResponse(
+                    target,
+                    headers={"Cache-Control": SPA_SHELL_CACHE_CONTROL},
+                )
+        return FileResponse(
+            dist / "index.html",
+            headers={"Cache-Control": SPA_SHELL_CACHE_CONTROL},
+        )
 
 
 if _DIST.is_dir():  # pragma: no cover - exercised via `_mount_spa` against a fixture
