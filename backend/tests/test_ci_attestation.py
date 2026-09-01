@@ -185,20 +185,47 @@ def test_mode_head_does_not_write_an_attestation(monkeypatch):
     )
 
 
-def test_mcp_update_item_forwards_head_commit():
-    """THE OTHER CALL. Deleting head_commit=args.get from the dispatcher left 56 tests
-    green: CI can exit 0 while item.head_commit stays empty and the weaker check remains
-    (GRPH-555 bounce). schema_probe wraps _call_tool, so this reads the file.
+def test_mcp_update_item_forwards_head_commit(client, auth):
+    """THE OTHER CALL. A source pin of `head_commit=args.get` stayed green when that
+    line was commented out — schema_probe wraps `_call_tool`, so the substring was
+    still in a file the probe never executes. CI can still exit 0 with
+    `item.head_commit` empty and the weaker check remains (GRPH-555 bounce).
+
+    The pin is the ORM column after a gate-key MCP round-trip, not the source.
+    `_item_dict` does not even emit `head_commit`, so a response-body check would
+    also pass while the currency gate still had nothing to compare.
     """
-    from pathlib import Path
+    from app.db import SessionLocal
+    from app.services import items as items_svc
 
-    from app import mcp_server
+    sha = "c" * 40
+    item = client.post("/api/items", json={"title": "head-pin"}, headers=auth).json()
+    key = client.post(
+        "/api/api-keys",
+        json={"name": "gate", "scopes": ["read", "write", "gate"], "project_id": "core"},
+        headers=auth,
+    ).json()["plaintext"]
 
-    src = Path(mcp_server.__file__).read_text()
-    assert 'head_commit=args.get("head_commit")' in src, (
-        "MCP update_item no longer forwards head_commit — the currency gate has "
-        "nothing to compare against"
-    )
+    out = client.post("/api/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "update_item",
+                   "arguments": {"id": item["id"], "head_commit": sha}},
+    }, headers={"X-API-Key": key}).json()
+    result = out.get("result") or {}
+    assert not result.get("isError"), out
+
+    db = SessionLocal()
+    try:
+        row = items_svc.get_item(db, item["id"])
+        assert row is not None, f"item {item['id']} vanished after the MCP write"
+        db.refresh(row)
+        assert row.head_commit == sha, (
+            f"item.head_commit is {row.head_commit!r} after a gate-key MCP "
+            "update_item that passed head_commit — the dispatcher no longer "
+            "forwards it, so the currency gate still has nothing to compare"
+        )
+    finally:
+        db.close()
 
 
 def test_not_found_from_the_server_is_item_missing(monkeypatch):
