@@ -45,7 +45,10 @@ const proj = (id: string, over: Partial<Project> = {}): Project => ({
 
 let projectList: Project[] = [];
 const setDefaults = vi.fn(async () => ({ scope: "" }));
-const createCredential = vi.fn(async () => ({ id: "cred_new", state: "pending_validation" }));
+const createCredential = vi.fn(
+  async (_projectId: string, _body: Record<string, unknown>) =>
+    ({ id: "cred_new", state: "pending_validation" }),
+);
 const deleteCredential = vi.fn(async () => undefined);
 const retryCredential = vi.fn(async () => ({
   id: "cred_a", state: "valid", last_error: "", validation_attempts: 0,
@@ -106,7 +109,7 @@ vi.mock("@/lib/api", () => ({
     })),
     reindexStatus: vi.fn(async () => ({ running: false, tables: [] })),
     config: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
-    createCredential: (...a: unknown[]) => createCredential(...(a as [])),
+    createCredential: (p: string, body: Record<string, unknown>) => createCredential(p, body),
     deleteCredential: (...a: unknown[]) => deleteCredential(...(a as [])),
     retryCredential: (...a: unknown[]) => retryCredential(...(a as [])),
     setScopeDefaults: (...a: unknown[]) => setDefaults(...(a as [])),

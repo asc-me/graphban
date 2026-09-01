@@ -127,7 +127,7 @@ function SelfHostPane({ pathname }: { pathname: string }) {
   if (pathname.startsWith(settingsPath("project/api-keys"))) return <ApiKeysPanel />;
   if (pathname.startsWith(settingsPath("deployment/providers"))) return <CredentialsPanel />;
   // GRPH-625 moved providers from This project to This box. The old path must redirect,
-  // not fall through: the project/* catch-all below would render ProjectPanel at a
+  // not fall through: the project-prefix catch-all below would render ProjectPanel at a
   // providers URL, and a wrong pane that looks like a pane is the worse failure.
   if (pathname.startsWith(settingsPath("project/providers")))
     return <Navigate to={settingsPath("deployment/providers")} replace />;
