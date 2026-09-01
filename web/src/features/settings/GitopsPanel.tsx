@@ -13,7 +13,15 @@ import { useGitops, useUpdateGitops } from "@/lib/queries";
 import type { GitopsField, GitopsPatch, GitopsView, GitopsWas, Project } from "@/lib/types";
 
 export const GITOPS_BASE_CHIPS = ["stage", "test", "main", "develop"] as const;
+export const GITOPS_INTEGRATION_CHIPS = ["stage", "develop", "test", "main"] as const;
 export const GITOPS_NAMING_TOKENS = ["item_id", "tag", "slug", "version", "date"] as const;
+export const GITOPS_MODELS = ["push_to_base", "prs_to_base", "prs_to_integration"] as const;
+export const GITOPS_MODEL_OPTIONS = [
+  ["", "Unmeasured"],
+  ["push_to_base", "Push to base"],
+  ["prs_to_base", "PRs to base"],
+  ["prs_to_integration", "PRs to integration"],
+] as const;
 export const UNMEASURED_PLACEHOLDER = "Unmeasured — not main";
 export const UNTIL_LINKED = "This is this project's process until the box is linked.";
 export const UNLINK_WARNING =
@@ -51,6 +59,31 @@ type Draft = {
   pr_title_pattern: string;
   reviewer_bar: string;
   version_from: string;
+  model: string;
+};
+
+const PRESET_DRAFT: Record<string, Partial<Draft>> = {
+  push_to_base: {
+    no_push_to_base: "false",
+    branch_name_pattern: "",
+    pr_title_pattern: "",
+    reviewer_bar: "sign_off",
+    version_from: "",
+  },
+  prs_to_base: {
+    no_push_to_base: "true",
+    branch_name_pattern: "feat/{item_id}-{slug}",
+    pr_title_pattern: "{item_id} {slug}",
+    reviewer_bar: "both",
+    version_from: "calver",
+  },
+  prs_to_integration: {
+    no_push_to_base: "true",
+    branch_name_pattern: "feat/{item_id}-{slug}",
+    pr_title_pattern: "{item_id} {slug}",
+    reviewer_bar: "both",
+    version_from: "calver",
+  },
 };
 
 function strVal(field: GitopsField): string {
@@ -71,6 +104,7 @@ function fromView(view: GitopsView): Draft {
     pr_title_pattern: strVal(view.fields.pr_title_pattern),
     reviewer_bar: strVal(view.fields.reviewer_bar),
     version_from: strVal(view.version_from),
+    model: strVal(view.model),
   };
 }
 
@@ -199,7 +233,19 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
       body.no_push_to_base =
         draft.no_push_to_base === "" ? null : draft.no_push_to_base === "true";
     }
+    if (draft.model !== original.model) {
+      body.model = draft.model === "" ? null : draft.model;
+    }
     return body;
+  }
+
+  function onModel(next: string) {
+    if (!next) {
+      setDraft((d) => ({ ...d, model: "" }));
+      return;
+    }
+    const preset = PRESET_DRAFT[next];
+    setDraft((d) => ({ ...d, ...preset, model: next }));
   }
 
   function onSave() {
@@ -256,6 +302,27 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
 
       <div className={cn("space-y-4", !writable && "opacity-60")}>
         <Field>
+          <Label>Model</Label>
+          <select
+            aria-label="Gitops model"
+            className={selectClass}
+            disabled={!writable}
+            value={draft.model}
+            onChange={(e) => onModel(e.target.value)}
+          >
+            {GITOPS_MODEL_OPTIONS.map(([value, label]) => (
+              <option key={value || "unmeasured"} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1.5 text-[11px] text-faint">
+            A closed preset that writes the fields below. Base branch is still yours — never filled as main.
+            Unmeasured is first and nothing is pre-selected.
+          </p>
+        </Field>
+
+        <Field>
           <Label>
             Base branch
             <WasNote value={view.was?.base_branch} />
@@ -271,7 +338,7 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
             <Clear disabled={!writable} onClick={() => setDraft((d) => ({ ...d, base_branch: "" }))} />
           </div>
           <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {GITOPS_BASE_CHIPS.map((chip) => (
+            {(draft.model === "prs_to_integration" ? GITOPS_INTEGRATION_CHIPS : GITOPS_BASE_CHIPS).map((chip) => (
               <Chip
                 key={chip}
                 label={chip}

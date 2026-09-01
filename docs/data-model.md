@@ -68,12 +68,14 @@ users ─< api_keys
   their note/date only. New snapshots (via the editor) always store the body.
 - **Links** — `a`/`b` are plain id strings (items or requests), not foreign keys, so an edge
   can span either kind.
-- **Gitops** — six nullable columns on **both** `organizations` (house process) and
-  `projects` (overlay). NULL is unmeasured (org) or inherit (project). Sparse fields **are**
-  inheritance; there is no extra toggle. The boolean is three-state: NULL is not `false`.
-  Columns, not a JSON blob, so a missing key cannot look like “no requirements”. Not part of
-  `ProjectOut` — that would serve a linked box's local `test` as live on `GET /api/projects`.
-  Migration `0095`.
+- **Gitops** — six nullable process columns plus nullable `gitops_model` on **both**
+  `organizations` (house process) and `projects` (overlay). NULL is unmeasured (org) or
+  inherit (project). Sparse fields **are** inheritance; there is no extra toggle. The
+  boolean is three-state: NULL is not `false`. `gitops_model` is the last preset applied
+  (`push_to_base` / `prs_to_base` / `prs_to_integration`), not a seventh live field
+  `get_context` emits. Columns, not a JSON blob, so a missing key cannot look like “no
+  requirements”. Not part of `ProjectOut` — that would serve a linked box's local `test`
+  as live on `GET /api/projects`. Migrations `0095` (six fields), `0096` (`gitops_model`).
 
 ## Migrations
 

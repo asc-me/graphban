@@ -691,6 +691,7 @@ export interface GitopsView {
   };
   was: GitopsWas | null;
   version_from: GitopsField<string | null>;
+  model: GitopsField<string | null>;
   /** Org GET roster. Identity only; overlay values stay on per-project GET. */
   projects: GitopsProjectRef[];
 }
@@ -703,6 +704,7 @@ export type GitopsPatch = {
   pr_title_pattern?: string | null;
   reviewer_bar?: string | null;
   version_from?: string | null;
+  model?: string | null;
 };
 
 export type ProviderKind = "stub" | "anthropic" | "openai" | "ollama";

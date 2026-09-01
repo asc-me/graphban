@@ -156,6 +156,7 @@ def test_state1_get_context_is_unmeasured_not_main(client, auth):
     assert "main" not in _field_values(g).values()
     assert g["tokens"] == TOKENS
     assert g["version_from"] == UNMEASURED
+    assert "model" not in g, "the preset name is a Settings label, not an agent input"
     assert g["note"] == gitops_svc.NOTE_UNMEASURED
 
 
@@ -811,3 +812,182 @@ def test_linked_403_is_not_an_update_gitops_event(client, auth, monkeypatch):
     after = client.get("/api/events", params={"project_id": "core"}, headers=auth).json()
     n_after = sum(1 for e in after["results"] if e["action"] == "update_gitops")
     assert n_after == n, "linked 403 must not record update_gitops"
+
+
+# ---- named models (PRD-32 slice 1). Pin the CALL, not apply_model() ----------------------
+
+
+PRS_TO_BASE = {
+    "no_push_to_base": True,
+    "branch_name_pattern": "feat/{item_id}-{slug}",
+    "pr_title_pattern": "{item_id} {slug}",
+    "reviewer_bar": "both",
+}
+
+
+def _assert_prs_measured(body, *, source="project", base="main"):
+    assert body["fields"]["base_branch"] == {"value": base, "source": source}
+    for k, v in PRS_TO_BASE.items():
+        assert body["fields"][k] == {"value": v, "source": source}, k
+    assert body["version_from"] == {"value": "calver", "source": source}
+    assert body["model"] == {"value": "prs_to_base", "source": source}
+
+
+def test_patch_model_writes_the_six_fields_at_get_and_get_context(client, auth):
+    """THE CALL. Deleting the model branch in apply_patch leaves GET/get_context
+    unmeasured while this PATCH still returns 200 — a unit test of apply_model()
+    would not see that."""
+    r = _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"})
+    assert r.status_code == 200, r.text
+    _assert_prs_measured(r.json())
+
+    body = _get(client, auth).json()
+    _assert_prs_measured(body)
+
+    g = _gitops(_ctx(client, _mcp_key(client, auth)))
+    assert g["base_branch"] == {"value": "main", "source": "project"}
+    assert g["no_push_to_base"] == {"value": True, "source": "project"}
+    assert g["branch_name_pattern"] == {"value": "feat/{item_id}-{slug}", "source": "project"}
+    assert g["pr_title_pattern"] == {"value": "{item_id} {slug}", "source": "project"}
+    assert g["reviewer_bar"] == {"value": "both", "source": "project"}
+    assert g["version_from"] == {"value": "calver", "source": "project"}
+    assert "model" not in g
+
+
+def test_omit_model_and_base_branch_stays_unmeasured_when_github_is_connected(client, auth):
+    from app.db import SessionLocal
+    from app.services import platform as platform_svc
+
+    db = SessionLocal()
+    try:
+        platform_svc.connect_github(db, "core", account="acme", repo="app")
+    finally:
+        db.close()
+
+    r = _patch(client, auth, {})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["fields"]["base_branch"] == UNMEASURED
+    assert body["model"] == UNMEASURED
+    g = _gitops(_ctx(client, _mcp_key(client, auth)))
+    assert g["base_branch"] == UNMEASURED
+    assert "main" not in _field_values(g).values()
+
+
+def test_model_without_base_branch_is_422_and_does_not_write_main(client, auth):
+    from app.db import SessionLocal
+    from app.services import platform as platform_svc
+
+    db = SessionLocal()
+    try:
+        platform_svc.connect_github(db, "core", account="acme", repo="app")
+    finally:
+        db.close()
+
+    r = _patch(client, auth, {"model": "prs_to_base"})
+    assert r.status_code == 422, r.text
+    detail = json.dumps(r.json())
+    assert "prs_to_base" in detail
+    assert "base_branch" in detail
+    body = _get(client, auth).json()
+    assert body["fields"]["base_branch"] == UNMEASURED
+    assert body["model"] == UNMEASURED
+    assert body["fields"]["base_branch"]["value"] != "main"
+
+
+def test_empty_base_branch_with_a_model_is_422(client, auth):
+    r = _patch(client, auth, {"model": "push_to_base", "base_branch": ""})
+    assert r.status_code == 422
+    assert "push_to_base" in json.dumps(r.json())
+    assert _get(client, auth).json()["model"] == UNMEASURED
+
+
+def test_hand_edit_clears_the_model_id(client, auth):
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    r = _patch(client, auth, {"branch_name_pattern": "hotfix/{item_id}"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["model"] == UNMEASURED
+    assert body["fields"]["branch_name_pattern"]["value"] == "hotfix/{item_id}"
+    assert body["fields"]["base_branch"]["value"] == "main"
+    assert body["fields"]["reviewer_bar"]["value"] == "both"
+
+
+def test_clearing_the_model_does_not_wipe_the_six_fields(client, auth):
+    assert _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"}).status_code == 200
+    r = _patch(client, auth, {"model": None})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["model"] == UNMEASURED
+    assert body["fields"]["base_branch"]["value"] == "main"
+    assert body["fields"]["reviewer_bar"]["value"] == "both"
+    assert body["fields"]["no_push_to_base"]["value"] is True
+    assert body["version_from"]["value"] == "calver"
+
+
+def test_push_to_base_leaves_patterns_and_version_unmeasured(client, auth):
+    r = _patch(client, auth, {"model": "push_to_base", "base_branch": "develop"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["model"] == {"value": "push_to_base", "source": "project"}
+    assert body["fields"]["base_branch"]["value"] == "develop"
+    assert body["fields"]["no_push_to_base"] == {"value": False, "source": "project"}
+    assert body["fields"]["branch_name_pattern"] == UNMEASURED
+    assert body["fields"]["pr_title_pattern"] == UNMEASURED
+    assert body["fields"]["reviewer_bar"] == {"value": "sign_off", "source": "project"}
+    assert body["version_from"] == UNMEASURED
+
+
+def test_prs_to_integration_writes_the_same_fields_as_prs_to_base(client, auth):
+    r = _patch(client, auth, {"model": "prs_to_integration", "base_branch": "stage"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["model"] == {"value": "prs_to_integration", "source": "project"}
+    assert body["fields"]["base_branch"]["value"] == "stage"
+    assert body["fields"]["no_push_to_base"]["value"] is True
+    assert body["version_from"]["value"] == "calver"
+
+
+def test_a_product_version_is_not_a_gitops_model(client, auth):
+    r = _patch(client, auth, {"model": "2026.09.1", "base_branch": "main"})
+    assert r.status_code == 422
+    for m in gitops_svc.GITOPS_MODELS:
+        assert m in json.dumps(r.json())
+    assert _get(client, auth).json()["model"] == UNMEASURED
+    from app.db import SessionLocal
+    from app.models import Project
+    db = SessionLocal()
+    try:
+        assert db.get(Project, "core").gitops_model is None
+        assert db.get(Project, "core").gitops_base_branch is None
+    finally:
+        db.close()
+
+
+def test_org_patch_model_writes_house_fields(client, auth, monkeypatch):
+    org, _a, _b = _hosted_org(client, auth, monkeypatch)
+    r = client.patch(
+        f"/api/orgs/{org['id']}/gitops",
+        json={"model": "prs_to_base", "base_branch": "stage"},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    _assert_prs_measured(r.json(), source="org", base="stage")
+    got = client.get(f"/api/orgs/{org['id']}/gitops", headers=auth).json()
+    _assert_prs_measured(got, source="org", base="stage")
+
+
+def test_linked_model_patch_is_still_403(client, auth, monkeypatch):
+    _link_web(client, auth)
+    _mock_cloud(monkeypatch, _cloud_body())
+    r = _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"})
+    assert r.status_code == 403
+    assert r.json() == {"detail": LINKED_403_DETAIL}
+
+
+def test_gitops_models_are_not_product_versions():
+    for m in gitops_svc.GITOPS_MODELS:
+        assert m in ("push_to_base", "prs_to_base", "prs_to_integration")
+        assert not m[:4].isdigit()
+    assert "base_branch" not in gitops_svc.PRESETS["prs_to_base"]
+    assert gitops_svc.PRESETS["prs_to_base"] == gitops_svc.PRESETS["prs_to_integration"]

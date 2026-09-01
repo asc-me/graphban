@@ -845,6 +845,9 @@ class GitopsView(BaseModel):
     control: GitopsControl
     was: GitopsWas | None = None
     version_from: GitopsField
+    model: GitopsField = Field(
+        default_factory=lambda: GitopsField(value=None, source="unmeasured")
+    )
     projects: list[GitopsProjectRef] = Field(default_factory=list)
 
 
@@ -856,6 +859,7 @@ class GitopsPatch(BaseModel):
     pr_title_pattern: str | None = None
     reviewer_bar: str | None = None
     version_from: str | None = None
+    model: str | None = None
 
 
 class GithubConnectIn(BaseModel):

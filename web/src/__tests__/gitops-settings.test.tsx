@@ -8,6 +8,8 @@ import { docFor } from "@/features/docs/content";
 import { ProjectProvider } from "@/features/ProjectContext";
 import {
   GITOPS_BASE_CHIPS,
+  GITOPS_MODELS,
+  GITOPS_MODEL_OPTIONS,
   GITOPS_NAMING_TOKENS,
   GITOPS_PRELINK_KEY,
   UNLINK_WARNING,
@@ -66,6 +68,7 @@ function view(
     was: null,
     projects: [],
     version_from: version_from ?? unmeasured,
+    model: unmeasured,
     ...rest,
     fields: {
       base_branch: unmeasured,
@@ -406,6 +409,43 @@ describe("Gitops Settings page", () => {
     await user.selectOptions(push, "");
     await user.click(screen.getByRole("button", { name: "Save gitops" }));
     await waitFor(() => expect(updateSpy).toHaveBeenCalledWith("prj_a", { no_push_to_base: null }));
+  });
+
+  it("model picker is first, Unmeasured is first, and nothing is pre-selected", async () => {
+    renderPage();
+    const picker = await screen.findByLabelText("Gitops model");
+    expect(picker.tagName).toBe("SELECT");
+    expect(picker).toHaveValue("");
+    const labels = [...picker.querySelectorAll("option")].map((o) => o.textContent);
+    expect(labels[0]).toBe("Unmeasured");
+    expect(GITOPS_MODEL_OPTIONS.map(([id]) => id).filter(Boolean)).toEqual([...GITOPS_MODELS]);
+    expect(labels.slice(1)).toEqual(["Push to base", "PRs to base", "PRs to integration"]);
+  });
+
+  it("picking PRs to base writes model and the six fields on save", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.selectOptions(await screen.findByLabelText("Gitops model"), "prs_to_base");
+    expect(screen.getByLabelText("Branch name pattern")).toHaveValue("feat/{item_id}-{slug}");
+    expect(screen.getByLabelText("PR title pattern")).toHaveValue("{item_id} {slug}");
+    expect(screen.getByLabelText("Do not push to the base")).toHaveValue("true");
+    expect(screen.getByLabelText("Reviewer bar")).toHaveValue("both");
+    expect(screen.getByLabelText("Version from")).toHaveValue("calver");
+    expect(screen.getByLabelText("Base branch")).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "main" }));
+    await user.click(screen.getByRole("button", { name: "Save gitops" }));
+    await waitFor(() =>
+      expect(updateSpy).toHaveBeenCalledWith(
+        "prj_a",
+        expect.objectContaining({
+          model: "prs_to_base",
+          base_branch: "main",
+          no_push_to_base: true,
+          reviewer_bar: "both",
+          version_from: "calver",
+        }),
+      ),
+    );
   });
 
   it("hosted Settings never mounts GitopsPanel", async () => {

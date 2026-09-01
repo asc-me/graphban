@@ -31,6 +31,7 @@ logger = logging.getLogger("graphban.gitops")
 REVIEWER_BARS = ("sign_off", "forge", "both")
 NAMING_TOKENS = ("item_id", "tag", "slug", "version", "date")
 VERSION_SCHEMES = ("git_tag", "semver", "calver")
+GITOPS_MODELS = ("push_to_base", "prs_to_base", "prs_to_integration")
 GLOB_METACHARS = ("*", "?", "[")
 FIELD_SOURCES = ("project", "org", "unmeasured")
 CONTROL_STATES = ("local", "linked_set", "linked_unset", "linked_unreachable")
@@ -41,6 +42,26 @@ FIELDS = (
     "pr_title_pattern",
     "reviewer_bar",
 )
+
+# Presets write the six fields. base_branch is never in a preset (PRD-32).
+_PRS_PRESET = {
+    "no_push_to_base": True,
+    "branch_name_pattern": "feat/{item_id}-{slug}",
+    "pr_title_pattern": "{item_id} {slug}",
+    "reviewer_bar": "both",
+    "version_from": "calver",
+}
+PRESETS: dict[str, dict] = {
+    "push_to_base": {
+        "no_push_to_base": False,
+        "branch_name_pattern": None,
+        "pr_title_pattern": None,
+        "reviewer_bar": "sign_off",
+        "version_from": None,
+    },
+    "prs_to_base": dict(_PRS_PRESET),
+    "prs_to_integration": dict(_PRS_PRESET),
+}
 
 COL = {
     "base_branch": "gitops_base_branch",
@@ -109,13 +130,22 @@ def _control(state: str, *, writable: bool = False) -> GitopsControl:
     return GitopsControl(state=state, writable=writable, message=MESSAGES[state])
 
 
+def _pick_model(project: Project | None, org: Organization | None) -> GitopsField:
+    if project is not None and project.gitops_model is not None:
+        return GitopsField(value=project.gitops_model, source="project")
+    if org is not None and org.gitops_model is not None:
+        return GitopsField(value=org.gitops_model, source="org")
+    return _unmeasured()
+
+
 def _view(*, project_id, org_id, fields, version_from, state, was=None, projects=None,
-          writable=False) -> GitopsView:
+          writable=False, model=None) -> GitopsView:
     return GitopsView(
         project_id=project_id,
         org_id=org_id,
         fields=fields,
         version_from=version_from,
+        model=model if model is not None else _unmeasured(),
         control=_control(state, writable=writable),
         was=was,
         projects=list(projects) if projects is not None else [],
@@ -156,6 +186,7 @@ def resolve_local(db: Session, project_id: str | None) -> GitopsView:
         org_id=project.org_id,
         fields=_fields_from({f: _pick(project, org, f) for f in FIELDS}),
         version_from=_pick(project, org, "version_from"),
+        model=_pick_model(project, org),
         state="local",
     )
 
@@ -174,8 +205,13 @@ def resolve_org(db: Session, org_id: str) -> GitopsView:
     if org is not None:
         scheme = org.gitops_version_scheme
         version_from = GitopsField(value=scheme, source="org") if scheme is not None else _unmeasured()
+        model = (
+            GitopsField(value=org.gitops_model, source="org")
+            if org.gitops_model is not None else _unmeasured()
+        )
     else:
         version_from = _unmeasured()
+        model = _unmeasured()
     rows = db.scalars(
         select(Project).where(Project.org_id == org_id).order_by(Project.name)
     ).all()
@@ -185,6 +221,7 @@ def resolve_org(db: Session, org_id: str) -> GitopsView:
         org_id=org_id,
         fields=_fields_from(pairs),
         version_from=version_from,
+        model=model,
         state="local",
         projects=roster,
     )
@@ -202,6 +239,7 @@ def live_view(cloud: GitopsView, *, was: GitopsWas, project_id: str | None) -> G
         org_id=cloud.org_id,
         fields=cloud.fields,
         version_from=cloud.version_from,
+        model=cloud.model,
         state=state,
         was=was,
         writable=False,
@@ -342,13 +380,63 @@ def normalize(field: str, raw) -> str | bool | None:
     return _normalize_str(field, raw)
 
 
+def _normalize_model(raw) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("model must be a string or null")
+    value = raw.strip()
+    if not value:
+        return None
+    if value not in GITOPS_MODELS:
+        raise ValueError(f"model must be one of: {', '.join(GITOPS_MODELS)}")
+    return value
+
+
 def apply_patch(row: Organization | Project, sent: dict) -> list[str]:
-    """Write only the keys the client sent. Omitted keys are unchanged; null clears."""
+    """Write only the keys the client sent. Omitted keys are unchanged; null clears.
+
+    `model` is the preset apply. It lives here — not a second function the handler
+    might forget to call — so a PATCH that names a model is the CALL (PRD-32).
+    """
+    sent = dict(sent)
+    model_in = "model" in sent
+    model_raw = sent.pop("model") if model_in else None
+    model = _normalize_model(model_raw) if model_in else None
+
+    if model_in and model is not None:
+        if "base_branch" in sent:
+            resulting_base = normalize("base_branch", sent["base_branch"])
+        else:
+            resulting_base = getattr(row, COL["base_branch"])
+        if resulting_base is None:
+            raise ValueError(
+                f"model {model} needs a base_branch — the preset never fills it"
+            )
+
     changed: list[str] = []
-    for field in sent:
+    if model_in:
+        if model is None:
+            row.gitops_model = None
+            changed.append("model")
+        else:
+            for field, value in PRESETS[model].items():
+                setattr(row, COL[field], value)
+                changed.append(field)
+            row.gitops_model = model
+            changed.append("model")
+
+    for field, raw in sent.items():
         if field not in COL:
             raise ValueError(f"unknown gitops field {field!r}")
-        value = normalize(field, sent[field])
+        value = normalize(field, raw)
         setattr(row, COL[field], value)
-        changed.append(field)
+        if field not in changed:
+            changed.append(field)
+
+    # A field PATCH that is not a preset apply must not keep a stale model id.
+    if not model_in and sent:
+        if row.gitops_model is not None:
+            row.gitops_model = None
+            changed.append("model")
     return changed

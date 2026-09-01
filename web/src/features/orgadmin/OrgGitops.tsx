@@ -3,6 +3,7 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { GITOPS_MODEL_OPTIONS } from "@/features/settings/GitopsPanel";
 import { errorDetail } from "@/lib/errors";
 import {
   useGitops,
@@ -109,6 +110,7 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
   const writable = view.control.writable;
 
   const boundOf = (key: PatchKey): string => {
+    if (key === "model") return fieldStr(view.model);
     if (key === "version_from") return fieldStr(view.version_from);
     return fieldStr(view.fields[key as keyof GitopsView["fields"]]);
   };
@@ -117,6 +119,8 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
     save.mutate(edits, { onSuccess: () => setEdits({}) });
   };
 
+  const modelShown = shown(edits, "model", boundOf("model"));
+
   return (
     <section className="rounded-[13px] border border-line bg-surface-2 p-4">
       <h2 className="text-[15px] font-semibold">House process</h2>
@@ -124,6 +128,27 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
         Applies to every project unless that project sets an overlay.
       </p>
       <div className="mt-4 flex flex-col gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Model</span>
+          <select
+            aria-label="House gitops model"
+            className={SELECT_CLASS}
+            disabled={!writable}
+            value={modelShown}
+            onChange={(e) =>
+              setEdits((p) => setEdit(p, "model", boundOf("model"), e.target.value === "" ? null : e.target.value))
+            }
+          >
+            {GITOPS_MODEL_OPTIONS.map(([value, label]) => (
+              <option key={value || "unmeasured"} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <span className="text-[11px] text-faint">
+            Writes the fields below. Base branch is still required — the preset never fills main.
+          </span>
+        </label>
         <ProcessFields
           prefix="House"
           edits={edits}
@@ -205,10 +230,12 @@ function OverlayRow({ project }: { project: GitopsProjectRef }) {
               prefix={`${prefix} overlay`}
               edits={edits}
               boundOf={(key) => {
+                if (key === "model") return overlayBound(data.model);
                 if (key === "version_from") return overlayBound(data.version_from);
                 return overlayBound(data.fields[key as keyof GitopsView["fields"]]);
               }}
               hintOf={(key) => {
+                if (key === "model") return inheritHint(data.model);
                 if (key === "version_from") return inheritHint(data.version_from);
                 return inheritHint(data.fields[key as keyof GitopsView["fields"]]);
               }}
