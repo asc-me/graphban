@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from app import errors
 from app.config import settings
+from app.version import __version__
 from app.db import get_db
 from app.models import ApiKey, ArtifactRecommendation, Item, Link, MemoryShard, Project
 from app.security import authz
@@ -3153,7 +3154,7 @@ async def mcp_endpoint(
             {
                 "protocolVersion": version,
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "graphban", "version": "0.1.0"},
+                "serverInfo": {"name": "graphban", "version": __version__},
             },
         ))
         # E9a. A client that echoes this back lets a later `tools/list` be attributed to ONE

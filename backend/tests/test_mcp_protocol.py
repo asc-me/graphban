@@ -21,6 +21,8 @@ def test_initialize_advertises_the_current_finalized_version(client, auth):
     assert r["protocolVersion"] == "2025-11-25"
     assert r["capabilities"] == {"tools": {}}
     assert r["serverInfo"]["name"] == "graphban"
+    from app.version import __version__
+    assert r["serverInfo"]["version"] == __version__
 
 
 def test_initialize_echoes_a_supported_requested_version(client, auth):
