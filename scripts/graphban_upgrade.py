@@ -191,12 +191,16 @@ def stop(restart, *, drain: float = 10.0) -> None:
 
 def upgrade(root: pathlib.Path, release: pathlib.Path, sha: str, *, base: str,
             python: pathlib.Path, restart, probe=health, web=web_sha,
-            head=alembic_head, rewire=None, sync_deps=None) -> int:
+            head=alembic_head, rewire=None, sync_deps=None,
+            preserve=preserve_env) -> int:
     """Swap in a release, restart, verify — and put the old one back if it did not come up.
 
     `rewire(sha)` rewrites the supervisor unit so the next start carries this revision's
     `GIT_SHA`. `sync_deps(root, current)` refreshes `root/venv` from the new tree. Both
     are optional so the layout tests stay free of a real pip and a real launchd.
+
+    `preserve` is injectable so the host CLI CALL can be pinned — skipping it only inside
+    this helper left host_upgrade untested (GRPH-601 bounce).
     """
     current = root / "current"
     previous = root / "previous"
@@ -215,7 +219,7 @@ def upgrade(root: pathlib.Path, release: pathlib.Path, sha: str, *, base: str,
         current.rename(previous)
     shutil.copytree(release, current)
     if previous.exists():
-        preserve_env(previous, current)
+        preserve(previous, current)
     write_sha(current, sha)
 
     deps_failed = False
