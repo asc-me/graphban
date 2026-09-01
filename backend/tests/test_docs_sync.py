@@ -161,6 +161,39 @@ def test_the_historical_exemption_is_still_earned():
     )
 
 
+# ---- the in-product docs are a document too -------------------------------------------------
+
+_UI_DOCS = _REPO / "web" / "src" / "features" / "docs" / "content.ts"
+
+
+def test_ui_docs_state_the_live_tool_counts():
+    """The MCP Tools page states the surface's size to every signed-in user, and it said
+    "27 live tools" while the manifest shipped 56 — the same drift the markdown sweep
+    exists for, in the one catalogue the sweep never asks: `_tracked_markdown()` lists
+    `*.md`, and content.ts is TypeScript.
+
+    It names the core-tier count too, which the `_COUNT_CLAIM` regex cannot carry (it
+    asserts every matched number equals the TOTAL); deriving both from the service
+    constants keeps one guard per claim rather than loosening the shared regex."""
+    from app.services import tool_tiers
+
+    core = sum(1 for t in TOOLS if t["name"] not in tool_tiers.TOOL_TIERS)
+    text = _UI_DOCS.read_text(encoding="utf-8")
+    assert f"{LIVE_TOOL_COUNT} live tools" in text, (
+        f"content.ts's MCP Tools page must state {LIVE_TOOL_COUNT} live tools")
+    assert f"{core} core" in text, (
+        f"content.ts's MCP Tools page must state {core} core")
+
+
+def test_the_ui_docs_guard_still_reads_its_file():
+    """Same control as `test_the_sweep_actually_reads_the_documents`: a passing substring
+    assert is indistinguishable from a broken path if nobody checks the file is real prose."""
+    text = _UI_DOCS.read_text(encoding="utf-8")
+    assert "live tools" in text and " core" in text, (
+        "content.ts no longer states either count — if the claim has genuinely been removed, "
+        "delete the ratchet above rather than leaving it asserting nothing")
+
+
 # ---- no count that nothing keeps true (GRPH-558) ------------------------------------
 
 #: Cardinal numbers as words, because the census was written that way — "Nineteen PRDs exist;

@@ -130,8 +130,10 @@ const CONTENT: Record<string, DocEntry> = {
     title: "MCP Tools",
     tagline: "The tool surface agents call — with live metrics.",
     sections: [
-      { num: 1, h: "The surface", b: "27 live tools over a JSON-RPC endpoint (POST /api/mcp). Each card shows its params, description, and call count." },
+      { num: 1, h: "The surface", b: "56 live tools over a JSON-RPC endpoint (POST /api/mcp) — 34 core, shipped to every key, the rest by tier. Each card shows its params, description, and call count." },
       { num: 2, h: "Authenticate agents", b: "Create a scoped API key in Settings → API Keys, then call the endpoint with it. Every call is metered here." },
+      { num: 3, h: "Where keys come from", b: "Two paths, one key shape. Mint one here in the UI, or provision the first one without a browser: `graphban init` runs once on a virgin instance and creates the operator, the project, and its first key — `--key-scope` and `--key-tiers` are the same axes as the mint dialog." },
+      { num: 4, h: "Scope and tiers", b: "A Project-scoped key points the agent's writes at one project; a Global key is unbound, so calls pass `project_id` (or fall back to the default). Tiers (prd / codegraph / fleet / misc) decide which specialist tools the agent can SEE in its manifest — visibility, not permission: scopes and roles decide what may be called. Keys are shown once and stored only as a hash; a lost key is a new mint." },
     ],
     related: [{ label: "Settings", to: "/settings" }],
   },
@@ -195,7 +197,7 @@ const CONTENT: Record<string, DocEntry> = {
     sections: [
       { num: 1, h: "AI Providers", b: "Switch the chat/extraction provider (stub / Ollama / Claude) live. Embeddings are a deploy-time setting." },
       { num: 2, h: "Integrations", b: "Connect GitHub/Drive config and copy the inbound issues webhook — opened GitHub issues become tracker items." },
-      { num: 3, h: "Project, members, keys", b: "Edit project config and flags, review member roles, and create/revoke scoped API keys (shown once)." },
+      { num: 3, h: "Project, members, keys", b: "Edit project config and flags, review member roles, and create/revoke API keys (shown once). The mint dialog asks for scope — Project pins the agent's writes to the active project, Global lets the agent name a project per call — and which tool tiers the key advertises. The same axes exist for the first-run key as `graphban init --key-scope` / `--key-tiers`." },
     ],
     related: [{ label: "MCP Tools", to: "/mcp-tools" }],
   },

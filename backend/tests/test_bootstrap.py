@@ -58,6 +58,79 @@ def test_provisioning_yields_a_working_agent_credential(client, db, monkeypatch)
     assert out["project_id"] in result["structuredContent"]["writable_projects"]
 
 
+def test_default_key_is_project_scoped(client, db, monkeypatch):
+    """The status quo, pinned: the first-run key targets the bootstrapped project."""
+    monkeypatch.setattr(bootstrap.settings, "seed_on_start", False)
+    out = bootstrap.provision(db, project_name="My Repo")
+    row = db.scalar(select(ApiKey))
+    assert row.project_id == out["project_id"]
+    assert out["key_scope"] == "project"
+
+
+def test_global_key_scope_mints_an_unbound_key(client, db, monkeypatch):
+    """`--key-scope global` asks for a key the agent can point at ANY of the operator's
+    projects — the row says so (`project_id` NULL, the same shape a UI-minted global key
+    has), and the credential still authenticates MCP once the call names a project."""
+    monkeypatch.setattr(bootstrap.settings, "seed_on_start", False)
+    out = bootstrap.provision(db, project_name="My Repo", key_scope="global")
+    row = db.scalar(select(ApiKey))
+    assert row.project_id is None
+    assert out["key_scope"] == "global"
+    assert out["project_id"]  # the project still exists — global is about the CREDENTIAL
+
+    r = client.post(
+        "/api/mcp",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+              "params": {"name": "get_context",
+                         "arguments": {"project_id": out["project_id"]}}},
+        headers={"X-API-Key": out["api_key"]},
+    )
+    assert r.status_code == 200, r.text
+    result = r.json()["result"]
+    assert result.get("isError") is not True, result
+
+
+def test_key_tiers_reach_the_minted_key(client, db, monkeypatch):
+    """GRPH-571 tiers are the manifest contract an agent reads — init is the zero-browser
+    path, so it must be able to set them (the alternative was opening the UI, which is
+    what this script exists to avoid)."""
+    monkeypatch.setattr(bootstrap.settings, "seed_on_start", False)
+    out = bootstrap.provision(db, project_name="My Repo", key_tiers=["prd"])
+    row = db.scalar(select(ApiKey))
+    assert row.tool_tiers == ["prd"]
+    assert out["key_tiers"] == ["prd"]
+
+
+def test_default_key_is_core_only(client, db, monkeypatch):
+    """No tiers stores NULL — the canonical core shape, so a CLI-minted key is
+    indistinguishable from any other core key."""
+    monkeypatch.setattr(bootstrap.settings, "seed_on_start", False)
+    out = bootstrap.provision(db, project_name="My Repo")
+    row = db.scalar(select(ApiKey))
+    assert row.tool_tiers is None
+    assert out["key_tiers"] == []
+
+
+def test_unknown_key_tier_refuses_before_anything_is_written(client, db, monkeypatch):
+    monkeypatch.setattr(bootstrap.settings, "seed_on_start", False)
+    with pytest.raises(bootstrap.BootstrapRefused) as e:
+        bootstrap.provision(db, project_name="My Repo", key_tiers=["prd", "godmode"])
+    assert "godmode" in str(e.value)
+    assert "prd" not in str(e.value).split("tiers are")[0]  # names only the unknown one
+    assert db.scalars(select(User)).all() == []
+    assert db.scalars(select(ApiKey)).all() == []
+
+
+def test_unknown_key_scope_refuses_before_anything_is_written(client, db, monkeypatch):
+    """Same discipline as the bad-email refusal (GRPH-461): a typo'd scope must not
+    leave an instance with a half-provisioned operator."""
+    monkeypatch.setattr(bootstrap.settings, "seed_on_start", False)
+    with pytest.raises(bootstrap.BootstrapRefused):
+        bootstrap.provision(db, project_name="My Repo", key_scope="world")
+    assert db.scalars(select(User)).all() == []
+    assert db.scalars(select(ApiKey)).all() == []
+
+
 def test_the_operator_can_sign_in_with_what_was_printed(client, db, monkeypatch):
     """An account nobody can log into is a dead end — the human is the reviewer at the
     quality gates eventually, so the printed credential has to actually work.

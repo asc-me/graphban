@@ -118,4 +118,19 @@ describe("minting a sync credential", () => {
       expect(api.createApiKey).toHaveBeenCalledWith("ci-agent", "core", null, undefined, []),
     );
   });
+
+  it("mints an unbound key when the scope toggle says Global", async () => {
+    // The old checkbox's job, as a Project|Global toggle: the ONLY difference a scope
+    // choice may make is the project argument going null — same kind, same tiers.
+    const user = userEvent.setup();
+    renderSettings();
+    await user.click(screen.getByRole("button", { name: "API Keys" }));
+    await user.click(screen.getByRole("button", { name: "Global" }));
+    await user.type(screen.getByPlaceholderText(/ci-agent/), "fleet-wide");
+    await user.click(screen.getByRole("button", { name: /Create key/ }));
+
+    await waitFor(() =>
+      expect(api.createApiKey).toHaveBeenCalledWith("fleet-wide", null, null, undefined, []),
+    );
+  });
 });

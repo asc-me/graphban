@@ -28,6 +28,7 @@ from app.models import User
 from app.security.apikey import generate_api_key
 from app.security.passwords import hash_password
 from app.services import projects as projects_svc
+from app.services import tool_tiers
 
 
 # Must survive Pydantic's EmailStr on the LOGIN endpoint, which is a stricter check than
@@ -102,6 +103,9 @@ def check_email(email: str) -> str:
         ) from None
 
 
+KEY_SCOPES = ("project", "global")
+
+
 def provision(
     db: Session,
     *,
@@ -109,9 +113,24 @@ def provision(
     email: str = DEFAULT_EMAIL,
     name: str = "Operator",
     password: str | None = None,
+    key_scope: str = "project",
+    key_tiers: list[str] | None = None,
 ) -> dict:
     """Create the operator, their project, and one read+write key. Idempotent by
     refusal: on an instance that already has users it changes nothing and says so.
+
+    `key_scope` decides what the provisioned MCP key may write to:
+    "project" (the default) binds the key to the new project, so the agent's writes
+    target it without naming it; "global" mints an unbound key (`ApiKey.project_id`
+    NULL) that must pass `project_id` per call, or falls back to the default project.
+    Either way the project is still created — a global key is about the CREDENTIAL,
+    not about skipping the instance's first project.
+
+    `key_tiers` names optional tool tiers (see `services.tool_tiers.TIERS`) that the
+    key's manifest should ADVERTISE — e.g. ["prd"] to hand a first-run agent the
+    spec-authoring verbs. Omitted/empty is core-only, the same default as every other
+    mint. It is visibility, not authorisation: `scopes` and `roles` still decide what
+    may be called.
 
     The generated password is returned ONCE and only here. The API key likewise — keys
     are stored as a hash and cannot be recovered, so a caller that loses this dict has
@@ -120,7 +139,19 @@ def provision(
     # FIRST, before the virgin check and before any write. A half-provisioned instance with
     # an operator nobody can sign in as is worse than a refused one: the second `init` then
     # answers "this instance already has users; nothing was changed" and the human is stuck
-    # with a password for an account that cannot accept it (GRPH-461).
+    # with a password for an account that cannot accept it (GRPH-461). An invalid scope is
+    # the same failure class, so it is checked in the same place.
+    if key_scope not in KEY_SCOPES:
+        raise BootstrapRefused(
+            f"key_scope must be one of {KEY_SCOPES}, got {key_scope!r}; nothing was provisioned"
+        )
+    key_tiers = [t.strip() for t in key_tiers if t.strip()] if key_tiers else []
+    unknown = [t for t in key_tiers if t not in tool_tiers.TIERS]
+    if unknown:
+        raise BootstrapRefused(
+            f"unknown key tier(s) {', '.join(repr(t) for t in unknown)} — the tiers are "
+            f"{', '.join(tool_tiers.TIERS)}; nothing was provisioned"
+        )
     email = check_email(email)
     check_allowed(db)
     if not is_virgin(db):
@@ -151,7 +182,14 @@ def provision(
     # still defaults them to `review`.
     project.memory_write_mode = "trusted"
     db.commit()
-    _, api_key = generate_api_key(db, user.id, "first-run", ["read", "write"], project.id, None)
+    # Global mints with project_id NULL — the same shape the UI's key form produces,
+    # so authz treats the two paths identically. Empty tiers pass through as None so a
+    # CLI-minted core key is indistinguishable from any other core key in the row.
+    key_project_id = None if key_scope == "global" else project.id
+    _, api_key = generate_api_key(
+        db, user.id, "first-run", ["read", "write"], key_project_id, None,
+        tool_tiers=list(key_tiers) or None,
+    )
 
     return {
         "provisioned": True,
@@ -161,6 +199,8 @@ def provision(
         "project_name": project.name,
         "project_tag": project.tag,
         "memory_write_mode": project.memory_write_mode,
+        "key_scope": key_scope,
+        "key_tiers": key_tiers,
         "api_key": api_key,
     }
 
