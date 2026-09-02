@@ -157,6 +157,8 @@ def test_state1_get_context_is_unmeasured_not_main(client, auth):
     assert "main" not in _field_values(g).values()
     assert g["tokens"] == TOKENS
     assert g["version_from"] == UNMEASURED
+    assert g["release_defined_in"] == UNMEASURED
+    assert "docs/release.md" not in json.dumps(g)
     assert "model" not in g, "the preset name is a Settings label, not an agent input"
     assert "plan" not in g, "the checklist is Settings, not CORE"
     assert g["note"] == gitops_svc.NOTE_UNMEASURED
@@ -176,7 +178,9 @@ def test_state1_rest_get_is_unmeasured_editable(client, auth):
     assert body["plan"] is None
     assert "model" in body
     assert body["model"] == UNMEASURED
+    assert body["release_defined_in"] == UNMEASURED
     assert "main" not in json.dumps(body["fields"])
+    assert "docs/release.md" not in json.dumps(body)
 
 
 # ---- state 2: unlinked, local test -------------------------------------------------------
@@ -867,6 +871,8 @@ def test_patch_model_writes_the_six_fields_at_get_and_get_context(client, auth):
     assert g["pr_title_pattern"] == {"value": "{item_id} {slug}", "source": "project"}
     assert g["reviewer_bar"] == {"value": "both", "source": "project"}
     assert g["version_from"] == {"value": "calver", "source": "project"}
+    assert g["release_defined_in"] == UNMEASURED
+    assert "docs/release.md" not in json.dumps(g)
     assert "model" not in g
     assert "plan" not in g
     assert "model" in body
@@ -890,7 +896,9 @@ def test_omit_model_and_base_branch_stays_unmeasured_when_github_is_connected(cl
     assert body["model"] == UNMEASURED
     g = _gitops(_ctx(client, _mcp_key(client, auth)))
     assert g["base_branch"] == UNMEASURED
+    assert g["release_defined_in"] == UNMEASURED
     assert "main" not in _field_values(g).values()
+    assert "docs/release.md" not in json.dumps(g)
 
 
 def test_model_without_base_branch_is_422_and_does_not_write_main(client, auth):
@@ -1010,6 +1018,9 @@ def test_gitops_models_are_not_product_versions():
         assert not m[:4].isdigit()
     assert "base_branch" not in gitops_svc.PRESETS["prs_to_base"]
     assert gitops_svc.PRESETS["prs_to_base"] == gitops_svc.PRESETS["prs_to_integration"]
+    for preset in gitops_svc.PRESETS.values():
+        assert "release_defined_in" not in preset
+        assert "base_branch" not in preset
 
 
 def test_gitops_view_model_is_required_like_version_from():
@@ -1038,6 +1049,65 @@ def test_gitops_view_without_model_is_validation_error():
             version_from=u,
             control=GitopsControl(state="local", writable=True, message=""),
         )
+
+
+def test_gitops_view_missing_release_defined_in_is_unmeasured_not_unreachable():
+    """Old cloud payloads omit the field. Default unmeasured, not a failed fetch."""
+    from app.schemas import GitopsControl, GitopsField, GitopsFields, GitopsView
+
+    u = GitopsField(value=None, source="unmeasured")
+    view = GitopsView(
+        fields=GitopsFields(
+            base_branch=u,
+            no_push_to_base=u,
+            branch_name_pattern=u,
+            pr_title_pattern=u,
+            reviewer_bar=u,
+        ),
+        version_from=u,
+        model=u,
+        control=GitopsControl(state="local", writable=True, message=""),
+    )
+    assert view.release_defined_in == u
+
+
+def test_THE_CALL_release_defined_in_is_on_get_context_and_presets_do_not_write_it(client, auth):
+    """A missing locator must not look like docs/release.md. A PRs-to-base save
+    that fills it is Graphban's runbook wearing a customer contract."""
+    r = _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"})
+    assert r.status_code == 200, r.text
+    assert r.json()["release_defined_in"] == UNMEASURED
+
+    r = _patch(client, auth, {"release_defined_in": "docs/release.md"})
+    assert r.status_code == 200, r.text
+    assert r.json()["release_defined_in"] == {
+        "value": "docs/release.md", "source": "project",
+    }
+    g = _gitops(_ctx(client, _mcp_key(client, auth)))
+    assert g["release_defined_in"] == {
+        "value": "docs/release.md", "source": "project",
+    }
+    assert r.json()["model"] == UNMEASURED, "hand-edit clears the preset id"
+
+
+def test_release_defined_in_refuses_a_product_version(client, auth):
+    r = _patch(client, auth, {"release_defined_in": "2026.09.4"})
+    assert r.status_code == 422
+    assert _get(client, auth).json()["release_defined_in"] == UNMEASURED
+    r = _patch(client, auth, {"release_defined_in": "0.1.0"})
+    assert r.status_code == 422
+
+
+def test_release_defined_in_allows_a_url_with_query(client, auth):
+    url = "https://example.com/handbook?page=release"
+    r = _patch(client, auth, {"release_defined_in": url})
+    assert r.status_code == 200, r.text
+    assert r.json()["release_defined_in"]["value"] == url
+
+
+def test_release_defined_in_refuses_a_glob(client, auth):
+    r = _patch(client, auth, {"release_defined_in": "docs/*.md"})
+    assert r.status_code == 422
 
 
 # ---- migration plan (PRD-32 slice 2). Pin PATCH → items, not file_migration_plan() ------
@@ -1084,6 +1154,9 @@ def test_patch_model_files_the_plan_on_the_items_list(client, auth):
     assert "process, not code" in parent["description"]
     assert "P23" in parent["description"]
     assert "stall in review" in parent["description"]
+    cut = next(i for i in _items(client, auth) if i["title"] == "First tagged cut")
+    assert "unmeasured" in cut["description"]
+    assert "do not invent docs/release.md" in cut["description"]
 
 
 def test_plan_parent_names_the_p23_process_stall(client, auth):

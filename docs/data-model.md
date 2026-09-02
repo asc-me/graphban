@@ -8,7 +8,7 @@ Alembic; SQLite (tests / zero-infra dev) uses `create_all`.
 | Table | Key | Purpose |
 | --- | --- | --- |
 | `users` | `id` (`u1`, `u_…`) | Account: name, handle, email, avatar, initials, password hash |
-| `projects` | `id` (`core`) | Project: name, **`tag`** (unique, 2–4 chars), accent, visibility, description, flags (`share_global_memory`, `auto_extract`, `mcp_enabled`, `embed_model`). Gitops overlay: `gitops_base_branch`, `gitops_no_push_to_base`, `gitops_branch_name_pattern`, `gitops_pr_title_pattern`, `gitops_reviewer_bar`, `gitops_version_scheme` (NULL = inherit; **not** on `ProjectOut`) |
+| `projects` | `id` (`core`) | Project: name, **`tag`** (unique, 2–4 chars), accent, visibility, description, flags (`share_global_memory`, `auto_extract`, `mcp_enabled`, `embed_model`). Gitops overlay: `gitops_base_branch`, `gitops_no_push_to_base`, `gitops_branch_name_pattern`, `gitops_pr_title_pattern`, `gitops_reviewer_bar`, `gitops_version_scheme`, `gitops_release_defined_in` (NULL = inherit; **not** on `ProjectOut`) |
 | `organizations` | `id` | Hosted tenant. House gitops columns match the project overlay set (NULL = unmeasured) |
 | `password_resets` | `id` (`pwr_…`) | A single-use way back into an account: **`token_hash`** (sha256 — the plaintext exists only in the email), `expires_at`, `used_at` set on success, `requested_ip` for provenance |
 | `memberships` | `id` | User ↔ project with `role` (owner/admin/member) + `access` (write/read/none) |
@@ -69,14 +69,18 @@ users ─< api_keys
   their note/date only. New snapshots (via the editor) always store the body.
 - **Links** — `a`/`b` are plain id strings (items or requests), not foreign keys, so an edge
   can span either kind.
-- **Gitops** — six nullable process columns plus nullable `gitops_model` on **both**
+- **Gitops** — nullable process columns plus nullable `gitops_model` on **both**
   `organizations` (house process) and `projects` (overlay). NULL is unmeasured (org) or
   inherit (project). Sparse fields **are** inheritance; there is no extra toggle. The
-  boolean is three-state: NULL is not `false`. `gitops_model` is the last preset applied
-  (`push_to_base` / `prs_to_base` / `prs_to_integration`), not a seventh live field
-  `get_context` emits. Columns, not a JSON blob, so a missing key cannot look like “no
-  requirements”. Not part of `ProjectOut` — that would serve a linked box's local `test`
-  as live on `GET /api/projects`. Migrations `0095` (six fields), `0096` (`gitops_model`).
+  boolean is three-state: NULL is not `false`. `gitops_release_defined_in` is a path or
+  URL of this repo's cut process (`get_context.gitops.release_defined_in`); unmeasured
+  is not `docs/release.md`, and it is not a product CalVer. `gitops_model` is the last
+  preset applied (`push_to_base` / `prs_to_base` / `prs_to_integration`), not a live
+  field `get_context` emits. Presets never write `base_branch` or
+  `release_defined_in`. Columns, not a JSON blob, so a missing key cannot look like
+  “no requirements”. Not part of `ProjectOut` — that would serve a linked box's local
+  `test` as live on `GET /api/projects`. Migrations `0095` (fields), `0096`
+  (`gitops_model`), `0100` (`gitops_release_defined_in`).
 
 ## Migrations
 

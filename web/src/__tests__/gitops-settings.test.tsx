@@ -69,6 +69,7 @@ function view(
     was: null,
     projects: [],
     version_from: version_from ?? unmeasured,
+    release_defined_in: unmeasured,
     model: unmeasured,
     plan: null,
     ...rest,
@@ -484,7 +485,7 @@ describe("Gitops Settings page", () => {
     expect(body.model).not.toBe(GITOPS_CUSTOM);
   });
 
-  it("picking PRs to base writes model and the six fields on save", async () => {
+  it("picking PRs to base writes the preset fields and not the release locator", async () => {
     const user = userEvent.setup();
     renderPage();
     await user.selectOptions(await screen.findByLabelText("Gitops model"), "prs_to_base");
@@ -494,6 +495,7 @@ describe("Gitops Settings page", () => {
     expect(screen.getByLabelText("Reviewer bar")).toHaveValue("both");
     expect(screen.getByLabelText("Version from")).toHaveValue("calver");
     expect(screen.getByLabelText("Base branch")).toHaveValue("");
+    expect(screen.getByLabelText("Release defined in")).toHaveValue("");
     await user.click(screen.getByRole("button", { name: "main" }));
     await user.click(screen.getByRole("button", { name: "Save gitops" }));
     await waitFor(() =>
@@ -508,6 +510,8 @@ describe("Gitops Settings page", () => {
         }),
       ),
     );
+    const body = updateSpy.mock.calls[0][1] as { release_defined_in?: unknown };
+    expect(body).not.toHaveProperty("release_defined_in");
   });
 
   it("hosted Settings never mounts GitopsPanel", async () => {

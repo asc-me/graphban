@@ -60,7 +60,8 @@ FIELDS = (
     "reviewer_bar",
 )
 
-# Presets write the six fields. base_branch is never in a preset (PRD-32).
+# Presets write the six fields. base_branch and release_defined_in are never
+# in a preset — Graphban's runbook is not the customer's.
 _PRS_PRESET = {
     "no_push_to_base": True,
     "branch_name_pattern": "feat/{item_id}-{slug}",
@@ -87,10 +88,14 @@ COL = {
     "pr_title_pattern": "gitops_pr_title_pattern",
     "reviewer_bar": "gitops_reviewer_bar",
     "version_from": "gitops_version_scheme",
+    "release_defined_in": "gitops_release_defined_in",
 }
 _PATTERN_FIELDS = ("branch_name_pattern", "pr_title_pattern")
-_LITERAL_FIELDS = ("base_branch",)
+_LITERAL_FIELDS = ("base_branch", "release_defined_in")
 _TOKEN_RE = re.compile(r"\{([^{}]+)\}")
+_CALVER_RE = re.compile(r"^\d{4}\.\d{2}\.\d+$")
+_PRODUCT_VERSIONS = frozenset({"0.1.0", "unknown"})
+_RELEASE_DEFINED_MAX = 500
 _TOKENS_HELP = ", ".join("{" + t + "}" for t in NAMING_TOKENS)
 _FETCH_TIMEOUT = 3.0
 
@@ -165,12 +170,13 @@ def _plan_ref(db: Session, project: Project | None) -> GitopsPlanRef | None:
 
 
 def _view(*, project_id, org_id, fields, version_from, model, state, was=None, projects=None,
-          writable=False, plan=None) -> GitopsView:
+          writable=False, plan=None, release_defined_in=None) -> GitopsView:
     return GitopsView(
         project_id=project_id,
         org_id=org_id,
         fields=fields,
         version_from=version_from,
+        release_defined_in=release_defined_in if release_defined_in is not None else _unmeasured(),
         model=model,
         plan=plan,
         control=_control(state, writable=writable),
@@ -185,6 +191,7 @@ def _unmeasured_view(*, state: str, project_id=None, org_id=None, was=None) -> G
         org_id=org_id,
         fields=_empty_fields(),
         version_from=_unmeasured(),
+        release_defined_in=_unmeasured(),
         model=_unmeasured(),
         state=state,
         was=was,
@@ -214,6 +221,7 @@ def resolve_local(db: Session, project_id: str | None) -> GitopsView:
         org_id=project.org_id,
         fields=_fields_from({f: _pick(project, org, f) for f in FIELDS}),
         version_from=_pick(project, org, "version_from"),
+        release_defined_in=_pick(project, org, "release_defined_in"),
         model=_pick_model(project, org),
         plan=_plan_ref(db, project),
         state="local",
@@ -234,12 +242,17 @@ def resolve_org(db: Session, org_id: str) -> GitopsView:
     if org is not None:
         scheme = org.gitops_version_scheme
         version_from = GitopsField(value=scheme, source="org") if scheme is not None else _unmeasured()
+        loc = org.gitops_release_defined_in
+        release_defined_in = (
+            GitopsField(value=loc, source="org") if loc is not None else _unmeasured()
+        )
         model = (
             GitopsField(value=org.gitops_model, source="org")
             if org.gitops_model is not None else _unmeasured()
         )
     else:
         version_from = _unmeasured()
+        release_defined_in = _unmeasured()
         model = _unmeasured()
     rows = db.scalars(
         select(Project).where(Project.org_id == org_id).order_by(Project.name)
@@ -250,6 +263,7 @@ def resolve_org(db: Session, org_id: str) -> GitopsView:
         org_id=org_id,
         fields=_fields_from(pairs),
         version_from=version_from,
+        release_defined_in=release_defined_in,
         model=model,
         state="local",
         projects=roster,
@@ -268,6 +282,7 @@ def live_view(cloud: GitopsView, *, was: GitopsWas, project_id: str | None) -> G
         org_id=cloud.org_id,
         fields=cloud.fields,
         version_from=cloud.version_from,
+        release_defined_in=cloud.release_defined_in,
         model=cloud.model,
         state=state,
         was=was,
@@ -354,6 +369,10 @@ def for_agent(view: GitopsView) -> dict:
         "value": view.version_from.value,
         "source": view.version_from.source,
     }
+    out["release_defined_in"] = {
+        "value": view.release_defined_in.value,
+        "source": view.release_defined_in.source,
+    }
     if view.control.state != "local":
         out["control"] = view.control.state
     if view.control.state == "linked_unreachable":
@@ -375,6 +394,23 @@ def _normalize_str(field: str, raw: str) -> str | None:
     value = raw.strip()
     if not value:
         return None
+    if field == "release_defined_in":
+        if len(value) > _RELEASE_DEFINED_MAX:
+            raise ValueError(
+                f"release_defined_in is at most {_RELEASE_DEFINED_MAX} characters"
+            )
+        if "*" in value:
+            raise ValueError("release_defined_in is a single path or URL, not a glob")
+        if _tokens_in(value):
+            raise ValueError(
+                "release_defined_in is a literal; naming tokens "
+                f"({_TOKENS_HELP}) are for patterns only"
+            )
+        if _CALVER_RE.fullmatch(value) or value in _PRODUCT_VERSIONS:
+            raise ValueError(
+                "release_defined_in is where the process is written, not a product version"
+            )
+        return value
     if _has_glob(value):
         raise ValueError(
             f"{field} cannot contain glob metacharacters {GLOB_METACHARS}; "
@@ -544,13 +580,23 @@ def _plan_children(project: Project) -> list[dict[str, str]]:
         ),
     })
     if project.gitops_version_scheme:
+        locator = project.gitops_release_defined_in
+        if locator:
+            where = (
+                f"release_defined_in is `{locator}` — read that; do not invent a "
+                "GitHub source zip."
+            )
+        else:
+            where = (
+                "release_defined_in is unmeasured — do not invent docs/release.md."
+            )
         kids.append({
             "title": "First tagged cut",
             "description": (
                 f"version_from is `{project.gitops_version_scheme}`. Tag from the "
                 "worktree (`git describe` / CalVer YYYY.MM.N / semver as named). "
                 "No tag stays unmeasured, not 1.0.0. Graphban does not invent the "
-                "number and does not read GitHub Releases to fill it."
+                "number and does not read GitHub Releases to fill it. " + where
             ),
         })
     return kids

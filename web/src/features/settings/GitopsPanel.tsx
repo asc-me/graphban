@@ -35,6 +35,7 @@ export function gitopsFieldsMeasured(fields: {
   pr_title_pattern?: string;
   reviewer_bar?: string;
   version_from?: string;
+  release_defined_in?: string;
 }): boolean {
   return Boolean(
     fields.base_branch ||
@@ -42,7 +43,8 @@ export function gitopsFieldsMeasured(fields: {
       fields.branch_name_pattern ||
       fields.pr_title_pattern ||
       fields.reviewer_bar ||
-      fields.version_from,
+      fields.version_from ||
+      fields.release_defined_in,
   );
 }
 
@@ -56,6 +58,7 @@ export function gitopsModelSelectValue(
   return "";
 }
 export const UNMEASURED_PLACEHOLDER = "Unmeasured — not main";
+export const RELEASE_DEFINED_PLACEHOLDER = "Unmeasured — not docs/release.md";
 export const UNTIL_LINKED = "This is this project's process until the box is linked.";
 export const UNLINK_WARNING =
   "These are this box's pre-link values, not the org's last contract.";
@@ -92,6 +95,7 @@ type Draft = {
   pr_title_pattern: string;
   reviewer_bar: string;
   version_from: string;
+  release_defined_in: string;
   model: string;
 };
 
@@ -137,6 +141,7 @@ function fromView(view: GitopsView): Draft {
     pr_title_pattern: strVal(view.fields.pr_title_pattern),
     reviewer_bar: strVal(view.fields.reviewer_bar),
     version_from: strVal(view.version_from),
+    release_defined_in: strVal(view.release_defined_in),
     model: strVal(view.model),
   };
 }
@@ -256,7 +261,7 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
 
   function patch(): GitopsPatch {
     const body: GitopsPatch = {};
-    (["base_branch", "branch_name_pattern", "pr_title_pattern", "reviewer_bar", "version_from"] as const).forEach(
+    (["base_branch", "branch_name_pattern", "pr_title_pattern", "reviewer_bar", "version_from", "release_defined_in"] as const).forEach(
       (key) => {
         if (draft[key] === original[key]) return;
         body[key] = draft[key] === "" ? null : draft[key];
@@ -366,7 +371,7 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
           <p className="mt-1.5 text-[11px] text-faint">
             {modelValue === GITOPS_CUSTOM
               ? "Fields no longer match a preset. Pick one to re-apply, or leave as custom."
-              : "A closed preset that writes the fields below. Base branch is still yours — never filled as main. Unmeasured is first and nothing is pre-selected."}
+              : "A closed preset that writes the fields below. Base branch and release defined in are never filled by a preset. Unmeasured is first and nothing is pre-selected."}
           </p>
         </Field>
 
@@ -475,6 +480,22 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
           </select>
           <p className="mt-1.5 text-[11px] text-faint">
             Graphban does not invent a version. git tag is <code className="font-mono">git describe --tags --abbrev=0</code> in the worktree — no tag is unmeasured, not 1.0.0.
+          </p>
+        </Field>
+
+        <Field>
+          <Label>Release defined in</Label>
+          <Input
+            aria-label="Release defined in"
+            className="font-mono text-[12.5px]"
+            disabled={!writable}
+            placeholder={RELEASE_DEFINED_PLACEHOLDER}
+            value={draft.release_defined_in}
+            onChange={(e) => setDraft((d) => ({ ...d, release_defined_in: e.target.value }))}
+          />
+          <p className="mt-1.5 text-[11px] text-faint">
+            Path or URL of this repo's cut process. Unmeasured is not{" "}
+            <code className="font-mono">docs/release.md</code>. Graphban does not fetch it. Not this box's Updates page.
           </p>
         </Field>
       </div>

@@ -105,6 +105,8 @@ INSTRUCTION = (
     "- `search_memory` is what earlier agents learned here. It is worth one turn.\n"
     "Open PRs against gitops.base_branch.value from `get_context` when source is not "
     "unmeasured; unset, unmeasured, or linked_unreachable means do not guess main.\n"
+    "When gitops.release_defined_in.source is not unmeasured, follow that path or URL; "
+    "unmeasured means do not invent docs/release.md or GitHub's source zip.\n"
     "Read files when you have a specific file and a specific reason. Then edit, then "
     "run_tests."
 )

@@ -318,6 +318,8 @@ def test_the_instruction_names_measured_base_branch_and_does_not_guess_main():
     assert "do not guess main" in orient.INSTRUCTION
     assert "linked_unreachable" in orient.INSTRUCTION
     assert "unmeasured" in orient.INSTRUCTION
+    assert "release_defined_in" in orient.INSTRUCTION
+    assert "do not invent docs/release.md" in orient.INSTRUCTION
 
 
 def test_get_context_orientation_carries_gitops_and_does_not_invent_main():
