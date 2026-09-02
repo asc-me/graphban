@@ -45,7 +45,11 @@ export function OrgBilling() {
 
   const admin = org?.role === "admin" || org?.role === "owner";
   const selfServe = Boolean(billing.self_serve);
-  const upgrades = SELF_SERVE_PLANS.filter((p) => p !== billing.plan);
+  const checkoutEligible =
+    billing.plan === "free" || (SELF_SERVE_PLANS as readonly string[]).includes(billing.plan);
+  const upgrades = checkoutEligible
+    ? SELF_SERVE_PLANS.filter((p) => p !== billing.plan)
+    : [];
 
   return (
     <div className="max-w-[1180px] px-6 pb-16 pt-5">
@@ -56,7 +60,7 @@ export function OrgBilling() {
             current
           </span>
         </div>
-        {selfServe ? (
+        {selfServe && checkoutEligible ? (
           <>
             <p className="mt-2 max-w-[70ch] text-[12.5px] leading-relaxed text-muted">
               Checkout upgrades Pro or Team. An operator can still assign a plan by hand.
@@ -89,6 +93,24 @@ export function OrgBilling() {
               <p className="mt-2 text-[12px] text-faint">
                 An org admin can start Checkout. This seat cannot.
               </p>
+            )}
+          </>
+        ) : selfServe ? (
+          <>
+            <p className="mt-2 max-w-[70ch] text-[12.5px] leading-relaxed text-muted">
+              Enterprise is operator-assigned. Checkout is Pro/Team only — not a missing button.
+            </p>
+            {admin && billing.has_customer && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={portal.isPending}
+                  onClick={() => portal.mutate()}
+                >
+                  Manage billing
+                </Button>
+              </div>
             )}
           </>
         ) : (
