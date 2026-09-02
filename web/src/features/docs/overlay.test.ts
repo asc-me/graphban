@@ -114,6 +114,15 @@ describe("docs overlay routes", () => {
     expect(d.sections[0]?.b).toMatch(/sync/i);
   });
 
+  it("Cloud / Sync paste overlay names Link key, not a credential", () => {
+    const d = docFor(settingsPath("deployment/sync"));
+    const paste = d.sections.find((s) => /paste/i.test(s.h));
+    expect(paste?.b).toMatch(/Link key/);
+    expect(paste?.b).toMatch(/not a credential/);
+    expect(paste?.b).toMatch(/--api-key/);
+    expect(paste?.b).not.toMatch(/Sync API key/i);
+  });
+
   it("org Deployments overlay names minting a link key", () => {
     const d = docFor(adminPath("deployments"));
     expect(d.sections[0]?.h).toMatch(/link key/i);
