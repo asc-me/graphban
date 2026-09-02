@@ -166,6 +166,8 @@ describe("docs overlay routes", () => {
     expect(sitting?.b).toMatch(/get_context/);
     expect(sitting?.b).toMatch(/Release defined in/);
     expect(sitting?.b).toMatch(/docs\/release\.md/);
+    expect(sitting?.b).toMatch(/CalVer/);
+    expect(sitting?.b).toMatch(/does not fetch/);
 
     const box = updates.sections.find((s) => /this box/i.test(s.h));
     expect(box?.b).toMatch(/Gitops/);
