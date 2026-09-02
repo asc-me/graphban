@@ -422,6 +422,8 @@ describe("wiring", () => {
     expect(await screen.findByRole("link", { name: /^AI Providers$/ })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: /^credentials$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add provider/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /looking for api keys\?/i }))
+      .toHaveAttribute("href", "/settings/project/api-keys");
   });
 
   it("the self-host providers route lives under This box (GRPH-625)", async () => {
@@ -432,6 +434,8 @@ describe("wiring", () => {
     // Nav placement too — "under the deployment section" is a nav fact, not just a route fact.
     const link = screen.getByRole("link", { name: "AI providers" });
     expect(link).toHaveAttribute("href", "/settings/deployment/providers");
+    expect(screen.getByRole("link", { name: /looking for api keys\?/i }))
+      .toHaveAttribute("href", "/settings/project/api-keys");
   });
 
   it("the old project-scoped deep link redirects instead of 404-ing into the project form", async () => {

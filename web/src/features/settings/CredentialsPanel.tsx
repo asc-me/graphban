@@ -33,7 +33,9 @@ import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { keys, useCredentials, useProjects, useReindexStatus } from "@/lib/queries";
+import { settingsPath } from "@/lib/routes";
 import type { AiProvider, Credential, Project } from "@/lib/types";
+import { Link } from "react-router-dom";
 
 /** Whether this credential may be offered as default or fallback (PRD-25 D-f). */
 export function selectable(c: Credential): boolean {
@@ -594,9 +596,20 @@ export function CredentialsPanel() {
             <h2 className="text-[13px] font-medium text-fg">Credentials</h2>
             <p className="text-[11px] text-faint">
               Every provider configured on this deployment. Projects inherit the default unless they override it.
+              These are LLM credentials — not Graphban API keys.
             </p>
           </div>
-          <Button onClick={() => setAdding(true)}>Add provider</Button>
+          <div className="flex items-center gap-3">
+            {/* Fleet's "Looking for MCP?" / API keys' "Looking for seats?": this page is
+                what the box runs on. Agent keys that call Graphban live on API keys. */}
+            <Link
+              to={settingsPath("project/api-keys")}
+              className="text-[12px] text-muted transition-colors hover:text-fg-2"
+            >
+              Looking for API keys?
+            </Link>
+            <Button onClick={() => setAdding(true)}>Add provider</Button>
+          </div>
         </header>
 
         <ReindexBanner projectId={projectId} />
