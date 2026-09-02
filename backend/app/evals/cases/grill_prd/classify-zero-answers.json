@@ -1,0 +1,15 @@
+{
+  "id": "classify-zero-answers",
+  "surface": "grill_prd",
+  "action": "classify",
+  "input": {
+    "title": "[eval] classify with no answers",
+    "body": "# Thin spec\n\n## Problem\n\nA grill with no recorded answers is never complete, whatever any model claims.\n",
+    "answers": []
+  },
+  "expect": {
+    "min_shards": 1,
+    "grill_complete": false,
+    "grill_answers": 0
+  }
+}

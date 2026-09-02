@@ -1,0 +1,20 @@
+{
+  "id": "deferred-stays",
+  "surface": "grill_prd",
+  "action": "classify",
+  "input": {
+    "title": "[eval] deferred stays deferred",
+    "body": "# Deferral\n\n## Problem\n\nAn author's decision to leave something open is theirs. A later round must not quietly convert it back into an open question.\n",
+    "defer": ["open_decisions"],
+    "answers": [
+      "Gitflow is out of scope for v1.",
+      "A missing remote is unknown, not a skip.",
+      "PATCH is the existing gitops write; model is an extra field.",
+      "Whether org apply fans out is deferred until we have an org that size."
+    ]
+  },
+  "expect": {
+    "min_shards": 1,
+    "deferred": ["open_decisions"]
+  }
+}

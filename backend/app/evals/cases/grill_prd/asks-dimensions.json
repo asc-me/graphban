@@ -1,0 +1,15 @@
+{
+  "id": "asks-dimensions",
+  "surface": "grill_prd",
+  "action": "questions",
+  "input": {
+    "title": "[eval] gitops templates",
+    "body": "# Gitops templates\n\n## Problem\n\nAgents guess the git model of a repo because Graphban never tells them. They open PRs against main because that is what models do.\n\n## Goals\n\nNamed models write the six fields. Migration assist files tracker items. Graphban does not run git.\n"
+  },
+  "expect": {
+    "min_shards": 4,
+    "must_contain": ["out of scope", "failure path", "inputs and outputs", "still open"],
+    "grill_complete": false,
+    "grill_answers": 0
+  }
+}

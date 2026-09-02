@@ -167,7 +167,7 @@ def test_extracting_the_stale_proposal_fails_the_case(db, monkeypatch):
 
 
 def test_an_unknown_surface_case_is_ungraded_not_ok(db):
-    result = evals_svc.run_case(db, {"id": "x", "surface": "grill_prd", "expect": {}})
+    result = evals_svc.run_case(db, {"id": "x", "surface": "assistant", "expect": {}})
     assert result["invoked"] is False
     assert result["outcome"] == "ungraded"
     assert result["graded"] is False
@@ -335,6 +335,155 @@ def test_cli_eval_absent_is_exit_2(db, monkeypatch, tmp_path, capsys):
 def test_load_cases_sees_the_packaged_tree():
     cases = evals_svc.load_cases()
     assert cases is not None
-    ids = {c["id"] for c in cases}
-    assert ids == {"stale-proposal", "prefer-outcome", "prompt-injection", "thin-description"}
+    by_surface = {}
+    for c in cases:
+        by_surface.setdefault(c["surface"], set()).add(c["id"])
+    assert by_surface["extract_lessons"] == {
+        "stale-proposal", "prefer-outcome", "prompt-injection", "thin-description",
+    }
+    assert by_surface["grill_prd"] == {
+        "asks-dimensions", "prompt-injection", "classify-zero-answers", "deferred-stays",
+    }
     assert all(Path(c["_path"]).is_file() for c in cases)
+
+
+# ---- grill_prd (GRPH-642) ----------------------------------------------------
+
+def _grill(cid):
+    cases = evals_svc.load_cases(surface="grill_prd")
+    return next(c for c in cases if c["id"] == cid)
+
+
+def test_the_grill_cases_hold_mechanically(db):
+    report = evals_svc.run(db, surface="grill_prd", judge=False)
+    assert report["status"] == "ok", json.dumps(report["results"], indent=2, default=str)
+    assert report["cases"] == 4
+    assert report["mechanical_failed"] == 0
+    assert report["judge_ungraded"] == 4
+    assert report["graded"] is False
+
+
+def test_grill_questions_name_the_four_dimensions(db):
+    result = evals_svc.run_case(db, _grill("asks-dimensions"))
+    assert result["mechanical"]["passed"], result["mechanical"]
+    assert result["output_count"] >= 4
+    blob = " ".join(result["outputs"]).lower()
+    assert "out of scope" in blob
+    assert result["outputs"]  # CALL produced text
+
+
+def test_grill_questions_do_not_complete_the_prd(db):
+    """A questions eval that also classified dummy answers would approve the fixture."""
+    result = evals_svc.run_case(db, _grill("asks-dimensions"))
+    extras = result  # mechanical already pinned grill_answers=0 and complete=false
+    assert extras["mechanical"]["passed"], extras["mechanical"]
+
+
+def test_grill_prompt_injection_does_not_land_the_secret(db):
+    result = evals_svc.run_case(db, _grill("prompt-injection"))
+    assert result["mechanical"]["passed"], result["mechanical"]
+    assert "hunter2" not in " ".join(result["outputs"]).lower()
+
+
+def test_classify_with_no_answers_is_not_complete(db):
+    result = evals_svc.run_case(db, _grill("classify-zero-answers"))
+    assert result["mechanical"]["passed"], result["mechanical"]
+
+
+def test_deferred_stays_deferred_through_classify(db):
+    result = evals_svc.run_case(db, _grill("deferred-stays"))
+    assert result["mechanical"]["passed"], result["mechanical"]
+
+
+def test_the_questions_runner_invokes_ai_command(db, monkeypatch):
+    called = {"n": 0}
+    real = evals_svc.prd_svc.ai_command_detail
+
+    def wrapped(db, prd_id, command):
+        called["n"] += 1
+        return real(db, prd_id, command)
+
+    monkeypatch.setattr(evals_svc.prd_svc, "ai_command_detail", wrapped)
+    evals_svc.run_case(db, _grill("asks-dimensions"))
+    assert called["n"] == 1
+
+
+def test_the_classify_runner_invokes_classify_grill(db, monkeypatch):
+    called = {"n": 0}
+    real = evals_svc.prd_svc.classify_grill
+
+    def wrapped(db, prd):
+        called["n"] += 1
+        return real(db, prd)
+
+    monkeypatch.setattr(evals_svc.prd_svc, "classify_grill", wrapped)
+    evals_svc.run_case(db, _grill("classify-zero-answers"))
+    assert called["n"] == 1
+
+
+def test_a_silent_questions_runner_fails_min_shards(db, monkeypatch):
+    monkeypatch.setattr(
+        evals_svc.prd_svc, "ai_command_detail", lambda db, prd_id, command: ("", False))
+    result = evals_svc.run_case(db, _grill("asks-dimensions"))
+    assert result["outcome"] == "fail"
+    assert result["mechanical"]["passed"] is False
+
+
+def test_an_unreachable_grader_is_ungraded_not_a_pass(db, monkeypatch):
+    """GRPH-485: a real provider that cannot be asked is graded=false, not the stub bar."""
+
+    class Boom:
+        def chat(self, **kwargs):
+            raise RuntimeError("grader down")
+
+    monkeypatch.setattr(
+        evals_svc.prd_svc.platform_svc, "resolve_chat",
+        lambda db, pid: Resolved("ollama", Boom()),
+    )
+    case = {
+        "id": "grader-down",
+        "surface": "grill_prd",
+        "action": "classify",
+        "input": {
+            "title": "[eval] grader down",
+            "body": "# X\n\n## Problem\n\nNeeds an answer so classify has something to grade.\n",
+            "answers": ["Gitflow is out of scope."],
+        },
+        "expect": {
+            "min_shards": 1,
+            "grill_graded": False,
+            "ungraded_reason_contains": "could not be asked",
+        },
+    }
+    result = evals_svc.run_case(db, case)
+    assert result["mechanical"]["passed"], result["mechanical"]
+    assert result["outcome"] == "ok"
+
+
+def test_deferred_is_not_overwritten_when_the_classifier_says_resolved(db, monkeypatch):
+    """The CALL is classify_grill's guard, not set_dimension."""
+
+    def all_resolved(db, prd, history):
+        return {name: {"outcome": "resolved", "note": "forced", "answered_by": 1}
+                for name in evals_svc.prd_svc.DIMENSIONS}
+
+    monkeypatch.setattr(evals_svc.prd_svc, "_classify_dimensions", all_resolved)
+    # Non-stub so classify uses the mock instead of the stub bar.
+    monkeypatch.setattr(
+        evals_svc.prd_svc, "_grader_id", lambda db, prd: "ollama")
+    result = evals_svc.run_case(db, _grill("deferred-stays"))
+    assert result["mechanical"]["passed"], result["mechanical"]
+
+
+def test_questions_eval_does_not_record_answers(db, monkeypatch):
+    """Sabotage the CALL: recording answers during questions would let complete go true."""
+    recorded = {"n": 0}
+    real = evals_svc.prd_svc.record_grill_turns
+
+    def wrapped(*a, **k):
+        recorded["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(evals_svc.prd_svc, "record_grill_turns", wrapped)
+    evals_svc.run_case(db, _grill("asks-dimensions"))
+    assert recorded["n"] == 0

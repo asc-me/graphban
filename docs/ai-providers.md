@@ -92,11 +92,12 @@ The `anthropic` SDK is only imported when `CHAT_PROVIDER=anthropic`; install it 
 
 Deterministic tests cover code. They do not cover what an extractor *says*. Golden-set
 fixtures live in `backend/app/evals/cases/<surface>/` and run through the real service
-(`extract_lessons` is the first surface).
+(`extract_lessons`, `grill_prd`).
 
 ```bash
 # Mechanical checks only — the stub cannot judge substance, and that is ungraded, not a pass.
 graphban eval --surface extract_lessons
+graphban eval --surface grill_prd
 
 # Ask the project's chat model (three samples, unanimity on groundedness). Stub stays ungraded.
 graphban eval --surface extract_lessons --judge
