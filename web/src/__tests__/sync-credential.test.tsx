@@ -174,7 +174,7 @@ describe("hosted Sync / Link is the cloud-org mint, not the self-host paste form
     expect(screen.getByText(/scoped link key/i)).toBeInTheDocument();
     expect(screen.queryByText(/scoped credential/i)).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("cloud.graphban.dev")).not.toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("paste key…")).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("paste link key…")).not.toBeInTheDocument();
     expect(screen.queryByText(/Connect this self-hosted instance/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Link instance" })).not.toBeInTheDocument();
   });

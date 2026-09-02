@@ -66,7 +66,7 @@ export function SyncLinkPanel() {
         <h2 className="text-[15px] font-semibold tracking-tight">Sync / Link</h2>
         <p className="mt-1 max-w-[60ch] text-[12.5px] leading-relaxed text-muted">
           Connect this self-hosted instance to a cloud org. Mint the link key there — Settings
-          → Sync / Link, or API keys → Link key — then paste the cloud URL and key
+          → Sync / Link, or API keys → Link key — then paste the cloud URL and link key
           below. This box builds the graph; the cloud holds items, claims, and memory.
           Vectors never leave the box; the cloud re-embeds.
         </p>
@@ -212,7 +212,7 @@ function CloudLinkCard({
           </div>
           <div>
             <Label>Link key</Label>
-            <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="paste key…" />
+            <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="paste link key…" />
           </div>
           <div>
             <Label>
