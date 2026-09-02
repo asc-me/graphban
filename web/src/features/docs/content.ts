@@ -91,6 +91,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 3, h: "AI commands", b: "Expand, Generate risks, and Summarize append generated markdown to the body — using the configured chat provider." },
       { num: 4, h: "Link items", b: "The Linked dropdown attaches tracker items to this PRD." },
       { num: 5, h: "Coverage", b: "The Coverage tab shows task gaps on buildable sections, and empty headings separately. A body with no sections is not a clean pass. Empty is not a score." },
+      { num: 6, h: "Readiness to approve", b: "On the grill tab. A warning, not a gate — the grill still earns approved. Mechanical checks (present vs placeholder, empty headings, task gaps) load without a model. Ask the judge scores ambiguity and testability. Ungraded is not a fail; not asking is not a pass." },
     ],
     related: [{ label: "Tracker", to: "/tracker" }],
   },
