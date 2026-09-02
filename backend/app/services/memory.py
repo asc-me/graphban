@@ -741,7 +741,7 @@ def _llm_judge(db: Session, shard: MemoryShard) -> dict | None:
 # withhold an accept, never create one, so every other verdict is provably unchanged.
 # Auto-REJECT still applies — near-duplicate cleanup is safe here and keeps the queue
 # readable, and holding back a publish is not a reason to also stop discarding restatements.
-_UNPUBLISHABLE_ORIGINS = ("agent:auto-extract",)
+_UNPUBLISHABLE_ORIGINS = ("agent:auto-extract", "agent:eval-sample")
 
 
 def may_auto_publish(shard: MemoryShard) -> bool:
@@ -750,7 +750,8 @@ def may_auto_publish(shard: MemoryShard) -> bool:
     Covers `trusted` mode too, and that is the deliberate part. `trusted` (AL-280) exists so
     an agent can read back what it just wrote inside the same task — an extracted lesson has
     no such consumer, nobody is waiting on it, and it is the one write on that path whose
-    source text is known to go stale.
+    source text is known to go stale. Eval samples (GRPH-644) are the same shape: a human
+    has to label them or they stay ungraded, never a pass.
     """
     return not (shard.origin or "").startswith(_UNPUBLISHABLE_ORIGINS)
 

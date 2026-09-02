@@ -203,6 +203,20 @@ def _in_text(args: tuple, kwargs: dict) -> str:
     return " ".join(p for p in parts if p)
 
 
+PREVIEW_MAX = 512  # matches LlmCallSpan.output_preview; a label, not a transcript
+
+
+def _preview(text: str) -> str | None:
+    """Truncated output for human-eval sampling (GRPH-644). None, never "", when
+    there is nothing to label — empty string would look like a labelled blank."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    if len(t) <= PREVIEW_MAX:
+        return t
+    return t[: PREVIEW_MAX - 1] + "…"
+
+
 def _out_text(result: Any) -> str:
     if isinstance(result, str):
         return result
@@ -258,6 +272,9 @@ def _emit(meta: dict, kind: str, sink: dict, started: float, *,
         "error_class": type(error).__name__ if error else "",
         "http_status": _status(error),
         "retryable": getattr(error, "retryable", None) if error else None,
+        # Chat/extract only. Embeddings have no text to label; storing a vector
+        # preview would be a lie about what the human-eval queue holds.
+        "output_preview": _preview(out_text) if kind in ("chat", "extract") else None,
     }
     try:
         logger.info("llm %s %s %s %s %.1fms", row["provider"], row["model"], kind,

@@ -226,6 +226,7 @@ def test_an_extractor_makes_one_span_not_two(client):
     assert len(rows) == 1, f"extractor double-counting: {[(r.kind, r.feature) for r in rows]}"
     assert rows[0].kind == "extract"
     assert rows[0].tokens_source == "reported"
+    assert rows[0].output_preview and "a decision" in rows[0].output_preview
 
 
 # ---------------------------------------------------------------- absence: NULL is a fact
@@ -244,6 +245,7 @@ def test_stub_spend_is_a_real_zero_not_an_unknown(client):
     assert r.cost_usd == 0.0
     assert r.tokens_source == "none"
     assert r.input_tokens is None and r.output_tokens is None
+    assert r.output_preview and "Local stub agent" in r.output_preview
 
 
 def test_an_unpriced_model_costs_NULL_never_zero(client):

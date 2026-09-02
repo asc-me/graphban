@@ -386,6 +386,52 @@ def cmd_eval(args) -> int:
     return 0 if result["status"] == "ok" else 1
 
 
+def cmd_eval_sample(args) -> int:
+    """Copy live LLM spans into Memory review as candidates (GRPH-644)."""
+    from app.services import evals as evals_svc
+
+    db = _session()
+    try:
+        result = evals_svc.sample(
+            db, limit=args.limit, project_id=args.project or None)
+    finally:
+        db.close()
+    print(json.dumps(result, indent=2, default=str))
+    return 0 if result["sampled"] else 2
+
+
+def cmd_eval_labels(args) -> int:
+    """Report how far the human-eval queue has been labelled (GRPH-644)."""
+    from app.services import evals as evals_svc
+
+    db = _session()
+    try:
+        result = evals_svc.labels(db, project_id=args.project or None)
+    finally:
+        db.close()
+    print(json.dumps(result, indent=2, default=str))
+    if result["status"] == "absent":
+        return 2
+    return 0
+
+
+def cmd_eval_promote(args) -> int:
+    """Print a golden-case JSON skeleton from a published sample. Does not write the repo."""
+    from app.services import evals as evals_svc
+
+    db = _session()
+    try:
+        result = evals_svc.promote(db, args.shard)
+    except evals_svc.UnlabelledSample as e:
+        sys.exit(f"graphban eval promote: {e}")
+    except ValueError as e:
+        sys.exit(f"graphban eval promote: {e}")
+    finally:
+        db.close()
+    print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
 def cmd_learn_inventory(args) -> int:
     """Inventory the artifacts installed on THIS machine (GRPH-354 / PRD-16).
 
@@ -554,6 +600,17 @@ def build_parser() -> argparse.ArgumentParser:
                     help="ask the project's chat model; stub stays ungraded")
     ev.add_argument("--dir", help="override the cases directory (default: app/evals/cases)")
     ev.set_defaults(func=cmd_eval)
+    evsub = ev.add_subparsers(dest="eval_command")
+    es = evsub.add_parser("sample", help="copy live LLM spans into Memory review")
+    es.add_argument("--limit", type=int, default=20)
+    es.add_argument("--project")
+    es.set_defaults(func=cmd_eval_sample)
+    el = evsub.add_parser("labels", help="how far the human-eval queue has been labelled")
+    el.add_argument("--project")
+    el.set_defaults(func=cmd_eval_labels)
+    ep = evsub.add_parser("promote", help="print a case JSON from a published sample")
+    ep.add_argument("--shard", required=True)
+    ep.set_defaults(func=cmd_eval_promote)
 
     return p
 

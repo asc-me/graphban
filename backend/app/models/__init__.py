@@ -1951,3 +1951,7 @@ class LlmCallSpan(Base):
     error_class: Mapped[str] = mapped_column(String(64), default="")
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Truncated model output for human-eval sampling (GRPH-644). NULL means this
+    # span has nothing to label (embed, error, empty reply) — not an empty string.
+    # The prompt is deliberately not stored: spans are telemetry, not a transcript.
+    output_preview: Mapped[str | None] = mapped_column(String(512), nullable=True)

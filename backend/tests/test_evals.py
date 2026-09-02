@@ -16,6 +16,7 @@ import pytest
 from app.cli import build_parser
 from app.services import evals as evals_svc
 from app.services import insights as insights_svc
+from app.services import memory as mem_svc
 from app.services.platform import Resolved
 
 
@@ -560,3 +561,113 @@ def test_skipping_search_fails_the_grounded_case(db, monkeypatch):
     result = evals_svc.run_case(db, _assistant("grounded-in-memory"))
     assert result["outcome"] == "fail"
     assert any("missing" in f for f in result["mechanical"]["failures"])
+
+
+# ---- live sampling (GRPH-644) ------------------------------------------------
+
+def _live_span(db, *, feature="lessons.extract", provider="ollama", preview="never infer main",
+               project_id="core"):
+    from app.models import LlmCallSpan
+
+    row = LlmCallSpan(
+        provider=provider, model="qwen", kind="chat", feature=feature,
+        project_id=project_id, output_preview=preview, ok=True,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def test_sample_writes_candidates_and_does_not_publish(db):
+    span = _live_span(db)
+    out = evals_svc.sample(db, limit=10)
+    assert out["sampled"] == 1
+    assert out["ids"]
+    from app.models import MemoryShard
+
+    shard = db.get(MemoryShard, out["ids"][0])
+    assert shard.status == "candidate"
+    assert shard.origin == evals_svc.SAMPLE_ORIGIN
+    assert shard.source == f"eval-span:{span.id}"
+    assert "never infer main" in shard.text
+    assert mem_svc.may_auto_publish(shard) is False
+
+
+def test_sample_skips_stub_and_empty_preview(db):
+    _live_span(db, provider="stub", preview="Local stub agent says hi")
+    _live_span(db, provider="ollama", preview=None, feature="grill.classify")
+    out = evals_svc.sample(db)
+    assert out["sampled"] == 0
+    assert out["skipped_stub"] >= 1
+    assert out["skipped_no_preview"] >= 1
+
+
+def test_sample_is_idempotent_on_span_id(db):
+    _live_span(db)
+    first = evals_svc.sample(db)
+    second = evals_svc.sample(db)
+    assert first["sampled"] == 1
+    assert second["sampled"] == 0
+    assert second["skipped_already"] == 1
+
+
+def test_labels_are_ungraded_while_candidates_remain(db):
+    assert evals_svc.labels(db)["status"] == "absent"
+    _live_span(db)
+    evals_svc.sample(db)
+    report = evals_svc.labels(db)
+    assert report["status"] == "ungraded"
+    assert report["graded"] is False
+    assert report["candidates"] == 1
+
+
+def test_labels_ok_only_after_every_sample_is_labelled(db):
+    assert evals_svc.sample(db)["sampled"] == 0
+    _live_span(db)
+    ids = evals_svc.sample(db)["ids"]
+    mem_svc.set_status(db, ids[0], "published")
+    report = evals_svc.labels(db)
+    assert report["status"] == "ok"
+    assert report["graded"] is True
+    assert report["candidates"] == 0
+    assert report["published"] == 1
+
+
+def test_promote_refuses_an_unlabelled_sample(db):
+    _live_span(db)
+    ids = evals_svc.sample(db)["ids"]
+    with pytest.raises(evals_svc.UnlabelledSample):
+        evals_svc.promote(db, ids[0])
+
+
+def test_promote_prints_json_from_a_published_sample(db):
+    _live_span(db, preview="never infer main from GitHub when gitops is unmeasured")
+    sid = evals_svc.sample(db)["ids"][0]
+    mem_svc.set_status(db, sid, "published")
+    case = evals_svc.promote(db, sid)
+    assert case["expect"]["must_contain"]
+    assert "never infer main" in case["preview"]
+    assert case["source"].startswith("eval-span:")
+
+
+def test_sample_ignores_features_outside_the_live_set(db):
+    """The CALL: SAMPLE_FEATURES is what gets read. Untagged or embed spans must not
+    enter the review queue or every LLM call becomes a homework assignment."""
+    _live_span(db, feature="embed.write", preview="a vector happened")
+    _live_span(db, feature="", preview="untagged chat")
+    out = evals_svc.sample(db)
+    assert out["sampled"] == 0
+
+
+def test_cli_eval_sample_subcommand_is_wired():
+    parser = build_parser()
+    args = parser.parse_args(["eval", "sample", "--limit", "5"])
+    assert args.func.__name__ == "cmd_eval_sample"
+    assert args.limit == 5
+    args = parser.parse_args(["eval", "labels"])
+    assert args.func.__name__ == "cmd_eval_labels"
+    # The original run invocation must keep working.
+    args = parser.parse_args(["eval", "--surface", "assistant"])
+    assert args.func.__name__ == "cmd_eval"
+    assert args.surface == "assistant"
