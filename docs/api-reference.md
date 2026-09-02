@@ -394,8 +394,9 @@ which is what keeps the cross-tenant isolation guarantee honest.
 Plan assignment is `PUT /api/orgs/{id}/plan`, operator-gated the same way. Self-serve
 upgrades (GRPH-82) are org-admin, not operator: `/api/orgs/{id}/billing/checkout` and
 `/api/orgs/{id}/billing/portal` — 404 when Stripe is unset, so a manual-assignment
-deploy does not look broken. There is no suspend, restore, or impersonate — those
-endpoints do not exist.
+deploy does not look broken. `GET /billing` carries `self_serve` and `has_customer`
+(a Stripe customer id exists). False is manual assignment / never checked out, not a
+broken page. There is no suspend, restore, or impersonate — those endpoints do not exist.
 
 Two response fields carry a distinction the UI depends on:
 

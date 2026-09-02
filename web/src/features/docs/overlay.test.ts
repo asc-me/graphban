@@ -215,6 +215,16 @@ describe("docs overlay routes", () => {
     expect(install?.b).toMatch(/source zip/i);
   });
 
+  it("Billing overlay names two modes, not No Stripe here", () => {
+    const d = docFor(adminPath("billing"));
+    expect(d.sections.map((s) => s.h).join(" ")).not.toMatch(/No Stripe here/i);
+    const mode = d.sections.find((s) => /two modes/i.test(s.h));
+    expect(mode?.b).toMatch(/not a broken billing page/);
+    expect(mode?.b).toMatch(/Checkout/);
+    expect(mode?.b).toMatch(/no invoice list/);
+    expect(d.tagline).not.toMatch(/Display only/i);
+  });
+
   it("Updates overlay names stamp/publish as not apply", () => {
     const selfHost = docFor(settingsPath("deployment/updates"));
     const tagged = docFor("/p/CORE/settings/deployment/updates");

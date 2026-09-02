@@ -408,6 +408,14 @@ export const api = {
       body: JSON.stringify({ access }),
     }),
   orgBilling: (orgId: string) => request<Billing>(`/orgs/${orgId}/billing`),
+  orgCheckout: (orgId: string, body: { plan: string; success_url: string; cancel_url: string }) =>
+    request<{ url: string }>(`/orgs/${orgId}/billing/checkout`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
+  orgPortal: (orgId: string, body: { return_url: string }) =>
+    request<{ url: string }>(`/orgs/${orgId}/billing/portal`, {
+      method: "POST", body: JSON.stringify(body),
+    }),
   setOrgPlan: (orgId: string, plan: string) =>
     request<Org>(`/orgs/${orgId}/plan`, { method: "PUT", body: JSON.stringify({ plan }) }),
   requestAdditionalOrg: (body: { reason: string; company?: string }) =>

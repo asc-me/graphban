@@ -1,4 +1,8 @@
+import { useMutation } from "@tanstack/react-query";
+
+import { Button } from "@/components/ui/button";
 import { useBilling, useOrgs } from "@/lib/queries";
+import { api } from "@/lib/api";
 import type { Billing } from "@/lib/types";
 
 const COUNTERS: { key: keyof Billing["usage"]; limit: keyof Billing["limits"]; label: string }[] = [
@@ -8,24 +12,40 @@ const COUNTERS: { key: keyof Billing["usage"]; limit: keyof Billing["limits"]; l
   { key: "calls_this_month", limit: "max_calls_per_month", label: "MCP CALLS / MO" },
 ];
 
+const SELF_SERVE_PLANS = ["pro", "team"] as const;
+
 /**
- * Screen 12 — Billing. Display only, and that is the whole design.
+ * Screen 12 — Billing.
  *
- * Four rows because four counters exist. No payment method, no invoice list, no
- * self-serve upgrade — there is no Stripe and plans are operator-assigned. No usage chart
- * either: `OrgUsage` holds one row per period, so a chart would be drawing a time series
- * that does not exist.
+ * Four counters always. Self-serve (GRPH-82) is Checkout + portal when
+ * `billing.self_serve` is true. False is operator-assigned plans, not a broken
+ * page and not "the product has no Stripe".
  */
 export function OrgBilling() {
   const { data: orgs = [] } = useOrgs();
   const org = orgs[0] ?? null;
   const { data: billing, isLoading } = useBilling(org?.id);
+  const here = typeof window !== "undefined" ? window.location.href : "";
+
+  const checkout = useMutation({
+    mutationFn: (plan: string) =>
+      api.orgCheckout(org!.id, { plan, success_url: here, cancel_url: here }),
+    onSuccess: ({ url }) => { window.location.href = url; },
+  });
+  const portal = useMutation({
+    mutationFn: () => api.orgPortal(org!.id, { return_url: here }),
+    onSuccess: ({ url }) => { window.location.href = url; },
+  });
 
   if (isLoading || !billing) {
     return (
       <div className="max-w-[1180px] px-6 py-8 font-mono text-[11px] text-faint-2">loading…</div>
     );
   }
+
+  const admin = org?.role === "admin" || org?.role === "owner";
+  const selfServe = Boolean(billing.self_serve);
+  const upgrades = SELF_SERVE_PLANS.filter((p) => p !== billing.plan);
 
   return (
     <div className="max-w-[1180px] px-6 pb-16 pt-5">
@@ -36,10 +56,47 @@ export function OrgBilling() {
             current
           </span>
         </div>
-        <p className="mt-2 max-w-[70ch] text-[12.5px] leading-relaxed text-muted">
-          Contact your operator to change plan. Plans are assigned by a platform operator on this
-          deployment — there is no self-serve upgrade, and this screen does not pretend otherwise.
-        </p>
+        {selfServe ? (
+          <>
+            <p className="mt-2 max-w-[70ch] text-[12.5px] leading-relaxed text-muted">
+              Checkout upgrades Pro or Team. An operator can still assign a plan by hand.
+              There is no invoice list on this page.
+            </p>
+            {admin ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {upgrades.map((plan) => (
+                  <Button
+                    key={plan}
+                    size="sm"
+                    disabled={checkout.isPending}
+                    onClick={() => checkout.mutate(plan)}
+                  >
+                    Upgrade to {plan}
+                  </Button>
+                ))}
+                {billing.has_customer && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={portal.isPending}
+                    onClick={() => portal.mutate()}
+                  >
+                    Manage billing
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <p className="mt-2 text-[12px] text-faint">
+                An org admin can start Checkout. This seat cannot.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="mt-2 max-w-[70ch] text-[12.5px] leading-relaxed text-muted">
+            Contact your operator to change plan. Plans are assigned by a platform operator on this
+            deployment — self-serve is off, not missing. This screen does not pretend otherwise.
+          </p>
+        )}
       </section>
 
       <section className="mt-4 overflow-hidden rounded-[13px] border border-line bg-surface-2">
@@ -51,8 +108,6 @@ export function OrgBilling() {
             const used = billing.usage[c.key];
             const limit = billing.limits[c.limit];
             const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
-            // Explicit class strings: Tailwind scans source text, so `bg-${tone}` would
-            // compile to nothing and the bar would render invisible.
             const bar =
               pct >= 100 ? "bg-st-blocked" : pct >= 80 ? "bg-st-review" : "bg-st-done";
             const text =

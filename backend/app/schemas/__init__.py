@@ -341,6 +341,8 @@ class BillingOut(BaseModel):
     # True only when Stripe is fully configured. False is "manual assignment",
     # not "billing is broken" — absence of keys is today's default.
     self_serve: bool = False
+    # Portal needs a Stripe customer. False is "never checked out", not "portal broken".
+    has_customer: bool = False
 
 
 class CheckoutIn(BaseModel):
