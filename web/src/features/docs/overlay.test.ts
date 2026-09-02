@@ -244,6 +244,16 @@ describe("docs overlay routes", () => {
     }
   });
 
+  it("Updates overlay names empty via as not compose", () => {
+    const selfHost = docFor(settingsPath("deployment/updates"));
+    const tagged = docFor("/p/CORE/settings/deployment/updates");
+    for (const d of [selfHost, tagged]) {
+      const install = d.sections.find((s) => /check and install/i.test(s.h));
+      expect(install?.b).toMatch(/could not tell/);
+      expect(install?.b).toMatch(/empty via is not compose/);
+    }
+  });
+
   it("PRD editor overlay names empty headings as not a clean pass", () => {
     const d = docFor("/prds/abc");
     const cov = d.sections.find((s) => /coverage/i.test(s.h));

@@ -127,6 +127,7 @@ describe("Updates Settings page", () => {
       payload({
         state: "available",
         apply: true,
+        via: "compose",
         latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
       }),
     );
@@ -140,6 +141,7 @@ describe("Updates Settings page", () => {
       payload({
         state: "available",
         apply: true,
+        via: "compose",
         latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
       }),
     );
@@ -148,6 +150,7 @@ describe("Updates Settings page", () => {
         payload({
           state: "current",
           apply: true,
+          via: "compose",
           running: { version: "2026.10.1", git_sha: "newsha" },
           latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
         }),
@@ -183,6 +186,34 @@ describe("Updates Settings page", () => {
     renderPage(settingsPath("deployment/updates"), true);
     expect(await screen.findByRole("button", { name: /check for updates/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^install$/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/hosted\. the operator updates this instance/i)).toBeInTheDocument();
+  });
+
+  it("empty via is not compose", async () => {
+    updateCheckSpy.mockResolvedValue(
+      payload({
+        state: "available",
+        apply: true,
+        via: "",
+        latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText(/how this box is deployed/i)).toBeInTheDocument();
+    expect(screen.getByText(/could not tell — not compose/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^install$/i })).toBeDisabled();
+  });
+
+  it("names compose and native methods", async () => {
+    updateCheckSpy.mockResolvedValue(
+      payload({ via: "compose", apply: true, state: "available" }),
+    );
+    const { unmount } = renderPage();
+    expect(await screen.findByText(/compose, with a host helper/i)).toBeInTheDocument();
+    unmount();
+    updateCheckSpy.mockResolvedValue(payload({ via: "native" }));
+    renderPage();
+    expect(await screen.findByText(/native install at \/opt\/graphban/i)).toBeInTheDocument();
   });
 
   it("THE CALL: Check for updates refetches the payload", async () => {

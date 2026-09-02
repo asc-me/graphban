@@ -198,7 +198,12 @@ def apply(tag: str, *, check_fn=None, send=None, native_start=None,
     latest = (payload.get("latest") or {}).get("tag") or ""
     if (tag or "").strip() != latest:
         return {"ok": False, "status": 409, "error": "tag is not the advertised cut"}
-    via = payload.get("via") or "compose"
+    via = (payload.get("via") or "").strip()
+    if via not in ("compose", "native"):
+        # Empty via is unknown, not compose. Defaulting here would start deploy.sh
+        # on a box that never named a method.
+        return {"ok": False, "status": 503,
+                "error": "no apply path — method is unknown, not compose"}
     if via == "native":
         starter = native_start if native_start is not None else start_native
         asset = (payload.get("latest") or {}).get("asset") or ""
