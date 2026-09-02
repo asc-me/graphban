@@ -457,9 +457,9 @@ const CONTENT: Record<string, DocEntry> = {
   "org-billing": {
     badge: "BILLING",
     title: "Billing",
-    tagline: "Four counters. Display only.",
+    tagline: "Limits, and Checkout when self-serve is on.",
     sections: [
-      { num: 1, h: "No Stripe here", b: "Projects, seats, shards, MCP calls this month. Plans are operator-assigned. There is no invoice list and no usage chart — OrgUsage holds one row per period." },
+      { num: 1, h: "Two modes", b: "Unset Stripe keys keep operator-assigned plans — that is not a broken billing page. When self-serve is on, Checkout upgrades Pro/Team and the portal manages the subscription. There is still no invoice list and no usage chart — OrgUsage holds one row per period. An operator can still assign a plan by hand." },
     ],
   },
 

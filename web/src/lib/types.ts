@@ -169,6 +169,8 @@ export interface Billing {
   usage: Usage;
   /** Stripe checkout is live. False is manual assignment, not a broken billing page. */
   self_serve?: boolean;
+  /** A Stripe customer id exists. False is never checked out, not a broken portal. */
+  has_customer?: boolean;
 }
 
 // ── Operator console (hosted + platform-admin only, AL-94) ────────────────

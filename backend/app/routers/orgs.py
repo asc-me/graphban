@@ -165,6 +165,7 @@ def org_billing(org_id: str, db: Session = Depends(get_db), user: User = Depends
         ),
         usage=UsageOut(**quotas.usage(db, org_id)),
         self_serve=billing_svc.configured(),
+        has_customer=bool(org.stripe_customer_id),
     )
 
 

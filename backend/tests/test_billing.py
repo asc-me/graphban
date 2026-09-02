@@ -50,6 +50,7 @@ def test_unset_stripe_hides_checkout_and_the_webhook(client, hosted):
                        headers={"stripe-signature": "t=1,v1=x"}).status_code == 404
     body = client.get(f"/api/orgs/{org['id']}/billing", headers=auth).json()
     assert body["self_serve"] is False
+    assert body["has_customer"] is False
     assert body["plan"] == "free"
 
 
@@ -159,6 +160,24 @@ def test_configured_stripe_reports_self_serve(client, stripe_on):
     auth = _login(client, "alex@ascme-labs.com")
     org = _make_org(client, auth)
     body = client.get(f"/api/orgs/{org['id']}/billing", headers=auth).json()
+    assert body["self_serve"] is True
+    assert body["has_customer"] is False
+
+
+def test_has_customer_is_the_org_column(client, stripe_on):
+    """THE CALL. A hardcoded false would hide Manage billing after checkout."""
+    from app.db import SessionLocal
+    auth = _login(client, "alex@ascme-labs.com")
+    org = _make_org(client, auth)
+    db = SessionLocal()
+    try:
+        row = db.get(Organization, org["id"])
+        row.stripe_customer_id = "cus_abc"
+        db.commit()
+    finally:
+        db.close()
+    body = client.get(f"/api/orgs/{org['id']}/billing", headers=auth).json()
+    assert body["has_customer"] is True
     assert body["self_serve"] is True
 
 
