@@ -284,6 +284,14 @@ describe("listing", () => {
       .toHaveAttribute("href", "/fleet");
   });
 
+  it("sends someone looking for LLM credentials to AI Providers, not a mint here", async () => {
+    // The reverse of AI Providers' "Looking for API keys?". An Anthropic key is
+    // not a Graphban API key; minting one here would be the two-surfaces bug.
+    view();
+    expect(await screen.findByRole("link", { name: /looking for llm credentials\?/i }))
+      .toHaveAttribute("href", "/settings/deployment/providers");
+  });
+
   it("says what the absence of a gate key COSTS", async () => {
     // An empty state reading "No gate keys" is true and useless. The reason the list is empty
     // is the reason the gate is running on its weak path.
@@ -374,6 +382,7 @@ describe("docs overlay", () => {
     expect(body).toMatch(/scope/i);
     expect(body).toMatch(/seat/i);
     expect(keys.related?.some((r) => r.label === "Fleet")).toBe(true);
+    expect(keys.related?.some((r) => r.label === "AI providers")).toBe(true);
     expect(docFor(settingsPath("project/providers")).title).toBe("AI providers");
     expect(docFor(settingsPath("deployment/providers")).title).toBe("AI providers");
     expect(docFor("/settings").title).toBe("Settings");
