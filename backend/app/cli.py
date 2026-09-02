@@ -151,7 +151,7 @@ def cmd_link(args) -> int:
     if args.project:
         cfg["project"] = args.project
     if not cfg.get("cloud_url") or not cfg.get("api_key"):
-        sys.exit("graphban link: need --cloud-url and --api-key (the org-issued sync credential)")
+        sys.exit("graphban link: need --cloud-url and --api-key (the org-issued link key)")
 
     db = _session()
     try:

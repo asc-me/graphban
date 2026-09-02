@@ -99,8 +99,11 @@ def test_link_persists_target_chmod_600(cfg_path):
 
 
 def test_link_requires_both_url_and_key(cfg_path):
-    with pytest.raises(SystemExit):
+    # --api-key is the flag (identity). The parenthetical used to say "sync credential"
+    # while Settings → Cloud / Sync names the same object a link key.
+    with pytest.raises(SystemExit, match=r"--api-key \(the org-issued link key\)") as e:
         cli.main(["link", "--cloud-url", "https://c.example/"])  # missing --api-key
+    assert "sync credential" not in str(e.value)
 
 
 def test_status_reports_not_linked(cfg_path, capsys):
