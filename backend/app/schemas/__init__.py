@@ -411,6 +411,10 @@ class ItemUpdate(BaseModel):
     prd_id: str | None = None
     prd_section: str | None = None
     evidence: list[dict] | None = None  # proof-on-done receipts (AL-53)
+    # Human-confirmed fidelity flip after a prototype settles the question (GRPH-235).
+    # The service whitelist already accepted `fidelity` — MCP could write it while the
+    # web PATCH silently could not, so the loop this item closes had no confirm button.
+    fidelity: str | None = None
 
 
 class ReorderIn(BaseModel):
@@ -1047,6 +1051,20 @@ class GrillApplyIn(BaseModel):
 class GrillDeferIn(BaseModel):
     dimension: str  # one of prds.DIMENSIONS
     reason: str = ""  # why it's being left open — rides onto the AL-302 baseline
+
+
+class GrillPrototypeIn(BaseModel):
+    # GRPH-235: hand ONE high-fidelity question to the prototype tooling.
+    item_id: str  # key or id; must live in the PRD's project
+    dimension: str = "open_decisions"  # the grill question the prototype settles
+    note: str = ""  # optional focus for the screen prompt
+
+
+class PrototypeVerdictIn(BaseModel):
+    item_id: str
+    attachment_id: str  # screenshot already uploaded to /api/public/attachments
+    verdict: str  # the human's conclusion — what re-enters the grill is this, not pixels
+    dimension: str = "open_decisions"
 
 
 class RebaselineIn(BaseModel):
