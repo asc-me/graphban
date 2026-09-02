@@ -1,0 +1,22 @@
+{
+  "id": "prefer-outcome",
+  "surface": "extract_lessons",
+  "input": {
+    "title": "gitops does not infer main",
+    "description": "We decided to default base_branch to main when the form is empty.",
+    "evidence": [
+      {
+        "kind": "note",
+        "detail": "Learning: never infer main from GitHub when gitops is unmeasured."
+      }
+    ]
+  },
+  "expect": {
+    "status": "candidate",
+    "origin": "agent:auto-extract",
+    "min_shards": 1,
+    "max_shards": 3,
+    "must_contain": ["never infer main"],
+    "must_not_contain": ["default base_branch to main"]
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "id": "thin-description",
+  "surface": "extract_lessons",
+  "input": {
+    "title": "Timeouts on outbound HTTP",
+    "description": "We decided to always set a timeout on outbound HTTP.",
+    "evidence": []
+  },
+  "expect": {
+    "status": "candidate",
+    "origin": "agent:auto-extract",
+    "min_shards": 1,
+    "max_shards": 3,
+    "must_contain": ["timeout"]
+  }
+}

@@ -356,6 +356,36 @@ def cmd_learn(args) -> int:
     return 0
 
 
+def cmd_eval(args) -> int:
+    """Run golden-set evals for generative surfaces (GRPH-224).
+
+    Mechanical checks always run (shape, must/must-not). `--judge` asks the
+    project's chat model; without it, and on the stub, the judge half is
+    ungraded rather than a pass. Exit 2 if no cases were found — an empty
+    directory must not look like a green run.
+    """
+    from app.services import evals as evals_svc
+
+    db = _session()
+    try:
+        result = evals_svc.run(
+            db,
+            surface=None if args.surface == "all" else args.surface,
+            judge=args.judge,
+            root=Path(args.dir) if args.dir else None,
+        )
+    except evals_svc.UnknownSurface as e:
+        sys.exit(f"graphban eval: {e}")
+    except ValueError as e:
+        sys.exit(f"graphban eval: {e}")
+    finally:
+        db.close()
+    print(json.dumps(result, indent=2, default=str))
+    if result["status"] == "absent":
+        return 2
+    return 0 if result["status"] == "ok" else 1
+
+
 def cmd_learn_inventory(args) -> int:
     """Inventory the artifacts installed on THIS machine (GRPH-354 / PRD-16).
 
@@ -513,6 +543,17 @@ def build_parser() -> argparse.ArgumentParser:
     li.add_argument("--api-key", help="credential for --api-url; falls back to the linked "
                                       "config")
     li.set_defaults(func=cmd_learn_inventory)
+
+    # Spelled out rather than imported from `evals.SURFACES`: `--help` must not
+    # import the service layer. `test_evals` pins these against SURFACES.
+    ev = sub.add_parser("eval", help="run golden-set evals for generative surfaces")
+    ev.add_argument("--surface", default="all",
+                    choices=["extract_lessons", "all"],
+                    help="one surface, or all registered surfaces (default all)")
+    ev.add_argument("--judge", action="store_true",
+                    help="ask the project's chat model; stub stays ungraded")
+    ev.add_argument("--dir", help="override the cases directory (default: app/evals/cases)")
+    ev.set_defaults(func=cmd_eval)
 
     return p
 
