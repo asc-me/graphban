@@ -6,6 +6,7 @@ from app.config import settings
 from app.db import get_db
 from app.models import MemoryShard, User
 from app.schemas import (
+    CandidateJudgeOut,
     LessonDetail,
     LessonListOut,
     LessonOutcomeIn,
@@ -302,6 +303,20 @@ def publish_shard(shard_id: str, db: Session = Depends(get_db), user: User = Dep
 def reject_shard(shard_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Reject a candidate — kept for provenance, never surfaces in search (AL-49)."""
     return _review_shard(shard_id, "rejected", "reject_shard", db, user)
+
+
+@router.post("/shards/{shard_id}/judge", response_model=CandidateJudgeOut)
+def judge_shard(shard_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """On-demand LLM judge for a candidate (GRPH-650). Advisory — never mutates
+    status. A missing verdict is a cause, not quality 0."""
+    existing = db.get(MemoryShard, shard_id)
+    if existing is None:
+        raise HTTPException(404, "shard not found")
+    if existing.project_id is not None:
+        authz.require_writable(db, user.id, existing.project_id, "shard")
+    elif not authz.writable_project_ids(db, user.id):
+        raise HTTPException(403, "no write access to any project")
+    return mem_svc.advisory_judge_view(db, existing)
 
 
 @router.get("/auto-actions", response_model=list[ShardOut])

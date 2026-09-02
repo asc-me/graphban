@@ -197,10 +197,12 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 1, h: "Candidates, not truth", b: "Memory an agent writes (via add_memory or auto-extracted on Done) enters as a candidate. It stays out of the default semantic search until you publish it here." },
       { num: 2, h: "Publish or reject", b: "Publish promotes a shard into the trusted retrieval path every future agent searches. Reject keeps it for provenance but never surfaces it. Both are recorded in Activity." },
       { num: 3, h: "Recurring lessons", b: "When the same correction shows up several times, it's grouped as a recurring lesson — publish it once as a principle and drop the duplicates in a single action." },
+      { num: 4, h: "Ask the judge", b: "When the LLM judge is on, score a candidate on demand. Similarity is always there. A missing judge score means nobody asked, or the model could not decide — never that the note is fine." },
     ],
     related: [
       { label: "Lessons", to: "/lessons" },
       { label: "Activity", to: "/activity" },
+      { label: "Project", to: settingsPath("project") },
     ],
   },
 

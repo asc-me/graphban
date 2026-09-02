@@ -63,6 +63,7 @@ import type {
   Project,
   RequestItem,
   RoadmapPhase,
+  CandidateJudge,
   ScoredCandidate,
   AssistantThread,
   AssistantThreadDetail,
@@ -491,6 +492,8 @@ export const api = {
     request<Shard[]>(`/memory/auto-actions${projectId ? `?project_id=${projectId}` : ""}`),
   undoAutoShard: (id: string) =>
     request<Shard>(`/memory/shards/${id}/undo-auto`, { method: "POST" }),
+  judgeShard: (id: string) =>
+    request<CandidateJudge>(`/memory/shards/${id}/judge`, { method: "POST" }),
 
   lessons: (projectId: string, filters: LessonFilters = {}) => {
     const q = new URLSearchParams({ project_id: projectId });

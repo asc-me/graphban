@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 107 of the 180 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 108 of the 181 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -90,6 +90,7 @@ Sparse process: org house + project overlay. Agents consume the resolved contrac
 | PATCH | `/api/memory/shards/{id}` | JWT | |
 | POST | `/api/memory/shards/{id}/publish` | JWT | Promote a candidate into the trusted retrieval path |
 | POST | `/api/memory/shards/{id}/reject` | JWT | Reject a candidate (kept for provenance, never searched) |
+| POST | `/api/memory/shards/{id}/judge` | JWT | On-demand LLM judge for a candidate. Advisory — never mutates status. A missing verdict is a cause, not quality 0 |
 | POST | `/api/memory/search` | JWT | Published-only semantic search |
 | POST | `/api/memory/backfill` | JWT |
 | GET | `/api/memory/export` | JWT |

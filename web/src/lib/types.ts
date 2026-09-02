@@ -489,6 +489,20 @@ export interface ScoredCandidate {
   duplicate_of: string | null;
 }
 
+/** On-demand LLM judge (GRPH-650). `verdict` XOR `cause` — a missing quality is not 0. */
+export interface JudgeVerdict {
+  keep: boolean;
+  quality: number;
+  reason: string;
+}
+
+export interface CandidateJudge {
+  shard_id: string;
+  verdict: JudgeVerdict | null;
+  cause: string | null;
+  cause_detail: string;
+}
+
 export interface RequestItem {
   id: string;
   project_id: string;
