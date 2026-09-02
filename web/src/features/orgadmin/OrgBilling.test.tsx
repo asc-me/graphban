@@ -72,6 +72,27 @@ describe("Org billing self-serve (GRPH-660)", () => {
     expect(screen.queryByRole("button", { name: /Upgrade to/i })).not.toBeInTheDocument();
   });
 
+  it("enterprise is not Checkout", () => {
+    mocks.billing.self_serve = true;
+    mocks.billing.has_customer = false;
+    mocks.billing.plan = "enterprise";
+    mocks.orgs[0].role = "admin";
+    draw();
+    expect(screen.getByText(/Enterprise is operator-assigned/i)).toBeInTheDocument();
+    expect(screen.getByText(/Checkout is Pro\/Team only/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Upgrade to/i })).not.toBeInTheDocument();
+  });
+
+  it("enterprise with a customer can still manage billing", () => {
+    mocks.billing.self_serve = true;
+    mocks.billing.has_customer = true;
+    mocks.billing.plan = "enterprise";
+    mocks.orgs[0].role = "admin";
+    draw();
+    expect(screen.getByRole("button", { name: /Manage billing/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Upgrade to/i })).not.toBeInTheDocument();
+  });
+
   it("Manage billing only when a customer exists", () => {
     mocks.billing.self_serve = true;
     mocks.billing.has_customer = true;
