@@ -198,6 +198,14 @@ describe("docs overlay routes", () => {
     expect(house?.b).toMatch(/does not file a graduation checklist/);
   });
 
+  it("Org gitops overlay names a link key, not a deployment credential", () => {
+    const org = docFor(adminPath("gitops"));
+    const linked = org.sections.find((s) => /linked boxes/i.test(s.h));
+    expect(linked?.b).toMatch(/link key/);
+    expect(linked?.b).not.toMatch(/deployment credential/i);
+    expect(linked?.b).not.toMatch(/sync credential/i);
+  });
+
   it("AI providers overlay names task-model inherit, not a missing judge", () => {
     const selfHost = docFor(settingsPath("deployment/providers"));
     const hosted = docFor(settingsPath("project/providers"));
