@@ -10,6 +10,8 @@ from app.providers import iter_reply, llm_meter
 from app.schemas import (
     GrillApplyIn,
     GrillDeferIn,
+    GrillPrototypeIn,
+    PrototypeVerdictIn,
     RebaselineIn,
     GrillApplyOut,
     GrillIn,
@@ -28,8 +30,10 @@ from app.schemas import (
 from app.security import authz
 from app.security.deps import get_current_user
 from app.services import events as events_svc
+from app.services import items as items_svc
 from app.services import platform as platform_svc
 from app.services import prds as prd_svc
+from app.services import prototypes as proto_svc
 
 router = APIRouter(prefix="/prds", tags=["prds"])
 
@@ -107,6 +111,69 @@ def prd_grill_defer(prd_id: str, body: GrillDeferIn, db: Session = Depends(get_d
                            target_id=prd.id, project_id=prd.project_id,
                            meta={"dimension": body.dimension, "reason": body.reason})
     return prd_svc.grill_state(db, prd.id)
+
+
+def _load_writable_prd_and_item(db, user, prd_id: str, item_id: str):
+    """Both halves of a handoff, guarded once. A foreign item 404s rather than 403s —
+    the same existence-hiding the item routes use (AL-76)."""
+    prd = prd_svc.get_prd(db, prd_id)
+    if prd is None:
+        raise HTTPException(404, "prd not found")
+    authz.require_writable(db, user.id, prd.project_id, "prd")
+    item = items_svc.get_item(db, item_id)
+    if item is None or item.project_id != prd.project_id:
+        raise HTTPException(404, "item not found in this prd's project")
+    return prd, item
+
+
+@router.post("/{prd_id}/grill/prototype")
+def prd_grill_prototype(prd_id: str, body: GrillPrototypeIn, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """Emit the paste-ready prompt-pack for one high-fidelity question (GRPH-235).
+
+    The grill's `open_decisions` dimension asks which questions need a prototype; this is
+    the hop that hands one over. Generation stays a human paste into the design tool —
+    the repo has no browser tooling, and the grilling for this item settled that emitting
+    the right prompt plus capturing the result is the automatable unit. The handoff is
+    recorded as a grill turn so the transcript, not a bystander's memory, knows it
+    happened."""
+    prd, item = _load_writable_prd_and_item(db, user, prd_id, body.item_id)
+    try:
+        out = proto_svc.emit_prompt_pack(db, prd, item, dimension=body.dimension,
+                                         note=body.note)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    events_svc.record_user(db, user, action="grill_prototype_emit", target_type="prd",
+                           target_id=prd.id, project_id=prd.project_id,
+                           meta={"item": item.key, "dimension": body.dimension,
+                                 "turn_seq": out["turn_seq"]})
+    return out
+
+
+@router.post("/{prd_id}/grill/prototype/verdict")
+def prd_grill_prototype_verdict(prd_id: str, body: PrototypeVerdictIn,
+                                db: Session = Depends(get_db),
+                                user: User = Depends(get_current_user)):
+    """Carry the prototype's result back into the grill — the hop that makes this a loop.
+
+    Upload the screenshot to `/api/public/attachments` first, then post its id with the
+    verdict. The verdict (a human's reading, not the pixels — providers are text-only)
+    becomes a user grill turn citing the artifact URL, and a `screenshot` receipt lands on
+    the item. The NEXT grill round grades it; this call does not, which keeps grading
+    where grading lives. And `high → low` fidelity is only ever PROPOSED here — the author
+    confirms the flip on the item, because a wrong auto-flip silently deletes the
+    "needs a prototype" signal AL-68 exists to provide."""
+    prd, item = _load_writable_prd_and_item(db, user, prd_id, body.item_id)
+    try:
+        out = proto_svc.record_verdict(db, prd, item, attachment_id=body.attachment_id,
+                                       verdict=body.verdict, dimension=body.dimension)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    events_svc.record_user(db, user, action="grill_prototype_verdict", target_type="prd",
+                           target_id=prd.id, project_id=prd.project_id,
+                           meta={"item": item.key, "dimension": body.dimension,
+                                 "turn_seq": out["turn_seq"]})
+    return out
 
 
 @router.post("/{prd_id}/rebaseline", response_model=PrdOut)

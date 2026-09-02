@@ -477,6 +477,36 @@ def record_grill_turns(
     return added
 
 
+def append_grill_turn(
+    db: Session, prd_id: str, *, role: str, text: str, via: str = "", actor: str = "",
+) -> GrillTurn:
+    """Append exactly ONE turn, server-authored. Returns the stored row.
+
+    This is not `record_grill_turns`. That function takes the client's FULL transcript and
+    appends only its suffix — which means a one-item history is a no-op on any PRD that
+    already has turns (`_already_stored` returns `len(existing)` with no window, slicing
+    away the one turn you came to add). The prototype handoff (GRPH-235) authors turns the
+    server itself knows happened — a handoff emitted, a verdict carried back — and those
+    need an append that means "append".
+
+    Same seq rule as `record_grill_turns` (`len(existing)`), so the two writers interleave
+    on the same contiguous counter and `_already_stored` still recognises a client replay
+    that contains these turns.
+    """
+    turn = GrillTurn(
+        prd_id=prd_id,
+        seq=len(grill_turns(db, prd_id)),
+        role="user" if role == "user" else "agent",
+        text=(text or "").strip(),
+        via=via,
+        actor=actor,
+    )
+    db.add(turn)
+    db.commit()
+    db.refresh(turn)
+    return turn
+
+
 # ---- the completion standard (AL-297 / PRD-15 D1) -----------------------------------
 # What "the grill ran out of objections" means. Fixed and named, because if it were left
 # to whatever chat model is configured then `approved` would denote something different
