@@ -37,3 +37,14 @@ def measured(client: Any, item_id: str, paths: list[str] | None) -> dict | None:
     if not cleaned or not item_id:
         return None
     return client.call("update_item", id=item_id, touchpoints=cleaned)
+
+
+def from_cursor_stream(client: Any, item_id: str, text: str) -> dict | None:
+    """Parse-only write-back (GRPH-215 phase 1). Empty stream is not a write.
+
+    THE CALL a captured cursor-agent log makes: parse, then `measured`. Verifying
+    the parser without this would look healthy while nothing reached the item.
+    """
+    from gbfleet.adapters.cursor_stream import touched
+
+    return measured(client, item_id, touched(text))

@@ -101,3 +101,5 @@ rules serves both editors — the planned Cursor rules (AL-147) apply to Grok Bu
 - [mcp.md](mcp.md) — the full 30-tool reference + error taxonomy.
 - [AL-201 spike](spikes/al-201-grok-build-worktrees.md) — running collision-free clusters on
   Grok Build's parallel worktrees, with touchpoint auto-capture.
+- [GRPH-215 spike](spikes/grph-215-cursor-worktrees.md) — the same seam for Cursor: parse
+  stream-json writes; do not give Cursor a second worktree owner.

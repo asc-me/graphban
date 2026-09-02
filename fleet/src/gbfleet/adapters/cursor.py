@@ -24,6 +24,7 @@ from ..spawn import Launch
 from ..worktree import Worktree
 from . import Adapter, Support, Tuning
 from .claude import POINTER
+from .cursor_stream import touched as stream_touched_paths
 
 
 class CursorAgent(Adapter):
@@ -76,6 +77,10 @@ class CursorAgent(Adapter):
         """
         return []
 
+    def stream_touched(self, text: str) -> list[str]:
+        """Write-tool paths from `--output-format stream-json`. Reads are not writes."""
+        return stream_touched_paths(text)
+
     def launch(
         self, seat: Seat, tree: Worktree, instruction_file: Path, binary: Path,
         model: str = "", tuning: Tuning | None = None, *,
@@ -91,6 +96,9 @@ class CursorAgent(Adapter):
                 "--force",         # nobody is there to approve a command
                 "--approve-mcps",  # ...or to approve the seat we just handed it
                 "--trust",         # ...or to trust the worktree it is standing in
+                # GRPH-215 phase 1: structured writes, not a debug log. Must sit
+                # before POINTER — a flag after it is prompt text.
+                "--output-format", "stream-json",
                 POINTER,
             ],
             seat_path=self.seat_path(tree.path),

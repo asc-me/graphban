@@ -422,8 +422,11 @@ not assumed, and the answers differ enough that the gaps matter more than the co
 
 `cursor-agent` has `--output-format stream-json` and `--stream-partial-output`, which
 give structured progress rather than a debug log. That is a different feature reached a
-different way, and quietly substituting it would be the fabrication `codex.py` refuses
-to make. `gbagent` is ours and has no flag either; it already has a per-turn trace
+different way, and quietly substituting it **as debug** would be the fabrication
+`codex.py` refuses to make. Launch does pass `--output-format stream-json` for
+touchpoint capture (GRPH-215): write-tool paths are parsed in
+`adapters/cursor_stream.py` and unioned onto the git-diff measurement. That is not a
+debug log, and the debug gap above stays announced. `gbagent` is ours and has no flag either; it already has a per-turn trace
 (GRPH-506) and simply no way to be told where to put it, so fixing that is real work
 rather than a declaration.
 

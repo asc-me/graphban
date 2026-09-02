@@ -52,3 +52,18 @@ def measure(tree: Worktree) -> list[str]:
 
     changed = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     return sorted(f for f in changed if not is_seat_relative(f))
+
+
+def including_stream(adapter: str, git_paths: list[str], stdout: str) -> list[str]:
+    """Union git-diff with a vendor stream parser, if the adapter has one.
+
+    Git-diff is ground truth (shell writes, not just tool calls). The stream is extra
+    capture — Cursor writeToolCall (GRPH-215) — and empty extra is not a write.
+    """
+    from .adapters import ADAPTERS
+
+    impl = ADAPTERS.get(adapter)
+    extra = impl.stream_touched(stdout) if impl is not None else []
+    if not extra:
+        return list(git_paths)
+    return sorted(set(git_paths) | set(extra))

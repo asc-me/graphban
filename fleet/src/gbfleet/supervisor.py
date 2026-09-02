@@ -907,11 +907,19 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
         # left uncommitted, so the branch now holds the whole of what it did. Measuring
         # before would miss exactly the work that was most at risk.
         try:
-            wave.touched[child.branch] = tp_mod.measure(tree)
+            git_paths = tp_mod.measure(tree)
         except ValueError as exc:
             # Not silently empty. "We could not measure" and "it changed nothing" are
             # different answers and only one of them is reassuring.
             wave.failures.append(f"{child.branch}: {exc}")
+            git_paths = None
+        if git_paths is not None:
+            # GRPH-215 CALL: union vendor stream writes (Cursor stream-json) onto
+            # the git-diff measurement. Skipping this would leave the parser correct
+            # and the reap blind to it.
+            wave.touched[child.branch] = tp_mod.including_stream(
+                child.adapter, git_paths, child.stdout_text(),
+            )
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
 
