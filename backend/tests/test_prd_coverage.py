@@ -25,6 +25,8 @@ def test_decompose_fills_gaps_and_links(client, auth):
     assert dry["created"] == []
 
     # create=true creates linked backlog items.
+    from tests.prd_approve import approve_id
+    approve_id(prd["id"])
     made = client.post(f"/api/prds/{prd['id']}/decompose?create=true", headers=auth).json()
     assert len(made["created"]) == 2
     db = SessionLocal()
@@ -122,6 +124,8 @@ def test_mcp_decompose_and_coverage(client, auth):
     prd = client.post("/api/prds", json={
         "title": "MCP Spec", "body": "# MCP Spec\n\n## One\n\n## Two\n", "project_id": "core",
     }, headers=auth).json()
+    from tests.prd_approve import approve_id
+    approve_id(prd["id"])
     made = _mcp(client, key, "decompose_prd", {"prd_id": prd["id"], "create": True})["structuredContent"]
     assert len(made["created"]) == 2
     cov = _mcp(client, key, "prd_coverage", {"prd_id": prd["id"]})["structuredContent"]

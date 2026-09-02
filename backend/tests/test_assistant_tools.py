@@ -117,9 +117,11 @@ def test_decompose_prd_creates_tracked_tasks(db):
     from app.services import items as items_svc
     from app.services import prds as prd_svc
 
+    from tests.prd_approve import approve
     prd = prd_svc.create_prd(db, title="Sync Spec", body=(
         "# Sync Spec\n\n## API sync endpoint\n"
         "The server exposes a sync endpoint that ingests external events.\n"))
+    approve(db, prd)
     r = at.dispatch(_ctx(db, "prd", prd.id), ToolCall(id="c1", name="decompose_prd", input={}))
     assert not r.is_error and "created" in r.content and prd.id in r.content
     assert any(i.prd_id == prd.id for i in items_svc.search_items(db, query="sync", project_id="core"))

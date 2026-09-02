@@ -419,11 +419,16 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
             </div>
           )}
         </div>
-        {cov.gaps.length > 0 && (
+        {cov.gaps.length > 0 && cov.status === "approved" && (
           <Button size="sm" onClick={fillGaps} disabled={busy}>
             <ListChecks size={13} />
             {busy ? "Creating…" : `Fill ${cov.gaps.length} gap${cov.gaps.length > 1 ? "s" : ""}`}
           </Button>
+        )}
+        {cov.gaps.length > 0 && cov.status !== "approved" && (
+          <div className="max-w-[16rem] text-right font-mono text-[10.5px] text-faint">
+            Fill gaps after the grill earns approved — a {cov.status} is not a task list
+          </div>
         )}
       </div>
 

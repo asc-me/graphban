@@ -360,7 +360,8 @@ CORE_TOKENS = 9064
 
 #: Per tier, so a tier cannot quietly grow back to the untiered weight — the item's
 #: acceptance, in a form that fails when it stops being true.
-TIER_TOKENS = {"prd": 2001, "codegraph": 1030, "fleet": 799, "misc": 1288}
+TIER_TOKENS = {"prd": 2002, "codegraph": 1030, "fleet": 799, "misc": 1288}
+# prd 2001 -> 2002 (GRPH-654). `decompose_prd` names the approved gate.
 
 
 def test_the_core_manifest_is_the_size_recorded():

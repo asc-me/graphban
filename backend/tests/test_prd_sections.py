@@ -132,6 +132,8 @@ def test_full_coverage_reads_as_no_gaps(client, auth):
     """A PRD whose buildable sections are all tracked has zero gaps — previously the
     prose sections kept it looking permanently incomplete."""
     prd_id = _make_prd(client, auth)
+    from tests.prd_approve import approve_id
+    approve_id(prd_id)
     created = client.post(f"/api/prds/{prd_id}/decompose?create=true", headers=auth).json()["created"]
     assert len(created) == 2
     cov = client.get(f"/api/prds/{prd_id}/coverage", headers=auth).json()
@@ -141,6 +143,8 @@ def test_full_coverage_reads_as_no_gaps(client, auth):
 
 def test_decompose_create_makes_only_real_tasks(client, auth):
     prd_id = _make_prd(client, auth)
+    from tests.prd_approve import approve_id
+    approve_id(prd_id)
     client.post(f"/api/prds/{prd_id}/decompose?create=true", headers=auth)
     titles = [i["title"] for i in client.get("/api/items?project_id=core", headers=auth).json()
               if i.get("prd_id") == prd_id]

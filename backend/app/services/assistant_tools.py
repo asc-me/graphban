@@ -123,6 +123,9 @@ def _decompose_prd(ctx: ToolContext, inp: dict) -> str:
     prd = prd_svc.get_prd(ctx.db, ctx.entity_id)
     if prd is None:
         return f"prd not found: {ctx.entity_id}"
+    # Always create=True. A refused draft must not read as "already fully tracked" —
+    # that is the absence-as-clean hole. DecomposeRequiresApproval propagates to
+    # dispatch, which marks is_error.
     result = prd_svc.decompose(ctx.db, prd, create=True, include_prose=bool(inp.get("include_prose")))
     created = result.get("created", [])
     if not created:

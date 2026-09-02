@@ -36,6 +36,8 @@ def _prd(client, auth, body=BODY, title="Sync Spec"):
 
 
 def _decompose(client, auth, prd):
+    from tests.prd_approve import approve_id
+    approve_id(prd["id"])
     return client.post(f"/api/prds/{prd['id']}/decompose?create=true", headers=auth).json()
 
 

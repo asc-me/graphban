@@ -335,7 +335,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `extract_lessons` | `id` | Distil lessons into memory (returns `scheduled: true` immediately; shards land on `linked_shards`) |
 | `generate_digest` | `project_id` | Compose a progress digest across the project |
 | `prd_coverage` | `prd_id` | Spec-to-task rollup: per-section counts, `gaps` (no tasks), `empty_sections` (no substance). `shaped: false` is not a clean pass (read-only) |
-| `decompose_prd` | `prd_id`, `create` | Propose (or create) one task per un-covered PRD section, each carrying the PRD's framing prose |
+| `decompose_prd` | `prd_id`, `create` | Propose (or create) one task per un-covered PRD section, each carrying the PRD's framing prose. `create=true` is refused unless the PRD is `approved` (grill earns it) |
 | `create_prd` | `title`, `body`, `template`, `project_id` | **Author a PRD** (the handoff artifact) — `## ` sections drive decompose/coverage |
 | `get_prd` | `prd_id` | The full PRD including its markdown `body` and a `body_hash` (GRPH-519) |
 | `update_prd` | `prd_id`, `title`, `status`, `section`, `base_hash`, `body` | Patch a PRD. **`section`** replaces one `## ` heading's contents and leaves every other byte alone; a whole-body replace needs `base_hash` from `get_prd` (GRPH-357). **`approved` is not settable** — it is reached by finishing the grill; setting it returns `conflict` naming what is still outstanding (AL-300) |
@@ -468,7 +468,8 @@ flood the corpus it exists to improve.
 Items can link to a **PRD + section** (`prd_id` / `prd_section` on `create_item`/`update_item`),
 so the spec and the tracker stay joined. `decompose_prd(prd_id, create=true)` proposes one
 tracked task per un-covered PRD section (the gaps) and, with `create`, creates them as backlog
-items linked back to the section — the spec drives the tracker.
+items linked back to the section — the spec drives the tracker. Filing is refused until the
+PRD is `approved` (the grill earns it); a dry-run still proposes on a draft.
 
 **Each task carries the PRD's framing sections with it** (GRPH-261). A section body reads
 correctly inside a document and incompletely outside one: the rules an implementer needs —
