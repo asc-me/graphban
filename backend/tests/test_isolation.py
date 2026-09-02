@@ -49,6 +49,7 @@ READ_GETS = [
 PRD_BY_ID = [
     "/api/prds/PRD-1",
     "/api/prds/PRD-1/coverage",
+    "/api/prds/PRD-1/evaluate",
     "/api/prds/PRD-1/versions",
 ]
 

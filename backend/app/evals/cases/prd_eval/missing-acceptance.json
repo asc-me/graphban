@@ -1,0 +1,13 @@
+{
+  "id": "missing-acceptance",
+  "surface": "prd_eval",
+  "input": {
+    "title": "[eval] gitops without a done-when",
+    "body": "# Gitops without a done-when\n\n## Problem\n\nAgents guess the git model of a repo because Graphban never tells them. They open PRs against main because that is what models do by default.\n\n## Goals\n\nNamed models write the six fields. Migration assist files tracker items. Graphban does not run git itself.\n\n## Non-Goals\n\nNo git hosting. No CI. The supervisor does not push, merge, or rebase on anyone's behalf.\n"
+  },
+  "expect": {
+    "eval_mechanical_ready": false,
+    "eval_missing": ["acceptance"],
+    "must_contain": ["acceptance"]
+  }
+}

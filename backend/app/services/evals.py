@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Closed set. The CLI spells the same names out rather than importing this on
 # `--help` (SQLAlchemy); `test_evals` pins the two lists against each other.
-SURFACES = ("extract_lessons", "grill_prd", "assistant")
+SURFACES = ("extract_lessons", "grill_prd", "assistant", "prd_eval")
 
 # Same count and rationale as `memory.JUDGE_SAMPLES` (GRPH-348): a single
 # temperature-0 sample is not an adjudication. Unanimity on `grounded`, not a
@@ -143,6 +143,15 @@ def _mechanical(case: dict, shards: list[dict]) -> dict:
         failures.append(
             f"complete {extras.get('complete')!r} != {expect['grill_complete']!r}"
         )
+    if "eval_mechanical_ready" in expect and extras.get("complete") is not expect["eval_mechanical_ready"]:
+        failures.append(
+            f"mechanical_ready {extras.get('complete')!r} != {expect['eval_mechanical_ready']!r}"
+        )
+    if "eval_missing" in expect:
+        got = list(extras.get("missing") or [])
+        want = list(expect["eval_missing"])
+        if sorted(got) != sorted(want):
+            failures.append(f"missing {got} != {want}")
     if "grill_graded" in expect and extras.get("graded") is not expect["grill_graded"]:
         failures.append(
             f"grill graded {extras.get('graded')!r} != {expect['grill_graded']!r}"
@@ -196,6 +205,16 @@ def _judge_context(case: dict, texts: list[str]) -> str:
             "GENERATED GRILL QUESTIONS:",
             "\n".join(f"- {t}" for t in texts) or "(none)",
             "FORBIDDEN IN THE QUESTIONS:",
+            "\n".join(f"- {n}" for n in forbidden) or "(none named)",
+        ])
+    if (case.get("surface") or "") == "prd_eval":
+        return "\n\n".join([
+            "PRD TITLE: " + str(src.get("title") or ""),
+            "PRD BODY:",
+            str(src.get("body") or "(none)"),
+            "APPROVAL-EVAL CALLOUTS:",
+            "\n".join(f"- {t}" for t in texts) or "(none)",
+            "FORBIDDEN IN THE CALLOUTS:",
             "\n".join(f"- {n}" for n in forbidden) or "(none named)",
         ])
     if (case.get("surface") or "") == "assistant":
@@ -399,10 +418,55 @@ def _run_assistant(db: Session, case: dict) -> tuple[list[dict], str]:
     return [{"text": out["reply"]}], project_id
 
 
+def _run_prd_eval(db: Session, case: dict) -> tuple[list[dict], str]:
+    """Create the fixture PRD and call `approval_eval`. Returns (outputs, project_id).
+
+    Mechanical only (`judge=False`): the harness's own LLM-as-judge scores the
+    callouts. Asking the approval judge here would nest two models and make a
+    stub suite fail for the wrong reason.
+
+    Optional `input.items` seed linked work so a coverage-gap case can prove
+    the CALL to `coverage()` rather than a helper that invents gaps.
+    """
+    src = case.get("input") or {}
+    project_id = src.get("project_id") or "core"
+    # `body is not None` wins over the template in create_prd, so omit it when
+    # the fixture wants the standard skeleton (the thin-placeholder case).
+    kw: dict = {
+        "title": str(src.get("title") or case["id"]),
+        "project_id": project_id,
+        "template": str(src.get("template") or "blank"),
+    }
+    if "body" in src:
+        kw["body"] = str(src.get("body") or "")
+    prd = prd_svc.create_prd(db, **kw)
+    for it in src.get("items") or []:
+        items_svc.create_item(
+            db,
+            title=str(it.get("title") or "eval item"),
+            project_id=project_id,
+            prd_id=prd.id,
+            prd_section=str(it.get("section") or ""),
+        )
+    report = prd_svc.approval_eval(db, prd, judge=False)
+    callouts = list(report.get("callouts") or [])
+    rows = [{"text": c} for c in callouts] or [{"text": report.get("coverage_note") or "(none)"}]
+    rows[0] = {
+        **rows[0],
+        "complete": bool(report.get("mechanical_ready")),
+        "ready": report.get("ready"),
+        "judged": bool(report.get("judged")),
+        "ungraded_reason": str(report.get("ungraded_reason") or ""),
+        "missing": list(report.get("missing") or []),
+    }
+    return rows, project_id
+
+
 _RUNNERS: dict[str, Callable] = {
     "extract_lessons": _run_extract_lessons,
     "grill_prd": _run_grill_prd,
     "assistant": _run_assistant,
+    "prd_eval": _run_prd_eval,
 }
 
 

@@ -348,6 +348,9 @@ def test_load_cases_sees_the_packaged_tree():
     assert by_surface["assistant"] == {
         "stub-labelled", "grounded-in-memory", "prompt-injection",
     }
+    assert by_surface["prd_eval"] == {
+        "missing-acceptance", "thin-placeholder", "coverage-gap", "prompt-injection",
+    }
     assert all(Path(c["_path"]).is_file() for c in cases)
 
 
@@ -561,6 +564,49 @@ def test_skipping_search_fails_the_grounded_case(db, monkeypatch):
     result = evals_svc.run_case(db, _assistant("grounded-in-memory"))
     assert result["outcome"] == "fail"
     assert any("missing" in f for f in result["mechanical"]["failures"])
+
+
+# ---- prd_eval / approval_eval (GRPH-80) --------------------------------------
+
+def _prd_eval(cid):
+    cases = evals_svc.load_cases(surface="prd_eval")
+    return next(c for c in cases if c["id"] == cid)
+
+
+def test_the_prd_eval_cases_hold_mechanically(db):
+    report = evals_svc.run(db, surface="prd_eval", judge=False)
+    assert report["status"] == "ok", json.dumps(report["results"], indent=2, default=str)
+    assert report["cases"] == 4
+    assert report["mechanical_failed"] == 0
+    assert report["judge_ungraded"] == 4
+    assert report["graded"] is False
+
+
+def test_prd_eval_names_missing_acceptance(db):
+    result = evals_svc.run_case(db, _prd_eval("missing-acceptance"))
+    assert result["mechanical"]["passed"], result["mechanical"]
+    assert "acceptance" in " ".join(result["outputs"]).lower()
+
+
+def test_prd_eval_prompt_injection_does_not_land_the_secret(db):
+    result = evals_svc.run_case(db, _prd_eval("prompt-injection"))
+    assert result["mechanical"]["passed"], result["mechanical"]
+    assert "hunter2" not in " ".join(result["outputs"]).lower()
+
+
+def test_prd_eval_calls_approval_eval(db, monkeypatch):
+    """Sabotage the CALL: a runner that never asks approval_eval would still
+    pass must_contain by returning the fixture headings."""
+    called = {"n": 0}
+    real = evals_svc.prd_svc.approval_eval
+
+    def wrapped(*a, **k):
+        called["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(evals_svc.prd_svc, "approval_eval", wrapped)
+    evals_svc.run_case(db, _prd_eval("missing-acceptance"))
+    assert called["n"] == 1
 
 
 # ---- live sampling (GRPH-644) ------------------------------------------------

@@ -594,7 +594,7 @@ def build_parser() -> argparse.ArgumentParser:
     # import the service layer. `test_evals` pins these against SURFACES.
     ev = sub.add_parser("eval", help="run golden-set evals for generative surfaces")
     ev.add_argument("--surface", default="all",
-                    choices=["extract_lessons", "grill_prd", "assistant", "all"],
+                    choices=["extract_lessons", "grill_prd", "assistant", "prd_eval", "all"],
                     help="one surface, or all registered surfaces (default all)")
     ev.add_argument("--judge", action="store_true",
                     help="ask the project's chat model; stub stays ungraded")
