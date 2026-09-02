@@ -38,6 +38,8 @@ describe("the org overview", () => {
     );
     // Not a table of zeroes — a next action.
     expect(screen.getByText(/Link your first deployment/i)).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Mint a link key/i })).toBeTruthy();
+    expect(screen.queryByText(/sync credential/i)).toBeNull();
     expect(screen.queryByText(/Graph nodes/i)).toBeNull();
   });
 

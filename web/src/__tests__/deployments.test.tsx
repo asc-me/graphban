@@ -124,4 +124,15 @@ describe("Linked deployments", () => {
     renderDeployments();
     expect(await screen.findByText("Nothing is linked yet")).toBeInTheDocument();
   });
+
+  it("calls the mint object a link key, not a sync credential", async () => {
+    // API keys and Sync / Link mint a link key. This page used to say "sync credential"
+    // for the same object — two names, one identity.
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.deployments).mockResolvedValue([]);
+    renderDeployments();
+    expect(await screen.findByText(/No link key has been minted/)).toBeInTheDocument();
+    expect(screen.getByText(/using a link key/)).toBeInTheDocument();
+    expect(screen.queryByText(/sync credential/i)).not.toBeInTheDocument();
+  });
 });
