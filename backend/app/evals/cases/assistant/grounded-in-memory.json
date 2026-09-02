@@ -1,0 +1,14 @@
+{
+  "id": "grounded-in-memory",
+  "surface": "assistant",
+  "input": {
+    "question": "What is the integration branch for this repo?",
+    "memory": [
+      "Convention: the integration branch is stage, never main."
+    ]
+  },
+  "expect": {
+    "min_shards": 1,
+    "must_contain": ["integration branch is stage", "Local stub agent"]
+  }
+}

@@ -33,10 +33,9 @@ from app.schemas import (
 )
 from app.security import authz
 from app.security.deps import get_current_user, get_user_or_agent_key
+from app.services import agent_chat as agent_chat_svc
 from app.services import code_graph as code_svc
 from app.services import galaxy as galaxy_svc
-from app.services import items as items_svc
-from app.services import memory as mem_svc
 from app.services import platform as platform_svc
 from app.services.projects import resolve_project_id
 
@@ -74,11 +73,6 @@ def _readable_pid(db: Session, user: User, project_id: str | None) -> str:
     return pid
 
 
-SYSTEM = (
-    "You are Graphban's project agent. Answer using the supplied project state and "
-    "memory shards. Be concise and cite item ids where relevant."
-)
-
 CODE_SYSTEM = (
     "You are Graphban's codebase agent. Answer questions about the code's structure and "
     "relations using ONLY the supplied code graph — the described modules/files/symbols and "
@@ -88,37 +82,14 @@ CODE_SYSTEM = (
 )
 
 
-def _build_context(db: Session, project_id: str | None, hits) -> str:
-    all_items = items_svc.list_items(db, project_id=project_id)
-    by_status: dict[str, int] = {}
-    for it in all_items:
-        by_status[it.status] = by_status.get(it.status, 0) + 1
-    parts = []
-    summary = ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in sorted(by_status.items()))
-    parts.append(f"Project state: {summary or 'no items yet'}.")
-    in_progress = [it for it in all_items if it.status == "in_progress"]
-    if in_progress:
-        parts.append("In progress: " + "; ".join(f"{it.id} {it.title}" for it in in_progress[:3]) + ".")
-    nxt = items_svc.suggest_next(db, project_id=project_id)
-    if nxt:
-        parts.append(f"Suggested next: {nxt.id} — {nxt.title}.")
-    if hits:
-        parts.append("Relevant memory:")
-        parts += [f"  · ({score:.2f}) {s.text}" for s, score in hits]
-    else:
-        parts.append("No matching memory shards found.")
-    return "\n".join(parts)
-
-
 @router.post("/chat", response_model=ChatOut)
 def chat(body: ChatIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     pid = _readable_pid(db, user, body.project_id)
-    hits = mem_svc.search_memory(db, body.message, top_k=3, project_id=pid)
-    context = _build_context(db, pid, hits)
-    reply = platform_svc.chat_model_for(db, pid).chat(system=SYSTEM, context=context, question=body.message)
+    out = agent_chat_svc.reply(db, project_id=pid, message=body.message)
     return ChatOut(
-        reply=reply,
-        shards=[ShardHit(shard=ShardOut.model_validate(s), score=round(sc, 4)) for s, sc in hits],
+        reply=out["reply"],
+        shards=[ShardHit(shard=ShardOut.model_validate(s), score=round(sc, 4))
+                for s, sc in out["hits"]],
     )
 
 
@@ -130,18 +101,16 @@ def _sse(event: str, data: str) -> str:
 def chat_stream(body: ChatIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Server-Sent Events: a `shards` event, then `delta` events, then `done` (F3)."""
     pid = _readable_pid(db, user, body.project_id)
-    hits = mem_svc.search_memory(db, body.message, top_k=3, project_id=pid)
-    context = _build_context(db, pid, hits)
+    chat, context, hits = agent_chat_svc.assemble(db, project_id=pid, message=body.message)
     shards = [
         ShardHit(shard=ShardOut.model_validate(s), score=round(sc, 4)).model_dump(mode="json")
         for s, sc in hits
     ]
 
-    chat = platform_svc.chat_model_for(db, pid)  # resolve while the request DB session is open
-
     def gen():
         yield _sse("shards", json.dumps(shards))
-        for piece in iter_reply(chat, system=SYSTEM, context=context, question=body.message):
+        for piece in iter_reply(chat, system=agent_chat_svc.SYSTEM, context=context,
+                                question=body.message):
             yield _sse("delta", json.dumps({"text": piece}))
         yield _sse("done", "{}")
 
