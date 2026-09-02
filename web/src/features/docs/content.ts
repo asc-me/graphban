@@ -251,7 +251,7 @@ const CONTENT: Record<string, DocEntry> = {
     sections: [
       { num: 1, h: "AI Providers (This box)", b: "Under the deployment section — providers are what the box runs on, not per-project config. Add a credential for Anthropic, OpenAI, Gemini, Grok, Groq, DeepSeek, Mistral, Ollama, Qwen, Kimi, GLM, MiniMax, OpenRouter, Together, Fireworks, Perplexity, Cohere, or any custom OpenAI-compat endpoint; every compat entry carries an editable endpoint so a gateway or local server is one field, not a code change. Embeddings stay a deploy-time setting." },
       { num: 2, h: "Integrations", b: "Connect GitHub/Drive config and copy the inbound issues webhook — opened GitHub issues become tracker items." },
-      { num: 3, h: "Project, members, keys", b: "Edit project config and flags, review member roles, and create/revoke API keys (shown once). The mint dialog asks for scope — Project pins the agent's writes to the active project, Global lets the agent name a project per call — and which tool tiers the key advertises. The same axes exist for the first-run key as `graphban init --key-scope` / `--key-tiers`." },
+      { num: 3, h: "Project, members, keys", b: "Edit project config and flags, review member roles, and mint/revoke API keys (shown once). The mint dialog asks for scope — Project pins the agent's writes to the active project, Global lets the agent name a project per call — and which tool tiers the key advertises. The same axes exist for the first-run key as `graphban init --key-scope` / `--key-tiers`." },
     ],
     related: [{ label: "MCP Tools", to: "/mcp-tools" }],
   },

@@ -348,6 +348,10 @@ describe("Fleet view", () => {
     );
     expect(line).toBeInTheDocument();
     expect(screen.getByText(/release 1 lease and 3 reservations/)).toBeInTheDocument();
+    // The irreversible confirm names the object Settings mints. "Credential" here is the
+    // two-surfaces mix: an operator cannot tell whether their API key is the one that dies.
+    expect(screen.getByText(/Your own API key is untouched/)).toBeInTheDocument();
+    expect(screen.queryByText(/Your own credential is untouched/)).not.toBeInTheDocument();
     expect(api.endWave).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "End wave-1" }));
