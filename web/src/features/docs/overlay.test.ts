@@ -374,4 +374,12 @@ describe("docs overlay routes", () => {
     expect(body).toMatch(/seat/i);
     expect(mcp.related?.some((r) => r.label === "API keys")).toBe(true);
   });
+
+  it("MCP Tools overlay names Looking for API keys, not an LLM secret", () => {
+    for (const path of ["/mcp-tools", settingsPath("project/mcp")]) {
+      const auth = docFor(path).sections.find((s) => /authenticate/i.test(s.h));
+      expect(auth?.b, path).toMatch(/Looking for API keys/);
+      expect(auth?.b, path).toMatch(/not an LLM secret/);
+    }
+  });
 });
