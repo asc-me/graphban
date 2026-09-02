@@ -240,6 +240,11 @@ class Settings(BaseSettings):
     # reason `pending_validation` exists, and nothing else re-asks.
     credential_retry_seconds: int = 60
 
+    # LLM call spans (GRPH-225). How long `llm_call_spans` rows live; 0 or negative
+    # keeps everything. The table is telemetry, not the ledger — unbounded growth of
+    # per-call rows is the difference between a cost panel and an ops incident.
+    llm_span_retention_days: int = 90
+
     # Org invites (AL-74b). Delivered by email; when SMTP is unconfigured the email
     # service falls back to a console/outbox transport (fine for self-host + tests).
     # `app_base_url` is the SPA origin used to build the invite-accept link in the

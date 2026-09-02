@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.errors import QuotaExceeded
 from app.models import AssistantProposedAction, User
+from app.providers import llm_meter
 from app.providers.toolcall import MAX_ITERS
 from app.security import authz
 from app.security.deps import get_current_user
@@ -195,7 +196,12 @@ def send_message(thread_id: str, body: MessageIn, db: Session = Depends(get_db),
                          thread_id=thread.id)
     tools = at.available_tools(ctx)
     # Resolve context + session eagerly while the request DB session is open.
-    session = chat.tool_session(system=_SYSTEM, context=_context(db, thread), question=body.message)
+    # The llm_context tags CREATION only — the tool-session wrapper stamps the feature
+    # onto the session's spans when the session is built (GRPH-225), so the turns that
+    # stream later, from the response generator's thread where this block has already
+    # exited, still carry "assistant".
+    with llm_meter.llm_context(feature="assistant", project_id=thread.project_id):
+        session = chat.tool_session(system=_SYSTEM, context=_context(db, thread), question=body.message)
 
     org_id = quotas.org_id_for_project(db, thread.project_id)
 

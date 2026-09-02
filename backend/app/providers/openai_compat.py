@@ -50,12 +50,16 @@ class OpenAICompatChat:
 
     def stream(self, *, system: str, context: str, question: str,
                temperature: float | None = None):
+        # include_usage was already the tool-session convention (AL-179); the plain
+        # stream is where most spend happens, and the tail chunk costs nothing extra.
+        # A compat endpoint that rejects the field would surface here as a provider
+        # error, not as silently-metered traffic (GRPH-225).
         with httpx.stream(
             "POST",
             f"{self.base_url}/chat/completions",
             headers=self._headers(),
             json={"model": self.model, "messages": _messages(system, context, question),
-                  "stream": True,
+                  "stream": True, "stream_options": {"include_usage": True},
                   **({"temperature": temperature} if temperature is not None else {})},
             timeout=_timeout(),
         ) as r:
@@ -67,8 +71,18 @@ class OpenAICompatChat:
                 if data == "[DONE]":
                     break
                 try:
-                    delta = json.loads(data)["choices"][0]["delta"].get("content")
-                except (json.JSONDecodeError, KeyError, IndexError):
+                    chunk = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                if chunk.get("usage"):  # the usage-only tail chunk (no choices)
+                    from app.providers import llm_meter
+
+                    u = chunk["usage"]
+                    llm_meter.record_usage(input=u.get("prompt_tokens"),
+                                           output=u.get("completion_tokens"))
+                try:
+                    delta = chunk["choices"][0]["delta"].get("content")
+                except (KeyError, IndexError):
                     continue
                 if delta:
                     yield delta

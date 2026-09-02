@@ -681,24 +681,26 @@ def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
 
     text = " ".join((shard.text or "").split())
     verdicts: list[dict] = []
-    for _ in range(JUDGE_SAMPLES):
-        try:
-            raw = model.chat(system=_JUDGE_SYSTEM, context=text,
-                             question=_JUDGE_QUESTION, temperature=0)
-        except Exception:  # noqa: BLE001 — a model outage must not fail the memory write
-            logger.exception("llm judge: chat call failed")
-            return None, "error"
-        verdict = _parse_judge(raw)
-        if verdict is None:
-            # Two different failures, and collapsing them would be the very conflation this
-            # function exists to undo: the judge SAYING it saw nothing is a fact about this
-            # candidate, while an unparseable reply is a fact about the model.
-            return None, ("no_input" if _NO_INPUT_RE.search(raw or "") else "unparseable")
-        if verdicts and verdict["keep"] != verdicts[0]["keep"]:
-            logger.info("llm judge: split verdict on shard %s after %d samples; "
-                        "no adjudication", shard.id, len(verdicts) + 1)
-            return None, "split"
-        verdicts.append(verdict)
+    from app.providers import llm_meter
+    with llm_meter.llm_context(feature="memory.judge", project_id=shard.project_id or ""):
+        for _ in range(JUDGE_SAMPLES):
+            try:
+                raw = model.chat(system=_JUDGE_SYSTEM, context=text,
+                                 question=_JUDGE_QUESTION, temperature=0)
+            except Exception:  # noqa: BLE001 — a model outage must not fail the memory write
+                logger.exception("llm judge: chat call failed")
+                return None, "error"
+            verdict = _parse_judge(raw)
+            if verdict is None:
+                # Two different failures, and collapsing them would be the very conflation this
+                # function exists to undo: the judge SAYING it saw nothing is a fact about this
+                # candidate, while an unparseable reply is a fact about the model.
+                return None, ("no_input" if _NO_INPUT_RE.search(raw or "") else "unparseable")
+            if verdicts and verdict["keep"] != verdicts[0]["keep"]:
+                logger.info("llm judge: split verdict on shard %s after %d samples; "
+                            "no adjudication", shard.id, len(verdicts) + 1)
+                return None, "split"
+            verdicts.append(verdict)
 
     # Agreed. Average the quality so one outlier rating cannot carry a publish on its own,
     # and keep the first reason — they concur on the verdict, so any of them explains it.
@@ -1035,7 +1037,9 @@ def search_memory(
     The trusted-publication boundary (AL-49): only `published` shards surface by
     default. `include_candidates` also returns unreviewed agent self-reports;
     `rejected` shards never surface."""
-    qvec = get_embedder().embed(query)
+    from app.providers import llm_meter
+    with llm_meter.llm_context(feature="memory.search", project_id=project_id or ""):
+        qvec = get_embedder().embed(query)
     allowed = ("published", "candidate") if include_candidates else ("published",)
 
     if not settings.is_sqlite:

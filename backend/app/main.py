@@ -58,6 +58,18 @@ async def lifespan(app: FastAPI):
 
         run_migrations()
 
+    # LLM span retention (GRPH-225), once before serving and never fatal: janitorial
+    # work on telemetry does not justify taking the box down, and a boot that dies on
+    # a DELETE is exactly the "unhandled error takes down every self-host install"
+    # failure the retry loop above goes out of its way to avoid.
+    try:
+        from app.providers import llm_meter
+
+        llm_meter.purge_expired()
+    except Exception:  # noqa: BLE001
+        logger.warning("llm span retention pass failed; spans keep accumulating until "
+                       "the next boot", exc_info=True)
+
     if settings.seed_on_start:
         from app.seed import seed
 

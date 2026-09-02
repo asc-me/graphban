@@ -1910,3 +1910,44 @@ class ReindexProgress(Base):
         DateTime(timezone=True), nullable=True
     )
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class LlmCallSpan(Base):
+    """One row per provider call (GRPH-225): who was asked, what came back, at what cost.
+
+    Deliberately NOT an `Event`: the audit ledger records accepted mutations with actor
+    identity at the boundary; this records telemetry for calls that may never become a
+    mutation (a failed extraction, a retried embed), at volumes that would bury the
+    ledger. It also has its own retention — see `llm_meter.purge_expired`.
+
+    `project_id` is a plain string, not a FK: a span must outlive the project it was
+    billed to, so that deleting a project does not silently erase its cost history (the
+    same reason `Event.target_id` survives deleted targets). Absence conventions, each
+    load-bearing: `cost_usd` NULL means UNPRICED, never zero; `input_tokens` NULL with
+    `tokens_source="none"` means the provider reports nothing and the row is a
+    zero-cost local call; `feature` "" means the call site never tagged, which charts
+    as its own bucket rather than polluting a real one.
+    """
+
+    __tablename__ = "llm_call_spans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="", index=True)  # registry id
+    model: Mapped[str] = mapped_column(String(128), default="")
+    base_url: Mapped[str] = mapped_column(String(256), default="")  # custom gateways, never the key
+    kind: Mapped[str] = mapped_column(String(16), default="chat")  # chat | extract | embed | tool_turn
+    feature: Mapped[str] = mapped_column(String(64), default="")
+    project_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    request_id: Mapped[str] = mapped_column(String(32), default="")
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_source: Mapped[str] = mapped_column(String(12), default="none")  # reported | estimated | none
+    latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ok: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    error_class: Mapped[str] = mapped_column(String(64), default="")
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retryable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

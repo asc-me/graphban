@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.models import User
-from app.providers import iter_reply
+from app.providers import iter_reply, llm_meter
 from app.schemas import (
     GrillApplyIn,
     GrillDeferIn,
@@ -420,6 +420,13 @@ def grill_stream(prd_id: str, body: GrillIn, db: Session = Depends(get_db), user
     # Resolve the project's provider eagerly, while the request DB session is open.
     resolved = platform_svc.resolve_chat(db, prd.project_id)
     provider, chat = resolved.provider_id, resolved.chat
+    # Attribution goes on the INSTANCE, not a `with llm_context(...)` around the
+    # generator body: each chunk of a response generator runs in a fresh copy of the
+    # caller's context (iterate_in_threadpool), where a contextvar set/reset pair is
+    # illegal. The project is already bound at resolution; everything this stream asks
+    # the model for is one user action (GRPH-225). The round's classification is a
+    # separate chat and tags its own synchronously, inside the service.
+    llm_meter.tag(chat, feature="grill")
 
     def gen():
         # Accumulate the reply as it streams so the questions the grill ASKED are

@@ -3182,6 +3182,18 @@ async def mcp_endpoint(
         params = body.get("params", {})
         name = params.get("name")
         args = params.get("arguments", {}) or {}
+        # LLM span attribution (GRPH-225): a model call made inside a tool carries the
+        # tool's name. DELIBERATELY SET-NEVER-RESET: the dispatch threadpool and the
+        # deferred background tasks (completion judge, lesson extraction) each run in a
+        # fresh copy of THIS task's context, and request tasks are isolated from each
+        # other — a reset in a finally would untag precisely the deferred calls that most
+        # need a feature on them, while a bare set cannot leak between requests.
+        from app.providers import llm_meter
+
+        llm_meter.feature_var.set(f"mcp:{name or 'unknown'}")
+        _arg_proj = args.get("project_id") if isinstance(args, dict) else None
+        if _arg_proj:
+            llm_meter.project_var.set(str(_arg_proj))
         try:
             # Validate arguments against the declared schema before dispatch, so a
             # bad call is an actionable error rather than a KeyError or a silently

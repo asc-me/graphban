@@ -28,6 +28,7 @@ Alembic; SQLite (tests / zero-infra dev) uses `create_all`.
 | `api_keys` | `id` | Scoped agent key: name, prefix, `hashed_key` (SHA-256), scopes, last used |
 | `project_tag_history` | `tag` | A tag a project used to hold — one row per rename. Tags are never reused on a deployment |
 | `legacy_entity_keys` | `old_key` | Ids issued before project tags existed (`AL-12`, `R-33`, `PRD-1`), seeded once so they resolve forever |
+| `llm_call_spans` | `id` | One row per provider call (GRPH-225): provider/model/base_url, `kind` (`chat\|extract\|embed\|tool_turn`), `feature`, `project_id` (a plain string, NOT a foreign key — a span must outlive the project it was billed to), token counts with `tokens_source` (`reported\|estimated\|none`), `cost_usd` (**NULL = unpriced**, never 0), latency, and `ok`/`error_class`/`http_status`/`retryable`. Retention: `LLM_SPAN_RETENTION_DAYS`, swept at startup. Migration `0097` |
 
 ## Keys are rendered, not stored (PRD-13)
 

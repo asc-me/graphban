@@ -202,7 +202,7 @@ def _fallback_for(db: Session, scope: str, primary_id: str):
 
 def _from_credential(cred: Credential, source: str, model_override: str = "",
                      *, fell_back_from: str = "", db: Session | None = None,
-                     scope: str = "") -> Resolved:
+                     scope: str = "", project_id: str = "") -> Resolved:
     """Build the adapter from a credential row, honouring a project's model override.
 
     The override reaches `build_chat` and not just the returned `model` field. Reporting an
@@ -211,9 +211,11 @@ def _from_credential(cred: Credential, source: str, model_override: str = "",
     between would disagree.
     """
     model = model_override or cred.model
+    # project_id binds span attribution (GRPH-225) at construction — the resolution
+    # that answered "which provider for THIS project" is the authority on that field.
     chat = providers.build_chat(
         cred.kind, base_url=cred.base_url,
-        api_key=secrets.decrypt(cred.api_key), model=model,
+        api_key=secrets.decrypt(cred.api_key), model=model, project_id=project_id,
     )
 
     # Wrapped only when a usable fallback exists, so a deployment without one gets exactly the
@@ -225,6 +227,7 @@ def _from_credential(cred: Credential, source: str, model_override: str = "",
             fallback=providers.build_chat(
                 second.kind, base_url=second.base_url,
                 api_key=secrets.decrypt(second.api_key), model=second.model,
+                project_id=project_id,
             ),
             fallback_id=second.id,
         )
@@ -277,7 +280,7 @@ def resolve_chat(db: Session, project_id: str) -> Resolved:
     if usable(cred):
         return _from_credential(cred, "project",
                                 getattr(project, "model_override", "") or "",
-                                db=db, scope=scope)
+                                db=db, scope=scope, project_id=project_id)
 
     # The project asked for something it is not getting. `fell_back_from` carries that the
     # whole way down, so every outcome below reports the substitution rather than looking
@@ -299,11 +302,12 @@ def resolve_chat(db: Session, project_id: str) -> Resolved:
         # routing around it would hide a broken default forever; a project credential has
         # somewhere to fall to, so it falls.
         return _from_credential(default, "deployment", fell_back_from=wanted,
-                                db=db, scope=scope)
+                                db=db, scope=scope, project_id=project_id)
 
     # Nothing resolved. `dangling` when a pointer was SET and did not survive — the operator
     # has something to fix, and it is not the same situation as never having configured one.
-    return Resolved(provider_id="stub", chat=providers.build_chat("stub"),
+    return Resolved(provider_id="stub",
+                    chat=providers.build_chat("stub", project_id=project_id),
                     source="dangling" if pointer else "stub",
                     fell_back_from=wanted)
 
@@ -314,7 +318,8 @@ def chat_model_for(db: Session, project_id: str) -> ChatModel:
 
 def extractor_for(db: Session, project_id: str) -> Extractor:
     provider, base_url, api_key, model = _chat_params(get_config(db, project_id))
-    return providers.build_extractor(provider, base_url=base_url, api_key=api_key, model=model)
+    return providers.build_extractor(provider, base_url=base_url, api_key=api_key,
+                                     model=model, project_id=project_id)
 
 
 # ---- Per-conversation model picker (AL-176) --------------------------------------------
@@ -331,7 +336,8 @@ def resolve_chat_for(db: Session, project_id: str, provider_id: str) -> tuple[st
     """(provider_id, chat model) for a SPECIFIC provider a thread chose — not the project's
     active one. An unconfigured / stub pick resolves to the offline stub."""
     provider, base_url, api_key, model = _provider_params_for(get_config(db, project_id), provider_id)
-    return provider, providers.build_chat(provider, base_url=base_url, api_key=api_key, model=model)
+    return provider, providers.build_chat(provider, base_url=base_url, api_key=api_key,
+                                          model=model, project_id=project_id)
 
 
 def _is_configured(cfg: PlatformConfig, prov: dict) -> bool:

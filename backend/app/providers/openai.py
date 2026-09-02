@@ -45,7 +45,12 @@ class OpenAIEmbedder:
                     timeout=_timeout(),
                 )
                 r.raise_for_status()
-                return r.json()["data"][0]["embedding"]
+                payload = r.json()
+                from app.providers import llm_meter
+
+                u = payload.get("usage") or {}
+                llm_meter.record_usage(input=u.get("prompt_tokens") or u.get("total_tokens"))
+                return payload["data"][0]["embedding"]
             except Exception as e:  # noqa: BLE001 — retried, then re-raised below
                 last = e
                 if attempt + 1 < attempts:
@@ -70,7 +75,12 @@ class OpenAIEmbedder:
             timeout=_timeout() if callable(globals().get("_timeout")) else 60.0,
         )
         r.raise_for_status()
-        rows = r.json()["data"]
+        body = r.json()
+        rows = body["data"]
+        from app.providers import llm_meter
+
+        u = body.get("usage") or {}
+        llm_meter.record_usage(input=u.get("prompt_tokens") or u.get("total_tokens"))
         out: list[list[float]] = [[] for _ in texts]
         for row in rows:
             out[row.get("index", rows.index(row))] = row["embedding"]

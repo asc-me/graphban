@@ -54,7 +54,11 @@ class OllamaEmbedder:
                 timeout=_timeout(),
             )
             r.raise_for_status()
-            vectors = r.json().get("embeddings")
+            body = r.json()
+            vectors = body.get("embeddings")
+            from app.providers import llm_meter
+
+            llm_meter.record_usage(input=body.get("prompt_eval_count"))
             if isinstance(vectors, list) and len(vectors) == len(texts):
                 return vectors
             logger.warning("ollama /api/embed returned %s vectors for %d inputs; falling back "
@@ -80,7 +84,11 @@ class OllamaEmbedder:
                     timeout=_timeout(),
                 )
                 r.raise_for_status()
-                return r.json()["embedding"]
+                payload = r.json()
+                from app.providers import llm_meter
+
+                llm_meter.record_usage(input=payload.get("prompt_eval_count"))
+                return payload["embedding"]
             except Exception as e:  # noqa: BLE001 — retried, then re-raised below
                 last = e
                 if attempt + 1 < attempts:
@@ -135,6 +143,12 @@ class OllamaChat:
                 if piece:
                     yield piece
                 if obj.get("done"):
+                    # The done line carries the counts (GRPH-225): prompt_eval_count /
+                    # eval_count are ollama's, exact when present.
+                    from app.providers import llm_meter
+
+                    llm_meter.record_usage(input=obj.get("prompt_eval_count"),
+                                           output=obj.get("eval_count"))
                     break
 
     def tool_session(self, *, system: str, context: str, question: str):
