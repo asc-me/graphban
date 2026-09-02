@@ -429,6 +429,20 @@ const CONTENT: Record<string, DocEntry> = {
     ],
   },
 
+  "org-roles": {
+    badge: "ROLES",
+    title: "Roles & permissions",
+    tagline: "People-roles. Fleet roles are a seat, not a credential.",
+    sections: [
+      { num: 1, h: "Not a missing page", b: "If you can open this, the speculative flag is on. A URL that 404s when the flag is off is the decision, not an oversight." },
+      { num: 2, h: "People, not fleet", b: "These are roles for people. Agent roles — planner, worker, reviewer — are a seat on Fleet, enforced at call time — not a credential. A change on this screen cannot grant or remove one. That word is an LLM provider row." },
+    ],
+    related: [
+      { label: "Users & access", to: adminPath("users") },
+      { label: "Fleet", to: "/fleet" },
+    ],
+  },
+
   "org-teams": {
     badge: "TEAMS",
     title: "Teams",
@@ -522,6 +536,7 @@ export function docFor(pathname: string): DocEntry {
   if (path.startsWith("/admin")) return CONTENT["operator"];
 
   if (path.startsWith(adminPath("gitops"))) return CONTENT["org-gitops"];
+  if (path.startsWith(adminPath("users/roles"))) return CONTENT["org-roles"];
   if (path.startsWith(adminPath("users"))) return CONTENT["org-users"];
   if (path.startsWith(adminPath("teams"))) return CONTENT["org-teams"];
   if (path.startsWith(adminPath("deployments"))) return CONTENT["org-deployments"];
