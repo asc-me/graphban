@@ -906,10 +906,20 @@ export function ApiKeysPanel() {
     <Section
       title="API keys"
       extra={
-        // Fleet's "Looking for MCP?" is the other direction of the same question.
-        <Link to="/fleet" className="text-[12px] font-normal text-muted transition-colors hover:text-fg-2">
-          Looking for seats?
-        </Link>
+        <div className="flex items-center gap-3">
+          {/* AI Providers' "Looking for API keys?" is the other direction. This page
+              mints Graphban keys; LLM credentials (what the box runs on) live there. */}
+          <Link
+            to={settingsPath("deployment/providers")}
+            className="text-[12px] font-normal text-muted transition-colors hover:text-fg-2"
+          >
+            Looking for LLM credentials?
+          </Link>
+          {/* Fleet's "Looking for MCP?" is the other direction of the same question. */}
+          <Link to="/fleet" className="text-[12px] font-normal text-muted transition-colors hover:text-fg-2">
+            Looking for seats?
+          </Link>
+        </div>
       }
       desc={
         <>

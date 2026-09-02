@@ -328,6 +328,7 @@ describe("docs overlay routes", () => {
     const body = keys.sections.map((s) => `${s.h} ${s.b}`).join(" ");
     expect(body).toMatch(/seat/i);
     expect(keys.related?.some((r) => r.label === "Fleet")).toBe(true);
+    expect(keys.related?.some((r) => r.label === "AI providers")).toBe(true);
   });
 
   it("API keys overlay names a link key, not a sync credential", () => {

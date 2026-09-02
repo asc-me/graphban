@@ -272,6 +272,7 @@ const CONTENT: Record<string, DocEntry> = {
     related: [
       { label: "MCP Tools", to: settingsPath("project/mcp") },
       { label: "Fleet", to: "/fleet" },
+      { label: "AI providers", to: settingsPath("deployment/providers") },
     ],
   },
 
