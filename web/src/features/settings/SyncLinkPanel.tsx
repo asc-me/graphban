@@ -172,7 +172,7 @@ function CloudLinkCard({
             <LinkRow label="Cloud URL" value={status.cloud_url} />
             {status.org && <LinkRow label="Tenant / org" value={status.org} />}
             <LinkRow
-              label="Credential"
+              label="Link key"
               value={status.credential_set ? "configured" : "missing"}
               valueClass={status.credential_set ? "text-accent" : "text-st-blocked"}
               note="scope: sync"
@@ -211,7 +211,7 @@ function CloudLinkCard({
             <Input value={cloudUrl} onChange={(e) => setCloudUrl(e.target.value)} placeholder="cloud.graphban.dev" />
           </div>
           <div>
-            <Label>Sync API key</Label>
+            <Label>Link key</Label>
             <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="paste key…" />
           </div>
           <div>
