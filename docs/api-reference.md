@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 110 of the 183 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 113 of the 186 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -391,8 +391,11 @@ which is what keeps the cross-tenant isolation guarantee honest.
 | GET | `/api/admin/org-requests` | Pending additional-org requests |
 | POST | `/api/admin/org-requests/{id}` | Approve or deny one |
 
-Plan assignment is `PUT /api/orgs/{id}/plan`, operator-gated the same way. There is no
-suspend, restore, or impersonate — those endpoints do not exist.
+Plan assignment is `PUT /api/orgs/{id}/plan`, operator-gated the same way. Self-serve
+upgrades (GRPH-82) are org-admin, not operator: `/api/orgs/{id}/billing/checkout` and
+`/api/orgs/{id}/billing/portal` — 404 when Stripe is unset, so a manual-assignment
+deploy does not look broken. There is no suspend, restore, or impersonate — those
+endpoints do not exist.
 
 Two response fields carry a distinction the UI depends on:
 
@@ -433,5 +436,6 @@ See [MCP tools](mcp.md) for the tool catalog.
 | GET | `/api/public/duplicates` | Live duplicate check (`?q=&project_id=`) |
 | GET | `/api/public/roadmap` | Read-only roadmap (for the share link) |
 | POST | `/api/public/github/webhook` | Inbound GitHub issue → tracker item |
+| POST | `/api/public/stripe/webhook` | Stripe → `Organization.plan`. 404 when Stripe is unset; 401 on a bad signature. Never applies an unsigned payload |
 
 All public endpoints share a per-IP sliding-window rate limit (20/60s).

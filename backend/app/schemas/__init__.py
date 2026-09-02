@@ -338,6 +338,23 @@ class BillingOut(BaseModel):
     plan: str
     limits: PlanLimitsOut
     usage: UsageOut
+    # True only when Stripe is fully configured. False is "manual assignment",
+    # not "billing is broken" — absence of keys is today's default.
+    self_serve: bool = False
+
+
+class CheckoutIn(BaseModel):
+    plan: str
+    success_url: str
+    cancel_url: str
+
+
+class PortalIn(BaseModel):
+    return_url: str
+
+
+class BillingUrlOut(BaseModel):
+    url: str
 
 
 class SetPlanIn(BaseModel):

@@ -141,10 +141,18 @@ class Settings(BaseSettings):
     hosted_mode: bool = False
 
     # Plan/quota administration (AL-75). During private beta, org plans are assigned
-    # MANUALLY by an operator (Stripe self-serve billing comes later). Only accounts
-    # whose email is in this comma-separated allowlist may change an org's plan — an
-    # org owner can't upgrade their own org for free.
+    # MANUALLY by an operator. Stripe self-serve (GRPH-82) lights up only when the
+    # four STRIPE_* keys below are set; unset keeps this path as the only writer.
+    # Only accounts whose email is in this comma-separated allowlist may change an
+    # org's plan by hand — an org owner can't upgrade their own org for free.
     platform_admin_emails: str = ""
+
+    # Self-serve billing (GRPH-82). Empty = manual assignment only. All four must
+    # be set before checkout, the portal, or the webhook do anything.
+    stripe_api_key: str = ""
+    stripe_webhook_secret: str = ""
+    stripe_price_pro: str = ""
+    stripe_price_team: str = ""
 
     @property
     def platform_admin_email_set(self) -> set[str]:
