@@ -42,12 +42,13 @@ export function McpToolsView() {
         <div className="ml-auto flex items-center gap-3">
           {/* This page is the catalog. The key that authenticates lives on Settings →
               API keys — the page people open this one looking for. Named as a question
-              because the destination is the answer. */}
+              because the destination is the answer. Same words as AI Providers:
+              "a key" could be an Anthropic secret. */}
           <Link
             to={settingsPath("project/api-keys")}
             className="text-[12px] text-muted transition-colors hover:text-fg-2"
           >
-            Looking for a key?
+            Looking for API keys?
           </Link>
           <div className="flex items-center gap-2 rounded-lg border border-[#1c2620] bg-[rgba(95,208,122,0.05)] px-2.5 py-1.5 font-mono text-[10.5px] text-st-done">
             <span className="blink h-1.5 w-1.5 rounded-full bg-st-done shadow-[0_0_8px_#5fd07a]" />

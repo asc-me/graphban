@@ -18,7 +18,7 @@ vi.mock("@/lib/queries", () => ({
 }));
 
 describe("MCP Tools", () => {
-  it("sends someone looking for a key to API keys, not a mint on this catalog", () => {
+  it("sends someone looking for API keys to API keys, not a mint on this catalog", () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={qc}>
@@ -27,7 +27,9 @@ describe("MCP Tools", () => {
         </MemoryRouter>
       </QueryClientProvider>,
     );
-    expect(screen.getByRole("link", { name: /looking for a key\?/i }))
+    // Same question AI Providers asks. "Looking for a key?" could be an Anthropic secret.
+    expect(screen.getByRole("link", { name: /looking for api keys\?/i }))
       .toHaveAttribute("href", settingsPath("project/api-keys"));
+    expect(screen.queryByRole("link", { name: /looking for a key\?/i })).not.toBeInTheDocument();
   });
 });
