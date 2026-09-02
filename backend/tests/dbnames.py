@@ -145,6 +145,59 @@ class NotIsolated(RuntimeError):
     """
 
 
+_SQLITE_SIDECARS = ("-journal", "-wal", "-shm")
+
+
+def template_name(live: str, suffix: str) -> str:
+    """Where the empty/seeded snapshot lives, derived from the live database name.
+
+    SQLite files keep a `.db` suffix so they stay gitignored (`backend/*.db`):
+    `./.pytest.db` → `./.pytest_t0.db`. Postgres names have no suffix, so the marker
+    is appended: `graphban_test_gw0` → `graphban_test_gw0_t0`.
+    """
+    if live.endswith(".db"):
+        return f"{live[:-3]}{suffix}.db"
+    return f"{live}{suffix}"
+
+
+def copy_sqlite_file(source: str, target: str) -> None:
+    """Replace `target` with a copy of `source`. Target sidecars are dropped so a leftover
+    WAL cannot roll into the snapshot.
+
+    The SQLite half of `_copy_database`. Postgres uses `CREATE DATABASE … TEMPLATE …`;
+    there is no server here, so this is a file copy. The caller must have disposed every
+    connection to both files first — an open handle would keep the old inode.
+    """
+    import pathlib
+    import shutil
+    import sqlite3
+
+    src = pathlib.Path(source)
+    if not src.is_file():
+        raise FileNotFoundError(source)
+    # Make the source file the whole database (no WAL to leave behind).
+    conn = sqlite3.connect(source)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    if pathlib.Path(source).resolve() == pathlib.Path(target).resolve():
+        return
+    for suffix in _SQLITE_SIDECARS:
+        pathlib.Path(f"{target}{suffix}").unlink(missing_ok=True)
+    pathlib.Path(target).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+
+
+def unlink_sqlite_path(path: str) -> None:
+    """Delete a SQLite file and its journal/WAL sidecars. Does not touch `.lock`."""
+    import pathlib
+
+    pathlib.Path(path).unlink(missing_ok=True)
+    for suffix in _SQLITE_SIDECARS:
+        pathlib.Path(f"{path}{suffix}").unlink(missing_ok=True)
+
+
 def worker_url(url: str, worker: str) -> str:
     """The database `worker` owns, derived from the base URL.
 

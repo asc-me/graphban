@@ -1,24 +1,24 @@
 """Shared fixtures.
 
-**The schema is built once per session; only the DATA is reset between tests.**
+**The schema is built once per session. Each test is a snapshot restore, not a truncate.**
 
 It used to be rebuilt per test — `drop_all` plus a dropped `alembic_version`, so the
-lifespan re-ran the entire migration chain for every one of ~1,400 tests. Measured on
-Postgres that was 231 ms each, and setup accounted for essentially the whole 13-minute CI
-job; the test bodies were close to free. Truncating instead costs ~97 ms and takes the job
-to roughly half.
+lifespan re-ran the entire migration chain for every test. Truncating instead cut that
+roughly in half, and seeding (~198 ms, inside the app's lifespan) was then the largest
+cost left. Hoisting the seed needed a per-test transaction the downgrade tests cannot
+live inside, so it stayed.
 
-What that buys is only worth having if isolation survives it, so:
+GRPH-529 hoisted it anyway, with a TEMPLATE copy on Postgres: two snapshots per worker
+(empty / seeded), restored by replacing the live database. SQLite did not get that path
+and kept DELETE-every-table plus a re-seed. The suite grew from ~1,400 tests to 3,420;
+SQLite CI paid the old reset 3,420 times (~19 min) while Postgres paid a file copy
+(~7 min). This file now uses the snapshot restore on both engines — `CREATE DATABASE
+… TEMPLATE …` on Postgres, a file copy on SQLite.
 
-- every table is emptied before each test, so no test can see another's rows;
-- the schema is re-checked before each test too (a 14 ms no-op at head). Two tests
-  deliberately DOWNGRADE the schema mid-run to prove a data migration backfills real rows,
-  and one of them failing part-way would otherwise leave every later test running against
-  a schema from revision 0037.
-
-Seeding still runs per test, inside the app's own lifespan — ~198 ms, and the largest cost
-left. Hoisting it needs each test wrapped in a transaction that is rolled back, which the
-downgrade tests above cannot live inside, so it is deliberately not done here.
+Which snapshot depends on what the test asked for. A test that uses `client` has always
+seen the prototype dataset (the lifespan seeds). A test that does not has always seen
+an empty database. The copy also subsumes schema repair: a test that downgrades and
+fails used to leave the schema behind; the next test replaces the whole database.
 """
 import os
 
@@ -218,19 +218,28 @@ def _admin_engine():
 
 
 def _copy_database(source: str, target: str) -> None:
-    """`CREATE DATABASE target TEMPLATE source` — a file copy, and in CI a RAM copy since
-    the cluster lives in tmpfs.
+    """Replace `target` with a copy of `source`.
 
-    Postgres refuses to copy a database anyone is connected to, and refuses to drop one
-    too, so both ends are cleared first. `engine.dispose()` handles our own pool; the
-    terminate covers a connection some test opened and did not close, which would otherwise
-    surface as an unexplained failure in whichever test happened to run next.
+    Postgres: `CREATE DATABASE target TEMPLATE source` — a file copy, and in CI a RAM
+    copy since the cluster lives in tmpfs. It refuses to copy a database anyone is
+    connected to, so both ends are cleared first. `engine.dispose()` handles our own
+    pool; the terminate covers a connection some test opened and did not close.
+
+    SQLite: the same idea with no server — copy the file. The caller has disposed the
+    pool; leftover WAL/journal on the target is dropped so it cannot roll into the
+    snapshot.
     """
-    from sqlalchemy import text
-
     from app.db import engine
 
     engine.dispose()
+    if _is_sqlite():
+        from tests.dbnames import copy_sqlite_file
+
+        copy_sqlite_file(source, target)
+        return
+
+    from sqlalchemy import text
+
     admin = _admin_engine()
     try:
         with admin.begin() as conn:
@@ -256,35 +265,44 @@ def _build_templates() -> None:
     from app.db import SessionLocal, engine
     from app.seed import seed
 
+    from tests.dbnames import template_name
+
     live = engine.url.database
     _build_schema()
-    _copy_database(live, live + _TMPL_EMPTY)
+    _copy_database(live, template_name(live, _TMPL_EMPTY))
     db = SessionLocal()
     try:
         seed(db)          # commits
     finally:
         db.close()
-    _copy_database(live, live + _TMPL_SEEDED)
+    _copy_database(live, template_name(live, _TMPL_SEEDED))
 
 
 def _drop_templates() -> None:
     """Leave nothing behind. A worker that dies mid-session leaves its templates, and the
-    next session's `CREATE DATABASE` would fail on a name already taken — so the build side
+    next session's restore would fail on a name already taken — so the build side
     drops before creating too, and this is the tidy path rather than the only one."""
+    from app.db import engine
+    from tests.dbnames import template_name, unlink_sqlite_path
+
+    live = engine.url.database
+    engine.dispose()
+    if _is_sqlite():
+        for suffix in (_TMPL_EMPTY, _TMPL_SEEDED):
+            unlink_sqlite_path(template_name(live, suffix))
+        return
+
     from sqlalchemy import text
 
-    from app.db import engine
-
-    name = engine.url.database
-    engine.dispose()
     admin = _admin_engine()
     try:
         with admin.begin() as conn:
             for suffix in (_TMPL_EMPTY, _TMPL_SEEDED):
+                name = template_name(live, suffix)
                 conn.execute(text(
                     "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                    "WHERE datname = :n AND pid <> pg_backend_pid()"), {"n": name + suffix})
-                conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{name + suffix}"')
+                    "WHERE datname = :n AND pid <> pg_backend_pid()"), {"n": name})
+                conn.exec_driver_sql(f'DROP DATABASE IF EXISTS "{name}"')
     finally:
         admin.dispose()
 
@@ -338,41 +356,17 @@ def _drop_schema() -> None:
             conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
 
 
-def _reset_data() -> None:
-    """Empty every table, leaving the schema alone.
-
-    `alembic_version` is untouched because it is not in `Base.metadata` — emptying it would
-    put the next migration check back to square one, which is the cost being removed.
-    """
-    from sqlalchemy import text
-
-    from app.db import Base, engine
-
-    tables = Base.metadata.sorted_tables
-    with engine.begin() as conn:
-        if _is_sqlite():
-            # No TRUNCATE in SQLite. Reverse dependency order so a FK never blocks a delete.
-            for table in reversed(tables):
-                conn.execute(table.delete())
-        else:
-            names = ", ".join(f'"{t.name}"' for t in tables)
-            conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
-
-
 @pytest.fixture(scope="session", autouse=True)
 def _schema():
-    """Build the schema once for the whole session, and leave nothing behind."""
+    """Build the schema once for the whole session, and leave nothing behind.
+
+    Both engines restore from snapshots now, so the session fixture is one path:
+    drop whatever a previous run left, build empty+seeded templates, yield, then
+    drop templates and the worker's own database. SQLite used to return before
+    `_drop_worker_database` — a `-n 4` run left all four `.pytest_gw*.db` behind
+    with the helper fully tested and correctly called from a function nothing reached.
+    """
     _drop_schema()  # a previous run may have died mid-test
-    if _is_sqlite():
-        _build_schema()
-        yield
-        _drop_schema()
-        # AND the worker's FILE, which this branch used to return without doing — so the
-        # teardown added to `_drop_worker_database` was unreachable on the one engine that
-        # needed it. Measured: a `-n 4` run left all four `.pytest_gw*.db` behind with the
-        # helper fully tested and correctly called from a function nothing reached.
-        _drop_worker_database()
-        return
     _build_templates()
     yield
     _drop_schema()
@@ -389,9 +383,9 @@ def _clean_database(_schema, request):
     and failed loudly; now it would quietly read whatever the previous test left, which is
     the kind of thing that surfaces as an unexplained flake months later.
 
-    On Postgres this is a TEMPLATE copy rather than a truncate-and-reseed (GRPH-529):
-    ~80 ms against 358, because the seeded rows arrive in the file copy instead of being
-    INSERTed again for every test.
+    This is a snapshot restore rather than a truncate-and-reseed (GRPH-529): the seeded
+    rows arrive in the file copy instead of being INSERTed again for every test. SQLite
+    used to DELETE every table and re-seed; that is the 19-minute CI job.
 
     **Which template depends on what the test asked for**, read off its own fixture
     closure. A test that uses `client` gets the app's lifespan, which seeds — so it has
@@ -403,16 +397,12 @@ def _clean_database(_schema, request):
     and fails before upgrading back used to leave the schema behind for everything after
     it. The next test does not repair that schema, it replaces the whole database.
     """
-    if _is_sqlite():
-        _build_schema()  # no-op at head; repairs after a test that downgraded
-        _reset_data()
-        yield
-        return
     from app.db import engine
+    from tests.dbnames import template_name
 
     live = engine.url.database
     seeded = "client" in request.fixturenames
-    _copy_database(live + (_TMPL_SEEDED if seeded else _TMPL_EMPTY), live)
+    _copy_database(template_name(live, _TMPL_SEEDED if seeded else _TMPL_EMPTY), live)
     yield
 
 
