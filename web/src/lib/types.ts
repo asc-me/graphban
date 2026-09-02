@@ -34,6 +34,8 @@ export interface Project {
   credential_id: string | null;
   /** Its model override. Empty means the credential's own model. */
   model_override: string;
+  /** Per-task overrides (GRPH-316). Missing key = inherit the project credential. */
+  chat_roles?: Record<string, { credential_id?: string; model_override?: string }>;
 }
 
 // ── Deploy config + Organizations (hosted-only, AL-74b) ────────────────────

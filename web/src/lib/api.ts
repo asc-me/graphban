@@ -777,6 +777,11 @@ export const api = {
       `/platform/credentials/project${projectQuery(projectId)}`, {
         method: "PUT", body: JSON.stringify(body),
       }),
+  setProjectRoles: (projectId: string, roles: Record<string, { credential_id?: string; model_override?: string }>) =>
+    request<{ project_id: string; chat_roles: Record<string, { credential_id?: string; model_override?: string }>; known_roles: string[] }>(
+      `/platform/credentials/roles${projectQuery(projectId)}`, {
+        method: "PUT", body: JSON.stringify({ roles }),
+      }),
   startReindex: (projectId: string) =>
     request<{ started: { table: string; total: number }[] }>(`/platform/reindex${projectQuery(projectId)}`, {
       method: "POST",

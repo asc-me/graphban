@@ -118,6 +118,12 @@ class ProjectCredentialIn(BaseModel):
     model_override: str | None = None
 
 
+class ProjectRolesIn(BaseModel):
+    """Full replacement of the project's per-task map (GRPH-316). `{}` clears every override."""
+
+    roles: dict = {}
+
+
 def _scope(db: Session, user: User, project_id: str) -> str:
     """Resolve the caller's scope through a project the authz layer has already vetted.
 
@@ -256,6 +262,25 @@ def set_project_credential(body: ProjectCredentialIn, project_id: str = "core",
         raise HTTPException(404, "no such credential or project") from None
     return {"project_id": project.id, "credential_id": project.credential_id,
             "model_override": project.model_override}
+
+
+@router.put("/credentials/roles")
+def set_project_roles(body: ProjectRolesIn, project_id: str = "core",
+                      db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """Per-task chat overrides (GRPH-316). Unset roles inherit the project's credential.
+
+    A role that names an unusable credential is refused at resolution (ungraded), not
+    silently swapped for the project model."""
+    _scope(db, user, project_id)
+    try:
+        project = platform_svc.set_project_roles(db, project_id, body.roles)
+    except LookupError:
+        raise HTTPException(404, "no such credential or project") from None
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    return {"project_id": project.id, "chat_roles": project.chat_roles or {},
+            "known_roles": list(platform_svc.CHAT_ROLES)}
 
 
 @router.get("", response_model=PlatformConfigOut)

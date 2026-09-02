@@ -10,8 +10,8 @@ not asked or agreed), `failed`, or `absent` (nobody looked — missing cases dir
 or zero files). `pass` is not a word this report uses for the suite, because it
 is the reassuring reading of an empty judge.
 
-The judge reuses the project's chat provider (`resolve_chat`). A dedicated judge
-model is GRPH-316, not a new setting here. The rubric is groundedness against
+The judge reuses `resolve_role(..., "memory.judge")`, which inherits the
+project's chat provider until a role override is set (GRPH-316). The rubric is groundedness against
 the fixture, not "is this a good lesson?" — that question is how GRPH-358's
 false lesson would have scored well.
 
@@ -248,7 +248,7 @@ def _judge(db: Session, case: dict, shards: list[dict], *, project_id: str) -> d
     is a different sentence and must not look like the extractor did well.
     """
     try:
-        resolved = platform_svc.resolve_chat(db, project_id)
+        resolved = platform_svc.resolve_role(db, project_id, "memory.judge")
         provider, chat = resolved.provider_id, resolved.chat
     except Exception:  # noqa: BLE001 — a broken resolver is ungraded, not a crash
         logger.exception("evals judge: provider resolution failed")
