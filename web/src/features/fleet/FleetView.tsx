@@ -730,7 +730,7 @@ export function FleetView() {
               {soloAgents.length > 0 && (
                 <>
                   <div className="pt-1 text-[11px] text-faint">
-                    {soloAgents.length} un-enrolled · single-agent posture, no role gate
+                    {soloAgents.length} un-enrolled · single-agent — API key, no seat
                   </div>
                   {soloAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} />)}
                 </>
@@ -942,14 +942,22 @@ export function FleetView() {
 
         <Section
           title="Legacy: wave key"
-          desc="Only if this client cannot share one MCP config. End wave revokes it. Seats on Wave are the recommended path, and an ordinary API key is minted in Settings."
+          desc={
+            <>
+              Only if this client cannot share one MCP config. End wave revokes it.
+              all-in-one is an ordinary{" "}
+              <Link to={settingsPath("project/api-keys")} className="text-fg-2 underline-offset-2 hover:underline">
+                API key in Settings
+              </Link>
+              {" "}— register without a seat. A wave is the specialised roles.
+            </>
+          }
         >
           {/* NOT deleted with the rest of PRD-19 E8, deliberately. G6 says nothing that works
-              today stops working, and a role-narrowed credential still does — the API is
-              unchanged and this repo's own tests use one. What was wrong was having two routes
-              with nothing saying which to reach for, so the ambiguity is resolved by NAMING
-              the order rather than by removing the option out from under anyone. Collapsed
-              so the empty roster cannot still teach this as the first thing to do. */}
+              today stops working, and a role-narrowed key still does — the API is unchanged
+              and this repo's own tests use one. all-in-one is NOT offered here: that posture
+              is an un-enrolled agent on an ordinary API key (wave.ts already said so), and
+              minting it as a wave key made End wave sweep the default install. */}
           <button
             onClick={() => setShowWaveKey((v) => !v)}
             aria-expanded={showWaveKey}
@@ -960,17 +968,9 @@ export function FleetView() {
           {showWaveKey && (
           <>
           <div className="mb-3 mt-3 flex flex-wrap gap-2">
-            {/* `all-in-one` is offered beside the three because the roster REPORTS it — a
-                page that counts a posture it cannot create names a category the reader has no
-                way to produce. It mints an unnarrowed credential, which is what makes the
-                agent unrestricted. */}
-            {[...(data?.roles ?? ["planner", "worker", "reviewer"]), ALL_IN_ONE].map((r) => (
+            {WAVE_ROLES.map((r) => (
               // Selection is signalled by BACKGROUND and border, never by the role tone.
-              // Tinting the selected item with `ROLE_TONE` put `all-in-one` in `text-muted
-              // border-line-2` — byte-identical to the unselected style — so choosing it
-              // looked exactly like not choosing it. Found on the first walk, after three
-              // credentials came out all-in-one. The roster badges keep the colours; a
-              // picker's job is "which one is selected".
+              // The roster badges keep the colours; a picker's job is "which one is selected".
               <button key={r} onClick={() => setRole(r)} aria-pressed={role === r}
                 className={cn("rounded-[9px] border px-3 py-1.5 text-[12px] transition-colors",
                               role === r
@@ -981,7 +981,7 @@ export function FleetView() {
             ))}
           </div>
           <Button onClick={mint}>
-            Mint {role === ALL_IN_ONE ? "an" : "a"} {role} credential
+            Mint a {role} wave key
           </Button>
           {minted && (
             <div className="mt-3 space-y-2">

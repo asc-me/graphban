@@ -264,63 +264,41 @@ describe("Fleet view", () => {
     expect(screen.getByText(/queued until GB-A1 releases/)).toBeInTheDocument();
   });
 
-  it("offers all-in-one beside the three roles", async () => {
-    // The roster REPORTS all-in-one, so the page must be able to create one — otherwise it
-    // names a posture the reader has no way to produce. Collapsed behind the legacy mint so
-    // it is not the first thing an empty fleet teaches.
+  it("does not mint all-in-one as a wave key", async () => {
+    // wave.ts: a wave is the specialised roles; all-in-one is an un-enrolled agent on an
+    // ordinary API key. Offering it here minted a wave-tagged key that End wave swept —
+    // the default install, produced as the thing the wave exists to revoke.
     const user = userEvent.setup();
     renderView();
-    expect(screen.queryByRole("button", { name: "all-in-one" })).not.toBeInTheDocument();
     await openLegacyWaveKey(user);
-    for (const r of ["planner", "worker", "reviewer", "all-in-one"]) {
+    expect(screen.queryByRole("button", { name: "all-in-one" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /API key in Settings/ }))
+      .toHaveAttribute("href", settingsPath("project/api-keys"));
+    for (const r of ["planner", "worker", "reviewer"]) {
       expect(screen.getByRole("button", { name: r })).toBeInTheDocument();
     }
   });
 
-  it("shows which role is selected — including all-in-one", async () => {
-    // The bug: the selected style came from ROLE_TONE, and all-in-one's tone was
-    // `text-muted border-line-2` — the SAME classes as unselected. Choosing it looked
-    // identical to not choosing it, and three credentials were minted all-in-one before
-    // anyone noticed. Asserted via aria-pressed so it cannot regress into a colour question.
+  it("shows which specialised role is selected", async () => {
+    // Selection is background/border, never ROLE_TONE. When all-in-one lived here its
+    // tone was byte-identical to unselected, so choosing it looked like not choosing it.
     const user = userEvent.setup();
     renderView();
     await openLegacyWaveKey(user);
 
-    for (const r of ["planner", "worker", "reviewer", "all-in-one"]) {
+    for (const r of ["planner", "worker", "reviewer"]) {
       await user.click(screen.getByRole("button", { name: r }));
       const chosen = screen.getByRole("button", { name: r });
       expect(chosen).toHaveAttribute("aria-pressed", "true");
-      for (const other of ["planner", "worker", "reviewer", "all-in-one"].filter((x) => x !== r)) {
+      for (const other of ["planner", "worker", "reviewer"].filter((x) => x !== r)) {
         const notChosen = screen.getByRole("button", { name: other });
         expect(notChosen).toHaveAttribute("aria-pressed", "false");
-        // And it must LOOK different. `aria-pressed` alone would not have caught the original
-        // defect, which was a pure class collision — selected all-in-one rendered
-        // `text-muted border-line-2`, unselected rendered `border-line-2 text-muted`.
-        // Compared as SETS so class order never makes this pass by accident.
         const classes = (el: Element) => new Set((el.className || "").split(/\s+/).filter(Boolean));
         const a = classes(chosen);
         const b = classes(notChosen);
         expect([...a].some((c) => !b.has(c)) || [...b].some((c) => !a.has(c))).toBe(true);
       }
     }
-  });
-
-  it("mints an unnarrowed credential for all-in-one, and primes it as the solo posture", async () => {
-    api.mintFleetKey.mockResolvedValue({
-      id: "k1", plaintext: "gb_sk_secret", role: "all-in-one", wave: "wave-1", prefix: "gb_sk_ab",
-    });
-    const user = userEvent.setup();
-    renderView();
-    await openLegacyWaveKey(user);
-
-    await user.click(screen.getByRole("button", { name: "all-in-one" }));
-    await user.click(screen.getByRole("button", { name: /Mint an all-in-one credential/ }));
-
-    await waitFor(() => expect(api.mintFleetKey).toHaveBeenCalledWith(
-      expect.objectContaining({ role: "all-in-one" })));
-    // Primed as the DEFAULT posture: no reviewer agent, the human reviews. Priming it like a
-    // worker would imply a gate that deliberately does not apply here.
-    expect(await screen.findByText(/the human reviews your work/)).toBeInTheDocument();
   });
 
   it("mints a role-narrowed credential and shows all three pastes", async () => {
@@ -332,7 +310,7 @@ describe("Fleet view", () => {
     await openLegacyWaveKey(user);
 
     await user.click(screen.getByRole("button", { name: "reviewer" }));
-    await user.click(screen.getByRole("button", { name: /Mint a reviewer credential/ }));
+    await user.click(screen.getByRole("button", { name: /Mint a reviewer wave key/ }));
 
     await waitFor(() => expect(api.mintFleetKey).toHaveBeenCalledWith(
       expect.objectContaining({ role: "reviewer", project_id: "core" })));
@@ -386,7 +364,7 @@ describe("Fleet view", () => {
     const user = userEvent.setup();
     const { container } = renderView();
     await openLegacyWaveKey(user);
-    await user.click(screen.getByRole("button", { name: /Mint a worker credential/ }));
+    await user.click(screen.getByRole("button", { name: /Mint a worker wave key/ }));
     await screen.findByText(/Connect an agent · MCP/);
 
     const seen = new Set<string>();
@@ -664,6 +642,7 @@ describe("Fleet view", () => {
     expect(screen.getByText("seated")).toBeInTheDocument();
     expect(screen.getByText("solo")).toBeInTheDocument();
     expect(screen.getByText(/1 un-enrolled/)).toBeInTheDocument();
+    expect(screen.getByText(/API key, no seat/)).toBeInTheDocument();
   });
 
   it("dismisses an agent, and offers to put it back", async () => {

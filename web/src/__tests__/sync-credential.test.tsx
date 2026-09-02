@@ -77,7 +77,7 @@ describe("minting a sync credential", () => {
   it("mints with the sync scope pinned to a project, not the default read/write", async () => {
     const user = userEvent.setup();
     renderSettings();
-    await user.click(screen.getByRole("link", { name: "API Keys" }));
+    await user.click(screen.getByRole("link", { name: "API keys" }));
     await user.click(screen.getByRole("button", { name: "Sync credential" }));
     await user.type(screen.getByPlaceholderText(/laptop/), "laptop — core");
     await user.click(screen.getByRole("button", { name: /Mint credential/ }));
@@ -97,7 +97,7 @@ describe("minting a sync credential", () => {
   it("shows the link hand-off after minting, not the MCP snippet", async () => {
     const user = userEvent.setup();
     renderSettings();
-    await user.click(screen.getByRole("link", { name: "API Keys" }));
+    await user.click(screen.getByRole("link", { name: "API keys" }));
     await user.click(screen.getByRole("button", { name: "Sync credential" }));
     await user.type(screen.getByPlaceholderText(/laptop/), "laptop");
     await user.click(screen.getByRole("button", { name: /Mint credential/ }));
@@ -111,7 +111,7 @@ describe("minting a sync credential", () => {
   it("leaves agent keys on the default scopes", async () => {
     const user = userEvent.setup();
     renderSettings();
-    await user.click(screen.getByRole("link", { name: "API Keys" }));
+    await user.click(screen.getByRole("link", { name: "API keys" }));
     await user.type(screen.getByPlaceholderText(/claude-code/), "ci-agent");
     await user.click(screen.getByRole("button", { name: /Mint key/ }));
 
@@ -132,7 +132,7 @@ describe("minting a sync credential", () => {
     // choice may make is the project argument going null — same kind, same tiers.
     const user = userEvent.setup();
     renderSettings();
-    await user.click(screen.getByRole("link", { name: "API Keys" }));
+    await user.click(screen.getByRole("link", { name: "API keys" }));
     await user.click(screen.getByRole("button", { name: "Global" }));
     await user.type(screen.getByPlaceholderText(/claude-code/), "fleet-wide");
     await user.click(screen.getByRole("button", { name: /Mint key/ }));
@@ -157,7 +157,7 @@ describe("hosted Sync / Link is the cloud-org mint, not the self-host paste form
   it("API Keys is a path, so the pane is keys not the Settings catch-all", async () => {
     const user = userEvent.setup();
     renderSettings();
-    await user.click(screen.getByRole("link", { name: "API Keys" }));
+    await user.click(screen.getByRole("link", { name: "API keys" }));
     expect(await screen.findByRole("button", { name: /Mint key/ })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /^credentials$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /^Cloud link$/ })).not.toBeInTheDocument();
