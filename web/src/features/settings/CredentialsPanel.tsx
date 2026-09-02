@@ -190,7 +190,7 @@ function AddCredentialDialog({
           <div className="flex flex-col gap-3" data-testid="credential-form">
             <Field label="Label">
               <Input aria-label="Label" value={label} onChange={(e) => setLabel(e.target.value)}
-                placeholder={`${picked.label} key`} />
+                placeholder={`${picked.label} credential`} />
             </Field>
             {needs.endpoint && (
               <Field label="Endpoint URL">

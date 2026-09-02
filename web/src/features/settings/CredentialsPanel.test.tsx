@@ -292,6 +292,10 @@ describe("CredentialsPanel", () => {
     expect(await screen.findByLabelText(/provider key/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/^api key$/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/endpoint/i)).not.toBeInTheDocument();
+    // Label is the credential's name, not the secret. "Anthropic key" sat next
+    // to Provider key and read as the same object.
+    expect(screen.getByPlaceholderText("Anthropic credential")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Anthropic key")).not.toBeInTheDocument();
   });
 
   it("asks a DIFFERENT provider for different fields", async () => {
