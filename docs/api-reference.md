@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 105 of the 178 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 107 of the 180 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -210,6 +210,8 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | POST | `/api/prds/{id}/ai` | JWT | one-shot AI command (expand/risks/summarize/grill) |
 | POST | `/api/prds/{id}/grill/stream` | JWT (SSE) | interactive grill — clarifying questions (AL-67) |
 | POST | `/api/prds/{id}/grill/apply` | JWT | fold grill decisions into a proposed PRD body |
+| POST | `/api/prds/{id}/grill/prototype` | JWT | emit the paste-ready prompt-pack for one high-fidelity question; records the handoff as a grill turn (GRPH-235) |
+| POST | `/api/prds/{id}/grill/prototype/verdict` | JWT | carry the prototype's human verdict back into the grill (screenshot attachment cited); PROPOSES the high→low fidelity flip — never applies it (GRPH-235) |
 
 ## Analytics
 
