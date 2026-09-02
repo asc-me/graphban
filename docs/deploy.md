@@ -7,6 +7,7 @@ step here has been run in anger.
 > The hosted (Railway) path is separate and tracked under the `railway` items;
 > this runbook covers the current `rsync` + `docker compose` self-host deploy.
 > A native launchd/systemd install (no Docker) is [native-install.md](native-install.md).
+> Cutting a named CalVer that Settings → Updates can Install is [release.md](release.md).
 
 ## What runs where
 
@@ -94,11 +95,17 @@ from there.
 
 ```bash
 git clone git@github.com:asc-me/graphban.git ~/graphban-src
-mkdir -p ~/.graphban-apply
-python3 ~/graphban-src/scripts/graphban_compose_host.py listen \
-  --repo ~/graphban-src --dir ~/agentledger \
-  --socket ~/.graphban-apply/apply.sock
+mkdir -p ~/.graphban-apply ~/.config/systemd/user
+cp ~/graphban-src/scripts/graphban-compose-host.service ~/.config/systemd/user/
+loginctl enable-linger "$USER"
+systemctl --user daemon-reload
+systemctl --user enable --now graphban-compose-host.service
 ```
+
+Linger is what keeps the helper up after logout — without it, Install 202s and
+nothing rebuilds. To run in the foreground instead of systemd, same binary:
+`python3 ~/graphban-src/scripts/graphban_compose_host.py listen --repo
+~/graphban-src --dir ~/agentledger --socket ~/.graphban-apply/apply.sock`.
 
 In the compose project's `.env` (the server's, never rsynced):
 
@@ -247,7 +254,7 @@ ssh ubuntu-srv 'curl -s http://localhost:8001/health'
 # hosted (Railway) — no ssh; the public endpoint IS the check
 curl -s https://cloud.graphban.dev/health
 
-# {"status":"ok","service":"graphban-api","version":"2026.09.4","git_sha":"<sha>","db":"ok"}
+# {"status":"ok","service":"graphban-api","version":"YYYY.MM.N","git_sha":"<sha>","db":"ok"}
 ```
 
 Or run the whole smoke suite against either one, which checks this and more:

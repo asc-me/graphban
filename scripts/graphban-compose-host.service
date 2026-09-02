@@ -1,0 +1,12 @@
+[Unit]
+Description=Graphban compose apply helper (Settings → Updates → Install)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/graphban-src/scripts/graphban_compose_host.py listen --repo %h/graphban-src --dir %h/agentledger --socket %h/.graphban-apply/apply.sock
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -45,7 +45,7 @@ Four ways to run it. Compose is the default; the others are not replacements for
 | **Docker Compose** | Default. A laptop, or any box that already runs Docker. | `docker compose up --build` |
 | **Native service** | A team server on a Mac or a Linux box, no Docker VM. launchd / systemd. | `python3 scripts/graphban_host.py install` |
 | **Dev processes** | Hacking on this repo. | `uvicorn` + `pnpm dev` |
-| **Self-host / Railway** | An existing deployment. | [docs/deploy.md](docs/deploy.md) · [docs/deploy-railway.md](docs/deploy-railway.md) |
+| **Self-host / Railway** | An existing deployment. | [docs/deploy.md](docs/deploy.md) · [docs/deploy-railway.md](docs/deploy-railway.md) · [docs/release.md](docs/release.md) |
 
 There is no `.app`. A menu-bar wrapper around a headless team server is a worse version of
 a system service. Native means a LaunchDaemon or a systemd unit.

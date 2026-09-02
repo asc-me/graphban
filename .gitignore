@@ -42,6 +42,9 @@ sync/
 # Compose apply helper socket dir (docker-compose default mount)
 .graphban-apply/
 
+# Packed native/GitHub release trees (scripts/graphban_release.py publish)
+dist-release/
+
 # OS / editor
 .DS_Store
 

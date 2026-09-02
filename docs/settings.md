@@ -26,6 +26,10 @@ Three states: **current** (the page says this box is on the latest release),
 **available**, **unknown**. Unknown is not current: a failed feed fetch, or a
 running version that is still `0.1.0`, must not look up to date.
 
+Cutting a named CalVer so this page has something to Install is
+[release.md](release.md) (`stamp` then `publish`). GitHub's source zip is not
+a release. Apply stays this button — not the publish script, not MCP.
+
 ### Gitops
 
 `/settings/deployment/gitops`. Sparse delivery contract: integration base, whether
