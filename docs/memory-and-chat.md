@@ -32,6 +32,14 @@ into seeing unreviewed notes with `search_memory(include_candidates=true)`. Publ
 and reject are recorded in **Activity**. This keeps one hallucinated note from
 becoming ground truth for the next agent.
 
+**The review queue is scored, not blank (GRPH-79).** Similarity (AL-151) always
+suggests publish / reject / look. When the project's LLM judge is on, the same
+list also carries groundedness (does this contradict trusted memory, the linked
+item, or the code graph?) and readiness (specific, durable, non-trivial). A stub
+or an unreachable judge is **not judged**, named as such — never a quiet 0 that
+looks like a clean bill. Similarity vetoes (near-duplicate, resembles-rejected)
+still win without spending a judge call. Publishing remains the human's.
+
 **Grilling feeds the queue.** When you apply a PRD [grill](prds.md) session, each
 decision you made becomes a `candidate` shard (`origin: agent:grill`, sourced to the
 PRD) — so grilling decisions land in Memory review for approval instead of

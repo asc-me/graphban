@@ -491,12 +491,23 @@ class ShardHit(BaseModel):
 
 
 class ScoredCandidate(BaseModel):
-    """Advisory review suggestion for a candidate shard (AL-151)."""
+    """Advisory review suggestion for a candidate shard (AL-151).
+
+    `judged` / `grounded` / `ready` are the GRPH-79 LLM layer. Similarity still
+    always runs. When the judge was not asked or could not decide, `judged` is
+    false and `ungraded_reason` names why — never a fabricated 0.
+    """
     shard: ShardOut
     suggestion: str  # accept | reject | review
     confidence: float
     reasons: list[str]
     duplicate_of: str | None = None
+    judged: bool = False
+    grounded: bool | None = None
+    ready: bool | None = None
+    conflicts: list[str] = []
+    judge_reason: str = ""
+    ungraded_reason: str = ""
 
 
 class JudgeVerdictOut(BaseModel):

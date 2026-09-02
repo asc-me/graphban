@@ -2,7 +2,8 @@
 
 The write-path judge (AL-227) already scores on add_memory. This is the human-checks
 side: POST /memory/shards/{id}/judge returns a verdict or a cause, never mutates, and
-GET /candidates/scored must not call the chat model.
+GET /candidates/scored stays similarity-only while the judge toggle is off.
+GRPH-79 asks review_judge on that GET when the toggle is on.
 """
 from app.services import memory as mem_svc
 from app.services.platform import Resolved
@@ -54,14 +55,12 @@ def _candidate(client, auth, name, text="always pin the pgvector image to pg16 i
     return pid, s
 
 
-def test_scored_list_does_not_call_the_chat_model(client, auth, monkeypatch):
-    """THE CALL. Enriching GET /candidates/scored with the judge would score every
-    page load. On-demand is POST /judge; this list stays similarity-only.
-
-    Count, don't raise: `judge_verdict` swallows resolve_chat errors as cause=error,
-    so a raising patch would still return 200 with the judge having run."""
+def test_scored_list_does_not_call_the_chat_model_when_judge_is_off(client, auth, monkeypatch):
+    """Default page load stays similarity-only. GRPH-79 asks `review_judge` on GET
+    scored only when `memory_llm_judge` is on (capped). POST /judge remains the
+    on-demand re-ask (keep/quality). This pin is the cheap default, not a ban
+    on the review judge."""
     pid, _s = _candidate(client, auth, "ScoredNoChat")
-    client.patch(f"/api/projects/{pid}", json={"memory_llm_judge": True}, headers=auth)
 
     from app.services import platform as platform_svc
     calls = {"n": 0}
@@ -75,7 +74,7 @@ def test_scored_list_does_not_call_the_chat_model(client, auth, monkeypatch):
     r = client.get(f"/api/memory/candidates/scored?project_id={pid}", headers=auth)
     assert r.status_code == 200
     assert isinstance(r.json(), list)
-    assert calls["n"] == 0, "GET scored resolved a chat model; judging belongs on POST /judge"
+    assert calls["n"] == 0, "GET scored resolved a chat model while the judge toggle is off"
 
 
 def test_advisory_judge_off_is_unavailable_not_a_score(client, auth):

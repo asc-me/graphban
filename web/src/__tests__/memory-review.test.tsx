@@ -107,6 +107,55 @@ describe("Memory review queue", () => {
 });
 
 
+describe("review judge signals (GRPH-79)", () => {
+  it("shows ungrounded and not-ready without looking like a publish", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.scoredCandidates).mockResolvedValueOnce([
+      {
+        shard: candidate,
+        suggestion: "review",
+        confidence: 0.4,
+        reasons: ["review judge: contradicts published memory"],
+        duplicate_of: null,
+        judged: true,
+        grounded: false,
+        ready: false,
+        conflicts: ["published m1: we never batch writes"],
+        judge_reason: "contradicts published memory",
+        ungraded_reason: "",
+      },
+    ]);
+    renderView();
+    expect(await screen.findByText("ungrounded")).toBeInTheDocument();
+    expect(screen.getByText("not ready")).toBeInTheDocument();
+    expect(screen.getByText(/Conflicts:/)).toBeInTheDocument();
+    expect(screen.queryByText("not judged")).not.toBeInTheDocument();
+  });
+
+  it("names an ungraded judge rather than showing a quiet zero", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.scoredCandidates).mockResolvedValueOnce([
+      {
+        shard: candidate,
+        suggestion: "review",
+        confidence: 0.3,
+        reasons: ["novel — no strong signal either way"],
+        duplicate_of: null,
+        judged: false,
+        grounded: null,
+        ready: null,
+        conflicts: [],
+        judge_reason: "",
+        ungraded_reason: "stub cannot judge substance",
+      },
+    ]);
+    renderView();
+    expect(await screen.findByText(/not judged — stub cannot judge substance/)).toBeInTheDocument();
+    expect(screen.queryByText("ungrounded")).not.toBeInTheDocument();
+    expect(screen.queryByText("grounded")).not.toBeInTheDocument();
+  });
+});
+
 describe("unreviewed shards (AL-287)", () => {
   it("labels a shard nobody reviewed differently from a scorer decision", async () => {
     renderView();
