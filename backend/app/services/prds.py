@@ -3358,14 +3358,6 @@ APPROVAL_LABELS = {
     "acceptance": "Acceptance criteria",
 }
 
-#: Word-characters remaining after stripping template placeholders. The standard
-#: template's `_What is this…_` italic is 8 letters; a real section is more.
-_THIN_MIN = 40
-_ITALIC_PLACEHOLDER = re.compile(r"_[^_\n]{0,80}_")
-_EMPTY_BULLET = re.compile(r"^\s*[-*]\s*$", re.M)
-_HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
-_WORD_CHARS = re.compile(r"[a-zA-Z0-9]+")
-
 EVAL_CAUSES = {
     "not_asked": "the judge has not been asked — ungraded is not a pass",
     "no_provider": "no independent chat model is configured for this project",
@@ -3399,16 +3391,12 @@ _EVAL_SYSTEM = (
 _EVAL_QUESTION = "Score this PRD for a human reviewer. Return only the JSON object."
 
 
-def _section_substance(text: str) -> int:
-    """How much real prose is in a section, ignoring template scaffolding."""
-    cleaned = _ITALIC_PLACEHOLDER.sub(" ", text or "")
-    cleaned = _EMPTY_BULLET.sub(" ", cleaned)
-    cleaned = _HTML_COMMENT.sub(" ", cleaned)
-    return sum(len(w) for w in _WORD_CHARS.findall(cleaned))
-
-
 def _approval_completeness(body: str) -> tuple[list[dict], list[str], list[str], list[str]]:
-    """`(rows, missing, thin, callouts)` for the four standard dimensions."""
+    """`(rows, missing, thin, callouts)` for the four standard dimensions.
+
+    Occupancy is `section_is_empty` (GRPH-651) — the same predicate coverage uses —
+    so the grill panel and the coverage tab cannot disagree about a placeholder.
+    """
     titles = parse_sections(body)
     bodies = section_bodies(body)
     by_key = {_section_key(t): (t, bodies.get(t, "")) for t in titles}
@@ -3424,7 +3412,7 @@ def _approval_completeness(body: str) -> tuple[list[dict], list[str], list[str],
                             else f"add a {label} section")
             continue
         title, text = hit
-        if _section_substance(text) < _THIN_MIN:
+        if section_is_empty(text):
             rows.append({"dimension": dim, "label": label, "state": "thin",
                          "section": title})
             thin.append(dim)
@@ -3531,7 +3519,11 @@ def approval_eval(db: Session, prd: Prd, *, judge: bool = False) -> dict:
     cov = coverage(db, prd)
     gaps = list(cov.get("gaps") or [])
     implementable = int(cov.get("implementable_sections") or 0)
-    if implementable == 0:
+    shaped = bool(cov.get("shaped"))
+    empty_sections = list(cov.get("empty_sections") or [])
+    if not shaped:
+        coverage_note = "no sections yet — not a clean pass"
+    elif implementable == 0:
         coverage_note = "no buildable sections — coverage has nothing to measure"
     elif not gaps:
         coverage_note = "every buildable section has at least one item"
@@ -3539,7 +3531,7 @@ def approval_eval(db: Session, prd: Prd, *, judge: bool = False) -> dict:
         coverage_note = f"{len(gaps)} buildable section(s) have no items yet"
         callouts.extend(f"no work linked under {g}" for g in gaps)
 
-    mechanical_ready = not missing and not thin
+    mechanical_ready = not missing and not thin and shaped
     out = {
         "prd_id": prd.key,
         "judged": False,
@@ -3551,6 +3543,8 @@ def approval_eval(db: Session, prd: Prd, *, judge: bool = False) -> dict:
         "missing": missing,
         "thin": thin,
         "coverage_gaps": gaps,
+        "empty_sections": empty_sections,
+        "shaped": shaped,
         "implementable_sections": implementable,
         "coverage_note": coverage_note,
         "ambiguous": [],

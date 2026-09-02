@@ -61,6 +61,11 @@ export function ApprovalEval({
           No work linked: {data.coverage_gaps.join(" · ")}
         </p>
       )}
+      {data.shaped && data.empty_sections.length > 0 && (
+        <p className="mt-1 text-[11px] text-[#e0b34a]">
+          Empty headings: {data.empty_sections.join(" · ")}
+        </p>
+      )}
 
       {data.judged ? (
         <JudgedBlock data={data} />

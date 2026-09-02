@@ -22,6 +22,8 @@ const mechanical: PrdEval = {
   missing: ["acceptance"],
   thin: [],
   coverage_gaps: ["Adapter"],
+  empty_sections: [],
+  shaped: true,
   implementable_sections: 1,
   coverage_note: "1 buildable section(s) have no items yet",
   ambiguous: [],

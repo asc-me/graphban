@@ -70,12 +70,16 @@ def test_evaluate_uses_coverage_for_gaps(client, auth, monkeypatch):
         out = real(db, p)
         out = dict(out)
         out["gaps"] = ["PlantedGap"]
+        out["empty_sections"] = ["PlantedEmpty"]
+        out["shaped"] = True
         out["implementable_sections"] = max(1, out.get("implementable_sections") or 0)
         return out
 
     monkeypatch.setattr(prd_svc, "coverage", planted)
     body = client.get(f"/api/prds/{prd['id']}/evaluate", headers=auth).json()
     assert "PlantedGap" in body["coverage_gaps"]
+    assert "PlantedEmpty" in body["empty_sections"]
+    assert body["shaped"] is True
     assert any("PlantedGap" in c for c in body["callouts"])
 
 

@@ -911,6 +911,8 @@ export interface PrdEval {
   missing: string[];
   thin: string[];
   coverage_gaps: string[];
+  empty_sections: string[];
+  shaped: boolean;
   implementable_sections: number;
   coverage_note: string;
   ambiguous: string[];
