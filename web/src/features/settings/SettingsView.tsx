@@ -873,7 +873,7 @@ export function ApiKeysPanel() {
     const projectId = isPinned ? syncTarget : scope === "global" ? null : active?.id ?? null;
     if (isPinned && !projectId) {
       setError(
-        `Pick a project — a ${kind === "gate" ? "gate key" : "sync credential"} must target exactly one.`,
+        `Pick a project — a ${kind === "gate" ? "gate key" : "link key"} must target exactly one.`,
       );
       return;
     }
@@ -941,7 +941,7 @@ export function ApiKeysPanel() {
         {(
           [
             ["agent", "Agent key", "Talks to the MCP endpoint — read/write on items, memory, code."],
-            ["sync", "Sync credential", "Pushes a code graph from a local instance into one project. Nothing else."],
+            ["sync", "Link key", "Pushes a code graph from a local instance into one project. Nothing else. Same object Sync / Link mints."],
             ["gate", "Gate key", "Attests that work was checked, so an item may reach done. For CI or a reviewer — never for the agent doing the work."],
           ] as const
         ).map(([id, label, desc]) => (
@@ -998,7 +998,7 @@ export function ApiKeysPanel() {
           <option value="365">Expires in 365 days</option>
         </select>
         <Button size="sm" onClick={create} disabled={!name.trim()}>
-          <Plus size={14} />{kind === "sync" ? "Mint credential" : kind === "gate" ? "Mint gate key" : "Mint key"}
+          <Plus size={14} />{kind === "sync" ? "Mint link key" : kind === "gate" ? "Mint gate key" : "Mint key"}
         </Button>
       </div>
       {error && <p className="mb-2 text-[12px] text-st-blocked">{error}</p>}
@@ -1036,7 +1036,7 @@ export function ApiKeysPanel() {
       )}
       {kind === "sync" ? (
         <p className="mb-4 text-[12px] text-muted">
-          Pinned to <span className="text-fg-2">{projectName(syncTarget)}</span> — a sync credential targets exactly one
+          Pinned to <span className="text-fg-2">{projectName(syncTarget)}</span> — a link key targets exactly one
           project, so a key distributed to a fleet can only ever push there.
         </p>
       ) : kind === "gate" ? (
@@ -1150,16 +1150,16 @@ export function ApiKeysPanel() {
       </KeyGroup>
 
       <KeyGroup
-        title="Sync credentials"
+        title="Link keys"
         blurb={
           <>
             Push a code graph and nothing else. Each one <em className="not-italic text-fg-2">is</em>{" "}
             a linked deployment's identity — one key, one box — so revoking it unlinks that
-            deployment rather than just closing an access path.
+            deployment rather than just closing an access path. Sync / Link mints the same object.
           </>
         }
         rows={syncKeys}
-        empty="No deployment is linked. A sync credential is what links one, and it is minted here."
+        empty="No deployment is linked. A link key is what links one, and it is minted here."
       >
         {(k) => (
           <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">

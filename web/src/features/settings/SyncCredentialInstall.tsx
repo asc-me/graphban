@@ -37,7 +37,7 @@ export function SyncCredentialInstall({ apiKey, projectId }: { apiKey: string; p
   return (
     <div className="mt-3 rounded-[11px] border border-line-2 bg-surface-2 p-3">
       <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-faint">
-        Link a local instance · sync credential
+        Link a local instance · link key
       </div>
       <div className="mb-2 flex flex-wrap gap-1.5">
         {(
