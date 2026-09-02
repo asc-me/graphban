@@ -19,6 +19,7 @@ from app.schemas import (
     GitopsControl,
     GitopsField,
     GitopsFields,
+    GitopsPlanRef,
     GitopsProjectRef,
     GitopsView,
     GitopsWas,
@@ -154,14 +155,24 @@ def _pick_model(project: Project | None, org: Organization | None) -> GitopsFiel
     return _unmeasured()
 
 
+def _plan_ref(db: Session, project: Project | None) -> GitopsPlanRef | None:
+    if project is None or not project.gitops_model:
+        return None
+    parent = _existing_plan(db, project.id, project.gitops_model)
+    if parent is None:
+        return None
+    return GitopsPlanRef(id=parent.key, title=parent.title)
+
+
 def _view(*, project_id, org_id, fields, version_from, state, was=None, projects=None,
-          writable=False, model=None) -> GitopsView:
+          writable=False, model=None, plan=None) -> GitopsView:
     return GitopsView(
         project_id=project_id,
         org_id=org_id,
         fields=fields,
         version_from=version_from,
         model=model if model is not None else _unmeasured(),
+        plan=plan,
         control=_control(state, writable=writable),
         was=was,
         projects=list(projects) if projects is not None else [],
@@ -203,6 +214,7 @@ def resolve_local(db: Session, project_id: str | None) -> GitopsView:
         fields=_fields_from({f: _pick(project, org, f) for f in FIELDS}),
         version_from=_pick(project, org, "version_from"),
         model=_pick_model(project, org),
+        plan=_plan_ref(db, project),
         state="local",
     )
 

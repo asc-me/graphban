@@ -693,6 +693,8 @@ export interface GitopsView {
   was: GitopsWas | null;
   version_from: GitopsField<string | null>;
   model: GitopsField<string | null>;
+  /** Tracker parent filed for the current named model. Null when unmeasured or none filed. */
+  plan: { id: string; title: string } | null;
   /** Org GET roster. Identity only; overlay values stay on per-project GET. */
   projects: GitopsProjectRef[];
 }

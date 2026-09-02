@@ -157,6 +157,7 @@ def test_state1_get_context_is_unmeasured_not_main(client, auth):
     assert g["tokens"] == TOKENS
     assert g["version_from"] == UNMEASURED
     assert "model" not in g, "the preset name is a Settings label, not an agent input"
+    assert "plan" not in g, "the checklist is Settings, not CORE"
     assert g["note"] == gitops_svc.NOTE_UNMEASURED
 
 
@@ -171,6 +172,7 @@ def test_state1_rest_get_is_unmeasured_editable(client, auth):
     assert body["control"]["message"] == ""
     assert body["was"] is None
     assert body["projects"] == []
+    assert body["plan"] is None
     assert "main" not in json.dumps(body["fields"])
 
 
@@ -1034,6 +1036,33 @@ def test_patch_model_files_the_plan_on_the_items_list(client, auth):
     assert "Contract is live" in titles
     assert "First tagged cut" in titles
     assert "Graphban does not run git" in parent["description"]
+
+
+def test_get_gitops_names_the_filed_plan(client, auth):
+    """THE CALL. Deleting plan=_plan_ref from resolve_local leaves GET plan null
+    while the parent item exists."""
+    r = _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"})
+    assert r.status_code == 200, r.text
+    parent = next(
+        p for p in _plan_parents(client, auth)
+        if gitops_svc.plan_tag("prs_to_base") in p["tags"]
+    )
+    expected = {"id": parent["id"], "title": "Gitops: PRs to base"}
+    assert r.json()["plan"] == expected
+    assert _get(client, auth).json()["plan"] == expected
+    g = _gitops(_ctx(client, _mcp_key(client, auth)))
+    assert "plan" not in g
+
+
+def test_org_gitops_get_has_no_plan(client, auth, monkeypatch):
+    org, _a, _b = _hosted_org(client, auth, monkeypatch)
+    r = client.patch(
+        f"/api/orgs/{org['id']}/gitops",
+        json={"model": "prs_to_base", "base_branch": "stage"},
+        headers=auth,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["plan"] is None
 
 
 def test_reapplying_the_same_model_does_not_duplicate_the_parent(client, auth):

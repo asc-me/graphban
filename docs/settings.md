@@ -38,7 +38,8 @@ agents may push to it, optional branch/PR naming, reviewer bar, version scheme.
 - Saving a non-Unmeasured model on a **project** files a tracker parent + children
   (observe / remote / base_branch / optionally stop-pushing, one PR, tagged cut /
   contract is live). Re-applying the same model does not duplicate. Org-house apply
-  does not file per-project plans. Graphban still does not run git. Observe answers
+  does not file per-project plans. GET gitops `plan` names the parent item; get_context
+  does not. Graphban still does not run git. Observe answers
   `remote` / `none` / `unknown` as evidence; the rest stay blocked until remote or
   none. `github_repo` is not a remote. Children 2–5 accept evidence `already` when
   the repo already matches — that is a receipt, not an auto-done.
