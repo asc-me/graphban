@@ -183,10 +183,12 @@ describe("docs overlay routes", () => {
     expect(house?.b).toMatch(/does not file a graduation checklist/);
   });
 
-  it("Memory review overlay names on-demand judging and that a missing score is not clean", () => {
-    const ask = docFor("/memory-review").sections.find((s) => /ask the judge/i.test(s.h));
-    expect(ask?.b).toMatch(/nobody asked/);
+  it("Memory review overlay names list judging and that a missing score is not clean", () => {
+    const ask = docFor("/memory-review").sections.find((s) => /llm judge/i.test(s.h));
+    expect(ask?.b).toMatch(/capped/);
     expect(ask?.b).toMatch(/never that the note is fine/);
+    expect(ask?.b).toMatch(/keep\/quality/);
+    expect(ask?.b).not.toMatch(/nobody asked/);
   });
 
   it("Fleet overlay talks seats, not gate keys", () => {

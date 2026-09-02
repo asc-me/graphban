@@ -355,6 +355,7 @@ function CandidateCard({
           <button
             onClick={() => judge.mutate(shard.id, { onSuccess: setAsked })}
             disabled={busy || judge.isPending}
+            title="Re-ask keep/quality. Does not replace groundedness on the list."
             className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-line-hover hover:text-ink disabled:opacity-50"
           >
             {judge.isPending ? "Asking…" : "Ask the judge"}

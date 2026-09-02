@@ -191,9 +191,10 @@ describe("on-demand LLM judge (GRPH-650)", () => {
     project.memory_llm_judge = false;
   });
 
-  it("does not show a judge score before anyone asks", async () => {
+  it("does not show a keep/quality score before anyone asks", async () => {
     renderView();
-    expect(await screen.findByRole("button", { name: /Ask the judge/ })).toBeInTheDocument();
+    const ask = await screen.findByRole("button", { name: /Ask the judge/ });
+    expect(ask).toHaveAttribute("title", expect.stringMatching(/keep\/quality/i));
     expect(screen.queryByText(/^Judge:/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Judge unavailable/)).not.toBeInTheDocument();
   });
