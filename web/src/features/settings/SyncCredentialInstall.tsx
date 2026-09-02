@@ -28,7 +28,7 @@ export function SyncCredentialInstall({ apiKey, projectId }: { apiKey: string; p
 
   const web = [
     `Cloud URL      ${origin}`,
-    `Sync API key   ${apiKey}`,
+    `Link key       ${apiKey}`,
     `Project        ${projectId}`,
   ].join("\n");
 
@@ -86,7 +86,7 @@ export function SyncCredentialInstall({ apiKey, projectId }: { apiKey: string; p
       )}
       <p className="mt-1 text-[10.5px] text-faint">
         The CLI's <span className="font-mono text-muted-2">--project</span> names the LOCAL project being pushed; the
-        cloud target is resolved from this credential and is always{" "}
+        cloud target is resolved from this link key and is always{" "}
         <span className="font-mono text-muted-2">{projectId}</span>. Change it if the local id differs.
       </p>
       <p className="mt-1 text-[10.5px] text-faint">

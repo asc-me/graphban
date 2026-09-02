@@ -64,7 +64,8 @@ describe("SyncCredentialInstall", () => {
     const user = userEvent.setup();
     render(<SyncCredentialInstall apiKey="gb_sk_secret" projectId="core" />);
     await user.click(screen.getByRole("button", { name: /Local Settings/ }));
-    expect(screen.getByText(/Sync API key\s+gb_sk_secret/)).toBeInTheDocument();
+    expect(screen.getByText(/Link key\s+gb_sk_secret/)).toBeInTheDocument();
+    expect(screen.queryByText(/Sync API key/)).not.toBeInTheDocument();
   });
 });
 
@@ -170,6 +171,8 @@ describe("hosted Sync / Link is the cloud-org mint, not the self-host paste form
 
     expect(await screen.findByRole("heading", { name: /^Cloud link$/ })).toBeInTheDocument();
     expect(screen.getByText(/Mint a link key/)).toBeInTheDocument();
+    expect(screen.getByText(/scoped link key/i)).toBeInTheDocument();
+    expect(screen.queryByText(/scoped credential/i)).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("cloud.graphban.dev")).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("paste key…")).not.toBeInTheDocument();
     expect(screen.queryByText(/Connect this self-hosted instance/)).not.toBeInTheDocument();
