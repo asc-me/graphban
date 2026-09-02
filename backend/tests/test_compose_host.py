@@ -109,3 +109,32 @@ def test_script_is_executable():
     script = REPO / "scripts" / "graphban_compose_host.py"
     assert script.is_file()
     assert script.stat().st_mode & 0o111
+
+
+def test_apply_logs_deploy_output_so_a_failed_install_is_not_silent(tmp_path):
+    """2026.09.5/.6: Install acked 202, deploy.sh died inside the docker build,
+    and its output went to /dev/null — the box stayed on the old cut with nothing
+    on it that said why. The log beside the socket is the trail.
+    """
+    repo = tmp_path / "src"
+    (repo / "scripts").mkdir(parents=True)
+    script = repo / "scripts" / "deploy.sh"
+    script.write_text("#!/bin/sh\necho deploy-was-here\n", encoding="utf-8")
+    script.chmod(0o755)
+    dest = tmp_path / "box"
+    log = tmp_path / "apply" / "deploy.log"
+
+    got = ch.start_apply(repo, dest, "2026.09.2", log_path=log)
+    assert got["ok"] is True
+
+    # The child is detached by design; wait for it to land in the log.
+    text = ""
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        if log.exists():
+            text = log.read_text(encoding="utf-8")
+            if "deploy-was-here" in text:
+                break
+        time.sleep(0.05)
+    assert "apply 2026.09.2" in text, text
+    assert "deploy-was-here" in text, text

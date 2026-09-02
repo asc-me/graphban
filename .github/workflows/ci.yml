@@ -122,6 +122,43 @@ jobs:
       # The suite is serial otherwise and the runner has cores going spare.
       - run: .venv/bin/python -m pytest -q -n auto
 
+  backend-packaging:
+    # The install backend/Dockerfile runs: `pip install --no-cache-dir .` —
+    # NON-editable, from a tree without `.git` (rsync excludes it). Every other
+    # backend job installs `-e`, which never builds this wheel the same way. A
+    # force-include that duplicated the eval fixtures passed the whole editable
+    # suite, then killed metadata generation inside every docker build, so every
+    # updater Install on the box failed silently for two cuts. This job is the
+    # one that has to catch the next packaging break.
+    name: Backend wheel installs (non-editable)
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/pyproject.toml
+      - run: uv venv --python 3.12 .venv
+      # No `.git`, like the build context a deploy ships.
+      - run: rm -rf ../.git
+      - run: uv pip install .
+      # The installed wheel must ship the eval fixtures, or `graphban eval`
+      # reports `absent` on every install (the GRPH-224 claim). 4 is the
+      # extract_lessons golden set; `None`/short means the wheel dropped them.
+      - name: The installed wheel ships the eval cases
+        run: |
+          .venv/bin/python - <<'EOF'
+          from app.services import evals as e
+          cases = e.load_cases(surface="extract_lessons")
+          assert cases and len(cases) == 4, cases
+          print(f"installed wheel ships {len(cases)} extract_lessons cases")
+          EOF
+
   frontend:
     name: Frontend tests + typecheck + build
     needs: changes
@@ -181,7 +218,7 @@ jobs:
     # Every job defined above must appear here. A job that runs but is not needed by this
     # gate is worse than no job: it burns the minutes and reports nowhere.
     # `test_ci_gate_covers_every_job` in the backend suite is what enforces that.
-    needs: [changes, backend-sqlite, backend-postgres, frontend, fleet]
+    needs: [changes, backend-sqlite, backend-postgres, backend-packaging, frontend, fleet]
     # `always()` so a failed/skipped suite still runs the gate (otherwise a broken
     # filter looks like a green PR). Fork PRs are excluded: this job talks to the
     # LAN ledger on ubuntu-srv, and a public repo must not run untrusted checkout
