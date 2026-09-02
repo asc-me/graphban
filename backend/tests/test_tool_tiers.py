@@ -354,10 +354,9 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 9066
-# 8974 -> 9066 (GRPH-P31 / GRPH-616). `get_context` now carries gitops: unmeasured is not
-# main, and control is present when linked including linked_unreachable. Compact
-# outputSchema (`{"type": "object"}`); the sentences are the bill every key pays.
+CORE_TOKENS = 9064
+# 9066 -> 9064 (GRPH-652). `prd_coverage` names empty_sections vs gaps; shorter than
+# the gaps-only sentence, so core shrank two tokens.
 
 #: Per tier, so a tier cannot quietly grow back to the untiered weight — the item's
 #: acceptance, in a form that fails when it stops being true.

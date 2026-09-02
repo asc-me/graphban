@@ -126,3 +126,27 @@ def test_mcp_decompose_and_coverage(client, auth):
     assert len(made["created"]) == 2
     cov = _mcp(client, key, "prd_coverage", {"prd_id": prd["id"]})["structuredContent"]
     assert cov["sections_with_tasks"] == 2 and cov["gaps"] == []
+    assert cov["shaped"] is True
+    assert cov["empty_sections"] == ["One", "Two"]
+
+
+def test_mcp_prd_coverage_description_names_empty_vs_gaps():
+    """THE CALL. Payload keys an agent never reads are a clean miss. The description
+    is what tools/list ships."""
+    from app.mcp_server import TOOLS
+    desc = next(t["description"] for t in TOOLS if t["name"] == "prd_coverage")
+    assert "empty_sections" in desc
+    assert "shaped" in desc
+    assert "gaps" in desc
+
+
+def test_mcp_prd_coverage_names_empty_on_a_standard_template(client, auth):
+    """REST coverage already returns empty_sections; MCP must not drop them."""
+    key = client.post("/api/api-keys", json={"name": "cov-agent", "project_id": "core"},
+                      headers=auth).json()["plaintext"]
+    prd = client.post("/api/prds", json={"title": "Fresh MCP", "project_id": "core"},
+                      headers=auth).json()
+    cov = _mcp(client, key, "prd_coverage", {"prd_id": prd["id"]})["structuredContent"]
+    assert cov["shaped"] is True
+    assert cov["empty_sections"]
+    assert "Overview" in cov["empty_sections"]
