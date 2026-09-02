@@ -86,9 +86,11 @@ describe("Fleet view", () => {
   it("says what to do when the fleet is empty", async () => {
     renderView();
     // An empty roster is the state a first-time user is in, and "no agents" alone leaves them
-    // nowhere. Seats are the recommended path; "mint a credential below" taught the older
-    // one. The instruction is the content, and it takes you there.
+    // nowhere. The default posture is one agent — an API key, no seat. Sending everyone to
+    // Wave taught the fleet path as the first thing, which is the rarer install.
     expect(screen.queryByText(/Mint a credential below/)).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Mint an API key/ }))
+      .toHaveAttribute("href", settingsPath("project/api-keys"));
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /Issue seats on Wave/ }));
     expect(screen.getByRole("button", { name: /Issue the seats into/ })).toBeInTheDocument();

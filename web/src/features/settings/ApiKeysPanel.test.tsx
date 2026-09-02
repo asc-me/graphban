@@ -266,6 +266,14 @@ describe("listing", () => {
     expect(link).toHaveAttribute("href", "/fleet");
   });
 
+  it("sends someone looking for seats to Fleet, not a second mint on this page", async () => {
+    // The reverse of Fleet's "Looking for MCP?". A seat is not an API key; minting
+    // another key here would be the two-surfaces bug wearing the other shirt.
+    view();
+    expect(await screen.findByRole("link", { name: /looking for seats\?/i }))
+      .toHaveAttribute("href", "/fleet");
+  });
+
   it("says what the absence of a gate key COSTS", async () => {
     // An empty state reading "No gate keys" is true and useless. The reason the list is empty
     // is the reason the gate is running on its weak path.

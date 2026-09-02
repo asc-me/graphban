@@ -706,14 +706,23 @@ export function FleetView() {
         <Section title="Roster" desc="Offline agents fade rather than vanish — one that died holding a branch is what you need to see.">
           {agents.length === 0 ? (
             <Empty>
-              No agents yet. A seat is the role for this session — issue them on Wave.
-              The API key that goes in MCP config is minted in Settings.
-              <button
-                onClick={() => setTab("wave")}
-                className="mt-2 block w-full text-[12px] text-muted hover:text-fg-2"
-              >
-                Issue seats on Wave →
-              </button>
+              No agents yet. One agent needs an API key in Settings and no seat.
+              A fleet issues seats on Wave — a seat is the role, not a second key.
+              <span className="mt-2 flex justify-center gap-4">
+                <Link
+                  to={settingsPath("project/api-keys")}
+                  className="text-[12px] text-muted hover:text-fg-2"
+                >
+                  Mint an API key →
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => setTab("wave")}
+                  className="text-[12px] text-muted hover:text-fg-2"
+                >
+                  Issue seats on Wave →
+                </button>
+              </span>
             </Empty>
           ) : (
             <div className="space-y-2">

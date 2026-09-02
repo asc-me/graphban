@@ -199,4 +199,12 @@ describe("docs overlay routes", () => {
     expect(body).toMatch(/seat/i);
     expect(keys.related?.some((r) => r.label === "Fleet")).toBe(true);
   });
+
+  it("MCP Tools overlay does not pretend this page mints keys", () => {
+    const mcp = docFor("/mcp-tools");
+    const body = mcp.sections.map((s) => `${s.h} ${s.b}`).join(" ");
+    expect(body).toMatch(/does not mint keys/);
+    expect(body).toMatch(/seat/i);
+    expect(mcp.related?.some((r) => r.label === "API keys")).toBe(true);
+  });
 });
