@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { FleetView } from "@/features/fleet/FleetView";
+import { settingsPath } from "@/lib/routes";
 
 const api = vi.hoisted(() => ({
   mintFleetKey: vi.fn(),
@@ -30,7 +32,9 @@ function renderView() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <FleetView />
+      <MemoryRouter>
+        <FleetView />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -80,6 +84,15 @@ describe("Fleet view", () => {
     // An empty roster is the state a first-time user is in, and "no agents" alone leaves them
     // nowhere. The instruction is the content.
     expect(screen.getByText(/Mint a credential below/)).toBeInTheDocument();
+  });
+
+  it("sends someone looking for MCP to API keys, not a second mint on this page", () => {
+    // Fleet is seats and the roster. The key that goes in an MCP config is minted on
+    // Settings → API keys. Linking to /mcp-tools or the MCP catalog would send the
+    // person who asked "how do I connect" to a tool list with no key on it.
+    renderView();
+    expect(screen.getByRole("link", { name: /looking for mcp\?/i }))
+      .toHaveAttribute("href", settingsPath("project/api-keys"));
   });
 
   it("breaks the count down by role rather than totalling it", () => {

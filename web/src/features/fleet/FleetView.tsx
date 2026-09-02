@@ -1,5 +1,6 @@
 import { Check, Copy, Users } from "lucide-react";
 import * as React from "react";
+import { Link } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { McpInstall } from "@/features/settings/McpInstall";
@@ -9,6 +10,7 @@ import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useFleet } from "@/lib/queries";
+import { settingsPath } from "@/lib/routes";
 import { WAVE_ROLES } from "./wave";
 import type { FleetAgent } from "@/lib/types";
 
@@ -568,10 +570,21 @@ export function FleetView() {
             </div>
           )}
         </div>
-        {/* Nothing live means nothing to end. */}
-        {waves.length > 0 && (
-          <Button onClick={askEndWave}>End wave</Button>
-        )}
+        <div className="flex items-center gap-3">
+          {/* Fleet issues seats and watches the roster. The MCP config and the key that
+              goes in it live on Settings → API keys — the page people open this one
+              looking for. Named as a question because the destination is the answer. */}
+          <Link
+            to={settingsPath("project/api-keys")}
+            className="text-[12px] text-muted transition-colors hover:text-fg-2"
+          >
+            Looking for MCP?
+          </Link>
+          {/* Nothing live means nothing to end. */}
+          {waves.length > 0 && (
+            <Button onClick={askEndWave}>End wave</Button>
+          )}
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
