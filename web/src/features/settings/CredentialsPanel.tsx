@@ -384,6 +384,72 @@ function AddRuleDialog({
   );
 }
 
+const TASK_ROLES: { id: string; label: string }[] = [
+  { id: "grill.converse", label: "Grill conversation" },
+  { id: "grill.classify", label: "Grill classify" },
+  { id: "memory.judge", label: "Memory / eval judge" },
+  { id: "assistant", label: "Assistant" },
+  { id: "spec.critique", label: "Spec critique" },
+];
+
+function TaskRoles({
+  credentials, projects, projectId, onChanged, onError,
+}: {
+  credentials: Credential[]; projects: Project[];
+  projectId: string;
+  onChanged: () => void; onError: (e: Error) => void;
+}) {
+  const project = projects.find((p) => p.id === projectId);
+  const roles = project?.chat_roles ?? {};
+  const save = useMutation({
+    mutationFn: (next: Record<string, { credential_id?: string; model_override?: string }>) =>
+      api.setProjectRoles(projectId, next),
+    onSuccess: onChanged, onError,
+  });
+
+  function setRole(id: string, credentialId: string) {
+    const next = { ...roles };
+    if (!credentialId) {
+      delete next[id];
+    } else {
+      next[id] = { ...next[id], credential_id: credentialId };
+    }
+    save.mutate(next);
+  }
+
+  return (
+    <section className="flex flex-col gap-3" data-testid="task-roles">
+      <header>
+        <h3 className="text-[13px] font-medium text-fg">Task models</h3>
+        <p className="text-[11px] text-faint">
+          Classify, critique, and the memory judge can use a different credential. Unset inherits this project&apos;s chat.
+          A named credential that cannot be used is ungraded — not a quieter model.
+        </p>
+      </header>
+      <ul className="flex flex-col gap-2">
+        {TASK_ROLES.map((r) => (
+          <li key={r.id} className="flex items-center gap-2">
+            <span className="w-44 flex-none text-[12px] text-fg-2">{r.label}</span>
+            <select
+              aria-label={r.label}
+              value={roles[r.id]?.credential_id ?? ""}
+              onChange={(e) => setRole(r.id, e.target.value)}
+              className="min-w-0 flex-1 rounded border border-line-2 bg-transparent px-2 py-1 text-[12px]"
+            >
+              <option value="">Inherit project chat</option>
+              {credentials.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {(c.label || c.id)} — {c.kind} · {c.model}
+                </option>
+              ))}
+            </select>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function OverrideRules({
   credentials, projects, onChanged, onError,
 }: {
@@ -612,6 +678,10 @@ export function CredentialsPanel() {
       {credentials.length > 0 && (
         <OverrideRules credentials={credentials} projects={(projects ?? []) as Project[]}
           onChanged={refresh} onError={onError} />
+      )}
+      {credentials.length > 0 && (
+        <TaskRoles credentials={credentials} projects={(projects ?? []) as Project[]}
+          projectId={projectId} onChanged={refresh} onError={onError} />
       )}
     </div>
   );

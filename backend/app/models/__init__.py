@@ -134,6 +134,10 @@ class Project(Base):
     # model meant a second credential row holding the same secret — storing one key twice so
     # that rotating it becomes two edits, one of which gets forgotten.
     model_override: Mapped[str] = mapped_column(String, default="", server_default="")
+    # Per-task chat overrides (GRPH-316). Keys are the closed CHAT_ROLES set; a missing
+    # key inherits the project's credential. Stored as JSON so a new role is not a
+    # migration. Empty dict means every task uses the project pointer.
+    chat_roles: Mapped[dict] = mapped_column(JSON, default=dict)
     # Memory auto-triage (AL-227): let the AL-151 scorer ACT on agent candidates
     # instead of only advising, so the review queue stays small. Every auto-action
     # is audited and undoable.

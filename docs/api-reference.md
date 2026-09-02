@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 109 of the 182 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 110 of the 183 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -238,6 +238,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | POST | `/api/platform/credentials/{id}/retry` | JWT |
 | PUT | `/api/platform/credentials/defaults` | JWT | Set the scope's default / fallback / embedding credential. `422` for one that has never been validated |
 | PUT | `/api/platform/credentials/project` | JWT | Point a project at a credential, with an optional `model_override` |
+| PUT | `/api/platform/credentials/roles` | JWT | Per-task chat overrides (GRPH-316). Unset inherits the project credential. A named unusable credential is ungraded, not a quieter model |
 | POST | `/api/platform/github/connect` · `/disconnect` · `/create-issue` | JWT |
 | POST | `/api/platform/gdrive/connect` · `/disconnect` | JWT |
 

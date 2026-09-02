@@ -242,6 +242,18 @@ def _from_credential(cred: Credential, source: str, model_override: str = "",
     )
 
 
+# Named tasks that may point at their own credential (GRPH-316). Unset = inherit
+# the project's chat pointer. A dedicated judge model is this set, not a new env
+# var — evals.py already deferred here.
+CHAT_ROLES = (
+    "grill.converse",
+    "grill.classify",
+    "memory.judge",
+    "assistant",
+    "spec.critique",
+)
+
+
 def resolve_chat(db: Session, project_id: str) -> Resolved:
     """Which chat provider a project gets, in the transitional order of PRD-25 S1.
 
@@ -310,6 +322,90 @@ def resolve_chat(db: Session, project_id: str) -> Resolved:
                     chat=providers.build_chat("stub", project_id=project_id),
                     source="dangling" if pointer else "stub",
                     fell_back_from=wanted)
+
+
+def resolve_role(db: Session, project_id: str, role: str) -> Resolved:
+    """Chat resolution for one named task (GRPH-316).
+
+    Unset inherits `resolve_chat` exactly — anyone who does not care keeps one
+    setting. A role that NAMES a credential and cannot use it is `role_unusable`
+    (stub), not a silent fall back to the project's model: grading with a weaker
+    bar is the grill's recorded failure, and it applies here too.
+    """
+    if role not in CHAT_ROLES:
+        raise ValueError(f"unknown chat role {role!r}; known: {', '.join(CHAT_ROLES)}")
+    project = db.get(Project, project_id)
+    spec = ((project.chat_roles or {}).get(role) if project is not None else None) or {}
+    if not isinstance(spec, dict):
+        spec = {}
+    cred_id = (spec.get("credential_id") or "") or None
+    model_over = spec.get("model_override") or ""
+    if not cred_id and not model_over:
+        return resolve_chat(db, project_id)
+
+    scope = scope_for(db, project_id)
+    if cred_id:
+        cred = credential_in_scope(db, cred_id, scope)
+        if usable(cred):
+            model = model_over or (project.model_override if project is not None else "")
+            return _from_credential(cred, "role", model,
+                                    db=db, scope=scope, project_id=project_id)
+        return Resolved(
+            provider_id="stub",
+            chat=providers.build_chat("stub", project_id=project_id),
+            source="role_unusable",
+            fell_back_from=cred_id,
+        )
+
+    # Model-only override on the inherited credential.
+    inherited = resolve_chat(db, project_id)
+    if inherited.credential_id:
+        cred = credential_in_scope(db, inherited.credential_id, scope)
+        if usable(cred):
+            return _from_credential(cred, inherited.source, model_over,
+                                    fell_back_from=inherited.fell_back_from,
+                                    db=db, scope=scope, project_id=project_id)
+    return inherited
+
+
+def set_project_roles(db: Session, project_id: str, roles: dict) -> Project:
+    """Replace the project's per-task map. Unknown roles and foreign credentials refuse.
+
+    Sending `{}` clears every override (inherit). Sending `{role: {}}` or `{role: null}`
+    clears that one role. A credential_id must be in the project's scope.
+    """
+    project = db.get(Project, project_id)
+    if project is None:
+        raise LookupError(project_id)
+    if not isinstance(roles, dict):
+        raise ValueError("chat_roles must be an object")
+    cleaned: dict = {}
+    scope = scope_for(db, project_id)
+    for name, spec in roles.items():
+        if name not in CHAT_ROLES:
+            raise ValueError(f"unknown chat role {name!r}; known: {', '.join(CHAT_ROLES)}")
+        if spec is None or spec == {}:
+            continue
+        if not isinstance(spec, dict):
+            raise ValueError(f"chat role {name!r} must be an object")
+        cred_id = spec.get("credential_id") or None
+        model_over = spec.get("model_override") or ""
+        if cred_id:
+            cred = credential_in_scope(db, cred_id, scope)
+            if cred is None:
+                raise LookupError(cred_id)
+        if not cred_id and not model_over:
+            continue
+        entry: dict = {}
+        if cred_id:
+            entry["credential_id"] = cred_id
+        if model_over:
+            entry["model_override"] = str(model_over)
+        cleaned[name] = entry
+    project.chat_roles = cleaned
+    db.commit()
+    db.refresh(project)
+    return project
 
 
 def chat_model_for(db: Session, project_id: str) -> ChatModel:
@@ -700,6 +796,12 @@ def _references(db: Session, credential_id: str, scope: str) -> tuple[list[str],
             roles.append("the fallback")
         if row.embed_credential_id == credential_id:
             roles.append("the embedding credential")
+    for p in db.query(Project).all():
+        if (p.org_id or "") != (scope or ""):
+            continue
+        for name, spec in ((p.chat_roles or {}) if isinstance(p.chat_roles, dict) else {}).items():
+            if isinstance(spec, dict) and spec.get("credential_id") == credential_id:
+                roles.append(f"{p.id} {name}")
     return sorted(projects), roles
 
 

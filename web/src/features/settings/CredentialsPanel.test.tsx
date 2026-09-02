@@ -40,7 +40,7 @@ const proj = (id: string, over: Partial<Project> = {}): Project => ({
   visibility: "private", description: "", share_global_memory: false, auto_extract: true,
   mcp_enabled: true, embed_model: "", memory_auto_reject: true, memory_write_mode: "review",
   memory_llm_judge: false, agent_adjudication: false, allow_self_review: false,
-  credential_id: null, model_override: "", ...over,
+  credential_id: null, model_override: "", chat_roles: {}, ...over,
 });
 
 let projectList: Project[] = [];
@@ -117,6 +117,7 @@ vi.mock("@/lib/api", () => ({
       updateCredential(p, id, body),
     setProjectCredential: (p: string, body: Record<string, unknown>) =>
       setProjectCredential(p, body),
+    setProjectRoles: vi.fn(async () => ({ project_id: "core", chat_roles: {}, known_roles: [] })),
   },
 }));
 
@@ -159,6 +160,14 @@ describe("CredentialsPanel", () => {
     // Asserted on the ROW, not a bare text match: the label appears both as text and inside
     // the toggle button's accessible name, so `findByText` now finds two elements.
     expect(await screen.findByTestId("credential-cred_a")).toHaveTextContent("Primary key");
+  });
+
+  it("offers inherit for every task model so a missing role is not a forced pick", async () => {
+    state.credentials = [cred({ label: "Primary key" })];
+    show();
+    const panel = await screen.findByTestId("task-roles");
+    expect(within(panel).getAllByRole("option", { name: /inherit project chat/i }).length).toBe(5);
+    expect(within(panel).getByLabelText("Memory / eval judge")).toHaveValue("");
   });
 
   it("shows which projects use a credential, because a delete refusal must be predictable", async () => {
