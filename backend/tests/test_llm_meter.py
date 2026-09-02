@@ -169,12 +169,30 @@ def test_a_stream_consumed_across_threads_meters_once(client):
 
     router = APIRouter()
     router.add_api_route("/__meter_probe", _stream_route)
+    # include_router appends. Starlette matches first-hit, and when web/dist exists
+    # (a local build; CI never has one) the SPA catch-all `/{full_path:path}` is
+    # already on the app — an appended probe would serve index.html and this
+    # assertion would fail with HTML instead of "hello".
+    start = len(client.app.router.routes)
     client.app.include_router(router)
+    added = client.app.router.routes[start:]
+    del client.app.router.routes[start:]
+    client.app.router.routes[0:0] = added
+    # CI never has web/dist, so the catch-all is not there to fail the body
+    # assertion. This is the lock that still fires: an append leaves the probe
+    # at the end of the list.
+    assert client.app.router.routes[0] in added, (
+        "probe was appended; the SPA catch-all would eat /__meter_probe")
     try:
         with client.stream("GET", "/__meter_probe") as r:
             body = b"".join(r.iter_bytes()).decode()
     finally:
         httpd.server_close()
+        for route in added:
+            try:
+                client.app.router.routes.remove(route)
+            except ValueError:
+                pass
 
     assert "hello" in body
     rows = _spans(project=tok)
