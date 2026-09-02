@@ -173,8 +173,10 @@ describe("docs overlay routes", () => {
     expect(checklist?.b).toMatch(/observe the remote/i);
     expect(checklist?.b).toMatch(/does not run git/i);
 
-    expect(docFor(adminPath("gitops")).sections.map((s) => s.h).join(" ")).not.toMatch(
-      /sitting/i,
-    );
+    const org = docFor(adminPath("gitops"));
+    expect(org.sections.map((s) => s.h).join(" ")).not.toMatch(/sitting/i);
+    const house = org.sections.find((s) => /house process/i.test(s.h));
+    expect(house?.b).toMatch(/Custom, not Unmeasured/);
+    expect(house?.b).toMatch(/does not file a graduation checklist/);
   });
 });
