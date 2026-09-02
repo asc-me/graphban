@@ -84,15 +84,15 @@ export function OrgOverviewView() {
           <h2 className="text-[14px] font-semibold">Link your first deployment</h2>
           <p className="mt-2 max-w-[62ch] text-[12.5px] leading-relaxed text-muted">
             This organization has no projects yet. A project fills up when a local
-            deployment pushes its code graph here, so the next step is minting a sync
-            credential and running <code className="font-mono text-[11.5px]">graphban link</code> on
+            deployment pushes its code graph here, so the next step is minting a link
+            key and running <code className="font-mono text-[11.5px]">graphban link</code> on
             the box that holds the repo.
           </p>
           <Link
             to={adminPath("deployments")}
             className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-[12.5px] font-medium text-black hover:bg-accent-2"
           >
-            <Server size={14} /> Mint a sync credential
+            <Server size={14} /> Mint a link key
           </Link>
         </div>
       </div>

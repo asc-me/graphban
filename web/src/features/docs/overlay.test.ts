@@ -117,6 +117,8 @@ describe("docs overlay routes", () => {
   it("org Deployments overlay names minting a link key", () => {
     const d = docFor(adminPath("deployments"));
     expect(d.sections[0]?.h).toMatch(/link key/i);
+    const body = d.sections.map((s) => `${s.h} ${s.b}`).join(" ");
+    expect(body).not.toMatch(/sync credential/i);
   });
 
   it("does not open AI Providers on a page that is not providers", () => {

@@ -50,9 +50,10 @@ export function OrgDeployments() {
   return (
     <div className="max-w-[1180px] px-6 pb-16 pt-5">
       <p className="mb-4 max-w-[80ch] text-[12.5px] leading-relaxed text-muted">
-        Local deployments push their code graph here using a sync credential.{" "}
-        <span className="text-fg-2">The credential is the deployment's identity</span> — one
-        key, one box — so the name you give a key is the name you will see here.
+        Local deployments push their code graph here using a link key.{" "}
+        <span className="text-fg-2">The key is the deployment's identity</span> — one
+        key, one box — so the name you give it is the name you will see here. Same object
+        API keys and Sync / Link mint.
       </p>
 
       <div className="mb-4 flex gap-2.5 rounded-[10px] border border-line bg-surface px-3 py-2.5">
@@ -91,9 +92,9 @@ function NoDeployments() {
     <div className="rounded-[13px] border border-line bg-surface-2 px-5 py-8">
       <div className="text-[15px] font-semibold">Nothing is linked yet</div>
       <p className="mt-2 max-w-[62ch] text-[12.5px] leading-relaxed text-muted">
-        No sync credential has been minted for this org's projects, so no local box is
-        pushing a code graph here. Mint one from API keys with the <code
-        className="font-mono text-[11.5px] text-fg-2">sync</code> scope, then run{" "}
+        No link key has been minted for this org's projects, so no local box is
+        pushing a code graph here. Mint one from API keys → Link key, or Settings →
+        Sync / Link, then run{" "}
         <code className="font-mono text-[11.5px] text-fg-2">graphban link</code> on the
         machine that has the checkout.
       </p>
@@ -110,14 +111,14 @@ const FRESHNESS: Record<Deployment["freshness"], { label: string; tone: string; 
   stale: {
     label: "stale",
     tone: "text-st-review border-st-review/30 bg-st-review/[0.08]",
-    note: "Pushed before, not recently — the box stopped, or its credential no longer works.",
+    note: "Pushed before, not recently — the box stopped, or its link key no longer works.",
   },
   // Deliberately its own state. A link somebody set up and never finished asks for a
   // different action from a box that stopped, so it must not read as staleness.
   never: {
     label: "never pushed",
     tone: "text-faint border-line",
-    note: "This credential exists but has never been used. The link was set up and not finished.",
+    note: "This link key exists but has never been used. The link was set up and not finished.",
   },
 };
 
