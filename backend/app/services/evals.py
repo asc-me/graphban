@@ -28,8 +28,10 @@ from typing import Callable
 from sqlalchemy.orm import Session
 
 from app.evals import CASES_DIR
+from app.services import agent_chat as agent_chat_svc
 from app.services import insights as insights_svc
 from app.services import items as items_svc
+from app.services import memory as mem_svc
 from app.services import platform as platform_svc
 from app.services import prds as prd_svc
 
@@ -37,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Closed set. The CLI spells the same names out rather than importing this on
 # `--help` (SQLAlchemy); `test_evals` pins the two lists against each other.
-SURFACES = ("extract_lessons", "grill_prd")
+SURFACES = ("extract_lessons", "grill_prd", "assistant")
 
 # Same count and rationale as `memory.JUDGE_SAMPLES` (GRPH-348): a single
 # temperature-0 sample is not an adjudication. Unanimity on `grounded`, not a
@@ -194,6 +196,17 @@ def _judge_context(case: dict, texts: list[str]) -> str:
             "GENERATED GRILL QUESTIONS:",
             "\n".join(f"- {t}" for t in texts) or "(none)",
             "FORBIDDEN IN THE QUESTIONS:",
+            "\n".join(f"- {n}" for n in forbidden) or "(none named)",
+        ])
+    if (case.get("surface") or "") == "assistant":
+        return "\n\n".join([
+            "QUESTION:",
+            str(src.get("question") or ""),
+            "SEEDED MEMORY (the answer must be grounded here):",
+            "\n".join(f"- {m}" for m in (src.get("memory") or [])) or "(none)",
+            "ASSISTANT REPLY:",
+            "\n".join(texts) or "(none)",
+            "FORBIDDEN IN THE REPLY:",
             "\n".join(f"- {n}" for n in forbidden) or "(none named)",
         ])
     return "\n\n".join([
@@ -366,9 +379,30 @@ def _run_grill_prd(db: Session, case: dict) -> tuple[list[dict], str]:
     return _grill_outputs(questions, done), project_id
 
 
+def _run_assistant(db: Session, case: dict) -> tuple[list[dict], str]:
+    """Seed fixture memory and call the real `/api/agent/chat` service.
+
+    Memory is published — search_memory hides candidates, and a fixture that
+    stayed in the queue would make every grounded case fail for the wrong
+    reason. The CALL is `agent_chat.reply`, not a composed string.
+    """
+    src = case.get("input") or {}
+    project_id = src.get("project_id") or "core"
+    for text in src.get("memory") or []:
+        mem_svc.add_memory(
+            db, text_body=str(text), scope="global", project_id=project_id,
+            status="published", origin="user:eval", source="eval fixture",
+        )
+    out = agent_chat_svc.reply(
+        db, project_id=project_id, message=str(src.get("question") or ""),
+    )
+    return [{"text": out["reply"]}], project_id
+
+
 _RUNNERS: dict[str, Callable] = {
     "extract_lessons": _run_extract_lessons,
     "grill_prd": _run_grill_prd,
+    "assistant": _run_assistant,
 }
 
 

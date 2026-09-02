@@ -1,0 +1,11 @@
+{
+  "id": "stub-labelled",
+  "surface": "assistant",
+  "input": {
+    "question": "What is in flight?"
+  },
+  "expect": {
+    "min_shards": 1,
+    "must_contain": ["Local stub agent", "no external model configured"]
+  }
+}

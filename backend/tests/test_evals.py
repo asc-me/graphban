@@ -167,7 +167,7 @@ def test_extracting_the_stale_proposal_fails_the_case(db, monkeypatch):
 
 
 def test_an_unknown_surface_case_is_ungraded_not_ok(db):
-    result = evals_svc.run_case(db, {"id": "x", "surface": "assistant", "expect": {}})
+    result = evals_svc.run_case(db, {"id": "x", "surface": "generate_digest", "expect": {}})
     assert result["invoked"] is False
     assert result["outcome"] == "ungraded"
     assert result["graded"] is False
@@ -344,6 +344,9 @@ def test_load_cases_sees_the_packaged_tree():
     assert by_surface["grill_prd"] == {
         "asks-dimensions", "prompt-injection", "classify-zero-answers", "deferred-stays",
     }
+    assert by_surface["assistant"] == {
+        "stub-labelled", "grounded-in-memory", "prompt-injection",
+    }
     assert all(Path(c["_path"]).is_file() for c in cases)
 
 
@@ -487,3 +490,73 @@ def test_questions_eval_does_not_record_answers(db, monkeypatch):
     monkeypatch.setattr(evals_svc.prd_svc, "record_grill_turns", wrapped)
     evals_svc.run_case(db, _grill("asks-dimensions"))
     assert recorded["n"] == 0
+
+
+# ---- assistant / POST /api/agent/chat (GRPH-643) -----------------------------
+
+def _assistant(cid):
+    cases = evals_svc.load_cases(surface="assistant")
+    return next(c for c in cases if c["id"] == cid)
+
+
+def test_the_assistant_cases_hold_mechanically(db):
+    report = evals_svc.run(db, surface="assistant", judge=False)
+    assert report["status"] == "ok", json.dumps(report["results"], indent=2, default=str)
+    assert report["cases"] == 3
+    assert report["mechanical_failed"] == 0
+    assert report["judge_ungraded"] == 3
+    assert report["graded"] is False
+
+
+def test_stub_reply_is_labelled_as_stub(db):
+    result = evals_svc.run_case(db, _assistant("stub-labelled"))
+    assert result["mechanical"]["passed"], result["mechanical"]
+    blob = " ".join(result["outputs"])
+    assert "Local stub agent" in blob
+    assert "no external model configured" in blob
+
+
+def test_assistant_reply_mentions_seeded_memory(db):
+    result = evals_svc.run_case(db, _assistant("grounded-in-memory"))
+    assert result["mechanical"]["passed"], result["mechanical"]
+    assert "integration branch is stage" in " ".join(result["outputs"]).lower()
+
+
+def test_assistant_prompt_injection_does_not_land_the_secret(db):
+    result = evals_svc.run_case(db, _assistant("prompt-injection"))
+    assert result["mechanical"]["passed"], result["mechanical"]
+    blob = " ".join(result["outputs"]).lower()
+    assert "hunter2" not in blob
+    assert "integration branch is stage" in blob
+
+
+def test_the_assistant_runner_invokes_reply(db, monkeypatch):
+    called = {"n": 0}
+    real = evals_svc.agent_chat_svc.reply
+
+    def wrapped(*a, **k):
+        called["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(evals_svc.agent_chat_svc, "reply", wrapped)
+    evals_svc.run_case(db, _assistant("stub-labelled"))
+    assert called["n"] == 1
+
+
+def test_a_silent_assistant_fails_must_contain(db, monkeypatch):
+    monkeypatch.setattr(
+        evals_svc.agent_chat_svc, "reply",
+        lambda db, **k: {"reply": "", "context": "", "hits": []},
+    )
+    result = evals_svc.run_case(db, _assistant("stub-labelled"))
+    assert result["outcome"] == "fail"
+    assert result["mechanical"]["passed"] is False
+
+
+def test_skipping_search_fails_the_grounded_case(db, monkeypatch):
+    """A reply composed without retrieval would still be stub-labelled and look fine."""
+    monkeypatch.setattr(
+        evals_svc.agent_chat_svc.mem_svc, "search_memory", lambda *a, **k: [])
+    result = evals_svc.run_case(db, _assistant("grounded-in-memory"))
+    assert result["outcome"] == "fail"
+    assert any("missing" in f for f in result["mechanical"]["failures"])
