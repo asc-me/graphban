@@ -313,6 +313,16 @@ describe("docs overlay routes", () => {
     expect(fleet.related?.some((r) => r.label === "API keys")).toBe(true);
   });
 
+  it("API keys overlay names Minted with, not gone after the banner", () => {
+    const keys = docFor(settingsPath("project/api-keys"));
+    const minted = keys.sections.find((s) => /minted with/i.test(s.h));
+    expect(minted?.b).toMatch(/scopes/);
+    expect(minted?.b).toMatch(/agent keys only/);
+    expect(minted?.b).toMatch(/core-only/);
+    expect(minted?.b).toMatch(/not missing/);
+    expect(keys.sections.find((s) => /shown once/i.test(s.h))?.b).toMatch(/shown once/);
+  });
+
   it("API keys overlay says a seat is not a key", () => {
     const keys = docFor(settingsPath("project/api-keys"));
     const body = keys.sections.map((s) => `${s.h} ${s.b}`).join(" ");
