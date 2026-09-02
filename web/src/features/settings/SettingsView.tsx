@@ -217,10 +217,15 @@ function HostedPane({ pathname }: { pathname: string }) {
   return <CredentialsPanel />;
 }
 
-function Section({ title, desc, children }: { title: string; desc?: React.ReactNode; children: React.ReactNode }) {
+function Section({ title, desc, extra, children }: {
+  title: string; desc?: React.ReactNode; extra?: React.ReactNode; children: React.ReactNode;
+}) {
   return (
     <div className="mb-6 max-w-2xl">
-      <div className="text-[14px] font-semibold">{title}</div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[14px] font-semibold">{title}</div>
+        {extra}
+      </div>
       {desc && <p className="mb-3 mt-0.5 text-[12.5px] text-muted">{desc}</p>}
       <div className={desc ? "" : "mt-3"}>{children}</div>
     </div>
@@ -894,6 +899,12 @@ export function ApiKeysPanel() {
   return (
     <Section
       title="API keys"
+      extra={
+        // Fleet's "Looking for MCP?" is the other direction of the same question.
+        <Link to="/fleet" className="text-[12px] font-normal text-muted transition-colors hover:text-fg-2">
+          Looking for seats?
+        </Link>
+      }
       desc={
         <>
           An API key is who the process is — put it in MCP config once. Roles for a wave are{" "}
