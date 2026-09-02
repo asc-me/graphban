@@ -103,6 +103,7 @@ def test_linked_get_context_stays_local_and_pulls_gitops(client, auth, monkeypat
                     "control": {"state": "local", "writable": True, "message": ""},
                     "was": None,
                     "version_from": {"value": None, "source": "unmeasured"},
+                    "model": {"value": None, "source": "unmeasured"},
                 }
         return R()
 
