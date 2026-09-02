@@ -26,6 +26,12 @@ Three states: **current** (the page says this box is on the latest release),
 **available**, **unknown**. Unknown is not current: a failed feed fetch, or a
 running version that is still `0.1.0`, must not look up to date.
 
+The page names **how this box is deployed** (compose helper / native / hosted /
+could not tell — empty `via` is not compose). **Release notes** are the GitHub
+Release body for this cut, in an accordion. When an update is available, a
+second list is the latest tag — not a rollup of skipped cuts. An empty body is
+“no notes on this release”; a failed fetch is “could not load notes”.
+
 Cutting a named CalVer so this page has something to Install is
 [release.md](release.md) (`stamp` then `publish`). GitHub's source zip is not
 a release. Apply stays this button — not the publish script, not MCP.

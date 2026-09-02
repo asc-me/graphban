@@ -244,6 +244,14 @@ describe("docs overlay routes", () => {
     }
   });
 
+  it("Updates overlay names empty notes as not a failed fetch", () => {
+    const d = docFor(settingsPath("deployment/updates"));
+    const notes = d.sections.find((s) => /release notes/i.test(s.h));
+    expect(notes?.b).toMatch(/empty body is no notes/i);
+    expect(notes?.b).toMatch(/failed fetch is could not load/i);
+    expect(notes?.b).toMatch(/not a rollup/i);
+  });
+
   it("Updates overlay names empty via as not compose", () => {
     const selfHost = docFor(settingsPath("deployment/updates"));
     const tagged = docFor("/p/CORE/settings/deployment/updates");

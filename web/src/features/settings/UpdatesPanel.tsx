@@ -7,8 +7,9 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { Markdown } from "@/lib/markdown";
 import { useConfig, useUpdateCheck } from "@/lib/queries";
-import type { UpdateCheck } from "@/lib/types";
+import type { ReleaseNotes, UpdateCheck } from "@/lib/types";
 
 function Label({ children }: { children: React.ReactNode }) {
   return <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">{children}</div>;
@@ -44,16 +45,6 @@ function StateCopy({ data }: { data: UpdateCheck }) {
           <span className="font-mono text-fg">{data.latest.tag}</span> is available. This
           box is on <Cut version={v} sha={sha} />.
         </p>
-        {data.latest.url ? (
-          <a
-            className="text-[12.5px] text-accent underline-offset-2 hover:underline"
-            href={data.latest.url}
-            rel="noopener noreferrer"
-            target="_blank"
-          >
-            Release notes
-          </a>
-        ) : null}
         {data.hosted ? (
           <p className="text-[12px] text-muted">
             This hosted instance is updated by the operator, not from this page.
@@ -69,6 +60,57 @@ function StateCopy({ data }: { data: UpdateCheck }) {
         Could not tell whether a newer cut exists. This box reports <Cut version={v} sha={sha} />.
       </p>
       {data.note ? <p className="text-[12px] text-muted">{data.note}</p> : null}
+    </div>
+  );
+}
+
+function NotesAccordion({
+  label,
+  notes,
+  defaultOpen,
+}: {
+  label: string;
+  notes: ReleaseNotes;
+  defaultOpen: boolean;
+}) {
+  return (
+    <details
+      className="rounded-[10px] border border-line-2 bg-surface p-3.5"
+      open={defaultOpen}
+    >
+      <summary className="cursor-pointer select-none font-mono text-[10.5px] uppercase tracking-wide text-faint">
+        {label}{" "}
+        <span className="font-mono normal-case tracking-normal text-fg">{notes.tag}</span>
+      </summary>
+      <div className="mt-2 text-[13px] leading-relaxed text-fg-2">
+        {notes.state === "unknown" ? (
+          <p>Could not load notes for this release.</p>
+        ) : null}
+        {notes.state === "empty" ? (
+          <p>No notes on this release.</p>
+        ) : null}
+        {notes.state === "present" ? <Markdown source={notes.body} /> : null}
+      </div>
+    </details>
+  );
+}
+
+function ReleaseNotesList({ data }: { data: UpdateCheck }) {
+  const running = data.notes?.running;
+  const latest = data.notes?.latest;
+  if (!running) return null;
+  const showLatest = data.state === "available" && latest && latest.tag !== running.tag;
+  return (
+    <div className="mt-4 space-y-2">
+      <Label>Release notes</Label>
+      <NotesAccordion
+        label="This release"
+        notes={running}
+        defaultOpen={!showLatest}
+      />
+      {showLatest ? (
+        <NotesAccordion label="Latest release" notes={latest} defaultOpen />
+      ) : null}
     </div>
   );
 }
@@ -167,6 +209,7 @@ export function UpdatesPanel() {
             <p className="text-[13px] text-fg-2">{methodCopy(data)}</p>
           </div>
         )}
+        {data && <ReleaseNotesList data={data} />}
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button
             type="button"

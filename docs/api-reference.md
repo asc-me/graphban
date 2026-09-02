@@ -228,7 +228,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 
 | Method | Path | Auth |
 | --- | --- | --- |
-| GET | `/api/platform/update-check` | JWT | Whether this instance is current against the published stable GitHub Release. Three states: `current`, `available`, `unknown`. Unknown is not current. `apply` is true when not hosted and (compose helper socket or native `/opt/graphban`). `via` is `compose` / `native` / empty |
+| GET | `/api/platform/update-check` | JWT | Whether this instance is current against the published stable GitHub Release. Three states: `current`, `available`, `unknown`. Unknown is not current. `apply` is true when not hosted and (compose helper socket or native `/opt/graphban`). `via` is `compose` / `native` / empty. `notes.running` / `notes.latest` are GitHub Release bodies (`present` / `empty` / `unknown`); `notes.latest` is null when current |
 | POST | `/api/platform/update-apply` | JWT | Start an apply of the advertised latest tag. Compose: host helper starts `deploy.sh`. Native: fetch `graphban-<tag>.tar.gz` and start `graphban_host.py upgrade`. 202 when started. Hosted 403. No apply path 503. Wrong tag 409. Not MCP |
 | GET / PATCH | `/api/platform` | JWT |
 | GET | `/api/platform/credentials` | JWT | Every credential in the caller's scope with `state`, derived `used_by`, and `falling_back` — projects pointing here that are NOT getting it because the row is unreachable or out of scope (PRD-25 §4). Never returns a key, only `key_set` |

@@ -41,8 +41,10 @@ def update_check(_: User = Depends(get_current_user)):
 
     Three states; unknown is not current. `apply` is true when this is not
     hosted and (a compose host helper is listening, or this is a native
-    `/opt/graphban` install). JWT so it is a Settings fact, not a public
-    oracle beyond `/health`.
+    `/opt/graphban` install). `notes` carries GitHub Release bodies for the
+    running tag and, when a newer cut exists, the latest — empty is not
+    unknown. JWT so it is a Settings fact, not a public oracle beyond
+    `/health`.
     """
     return instance_update.check()
 

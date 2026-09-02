@@ -1,5 +1,13 @@
 """Instance update check — three states, unknown is not current (P32)."""
+import pytest
+
 from app.services import instance_update as svc
+
+
+@pytest.fixture(autouse=True)
+def _offline_tag_feed(monkeypatch):
+    """REST tests look up fetch_tag at call time. Do not hit GitHub."""
+    monkeypatch.setattr(svc, "fetch_tag", lambda tag: None)
 
 
 def test_placeholder_version_is_unknown_even_when_the_feed_matches():
@@ -68,6 +76,7 @@ def test_fetch_latest_strips_v_and_drops_empty(monkeypatch):
         "tag": "2026.09.1",
         "url": "https://github.com/asc-me/graphban/releases/tag/2026.09.1",
         "asset": "",
+        "notes_body": "",
     }
 
 
@@ -416,3 +425,78 @@ def test_rest_native_apply_call(client, auth, monkeypatch):
     assert r.status_code == 202, r.text
     assert r.json()["via"] == "native"
     assert r.json()["sha"] == "deadbee"
+
+
+def test_empty_release_body_is_not_a_failed_fetch():
+    got = svc.check(
+        fetch=lambda: {"tag": "2026.09.1", "url": "https://example", "notes_body": ""},
+        run={"version": "2026.09.1", "git_sha": "abc"},
+        hosted=False,
+    )
+    assert got["state"] == "current"
+    assert got["notes"]["running"] == {
+        "tag": "2026.09.1", "state": "empty", "body": "",
+    }
+    assert got["notes"]["latest"] is None
+
+
+def test_failed_notes_fetch_is_unknown_not_empty():
+    got = svc.check(
+        fetch=lambda: {"tag": "2026.10.1", "url": "https://example",
+                       "notes_body": "## New\n"},
+        fetch_running=lambda tag: None,
+        run={"version": "2026.09.1", "git_sha": "abc"},
+        hosted=False,
+    )
+    assert got["state"] == "available"
+    assert got["notes"]["running"]["state"] == "unknown"
+    assert got["notes"]["running"]["body"] == ""
+    assert got["notes"]["latest"]["state"] == "present"
+    assert "## New" in got["notes"]["latest"]["body"]
+
+
+def test_current_does_not_duplicate_latest_notes():
+    body = "CalVer cut of Graphban.\n"
+    got = svc.check(
+        fetch=lambda: {"tag": "2026.09.1", "url": "https://example", "notes_body": body},
+        run={"version": "2026.09.1", "git_sha": "abc"},
+        hosted=False,
+    )
+    assert got["notes"]["running"]["state"] == "present"
+    assert got["notes"]["running"]["body"] == body
+    assert got["notes"]["latest"] is None
+
+
+def test_THE_CALL_rest_notes_unknown_is_not_empty(client, auth, monkeypatch):
+    """A handler that omits notes, or maps a failed tag fetch to empty, makes
+    the page say nobody wrote notes when nobody looked."""
+    monkeypatch.setattr(
+        svc, "fetch_latest",
+        lambda: {"tag": "2026.10.1", "url": "https://example/x", "notes_body": "latest notes"},
+    )
+    monkeypatch.setattr(svc, "fetch_tag", lambda tag: None)
+    monkeypatch.setattr(
+        svc, "running",
+        lambda: {"version": "2026.09.1", "git_sha": "d596e57"},
+    )
+    body = client.get("/api/platform/update-check", headers=auth).json()
+    assert body["state"] == "available"
+    assert "notes" in body
+    assert body["notes"]["running"]["state"] == "unknown"
+    assert body["notes"]["latest"]["state"] == "present"
+    assert body["notes"]["latest"]["body"] == "latest notes"
+
+
+def test_fetch_latest_keeps_the_github_body(monkeypatch):
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {
+                "tag_name": "2026.09.4",
+                "html_url": "https://github.com/asc-me/graphban/releases/tag/2026.09.4",
+                "body": "Fourth CalVer cut.\n",
+                "assets": [],
+            }
+    monkeypatch.setattr(svc.httpx, "get", lambda *a, **k: _Resp())
+    got = svc.fetch_latest()
+    assert got["notes_body"] == "Fourth CalVer cut.\n"
