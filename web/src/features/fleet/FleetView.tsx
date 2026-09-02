@@ -390,7 +390,7 @@ export function FleetView() {
       const out = await api.mintFleetKey({ project_id: activeId, role, wave: wave ?? "wave-1" });
       setMinted({ plaintext: out.plaintext, role: out.role });
     } catch (e) {
-      setError(errorDetail(e, "could not mint a fleet credential"));
+      setError(errorDetail(e, "could not mint a wave key"));
     }
   }
 
@@ -458,7 +458,7 @@ export function FleetView() {
       await api.revokeExpiredKeys(activeId);
       await refetch();
     } catch (e) {
-      setError(errorDetail(e, "could not clear the expired credentials"));
+      setError(errorDetail(e, "could not clear the expired keys"));
     }
   }
 
@@ -468,7 +468,7 @@ export function FleetView() {
       await api.revokeKey(id);
       await refetch();
     } catch (e) {
-      setError(errorDetail(e, "could not revoke that credential"));
+      setError(errorDetail(e, "could not revoke that key"));
     }
   }
 
@@ -644,7 +644,7 @@ export function FleetView() {
               )}
             </p>
             <p className="mt-1 text-[12px] text-muted">
-              Your own credential is untouched — only wave-tagged keys and this wave&apos;s
+              Your own API key is untouched — only wave-tagged keys and this wave&apos;s
               seats, in <span className="font-mono">{scope}</span> only. This cannot be undone.
             </p>
             <div className="mt-3 flex gap-2">
