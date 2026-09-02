@@ -459,7 +459,7 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Billing",
     tagline: "Limits, and Checkout when self-serve is on.",
     sections: [
-      { num: 1, h: "Two modes", b: "Unset Stripe keys keep operator-assigned plans — that is not a broken billing page. When self-serve is on, Checkout upgrades Pro/Team and the portal manages the subscription. There is still no invoice list and no usage chart — OrgUsage holds one row per period. An operator can still assign a plan by hand." },
+      { num: 1, h: "Two modes", b: "Unset Stripe keys keep operator-assigned plans — that is not a broken billing page. When self-serve is on, Checkout upgrades Pro/Team and the portal manages the subscription. Enterprise is operator-assigned even then — Checkout is Pro/Team only, not a missing button; portal still if a customer exists. There is still no invoice list and no usage chart — OrgUsage holds one row per period. An operator can still assign a plan by hand." },
     ],
   },
 
