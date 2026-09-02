@@ -31,12 +31,13 @@ from app.evals import CASES_DIR
 from app.services import insights as insights_svc
 from app.services import items as items_svc
 from app.services import platform as platform_svc
+from app.services import prds as prd_svc
 
 logger = logging.getLogger(__name__)
 
 # Closed set. The CLI spells the same names out rather than importing this on
 # `--help` (SQLAlchemy); `test_evals` pins the two lists against each other.
-SURFACES = ("extract_lessons",)
+SURFACES = ("extract_lessons", "grill_prd")
 
 # Same count and rationale as `memory.JUDGE_SAMPLES` (GRPH-348): a single
 # temperature-0 sample is not an adjudication. Unanimity on `grounded`, not a
@@ -135,6 +136,29 @@ def _mechanical(case: dict, shards: list[dict]) -> dict:
     for needle in expect.get("must_not_contain") or []:
         if needle.lower() in blob:
             failures.append(f"forbidden {needle!r}")
+    extras = shards[0] if shards and isinstance(shards[0], dict) else {}
+    if "grill_complete" in expect and extras.get("complete") is not expect["grill_complete"]:
+        failures.append(
+            f"complete {extras.get('complete')!r} != {expect['grill_complete']!r}"
+        )
+    if "grill_graded" in expect and extras.get("graded") is not expect["grill_graded"]:
+        failures.append(
+            f"grill graded {extras.get('graded')!r} != {expect['grill_graded']!r}"
+        )
+    if "grill_answers" in expect and extras.get("answers") != expect["grill_answers"]:
+        failures.append(
+            f"answers {extras.get('answers')!r} != {expect['grill_answers']!r}"
+        )
+    if "deferred" in expect:
+        got = list(extras.get("deferred") or [])
+        want = list(expect["deferred"])
+        if sorted(got) != sorted(want):
+            failures.append(f"deferred {got} != {want}")
+    needle = expect.get("ungraded_reason_contains")
+    if needle:
+        reason = str(extras.get("ungraded_reason") or "")
+        if needle.lower() not in reason.lower():
+            failures.append(f"ungraded_reason missing {needle!r} (got {reason!r})")
     return {"passed": not failures, "failures": failures}
 
 
@@ -162,6 +186,16 @@ def _judge_context(case: dict, texts: list[str]) -> str:
     expect = case.get("expect") or {}
     forbidden = expect.get("must_not_contain") or []
     src = case.get("input") or {}
+    if (case.get("surface") or "") == "grill_prd":
+        return "\n\n".join([
+            "PRD TITLE: " + str(src.get("title") or ""),
+            "PRD BODY:",
+            str(src.get("body") or "(none)"),
+            "GENERATED GRILL QUESTIONS:",
+            "\n".join(f"- {t}" for t in texts) or "(none)",
+            "FORBIDDEN IN THE QUESTIONS:",
+            "\n".join(f"- {n}" for n in forbidden) or "(none named)",
+        ])
     return "\n\n".join([
         "ITEM TITLE: " + str(src.get("title") or ""),
         "ITEM DESCRIPTION (proposal, possibly stale):",
@@ -269,8 +303,72 @@ def _run_extract_lessons(db: Session, case: dict) -> tuple[list[dict], str]:
     return shards, project_id
 
 
+def _grill_outputs(text: str, done: dict) -> list[dict]:
+    """One dict per question bullet, extras on the first so mechanical can see them.
+
+    Splitting the bullets is load-bearing: a single blob would make `min_shards: 4`
+    pass on any non-empty string, including a runner that never called `ai_command`.
+    """
+    bullets = [ln[2:].strip() for ln in (text or "").splitlines() if ln.startswith("- ")]
+    rows = [{"text": b} for b in bullets] or [{"text": text or ""}]
+    rows[0] = {
+        **rows[0],
+        "complete": bool(done.get("complete")),
+        "graded": bool(done.get("graded")),
+        "answers": int(done.get("answers") or 0),
+        "deferred": list(done.get("deferred") or []),
+        "outstanding": list(done.get("outstanding") or []),
+        "ungraded_reason": str(done.get("ungraded_reason") or ""),
+    }
+    return rows
+
+
+def _run_grill_prd(db: Session, case: dict) -> tuple[list[dict], str]:
+    """Create the fixture PRD and call the real grill. Returns (outputs, project_id).
+
+    `action=questions` is `ai_command_detail(..., "grill")` — the CALL `grill_prd`
+    makes. It must not record answers: a green questions eval that also classified
+    four dummy replies would approve the fixture, which is the theatre this pin
+    exists to catch.
+
+    `action=classify` records the fixture answers (if any) and calls
+    `classify_grill`. Deferred dimensions are written first so the guard in
+    classify is the thing under test, not a helper.
+    """
+    src = case.get("input") or {}
+    project_id = src.get("project_id") or "core"
+    prd = prd_svc.create_prd(
+        db,
+        title=str(src.get("title") or case["id"]),
+        body=str(src.get("body") or ""),
+        project_id=project_id,
+    )
+    action = case.get("action") or "questions"
+    if action == "classify":
+        for dim in src.get("defer") or []:
+            prd_svc.set_dimension(db, prd.id, dim, "deferred",
+                                  note="eval fixture", graded_by="eval")
+        history = [{"role": "user", "text": a} for a in (src.get("answers") or []) if a]
+        if history:
+            prd_svc.record_grill_turns(db, prd.id, history, via="eval")
+        done = prd_svc.classify_grill(db, prd)
+        text = json.dumps({
+            "complete": done.get("complete"),
+            "graded": done.get("graded"),
+            "deferred": done.get("deferred"),
+            "outstanding": done.get("outstanding"),
+            "ungraded_reason": done.get("ungraded_reason"),
+        }, sort_keys=True)
+        return _grill_outputs(text, done), project_id
+
+    questions, _retried = prd_svc.ai_command_detail(db, prd.id, "grill")
+    done = prd_svc.completion(db, prd.id)
+    return _grill_outputs(questions, done), project_id
+
+
 _RUNNERS: dict[str, Callable] = {
     "extract_lessons": _run_extract_lessons,
+    "grill_prd": _run_grill_prd,
 }
 
 
