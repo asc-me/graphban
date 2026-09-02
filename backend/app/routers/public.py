@@ -116,6 +116,25 @@ def _verify_github_signature(raw: bytes, signature: str | None) -> None:
         raise HTTPException(401, "webhook signature verification failed")
 
 
+@router.post("/stripe/webhook")
+async def stripe_webhook(request: FastAPIRequest, db: Session = Depends(get_db)):
+    """Stripe → org.plan (GRPH-82). Unsigned or unconfigured is 401/404, never a quiet apply."""
+    from app.services import billing as billing_svc
+
+    if not billing_svc.configured():
+        raise HTTPException(404, "Not Found")
+    raw = await request.body()
+    sig = request.headers.get("stripe-signature") or ""
+    try:
+        event = billing_svc.construct_event(raw, sig)
+    except billing_svc.BillingUnavailable:
+        raise HTTPException(404, "Not Found") from None
+    except ValueError:
+        raise HTTPException(401, "webhook signature verification failed") from None
+    billing_svc.apply_event(db, event)
+    return {"ok": True}
+
+
 @router.post("/github/webhook")
 async def github_webhook(request: FastAPIRequest, db: Session = Depends(get_db)):
     """Inbound GitHub issues webhook → new tracker item, routed to the project that

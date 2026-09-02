@@ -167,6 +167,8 @@ export interface Billing {
   plan: string;
   limits: PlanLimits;
   usage: Usage;
+  /** Stripe checkout is live. False is manual assignment, not a broken billing page. */
+  self_serve?: boolean;
 }
 
 // ── Operator console (hosted + platform-admin only, AL-94) ────────────────

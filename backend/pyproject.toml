@@ -33,6 +33,9 @@ agentledger = "app.cli:main"
 cloud = [
     "anthropic>=0.40",
 ]
+billing = [
+    "stripe>=11",
+]
 dev = [
     "pytest>=8.3",
     # Parallel test execution. Each worker gets its OWN database — see tests/conftest.py —

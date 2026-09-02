@@ -54,6 +54,10 @@ mail is simply not sent, so an invite can be "issued" and never arrive.
 | Var | Default | Notes |
 | --- | --- | --- |
 | `HOSTED_MODE` | `false` | Multi-tenant posture: org gates on, first-run bootstrap refused, share links accept only the token |
+| `STRIPE_API_KEY` | *(empty)* | Self-serve billing (GRPH-82). Empty keeps manual `PUT /orgs/{id}/plan` as the only writer. Needs the `billing` extra (`pip install 'graphban-api[billing]'`); the default image does not ship Stripe |
+| `STRIPE_WEBHOOK_SECRET` | *(empty)* | Verifies `Stripe-Signature` on `POST /api/public/stripe/webhook`. Empty hides the webhook (404) |
+| `STRIPE_PRICE_PRO` | *(empty)* | Stripe Price id mapped to plan `pro` |
+| `STRIPE_PRICE_TEAM` | *(empty)* | Stripe Price id mapped to plan `team`. Enterprise stays operator-assigned |
 | `LOG_LEVEL` | `INFO` | |
 | `LOG_JSON` | `false` | Structured logs. On for anything with log search |
 | `REDIS_URL` | *(empty)* | Empty keeps rate-limit state in process, which is per-worker rather than per-deployment |

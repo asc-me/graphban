@@ -31,6 +31,9 @@ from app.models import (
 )
 from app.schemas import (
     BillingOut,
+    BillingUrlOut,
+    CheckoutIn,
+    PortalIn,
     GitopsPatch,
     GitopsView,
     InviteAcceptIn,
@@ -58,12 +61,13 @@ from app.schemas import (
 )
 from app.security import authz
 from app.security.deps import get_current_user
+from app.services import billing as billing_svc
 from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import gitops
 from app.services import orgs as orgs_svc
-from app.services import teams as teams_svc
 from app.services import quotas
+from app.services import teams as teams_svc
 
 
 def require_hosted() -> None:
@@ -160,7 +164,44 @@ def org_billing(org_id: str, db: Session = Depends(get_db), user: User = Depends
             max_calls_per_month=plan.max_calls_per_month,
         ),
         usage=UsageOut(**quotas.usage(db, org_id)),
+        self_serve=billing_svc.configured(),
     )
+
+
+@router.post("/orgs/{org_id}/billing/checkout", response_model=BillingUrlOut)
+def org_checkout(org_id: str, body: CheckoutIn, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """Start a Stripe Checkout session for Pro/Team (GRPH-82). Hidden (404) when
+    Stripe is unset, so self-serve does not look broken on a manual-assignment deploy."""
+    authz.require_org_admin(db, user.id, org_id)
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(404, "organization not found")
+    try:
+        url = billing_svc.create_checkout_url(
+            org, plan=body.plan, success_url=body.success_url,
+            cancel_url=body.cancel_url, customer_email=user.email or "",
+        )
+    except billing_svc.BillingUnavailable:
+        raise HTTPException(404, "Not Found") from None
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    return BillingUrlOut(url=url)
+
+
+@router.post("/orgs/{org_id}/billing/portal", response_model=BillingUrlOut)
+def org_portal(org_id: str, body: PortalIn, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    """Stripe billing portal (manage/cancel). Hidden when Stripe is unset."""
+    authz.require_org_admin(db, user.id, org_id)
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(404, "organization not found")
+    try:
+        url = billing_svc.create_portal_url(org, return_url=body.return_url)
+    except billing_svc.BillingUnavailable:
+        raise HTTPException(404, "Not Found") from None
+    return BillingUrlOut(url=url)
 
 
 @router.put("/orgs/{org_id}/plan", response_model=OrgOut)
