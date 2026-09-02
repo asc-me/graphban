@@ -463,7 +463,8 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
     occurrences are offered as merges into it.
 
     Similarity-only, so it degrades to noise (not an error) when embeddings are the
-    offline stub — it needs no chat provider."""
+    offline stub — it needs no chat provider. Does not call the chat model (GRPH-650);
+    on-demand judging is `advisory_judge`."""
     cands = [s for s in list_shards(db, project_id=project_id, status="candidate") if s.embedding is not None]
     published = [(s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="published") if s.embedding is not None]
     rejected = [(s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="rejected") if s.embedding is not None]
@@ -659,6 +660,17 @@ JUDGE_CAUSES = {
     "error": "the judge could not be reached",
 }
 
+# Extra causes the on-demand review endpoint can report (GRPH-650). Not in
+# JUDGE_CAUSES: `agent_publish` would then tell an operator "no chat model is
+# configured" about a toggle they left off, or about a shard that is already
+# published. Those are not verdicts about the note.
+ADVISORY_CAUSES = {
+    **JUDGE_CAUSES,
+    "judge_off": "the LLM judge is off for this project — similarity is the signal you have",
+    "not_candidate": "only a candidate can be scored this way; this shard is already "
+                     "published or rejected",
+}
+
 
 def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
     """`(verdict, cause)` — the judge's answer and, when there is none, WHY (GRPH-351).
@@ -719,6 +731,41 @@ def _llm_judge(db: Session, shard: MemoryShard) -> dict | None:
     `judge_verdict` instead — see JUDGE_CAUSES for why the distinction matters.
     """
     return judge_verdict(db, shard)[0]
+
+
+def advisory_judge(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
+    """On-demand judge for the human review queue (GRPH-650). Never mutates status.
+
+    Returns `(verdict, cause)` like `judge_verdict`. `ok` means a verdict is present.
+    Distinguishes `judge_off` from `no_provider` so a missing score cannot read as
+    "the model said this is fine" or "no model is configured" when the operator
+    simply left the toggle off.
+    """
+    if shard.status != "candidate":
+        return None, "not_candidate"
+    _mode, _reject, llm_judge = _triage_prefs(db, shard.project_id)
+    if not llm_judge:
+        return None, "judge_off"
+    return judge_verdict(db, shard)
+
+
+def advisory_judge_view(db: Session, shard: MemoryShard) -> dict:
+    """Wire shape for POST /memory/shards/{id}/judge. `verdict` XOR `cause` —
+    a missing quality number is not 0."""
+    verdict, cause = advisory_judge(db, shard)
+    if verdict is not None:
+        return {
+            "shard_id": shard.id,
+            "verdict": verdict,
+            "cause": None,
+            "cause_detail": "",
+        }
+    return {
+        "shard_id": shard.id,
+        "verdict": None,
+        "cause": cause,
+        "cause_detail": ADVISORY_CAUSES.get(cause, cause),
+    }
 
 
 # Origins whose shards may be auto-REJECTED but never auto-PUBLISHED (GRPH-358).

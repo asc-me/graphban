@@ -7,19 +7,21 @@ import {
   useAutoActions,
   useCandidateClusters,
   useCandidateShards,
+  useJudgeShard,
   usePromoteCluster,
   useReviewShard,
   useScoredCandidates,
   useUndoAutoShard,
 } from "@/lib/queries";
-import type { ReviewSuggestion, ScoredCandidate, Shard, ShardCluster } from "@/lib/types";
+import type { CandidateJudge, ReviewSuggestion, ScoredCandidate, Shard, ShardCluster } from "@/lib/types";
 
 /** AL-49: the review queue. Agent-written memory enters as a candidate and only
  *  reaches the trusted retrieval path once a human publishes it here.
  *  AL-50: recurring near-duplicate candidates are grouped so a lesson that keeps
  *  recurring can be promoted once as a principle. */
 export function MemoryReviewView() {
-  const { activeId } = useProjectCtx();
+  const { activeId, active } = useProjectCtx();
+  const judgeOn = Boolean(active?.memory_llm_judge);
   const { data: candidates, isLoading } = useCandidateShards(activeId);
   const { data: clusters } = useCandidateClusters(activeId);
   const { data: scored } = useScoredCandidates(activeId);
@@ -96,6 +98,7 @@ export function MemoryReviewView() {
                   key={s.id}
                   shard={s}
                   score={scoreById.get(s.id)}
+                  judgeOn={judgeOn}
                   onPublish={() => publish.mutate(s.id)}
                   onReject={() => reject.mutate(s.id)}
                   busy={publish.isPending || reject.isPending}
@@ -246,17 +249,21 @@ const SUGGESTION_META: Record<ReviewSuggestion, { label: string; className: stri
 function CandidateCard({
   shard,
   score,
+  judgeOn,
   onPublish,
   onReject,
   busy,
 }: {
   shard: Shard;
   score?: ScoredCandidate;
+  judgeOn: boolean;
   onPublish: () => void;
   onReject: () => void;
   busy: boolean;
 }) {
   const meta = score ? SUGGESTION_META[score.suggestion] : null;
+  const judge = useJudgeShard();
+  const [asked, setAsked] = React.useState<CandidateJudge | null>(null);
   return (
     <div className="rounded-[12px] border border-line-2 bg-surface-2 p-3.5">
       <div className="mb-2 flex items-center gap-2">
@@ -287,6 +294,14 @@ function CandidateCard({
       {score && score.reasons.length > 0 && (
         <p className="mb-3 text-[11.5px] text-faint">Why: {score.reasons.join(" · ")}</p>
       )}
+      {asked?.verdict && (
+        <p className="mb-3 text-[11.5px] text-fg-2">
+          Judge: {Math.round(asked.verdict.quality * 100)}% — {asked.verdict.reason || (asked.verdict.keep ? "publish-worthy" : "not publish-worthy")}
+        </p>
+      )}
+      {asked && asked.verdict == null && (
+        <p className="mb-3 text-[11.5px] text-faint">Judge unavailable: {asked.cause_detail}</p>
+      )}
       <div className="flex items-center gap-2">
         <button
           onClick={onPublish}
@@ -302,6 +317,15 @@ function CandidateCard({
         >
           <X size={13} /> Reject
         </button>
+        {judgeOn && (
+          <button
+            onClick={() => judge.mutate(shard.id, { onSuccess: setAsked })}
+            disabled={busy || judge.isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-line px-2.5 py-1.5 text-[12px] text-muted transition-colors hover:border-line-hover hover:text-ink disabled:opacity-50"
+          >
+            {judge.isPending ? "Asking…" : "Ask the judge"}
+          </button>
+        )}
       </div>
     </div>
   );

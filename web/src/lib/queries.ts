@@ -631,6 +631,13 @@ export function useUndoAutoShard() {
   });
 }
 
+/** On-demand LLM judge (GRPH-650). Advisory — does not mutate the queue. */
+export function useJudgeShard() {
+  return useMutation({
+    mutationFn: (id: string) => api.judgeShard(id),
+  });
+}
+
 export function usePromoteCluster() {
   const qc = useQueryClient();
   return useMutation({

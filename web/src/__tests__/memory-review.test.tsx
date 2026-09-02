@@ -7,7 +7,7 @@ import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
 import { MemoryRouter } from "react-router-dom";
 
 import { ProjectProvider } from "@/features/ProjectContext";
-import type { Shard } from "@/lib/types";
+import type { CandidateJudge, Shard } from "@/lib/types";
 
 const candidate: Shard = {
   id: "m9", text: "Agent guess: batch writes for perf.", scope: "item", source: "lesson from AL-12",
@@ -31,9 +31,15 @@ const unvetted: Shard = {
 };
 
 // Hoisted so the (hoisted) vi.mock factory can reference the spies eagerly.
-const { publishSpy, undoSpy } = vi.hoisted(() => ({
+const { publishSpy, undoSpy, judgeSpy } = vi.hoisted(() => ({
   publishSpy: vi.fn(async () => ({})),
   undoSpy: vi.fn(async () => ({})),
+  judgeSpy: vi.fn(async (id: string): Promise<CandidateJudge> => ({
+    shard_id: id,
+    verdict: null,
+    cause: "no_provider",
+    cause_detail: "no independent chat model is configured for this project",
+  })),
 }));
 
 const project = {
@@ -54,6 +60,7 @@ vi.mock("@/lib/api", () => ({
     rejectShard: vi.fn(async () => ({ ...candidate, status: "rejected" })),
     promoteCluster: vi.fn(async () => ({ published: "", rejected: [] })),
     undoAutoShard: undoSpy,
+    judgeShard: judgeSpy,
   },
 }));
 
@@ -77,6 +84,7 @@ describe("Memory review queue", () => {
 
     expect(await screen.findByText(/Agent guess: batch writes/)).toBeInTheDocument();
     expect(screen.getByText("agent:loop-agent")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Ask the judge/ })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Publish/ }));
     expect(publishSpy).toHaveBeenCalledWith("m9");
@@ -121,5 +129,44 @@ describe("unreviewed shards (AL-287)", () => {
   it("counts unreviewed shards in the header, not just candidates", async () => {
     renderView();
     expect(await screen.findByText("1 UNREVIEWED")).toBeInTheDocument();
+  });
+});
+
+
+describe("on-demand LLM judge (GRPH-650)", () => {
+  beforeEach(() => {
+    project.memory_llm_judge = true;
+    judgeSpy.mockClear();
+  });
+  afterEach(() => {
+    project.memory_llm_judge = false;
+  });
+
+  it("does not show a judge score before anyone asks", async () => {
+    renderView();
+    expect(await screen.findByRole("button", { name: /Ask the judge/ })).toBeInTheDocument();
+    expect(screen.queryByText(/^Judge:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Judge unavailable/)).not.toBeInTheDocument();
+  });
+
+  it("shows unavailable copy, not a quality number, when the judge cannot run", async () => {
+    renderView();
+    await userEvent.click(await screen.findByRole("button", { name: /Ask the judge/ }));
+    expect(await screen.findByText(/Judge unavailable/)).toBeInTheDocument();
+    expect(screen.queryByText(/Judge: 0%/)).not.toBeInTheDocument();
+    expect(judgeSpy).toHaveBeenCalledWith("m9");
+  });
+
+  it("shows the verdict quality and reason when the judge answers", async () => {
+    judgeSpy.mockResolvedValueOnce({
+      shard_id: "m9",
+      verdict: { keep: true, quality: 0.9, reason: "durable specific convention" },
+      cause: null,
+      cause_detail: "",
+    });
+    renderView();
+    await userEvent.click(await screen.findByRole("button", { name: /Ask the judge/ }));
+    expect(await screen.findByText(/Judge: 90%/)).toBeInTheDocument();
+    expect(screen.getByText(/durable specific convention/)).toBeInTheDocument();
   });
 });

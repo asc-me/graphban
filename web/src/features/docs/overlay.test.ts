@@ -183,6 +183,12 @@ describe("docs overlay routes", () => {
     expect(house?.b).toMatch(/does not file a graduation checklist/);
   });
 
+  it("Memory review overlay names on-demand judging and that a missing score is not clean", () => {
+    const ask = docFor("/memory-review").sections.find((s) => /ask the judge/i.test(s.h));
+    expect(ask?.b).toMatch(/nobody asked/);
+    expect(ask?.b).toMatch(/never that the note is fine/);
+  });
+
   it("Fleet overlay talks seats, not gate keys", () => {
     // Gate keys are minted on API keys. Naming them on Fleet is the two-pages
     // mix that sends an operator to mint the wrong object.

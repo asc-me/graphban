@@ -499,6 +499,24 @@ class ScoredCandidate(BaseModel):
     duplicate_of: str | None = None
 
 
+class JudgeVerdictOut(BaseModel):
+    keep: bool
+    quality: float
+    reason: str = ""
+
+
+class CandidateJudgeOut(BaseModel):
+    """On-demand LLM judge for a review-queue candidate (GRPH-650).
+
+    `verdict` XOR `cause`: a missing quality number is not 0. `cause_detail` is
+    the sentence for the cause; empty when a verdict is present.
+    """
+    shard_id: str
+    verdict: JudgeVerdictOut | None = None
+    cause: str | None = None
+    cause_detail: str = ""
+
+
 class EffectivenessListOut(BaseModel):
     score: float | None
     trend: str
