@@ -226,6 +226,9 @@ describe("docs overlay routes", () => {
     expect(mode?.b).toMatch(/not a broken billing page/);
     expect(mode?.b).toMatch(/Checkout/);
     expect(mode?.b).toMatch(/no invoice list/);
+    expect(mode?.b).toMatch(/Enterprise/);
+    expect(mode?.b).toMatch(/Pro\/Team only/);
+    expect(mode?.b).toMatch(/not a missing button/);
     expect(d.tagline).not.toMatch(/Display only/i);
   });
 
