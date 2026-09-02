@@ -158,7 +158,7 @@ const CONTENT: Record<string, DocEntry> = {
     sections: [
       { num: 1, h: "Roster and posture", b: "Offline agents fade rather than vanish — one that died holding a branch is what you need to see. Fleet posture: specialised roles review themselves. Single-agent: you are the reviewer." },
       { num: 2, h: "Review queue and clusters", b: "The queue names who built each item — the reason it needs somebody else. Clusters are non-colliding work; anything held back says why." },
-      { num: 3, h: "Waves and seats", b: "Mint a wave or one seat. Ending a wave is irreversible and names which wave. A gate key attests in CI; do not hand it to the agent doing the work." },
+      { num: 3, h: "Waves and seats", b: "A seat is the role for this session — paste it into the prompt, not the MCP config. Ending a wave is irreversible and names which wave. The API key that authenticates is minted on Settings → API keys; a wave key minted here is swept by End wave." },
     ],
     related: [{ label: "API keys", to: settingsPath("project/api-keys") }],
   },
@@ -257,11 +257,13 @@ const CONTENT: Record<string, DocEntry> = {
     sections: [
       { num: 1, h: "Three kinds", b: "An agent key talks to MCP — read and write on items, memory, and code. A sync credential pushes a code graph from a local box into exactly one project and nothing else. A gate key attests that work was checked so an item may reach done: for CI or a reviewer, never for the agent doing the work. Gate is minted with read+write+gate; gate alone cannot attest." },
       { num: 2, h: "Scope is the write target", b: "Project pins the agent's writes to the active project. Global is unbound — calls pass project_id or fall back to the default. Connect snippets follow the key: Claude Code and Grok CLI get --scope project or --scope user. Sync and gate always pin to one project." },
-      { num: 3, h: "Advertisement is not permission", b: "An agent key ships the core tools. Tiers (PRDs, code-graph writes, fleet admin, occasional) opt in specialist tools because they cost manifest tokens every turn. A tool left out of tools/list is still callable; scopes and roles decide what may be called. Visibility is not the gate. The symptom of a missing tier is an agent that does not know a tool exists, never an error." },
+      { num: 3, h: "Advertisement is not permission", b: "An agent key ships the core tools. Tiers (PRDs, code-graph writes, fleet admin, occasional) opt in specialist tools because they cost manifest tokens every turn. A tool left out of tools/list is still callable; scopes and roles decide what may be called. Visibility is not the gate. The symptom of a missing tier is an agent that does not know a tool exists, never an error. The Fleet admin tier is for the supervisor or planner key — being in a fleet needs a seat, not this tier." },
       { num: 4, h: "Shown once", b: "The plaintext is shown once and stored as a hash. A lost key is a new mint. Two paths, one key shape: mint here, or graphban init --key-scope / --key-tiers on a virgin instance." },
+      { num: 5, h: "Seats are not keys", b: "A seat on Fleet grants a role for one session and expires. Put the API key in MCP config once; issue a seat per agent per wave. A wave-tagged key minted on Fleet is swept by End wave — it is labelled here so it cannot look like a hand-minted key." },
     ],
     related: [
       { label: "MCP Tools", to: settingsPath("project/mcp") },
+      { label: "Fleet", to: "/fleet" },
     ],
   },
 

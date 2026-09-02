@@ -66,6 +66,10 @@ async function openWave(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: /^Wave/ }));
 }
 
+async function openLegacyWaveKey(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /Legacy: mint a wave key/i }));
+}
+
 /**
  * D5's job is to make a fleet usable — without it every wave costs a trip through Settings
  * and three hand-assembled pastes per terminal. These pin the parts that carry meaning rather
@@ -79,11 +83,32 @@ describe("Fleet view", () => {
     api.endWave.mockReset();
   });
 
-  it("says what to do when the fleet is empty", () => {
+  it("says what to do when the fleet is empty", async () => {
     renderView();
     // An empty roster is the state a first-time user is in, and "no agents" alone leaves them
-    // nowhere. The instruction is the content.
-    expect(screen.getByText(/Mint a credential below/)).toBeInTheDocument();
+    // nowhere. Seats are the recommended path; "mint a credential below" taught the older
+    // one. The instruction is the content, and it takes you there.
+    expect(screen.queryByText(/Mint a credential below/)).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Issue seats on Wave/ }));
+    expect(screen.getByRole("button", { name: /Issue the seats into/ })).toBeInTheDocument();
+  });
+
+  it("labels a wave-tagged key as swept by End wave, not as an ordinary one", () => {
+    // Two minting surfaces, one list: without the mark, End wave sweeping one of them
+    // is invisible until it happens.
+    fleet.data = {
+      ...BASE,
+      credentials: [
+        { id: "k1", name: "yours", prefix: "gb_sk_aaaa", wave: null, revoked: false,
+          posture: null, roles: [], agents: 1, expires_at: null },
+        { id: "k2", name: "wave", prefix: "gb_sk_bbbb", wave: "wave-1", revoked: false,
+          posture: null, roles: [], agents: 1, expires_at: null },
+      ],
+    };
+    renderView();
+    expect(screen.getByText(/wave-1 · swept by End wave/)).toBeInTheDocument();
+    expect(screen.getByText(/yours · never swept/)).toBeInTheDocument();
   });
 
   it("sends someone looking for MCP to API keys, not a second mint on this page", () => {
@@ -239,8 +264,12 @@ describe("Fleet view", () => {
 
   it("offers all-in-one beside the three roles", async () => {
     // The roster REPORTS all-in-one, so the page must be able to create one — otherwise it
-    // names a posture the reader has no way to produce.
+    // names a posture the reader has no way to produce. Collapsed behind the legacy mint so
+    // it is not the first thing an empty fleet teaches.
+    const user = userEvent.setup();
     renderView();
+    expect(screen.queryByRole("button", { name: "all-in-one" })).not.toBeInTheDocument();
+    await openLegacyWaveKey(user);
     for (const r of ["planner", "worker", "reviewer", "all-in-one"]) {
       expect(screen.getByRole("button", { name: r })).toBeInTheDocument();
     }
@@ -253,6 +282,7 @@ describe("Fleet view", () => {
     // anyone noticed. Asserted via aria-pressed so it cannot regress into a colour question.
     const user = userEvent.setup();
     renderView();
+    await openLegacyWaveKey(user);
 
     for (const r of ["planner", "worker", "reviewer", "all-in-one"]) {
       await user.click(screen.getByRole("button", { name: r }));
@@ -279,6 +309,7 @@ describe("Fleet view", () => {
     });
     const user = userEvent.setup();
     renderView();
+    await openLegacyWaveKey(user);
 
     await user.click(screen.getByRole("button", { name: "all-in-one" }));
     await user.click(screen.getByRole("button", { name: /Mint an all-in-one credential/ }));
@@ -296,6 +327,7 @@ describe("Fleet view", () => {
     });
     const user = userEvent.setup();
     renderView();
+    await openLegacyWaveKey(user);
 
     await user.click(screen.getByRole("button", { name: "reviewer" }));
     await user.click(screen.getByRole("button", { name: /Mint a reviewer credential/ }));
@@ -351,6 +383,7 @@ describe("Fleet view", () => {
     });
     const user = userEvent.setup();
     const { container } = renderView();
+    await openLegacyWaveKey(user);
     await user.click(screen.getByRole("button", { name: /Mint a worker credential/ }));
     await screen.findByText(/Connect an agent · MCP/);
 
@@ -782,6 +815,7 @@ describe("Fleet view", () => {
 
     const note = screen.getByText(/not\s+a seat/);
     expect(note.textContent).toMatch(/API key/);
+    expect(note.textContent).toMatch(/Fleet admin/);
   });
 
   it("points the supervisor path at the measured-model document", async () => {

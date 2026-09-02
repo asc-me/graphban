@@ -46,6 +46,21 @@ def proj(client, auth):
 
 # ---- onboarding a wave --------------------------------------------------------------------
 
+def test_a_fleet_key_is_labelled_on_the_api_keys_list(client, auth, proj):
+    """A wave-tagged key listed next to a hand-minted one with no mark is the two
+    minting-surfaces bug: End wave will sweep one, and the list cannot say which."""
+    fleet = client.post("/api/fleet/keys",
+                        json={"project_id": proj, "role": "worker", "wave": "w1"},
+                        headers=auth)
+    hand = client.post("/api/api-keys", json={"name": "mine", "project_id": proj},
+                       headers=auth)
+    assert fleet.status_code == 201, fleet.text
+    assert hand.status_code == 201, hand.text
+    listed = {row["id"]: row for row in client.get("/api/api-keys", headers=auth).json()}
+    assert listed[fleet.json()["id"]]["fleet_wave"] == "w1"
+    assert listed[hand.json()["id"]]["fleet_wave"] is None
+
+
 def test_a_minted_fleet_key_is_narrowed_to_one_role(client, auth, proj, db):
     """The D2 ceiling, applied at mint time. An agent on this credential cannot register into
     a different role however its client config is written."""

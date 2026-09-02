@@ -112,8 +112,8 @@ describe("minting a sync credential", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("link", { name: "API Keys" }));
-    await user.type(screen.getByPlaceholderText(/ci-agent/), "ci-agent");
-    await user.click(screen.getByRole("button", { name: /Create key/ }));
+    await user.type(screen.getByPlaceholderText(/claude-code/), "ci-agent");
+    await user.click(screen.getByRole("button", { name: /Mint key/ }));
 
     await waitFor(() =>
       // undefined scopes → the backend default ["read","write"]; `[]` tiers → the core MCP
@@ -134,8 +134,8 @@ describe("minting a sync credential", () => {
     renderSettings();
     await user.click(screen.getByRole("link", { name: "API Keys" }));
     await user.click(screen.getByRole("button", { name: "Global" }));
-    await user.type(screen.getByPlaceholderText(/ci-agent/), "fleet-wide");
-    await user.click(screen.getByRole("button", { name: /Create key/ }));
+    await user.type(screen.getByPlaceholderText(/claude-code/), "fleet-wide");
+    await user.click(screen.getByRole("button", { name: /Mint key/ }));
 
     await waitFor(() =>
       expect(api.createApiKey).toHaveBeenCalledWith("fleet-wide", null, null, undefined, []),
@@ -158,7 +158,7 @@ describe("hosted Sync / Link is the cloud-org mint, not the self-host paste form
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("link", { name: "API Keys" }));
-    expect(await screen.findByRole("button", { name: /Create key/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Mint key/ })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /^credentials$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /^Cloud link$/ })).not.toBeInTheDocument();
   });
