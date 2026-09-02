@@ -339,6 +339,14 @@ describe("docs overlay routes", () => {
     expect(keys.related?.some((r) => r.label === "AI providers")).toBe(true);
   });
 
+  it("API keys overlay names Graphban keys, not LLM credentials", () => {
+    const keys = docFor(settingsPath("project/api-keys"));
+    expect(keys.tagline).toMatch(/not LLM credentials/);
+    expect(keys.sections.find((s) => /three kinds/i.test(s.h))?.b).toMatch(
+      /Looking for LLM credentials/,
+    );
+  });
+
   it("API keys overlay names a link key, not a sync credential", () => {
     // Sync / Link already mints a "link key". The API keys kind used to say
     // "sync credential" for the same object — two names, one mint.
