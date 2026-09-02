@@ -163,7 +163,8 @@ describe("P28 Settings (self-host)", () => {
     expect(await screen.findByText("This box")).toBeInTheDocument();
     expect(screen.getByText("This project")).toBeInTheDocument();
     expect(screen.getByText("Cloud / Sync")).toBeInTheDocument();
-    expect(screen.getByText("MCP")).toBeInTheDocument();
+    expect(screen.getByText("MCP Tools")).toBeInTheDocument();
+    expect(screen.queryByText(/^MCP$/)).not.toBeInTheDocument();
     expect(screen.queryByText("Users & access")).not.toBeInTheDocument();
   });
 });
