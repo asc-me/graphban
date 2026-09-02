@@ -116,6 +116,7 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
   const boundOf = (key: PatchKey): string => {
     if (key === "model") return fieldStr(view.model);
     if (key === "version_from") return fieldStr(view.version_from);
+    if (key === "release_defined_in") return fieldStr(view.release_defined_in);
     return fieldStr(view.fields[key as keyof GitopsView["fields"]]);
   };
 
@@ -131,6 +132,7 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
     pr_title_pattern: shown(edits, "pr_title_pattern", boundOf("pr_title_pattern")),
     reviewer_bar: shown(edits, "reviewer_bar", boundOf("reviewer_bar")),
     version_from: shown(edits, "version_from", boundOf("version_from")),
+    release_defined_in: shown(edits, "release_defined_in", boundOf("release_defined_in")),
   });
 
   return (
@@ -162,7 +164,7 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
           <span className="text-[11px] text-faint">
             {modelValue === GITOPS_CUSTOM
               ? "Fields no longer match a preset. Pick one to re-apply, or leave as custom."
-              : "Writes the fields below. Base branch is still required — the preset never fills main."}
+              : "Writes the fields below. Base branch and release defined in are never filled by a preset."}
           </span>
         </label>
         <ProcessFields
@@ -171,7 +173,11 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
           boundOf={boundOf}
           hintOf={() => undefined}
           placeholderOf={(key) =>
-            key === "base_branch" ? "Unmeasured — not main" : undefined
+            key === "base_branch"
+              ? "Unmeasured — not main"
+              : key === "release_defined_in"
+                ? "Unmeasured — not docs/release.md"
+                : undefined
           }
           writable={writable}
           overlay={false}
@@ -248,14 +254,23 @@ function OverlayRow({ project }: { project: GitopsProjectRef }) {
               boundOf={(key) => {
                 if (key === "model") return overlayBound(data.model);
                 if (key === "version_from") return overlayBound(data.version_from);
+                if (key === "release_defined_in") return overlayBound(data.release_defined_in);
                 return overlayBound(data.fields[key as keyof GitopsView["fields"]]);
               }}
               hintOf={(key) => {
                 if (key === "model") return inheritHint(data.model);
                 if (key === "version_from") return inheritHint(data.version_from);
+                if (key === "release_defined_in") return inheritHint(data.release_defined_in);
                 return inheritHint(data.fields[key as keyof GitopsView["fields"]]);
               }}
               placeholderOf={(key) => {
+                if (key === "release_defined_in") {
+                  const f = data.release_defined_in;
+                  if (f.source === "org" && typeof f.value === "string" && f.value) {
+                    return `inherits ${f.value}`;
+                  }
+                  return "inherit";
+                }
                 if (key !== "base_branch") return undefined;
                 const f = data.fields.base_branch;
                 if (f.source === "org" && typeof f.value === "string" && f.value) {
@@ -414,6 +429,19 @@ function ProcessFields({
         }
         onClear={() => onEdit("version_from", boundOf("version_from"), null)}
       />
+      <TextField
+        label="Release defined in"
+        ariaLabel={`${prefix} release defined in`}
+        value={shown(edits, "release_defined_in", boundOf("release_defined_in"))}
+        placeholder={
+          placeholderOf("release_defined_in") ??
+          (overlay ? "inherit" : "Unmeasured — not docs/release.md")
+        }
+        hint={hintOf("release_defined_in")}
+        writable={writable}
+        onChange={(v) => onEdit("release_defined_in", boundOf("release_defined_in"), v)}
+        onClear={() => onEdit("release_defined_in", boundOf("release_defined_in"), null)}
+      />
     </>
   );
 }
@@ -438,7 +466,7 @@ function TextField({
   writable: boolean;
   chips?: readonly string[];
   onChange: (v: string) => void;
-  onChips: (chip: string) => void;
+  onChips?: (chip: string) => void;
   onClear: () => void;
 }) {
   return (
@@ -463,7 +491,7 @@ function TextField({
           </button>
         )}
       </div>
-      {chips && (
+      {chips && onChips && (
         <div className="mt-1.5 flex flex-wrap gap-1">
           {chips.map((c) => (
             <button

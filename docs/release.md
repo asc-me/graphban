@@ -14,6 +14,9 @@ python3 scripts/graphban_release.py publish    # pack + GitHub Release
 Then on the box: **Settings → This box → Updates → Check → Install**. Confirm
 names the tag. This script does not apply.
 
+Point Gitops **Release defined in** at `docs/release.md` so agents find this
+file from `get_context`. Unmeasured is not this path.
+
 ## What a release is
 
 Product cuts are **CalVer `YYYY.MM.N` + `git_sha`**. `/health.version` is the

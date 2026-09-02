@@ -42,6 +42,7 @@ function view(over: Partial<GitopsView> = {}): GitopsView {
     org_id: "org_1",
     fields: fields(),
     version_from: unmeasured,
+    release_defined_in: unmeasured,
     model: unmeasured,
     plan: null,
     control: { state: "local", writable: true, message: "" },

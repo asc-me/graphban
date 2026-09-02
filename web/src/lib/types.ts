@@ -718,6 +718,8 @@ export interface GitopsView {
   };
   was: GitopsWas | null;
   version_from: GitopsField<string | null>;
+  /** Path or URL of this repo's cut process. Unmeasured is not docs/release.md. */
+  release_defined_in: GitopsField<string | null>;
   model: GitopsField<string | null>;
   /** Tracker parent filed for the current named model. Null when unmeasured or none filed. */
   plan: { id: string; title: string } | null;
@@ -733,6 +735,7 @@ export type GitopsPatch = {
   pr_title_pattern?: string | null;
   reviewer_bar?: string | null;
   version_from?: string | null;
+  release_defined_in?: string | null;
   model?: string | null;
 };
 

@@ -363,8 +363,8 @@ const CONTENT: Record<string, DocEntry> = {
     tagline: "This project's delivery contract — unmeasured is not main.",
     sections: [
       { num: 1, h: "Unmeasured, not main", b: "Unset fields are unmeasured — not 'use main' and not 'no requirements'. Agents read the resolved contract from get_context." },
-      { num: 2, h: "Named models", b: "Push to base / PRs to base / PRs to integration write the six fields in one save. Base branch is never filled by a preset. A hand-edit clears the model id so a stale preset name cannot survive; the picker then says Custom, not Unmeasured. Saving a model files a tracker checklist on this project; GET gitops.plan names it. Graphban still does not run git." },
-      { num: 3, h: "The sitting", b: "Updates is this box's cut. Here, pick PRs to base, type the branch, save. Tracker then holds the graduation checklist (observe remote → first tagged cut). get_context still returns only the six gitops fields — not the model name and not whether this box is current." },
+      { num: 2, h: "Named models", b: "Push to base / PRs to base / PRs to integration write the preset fields in one save. Base branch and release defined in are never filled by a preset. A hand-edit clears the model id so a stale preset name cannot survive; the picker then says Custom, not Unmeasured. Saving a model files a tracker checklist on this project; GET gitops.plan names it. Graphban still does not run git." },
+      { num: 3, h: "The sitting", b: "Updates is this box's cut. Here, pick PRs to base, type the branch, optionally point Release defined in at the runbook (unmeasured is not docs/release.md). Tracker then holds the graduation checklist (observe remote → first tagged cut). get_context returns the contract fields including that locator — not the model name and not whether this box is current." },
       { num: 4, h: "Grey when linked", b: "A linked box shows the org's live values, filled but not editable. control.message is the banner. Local columns are was, never the form value." },
       { num: 5, h: "Patterns, not globs", b: "Branch and PR patterns may insert {item_id} {tag} {slug} {version} {date}. base_branch is a literal. Globs are rejected." },
     ],
@@ -391,7 +391,7 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Org gitops",
     tagline: "House process and per-project overlay.",
     sections: [
-      { num: 1, h: "House process", b: "The org default: a named model writes the six fields, or set them by hand. Unset is unmeasured — not main and not no requirements. A hand-edit clears the model id; the picker then says Custom, not Unmeasured. Saving the house model does not file a graduation checklist on every project." },
+      { num: 1, h: "House process", b: "The org default: a named model writes the preset fields, or set them by hand. Base branch and release defined in are never filled by a preset. Unset is unmeasured — not main, not docs/release.md, and not no requirements. A hand-edit clears the model id; the picker then says Custom, not Unmeasured. Saving the house model does not file a graduation checklist on every project." },
       { num: 2, h: "Project overlay", b: "Empty overlay inherits the house value. Sparse fields are inheritance. Clearing a field returns it to inherit. Overlay rows come from every org project, not the readable subset." },
       { num: 3, h: "Linked boxes", b: "A linked self-host box reads this contract live. Gitops is not a property of a deployment credential, so it is not on Deployments cards." },
     ],

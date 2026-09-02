@@ -33,11 +33,13 @@ a release. Apply stays this button — not the publish script, not MCP.
 ### Gitops
 
 `/settings/deployment/gitops`. Sparse delivery contract: integration base, whether
-agents may push to it, optional branch/PR naming, reviewer bar, version scheme.
+agents may push to it, optional branch/PR naming, reviewer bar, version scheme,
+and where the cut process is written (`release_defined_in`).
 
 - A **model** picker (Unmeasured / Push to base / PRs to base / PRs to integration)
-  writes those six fields in one save. `base_branch` is never filled by a preset —
-  a model save with an empty base is 422, not a write of `main`. A later hand-edit
+  writes the preset fields in one save. `base_branch` and `release_defined_in` are
+  never filled by a preset — a model save with an empty base is 422, not a write of
+  `main`, and unmeasured locator is not `docs/release.md`. A later hand-edit
   clears the model id.
 - Saving a non-Unmeasured model on a **project** files a tracker parent + children
   (observe / remote / base_branch / optionally stop-pushing, one PR, tagged cut /
