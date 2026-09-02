@@ -47,6 +47,8 @@ def test_decompose_classifies_ui_section_as_high(client, auth):
         "## Visual design\n\nHow the dashboard should look and feel, the layout and interactions.\n"
     )
     prd = client.post("/api/prds", json={"title": "F", "body": body, "project_id": "core"}, headers=auth).json()
+    from tests.prd_approve import approve_id
+    approve_id(prd["id"])
     key = _key(client, auth, project_id="core")
     dec = _mcp(client, key, "decompose_prd", {"prd_id": prd["id"], "create": True})["structuredContent"]
     by_section = {p["section"]: p["fidelity"] for p in dec["proposals"]}
@@ -62,6 +64,8 @@ def test_decompose_classifies_ui_section_as_high(client, auth):
 def test_coverage_counts_open_high_fidelity(client, auth):
     body = "# G\n\n## Feel\n\nhow it should feel and animate.\n\n## Logic\n\nthe rules.\n"
     prd = client.post("/api/prds", json={"title": "G", "body": body, "project_id": "core"}, headers=auth).json()
+    from tests.prd_approve import approve_id
+    approve_id(prd["id"])
     key = _key(client, auth, project_id="core")
     _mcp(client, key, "decompose_prd", {"prd_id": prd["id"], "create": True})
     cov = _mcp(client, key, "prd_coverage", {"prd_id": prd["id"]})["structuredContent"]

@@ -106,6 +106,14 @@ class ApprovalNotEarned(ValueError):
     """`approved` was set by hand instead of reached by finishing the grill (AL-300)."""
 
 
+class DecomposeRequiresApproval(ValueError):
+    """`create=True` on a PRD that has not earned `approved` (P23 A / GRPH-654).
+
+    Dry-run still proposes. Filing tasks is the write that a running fleet will pick up,
+    so an ungrilled draft must not become forty items.
+    """
+
+
 class PrdClosed(ValueError):
     """A closed PRD was edited, reopened, or rebaselined. Terminal is terminal (GRPH-244);
     post-close work becomes a successor PRD carrying a lineage link back."""
@@ -3677,6 +3685,9 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
     """Propose one tracked task per un-covered section (gap). With create=True, creates them
     as backlog items linked to the PRD + section, so the spec drives the tracker.
 
+    Filing (`create=True`) requires `approved` (P23 A). Dry-run still proposes on a draft.
+    An ungrilled body becoming forty live items is the failure this refuses.
+
     Framing sections (Problem, Goals, Non-goals, Success criteria, …) are skipped — they
     describe the work, they aren't work (AL-96). Pass ``include_prose=True`` when a PRD
     genuinely uses one of those headings for buildable scope."""
@@ -3723,6 +3734,11 @@ def decompose(db: Session, prd: Prd, create: bool = False, include_prose: bool =
         })
     created = []
     if create:
+        if prd.status != "approved":
+            raise DecomposeRequiresApproval(
+                f"create=true files tasks; that needs approved, which the grill earns — "
+                f"this PRD is {prd.status}. Dry-run (create=false) still proposes."
+            )
         for pr in proposals:
             item = items_svc.create_item(
                 db, title=pr["title"], description=pr["description"],

@@ -417,8 +417,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "decompose_prd",
         "description": (
             "One task per un-covered PRD section, each carrying the PRD's framing prose so it "
-            "needs no other reading. `create=true` files them, linked to PRD+section. Framing "
-            "sections aren't tasks unless `include_prose=true`."
+            "needs no other reading. `create=true` files them if approved (grill earns it). "
+            "Framing sections aren't tasks unless `include_prose=true`."
         ),
         "inputSchema": {
             "type": "object",
@@ -3415,6 +3415,13 @@ async def mcp_endpoint(
             return _tool_error(id_, "conflict", str(e),
                                "nothing is wrong with the call — wait for the cooldown to "
                                "elapse and send it again", modern=modern)
+        except prd_svc.DecomposeRequiresApproval as e:
+            # CONFLICT, not validation (GRPH-654). The arguments are fine; the PRD has not
+            # earned approved. `validation` would send an agent editing a payload that is
+            # already correct. Mapped here so REST 409 and MCP conflict cannot drift.
+            return _tool_error(id_, "conflict", str(e),
+                               "finish the grill so the PRD reaches approved, then send "
+                               "create=true again", modern=modern)
         except errors.AppError as e:
             # Expected, agent-correctable failure: not_found | validation | conflict.
             return _tool_error(id_, e.code, str(e), e.hint, modern=modern)

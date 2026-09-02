@@ -191,6 +191,13 @@ describe("docs overlay routes", () => {
     expect(cov?.b).not.toMatch(/\d+%/);
   });
 
+  it("PRD editor overlay names Fill gaps as gated on approved", () => {
+    const d = docFor("/prds/abc");
+    const cov = d.sections.find((s) => /coverage/i.test(s.h));
+    expect(cov?.b).toMatch(/grill earns approved/);
+    expect(cov?.b).toMatch(/draft is not a task list/);
+  });
+
   it("PRD editor overlay names Readiness to approve as a warning, not a gate", () => {
     const d = docFor("/prds/abc");
     const ready = d.sections.find((s) => /readiness to approve/i.test(s.h));

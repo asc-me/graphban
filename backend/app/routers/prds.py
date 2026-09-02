@@ -407,7 +407,12 @@ def decompose_prd(prd_id: str, create: bool = False, include_prose: bool = False
         raise HTTPException(404, "prd not found")
     if create:  # proposing tasks is a read; creating them is a write
         authz.require_writable(db, user.id, prd.project_id, "prd")
-    return prd_svc.decompose(db, prd, create=create, include_prose=include_prose)
+    try:
+        return prd_svc.decompose(db, prd, create=create, include_prose=include_prose)
+    except prd_svc.DecomposeRequiresApproval as e:
+        # 409, like ApprovalNotEarned: the request is well-formed; the PRD is not there yet.
+        # 422 would read as a malformed payload.
+        raise HTTPException(409, str(e))
 
 
 @router.get("/{prd_id}", response_model=PrdOut)
