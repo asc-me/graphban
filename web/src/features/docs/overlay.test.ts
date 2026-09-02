@@ -368,6 +368,17 @@ describe("docs overlay routes", () => {
     expect(providers.related?.some((r) => r.label === "API keys")).toBe(true);
   });
 
+  it("AI providers overlay names Provider key, not the Graphban API key field", () => {
+    const selfHost = docFor(settingsPath("deployment/providers"));
+    const hosted = docFor(settingsPath("project/providers"));
+    const tagged = docFor("/p/CORE/settings/deployment/providers");
+    for (const d of [selfHost, hosted, tagged]) {
+      const box = d.sections.find((s) => /this box/i.test(s.h));
+      expect(box?.b).toMatch(/Provider key/);
+      expect(box?.b).toMatch(/Looking for API keys/);
+    }
+  });
+
   it("MCP Tools overlay does not pretend this page mints keys", () => {
     const mcp = docFor("/mcp-tools");
     const body = mcp.sections.map((s) => `${s.h} ${s.b}`).join(" ");

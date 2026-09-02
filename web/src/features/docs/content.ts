@@ -281,7 +281,7 @@ const CONTENT: Record<string, DocEntry> = {
     title: "AI providers",
     tagline: "Credentials this box runs on — not Graphban API keys.",
     sections: [
-      { num: 1, h: "This box, not this project", b: "Self-host: This box → AI providers. Hosted: the AI Providers tab. An LLM credential is what the instance runs on. Agent keys that call Graphban live on API keys." },
+      { num: 1, h: "This box, not this project", b: "Self-host: This box → AI providers. Hosted: the AI Providers tab. An LLM credential is what the instance runs on. The secret on a credential is a Provider key. Looking for API keys? is Graphban identity. Agent keys that call Graphban live on API keys." },
       { num: 2, h: "Catalogue plus a custom endpoint", b: "Pick Anthropic, OpenAI, Gemini, Grok, Groq, DeepSeek, Mistral, Ollama, Qwen, Kimi, GLM, MiniMax, OpenRouter, Together, Fireworks, Perplexity, Cohere, or Custom. Every OpenAI-compat row shows an editable endpoint, pre-filled from the catalogue so the default URL is zero-typing and a gateway or local server is one field." },
       { num: 3, h: "Deployment default, then project", b: "A credential can be the box default. A project may point at one; if that pointer is dead, resolution falls back to the deployment default rather than going silent." },
       { num: 4, h: "Task models", b: "Classify, critique, and the memory judge can use a different credential. Unset inherits this project's chat — a missing role is not 'no judge'. A named credential that cannot be used is ungraded, not a quieter model." },
