@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LeftNav } from "@/components/shell/LeftNav";
 import { docFor } from "@/features/docs/content";
 import { OrgGitops } from "@/features/orgadmin/OrgGitops";
+import { GITOPS_CUSTOM } from "@/features/settings/GitopsPanel";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { adminPath } from "@/lib/routes";
 import type { GitopsView } from "@/lib/types";
@@ -157,12 +158,43 @@ describe("Org gitops editor", () => {
   });
 
   it("house model picker is Unmeasured first and nothing is pre-selected", async () => {
+    spies.orgGitops.mockResolvedValue(view({ projects: [] }));
     renderPage();
     const picker = await screen.findByLabelText("House gitops model");
     expect(picker.tagName).toBe("SELECT");
     expect(picker).toHaveValue("");
     const labels = [...picker.querySelectorAll("option")].map((o) => o.textContent);
     expect(labels[0]).toBe("Unmeasured");
+  });
+
+  it("house picker says Custom when fields are set and model is empty", async () => {
+    renderPage();
+    const picker = await screen.findByLabelText("House gitops model");
+    expect(picker).toHaveValue(GITOPS_CUSTOM);
+    expect(screen.getByText(/no longer match a preset/i)).toBeInTheDocument();
+  });
+
+  it("selecting Custom on the house picker does not PATCH model custom", async () => {
+    spies.orgGitops.mockResolvedValue(
+      view({
+        model: { value: "prs_to_base", source: "org" },
+        fields: fields({ base_branch: { value: "main", source: "org" } }),
+      }),
+    );
+    spies.updateOrgGitops.mockResolvedValue(
+      view({
+        model: unmeasured,
+        fields: fields({ base_branch: { value: "main", source: "org" } }),
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await user.selectOptions(await screen.findByLabelText("House gitops model"), GITOPS_CUSTOM);
+    await user.click(screen.getByRole("button", { name: "Save house process" }));
+    expect(spies.updateOrgGitops).toHaveBeenCalled();
+    const body = spies.updateOrgGitops.mock.calls[0][1] as { model?: unknown };
+    expect(body.model).toBeNull();
+    expect(body.model).not.toBe(GITOPS_CUSTOM);
   });
 
   it("shows house stage and an inheriting overlay as empty, not stage in the input", async () => {
