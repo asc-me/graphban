@@ -73,6 +73,19 @@ function StateCopy({ data }: { data: UpdateCheck }) {
   );
 }
 
+function methodCopy(data: UpdateCheck): string {
+  if (data.hosted) {
+    return "Hosted. The operator updates this instance — not compose.";
+  }
+  if (data.via === "native") {
+    return "Native install at /opt/graphban.";
+  }
+  if (data.via === "compose") {
+    return "Compose, with a host helper on the unix socket.";
+  }
+  return "Could not tell — not compose.";
+}
+
 function installHint(data: UpdateCheck | undefined): string {
   if (!data || data.state === "unknown") {
     return "Install is disabled until a check succeeds.";
@@ -96,7 +109,12 @@ export function UpdatesPanel() {
   const { data: config } = useConfig();
   const { data, isError, isPending, isFetching, refetch } = useUpdateCheck();
   const hosted = config?.hosted_mode ?? data?.hosted ?? false;
-  const canInstall = Boolean(data?.apply && data.state === "available" && !hosted);
+  const canInstall = Boolean(
+    data?.apply
+    && data.state === "available"
+    && !hosted
+    && (data.via === "compose" || data.via === "native"),
+  );
   const tag = data?.latest?.tag ?? "";
   const [confirming, setConfirming] = React.useState(false);
   const [applying, setApplying] = React.useState(false);
@@ -143,6 +161,12 @@ export function UpdatesPanel() {
           </p>
         )}
         {data && <StateCopy data={data} />}
+        {data && (
+          <div className="mt-4">
+            <Label>How this box is deployed</Label>
+            <p className="text-[13px] text-fg-2">{methodCopy(data)}</p>
+          </div>
+        )}
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button
             type="button"

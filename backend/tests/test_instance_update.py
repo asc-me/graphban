@@ -200,6 +200,59 @@ def test_apply_hosted_is_403_and_does_not_talk():
     assert got["status"] == 403
 
 
+def test_apply_empty_via_is_not_compose():
+    """THE CALL. apply True + empty via must not start deploy.sh."""
+    payload = {
+        "state": "available",
+        "running": {"version": "2026.09.1", "git_sha": "d596e57"},
+        "latest": {"tag": "2026.10.1", "url": "https://example/x", "asset": ""},
+        "apply": True,
+        "via": "",
+        "hosted": False,
+        "note": "",
+    }
+
+    def send(msg, **kw):
+        raise AssertionError("empty via must not talk to the compose helper")
+
+    def native_start(tag, asset, **kw):
+        raise AssertionError("empty via must not start native upgrade")
+
+    got = svc.apply(
+        "2026.10.1", check_fn=lambda **k: payload, send=send, native_start=native_start)
+    assert got["ok"] is False
+    assert got["status"] == 503
+    assert "not compose" in got["error"]
+
+
+def test_rest_apply_empty_via_is_not_compose(client, auth, monkeypatch):
+    """Sabotage the CALL: apply() defaulting empty via to compose would 202."""
+    monkeypatch.setattr(
+        svc, "check",
+        lambda **k: {
+            "state": "available",
+            "running": {"version": "2026.09.1", "git_sha": "d596e57"},
+            "latest": {"tag": "2026.10.1", "url": "https://example/x", "asset": ""},
+            "apply": True,
+            "via": "",
+            "hosted": False,
+            "note": "",
+        },
+    )
+
+    def talk(msg, **kw):
+        raise AssertionError("empty via must not talk to the compose helper")
+
+    monkeypatch.setattr(svc, "talk", talk)
+    r = client.post(
+        "/api/platform/update-apply",
+        headers=auth,
+        json={"tag": "2026.10.1"},
+    )
+    assert r.status_code == 503, r.text
+    assert "not compose" in r.json()["detail"]
+
+
 def test_rest_apply_call_posts_the_tag(client, auth, monkeypatch):
     """Sabotage the CALL: deleting the router branch would 404 while unit tests pass."""
     monkeypatch.setattr(
