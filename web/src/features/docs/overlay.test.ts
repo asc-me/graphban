@@ -69,6 +69,7 @@ const PAGES: [string, string][] = [
   [orgPath("galaxy"), "Galaxy"],
   [adminPath("gitops"), "Org gitops"],
   [adminPath("users"), "Users & access"],
+  [adminPath("users/roles"), "Roles & permissions"],
   [adminPath("teams"), "Teams"],
   [adminPath("deployments"), "Deployments"],
   [adminPath("integrations"), "Org integrations"],
@@ -373,6 +374,17 @@ describe("docs overlay routes", () => {
     expect(body).toMatch(/does not mint keys/);
     expect(body).toMatch(/seat/i);
     expect(mcp.related?.some((r) => r.label === "API keys")).toBe(true);
+  });
+
+  it("Org roles overlay is not Users, and fleet roles are a seat not a credential", () => {
+    // THE CALL. users/roles used to startWith(users) and open the seat-meter overlay.
+    const roles = docFor(adminPath("users/roles"));
+    expect(roles.title).toBe("Roles & permissions");
+    expect(roles.title).not.toBe("Users & access");
+    const people = roles.sections.find((s) => /people/i.test(s.h));
+    expect(people?.b).toMatch(/seat/);
+    expect(people?.b).toMatch(/not a credential/);
+    expect(docFor(adminPath("users")).title).toBe("Users & access");
   });
 
   it("MCP Tools overlay names Looking for API keys, not an LLM secret", () => {
