@@ -5,12 +5,23 @@ Exposes the live Graphban tools to agents, authenticated by a scoped API key
 Every tool calls the shared service layer, so an agent's writes are identical to
 what the web app produces — one code path.
 
-Handled methods: `initialize`, `tools/list`, `tools/call`, and the
-`notifications/initialized` notification. Single JSON responses (no SSE) keep it
-`curl`-friendly while remaining MCP Streamable-HTTP compatible for simple calls.
+Handled methods: `server/discover`, `initialize`, `tools/list`, `tools/call`, and
+the `notifications/initialized` notification. Single JSON responses (no SSE) keep
+it `curl`-friendly while remaining MCP Streamable-HTTP compatible for simple calls.
+
+**Dual-era (GRPH-223).** This endpoint serves both MCP eras on one URL. The era is
+chosen per request, exactly as the 2026-07-28 compatibility matrix prescribes: a
+request carrying `params._meta["io.modelcontextprotocol/protocolVersion"]` is a
+MODERN request — validated (header/`_meta` agreement, `Mcp-Method`/`Mcp-Name`) and
+answered statelessly with `resultType`, `ttlMs`/`cacheScope`, and `serverInfo` in
+the result `_meta`. An `initialize` handshake selects LEGACY semantics — the
+negotiated version stays within `SUPPORTED_PROTOCOL_VERSIONS`, and legacy replies
+keep their pre-adoption shape byte-for-byte (clients on 2025-11-25 and earlier
+never learn the endpoint changed).
 """
 from __future__ import annotations
 
+import base64
 import copy
 import json
 import secrets
@@ -59,10 +70,34 @@ import httpx
 
 router = APIRouter(tags=["mcp"])
 
-PROTOCOL_VERSION = "2025-11-25"  # latest finalized MCP spec our tools surface conforms to
-# Versions this server is compatible with. Per the spec's negotiation rule we echo the
-# client's requested version when it's one of these, else advertise PROTOCOL_VERSION.
+# The handshake's ceiling stays at the last initialization-based revision ON PURPOSE
+# (GRPH-223): per the 2026-07-28 compatibility matrix, "an `initialize` request selects
+# legacy semantics" — 2026-07-28 is not a legacy revision, so echoing it back to a
+# handshake client would name a dialect its messages don't speak. A client that wants
+# the modern era declares it per request in `_meta`, not in `initialize`.
+PROTOCOL_VERSION = "2025-11-25"  # advertised when a handshake requests nothing we know
+# Versions this server is compatible with over the LEGACY handshake. Per the spec's
+# negotiation rule we echo the client's requested version when it's one of these, else
+# advertise PROTOCOL_VERSION.
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2025-03-26", "2025-06-18", "2025-11-25"})
+
+# --- modern era (protocol revision 2026-07-28, "stateless core") ---------------
+MODERN_PROTOCOL_VERSION = "2026-07-28"
+# `_meta` keys the modern era rides on (SEP-2575). Version mismatches and header
+# mismatch carry spec-allocated JSON-RPC codes (SEP-2243 renumbering): -32022 and
+# -32020 respectively, from the -32020..-32099 range the spec reserves.
+META_VERSION = "io.modelcontextprotocol/protocolVersion"
+META_SERVER_INFO = "io.modelcontextprotocol/serverInfo"
+ERR_UNSUPPORTED_PROTOCOL_VERSION = -32022
+ERR_HEADER_MISMATCH = -32020
+_SERVER_INFO = {"name": "graphban", "version": __version__}
+# Freshness hints (SEP-2549) for `tools/list`. 15 minutes: manifests shift when an
+# admin edits tiers or a fleet agent's role changes, and role changes already ride
+# downlink directives rather than waiting on this TTL. `cacheScope: private` because
+# the list is narrowed per key (and per echoed session on the legacy path) — shared
+# intermediaries must not cache it.
+_TOOLS_TTL_MS = 900_000
+_DISCOVER_TTL_MS = 3_600_000
 
 logger = logging.getLogger("graphban.mcp")
 
@@ -3066,8 +3101,99 @@ def _rpc_result(id_: Any, result: Any) -> dict:
     return {"jsonrpc": "2.0", "id": id_, "result": result}
 
 
-def _rpc_error(id_: Any, code: int, message: str) -> dict:
-    return {"jsonrpc": "2.0", "id": id_, "error": {"code": code, "message": message}}
+def _rpc_error(id_: Any, code: int, message: str, data: dict | None = None) -> dict:
+    err: dict[str, Any] = {"code": code, "message": message}
+    if data:
+        err["data"] = data
+    return {"jsonrpc": "2.0", "id": id_, "error": err}
+
+
+def _decode_sentinel(value: str) -> str:
+    """Decode the `=?base64?…?=` form the spec allows for header values that cannot be
+    carried plain (Mcp-Name, Mcp-Param-*). Values that merely LOOK like the sentinel
+    are base64-of-base64 per the spec's anti-ambiguity rule, so one decode is correct
+    and the residue is compared as-is."""
+    if value.startswith("=?base64?") and value.endswith("?="):
+        try:
+            return base64.b64decode(value[len("=?base64?"):-len("?=")]).decode("utf-8")
+        except Exception:  # noqa: BLE001 — malformed sentinel: compare the raw value
+            return value
+    return value
+
+
+def _stamp_modern(result: dict) -> dict:
+    """Bring a result object into 2026-07-28 shape: the required `resultType`
+    (SEP-2322) and `serverInfo` in the result `_meta` (SEP-2575; a SHOULD, and we
+    pay it — it is two keys and it is what makes 'which server answered' answerable
+    from a client log alone)."""
+    result["resultType"] = "complete"
+    result["_meta"] = {**(result.get("_meta") or {}), META_SERVER_INFO: _SERVER_INFO}
+    return result
+
+
+def _modern_http_error(status: int, id_: Any, code: int, message: str,
+                       data: dict | None = None) -> JSONResponse:
+    """A transport-level rejection. The modern era pairs JSON-RPC error bodies with
+    real HTTP statuses (400 for validation/version failures, 404 for unknown methods)
+    — the status is how clients drive era detection, so a 200 here would be a bug
+    even though the body is well-formed."""
+    return JSONResponse(_rpc_error(id_, code, message, data), status_code=status)
+
+
+def _modern_rejection(request: Request, id_: Any, method: str, params: dict,
+                      meta: dict) -> JSONResponse | None:
+    """Validate a modern request's mandatory envelope. Returns the rejection to send,
+    or None if the request is well-formed.
+
+    Order follows the transport page: the version header must be PRESENT (it is the
+    routing signal intermediaries read), then MATCH `_meta`, then be a version we
+    implement, then the method/name mirrors. Missing-before-unsupported matters: a
+    client that forgot the header gets HeaderMismatch, not a supported-versions list
+    it cannot act on."""
+    version = meta.get(META_VERSION)
+    hdr = request.headers.get("mcp-protocol-version")
+    if not hdr:
+        return _modern_http_error(
+            400, id_, ERR_HEADER_MISMATCH,
+            "missing MCP-Protocol-Version header (required on every modern request)")
+    if hdr != version:
+        return _modern_http_error(
+            400, id_, ERR_HEADER_MISMATCH,
+            f"MCP-Protocol-Version header {hdr!r} does not match "
+            f"_meta {META_VERSION} {version!r}")
+    if version != MODERN_PROTOCOL_VERSION:
+        return _modern_http_error(
+            400, id_, ERR_UNSUPPORTED_PROTOCOL_VERSION, "unsupported protocol version",
+            data={"supported": sorted(SUPPORTED_PROTOCOL_VERSIONS
+                                      | {MODERN_PROTOCOL_VERSION}),
+                  "requested": version})
+    if request.headers.get("mcp-method") != method:
+        return _modern_http_error(
+            400, id_, ERR_HEADER_MISMATCH,
+            "Mcp-Method header missing or does not match the body method")
+    if method == "tools/call":
+        hn = request.headers.get("mcp-name")
+        if hn is None or _decode_sentinel(hn) != params.get("name"):
+            return _modern_http_error(
+                400, id_, ERR_HEADER_MISMATCH,
+                "Mcp-Name header missing or does not match params.name")
+    return None
+
+
+def _discover_result() -> dict:
+    """`server/discover` (SEP-2575): mandatory for servers, optional for clients to
+    call. Identity + capabilities + supported versions in one round trip — all
+    static, so the TTL is generous; still `private` because the response only exists
+    behind an authenticated endpoint."""
+    return {
+        "supportedVersions": sorted(SUPPORTED_PROTOCOL_VERSIONS
+                                    | {MODERN_PROTOCOL_VERSION}),
+        "capabilities": {"tools": {}},
+        "instructions": "Graphban: a tracker for agent fleets. `tools/list` is the "
+                        "contract and is narrowed to what this key can do. Fleet "
+                        "agents: register_agent, then claim/heartbeat/update_item; "
+                        "a response carrying a `directive` field must be acted on.",
+    }
 
 
 def _run_deferred(jobs: list) -> None:
@@ -3098,31 +3224,35 @@ def _attach_resolved_project(result: Any, scope: dict) -> Any:
                                      "none — pass project_id to choose"}
 
 
-def _success(id_: Any, result: Any) -> dict:
+def _success(id_: Any, result: Any, modern: bool = False) -> dict:
     """Wrap a tool result. Objects are also returned as `structuredContent` (typed,
     no JSON-in-a-text-block); text mirrors it for back-compat (#8)."""
     payload: dict[str, Any] = {"content": [{"type": "text", "text": json.dumps(result)}]}
     if isinstance(result, dict):
         payload["structuredContent"] = result
+    if modern:
+        _stamp_modern(payload)
     return _rpc_result(id_, payload)
 
 
-def _tool_error(id_: Any, code: str, message: str, hint: str | None = None) -> dict:
+def _tool_error(id_: Any, code: str, message: str, hint: str | None = None,
+                modern: bool = False) -> dict:
     """A tool-level failure. Reported via isError so the agent sees it, with a stable
     machine-readable `code` in structuredContent to branch on and an optional `hint`
-    naming the corrective action (AL-47)."""
+    naming the corrective action (AL-47). An isError payload is still a Result, so it
+    carries the modern stamps exactly like a successful one would."""
     err: dict[str, Any] = {"code": code, "message": message}
     if hint:
         err["hint"] = hint
     text = f"{code}: {message}" + (f" ({hint})" if hint else "")
-    return _rpc_result(
-        id_,
-        {
-            "content": [{"type": "text", "text": text}],
-            "structuredContent": {"error": err},
-            "isError": True,
-        },
-    )
+    payload: dict[str, Any] = {
+        "content": [{"type": "text", "text": text}],
+        "structuredContent": {"error": err},
+        "isError": True,
+    }
+    if modern:
+        _stamp_modern(payload)
+    return _rpc_result(id_, payload)
 
 
 @router.post("/mcp")
@@ -3142,9 +3272,34 @@ async def mcp_endpoint(
     method = body.get("method")
     id_ = body.get("id")
 
+    # Era detection is per request, off `_meta` alone — the compatibility matrix's
+    # rule, not ours to bend ("A request carrying modern per-request `_meta` is
+    # served statelessly; an `initialize` request selects legacy semantics"). The
+    # version HEADER cannot be the discriminator: legacy clients on 2025-06-18+ send
+    # it too, with an old value.
+    params = body.get("params") if isinstance(body.get("params"), dict) else {}
+    meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+    modern = meta is not None and META_VERSION in meta
+
     # Notifications (no id) get a 202 with no body.
     if method == "notifications/initialized":
         return Response(status_code=202)
+
+    if modern:
+        reject = _modern_rejection(request, id_, str(method), params, meta)
+        if reject is not None:
+            return reject
+
+    if method == "server/discover":
+        # Mandatory RPC for 2026-07-28 servers. Answered in the legacy era too: a
+        # hybrid client probing us over HTTP may send it handshake-style, and the
+        # answer is the same static object minus the modern stamps.
+        result = _discover_result()
+        if modern:
+            _stamp_modern(result)
+            result["ttlMs"] = _DISCOVER_TTL_MS
+            result["cacheScope"] = "private"
+        return _rpc_result(id_, result)
 
     if method == "initialize":
         requested = body.get("params", {}).get("protocolVersion")
@@ -3176,7 +3331,12 @@ async def mcp_endpoint(
         # on a multiplexed client — where `_session_role` declines and nothing narrows — a
         # re-fetch and no fetch look identical. Anyone measuring that case needs to record the
         # ATTEMPT and its binding state, which is a different instrument, not this one revived.
-        return _rpc_result(id_, {"tools": _visible_tools(key, role=_session_role(db, request))})
+        result = {"tools": _visible_tools(key, role=_session_role(db, request))}
+        if modern:
+            _stamp_modern(result)
+            result["ttlMs"] = _TOOLS_TTL_MS
+            result["cacheScope"] = "private"
+        return _rpc_result(id_, result)
 
     if method == "tools/call":
         params = body.get("params", {})
@@ -3206,10 +3366,13 @@ async def mcp_endpoint(
             if mcp_proxy.should_proxy(name):
                 cloud = await run_in_threadpool(mcp_proxy.forward, name, args)
                 if "result" in cloud:
-                    return _rpc_result(id_, cloud["result"])
+                    out = cloud["result"]
+                    if modern and isinstance(out, dict):
+                        _stamp_modern(out)
+                    return _rpc_result(id_, out)
                 err = cloud.get("error") or {}
                 return _tool_error(id_, "internal", err.get("message", "cloud proxy error"),
-                                   hint="safe to retry once; if it persists, report it")
+                                   hint="safe to retry once; if it persists, report it", modern=modern)
             # Run tool dispatch (sync DB + any outbound IO like report_graphban_issue) off
             # the event loop, so a slow/hanging tool never blocks the async server — and a
             # same-host upstream loop-back can still be served concurrently.
@@ -3231,7 +3394,7 @@ async def mcp_endpoint(
         except authz.Forbidden as e:
             # Authenticated but out of scope: distinct code so agents can branch
             # (retry won't help — a different key or membership grant will).
-            return _tool_error(id_, "unauthorized", str(e), getattr(e, "hint", None))
+            return _tool_error(id_, "unauthorized", str(e), getattr(e, "hint", None), modern=modern)
         except items_svc.MissingAttestation as e:
             # CONFLICT, not unauthorized (GRPH-543). The caller MAY complete this item; the
             # work simply is not accounted for yet. `unauthorized` would send an agent
@@ -3243,7 +3406,7 @@ async def mcp_endpoint(
             # one refactor away from disagreeing with this one.
             return _tool_error(id_, "conflict", str(e),
                                "move it to `review` and let an adapter attest it — a reviewer "
-                               "via sign_off with a commit, or CI holding a `gate`-scoped key")
+                               "via sign_off with a commit, or CI holding a `gate`-scoped key", modern=modern)
         except items_svc.PRCooldown as e:
             # CONFLICT for the same reason, and the hint says WAIT rather than naming an
             # action (GRPH-567). It is the only refusal in this surface that resolves on its
@@ -3251,16 +3414,16 @@ async def mcp_endpoint(
             # that is already correct.
             return _tool_error(id_, "conflict", str(e),
                                "nothing is wrong with the call — wait for the cooldown to "
-                               "elapse and send it again")
+                               "elapse and send it again", modern=modern)
         except errors.AppError as e:
             # Expected, agent-correctable failure: not_found | validation | conflict.
-            return _tool_error(id_, e.code, str(e), e.hint)
+            return _tool_error(id_, e.code, str(e), e.hint, modern=modern)
         except ValueError as e:
             # A service rejected the input (bad enum, unknown project, etc.).
-            return _tool_error(id_, "validation", str(e))
+            return _tool_error(id_, "validation", str(e), modern=modern)
         except KeyError as e:
             # A required arg slipped past validation (belt and braces).
-            return _tool_error(id_, "validation", f"missing argument: {e}")
+            return _tool_error(id_, "validation", f"missing argument: {e}", modern=modern)
         except httpx.HTTPError as e:
             # A provider adapter that hasn't been wrapped yet (providers/base.py
             # `provider_errors` gives a far better message where it is applied). Still
@@ -3271,12 +3434,13 @@ async def mcp_endpoint(
                 id_, "unavailable", f"AI provider unreachable: {type(e).__name__}",
                 hint="check the provider base URL, key and model in Settings -> AI "
                      "providers; this is configuration, not a transient failure",
+                modern=modern,
             )
         except Exception:  # noqa: BLE001 — never leak a raw 500 to a JSON-RPC client
             logger.exception("MCP tool %r failed", name)
             db.rollback()
             return _tool_error(id_, "internal", f"internal error executing {name!r}",
-                               hint="safe to retry once; if it persists, report it")
+                               hint="safe to retry once; if it persists, report it", modern=modern)
         # Meter only successful calls, after dispatch — failed/unknown-tool calls no
         # longer inflate the MCP Tools dashboard (AL-47).
         mcp_stats.increment(db, name)
@@ -3290,8 +3454,13 @@ async def mcp_endpoint(
             # background task once the response is sent — and, under the test client, before
             # the call returns, so the tests that drive extraction through the status
             # transition stay deterministic.
-            return JSONResponse(_success(id_, result),
+            return JSONResponse(_success(id_, result, modern=modern),
                                 background=BackgroundTask(_run_deferred, deferred))
-        return _success(id_, result)
+        return _success(id_, result, modern=modern)
 
+    if modern:
+        # The transport page: unknown methods in the modern era are 404 + JSON-RPC
+        # -32601 — the status is what tells a probing client this endpoint is real
+        # and modern, rather than a legacy server 404 it should fall back from.
+        return _modern_http_error(404, id_, -32601, f"method not found: {method}")
     return _rpc_error(id_, -32601, f"method not found: {method}")
