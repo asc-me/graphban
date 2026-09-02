@@ -822,6 +822,33 @@ export interface PrdCoverageSection {
   item_ids: string[];
 }
 
+/** GRPH-235: the paste-ready handoff returned by POST /prds/{id}/grill/prototype. */
+export interface PrototypeEmitOut {
+  prd: string;
+  item: string;
+  dimension: string;
+  prompt_pack: string;
+  turn_seq: number;
+}
+
+/** What the verdict route came back with — the fidelity flip is a PROPOSAL here,
+ *  confirmed by the author PATCHing the item, never applied by the server. */
+export interface PrototypeVerdictOut {
+  prd: string;
+  item: string;
+  dimension: string;
+  turn_seq: number;
+  artifact_url: string;
+  fidelity: string;
+  fidelity_proposal: {
+    item: string;
+    from: string;
+    to: string;
+    confirmed: boolean;
+    how: string;
+  } | null;
+}
+
 export interface PrdCoverage {
   prd_id: string;
   title: string;

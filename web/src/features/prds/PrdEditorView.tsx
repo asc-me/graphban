@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ChevronDown, Eye, History, Link2, ListChecks, MessageCircleQuestion, Save, ShieldQuestion, Sparkles } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Copy, Eye, FlaskConical, History, Link2, ListChecks, MessageCircleQuestion, Save, ShieldQuestion, Sparkles } from "lucide-react";
 import * as React from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -16,8 +16,9 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { lineDiff } from "@/lib/diff";
 import { Markdown } from "@/lib/markdown";
-import { keys, useGrillState, useIntentDiff, useItems, usePrd, usePrdVersions } from "@/lib/queries";
-import type { PrdStatus, PrdVersion } from "@/lib/types";
+import { publicApi } from "@/lib/publicApi";
+import { keys, useGrillState, useIntentDiff, useItems, usePrd, usePrdVersions, useUpdateItem } from "@/lib/queries";
+import type { Item, PrdStatus, PrdVersion, PrototypeVerdictOut } from "@/lib/types";
 
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
 import { GrillPanel } from "./GrillPanel";
@@ -187,7 +188,7 @@ export function PrdEditorView() {
               </div>
             </div>
           ) : rightTab === "coverage" ? (
-            <CoveragePanel prdId={id} onDecomposed={refresh} />
+            <CoveragePanel prdId={id} projectId={prd.project_id} onDecomposed={refresh} />
           ) : rightTab === "acceptance" ? (
             <AcceptancePanel prdId={id} />
           ) : (
@@ -363,13 +364,18 @@ function VersionHistory({
   );
 }
 
-function CoveragePanel({ prdId, onDecomposed }: { prdId: string; onDecomposed: () => void }) {
+function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: string; projectId: string; onDecomposed: () => void }) {
   const qc = useQueryClient();
   const [busy, setBusy] = React.useState(false);
+  const [protoOpen, setProtoOpen] = React.useState<string | null>(null);
   const { data: cov } = useQuery({
     queryKey: ["prd-coverage", prdId],
     queryFn: () => api.prdCoverage(prdId),
   });
+  // The nudge names a count; the handoff acts on items. Coverage carries per-section
+  // `item_ids`, and the tracker's list is already cached — no new endpoint needed to
+  // know WHICH items in this section are still prototype-first.
+  const { data: items = [] } = useItems(projectId);
 
   async function fillGaps() {
     setBusy(true);
@@ -410,35 +416,223 @@ function CoveragePanel({ prdId, onDecomposed }: { prdId: string; onDecomposed: (
       </div>
 
       <div className="space-y-1.5">
-        {cov.sections.map((s) => (
-          <div
-            key={s.section}
-            className="flex items-center gap-2 rounded-[10px] border border-line-2 bg-surface-2 px-3 py-2"
-          >
-            <span className="min-w-0 flex-1 truncate text-[13px] text-fg-2">{s.section}</span>
-            {s.open_high_fidelity > 0 && (
-              <span
-                className="rounded border border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] px-1.5 py-px font-mono text-[9px] uppercase tracking-wide text-[#e0b34a]"
-                title="High-fidelity work here needs a prototype"
+        {cov.sections.map((s) => {
+          const high = items.filter(
+            (it) => s.item_ids.includes(it.id) && it.fidelity === "high" && it.status !== "done",
+          );
+          const open = protoOpen === s.section;
+          return (
+            <React.Fragment key={s.section}>
+              <div
+                className="flex items-center gap-2 rounded-[10px] border border-line-2 bg-surface-2 px-3 py-2"
               >
-                {s.open_high_fidelity} proto
-              </span>
-            )}
-            {s.gap ? (
-              <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-[#e0b34a]">
-                no tasks
-              </span>
-            ) : (
-              <span className="font-mono text-[10.5px] text-muted">
-                {s.done}/{s.item_count} done
-              </span>
-            )}
-          </div>
-        ))}
+                <span className="min-w-0 flex-1 truncate text-[13px] text-fg-2">{s.section}</span>
+                {s.open_high_fidelity > 0 && (
+                  <button
+                    onClick={() => setProtoOpen(open ? null : s.section)}
+                    className={cn(
+                      "rounded border px-1.5 py-px font-mono text-[9px] uppercase tracking-wide transition-colors",
+                      open
+                        ? "border-[#e0b34a] text-[#f0c95f]"
+                        : "border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] text-[#e0b34a] hover:border-[#5a4a2a]",
+                    )}
+                    title="High-fidelity work here needs a prototype — start the handoff"
+                  >
+                    {s.open_high_fidelity} proto
+                  </button>
+                )}
+                {s.gap ? (
+                  <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-[#e0b34a]">
+                    no tasks
+                  </span>
+                ) : (
+                  <span className="font-mono text-[10.5px] text-muted">
+                    {s.done}/{s.item_count} done
+                  </span>
+                )}
+              </div>
+              {open && (
+                <div className="ml-4 space-y-2 border-l border-[#3a2f1a] pl-3">
+                  {high.map((it) => (
+                    <PrototypeRow key={it.id} prdId={prdId} item={it} />
+                  ))}
+                  {high.length === 0 && (
+                    <p className="text-[11.5px] text-faint">
+                      No still-open high-fidelity item resolves to this section — the count
+                      may be held by an item not yet linked here.
+                    </p>
+                  )}
+                </div>
+              )}
+            </React.Fragment>
+          );
+        })}
         {cov.section_count === 0 && (
           <p className="text-[12.5px] text-faint">No `##` sections in this PRD yet.</p>
         )}
       </div>
+    </div>
+  );
+}
+
+/** One high-fidelity item, one handoff: emit → paste → look → verdict → (confirm flip).
+ *
+ *  Generation stays OUTSIDE this app on purpose — the design tool is where screens are
+ *  made; what the loop was missing was the context going over and the conclusion coming
+ *  back, which are exactly the two calls here. The fidelity flip is a button the author
+ *  presses, never something the verdict route does by itself. */
+export function PrototypeRow({ prdId, item }: { prdId: string; item: Item }) {
+  const qc = useQueryClient();
+  const updateItem = useUpdateItem();
+  const [pack, setPack] = React.useState<string | null>(null);
+  const [copied, setCopied] = React.useState(false);
+  const [file, setFile] = React.useState<File | null>(null);
+  const [verdict, setVerdict] = React.useState("");
+  const [result, setResult] = React.useState<PrototypeVerdictOut | null>(null);
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState("");
+
+  async function emit() {
+    setBusy(true);
+    setErr("");
+    try {
+      const out = await api.prdPrototypeEmit(prdId, { item_id: item.id });
+      setPack(out.prompt_pack);
+    } catch (e) {
+      setErr(String((e as Error).message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copy() {
+    if (!pack) return;
+    try {
+      await navigator.clipboard.writeText(pack);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setErr("clipboard blocked — select the text and copy manually");
+    }
+  }
+
+  async function submitVerdict() {
+    if (!file) {
+      setErr("attach the screenshot you looked at — the verdict alone re-enters the grill, and the artifact URL is what makes it checkable");
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    try {
+      const att = await publicApi.uploadAttachment(file);
+      if (!att) {
+        setErr("screenshot upload failed (only png/jpeg/gif/webp are stored)");
+        return;
+      }
+      const out = await api.prdPrototypeVerdict(prdId, {
+        item_id: item.id,
+        attachment_id: att.id,
+        verdict,
+      });
+      setResult(out);
+      setVerdict("");
+      setFile(null);
+      qc.invalidateQueries({ queryKey: ["prd-coverage", prdId] });
+      qc.invalidateQueries({ queryKey: keys.items });
+    } catch (e) {
+      setErr(String((e as Error).message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function confirmFlip() {
+    if (!item.id) return;
+    updateItem.mutate(
+      { id: item.id, body: { fidelity: "low" } },
+      {
+        onSuccess: () => qc.invalidateQueries({ queryKey: ["prd-coverage", prdId] }),
+        onError: (e) => setErr(String((e as Error).message || e)),
+      },
+    );
+  }
+
+  return (
+    <div className="rounded-[10px] border border-line-2 bg-surface-2 p-2.5">
+      <div className="flex items-center gap-2">
+        <FlaskConical size={13} className="flex-none text-[#e0b34a]" />
+        <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg-2">{item.title}</span>
+        <span className="font-mono text-[10px] text-faint">{item.id}</span>
+      </div>
+      {pack === null ? (
+        <div className="mt-2">
+          <Button size="sm" variant="outline" onClick={emit} disabled={busy}>
+            {busy ? "Preparing…" : "Prototype this"}
+          </Button>
+        </div>
+      ) : (
+        <div className="mt-2 space-y-2">
+          <div className="text-[11.5px] text-muted">
+            Paste into the design tool — one prompt, one screen:
+          </div>
+          <div className="relative">
+            <pre className="max-h-40 overflow-auto rounded-lg border border-line-2 bg-surface-2 p-2 font-mono text-[10.5px] leading-relaxed text-muted">
+              {pack}
+            </pre>
+            <button
+              onClick={copy}
+              className="absolute right-1.5 top-1.5 rounded border border-line-2 bg-surface p-1 text-faint hover:text-fg"
+              title="Copy the prompt-pack"
+            >
+              {copied ? <Check size={12} className="text-st-done" /> : <Copy size={12} />}
+            </button>
+          </div>
+          {result === null ? (
+            <div className="space-y-2">
+              <div className="text-[11.5px] text-muted">
+                Looked at it? Bring the verdict back:
+              </div>
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                className="block w-full font-mono text-[10.5px] text-faint file:mr-2 file:rounded file:border file:border-line-2 file:bg-surface-4 file:px-2 file:py-1 file:text-[10.5px]"
+              />
+              <textarea
+                value={verdict}
+                onChange={(e) => setVerdict(e.target.value)}
+                rows={2}
+                placeholder="What the prototype settled, in words — this text is what the grill grades"
+                className="w-full rounded-lg border border-line-2 bg-surface-2 p-2 text-[12px] text-fg-2 outline-none placeholder:text-faint focus:border-line-hover"
+              />
+              <Button size="sm" onClick={submitVerdict} disabled={busy}>
+                {busy ? "Carrying…" : "Send verdict to grill"}
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-1.5 rounded-lg border border-[rgba(95,208,122,0.25)] bg-[rgba(95,208,122,0.06)] p-2">
+              <div className="text-[11.5px] text-st-done">
+                Verdict recorded (grill turn #{result.turn_seq}) · screenshot on the item.
+              </div>
+              {result.fidelity_proposal && item.fidelity === "high" && (
+                <div className="flex items-center gap-2">
+                  <span className="text-[11.5px] text-muted">
+                    Settled in words now? Drop the prototype flag — your call, never automatic.
+                  </span>
+                  <Button size="sm" variant="outline" onClick={confirmFlip} disabled={updateItem.isPending}>
+                    Set fidelity low
+                  </Button>
+                </div>
+              )}
+              <div className="text-[10.5px] text-faint">
+                The next grill round grades this verdict against the open question — nothing is
+                approved by this button alone.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {err && <p className="mt-1.5 text-[11px] text-st-blocked">{err}</p>}
     </div>
   );
 }

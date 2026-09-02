@@ -25,6 +25,8 @@ import type {
   CloseReport,
   EvidenceRollup,
   OrgRequest,
+  PrototypeEmitOut,
+  PrototypeVerdictOut,
   ProviderConfigUpdate,
   CodeAnswer,
   CodeForRefRow,
@@ -561,6 +563,22 @@ export const api = {
     request<PrdSummary[]>(`/prds${projectId ? `?project_id=${projectId}` : ""}`),
   prd: (id: string) => request<Prd>(`/prds/${id}`),
   prdCoverage: (id: string) => request<PrdCoverage>(`/prds/${id}/coverage`),
+  // GRPH-235: the prototype handoff. Emit returns the paste-ready prompt-pack and
+  // records the ask; verdict carries the human's reading back into the grill with the
+  // screenshot's URL, and only PROPOSES the high→low flip.
+  prdPrototypeEmit: (id: string, body: { item_id: string; dimension?: string; note?: string }) =>
+    request<PrototypeEmitOut>(`/prds/${id}/grill/prototype`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  prdPrototypeVerdict: (
+    id: string,
+    body: { item_id: string; attachment_id: string; verdict: string; dimension?: string },
+  ) =>
+    request<PrototypeVerdictOut>(`/prds/${id}/grill/prototype/verdict`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   decomposePrd: (id: string, create: boolean) =>
     request<{ prd_id: string; proposals: { section: string; title: string }[]; created: string[] }>(
       `/prds/${id}/decompose?create=${create}`,
