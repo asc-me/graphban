@@ -56,6 +56,8 @@ describe("DocsReader", () => {
     renderAt("/tracker");
     await user.click(screen.getByLabelText("Open docs for this page"));
     expect(screen.getByText("Graduation checklist")).toBeInTheDocument();
+    expect(screen.getByText(/process, not code/i)).toBeInTheDocument();
+    expect(screen.getByText(/stall in review/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Gitops" })).toBeInTheDocument();
   });
 

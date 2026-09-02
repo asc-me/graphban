@@ -316,7 +316,8 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
             Graduation checklist{" "}
             <span className="font-mono text-[12px]">{view.plan.id}</span>
             {" — "}
-            {view.plan.title}. Graphban does not run git.{" "}
+            {view.plan.title}. Process, not code — they stall in review until
+            evidenced. Graphban does not run git.{" "}
             <Link to="/tracker" className="text-accent underline-offset-2 hover:underline">
               Tracker
             </Link>
