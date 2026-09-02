@@ -10,7 +10,7 @@ import { Inert, NotAvailable, SPECULATIVE_ENABLED, SpeculativeHeader } from "./S
  * | --- | --- | --- |
  * | Org role | owner / admin / member | `authz.require_org_admin` |
  * | Project access | write / read / none | `authz.can_read` / `can_write`, per project |
- * | Fleet agent role | planner / worker / reviewer | `fleet.ROLES`, at call time, by credential |
+ * | Fleet agent role | planner / worker / reviewer | `fleet.ROLES`, at call time, by API key + seat |
  *
  * The five roles the first design drew — OWNER, ADMIN, PRODUCT, DEVELOPER, ANALYST —
  * collapse two different things: the first two are authority, the last three are job
@@ -65,9 +65,9 @@ export function OrgRoles() {
         </div>
         <p className="mt-2 max-w-[80ch] text-[12px] leading-relaxed text-muted">
           These are roles for <span className="text-fg-2">people</span>. Agent roles — planner,
-          worker, reviewer — are assigned per agent in Fleet and enforced by credential at call
-          time, so no change on this screen can grant or remove one. Blurring the two would put a
-          human role in front of a gate that exists to stop an agent reviewing its own work.
+          worker, reviewer — are a seat on Fleet, enforced at call time, so no change on this
+          screen can grant or remove one. Blurring the two would put a human role in front of a
+          gate that exists to stop an agent reviewing its own work.
         </p>
       </div>
     </div>
