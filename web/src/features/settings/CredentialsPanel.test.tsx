@@ -135,6 +135,13 @@ function show() {
 }
 
 
+/** Header button when the dialog is closed; form submit when it is open. */
+function addCredentialButton() {
+  const form = screen.queryByTestId("credential-form");
+  if (form) return within(form).getByRole("button", { name: /add credential/i });
+  return screen.getByRole("button", { name: /add credential/i });
+}
+
 /** Controls are collapsed by default — open the row before acting on it. */
 async function openRow(id = "cred_a") {
   const row = await screen.findByTestId(`credential-${id}`);
@@ -256,18 +263,19 @@ describe("CredentialsPanel", () => {
 
   it("opens a DIALOG and asks which provider first", async () => {
     show();
-    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
 
     // The picker comes first: choosing a provider is a different question from filling in its
     // details, and one form with a kind dropdown makes the reader work out which fields matter.
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /add a credential/i })).toBeInTheDocument();
     expect(screen.getByTestId("provider-picker")).toBeInTheDocument();
     expect(screen.queryByTestId("credential-form")).not.toBeInTheDocument();
   });
 
   it("does not offer the offline stub as something to add", async () => {
     show();
-    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
 
     // The stub is not a credential — it is what you get when there are none.
     const picker = await screen.findByTestId("provider-picker");
@@ -276,7 +284,7 @@ describe("CredentialsPanel", () => {
 
   it("asks for what the CHOSEN provider needs, from the registry", async () => {
     show();
-    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
     await userEvent.click(await screen.findByText("Anthropic"));
 
     // anthropic has auth:true and is not ollama — a key, no endpoint.
@@ -286,7 +294,7 @@ describe("CredentialsPanel", () => {
 
   it("asks a DIFFERENT provider for different fields", async () => {
     show();
-    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
     await userEvent.click(await screen.findByText("Ollama"));
 
     // ollama has auth:false — an endpoint, no key.
@@ -296,10 +304,10 @@ describe("CredentialsPanel", () => {
 
   it("cannot save without a field the chosen provider requires", async () => {
     show();
-    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
     await userEvent.click(await screen.findByText("Anthropic"));
 
-    expect(await screen.findByRole("button", { name: /add credential/i })).toBeDisabled();
+    expect(addCredentialButton()).toBeDisabled();
     expect(screen.getByText(/anthropic needs/i)).toBeInTheDocument();
     expect(createCredential).not.toHaveBeenCalled();
   });
@@ -309,7 +317,7 @@ describe("CredentialsPanel", () => {
     // at a gateway, proxy, or local server. Picking a provider prefills the registry's URL,
     // so api.openai.com stays zero-typing; editing it is the feature.
     show();
-    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
     await userEvent.click(await screen.findByText("OpenAI"));
 
     const endpoint = await screen.findByLabelText(/endpoint/i);
@@ -317,7 +325,7 @@ describe("CredentialsPanel", () => {
     await userEvent.clear(endpoint);
     await userEvent.type(endpoint, "https://gateway.internal/v1");
     await userEvent.type(screen.getByLabelText(/api key/i), "sk-x");
-    await userEvent.click(screen.getByRole("button", { name: /add credential/i }));
+    await userEvent.click(addCredentialButton());
 
     expect(createCredential).toHaveBeenCalledTimes(1);
     expect(createCredential.mock.calls[0][1]).toMatchObject({
@@ -329,18 +337,18 @@ describe("CredentialsPanel", () => {
     // The `custom` shape is all empty defaults, so everything is asked for — and nothing
     // pre-fills a lie about someone's gateway.
     show();
-    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
     await userEvent.click(await screen.findByText("Custom (OpenAI-compat)"));
 
     const endpoint = await screen.findByLabelText(/endpoint/i);
     expect(endpoint).toHaveValue("");
-    expect(screen.getByRole("button", { name: /add credential/i })).toBeDisabled();
+    expect(addCredentialButton()).toBeDisabled();
     expect(screen.getByText(/needs an endpoint/)).toBeInTheDocument();
 
     await userEvent.type(endpoint, "http://localhost:1234/v1");
     await userEvent.type(screen.getByLabelText(/api key/i), "none");
     await userEvent.type(screen.getByLabelText(/^model$/i), "qwen2.5");
-    await userEvent.click(screen.getByRole("button", { name: /add credential/i }));
+    await userEvent.click(addCredentialButton());
 
     expect(createCredential).toHaveBeenCalledTimes(1);
     expect(createCredential.mock.calls[0][1]).toMatchObject({
@@ -354,29 +362,29 @@ describe("CredentialsPanel", () => {
     // and the edit dialog hides the endpoint when base_url is empty, so it could
     // not be repaired (GRPH-511).
     show();
-    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
     await userEvent.click(await screen.findByText("Ollama"));
     const endpoint = await screen.findByLabelText(/endpoint/i);
     await userEvent.clear(endpoint);
 
-    expect(screen.getByRole("button", { name: /add credential/i })).toBeDisabled();
+    expect(addCredentialButton()).toBeDisabled();
     expect(createCredential).not.toHaveBeenCalled();
   });
 
   it("saves once the required fields are present", async () => {
     show();
-    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
     await userEvent.click(await screen.findByText("Anthropic"));
     await userEvent.type(await screen.findByLabelText(/api key/i), "sk-live");
 
-    await userEvent.click(screen.getByRole("button", { name: /add credential/i }));
+    await userEvent.click(addCredentialButton());
 
     expect(createCredential).toHaveBeenCalledTimes(1);
   });
 
   it("can go back to the picker without leaving the dialog", async () => {
     show();
-    await userEvent.click(await screen.findByRole("button", { name: /add provider/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
     await userEvent.click(await screen.findByText("Anthropic"));
     await userEvent.click(await screen.findByRole("button", { name: /^back$/i }));
 
@@ -421,7 +429,8 @@ describe("wiring", () => {
 
     expect(await screen.findByRole("link", { name: /^AI Providers$/ })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: /^credentials$/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /add provider/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add credential/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /add provider/i })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /looking for api keys\?/i }))
       .toHaveAttribute("href", "/settings/project/api-keys");
   });
