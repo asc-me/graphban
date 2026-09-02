@@ -118,6 +118,17 @@ no second queue. `generate_digest` is a template, not a model call, so it is not
 
 Judge calls are tagged `evals.judge` on `llm_call_spans` (GRPH-225).
 
+Live human-eval (GRPH-644) samples those spans into Memory review as **candidates**
+(`origin: agent:eval-sample`). Unlabelled candidates are `ungraded`, not a pass.
+Promote prints JSON for a human to paste into `app/evals/cases/` — it does not write
+the repo. Stub spans are skipped (labelling the offline heuristic is not a live eval).
+
+```bash
+graphban eval sample --limit 20
+graphban eval labels
+graphban eval promote --shard <id>
+```
+
 ## Related
 
 - [Memory & chat](memory-and-chat.md) · [PRDs](prds.md) · [Settings](settings.md)

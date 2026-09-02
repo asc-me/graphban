@@ -151,6 +151,7 @@ def test_the_veto_is_expressed_as_a_predicate_on_origin(db):
     from app.models import MemoryShard
 
     assert mem_svc.may_auto_publish(MemoryShard(origin="agent:auto-extract")) is False
+    assert mem_svc.may_auto_publish(MemoryShard(origin="agent:eval-sample")) is False
     assert mem_svc.may_auto_publish(MemoryShard(origin="agent:some-key")) is True
     assert mem_svc.may_auto_publish(MemoryShard(origin="user:alex")) is True
     assert mem_svc.may_auto_publish(MemoryShard(origin="")) is True

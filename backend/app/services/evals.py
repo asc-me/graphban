@@ -490,3 +490,186 @@ def run(db: Session, *, surface: str | None = None, judge: bool = False,
         "judge_ungraded": j_ungraded,
         "results": results,
     }
+
+
+# ---- live human-eval sampling (GRPH-644) -------------------------------------
+# Spans do not hold transcripts (GRPH-225). Sampling a row with no text would
+# put un-labelable telemetry in Memory review, which is the absence rule
+# wearing a queue. `output_preview` is the smallest payload that makes a span
+# reviewable. Stub output is skipped: labelling the offline heuristic is not a
+# live eval. Promote prints JSON; it does not write the repo.
+
+SAMPLE_FEATURES = (
+    "lessons.extract",
+    "grill.classify",
+    "memory.judge",
+    "evals.judge",
+)
+SAMPLE_ORIGIN = "agent:eval-sample"
+
+
+class UnlabelledSample(ValueError):
+    """Promote was asked to freeze a candidate. Unlabelled is ungraded, not a case."""
+
+
+def _span_source(span_id: int) -> str:
+    return f"eval-span:{span_id}"
+
+
+def _sample_text(span) -> str:
+    preview = (span.output_preview or "").strip()
+    model = f"{span.provider}/{span.model}" if span.model else span.provider
+    project = span.project_id or "unattributed"
+    return (
+        f"Eval sample · {span.feature} · {model}\n"
+        f"span {span.id} · project {project}\n\n"
+        f"{preview}"
+    )
+
+
+def sample(db: Session, *, limit: int = 20, project_id: str | None = None) -> dict:
+    """Copy recent labelled-able spans into Memory review as candidates.
+
+    Idempotent on span id (`source=eval-span:N`). Never publishes. Returns counts
+    so a zero is "nothing eligible", not a clean pass — see `labels`.
+    """
+    from sqlalchemy import select
+
+    from app.models import LlmCallSpan, MemoryShard
+
+    if limit < 1:
+        raise ValueError("limit must be >= 1")
+    stmt = (
+        select(LlmCallSpan)
+        .where(
+            LlmCallSpan.feature.in_(SAMPLE_FEATURES),
+            LlmCallSpan.ok.is_(True),
+        )
+        .order_by(LlmCallSpan.ts.desc())
+    )
+    if project_id:
+        stmt = stmt.where(LlmCallSpan.project_id == project_id)
+    spans = list(db.scalars(stmt.limit(max(limit * 8, 40))))
+    sampled = 0
+    skipped_stub = 0
+    skipped_no_preview = 0
+    skipped_already = 0
+    created_ids: list[str] = []
+    for span in spans:
+        if sampled >= limit:
+            break
+        if span.provider == "stub":
+            skipped_stub += 1
+            continue
+        if not (span.output_preview or "").strip():
+            skipped_no_preview += 1
+            continue
+        source = _span_source(span.id)
+        exists = db.scalar(select(MemoryShard.id).where(MemoryShard.source == source))
+        if exists:
+            skipped_already += 1
+            continue
+        shard = mem_svc.add_memory(
+            db,
+            text_body=_sample_text(span),
+            scope="global",
+            source=source,
+            project_id=span.project_id or "core",
+            status="candidate",
+            origin=SAMPLE_ORIGIN,
+        )
+        sampled += 1
+        created_ids.append(shard.id)
+    return {
+        "sampled": sampled,
+        "skipped_stub": skipped_stub,
+        "skipped_no_preview": skipped_no_preview,
+        "skipped_already": skipped_already,
+        "ids": created_ids,
+    }
+
+
+def labels(db: Session, *, project_id: str | None = None) -> dict:
+    """How far the human-eval queue has been labelled.
+
+    `absent` — no eval-sample shards exist (nobody sampled, or nothing was eligible).
+    `ungraded` — candidates remain; an unlabelled sample is not a pass.
+    `ok` — every sampled shard is published or rejected.
+    """
+    from sqlalchemy import func, select
+
+    from app.models import MemoryShard
+
+    stmt = select(MemoryShard.status, func.count()).where(
+        MemoryShard.origin == SAMPLE_ORIGIN,
+    )
+    if project_id:
+        stmt = stmt.where(MemoryShard.project_id == project_id)
+    stmt = stmt.group_by(MemoryShard.status)
+    counts = {status: n for status, n in db.execute(stmt)}
+    candidates = int(counts.get("candidate") or 0)
+    published = int(counts.get("published") or 0)
+    rejected = int(counts.get("rejected") or 0)
+    total = candidates + published + rejected
+    if total == 0:
+        status = "absent"
+        reason = "no eval samples — the human-eval queue has not been looked at"
+    elif candidates:
+        status = "ungraded"
+        reason = (
+            f"{candidates} sample(s) still in Memory review; unlabelled is not a pass"
+        )
+    else:
+        status = "ok"
+        reason = ""
+    return {
+        "status": status,
+        "graded": status == "ok",
+        "reason": reason,
+        "candidates": candidates,
+        "published": published,
+        "rejected": rejected,
+        "total": total,
+    }
+
+
+def promote(db: Session, shard_id: str) -> dict:
+    """JSON a human can paste into `app/evals/cases/`. Does not write the repo.
+
+    Refuses candidates: freezing an unlabelled sample would mint a golden case
+    nobody judged.
+    """
+    from app.models import MemoryShard
+
+    shard = db.get(MemoryShard, shard_id)
+    if shard is None:
+        raise ValueError(f"shard not found: {shard_id}")
+    if (shard.origin or "") != SAMPLE_ORIGIN:
+        raise ValueError(
+            f"{shard_id} is not an eval sample (origin {shard.origin!r})"
+        )
+    if shard.status != "published":
+        raise UnlabelledSample(
+            f"{shard_id} is {shard.status}: publish it in Memory review before "
+            "promoting, or the golden set would freeze an unlabelled sample"
+        )
+    feature = ""
+    for line in (shard.text or "").splitlines():
+        if line.startswith("Eval sample · "):
+            parts = line.split(" · ")
+            if len(parts) >= 2:
+                feature = parts[1].strip()
+            break
+    preview = (shard.text or "").split("\n\n", 1)[-1].strip()
+    needle = preview[:80].split("\n")[0].strip()
+    return {
+        "id": f"from-{shard.source or shard.id}",
+        "surface": feature or "extract_lessons",
+        "source": shard.source,
+        "note": "promoted from a labelled eval sample; fill `input` from the original work",
+        "expect": {
+            "min_shards": 1,
+            **({"must_contain": [needle]} if needle else {}),
+        },
+        "preview": preview,
+    }
