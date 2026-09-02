@@ -42,6 +42,12 @@ OBSERVE_TITLE = "Observe the repo"
 OBSERVE_ANSWERS = ("remote", "none", "unknown")
 OBSERVE_WAITING = "waiting on Observe: remote / none / unknown"
 OBSERVE_UNKNOWN_BLOCK = "Observe answered unknown — look again before the rest"
+ALREADY_TAG = "gitops-already"
+ALREADY_TOKEN = "already"
+ALREADY_HINT = (
+    "If this is already true, evidence `already` plus what you saw — do not create "
+    "a second remote. Graphban will not mark this done from that receipt."
+)
 GLOB_METACHARS = ("*", "?", "[")
 FIELD_SOURCES = ("project", "org", "unmeasured")
 CONTROL_STATES = ("local", "linked_set", "linked_unset", "linked_unreachable")
@@ -480,35 +486,41 @@ def _plan_children(project: Project) -> list[dict[str, str]]:
         },
         {
             "title": "Confirm the remote",
+            "already": True,
             "description": (
-                "Create or record `origin`. You run `git remote`. Graphban does not."
+                "Create or record `origin`. You run `git remote`. Graphban does not. "
+                + ALREADY_HINT
             ),
         },
         {
             "title": f"Confirm `{base}` exists and is HEAD",
+            "already": True,
             "description": (
                 f"The contract's base_branch is `{base}`. Confirm that ref exists on "
                 "the remote and is what HEAD should track. Graphban does not "
-                "`git checkout`."
+                "`git checkout`. " + ALREADY_HINT
             ),
         },
     ]
     if project.gitops_no_push_to_base:
         kids.append({
             "title": "Stop pushing to base",
+            "already": True,
             "description": (
                 "The contract has no_push_to_base=true. Stop landing on the integration "
                 "branch. Apply forge protection if you can; if you cannot, leave this "
-                "item blocked with that reason — do not close it as done."
+                "item blocked with that reason — do not close it as done. "
+                + ALREADY_HINT
             ),
         })
     if model in ("prs_to_base", "prs_to_integration"):
         kids.append({
             "title": "One PR from current work",
+            "already": True,
             "description": (
                 "Open one pull request from current work against the contract's "
                 f"base_branch (`{base}`) so the next run is not a philosophy lecture. "
-                "You run `gh`. Graphban does not."
+                "You run `gh`. Graphban does not. " + ALREADY_HINT
             ),
         })
     kids.append({
@@ -564,13 +576,16 @@ def file_migration_plan(db: Session, project: Project) -> Item | None:
     )
     for spec in _plan_children(project):
         is_observe = spec["title"] == OBSERVE_TITLE
+        tags = [PLAN_TAG]
+        if spec.get("already"):
+            tags.append(ALREADY_TAG)
         child = items_svc.create_item(
             db,
             title=spec["title"],
             description=spec["description"],
             project_id=project.id,
             status="next" if is_observe else "blocked",
-            tags=[PLAN_TAG],
+            tags=tags,
             reporter={"name": "Gitops", "handle": "gitops", "avatar": "#c6f24e"},
             commit=False,
         )
@@ -689,3 +704,32 @@ def apply_observe_answer(db: Session, item: Item) -> None:
         sib.blocker = OBSERVE_UNKNOWN_BLOCK
         if sib.status in ("next", "backlog"):
             sib.status = "blocked"
+
+
+def _is_already_child(item: Item) -> bool:
+    return ALREADY_TAG in (item.tags or [])
+
+
+def refuse_already_progress(db: Session, item: Item, fields: dict) -> None:
+    """Review/done on children 2–5 needs evidence. `already` is a valid receipt.
+    Graphban still does not complete the item from that token alone."""
+    from app.services.items import append_evidence
+
+    dest = fields.get("status")
+    if dest not in ("review", "done") or dest == item.status:
+        return
+    if not _is_already_child(item):
+        return
+    merged = append_evidence(item.evidence, fields.get("evidence") or [])
+    if not merged:
+        raise ValueError(
+            "this checklist child needs evidence: `already` plus what you saw if it "
+            "already matches, or a note of what you did. Graphban will not mark it done"
+        )
+
+
+def apply_already_evidence(item: Item) -> None:
+    """`already` is a receipt, not a completion. Must not write status=done."""
+    if not _is_already_child(item):
+        return
+    # Intentionally no status write.
