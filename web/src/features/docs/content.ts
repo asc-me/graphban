@@ -262,7 +262,7 @@ const CONTENT: Record<string, DocEntry> = {
     title: "API keys",
     tagline: "Who an agent is, what it can see, and what it may call.",
     sections: [
-      { num: 1, h: "Three kinds", b: "An agent key talks to MCP — read and write on items, memory, and code. A sync credential pushes a code graph from a local box into exactly one project and nothing else. A gate key attests that work was checked so an item may reach done: for CI or a reviewer, never for the agent doing the work. Gate is minted with read+write+gate; gate alone cannot attest." },
+      { num: 1, h: "Three kinds", b: "An agent key talks to MCP — read and write on items, memory, and code. A link key pushes a code graph from a local box into exactly one project and nothing else — same object Sync / Link mints. A gate key attests that work was checked so an item may reach done: for CI or a reviewer, never for the agent doing the work. Gate is minted with read+write+gate; gate alone cannot attest." },
       { num: 2, h: "Scope is the write target", b: "Project pins the agent's writes to the active project. Global is unbound — calls pass project_id or fall back to the default. Connect snippets follow the key: Claude Code and Grok CLI get --scope project or --scope user. Sync and gate always pin to one project." },
       { num: 3, h: "Advertisement is not permission", b: "An agent key ships the core tools. Tiers (PRDs, code-graph writes, fleet admin, occasional) opt in specialist tools because they cost manifest tokens every turn. A tool left out of tools/list is still callable; scopes and roles decide what may be called. Visibility is not the gate. The symptom of a missing tier is an agent that does not know a tool exists, never an error. The Fleet admin tier is for the supervisor or planner key — being in a fleet needs a seat, not this tier." },
       { num: 4, h: "Shown once", b: "The plaintext is shown once and stored as a hash. A lost key is a new mint. Two paths, one key shape: mint here, or graphban init --key-scope / --key-tiers on a virgin instance." },
@@ -293,7 +293,7 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Cloud / Sync",
     tagline: "A link key from your cloud org is what a local box pastes.",
     sections: [
-      { num: 1, h: "Mint the key in the cloud org", b: "On the hosted org: Settings → Sync / Link, or API keys → Sync credential. Scope is sync, pinned to one project — that is the only project the box can push. The name is the deployment's identity on Deployments. Shown once." },
+      { num: 1, h: "Mint the key in the cloud org", b: "On the hosted org: Settings → Sync / Link, or API keys → Link key. Scope is sync, pinned to one project — that is the only project the box can push. The name is the deployment's identity on Deployments. Shown once." },
       { num: 2, h: "Paste it on the local box", b: "Self-host Settings → Cloud / Sync takes the cloud URL (the org origin) and the plaintext. Tenant/org is a label. graphban link --cloud-url --api-key --project is the same hand-off." },
       { num: 3, h: "The box pushes; the org does not reach in", b: "The local box builds the graph and pushes summaries. Vectors stay on the box; the cloud re-embeds. Nothing is linked until that paste happens." },
     ],
@@ -440,7 +440,7 @@ const CONTENT: Record<string, DocEntry> = {
     title: "Deployments",
     tagline: "The box pushes. The cloud never reaches in.",
     sections: [
-      { num: 1, h: "Mint a link key in this org", b: "Settings → Sync / Link (or API keys → Sync credential). Scope sync, pinned to one project. The key's name is the deployment's identity here. Nothing is linked until that key is pasted on the box." },
+      { num: 1, h: "Mint a link key in this org", b: "Settings → Sync / Link (or API keys → Link key). Scope sync, pinned to one project. The key's name is the deployment's identity here. Nothing is linked until that key is pasted on the box." },
       { num: 2, h: "Address as text, then a link", b: "The console cannot test reachability — that is the viewer's network. A dead Open button is worse than showing http://ubuntu-srv:8080 first." },
     ],
   },

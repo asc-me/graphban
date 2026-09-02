@@ -91,7 +91,7 @@ async function mint(kind: string, name = "github-actions") {
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: kind }));
   await user.type(screen.getByPlaceholderText(/Key name/), name);
-  await user.click(screen.getByRole("button", { name: /Mint gate key|Mint key|Mint credential/ }));
+  await user.click(screen.getByRole("button", { name: /Mint gate key|Mint key|Mint link key/ }));
 }
 
 beforeEach(() => {
@@ -223,14 +223,24 @@ describe("tool tiers (GRPH-571)", () => {
     expect(screen.getByText(/callable/)).toBeInTheDocument();
   });
 
-  it("does not offer tiers for a sync credential", async () => {
-    // A sync credential calls no MCP tools at all, so a tier on it is a control that does
+  it("does not offer tiers for a link key", async () => {
+    // A link key calls no MCP tools at all, so a tier on it is a control that does
     // nothing — and a control that does nothing teaches the wrong model of what tiers are.
     const user = userEvent.setup();
     view();
-    await user.click(await screen.findByRole("button", { name: "Sync credential" }));
+    await user.click(await screen.findByRole("button", { name: "Link key" }));
 
     expect(screen.queryByRole("button", { name: "PRDs" })).toBeNull();
+  });
+
+  it("names the kind Link key, the same object Sync / Link mints", async () => {
+    // API keys used to say "Sync credential" while Sync / Link said "link key".
+    // Two names for one mint is the pairing hole this slice closes.
+    view();
+    expect(await screen.findByRole("button", { name: "Link key" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sync credential" })).toBeNull();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Link key" }));
+    expect(screen.getByRole("button", { name: /Mint link key/ })).toBeInTheDocument();
   });
 });
 

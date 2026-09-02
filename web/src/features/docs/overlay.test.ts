@@ -264,6 +264,18 @@ describe("docs overlay routes", () => {
     expect(keys.related?.some((r) => r.label === "Fleet")).toBe(true);
   });
 
+  it("API keys overlay names a link key, not a sync credential", () => {
+    // Sync / Link already mints a "link key". The API keys kind used to say
+    // "sync credential" for the same object — two names, one mint.
+    const keys = docFor(settingsPath("project/api-keys"));
+    const body = keys.sections.map((s) => `${s.h} ${s.b}`).join(" ");
+    expect(body).toMatch(/link key/i);
+    expect(body).not.toMatch(/sync credential/i);
+    const sync = docFor(settingsPath("deployment/sync"));
+    expect(sync.sections[0]?.b).toMatch(/Link key/);
+    expect(sync.sections[0]?.b).not.toMatch(/Sync credential/);
+  });
+
   it("MCP Tools overlay does not pretend this page mints keys", () => {
     const mcp = docFor("/mcp-tools");
     const body = mcp.sections.map((s) => `${s.h} ${s.b}`).join(" ");

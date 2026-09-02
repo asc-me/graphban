@@ -78,9 +78,9 @@ describe("minting a sync credential", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("link", { name: "API keys" }));
-    await user.click(screen.getByRole("button", { name: "Sync credential" }));
+    await user.click(screen.getByRole("button", { name: "Link key" }));
     await user.type(screen.getByPlaceholderText(/laptop/), "laptop — core");
-    await user.click(screen.getByRole("button", { name: /Mint credential/ }));
+    await user.click(screen.getByRole("button", { name: /Mint link key/ }));
 
     await waitFor(() =>
       expect(api.createApiKey).toHaveBeenCalledWith(
@@ -98,9 +98,9 @@ describe("minting a sync credential", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("link", { name: "API keys" }));
-    await user.click(screen.getByRole("button", { name: "Sync credential" }));
+    await user.click(screen.getByRole("button", { name: "Link key" }));
     await user.type(screen.getByPlaceholderText(/laptop/), "laptop");
-    await user.click(screen.getByRole("button", { name: /Mint credential/ }));
+    await user.click(screen.getByRole("button", { name: /Mint link key/ }));
 
     await waitFor(() =>
       expect(document.querySelector("pre")?.textContent).toContain("graphban link"),
