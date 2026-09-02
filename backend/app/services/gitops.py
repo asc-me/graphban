@@ -164,14 +164,14 @@ def _plan_ref(db: Session, project: Project | None) -> GitopsPlanRef | None:
     return GitopsPlanRef(id=parent.key, title=parent.title)
 
 
-def _view(*, project_id, org_id, fields, version_from, state, was=None, projects=None,
-          writable=False, model=None, plan=None) -> GitopsView:
+def _view(*, project_id, org_id, fields, version_from, model, state, was=None, projects=None,
+          writable=False, plan=None) -> GitopsView:
     return GitopsView(
         project_id=project_id,
         org_id=org_id,
         fields=fields,
         version_from=version_from,
-        model=model if model is not None else _unmeasured(),
+        model=model,
         plan=plan,
         control=_control(state, writable=writable),
         was=was,
@@ -185,6 +185,7 @@ def _unmeasured_view(*, state: str, project_id=None, org_id=None, was=None) -> G
         org_id=org_id,
         fields=_empty_fields(),
         version_from=_unmeasured(),
+        model=_unmeasured(),
         state=state,
         was=was,
     )

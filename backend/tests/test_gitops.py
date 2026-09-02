@@ -88,6 +88,7 @@ def _cloud_body(*, base=None, source="unmeasured", writable=True, state="local")
         "control": {"state": state, "writable": writable, "message": ""},
         "was": None,
         "version_from": dict(UNMEASURED),
+        "model": dict(UNMEASURED),
     }
 
 
@@ -173,6 +174,8 @@ def test_state1_rest_get_is_unmeasured_editable(client, auth):
     assert body["was"] is None
     assert body["projects"] == []
     assert body["plan"] is None
+    assert "model" in body
+    assert body["model"] == UNMEASURED
     assert "main" not in json.dumps(body["fields"])
 
 
@@ -425,6 +428,17 @@ def test_live_view_rewrites_cloud_control(client, auth, monkeypatch):
 
 
 # ---- unreachable ≠ state 1; timeout is not AI provider; 404 is not linked_unset ----------
+
+
+def test_cloud_payload_missing_model_is_unreachable_not_unmeasured(client, auth, monkeypatch):
+    """A missing model key is a failed fetch, not quiet unmeasured (P32 Data model)."""
+    _link_web(client, auth)
+    payload = _cloud_body(base="stage", source="org")
+    del payload["model"]
+    _mock_cloud(monkeypatch, payload)
+    body = _get(client, auth).json()
+    assert body["control"]["state"] == "linked_unreachable"
+    assert body["fields"]["base_branch"] == UNMEASURED
 
 
 def test_timeout_is_linked_unreachable_not_ai_provider(client, auth, monkeypatch):
@@ -854,6 +868,9 @@ def test_patch_model_writes_the_six_fields_at_get_and_get_context(client, auth):
     assert g["reviewer_bar"] == {"value": "both", "source": "project"}
     assert g["version_from"] == {"value": "calver", "source": "project"}
     assert "model" not in g
+    assert "plan" not in g
+    assert "model" in body
+    assert body["model"]["value"] == "prs_to_base"
 
 
 def test_omit_model_and_base_branch_stays_unmeasured_when_github_is_connected(client, auth):
@@ -993,6 +1010,34 @@ def test_gitops_models_are_not_product_versions():
         assert not m[:4].isdigit()
     assert "base_branch" not in gitops_svc.PRESETS["prs_to_base"]
     assert gitops_svc.PRESETS["prs_to_base"] == gitops_svc.PRESETS["prs_to_integration"]
+
+
+def test_gitops_view_model_is_required_like_version_from():
+    """THE CALL (P32 Data model). A default of unmeasured makes a missing attach
+    look like nobody chose. version_from is already required; model must match."""
+    from app.schemas import GitopsView
+
+    assert GitopsView.model_fields["model"].is_required()
+    assert GitopsView.model_fields["version_from"].is_required()
+
+
+def test_gitops_view_without_model_is_validation_error():
+    from pydantic import ValidationError
+    from app.schemas import GitopsControl, GitopsField, GitopsFields, GitopsView
+
+    u = GitopsField(value=None, source="unmeasured")
+    with pytest.raises(ValidationError):
+        GitopsView(
+            fields=GitopsFields(
+                base_branch=u,
+                no_push_to_base=u,
+                branch_name_pattern=u,
+                pr_title_pattern=u,
+                reviewer_bar=u,
+            ),
+            version_from=u,
+            control=GitopsControl(state="local", writable=True, message=""),
+        )
 
 
 # ---- migration plan (PRD-32 slice 2). Pin PATCH → items, not file_migration_plan() ------

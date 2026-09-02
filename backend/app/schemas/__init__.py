@@ -851,9 +851,7 @@ class GitopsView(BaseModel):
     control: GitopsControl
     was: GitopsWas | None = None
     version_from: GitopsField
-    model: GitopsField = Field(
-        default_factory=lambda: GitopsField(value=None, source="unmeasured")
-    )
+    model: GitopsField
     plan: GitopsPlanRef | None = None
     projects: list[GitopsProjectRef] = Field(default_factory=list)
 
