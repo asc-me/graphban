@@ -183,6 +183,14 @@ describe("docs overlay routes", () => {
     expect(house?.b).toMatch(/does not file a graduation checklist/);
   });
 
+  it("PRD editor overlay names empty headings as not a clean pass", () => {
+    const d = docFor("/prds/abc");
+    const cov = d.sections.find((s) => /coverage/i.test(s.h));
+    expect(cov?.b).toMatch(/empty/i);
+    expect(cov?.b).toMatch(/no sections is not a clean pass/i);
+    expect(cov?.b).not.toMatch(/\d+%/);
+  });
+
   it("Memory review overlay names list judging and that a missing score is not clean", () => {
     const ask = docFor("/memory-review").sections.find((s) => /llm judge/i.test(s.h));
     expect(ask?.b).toMatch(/capped/);

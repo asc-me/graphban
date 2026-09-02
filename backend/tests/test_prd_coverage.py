@@ -37,6 +37,61 @@ def test_decompose_fills_gaps_and_links(client, auth):
     assert again["proposals"] == []
 
 
+def test_standard_template_sections_are_empty_not_a_clean_pass(client, auth):
+    """A fresh Standard PRD has headings, but only placeholders — empty, not occupied."""
+    prd = client.post("/api/prds", json={"title": "Fresh"}, headers=auth).json()
+    cov = client.get(f"/api/prds/{prd['id']}/coverage", headers=auth).json()
+    assert cov["shaped"] is True
+    assert set(cov["empty_sections"]) == {
+        "Overview", "Goals", "Non-Goals", "Key Features",
+        "Success Metrics", "Risks & Open Questions",
+    }
+    assert all(s["empty"] for s in cov["sections"])
+    assert "percent_empty" not in cov and "occupancy" not in cov
+
+
+def test_no_headings_is_unshaped_not_zero_empty(client, auth):
+    """A body with no ## is not empty_sections=[] — that would read as a clean pass."""
+    prd = client.post(
+        "/api/prds",
+        json={"title": "Blank", "body": "# Blank\n\njust prose, no sections\n"},
+        headers=auth,
+    ).json()
+    cov = client.get(f"/api/prds/{prd['id']}/coverage", headers=auth).json()
+    assert cov["shaped"] is False
+    assert cov["empty_sections"] == []
+    assert cov["section_count"] == 0
+
+
+def test_occupied_section_is_not_empty(client, auth):
+    prd = client.post(
+        "/api/prds",
+        json={"title": "Filled", "body": "# Filled\n\n## Goals\n- ship the ingest path\n"},
+        headers=auth,
+    ).json()
+    cov = client.get(f"/api/prds/{prd['id']}/coverage", headers=auth).json()
+    assert cov["shaped"] is True
+    assert cov["empty_sections"] == []
+    assert cov["sections"][0]["empty"] is False
+
+
+def test_coverage_does_not_call_the_chat_model(client, auth, monkeypatch):
+    """Occupancy is mechanical. Enriching GET /coverage with a judge would score every tab."""
+    prd = client.post("/api/prds", json={"title": "NoChat"}, headers=auth).json()
+    from app.services import platform as platform_svc
+    calls = {"n": 0}
+    real = platform_svc.resolve_chat
+
+    def wrapped(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(platform_svc, "resolve_chat", wrapped)
+    r = client.get(f"/api/prds/{prd['id']}/coverage", headers=auth)
+    assert r.status_code == 200
+    assert calls["n"] == 0
+
+
 def test_coverage_rollup_and_gaps(client, auth):
     prd = client.post("/api/prds", json={
         "title": "Cov", "body": "# Cov\n\n## A\n\n## B\n\n## C\n",

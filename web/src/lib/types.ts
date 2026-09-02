@@ -839,6 +839,8 @@ export interface PrdCoverageSection {
   done: number;
   by_status: Record<string, number>;
   gap: boolean;
+  /** Heading with no substance (placeholder / blank). Not a task gap. */
+  empty: boolean;
   high_fidelity: number;
   open_high_fidelity: number;
   item_ids: string[];
@@ -881,6 +883,9 @@ export interface PrdCoverage {
   implementable_sections: number;
   sections_with_tasks: number;
   gaps: string[];
+  /** False when the body has no `##` headings — `empty_sections: []` is then not a clean pass. */
+  shaped: boolean;
+  empty_sections: string[];
   total_items: number;
   done_items: number;
   percent_done: number;

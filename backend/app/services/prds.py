@@ -3151,6 +3151,25 @@ def section_bodies(body: str) -> dict[str, str]:
     return {title: body[start:end].strip() for title, start, end in section_spans(body)}
 
 
+# Template placeholders are not substance (GRPH-651). A heading whose body is only an
+# italic prompt (`_What is this…_`) or a bare list marker is empty — the same sitting
+# as "no tasks" is a different failure, and merging them would hide the one coverage
+# never counted.
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_PLACEHOLDER_LINE = re.compile(r"^(_[^_\n]+_|[-*+]\s*)$")
+
+
+def section_is_empty(body: str) -> bool:
+    """True when a section has no substantive prose. A missing heading is not this
+    function's job — the caller distinguishes `shaped` so `empty_sections: []` cannot
+    mean 'nobody looked'."""
+    text = _HTML_COMMENT.sub("", body or "").strip()
+    if not text:
+        return True
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return all(_PLACEHOLDER_LINE.fullmatch(ln) for ln in lines)
+
+
 #: Slice and criterion labels as this repo actually writes them — `D8`, `AC-18`, `E3`, `S7`,
 #: `G5`. Anchored at a word boundary and required to end in a digit, because the failure to
 #: avoid is matching a bare word in prose.
@@ -3203,7 +3222,12 @@ def unlinked_work(db: Session, prd: Prd, items: list) -> dict:
 
 
 def coverage(db: Session, prd: Prd) -> dict:
-    """Per-section task rollup + gaps for a PRD."""
+    """Per-section task rollup + gaps for a PRD, plus occupancy (GRPH-651).
+
+    `gap` is a missing task on a buildable section. `empty` is a heading with no
+    substance. They are not the same, and this function does not emit an occupancy
+    percentage — a single green number is the sitting completeness() already forbids.
+    """
     sections = parse_sections(prd.body)
     # Needed for classification: a section can declare `<!-- framing -->` in its own body
     # and override the name-based guess (GRPH-247).
@@ -3235,6 +3259,8 @@ def coverage(db: Session, prd: Prd) -> dict:
             "by_status": dict(counts),
             # Framing prose is never a gap — only buildable sections can lack work (AL-96).
             "gap": implementable and len(its) == 0,
+            # Occupancy, not a task count (GRPH-651). Empty is not a gap.
+            "empty": section_is_empty(bodies.get(s, "")),
             "high_fidelity": sum(1 for it in its if it.fidelity == "high"),
             "open_high_fidelity": open_high,
             # The rendered key, not the frozen id — otherwise a retagged project reports
@@ -3290,6 +3316,10 @@ def coverage(db: Session, prd: Prd) -> dict:
         "implementable_sections": len(buildable),
         "sections_with_tasks": sum(1 for p in buildable if not p["gap"]),
         "gaps": [p["section"] for p in buildable if p["gap"]],
+        # Against THIS document's headings, not a required-heading rubric. `shaped` is
+        # why `empty_sections: []` on a body with no `##` is not a clean pass.
+        "shaped": bool(sections),
+        "empty_sections": [p["section"] for p in per if p["empty"]],
         "total_items": total, "done_items": done,
         "percent_done": round(100 * done / total) if total else 0,
         # Prototype-first work outstanding across the whole PRD.

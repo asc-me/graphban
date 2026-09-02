@@ -364,7 +364,7 @@ function VersionHistory({
   );
 }
 
-function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: string; projectId: string; onDecomposed: () => void }) {
+export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: string; projectId: string; onDecomposed: () => void }) {
   const qc = useQueryClient();
   const [busy, setBusy] = React.useState(false);
   const [protoOpen, setProtoOpen] = React.useState<string | null>(null);
@@ -401,6 +401,16 @@ function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: string; proj
           <div className="mt-1 h-1.5 w-48 overflow-hidden rounded-full bg-surface-4">
             <div className="h-full rounded-full bg-accent" style={{ width: `${cov.percent_done}%` }} />
           </div>
+          {!cov.shaped && (
+            <div className="mt-1.5 font-mono text-[10.5px] text-faint">
+              No sections yet — not a clean pass
+            </div>
+          )}
+          {cov.shaped && cov.empty_sections.length > 0 && (
+            <div className="mt-1.5 font-mono text-[10.5px] text-[#e0b34a]">
+              {cov.empty_sections.length} empty — not a task gap
+            </div>
+          )}
           {cov.open_high_fidelity > 0 && (
             <div className="mt-1.5 font-mono text-[10.5px] text-[#e0b34a]">
               {cov.open_high_fidelity} open · needs a prototype (grill → prototype → grill)
@@ -440,6 +450,11 @@ function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: string; proj
                   >
                     {s.open_high_fidelity} proto
                   </button>
+                )}
+                {s.empty && (
+                  <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-[#e0b34a]">
+                    empty
+                  </span>
                 )}
                 {s.gap ? (
                   <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-[#e0b34a]">
