@@ -23,6 +23,7 @@ import type { Item, PrdStatus, PrdVersion, PrototypeVerdictOut } from "@/lib/typ
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
 import { GrillPanel } from "./GrillPanel";
 import { PRD_SETTABLE_STATUSES, PRD_STATUS_META, prdStatusMeta } from "./meta";
+import { ApprovalEval } from "./ApprovalEval";
 import { ApprovedIsEarned, GrillProgress } from "./GrillProgress";
 import { AcceptancePanel } from "./AcceptancePanel";
 import { IntentDiff } from "./IntentDiff";
@@ -183,6 +184,7 @@ export function PrdEditorView() {
             <div className="flex min-h-0 flex-1 flex-col gap-3">
               {diff && <IntentDiff diff={diff} />}
               {grill && <GrillProgress state={grill} />}
+              <ApprovalEval prdId={id} grillComplete={!!grill?.complete} />
               <div className="min-h-0 flex-1">
                 <GrillPanel prdId={id} onApply={(b) => { setBody(b); setRightTab("preview"); }} />
               </div>

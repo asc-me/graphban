@@ -79,6 +79,28 @@ def prd_coverage(prd_id: str, db: Session = Depends(get_db), user: User = Depend
     return prd_svc.coverage(db, prd)
 
 
+@router.get("/{prd_id}/evaluate")
+def prd_evaluate_get(prd_id: str, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Mechanical pre-approval quality (GRPH-80). Does not call the chat model.
+
+    Completeness of standard sections and `coverage` gaps. Ambiguity/testability
+    stay ungraded (`cause=not_asked`) until POST. Ungraded is not a fail."""
+    prd = _require_readable_prd(db, user, prd_id)
+    return prd_svc.approval_eval(db, prd, judge=False)
+
+
+@router.post("/{prd_id}/evaluate")
+def prd_evaluate_post(prd_id: str, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """Mechanical + LLM pre-approval quality (GRPH-80). Advisory; never mutates status.
+
+    A stub or split judge is ungraded, not ready=false. Missing/thin sections
+    still fail `mechanical_ready` even if the model says ready."""
+    prd = _require_readable_prd(db, user, prd_id)
+    return prd_svc.approval_eval(db, prd, judge=True)
+
+
 @router.get("/{prd_id}/grill")
 def prd_grill_state(prd_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The grill as the SERVER knows it (AL-296) — no client transcript involved.

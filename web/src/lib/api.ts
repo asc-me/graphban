@@ -57,6 +57,7 @@ import type {
   PlatformConfig,
   Prd,
   PrdCoverage,
+  PrdEval,
   PrdStatus,
   PrdSummary,
   PrdVersion,
@@ -566,6 +567,11 @@ export const api = {
     request<PrdSummary[]>(`/prds${projectId ? `?project_id=${projectId}` : ""}`),
   prd: (id: string) => request<Prd>(`/prds/${id}`),
   prdCoverage: (id: string) => request<PrdCoverage>(`/prds/${id}/coverage`),
+  // GRPH-80: mechanical completeness + coverage gaps. Does not call the chat model.
+  prdEvaluate: (id: string) => request<PrdEval>(`/prds/${id}/evaluate`),
+  // LLM ambiguity/testability on top of the mechanical pass. Advisory; never mutates.
+  prdEvaluateAsk: (id: string) =>
+    request<PrdEval>(`/prds/${id}/evaluate`, { method: "POST" }),
   // GRPH-235: the prototype handoff. Emit returns the paste-ready prompt-pack and
   // records the ask; verdict carries the human's reading back into the grill with the
   // screenshot's URL, and only PROPOSES the high→low flip.

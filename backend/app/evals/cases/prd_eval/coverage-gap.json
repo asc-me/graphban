@@ -1,0 +1,13 @@
+{
+  "id": "coverage-gap",
+  "surface": "prd_eval",
+  "input": {
+    "title": "[eval] adapter with no work",
+    "body": "# Adapter with no work\n\n## Problem\n\nCollision clusters still serialize because there is no execution-backend adapter that can fan work into parallel worktrees.\n\n## Goals\n\nA Cursor adapter claims a cluster, opens one worktree per item, and reports completion back to the ledger without a human babysitting the checkout.\n\n## Non-Goals\n\nGraphban does not become an IDE. The adapter talks to Cursor; it does not replace it.\n\n## Acceptance criteria\n\nGiven a cluster of three ready items, three worktrees exist and each item is claimed by a distinct session.\n\n## Adapter\n\nBuild the Cursor execution-backend adapter that maps a collision cluster onto parallel worktrees and streams claim heartbeats.\n"
+  },
+  "expect": {
+    "eval_mechanical_ready": true,
+    "eval_missing": [],
+    "must_contain": ["Adapter"]
+  }
+}

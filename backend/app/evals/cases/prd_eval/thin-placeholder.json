@@ -1,0 +1,12 @@
+{
+  "id": "thin-placeholder",
+  "surface": "prd_eval",
+  "input": {
+    "title": "[eval] standard template is not a spec",
+    "template": "standard"
+  },
+  "expect": {
+    "eval_mechanical_ready": false,
+    "must_contain": ["placeholder"]
+  }
+}

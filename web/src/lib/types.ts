@@ -892,6 +892,33 @@ export interface PrdCoverage {
   open_high_fidelity: number;
 }
 
+/** Pre-approval quality (GRPH-80). `ready` is null when ungraded — never a quiet false. */
+export interface PrdEvalCompleteness {
+  dimension: string;
+  label: string;
+  state: "present" | "missing" | "thin";
+  section: string | null;
+}
+
+export interface PrdEval {
+  prd_id: string;
+  judged: boolean;
+  ready: boolean | null;
+  cause: string;
+  ungraded_reason: string;
+  mechanical_ready: boolean;
+  completeness: PrdEvalCompleteness[];
+  missing: string[];
+  thin: string[];
+  coverage_gaps: string[];
+  implementable_sections: number;
+  coverage_note: string;
+  ambiguous: string[];
+  untestable: string[];
+  callouts: string[];
+  judge_reason: string;
+}
+
 export interface PrdVersion {
   id: number;
   version: string;

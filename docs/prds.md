@@ -62,6 +62,23 @@ The offline **stub** returns deterministic, insertable snippets per command (and
 configure a provider for real drafting); with Ollama/Claude configured, they're generated.
 See [AI providers](ai-providers.md).
 
+### Readiness to approve (GRPH-80)
+
+The grill tab shows a **Readiness to approve** panel next to grill progress. It is
+advisory — finishing the grill still approves the PRD; a low score warns, it does
+not block.
+
+- **Mechanical (GET `/evaluate`, always):** are Problem / Scope / Non-goals /
+  Acceptance present and substantive (the standard template's italic placeholders
+  count as thin, not present), plus coverage gaps from `prd_coverage`. A PRD with
+  no buildable sections says so rather than reading as fully covered.
+- **LLM (POST `/evaluate`, on demand):** ambiguity and testability. Stub, split, or
+  an unasked judge is **ungraded**, not a fail. A judged `ready` cannot paper over
+  missing sections.
+
+Ungraded is named on the panel (`not judged — …`). If the grill has already
+approved and nobody asked the judge, the panel says so rather than looking clean.
+
 ### Linking items
 
 The **Linked** dropdown lists tracker items with a checkbox to link/unlink; linked ids show
@@ -88,3 +105,5 @@ as chips on the list view.
 | POST | `/api/prds/{id}/versions` | Snapshot + bump version (`{note}`) |
 | POST | `/api/prds/{id}/link` | Link/unlink an item (`{item_id, add}`) |
 | POST | `/api/prds/{id}/ai` | Run an AI command (`{command}`) |
+| GET | `/api/prds/{id}/evaluate` | Mechanical pre-approval quality (no chat call) |
+| POST | `/api/prds/{id}/evaluate` | Mechanical + LLM; advisory, never mutates status |
