@@ -18,12 +18,43 @@ export const GITOPS_BASE_CHIPS = ["stage", "test", "main", "develop"] as const;
 export const GITOPS_INTEGRATION_CHIPS = ["stage", "develop", "test", "main"] as const;
 export const GITOPS_NAMING_TOKENS = ["item_id", "tag", "slug", "version", "date"] as const;
 export const GITOPS_MODELS = ["push_to_base", "prs_to_base", "prs_to_integration"] as const;
+/** Display-only. Not a GITOPS_MODELS member and never PATCHed. */
+export const GITOPS_CUSTOM = "custom";
 export const GITOPS_MODEL_OPTIONS = [
   ["", "Unmeasured"],
+  [GITOPS_CUSTOM, "Custom"],
   ["push_to_base", "Push to base"],
   ["prs_to_base", "PRs to base"],
   ["prs_to_integration", "PRs to integration"],
 ] as const;
+
+export function gitopsFieldsMeasured(fields: {
+  base_branch?: string;
+  no_push_to_base?: string;
+  branch_name_pattern?: string;
+  pr_title_pattern?: string;
+  reviewer_bar?: string;
+  version_from?: string;
+}): boolean {
+  return Boolean(
+    fields.base_branch ||
+      fields.no_push_to_base ||
+      fields.branch_name_pattern ||
+      fields.pr_title_pattern ||
+      fields.reviewer_bar ||
+      fields.version_from,
+  );
+}
+
+/** Unmeasured is empty fields. Custom is measured fields with no preset id. */
+export function gitopsModelSelectValue(
+  model: string,
+  fields: Parameters<typeof gitopsFieldsMeasured>[0],
+): string {
+  if (model && model !== GITOPS_CUSTOM) return model;
+  if (gitopsFieldsMeasured(fields)) return GITOPS_CUSTOM;
+  return "";
+}
 export const UNMEASURED_PLACEHOLDER = "Unmeasured — not main";
 export const UNTIL_LINKED = "This is this project's process until the box is linked.";
 export const UNLINK_WARNING =
@@ -242,13 +273,15 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
   }
 
   function onModel(next: string) {
-    if (!next) {
+    if (!next || next === GITOPS_CUSTOM) {
       setDraft((d) => ({ ...d, model: "" }));
       return;
     }
     const preset = PRESET_DRAFT[next];
     setDraft((d) => ({ ...d, ...preset, model: next }));
   }
+
+  const modelValue = gitopsModelSelectValue(draft.model, draft);
 
   function onSave() {
     const body = patch();
@@ -320,7 +353,7 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
             aria-label="Gitops model"
             className={selectClass}
             disabled={!writable}
-            value={draft.model}
+            value={modelValue}
             onChange={(e) => onModel(e.target.value)}
           >
             {GITOPS_MODEL_OPTIONS.map(([value, label]) => (
@@ -330,8 +363,9 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
             ))}
           </select>
           <p className="mt-1.5 text-[11px] text-faint">
-            A closed preset that writes the fields below. Base branch is still yours — never filled as main.
-            Unmeasured is first and nothing is pre-selected.
+            {modelValue === GITOPS_CUSTOM
+              ? "Fields no longer match a preset. Pick one to re-apply, or leave as custom."
+              : "A closed preset that writes the fields below. Base branch is still yours — never filled as main. Unmeasured is first and nothing is pre-selected."}
           </p>
         </Field>
 

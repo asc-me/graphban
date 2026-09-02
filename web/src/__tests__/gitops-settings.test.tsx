@@ -8,6 +8,7 @@ import { docFor } from "@/features/docs/content";
 import { ProjectProvider } from "@/features/ProjectContext";
 import {
   GITOPS_BASE_CHIPS,
+  GITOPS_CUSTOM,
   GITOPS_MODELS,
   GITOPS_MODEL_OPTIONS,
   GITOPS_NAMING_TOKENS,
@@ -439,8 +440,46 @@ describe("Gitops Settings page", () => {
     expect(picker).toHaveValue("");
     const labels = [...picker.querySelectorAll("option")].map((o) => o.textContent);
     expect(labels[0]).toBe("Unmeasured");
-    expect(GITOPS_MODEL_OPTIONS.map(([id]) => id).filter(Boolean)).toEqual([...GITOPS_MODELS]);
-    expect(labels.slice(1)).toEqual(["Push to base", "PRs to base", "PRs to integration"]);
+    expect([...GITOPS_MODELS]).not.toContain(GITOPS_CUSTOM);
+    expect(
+      GITOPS_MODEL_OPTIONS.map(([id]) => id).filter((id) => id && id !== GITOPS_CUSTOM),
+    ).toEqual([...GITOPS_MODELS]);
+    expect(labels).toEqual([
+      "Unmeasured",
+      "Custom",
+      "Push to base",
+      "PRs to base",
+      "PRs to integration",
+    ]);
+  });
+
+  it("picker says Custom when fields are set and model is empty", async () => {
+    // THE CALL. Empty model + measured fields used to look like Unmeasured.
+    gitopsSpy.mockResolvedValue(
+      view({ fields: { base_branch: { value: "main", source: "project" } } }),
+    );
+    renderPage();
+    const picker = await screen.findByLabelText("Gitops model");
+    expect(picker).toHaveValue(GITOPS_CUSTOM);
+    expect(screen.getByRole("option", { name: "Custom" })).toBeInTheDocument();
+    expect(screen.getByText(/no longer match a preset/i)).toBeInTheDocument();
+  });
+
+  it("selecting Custom does not PATCH model custom", async () => {
+    gitopsSpy.mockResolvedValue(
+      view({
+        model: { value: "prs_to_base", source: "project" },
+        fields: { base_branch: { value: "main", source: "project" } },
+      }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await user.selectOptions(await screen.findByLabelText("Gitops model"), GITOPS_CUSTOM);
+    await user.click(screen.getByRole("button", { name: "Save gitops" }));
+    await waitFor(() => expect(updateSpy).toHaveBeenCalled());
+    const body = updateSpy.mock.calls[0][1] as { model?: unknown };
+    expect(body.model).toBeNull();
+    expect(body.model).not.toBe(GITOPS_CUSTOM);
   });
 
   it("picking PRs to base writes model and the six fields on save", async () => {

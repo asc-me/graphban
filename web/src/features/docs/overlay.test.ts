@@ -155,6 +155,10 @@ describe("docs overlay routes", () => {
       expect.arrayContaining(["Gitops"]),
     );
 
+    expect(gitops.sections.find((s) => /named models/i.test(s.h))?.b).toMatch(
+      /Custom, not Unmeasured/,
+    );
+
     const sitting = gitops.sections.find((s) => /sitting/i.test(s.h));
     expect(sitting?.b).toMatch(/PRs to base/);
     expect(sitting?.b).toMatch(/Updates/);

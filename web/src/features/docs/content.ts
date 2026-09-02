@@ -353,7 +353,7 @@ const CONTENT: Record<string, DocEntry> = {
     tagline: "This project's delivery contract — unmeasured is not main.",
     sections: [
       { num: 1, h: "Unmeasured, not main", b: "Unset fields are unmeasured — not 'use main' and not 'no requirements'. Agents read the resolved contract from get_context." },
-      { num: 2, h: "Named models", b: "Push to base / PRs to base / PRs to integration write the six fields in one save. Base branch is never filled by a preset. A hand-edit clears the model id so a stale preset name cannot survive. Saving a model files a tracker checklist on this project; GET gitops.plan names it. Graphban still does not run git." },
+      { num: 2, h: "Named models", b: "Push to base / PRs to base / PRs to integration write the six fields in one save. Base branch is never filled by a preset. A hand-edit clears the model id so a stale preset name cannot survive; the picker then says Custom, not Unmeasured. Saving a model files a tracker checklist on this project; GET gitops.plan names it. Graphban still does not run git." },
       { num: 3, h: "The sitting", b: "Updates is this box's cut. Here, pick PRs to base, type the branch, save. Tracker then holds the graduation checklist (observe remote → first tagged cut). get_context still returns only the six gitops fields — not the model name and not whether this box is current." },
       { num: 4, h: "Grey when linked", b: "A linked box shows the org's live values, filled but not editable. control.message is the banner. Local columns are was, never the form value." },
       { num: 5, h: "Patterns, not globs", b: "Branch and PR patterns may insert {item_id} {tag} {slug} {version} {date}. base_branch is a literal. Globs are rejected." },

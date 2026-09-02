@@ -3,7 +3,11 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { GITOPS_MODEL_OPTIONS } from "@/features/settings/GitopsPanel";
+import {
+  GITOPS_CUSTOM,
+  GITOPS_MODEL_OPTIONS,
+  gitopsModelSelectValue,
+} from "@/features/settings/GitopsPanel";
 import { errorDetail } from "@/lib/errors";
 import {
   useGitops,
@@ -120,6 +124,14 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
   };
 
   const modelShown = shown(edits, "model", boundOf("model"));
+  const modelValue = gitopsModelSelectValue(modelShown, {
+    base_branch: shown(edits, "base_branch", boundOf("base_branch")),
+    no_push_to_base: shown(edits, "no_push_to_base", boundOf("no_push_to_base")),
+    branch_name_pattern: shown(edits, "branch_name_pattern", boundOf("branch_name_pattern")),
+    pr_title_pattern: shown(edits, "pr_title_pattern", boundOf("pr_title_pattern")),
+    reviewer_bar: shown(edits, "reviewer_bar", boundOf("reviewer_bar")),
+    version_from: shown(edits, "version_from", boundOf("version_from")),
+  });
 
   return (
     <section className="rounded-[13px] border border-line bg-surface-2 p-4">
@@ -134,10 +146,12 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
             aria-label="House gitops model"
             className={SELECT_CLASS}
             disabled={!writable}
-            value={modelShown}
-            onChange={(e) =>
-              setEdits((p) => setEdit(p, "model", boundOf("model"), e.target.value === "" ? null : e.target.value))
-            }
+            value={modelValue}
+            onChange={(e) => {
+              const next = e.target.value;
+              const stored = next === "" || next === GITOPS_CUSTOM ? null : next;
+              setEdits((p) => setEdit(p, "model", boundOf("model"), stored));
+            }}
           >
             {GITOPS_MODEL_OPTIONS.map(([value, label]) => (
               <option key={value || "unmeasured"} value={value}>
@@ -146,7 +160,9 @@ function HouseForm({ orgId, view }: { orgId: string; view: GitopsView }) {
             ))}
           </select>
           <span className="text-[11px] text-faint">
-            Writes the fields below. Base branch is still required — the preset never fills main.
+            {modelValue === GITOPS_CUSTOM
+              ? "Fields no longer match a preset. Pick one to re-apply, or leave as custom."
+              : "Writes the fields below. Base branch is still required — the preset never fills main."}
           </span>
         </label>
         <ProcessFields
