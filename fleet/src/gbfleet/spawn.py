@@ -214,6 +214,12 @@ class Child:
     def running(self) -> bool:
         return self.process.poll() is None
 
+    def stdout_text(self) -> str:
+        path = self.log_dir / _STDOUT
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8", errors="replace")
+
     def tail(self, name: str = _STDERR, lines: int = 20) -> str:
         path = self.log_dir / name
         if not path.exists():

@@ -203,6 +203,15 @@ class Adapter:
         """Vendor flags for the knobs this adapter declares. Empty unless overridden."""
         return []
 
+    def stream_touched(self, text: str) -> list[str]:
+        """Paths this vendor's stdout says the run wrote. Default: the stream is silent.
+
+        Empty is "named no writes", not "safe to send []". Cursor is the one adapter
+        that currently parses a stream (GRPH-215); git-diff remains ground truth and
+        this is extra capture for write-tool events the diff might not have seen yet.
+        """
+        return []
+
     def debug_argv(self, path: Path) -> list[str]:
         """Flags that make this vendor write a debug log to `path`, or [] if it has none.
 

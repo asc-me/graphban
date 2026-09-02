@@ -135,6 +135,27 @@ def test_the_supervisor_still_cannot_write_an_item():
     assert "prediction" in source, "the reason has to travel with the code"
 
 
+def test_reap_calls_including_stream(git_repo, tmp_path, scripts, state, monkeypatch):
+    """Sabotage the CALL: git-diff without the vendor stream looks complete."""
+    import gbfleet.supervisor as mod
+
+    called = {"n": 0}
+    real = tp.including_stream
+
+    def spy(adapter, paths, stdout):
+        called["n"] += 1
+        return real(adapter, paths, stdout)
+
+    monkeypatch.setattr(mod.tp_mod, "including_stream", spy)
+    workspace = tmp_path / "ws"
+    wave = up(
+        git_repo, _seats(1), _factory(scripts, "works_then_exits"), _server(workspace),
+        state=state, workspace=workspace,
+    )
+    assert wave.ok, wave.failures
+    assert called["n"] >= 1
+
+
 def test_a_wave_reports_what_each_worker_touched(
     git_repo: Path, tmp_path: Path, scripts, state: Path
 ):
