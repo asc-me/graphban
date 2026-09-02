@@ -323,6 +323,14 @@ describe("docs overlay routes", () => {
     expect(sync.sections[0]?.b).not.toMatch(/Sync credential/);
   });
 
+  it("AI providers overlay sends Graphban keys to API keys, not this page", () => {
+    // This page is LLM credentials. Agent keys live on API keys — the same
+    // two-pages mix Fleet's "Looking for MCP?" exists to stop.
+    const providers = docFor(settingsPath("deployment/providers"));
+    expect(providers.tagline).toMatch(/not Graphban API keys/);
+    expect(providers.related?.some((r) => r.label === "API keys")).toBe(true);
+  });
+
   it("MCP Tools overlay does not pretend this page mints keys", () => {
     const mcp = docFor("/mcp-tools");
     const body = mcp.sections.map((s) => `${s.h} ${s.b}`).join(" ");
