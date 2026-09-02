@@ -838,6 +838,12 @@ class GitopsProjectRef(BaseModel):
     tag: str
 
 
+class GitopsPlanRef(BaseModel):
+    """The tracker parent filed when a named model was saved. Not on get_context."""
+    id: str
+    title: str
+
+
 class GitopsView(BaseModel):
     project_id: str | None = None
     org_id: str | None = None
@@ -848,6 +854,7 @@ class GitopsView(BaseModel):
     model: GitopsField = Field(
         default_factory=lambda: GitopsField(value=None, source="unmeasured")
     )
+    plan: GitopsPlanRef | None = None
     projects: list[GitopsProjectRef] = Field(default_factory=list)
 
 

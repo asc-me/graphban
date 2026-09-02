@@ -69,6 +69,7 @@ function view(
     projects: [],
     version_from: version_from ?? unmeasured,
     model: unmeasured,
+    plan: null,
     ...rest,
     fields: {
       base_branch: unmeasured,
@@ -418,6 +419,17 @@ describe("Gitops Settings page", () => {
     await user.selectOptions(push, "");
     await user.click(screen.getByRole("button", { name: "Save gitops" }));
     await waitFor(() => expect(updateSpy).toHaveBeenCalledWith("prj_a", { no_push_to_base: null }));
+  });
+
+  it("shows the filed checklist key and a Tracker link", async () => {
+    gitopsSpy.mockResolvedValue(
+      view({ plan: { id: "APP-12", title: "Gitops: PRs to base" } }),
+    );
+    renderPage();
+    expect(await screen.findByText("APP-12")).toBeInTheDocument();
+    expect(screen.getByText(/Gitops: PRs to base/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Tracker" })).toHaveAttribute("href", "/tracker");
+    expect(screen.getByText(/Graphban does not run git/)).toBeInTheDocument();
   });
 
   it("model picker is first, Unmeasured is first, and nothing is pre-selected", async () => {

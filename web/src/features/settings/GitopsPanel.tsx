@@ -4,6 +4,8 @@
  */
 import * as React from "react";
 
+import { Link } from "react-router-dom";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -276,6 +278,17 @@ function GitopsForm({ project, view }: { project: Project; view: GitopsView }) {
             ? UNTIL_LINKED
             : "The org process for the project this box is linked as."}
         </p>
+        {view.plan ? (
+          <p className="mt-2 max-w-[60ch] text-[12.5px] leading-relaxed text-fg-2">
+            Graduation checklist{" "}
+            <span className="font-mono text-[12px]">{view.plan.id}</span>
+            {" — "}
+            {view.plan.title}. Graphban does not run git.{" "}
+            <Link to="/tracker" className="text-accent underline-offset-2 hover:underline">
+              Tracker
+            </Link>
+          </p>
+        ) : null}
       </div>
 
       {view.control.message ? (

@@ -42,6 +42,7 @@ function view(over: Partial<GitopsView> = {}): GitopsView {
     fields: fields(),
     version_from: unmeasured,
     model: unmeasured,
+    plan: null,
     control: { state: "local", writable: true, message: "" },
     was: null,
     projects: [app, lib],
