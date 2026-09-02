@@ -33,8 +33,11 @@ logger = logging.getLogger("graphban.instance_update")
 STATES = ("current", "available", "unknown")
 PLACEHOLDER_VERSIONS = frozenset({"", "unknown", "0.1.0"})
 FEED_URL = "https://api.github.com/repos/asc-me/graphban/releases/latest"
+TAG_URL = "https://api.github.com/repos/asc-me/graphban/releases/tags/{tag}"
 _FETCH_TIMEOUT = 3.0
 _TAG_PREFIX = re.compile(r"^v", re.I)
+_GH_HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": "graphban-api"}
+NOTES_STATES = ("present", "empty", "unknown")
 # Inside the API container. Compose mounts GRAPHBAN_APPLY_DIR here. Not a Settings
 # field — absence of the socket is apply=false, not a knob.
 SOCKET_PATH = "/run/graphban-apply/apply.sock"
@@ -94,32 +97,64 @@ def talk(msg: dict, path: str | None = None, *, timeout: float = _HELPER_TIMEOUT
         return {"ok": False, "error": type(e).__name__}
 
 
+def _parse_release(body: dict) -> dict | None:
+    """Shared GitHub Release shape. `notes_body` is the markdown; missing/null is empty."""
+    tag = _TAG_PREFIX.sub("", str(body.get("tag_name") or "").strip())
+    url = str(body.get("html_url") or "").strip()
+    if not tag:
+        return None
+    want = f"graphban-{tag}.tar.gz"
+    asset = ""
+    for item in body.get("assets") or []:
+        if str(item.get("name") or "") == want:
+            asset = str(item.get("browser_download_url") or "").strip()
+            break
+    raw = body.get("body")
+    notes_body = "" if raw is None else str(raw)
+    return {"tag": tag, "url": url, "asset": asset, "notes_body": notes_body}
+
+
+def notes_payload(rel: dict | None, tag: str) -> dict:
+    """`state` is present / empty / unknown. Unknown is not an empty changelog."""
+    tag = _TAG_PREFIX.sub("", (tag or "").strip()) or "unknown"
+    if rel is None:
+        return {"tag": tag, "state": "unknown", "body": ""}
+    text = str(rel["notes_body"]) if "notes_body" in rel else str(rel.get("body") or "")
+    if not text.strip():
+        return {"tag": tag, "state": "empty", "body": ""}
+    return {"tag": tag, "state": "present", "body": text}
+
+
 def fetch_latest() -> dict | None:
-    """`{tag, url}` for the latest GitHub Release, or None on any failure. Never raises."""
+    """Latest GitHub Release, or None on any failure. Never raises."""
     try:
-        resp = httpx.get(
-            FEED_URL,
-            headers={"Accept": "application/vnd.github+json", "User-Agent": "graphban-api"},
-            timeout=_FETCH_TIMEOUT,
-        )
+        resp = httpx.get(FEED_URL, headers=_GH_HEADERS, timeout=_FETCH_TIMEOUT)
         if resp.status_code != 200:
             logger.warning("update feed status=%s", resp.status_code)
             return None
-        body = resp.json()
-        tag = _TAG_PREFIX.sub("", str(body.get("tag_name") or "").strip())
-        url = str(body.get("html_url") or "").strip()
-        if not tag:
-            return None
-        want = f"graphban-{tag}.tar.gz"
-        asset = ""
-        for item in body.get("assets") or []:
-            if str(item.get("name") or "") == want:
-                asset = str(item.get("browser_download_url") or "").strip()
-                break
-        return {"tag": tag, "url": url, "asset": asset}
+        return _parse_release(resp.json())
     except (httpx.TimeoutException, httpx.HTTPError, OSError, ValueError, TypeError,
             KeyError) as e:
         logger.warning("update feed failed: %s", type(e).__name__)
+        return None
+
+
+def fetch_tag(tag: str) -> dict | None:
+    """GitHub Release for one tag, or None on any failure (including 404). Never raises."""
+    tag = _TAG_PREFIX.sub("", (tag or "").strip())
+    if not tag or tag in PLACEHOLDER_VERSIONS:
+        return None
+    try:
+        resp = httpx.get(
+            TAG_URL.format(tag=tag), headers=_GH_HEADERS, timeout=_FETCH_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            logger.warning("update tag feed status=%s tag=%s", resp.status_code, tag)
+            return None
+        return _parse_release(resp.json())
+    except (httpx.TimeoutException, httpx.HTTPError, OSError, ValueError, TypeError,
+            KeyError) as e:
+        logger.warning("update tag feed failed: %s", type(e).__name__)
         return None
 
 
@@ -217,23 +252,36 @@ def apply(tag: str, *, check_fn=None, send=None, native_start=None,
             "via": via, **({"sha": got["sha"]} if got.get("sha") else {})}
 
 
-def check(*, fetch=None, run=None, hosted: bool | None = None, helper=None,
-          native=None) -> dict:
+def check(*, fetch=None, fetch_running=None, run=None, hosted: bool | None = None,
+          helper=None, native=None) -> dict:
     """The three-state payload the Updates page renders. `fetch` is injectable so the
     CALL tests can pin the feed without opening a socket.
 
     Defaults are looked up at call time, not bind time — a default `fetch=fetch_latest`
     would keep the original function after a test monkeypatches the name, and the REST
     CALL would still hit GitHub.
+
+    `notes.running` / `notes.latest` are GitHub Release bodies. Empty body is
+    `empty`; a failed fetch is `unknown` — not the same. When `fetch=` is
+    injected, the running tag is not fetched from GitHub unless `fetch_running`
+    is passed.
     """
     fetch_fn = fetch if fetch is not None else fetch_latest
+    if fetch_running is not None:
+        running_fn = fetch_running
+    elif fetch is None:
+        running_fn = fetch_tag
+    else:
+        running_fn = lambda tag: None  # noqa: E731 — tests stay offline
     got = run if run is not None else running()
     version = (got.get("version") or "").strip()
     raw = fetch_fn()
     latest = None
+    latest_tag = ""
     if raw and raw.get("tag"):
+        latest_tag = _TAG_PREFIX.sub("", str(raw["tag"]).strip())
         latest = {
-            "tag": _TAG_PREFIX.sub("", str(raw["tag"]).strip()),
+            "tag": latest_tag,
             "url": str(raw.get("url") or ""),
             "asset": str(raw.get("asset") or ""),
         }
@@ -249,10 +297,23 @@ def check(*, fetch=None, run=None, hosted: bool | None = None, helper=None,
         via, can = "native", True
     else:
         via, can = "", False
+
+    running_rel = None
+    if version and version not in PLACEHOLDER_VERSIONS:
+        if raw and latest_tag == version:
+            running_rel = raw
+        else:
+            running_rel = running_fn(version)
+    notes_running = notes_payload(running_rel, version or "unknown")
+    notes_latest = None
+    if latest and latest_tag != version:
+        notes_latest = notes_payload(raw, latest_tag)
+
     base = {
         "state": "unknown",
         "running": {"version": version or "unknown", "git_sha": got.get("git_sha") or "unknown"},
         "latest": latest,
+        "notes": {"running": notes_running, "latest": notes_latest},
         "apply": can,
         "via": via,
         "hosted": bool(hosted_flag),

@@ -46,13 +46,22 @@ export interface AppConfig {
   signup_mode: SignupMode;
 }
 
-/** GET /api/platform/update-check (P32). `unknown` is not current. `apply` is always false in this slice. */
+/** GET /api/platform/update-check (P32). `unknown` is not current. */
 export type UpdateCheckState = "current" | "available" | "unknown";
+export type ReleaseNotesState = "present" | "empty" | "unknown";
+
+export interface ReleaseNotes {
+  tag: string;
+  state: ReleaseNotesState;
+  body: string;
+}
 
 export interface UpdateCheck {
   state: UpdateCheckState;
   running: { version: string; git_sha: string };
   latest: { tag: string; url: string; asset?: string } | null;
+  /** GitHub Release bodies. `empty` is not `unknown`. `latest` is null when current. */
+  notes: { running: ReleaseNotes; latest: ReleaseNotes | null };
   apply: boolean;
   via: "" | "compose" | "native";
   hosted: boolean;

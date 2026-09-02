@@ -35,6 +35,10 @@ function payload(over: Partial<UpdateCheck> = {}): UpdateCheck {
     state: "current",
     running: { version: "2026.09.1", git_sha: "d596e57" },
     latest: { tag: "2026.09.1", url: "https://github.com/asc-me/graphban/releases/tag/2026.09.1" },
+    notes: {
+      running: { tag: "2026.09.1", state: "empty", body: "" },
+      latest: null,
+    },
     apply: false,
     via: "",
     hosted: false,
@@ -99,7 +103,7 @@ describe("Updates Settings page", () => {
   it("current says this box is on the latest release and has Check plus disabled Install", async () => {
     renderPage();
     expect((await screen.findAllByText(/on the latest release/i)).length).toBeGreaterThan(0);
-    expect(screen.getByText("2026.09.1")).toBeInTheDocument();
+    expect(screen.getAllByText("2026.09.1").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /check for updates/i })).toBeEnabled();
     const install = screen.getByRole("button", { name: /^install$/i });
     expect(install).toBeDisabled();
@@ -223,6 +227,55 @@ describe("Updates Settings page", () => {
     expect(updateCheckSpy).toHaveBeenCalledTimes(1);
     await user.click(btn);
     await waitFor(() => expect(updateCheckSpy).toHaveBeenCalledTimes(2));
+  });
+
+  it("current has one notes accordion, not a duplicate latest list", async () => {
+    updateCheckSpy.mockResolvedValue(
+      payload({
+        notes: {
+          running: { tag: "2026.09.1", state: "present", body: "On this box.\n" },
+          latest: null,
+        },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText("This release")).toBeInTheDocument();
+    expect(screen.getByText(/on this box/i)).toBeInTheDocument();
+    expect(screen.queryByText("Latest release")).not.toBeInTheDocument();
+  });
+
+  it("available shows this release and latest notes", async () => {
+    updateCheckSpy.mockResolvedValue(
+      payload({
+        state: "available",
+        apply: true,
+        via: "compose",
+        latest: { tag: "2026.10.1", url: "https://example/2026.10.1" },
+        notes: {
+          running: { tag: "2026.09.1", state: "empty", body: "" },
+          latest: { tag: "2026.10.1", state: "present", body: "What is new.\n" },
+        },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText("This release")).toBeInTheDocument();
+    expect(screen.getByText("Latest release")).toBeInTheDocument();
+    expect(screen.getByText(/what is new/i)).toBeInTheDocument();
+    expect(screen.getByText(/no notes on this release/i)).toBeInTheDocument();
+  });
+
+  it("unknown notes are not an empty changelog", async () => {
+    updateCheckSpy.mockResolvedValue(
+      payload({
+        notes: {
+          running: { tag: "2026.09.1", state: "unknown", body: "" },
+          latest: null,
+        },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByText(/could not load notes for this release/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no notes on this release/i)).not.toBeInTheDocument();
   });
 
   it("docs overlay matches Updates before the /settings catch-all", () => {
