@@ -155,7 +155,7 @@ function AddCredentialDialog({
   const missing = picked
     ? [
         needs.endpoint && !baseUrl.trim() ? "an endpoint" : "",
-        needs.key && !apiKey.trim() ? "an API key" : "",
+        needs.key && !apiKey.trim() ? "a provider key" : "",
         !model.trim() && !picked.chat_model ? "a model" : "",
       ].filter(Boolean)
     : [];
@@ -199,8 +199,8 @@ function AddCredentialDialog({
               </Field>
             )}
             {needs.key && (
-              <Field label="API key">
-                <Input aria-label="API key" type="password" value={apiKey}
+              <Field label="Provider key">
+                <Input aria-label="Provider key" type="password" value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" />
               </Field>
             )}
@@ -269,8 +269,8 @@ function EditCredentialDialog({
         </DialogHeader>
         {credential && (
           <div className="flex flex-col gap-3" data-testid="edit-form">
-            <Field label="API key">
-              <Input aria-label="API key" type="password" value={apiKey}
+            <Field label="Provider key">
+              <Input aria-label="Provider key" type="password" value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 placeholder={credential.key_set ? "•••••••• (leave blank to keep)" : "sk-…"} />
             </Field>

@@ -287,8 +287,10 @@ describe("CredentialsPanel", () => {
     await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
     await userEvent.click(await screen.findByText("Anthropic"));
 
-    // anthropic has auth:true and is not ollama — a key, no endpoint.
-    expect(await screen.findByLabelText(/api key/i)).toBeInTheDocument();
+    // anthropic has auth:true and is not ollama — a provider key, no endpoint.
+    // Not "API key": that is Graphban identity (Looking for API keys?).
+    expect(await screen.findByLabelText(/provider key/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^api key$/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/endpoint/i)).not.toBeInTheDocument();
   });
 
@@ -299,7 +301,7 @@ describe("CredentialsPanel", () => {
 
     // ollama has auth:false — an endpoint, no key.
     expect(await screen.findByLabelText(/endpoint/i)).toBeInTheDocument();
-    expect(screen.queryByLabelText(/api key/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/provider key/i)).not.toBeInTheDocument();
   });
 
   it("cannot save without a field the chosen provider requires", async () => {
@@ -308,7 +310,7 @@ describe("CredentialsPanel", () => {
     await userEvent.click(await screen.findByText("Anthropic"));
 
     expect(addCredentialButton()).toBeDisabled();
-    expect(screen.getByText(/anthropic needs/i)).toBeInTheDocument();
+    expect(screen.getByText(/anthropic needs a provider key/i)).toBeInTheDocument();
     expect(createCredential).not.toHaveBeenCalled();
   });
 
@@ -324,7 +326,7 @@ describe("CredentialsPanel", () => {
     expect(endpoint).toHaveValue("https://api.openai.com/v1");
     await userEvent.clear(endpoint);
     await userEvent.type(endpoint, "https://gateway.internal/v1");
-    await userEvent.type(screen.getByLabelText(/api key/i), "sk-x");
+    await userEvent.type(screen.getByLabelText(/provider key/i), "sk-x");
     await userEvent.click(addCredentialButton());
 
     expect(createCredential).toHaveBeenCalledTimes(1);
@@ -346,7 +348,7 @@ describe("CredentialsPanel", () => {
     expect(screen.getByText(/needs an endpoint/)).toBeInTheDocument();
 
     await userEvent.type(endpoint, "http://localhost:1234/v1");
-    await userEvent.type(screen.getByLabelText(/api key/i), "none");
+    await userEvent.type(screen.getByLabelText(/provider key/i), "none");
     await userEvent.type(screen.getByLabelText(/^model$/i), "qwen2.5");
     await userEvent.click(addCredentialButton());
 
@@ -375,7 +377,7 @@ describe("CredentialsPanel", () => {
     show();
     await userEvent.click(await screen.findByRole("button", { name: /add credential/i }));
     await userEvent.click(await screen.findByText("Anthropic"));
-    await userEvent.type(await screen.findByLabelText(/api key/i), "sk-live");
+    await userEvent.type(await screen.findByLabelText(/provider key/i), "sk-live");
 
     await userEvent.click(addCredentialButton());
 
@@ -542,7 +544,7 @@ describe("collapsing, health, editing and overrides", () => {
     show();
     await openRow();
     await userEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    await userEvent.type(await screen.findByLabelText(/api key/i), "sk-rotated");
+    await userEvent.type(await screen.findByLabelText(/provider key/i), "sk-rotated");
     await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     expect(updateCredential.mock.calls[0][2].api_key).toBe("sk-rotated");
