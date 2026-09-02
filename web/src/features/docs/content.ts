@@ -348,7 +348,7 @@ const CONTENT: Record<string, DocEntry> = {
     tagline: "Whether this box is on the published stable cut.",
     sections: [
       { num: 1, h: "Three states", b: "current, available, or unknown. Current says this box is on the latest release. Unknown is not current — a failed feed fetch or a placeholder 0.1.0 version must not look up to date." },
-      { num: 2, h: "Check and Install", b: "Check for updates refetches the feed. Install is enabled when a compose host helper is on the unix socket, or this is a native /opt/graphban install, and a newer cut is advertised. The API does not get a Docker socket. Hosted has Check, no Install." },
+      { num: 2, h: "Check and Install", b: "Check for updates refetches the feed. Install is enabled when a compose host helper is on the unix socket, or this is a native /opt/graphban install, and a newer cut is advertised. The asset is graphban-<tag>.tar.gz — GitHub's source zip is not a release. The API does not get a Docker socket. Hosted has Check, no Install." },
       { num: 3, h: "This box, not the repo", b: "This page is the instance — whether this Graphban is on the published stable cut. The repo's delivery contract is Gitops, a sibling under This box. They are not the same record." },
     ],
     related: [

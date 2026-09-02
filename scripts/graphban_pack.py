@@ -16,8 +16,9 @@ agent's uncommitted files and whoever's `.env`.
     python3 scripts/graphban_pack.py 2026.09.1
     python3 scripts/graphban_pack.py --from ./tree --sha abc1234 --out ./dist-release
 
-This does not upload to GitHub and does not run the swap. Attach the tarball
-with `gh release upload <tag> dist-release/graphban-<ver>.tar.gz`.
+This does not upload to GitHub and does not run the swap. The cut that
+attaches the tarball is `python3 scripts/graphban_release.py publish`
+(see docs/release.md).
 """
 from __future__ import annotations
 

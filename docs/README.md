@@ -11,6 +11,7 @@ fully offline with `docker compose up`.
 - **[Design philosophy](design-philosophy.md)** — the harness-engineering principles the codebase is built to, and how they're enforced
 - **[Getting started](getting-started.md)** — install, run, first login, a guided tour
 - **[Native install](native-install.md)** — launchd / systemd team server, no Docker
+- **[Release](release.md)** — stamp a CalVer, publish the tarball, Install from Settings
 - **[Architecture](ARCHITECTURE.md)** — how the system fits together and why
 
 ## Feature guides
@@ -41,6 +42,7 @@ fully offline with `docker compose up`.
 | [Configuration](configuration.md) | Environment variables |
 | [Development](development.md) | Local dev, tests, migrations |
 | [Deploy](deploy.md) | Self-host deploy runbook — release identity, verification, recovery, rollback |
+| [Release](release.md) | Stamp CalVer, pack `graphban-<tag>.tar.gz`, GitHub Release, UI Install |
 | [Implementation plan](IMPLEMENTATION_PLAN.md) | The original phase plan, kept as a record — see the roadmap for current status |
 
 ## Conventions used in these docs

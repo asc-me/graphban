@@ -208,6 +208,13 @@ describe("docs overlay routes", () => {
     }
   });
 
+  it("Updates Install names the packed tarball, not a source zip", () => {
+    const d = docFor(settingsPath("deployment/updates"));
+    const install = d.sections.find((s) => /check and install/i.test(s.h));
+    expect(install?.b).toMatch(/graphban-<tag>\.tar\.gz/);
+    expect(install?.b).toMatch(/source zip/i);
+  });
+
   it("PRD editor overlay names empty headings as not a clean pass", () => {
     const d = docFor("/prds/abc");
     const cov = d.sections.find((s) => /coverage/i.test(s.h));

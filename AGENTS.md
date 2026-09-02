@@ -212,6 +212,7 @@ that migrations 0001/0013 pin 384 in the column type — see AL-46.
 | Providers/AI | [`docs/ai-providers.md`](docs/ai-providers.md) |
 | Config/env | [`docs/configuration.md`](docs/configuration.md) |
 | Native install (launchd / systemd) | [`docs/native-install.md`](docs/native-install.md) |
+| Cut a named release (CalVer + GitHub tarball + UI Install) | [`docs/release.md`](docs/release.md), `scripts/graphban_release.py` |
 | Fleet supervisor (`fleet/`) | [`fleet/README.md`](fleet/README.md), [`docs/prd-22-fleet-supervisor.md`](docs/prd-22-fleet-supervisor.md) |
 | Vendor CLIs the fleet can run | [`docs/fleet-adapters.md`](docs/fleet-adapters.md) |
 | Does the fleet actually work? | [`docs/fleet-supervisor-walk.md`](docs/fleet-supervisor-walk.md) |
