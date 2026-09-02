@@ -63,7 +63,7 @@ export function CloudOrgLinkPanel() {
         <p className="mt-1 max-w-[62ch] text-[12.5px] leading-relaxed text-muted">
           This org is the cloud side. A self-hosted box links here with a{" "}
           <span className="text-fg-2">link key</span> you mint below — a{" "}
-          <code className="font-mono text-[11.5px] text-fg-2">sync</code>-scoped credential
+          <code className="font-mono text-[11.5px] text-fg-2">sync</code>-scoped link key
           pinned to one project. Paste it on the box; this org never reaches in.
         </p>
       </div>
