@@ -72,6 +72,11 @@ describe("SyncLinkPanel", () => {
     // the paragraph said "link key".
     expect(screen.getByText("Link key")).toBeInTheDocument();
     expect(screen.queryByText(/Sync API key/i)).not.toBeInTheDocument();
+    // After pairing, Graphban identity is an API key / link key; the Anthropic
+    // secret is a provider key. This footer used to say "provider API keys".
+    expect(screen.getByText(/the link key is stored/i)).toBeInTheDocument();
+    expect(screen.getByText(/provider keys/i)).toBeInTheDocument();
+    expect(screen.queryByText(/provider API keys/i)).not.toBeInTheDocument();
   });
 
   it("submits the link form with URL, key, and org", async () => {
