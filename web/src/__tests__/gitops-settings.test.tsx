@@ -431,6 +431,8 @@ describe("Gitops Settings page", () => {
     expect(screen.getByText(/Gitops: PRs to base/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Tracker" })).toHaveAttribute("href", "/tracker");
     expect(screen.getByText(/Graphban does not run git/)).toBeInTheDocument();
+    expect(screen.getByText(/Process, not code/)).toBeInTheDocument();
+    expect(screen.getByText(/stall in review/)).toBeInTheDocument();
   });
 
   it("model picker is first, Unmeasured is first, and nothing is pre-selected", async () => {

@@ -51,7 +51,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 1, h: "Advance status", b: "Click a status dot on a row (or in the detail panel) and pick a new state. Moving an item to Done auto-extracts a lesson into memory." },
       { num: 2, h: "Reorder", b: "Drag a row to change its position — the new order persists." },
       { num: 3, h: "Filter & inspect", b: "Use the status chips to filter and the top-bar search to find by title or id. Click a row for its detail panel: description, blocker, PR, and linked memory." },
-      { num: 4, h: "Graduation checklist", b: "Saving a gitops model files a checklist on this stream: observe the remote, confirm HEAD, stop pushing to base, open one PR, prove the contract live, first tagged cut. Those are ordinary tracker items. Graphban does not run git." },
+      { num: 4, h: "Graduation checklist", b: "Saving a gitops model files a checklist on this stream: observe the remote, confirm HEAD, stop pushing to base, open one PR, prove the contract live, first tagged cut. Those are process, not code — they stall in review until evidenced (P23). Graphban does not run git." },
     ],
     related: [
       { label: "MCP Tools", to: "/mcp-tools" },

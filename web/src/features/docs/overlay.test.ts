@@ -172,6 +172,9 @@ describe("docs overlay routes", () => {
     const checklist = tracker.sections.find((s) => /graduation checklist/i.test(s.h));
     expect(checklist?.b).toMatch(/observe the remote/i);
     expect(checklist?.b).toMatch(/does not run git/i);
+    expect(checklist?.b).toMatch(/process, not code/i);
+    expect(checklist?.b).toMatch(/stall in review/);
+    expect(checklist?.b).toMatch(/P23/);
 
     const org = docFor(adminPath("gitops"));
     expect(org.sections.map((s) => s.h).join(" ")).not.toMatch(/sitting/i);
