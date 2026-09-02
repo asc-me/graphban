@@ -765,6 +765,22 @@ export function useFleet(projectId?: string) {
  * corrects itself on the first response rather than needing a second call to learn it.
  * `enabled` lets a view that is not showing a graph stop paying for the poll at all.
  */
+export function useLive(projectId?: string, user?: string | null) {
+  const [intervalMs, setIntervalMs] = React.useState(50_000);
+  return useQuery({
+    queryKey: ["live", projectId, user ?? ""],
+    queryFn: async () => {
+      const res = await api.live(projectId!, user);
+      if (res.heartbeat_interval_seconds > 0) {
+        setIntervalMs(res.heartbeat_interval_seconds * 1000);
+      }
+      return res;
+    },
+    refetchInterval: intervalMs,
+    enabled: !!projectId,
+  });
+}
+
 export function useFleetPresence(projectId?: string, enabled = true) {
   const [intervalMs, setIntervalMs] = React.useState(50_000);
   return useQuery({
