@@ -88,6 +88,34 @@ The `anthropic` SDK is only imported when `CHAT_PROVIDER=anthropic`; install it 
   provider and resets the cache — this is what makes the Settings switch take effect live.
 - `backend/app/embeddings.py` is a thin back-compat shim over the registry.
 
+## Eval harness (GRPH-224)
+
+Deterministic tests cover code. They do not cover what an extractor *says*. Golden-set
+fixtures live in `backend/app/evals/cases/<surface>/` and run through the real service
+(`extract_lessons` is the first surface).
+
+```bash
+# Mechanical checks only — the stub cannot judge substance, and that is ungraded, not a pass.
+graphban eval --surface extract_lessons
+
+# Ask the project's chat model (three samples, unanimity on groundedness). Stub stays ungraded.
+graphban eval --surface extract_lessons --judge
+```
+
+The report status is `ok`, `failed`, or `absent`. `absent` is a missing or empty cases
+directory — an empty tree must not look like a green run. `graded: false` means the judge
+was not asked or could not decide; it is not a quality pass.
+
+The judge reuses the project's chat provider. A dedicated judge model is GRPH-316, not a
+new setting. The rubric is groundedness against the fixture (forbidden claims as settled
+fact), not "is this a good lesson?" — that question is how a fluent false extraction
+scores well.
+
+Human labels in v1 *are* the golden JSON. Live sampling reuses Memory review; there is
+no second queue. `generate_digest` is a template, not a model call, so it is not a surface.
+
+Judge calls are tagged `evals.judge` on `llm_call_spans` (GRPH-225).
+
 ## Related
 
 - [Memory & chat](memory-and-chat.md) · [PRDs](prds.md) · [Settings](settings.md)

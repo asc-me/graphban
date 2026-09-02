@@ -1,0 +1,21 @@
+{
+  "id": "stale-proposal",
+  "surface": "extract_lessons",
+  "input": {
+    "title": "A discovered artifact is never measurable",
+    "description": "We decided discovered artifacts inherit the existing MEASURABLE_TIERS logic; measurable ones contribute to usage_report.",
+    "evidence": [
+      {
+        "kind": "test",
+        "detail": "a discovered artifact is never measurable"
+      }
+    ]
+  },
+  "expect": {
+    "status": "candidate",
+    "origin": "agent:auto-extract",
+    "min_shards": 1,
+    "max_shards": 3,
+    "must_not_contain": ["inherit the existing MEASURABLE"]
+  }
+}

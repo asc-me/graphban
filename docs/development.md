@@ -31,6 +31,10 @@ pytest                               # full backend suite (runs on SQLite, offli
 The test suite is fully offline and deterministic (it uses the stub providers and a temp
 SQLite DB). Tests are organized by phase in `backend/tests/`.
 
+LLM-output evals (GRPH-224) are a second loop, not a substitute: `pytest tests/test_evals.py`
+runs the golden-set mechanical checks (always, stub, ungraded judge). `graphban eval --judge`
+asks a real chat model; see [AI providers](ai-providers.md#eval-harness-grph-224).
+
 ## Frontend
 
 ```bash

@@ -75,17 +75,35 @@ class StubChat:
         return _StubToolSession()
 
 
+# `insights._extraction_source` labels the original proposal as possibly stale
+# (GRPH-358). Extracting from it is how the stub reproduced the defect the label
+# exists to prevent. Matched as a prefix so a lesson that merely mentions the
+# phrase is not cut.
+_PROPOSAL_MARK = "ORIGINAL PROPOSAL"
+
+
 class StubExtractor:
     """Heuristic lesson extraction: pull decision/learning-flavored sentences."""
 
     def extract(self, *, title: str, description: str) -> list[str]:
-        sentences = [s.strip() for s in _SENT_RE.split(description or "") if s.strip()]
+        body = description or ""
+        cut = body.find(_PROPOSAL_MARK)
+        source = body[:cut] if cut >= 0 else body
+        # Headings are not terminated with `. `, so they glue to the next
+        # bullet if we sentence-split first — and dropping that "sentence"
+        # would throw away the outcome the wrap exists to privilege.
+        kept = []
+        for line in source.splitlines():
+            s = line.strip()
+            if not s or s.startswith("WHAT ACTUALLY HAPPENED") or s.startswith(_PROPOSAL_MARK):
+                continue
+            kept.append(s)
+        source = " ".join(kept)
+        sentences = [s.strip() for s in _SENT_RE.split(source) if s.strip()]
         hits = [s for s in sentences if any(m in s.lower() for m in _LESSON_MARKERS)]
         if hits:
             return hits[:3]
-        # Fall back to a single completion note so `done` items always leave a trace.
-        first = sentences[0] if sentences else ""
-        note = f"Completed: {title}."
-        if first:
-            note += f" {first}"
-        return [note]
+        # Fall back to a single completion note so `done` items always leave a
+        # trace. Do not append the first leftover sentence: after a cut that is
+        # often an evidence bullet, which is not a lesson.
+        return [f"Completed: {title}."]
