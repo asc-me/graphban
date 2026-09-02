@@ -133,4 +133,44 @@ describe("docs overlay routes", () => {
       expect(docFor(path).sections[0]?.h ?? "", path).not.toMatch(/AI Providers/);
     }
   });
+
+  it("the sitting is one document across Updates, Gitops, and Tracker", () => {
+    // THE CALL. Related links and sitting copy are the operator document.
+    // Deleting Tracker from Gitops related, or the sitting section, must fail here.
+    const gitops = docFor(settingsPath("deployment/gitops"));
+    const updates = docFor(settingsPath("deployment/updates"));
+    const tracker = docFor("/tracker");
+    const hostedTracker = docFor("/p/CORE/tracker");
+
+    expect(gitops.related?.map((r) => r.label)).toEqual(
+      expect.arrayContaining(["Updates", "Tracker"]),
+    );
+    expect(updates.related?.map((r) => r.label)).toEqual(
+      expect.arrayContaining(["Gitops", "Tracker"]),
+    );
+    expect(tracker.related?.map((r) => r.label)).toEqual(
+      expect.arrayContaining(["Gitops"]),
+    );
+    expect(hostedTracker.related?.map((r) => r.label)).toEqual(
+      expect.arrayContaining(["Gitops"]),
+    );
+
+    const sitting = gitops.sections.find((s) => /sitting/i.test(s.h));
+    expect(sitting?.b).toMatch(/PRs to base/);
+    expect(sitting?.b).toMatch(/Updates/);
+    expect(sitting?.b).toMatch(/Tracker/);
+    expect(sitting?.b).toMatch(/get_context/);
+
+    const box = updates.sections.find((s) => /this box/i.test(s.h));
+    expect(box?.b).toMatch(/Gitops/);
+    expect(box?.b).toMatch(/not the same record/);
+
+    const checklist = tracker.sections.find((s) => /graduation checklist/i.test(s.h));
+    expect(checklist?.b).toMatch(/observe the remote/i);
+    expect(checklist?.b).toMatch(/does not run git/i);
+
+    expect(docFor(adminPath("gitops")).sections.map((s) => s.h).join(" ")).not.toMatch(
+      /sitting/i,
+    );
+  });
 });

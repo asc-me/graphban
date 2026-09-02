@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
 import { DocsReader } from "@/features/docs/DocsReader";
+import { settingsPath } from "@/lib/routes";
 
 function renderAt(path: string) {
   return render(
@@ -28,6 +29,24 @@ describe("DocsReader", () => {
     renderAt("/prds/PRD-1");
     await user.click(screen.getByLabelText("Open docs for this page"));
     expect(screen.getByRole("heading", { name: "PRD editor" })).toBeInTheDocument();
+  });
+
+  it("Gitops overlay sitting names Updates and related Tracker", async () => {
+    const user = userEvent.setup();
+    renderAt(settingsPath("deployment/gitops"));
+    await user.click(screen.getByLabelText("Open docs for this page"));
+    expect(screen.getByRole("heading", { name: "Gitops" })).toBeInTheDocument();
+    expect(screen.getByText("The sitting")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tracker" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Updates" })).toBeInTheDocument();
+  });
+
+  it("Tracker overlay names the graduation checklist and related Gitops", async () => {
+    const user = userEvent.setup();
+    renderAt("/tracker");
+    await user.click(screen.getByLabelText("Open docs for this page"));
+    expect(screen.getByText("Graduation checklist")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Gitops" })).toBeInTheDocument();
   });
 
   it("toggles with the ? shortcut and records feedback locally", async () => {

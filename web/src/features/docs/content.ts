@@ -51,10 +51,12 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 1, h: "Advance status", b: "Click a status dot on a row (or in the detail panel) and pick a new state. Moving an item to Done auto-extracts a lesson into memory." },
       { num: 2, h: "Reorder", b: "Drag a row to change its position — the new order persists." },
       { num: 3, h: "Filter & inspect", b: "Use the status chips to filter and the top-bar search to find by title or id. Click a row for its detail panel: description, blocker, PR, and linked memory." },
+      { num: 4, h: "Graduation checklist", b: "Saving a gitops model files a checklist on this stream: observe the remote, confirm HEAD, stop pushing to base, open one PR, prove the contract live, first tagged cut. Those are ordinary tracker items. Graphban does not run git." },
     ],
     related: [
       { label: "MCP Tools", to: "/mcp-tools" },
       { label: "Dashboard", to: "/dashboard" },
+      { label: "Gitops", to: settingsPath("deployment/gitops") },
     ],
   },
 
@@ -337,8 +339,12 @@ const CONTENT: Record<string, DocEntry> = {
     sections: [
       { num: 1, h: "Three states", b: "current, available, or unknown. Current says this box is on the latest release. Unknown is not current — a failed feed fetch or a placeholder 0.1.0 version must not look up to date." },
       { num: 2, h: "Check and Install", b: "Check for updates refetches the feed. Install is enabled when a compose host helper is on the unix socket, or this is a native /opt/graphban install, and a newer cut is advertised. The API does not get a Docker socket. Hosted has Check, no Install." },
+      { num: 3, h: "This box, not the repo", b: "This page is the instance — whether this Graphban is on the published stable cut. The repo's delivery contract is Gitops, a sibling under This box. They are not the same record." },
     ],
-    related: [{ label: "Gitops", to: settingsPath("deployment/gitops") }],
+    related: [
+      { label: "Gitops", to: settingsPath("deployment/gitops") },
+      { label: "Tracker", to: "/tracker" },
+    ],
   },
 
   "/settings/deployment/gitops": {
@@ -348,11 +354,13 @@ const CONTENT: Record<string, DocEntry> = {
     sections: [
       { num: 1, h: "Unmeasured, not main", b: "Unset fields are unmeasured — not 'use main' and not 'no requirements'. Agents read the resolved contract from get_context." },
       { num: 2, h: "Named models", b: "Push to base / PRs to base / PRs to integration write the six fields in one save. Base branch is never filled by a preset. A hand-edit clears the model id so a stale preset name cannot survive. Saving a model files a tracker checklist on this project; GET gitops.plan names it. Graphban still does not run git." },
-      { num: 3, h: "Grey when linked", b: "A linked box shows the org's live values, filled but not editable. control.message is the banner. Local columns are was, never the form value." },
-      { num: 4, h: "Patterns, not globs", b: "Branch and PR patterns may insert {item_id} {tag} {slug} {version} {date}. base_branch is a literal. Globs are rejected." },
+      { num: 3, h: "The sitting", b: "Updates is this box's cut. Here, pick PRs to base, type the branch, save. Tracker then holds the graduation checklist (observe remote → first tagged cut). get_context still returns only the six gitops fields — not the model name and not whether this box is current." },
+      { num: 4, h: "Grey when linked", b: "A linked box shows the org's live values, filled but not editable. control.message is the banner. Local columns are was, never the form value." },
+      { num: 5, h: "Patterns, not globs", b: "Branch and PR patterns may insert {item_id} {tag} {slug} {version} {date}. base_branch is a literal. Globs are rejected." },
     ],
     related: [
       { label: "Updates", to: settingsPath("deployment/updates") },
+      { label: "Tracker", to: "/tracker" },
       { label: "Cloud / Sync", to: settingsPath("deployment/sync") },
     ],
   },
