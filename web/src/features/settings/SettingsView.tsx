@@ -148,7 +148,7 @@ const HOSTED_NAV: { to: string; label: string; end?: boolean }[] = [
   { to: settingsPath("deployment/sync"), label: "Sync / Link" },
   { to: settingsPath("project"), label: "Project", end: true },
   { to: settingsPath("project/members"), label: "Members" },
-  { to: settingsPath("project/api-keys"), label: "API Keys" },
+  { to: settingsPath("project/api-keys"), label: "API keys" },
   { to: settingsPath("account"), label: "Account" },
   { to: settingsPath("deployment/updates"), label: "Updates" },
 ];

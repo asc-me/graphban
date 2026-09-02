@@ -529,7 +529,7 @@ describe("Gitops Settings page", () => {
       "Sync / Link",
       "Project",
       "Members",
-      "API Keys",
+      "API keys",
       "Account",
       "Updates",
     ]) {
