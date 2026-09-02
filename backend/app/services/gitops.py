@@ -577,9 +577,12 @@ def file_migration_plan(db: Session, project: Project) -> Item | None:
         description=(
             f"Graduation checklist for the `{model}` contract on this project. "
             "Graphban does not run git, open PRs, or install hooks — you (or an "
-            "agent) do. Completing a child because a probe looked green, without "
-            "recording what you saw, is the absence rule. A different model files "
-            "a new parent; this one is not auto-cancelled."
+            "agent) do. These children are process, not code. Work with no suite "
+            "cannot be signed off (P23); they will stall in review until that "
+            "gate grows a path for \"the remote exists\" evidence. Completing a "
+            "child because a probe looked green, without recording what you saw, "
+            "is the absence rule. A different model files a new parent; this one "
+            "is not auto-cancelled."
         ),
         project_id=project.id,
         status="next",

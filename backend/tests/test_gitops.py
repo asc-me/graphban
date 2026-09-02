@@ -1081,6 +1081,26 @@ def test_patch_model_files_the_plan_on_the_items_list(client, auth):
     assert "Contract is live" in titles
     assert "First tagged cut" in titles
     assert "Graphban does not run git" in parent["description"]
+    assert "process, not code" in parent["description"]
+    assert "P23" in parent["description"]
+    assert "stall in review" in parent["description"]
+
+
+def test_plan_parent_names_the_p23_process_stall(client, auth):
+    """THE CALL (P32 risk 7). Naming the stall only in a comment or helper
+    leaves the filed parent silent. Deleting the sentence from create_item
+    fails this PATCH → items read."""
+    r = _patch(client, auth, {"model": "prs_to_base", "base_branch": "main"})
+    assert r.status_code == 200, r.text
+    parent = next(
+        p for p in _plan_parents(client, auth)
+        if gitops_svc.plan_tag("prs_to_base") in p["tags"]
+    )
+    desc = parent["description"]
+    assert "process, not code" in desc
+    assert "cannot be signed off (P23)" in desc
+    assert "stall in review" in desc
+    assert "the remote exists" in desc
 
 
 def test_get_gitops_names_the_filed_plan(client, auth):
