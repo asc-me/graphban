@@ -58,6 +58,15 @@ So the shape is:
 - **Generators keep their return contract.** `stream_turn` returns its `ToolTurn` via
   generator `return`; `_drive_gen` preserves `StopIteration.value` on the way out,
   because `iter_reply` and the assistant loop read it.
+- **Contextvars cannot cross a `yield`.** Starlette drives a sync route's response
+  generator with `iterate_in_threadpool`: each `next()` runs on a worker thread in a
+  fresh copy of the caller's context, so a token opened at chunk one cannot be reset at
+  chunk N (`ValueError: … created in a different Context` — which is exactly what the
+  first cut raised on CI), and a value opened there is invisible to later chunks.
+  `_drive_gen` therefore re-stamps its sink and guard INSIDE each iteration and keeps
+  the span's state that must survive yields — sink dict, accumulated text, start time —
+  in the driver frame. Abandoned streams get an error span too: a killed response still
+  spent the call.
 
 ## Attribution
 
@@ -65,19 +74,23 @@ So the shape is:
   from a contextvar at emit time. A request that resolves project A and then writes for
   project B would misattribute every contextvar read; an instance-bound project cannot.
   Deployment-scoped embedders carry `""` — unknown project, its own chartable bucket.
-- **`feature` is tagged at the call site** with `llm_context(feature=…)`: `assistant`,
-  `grill`, `grill.classify`, `prd.judge`, `memory.judge`, `memory.search`,
-  `lessons.extract`, `artifacts.classify`, `artifacts.draft`, `embed.write`, and
-  `mcp:<tool>` for every MCP tool call. `""` means the call site never tagged — stored
-  as `""` and chartable as "untagged", never silently bucketed into some default.
-- **Two places need the set-never-reset shape**, both because the LLM call runs in a
-  *different copied context* than the scope that knows what it is: the MCP dispatcher
-  (tool exec lands in a `run_in_threadpool` context; deferred analytics writes land in
-  a BackgroundTask context, each a copy of the request task's context — and each
-  request task gets its own copy, so an un-reset set cannot leak between requests), and
-  the tool-session factory (`_wrap_session_factory` stamps the creation-time feature
-  onto the session's spans, because the session is created in the request scope but its
-  turns stream from the response generator's thread).
+- **`feature` is tagged at the call site** — by `llm_context(feature=…)` where the
+  calls are synchronous (`grill.classify`, `prd.judge`, `memory.judge`,
+  `memory.search`, `lessons.extract`, `artifacts.classify`, `artifacts.draft`,
+  `embed.write`), by `tag(obj, feature=…)` on the adapter instance where they are not
+  (`grill`'s streamed question), and by the tool-session factory stamping creation-time
+  context onto the session's spans (`assistant` — the session is built in the request
+  scope but its turns run from the response generator's chunks). `mcp:<tool>` tags
+  every MCP call. `""` means the call site never tagged — stored as `""` and chartable
+  as "untagged", never silently bucketed into some default.
+- **`llm_context` is for synchronous scopes only**, and the reason is the thread model
+  above: its `finally: reset` must run in the same context as its `set`. Anything whose
+  LLM calls happen across response-generator chunks carries attribution on the
+  instance instead — the meta dict is read at emit time, wherever the emit lands.
+- **The MCP dispatcher keeps the set-never-reset shape**, and it is correct there: the
+  set happens in the request task's own context before `run_in_threadpool`, so every
+  copy (tool exec, deferred analytics) inherits it, and request tasks have isolated
+  copies — an un-reset set cannot leak between requests.
 - **`request_id` rides along** from the middleware's contextvar, joining every span of
   one request in the log platform.
 

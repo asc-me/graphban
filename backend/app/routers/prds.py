@@ -420,37 +420,38 @@ def grill_stream(prd_id: str, body: GrillIn, db: Session = Depends(get_db), user
     # Resolve the project's provider eagerly, while the request DB session is open.
     resolved = platform_svc.resolve_chat(db, prd.project_id)
     provider, chat = resolved.provider_id, resolved.chat
+    # Attribution goes on the INSTANCE, not a `with llm_context(...)` around the
+    # generator body: each chunk of a response generator runs in a fresh copy of the
+    # caller's context (iterate_in_threadpool), where a contextvar set/reset pair is
+    # illegal. The project is already bound at resolution; everything this stream asks
+    # the model for is one user action (GRPH-225). The round's classification is a
+    # separate chat and tags its own synchronously, inside the service.
+    llm_meter.tag(chat, feature="grill")
 
     def gen():
-        # Tagging lives INSIDE the generator, not at route scope: a sync handler runs
-        # on a threadpool copy of the request's context, so a contextvar set there is
-        # invisible to the thread that iterates this generator when the response is
-        # consumed. Everything this stream asks the model for is one user action —
-        # the streamed question and the round's classification (GRPH-225).
-        with llm_meter.llm_context(feature="grill", project_id=prd.project_id):
-            # Accumulate the reply as it streams so the questions the grill ASKED are
-            # recorded too — AL-297 has to classify what was put to the author, which it
-            # cannot do from the answers alone. Same in-generator write the assistant
-            # thread route already relies on.
-            parts: list[str] = []
-            if provider == "stub":
-                # Offline: stream the deterministic opening questions.
-                for line in prd_svc._stub_command("grill", prd).splitlines(keepends=True):
-                    parts.append(line)
-                    yield _sse("delta", json.dumps({"text": line}))
-            else:
-                for piece in iter_reply(chat, system=prd_svc.GRILL_CHAT_SYSTEM,
-                                        context=context, question=question):
-                    parts.append(piece)
-                    yield _sse("delta", json.dumps({"text": piece}))
-            reply = "".join(parts).strip()
-            if reply:
-                prd_svc.record_grill_turns(db, prd.id, history + [{"role": "agent", "text": reply}])
-            # Grade the round (AL-298). Classification is a separate call from the streamed
-            # conversation on purpose: the stream is for the author to read, this is the
-            # state approval derives from, and a malformed token should not cost both.
-            prd_svc.classify_grill(db, prd)
-            yield _sse("done", "{}")
+        # Accumulate the reply as it streams so the questions the grill ASKED are
+        # recorded too — AL-297 has to classify what was put to the author, which it
+        # cannot do from the answers alone. Same in-generator write the assistant
+        # thread route already relies on.
+        parts: list[str] = []
+        if provider == "stub":
+            # Offline: stream the deterministic opening questions.
+            for line in prd_svc._stub_command("grill", prd).splitlines(keepends=True):
+                parts.append(line)
+                yield _sse("delta", json.dumps({"text": line}))
+        else:
+            for piece in iter_reply(chat, system=prd_svc.GRILL_CHAT_SYSTEM,
+                                    context=context, question=question):
+                parts.append(piece)
+                yield _sse("delta", json.dumps({"text": piece}))
+        reply = "".join(parts).strip()
+        if reply:
+            prd_svc.record_grill_turns(db, prd.id, history + [{"role": "agent", "text": reply}])
+        # Grade the round (AL-298). Classification is a separate call from the streamed
+        # conversation on purpose: the stream is for the author to read, this is the
+        # state approval derives from, and a malformed token should not cost both.
+        prd_svc.classify_grill(db, prd)
+        yield _sse("done", "{}")
 
     return StreamingResponse(
         gen(), media_type="text/event-stream",

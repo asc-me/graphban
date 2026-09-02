@@ -34,6 +34,21 @@ counts (the HTTP response is theirs; the protocol returns a bare `str`), so each
 calls `record_usage()` at the point it already parses the response. The wrapper opens a
 sink around every protocol call and drains it on completion. Providers that never
 report simply never fill it.
+
+**The thread model, because CI taught it** (the first cut raised
+`ValueError: <Token ...> was created in a different Context` under streaming):
+Starlette drives a sync route's response generator with `iterate_in_threadpool`, and
+each `next()` runs on a worker thread in a *fresh copy* of the response task's context.
+A contextvar set in one `next()` cannot be reset in another, and its value is not even
+visible to the next chunk's call. Consequences, all mechanical:
+
+- `llm_context` is legal only in a **synchronous scope** — set and reset inside one
+  call, whether that call is a request handler or one chunk of a generator.
+- Attribution for a stream goes on the **instance** (`tag()`): the meta dict lives in
+  the closure, is read at emit time, and survives any number of context copies.
+- The generator driver re-stamps its sink and re-entrancy guard **per chunk** — the
+  contextvar set/reset pair is per-`next()`, while the span's own state (sink, parts,
+  start) lives in the driver frame, where it does survive yields.
 """
 from __future__ import annotations
 
@@ -81,7 +96,13 @@ def record_usage(**tokens: int | None) -> None:
 
 @contextmanager
 def llm_context(*, feature: str = "", project_id: str = ""):
-    """Tag every LLM call made inside this block. Call sites only; the wrapper reads."""
+    """Tag every LLM call made inside this block. Call sites only; the wrapper reads.
+
+    SYNCHRONOUS SCOPES ONLY. The reset in `finally` must run in the same context as
+    the set, so the `with` body must not suspend at a `yield` — a response generator's
+    chunks run in separate copied contexts (see the thread model at the top of this
+    module). Streaming call sites tag the adapter instance instead: `tag()`.
+    """
     tokens: list[tuple[contextvars.ContextVar[str], Any]] = []
     if feature:
         tokens.append((feature_var, feature_var.set(feature)))
@@ -92,6 +113,25 @@ def llm_context(*, feature: str = "", project_id: str = ""):
     finally:
         for var, tok in reversed(tokens):
             var.reset(tok)
+
+
+def tag(obj: Any, *, feature: str = "", project_id: str = "") -> None:
+    """Bind attribution ON THE INSTANCE — for calls whose spans are emitted from
+    contexts this code does not control (route generators, background tasks).
+
+    `metered()` shares one meta dict across every wrapped method of the object, and
+    `_emit` reads it at completion time, so tagging here reaches spans that a
+    contextvar physically cannot: the generator's chunks each run in a fresh copy of
+    the caller's context. An object built unmetered (a bare adapter in a test) simply
+    carries no meta — tagging is a no-op, not an error.
+    """
+    meta = getattr(obj, "_llm_meter_meta", None)
+    if meta is None:
+        return
+    if feature:
+        meta["feature"] = feature
+    if project_id:
+        meta["project"] = project_id
 
 
 # ----------------------------------------------------------------------------- cost
@@ -226,14 +266,34 @@ def _emit(meta: dict, kind: str, sink: dict, started: float, *,
     except Exception:  # noqa: BLE001 — logging must not break the feature either
         pass
     try:
+        from sqlalchemy import text
+
         from app.db import SessionLocal
         from app.models import LlmCallSpan
 
         db = SessionLocal()
+        is_sqlite = db.bind is not None and db.bind.dialect.name == "sqlite"
         try:
+            if is_sqlite:
+                # Telemetry must not make the USER wait for a lock. On SQLite a second
+                # connection can write only while no other transaction holds RESERVED —
+                # which is exactly what happens while lifespan seeding runs its writes
+                # and while a streaming route holds its session. The driver's 5s
+                # busy-wait stalled every embed of every seeded startup three times
+                # over. Fail fast instead: losing a span is legal (that is the
+                # invariant), a 5-second telemetry tail is not.
+                db.execute(text("PRAGMA busy_timeout=250"))
             db.add(LlmCallSpan(**row))
             db.commit()
         finally:
+            if is_sqlite:
+                # This connection goes back into the shared pool; its next borrower is
+                # not telemetry. 5000 is python-sqlite3's default, which is what the
+                # engine ships with (no explicit timeout in app/db.py).
+                try:
+                    db.execute(text("PRAGMA busy_timeout=5000"))
+                except Exception:  # noqa: BLE001
+                    pass
             db.close()
     except Exception:  # noqa: BLE001 — THE invariant: telemetry never breaks the feature
         logger.warning("llm span write failed (the call itself was unaffected)", exc_info=True)
@@ -271,6 +331,9 @@ def metered(obj: Any, *, provider: str, model: str = "", base_url: str = "",
         "base_url": base_url or getattr(obj, "base_url", "") or "",
         "project": project_id or "",
     }
+    # The same dict the wrappers close over: `tag()` mutates attribution through this
+    # reference, which is why tagging beats a contextvar for anything that streams.
+    obj._llm_meter_meta = meta
     for name, kind, gen in (
         ("chat", "chat", False),
         ("extract", "extract", False),
@@ -316,30 +379,49 @@ def _drive_gen(fn: Callable, args: tuple, kwargs: dict, kind: str, meta: dict):
     """Generator driver for `stream`/`stream_turn`: yields through, and on the
     producer's `return` (StopIteration.value — a ToolTurn for stream_turn) emits the
     span while PRESERVING the return value, because `iter_reply` and the assistant
-    loop read it."""
+    loop read it.
+
+    The sink and the guard are set and reset INSIDE every iteration — and the `yield`
+    sits OUTSIDE that window: under `iterate_in_threadpool` each `next()` resumes the
+    generator in the CONSUMER's freshly copied context, so a token still open at the
+    suspend point would have to be reset in a context that did not create it
+    (ValueError — CI proved it; a `finally` does not run at `yield`, it runs on
+    RESUME). A sink opened at the first chunk would likewise be invisible to
+    `record_usage()` on every later one, silently decaying reported tokens to
+    estimates. Everything the span needs across yields — sink, parts, start — lives
+    in this frame, which does survive them.
+    """
     sink: dict = {}
-    tok_sink = _sink_var.set(sink)
-    tok_in = _inside_var.set(True)
     t0 = time.perf_counter()
     parts: list[str] = []
     it = fn(*args, **kwargs)
-    try:
-        while True:
+    while True:
+        tok_sink = _sink_var.set(sink)
+        tok_in = _inside_var.set(True)
+        try:
             try:
                 chunk = next(it)
             except StopIteration as stop:
-                _inside_var.reset(tok_in); _sink_var.reset(tok_sink)
                 _emit(meta, kind, sink, t0, error=None, in_text=_in_text(args, kwargs),
                       out_text="".join(parts), result=stop.value)
                 return stop.value
             if isinstance(chunk, str):
                 parts.append(chunk)
+        except BaseException as e:
+            _emit(meta, kind, sink, t0, error=e, in_text=_in_text(args, kwargs),
+                  out_text="".join(parts))
+            raise
+        finally:
+            _inside_var.reset(tok_in); _sink_var.reset(tok_sink)
+        try:
             yield chunk
-    except BaseException as e:
-        _inside_var.reset(tok_in); _sink_var.reset(tok_sink)
-        _emit(meta, kind, sink, t0, error=e, in_text=_in_text(args, kwargs),
-              out_text="".join(parts))
-        raise
+        except BaseException as e:
+            # GeneratorExit from an abandoned stream: a killed response still spent
+            # the call, and hiding it is absence-reading-as-clean again. No token
+            # window is open here, so nothing to unwind — just the span.
+            _emit(meta, kind, sink, t0, error=e, in_text=_in_text(args, kwargs),
+                  out_text="".join(parts))
+            raise
 
 
 def _wrap_session_factory(factory: Callable, meta: dict) -> Callable:

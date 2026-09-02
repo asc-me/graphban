@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -26,13 +27,26 @@ from app.providers import llm_meter
 from app import providers
 
 
-def _spans(kind: str | None = None) -> list[LlmCallSpan]:
+def _tok() -> str:
+    """A unique project stamp for one test's spans.
+
+    CI's Postgres job runs `-n auto` xdist against ONE shared database — every other
+    worker's LLM traffic lands in `llm_call_spans` while this file asserts on it (the
+    SQLite job got away with global counts because each worker has its own file). The
+    construction-time project binding is the natural per-test key: meter every call
+    under a fresh token and read the table by it."""
+    return "meter-" + uuid.uuid4().hex[:12]
+
+
+def _spans(kind: str | None = None, project: str | None = None) -> list[LlmCallSpan]:
     db = SessionLocal()
     try:
         rows = db.scalars(select(LlmCallSpan).order_by(LlmCallSpan.id)).all()
     finally:
         db.close()
-    return [r for r in rows if kind is None or r.kind == kind]
+    return [r for r in rows
+            if (kind is None or r.kind == kind)
+            and (project is None or r.project_id == project)]
 
 
 def _sse_chunks(text: str = "the answer", usage: tuple | None = (11, 7)) -> list[str]:
@@ -90,15 +104,17 @@ def test_a_chat_call_produces_exactly_one_span_with_reported_tokens_and_cost(cli
     nested call must stay silent (the _inside guard), or every chat would count twice.
     """
     httpd, Handler = _serve([(200, "sse", _sse_chunks())])
+    tok = _tok()
     try:
         url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
-        chat = providers.build_chat("custom", base_url=url, api_key="k", model="gpt-4.1")
+        chat = providers.build_chat("custom", base_url=url, api_key="k", model="gpt-4.1",
+                                    project_id=tok)
         answer = chat.chat(system="s", context="c", question="q")
     finally:
         httpd.server_close()
 
     assert answer == "the answer"
-    rows = _spans()
+    rows = _spans(project=tok)
     assert len(rows) == 1, f"expected exactly one span, got {[ (r.kind, r.model) for r in rows ]}"
     r = rows[0]
     assert (r.provider, r.model, r.kind) == ("custom", "gpt-4.1", "chat")
@@ -115,17 +131,55 @@ def test_a_plain_stream_meters_once_and_still_streams(client):
     """The `iter_reply` path consumes stream() directly — the generator driver must
     neither swallow chunks nor emit two rows."""
     httpd, _ = _serve([(200, "sse", _sse_chunks(text="abc"))])
+    tok = _tok()
     try:
         url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
-        chat = providers.build_chat("custom", base_url=url, api_key="k", model="gpt-4o")
+        chat = providers.build_chat("custom", base_url=url, api_key="k", model="gpt-4o",
+                                    project_id=tok)
         pieces = list(chat.stream(system="s", context="c", question="q"))
     finally:
         httpd.server_close()
 
     assert "".join(pieces) == "abc"
-    rows = _spans()
+    rows = _spans(project=tok)
     assert len(rows) == 1 and rows[0].kind == "chat"
     assert rows[0].tokens_source == "reported"
+
+
+def test_a_stream_consumed_across_threads_meters_once(client):
+    """The CI-shaped version of the stream test: an actual `StreamingResponse` route
+    consumes `stream()` through `iterate_in_threadpool`, so the driver's set/reset
+    pairs land in a DIFFERENT copied context per chunk. The first cut raised
+    `ValueError: Token created in a different Context` here (and in every grill/
+    assistant/agent-chat stream test), and the usage tail — which arrives on a later
+    chunk than the one that opened the sink — would have decayed to `estimated`
+    even if it hadn't crashed. This test is the regression lock for both."""
+    from fastapi import APIRouter
+    from starlette.responses import StreamingResponse
+
+    httpd, _ = _serve([(200, "sse", _sse_chunks(text="hello "))])
+    tok = _tok()
+    url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
+
+    def _stream_route():
+        chat = providers.build_chat("custom", base_url=url, api_key="k",
+                                    model="gpt-4o", project_id=tok)
+        return StreamingResponse(chat.stream(system="s", context="c", question="q"),
+                                 media_type="text/event-stream")
+
+    router = APIRouter()
+    router.add_api_route("/__meter_probe", _stream_route)
+    client.app.include_router(router)
+    try:
+        with client.stream("GET", "/__meter_probe") as r:
+            body = b"".join(r.iter_bytes()).decode()
+    finally:
+        httpd.server_close()
+
+    assert "hello" in body
+    rows = _spans(project=tok)
+    assert len(rows) == 1, f"threaded stream emitted {len(rows)} spans"
+    assert rows[0].tokens_source == "reported"  # the sink survived the chunk hop
 
 
 def test_an_error_is_a_span_too_and_still_raises(client):
@@ -133,15 +187,17 @@ def test_an_error_is_a_span_too_and_still_raises(client):
     read as no traffic, which is the defect class again. The caller still gets the
     exception: the span records the failure, it does not absorb it."""
     httpd, _ = _serve([(429, "json", {"error": "rate limited"})])
+    tok = _tok()
     try:
         url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
-        chat = providers.build_chat("custom", base_url=url, api_key="k", model="gpt-4.1")
+        chat = providers.build_chat("custom", base_url=url, api_key="k", model="gpt-4.1",
+                                    project_id=tok)
         with pytest.raises(httpx.HTTPStatusError):
             chat.chat(system="s", context="c", question="q")
     finally:
         httpd.server_close()
 
-    rows = _spans()
+    rows = _spans(project=tok)
     assert len(rows) == 1
     r = rows[0]
     assert r.ok is False
@@ -156,15 +212,17 @@ def test_an_extractor_makes_one_span_not_two(client):
     must be silent: instrumentation at the construction chokepoint cannot double-count
     a call the extractor owns."""
     httpd, _ = _serve([(200, "sse", _sse_chunks(text="a decision\na convention"))])
+    tok = _tok()
     try:
         url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
-        ex = providers.build_extractor("custom", base_url=url, api_key="k", model="gpt-4.1")
+        ex = providers.build_extractor("custom", base_url=url, api_key="k", model="gpt-4.1",
+                                       project_id=tok)
         shards = ex.extract(title="shipped X", description="we chose Y")
     finally:
         httpd.server_close()
 
     assert shards == ["a decision", "a convention"]
-    rows = _spans()
+    rows = _spans(project=tok)
     assert len(rows) == 1, f"extractor double-counting: {[(r.kind, r.feature) for r in rows]}"
     assert rows[0].kind == "extract"
     assert rows[0].tokens_source == "reported"
@@ -175,10 +233,11 @@ def test_an_extractor_makes_one_span_not_two(client):
 def test_stub_spend_is_a_real_zero_not_an_unknown(client):
     """0.0 here is a claim that CAN be true (compute we already pay for); NULL would be
     a cop-out and an estimate would be noise on a zero row."""
+    tok = _tok()
     with llm_meter.llm_context(feature="unit.stub"):
-        chat = providers.build_chat("stub")
+        chat = providers.build_chat("stub", project_id=tok)
         chat.chat(system="s", context="c", question="q")
-    rows = _spans()
+    rows = _spans(project=tok)
     assert len(rows) == 1
     r = rows[0]
     assert r.provider == "stub" and r.ok
@@ -192,15 +251,16 @@ def test_an_unpriced_model_costs_NULL_never_zero(client):
     no price prefix has an UNKNOWN cost; a 0 would read as free on the exact panel this
     feature exists to populate."""
     httpd, _ = _serve([(200, "sse", _sse_chunks())])
+    tok = _tok()
     try:
         url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
         chat = providers.build_chat("custom", base_url=url, api_key="k",
-                                    model="unobtainium-9000")
+                                    model="unobtainium-9000", project_id=tok)
         chat.chat(system="s", context="c", question="q")
     finally:
         httpd.server_close()
 
-    r = _spans()[0]
+    r = _spans(project=tok)[0]
     assert r.cost_usd is None
     # tokens still arrive — NULL cost is "we cannot price this", not "we saw nothing":
     assert r.tokens_source == "reported" and r.input_tokens == 11
@@ -210,14 +270,16 @@ def test_a_provider_that_reports_nothing_is_flagged_as_estimated(client):
     """chars/4 is for charting an order of magnitude, and only honest if stamped.
     An estimate with no flag is a fabricated number wearing reported's clothes."""
     httpd, _ = _serve([(200, "sse", _sse_chunks(usage=None))])
+    tok = _tok()
     try:
         url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
-        chat = providers.build_chat("custom", base_url=url, api_key="k", model="gpt-4.1")
+        chat = providers.build_chat("custom", base_url=url, api_key="k", model="gpt-4.1",
+                                    project_id=tok)
         chat.chat(system="s", context="c", question="q")
     finally:
         httpd.server_close()
 
-    r = _spans()[0]
+    r = _spans(project=tok)[0]
     assert r.tokens_source == "estimated"
     assert r.input_tokens > 0 and r.output_tokens > 0  # from text length, stamped as such
     assert r.cost_usd is not None  # priced off an estimate: roughly right, visibly sourced
@@ -228,11 +290,12 @@ def test_a_provider_that_reports_nothing_is_flagged_as_estimated(client):
 def test_project_bound_at_construction_wins_over_the_contextvar(client):
     """A request that resolves project A's provider and then touches project B must
     bill A — the resolution is the authority. Instance beats context."""
-    with llm_meter.llm_context(feature="anything", project_id="the-other-project"):
-        providers.build_chat("stub", project_id="the-bound-project").chat(
+    tok = _tok()
+    with llm_meter.llm_context(feature="anything", project_id=f"other-{tok}"):
+        providers.build_chat("stub", project_id=tok).chat(
             system="s", context="c", question="q")
-    r = _spans()[0]
-    assert r.project_id == "the-bound-project"
+    r = _spans(project=tok)[0]
+    assert r.project_id == tok  # instance beats the contextvar, per the resolver-authority rule
     assert r.feature == "anything"  # feature is still call-site context, by design
 
 
@@ -240,15 +303,17 @@ def test_a_context_project_still_binds_when_the_instance_carries_none(client):
     """Deployment-scoped embedders (the env path) know no project; the contextvar is
     what gives their rows an owner."""
     emb = providers.build_embedder("stub")
-    with llm_meter.llm_context(feature="embed.write", project_id="ctx-project"):
+    tok = _tok()
+    with llm_meter.llm_context(feature="embed.write", project_id=tok):
         emb.embed("some text")
-    r = _spans()[0]
-    assert (r.kind, r.feature, r.project_id) == ("embed", "embed.write", "ctx-project")
+    r = _spans(project=tok)[0]
+    assert (r.kind, r.feature) == ("embed", "embed.write")  # ctx-bound project read at emit
 
 
 def test_an_untagged_call_site_lands_in_untagged_not_a_default_bucket(client):
-    providers.build_chat("stub").chat(system="s", context="c", question="q")
-    assert _spans()[0].feature == ""
+    tok = _tok()
+    providers.build_chat("stub", project_id=tok).chat(system="s", context="c", question="q")
+    assert _spans(project=tok)[0].feature == ""
 
 
 def test_a_tool_session_keeps_its_creation_feature_into_the_stream(client):
@@ -259,10 +324,11 @@ def test_a_tool_session_keeps_its_creation_feature_into_the_stream(client):
         "choices": [{"message": {"role": "assistant", "content": "hi"},
                      "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 5, "completion_tokens": 2}})])
+    tok = _tok()
     try:
         url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
         chat = providers.build_chat("custom", base_url=url, api_key="k", model="gpt-4.1")
-        with llm_meter.llm_context(feature="assistant", project_id="p1"):
+        with llm_meter.llm_context(feature="assistant", project_id=tok):
             session = chat.tool_session(system="s", context="c", question="q")
         # Context has EXITED. The turn below runs where feature_var reads "".
         turn = session.run_turn([])
@@ -270,10 +336,10 @@ def test_a_tool_session_keeps_its_creation_feature_into_the_stream(client):
         httpd.server_close()
 
     assert turn.text == "hi"
-    rows = _spans(kind="tool_turn")
+    rows = _spans(kind="tool_turn", project=tok)
     assert len(rows) == 1
     r = rows[0]
-    assert r.feature == "assistant" and r.project_id == "p1"
+    assert r.feature == "assistant" and r.project_id == tok
     # usage rides on the ToolTurn result; the wrapper merges it — reported, not estimated
     assert r.tokens_source == "reported"
     assert (r.input_tokens, r.output_tokens) == (5, 2)
@@ -284,9 +350,11 @@ def test_stream_turn_preserves_the_generator_return_value(client):
     reads `turn = yield from ...`. A driver that emits a span but eats the return value
     breaks the feature to observe it."""
     httpd, _ = _serve([(200, "sse", _sse_chunks(text="partial"))])
+    tok = _tok()
     try:
         url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
-        chat = providers.build_chat("custom", base_url=url, api_key="k", model="gpt-4.1")
+        chat = providers.build_chat("custom", base_url=url, api_key="k", model="gpt-4.1",
+                                    project_id=tok)
         session = chat.tool_session(system="s", context="c", question="q")
         gen = session.stream_turn([])
         collected = []
@@ -303,7 +371,7 @@ def test_stream_turn_preserves_the_generator_return_value(client):
     assert "".join(collected) == "partial"
     assert returned is not None and returned.text == "partial"
     assert returned.usage == {"input": 11, "output": 7}
-    rows = _spans(kind="tool_turn")
+    rows = _spans(kind="tool_turn", project=tok)
     assert len(rows) == 1
     assert rows[0].tokens_source == "reported"  # merged from the ToolTurn's usage
 
@@ -330,8 +398,9 @@ def test_a_failing_span_write_never_breaks_the_call(client, monkeypatch):
 def test_record_usage_outside_a_span_is_silent(client):
     """Adapters cannot know whether the object was wrapped; a bare build must not turn
     a legal report into an error."""
+    tok = _tok()
     llm_meter.record_usage(input=5, output=None)  # no sink, no raise
-    assert _spans() == []
+    assert _spans(project=tok) == []
 
 
 def test_every_span_is_mirrored_to_a_structured_log_line(client):
@@ -374,10 +443,11 @@ def test_every_span_is_mirrored_to_a_structured_log_line(client):
 
 # ---------------------------------------------------------------------- retention
 
-def _insert_span(ts, provider="stub"):
+def _insert_span(ts, provider="stub", project=None):
     db = SessionLocal()
     try:
-        db.add(LlmCallSpan(ts=ts, provider=provider, kind="chat"))
+        db.add(LlmCallSpan(ts=ts, provider=provider, kind="chat",
+                           **({"project_id": project} if project else {})))
         db.commit()
     finally:
         db.close()
@@ -385,12 +455,13 @@ def _insert_span(ts, provider="stub"):
 
 def test_purge_expired_deletes_only_beyond_the_window(client, monkeypatch):
     now = datetime.now(timezone.utc)
-    _insert_span(now - timedelta(days=200))
-    _insert_span(now - timedelta(days=1))
+    tok = _tok()
+    _insert_span(now - timedelta(days=200), project=tok)
+    _insert_span(now - timedelta(days=1), project=tok)
     monkeypatch.setattr(llm_meter.settings, "llm_span_retention_days", 90)
 
-    assert llm_meter.purge_expired() == 1
-    remaining = _spans()
+    assert llm_meter.purge_expired() >= 1  # >= : other workers' stale rows are fair game
+    remaining = _spans(project=tok)
     assert len(remaining) == 1
     # SQLite reads DateTime(timezone=True) back NAIVE; Postgres reads it aware. The
     # comparison must normalize the read-back rather than assume either engine — the
@@ -405,10 +476,11 @@ def test_retention_zero_keeps_everything(client, monkeypatch):
     """Self-host boxes with no dashboard pressure must be able to opt out by value,
     not by patching code."""
     now = datetime.now(timezone.utc)
-    _insert_span(now - timedelta(days=500))
+    tok = _tok()
+    _insert_span(now - timedelta(days=500), project=tok)
     monkeypatch.setattr(llm_meter.settings, "llm_span_retention_days", 0)
     assert llm_meter.purge_expired() == 0
-    assert len(_spans()) >= 1
+    assert len(_spans(project=tok)) >= 1
 
 
 # ------------------------------------------------- the MCP dispatch context (threadpool)
@@ -425,6 +497,10 @@ def test_an_mcp_tool_call_tags_its_spans_mcp_colon_tool(client, auth):
                     headers={"X-API-Key": key})
     assert r.status_code == 200 and not r.json()["result"].get("isError")
 
-    rows = _spans(kind="embed")
-    assert rows, "the memory write embedded nothing — the premise of this test changed"
-    assert all(r.feature == "mcp:add_memory" for r in rows), [r.feature for r in rows]
+    # This call embedded at least one vector (its write completed) — so an
+    # mcp:add_memory-tagged embed span must exist. Under xdist on shared Postgres
+    # another worker's add_memory could also be here; that still tests the
+    # mechanism. What cannot be here is the absence: zero rows means this process's
+    # own embed wrote an untagged span, i.e. the copy did not carry the tag.
+    tagged = [r for r in _spans(kind="embed") if r.feature == "mcp:add_memory"]
+    assert tagged, f"no tagged embed span; saw {[(r.kind, r.feature) for r in _spans()][-8:]}"
