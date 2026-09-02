@@ -164,7 +164,7 @@ function AddCredentialDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{picked ? `Add ${picked.label}` : "Add a provider"}</DialogTitle>
+          <DialogTitle>{picked ? `Add ${picked.label}` : "Add a credential"}</DialogTitle>
         </DialogHeader>
 
         {!picked ? (
@@ -608,7 +608,7 @@ export function CredentialsPanel() {
             >
               Looking for API keys?
             </Link>
-            <Button onClick={() => setAdding(true)}>Add provider</Button>
+            <Button onClick={() => setAdding(true)}>Add credential</Button>
           </div>
         </header>
 
