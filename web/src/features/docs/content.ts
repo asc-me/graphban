@@ -395,7 +395,7 @@ const CONTENT: Record<string, DocEntry> = {
     sections: [
       { num: 1, h: "House process", b: "The org default: a named model writes the preset fields, or set them by hand. Base branch and release defined in are never filled by a preset. Unset is unmeasured — not main, not docs/release.md, and not no requirements. A hand-edit clears the model id; the picker then says Custom, not Unmeasured. Saving the house model does not file a graduation checklist on every project." },
       { num: 2, h: "Project overlay", b: "Empty overlay inherits the house value. Sparse fields are inheritance. Clearing a field returns it to inherit. Overlay rows come from every org project, not the readable subset." },
-      { num: 3, h: "Linked boxes", b: "A linked self-host box reads this contract live. Gitops is not a property of a deployment credential, so it is not on Deployments cards." },
+      { num: 3, h: "Linked boxes", b: "A linked self-host box reads this contract live. Gitops is not a property of a link key, so it is not on Deployments cards." },
     ],
   },
 
