@@ -122,6 +122,11 @@ python3 ~/graphban-src/scripts/graphban_compose_host.py listen \
 JWT in the API is the operator gate. The helper trusts whoever can write the
 socket — keep it `0600`, do not put it on a TCP port.
 
+`deploy.sh` runs detached and appends its output to `deploy.log` beside the
+socket (`~/.graphban-apply/deploy.log` here). Install acks before the rebuild
+finishes either way; when the box does not come back on the new cut, that log
+is where the build says why.
+
 ### Native
 
 `/opt/graphban/current` is enough; no helper. Unpack is what `publish`
@@ -157,6 +162,9 @@ not current.
   path and is not this document.
 - **Comparing sha to HEAD.** Verify against the tag you published, then
   `/health`.
+- **Silent apply.** Install acks and detaches `deploy.sh`; through 2026.09.6
+  the output was discarded, so a box stuck on the old cut said nothing about
+  why. The helper logs it to `deploy.log` beside the socket now.
 
 Hand steps, if the script is the thing you do not trust yet:
 

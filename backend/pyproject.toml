@@ -1,6 +1,6 @@
 [project]
 name = "graphban-api"
-version = "2026.09.6"
+version = "2026.09.7"
 description = "Graphban backend — linear tracker + agent memory + MCP tools"
 license = "LicenseRef-FSL-1.1-Apache-2.0"
 requires-python = ">=3.12"
@@ -53,12 +53,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
+# `packages = ["app"]` already ships the eval fixtures — a force-include of the
+# same path added them a SECOND time, hatchling refused the duplicate, and every
+# non-editable `pip install .` (the one backend/Dockerfile runs) died generating
+# metadata. The guard that the installed wheel ships them is the
+# `backend-packaging` job in ci.yml.
 packages = ["app"]
-
-# JSON fixtures are not .py; without this the wheel ships a runner and no cases,
-# and `graphban eval` reports `absent` after a pip install (GRPH-224).
-[tool.hatch.build.targets.wheel.force-include]
-"app/evals/cases" = "app/evals/cases"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
