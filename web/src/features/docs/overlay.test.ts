@@ -183,6 +183,18 @@ describe("docs overlay routes", () => {
     expect(house?.b).toMatch(/does not file a graduation checklist/);
   });
 
+  it("AI providers overlay names task-model inherit, not a missing judge", () => {
+    const selfHost = docFor(settingsPath("deployment/providers"));
+    const hosted = docFor(settingsPath("project/providers"));
+    const tagged = docFor("/p/CORE/settings/deployment/providers");
+    for (const d of [selfHost, hosted, tagged]) {
+      const task = d.sections.find((s) => /task models/i.test(s.h));
+      expect(task?.b).toMatch(/inherits this project's chat/);
+      expect(task?.b).toMatch(/not 'no judge'/);
+      expect(task?.b).toMatch(/ungraded, not a quieter model/);
+    }
+  });
+
   it("PRD editor overlay names empty headings as not a clean pass", () => {
     const d = docFor("/prds/abc");
     const cov = d.sections.find((s) => /coverage/i.test(s.h));
