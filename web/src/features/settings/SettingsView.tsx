@@ -50,7 +50,8 @@ const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: 
     items: [
       { to: settingsPath("project"), label: "Project", end: true },
       { to: settingsPath("project/api-keys"), label: "API keys" },
-      { to: settingsPath("project/mcp"), label: "MCP" },
+      // Not "MCP": Fleet's "Looking for MCP?" is the connect snippet, on API keys.
+      { to: settingsPath("project/mcp"), label: "MCP Tools" },
       { to: settingsPath("project/integrations"), label: "Integrations" },
       { to: settingsPath("project/feedback-kit"), label: "Feedback Kit" },
       { to: settingsPath("project/members"), label: "Members" },
@@ -871,7 +872,9 @@ export function ApiKeysPanel() {
     const isPinned = kind === "sync" || kind === "gate";
     const projectId = isPinned ? syncTarget : scope === "global" ? null : active?.id ?? null;
     if (isPinned && !projectId) {
-      setError(`Pick a project — a ${kind} credential must target exactly one.`);
+      setError(
+        `Pick a project — a ${kind === "gate" ? "gate key" : "sync credential"} must target exactly one.`,
+      );
       return;
     }
     try {
