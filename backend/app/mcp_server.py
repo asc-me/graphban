@@ -408,8 +408,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "prd_coverage",
         "description": (
-            "Spec-to-task rollup for a PRD: per-section task counts by status, coverage %, and "
-            "`gaps` (sections with no tasks yet). Read-only."
+            "Spec-to-task rollup. `gaps` = no tasks; `empty_sections` = no substance. "
+            "`shaped: false` is not a clean pass. Read-only."
         ),
         "inputSchema": {"type": "object", "properties": {"prd_id": {"type": "string"}}, "required": ["prd_id"]},
     },

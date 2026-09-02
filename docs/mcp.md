@@ -334,7 +334,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `unlink_items` | `a`, `b`, `type` | Remove a typed relationship (inverse of `link_items`); omit `type` to remove all types for the pair. Idempotent — returns `removed` |
 | `extract_lessons` | `id` | Distil lessons into memory (returns `scheduled: true` immediately; shards land on `linked_shards`) |
 | `generate_digest` | `project_id` | Compose a progress digest across the project |
-| `prd_coverage` | `prd_id` | Spec-to-task rollup: per-section counts, coverage %, gaps (read-only) |
+| `prd_coverage` | `prd_id` | Spec-to-task rollup: per-section counts, `gaps` (no tasks), `empty_sections` (no substance). `shaped: false` is not a clean pass (read-only) |
 | `decompose_prd` | `prd_id`, `create` | Propose (or create) one task per un-covered PRD section, each carrying the PRD's framing prose |
 | `create_prd` | `title`, `body`, `template`, `project_id` | **Author a PRD** (the handoff artifact) — `## ` sections drive decompose/coverage |
 | `get_prd` | `prd_id` | The full PRD including its markdown `body` and a `body_hash` (GRPH-519) |
