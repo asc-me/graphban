@@ -191,6 +191,15 @@ describe("docs overlay routes", () => {
     expect(cov?.b).not.toMatch(/\d+%/);
   });
 
+  it("PRD editor overlay names Readiness to approve as a warning, not a gate", () => {
+    const d = docFor("/prds/abc");
+    const ready = d.sections.find((s) => /readiness to approve/i.test(s.h));
+    expect(ready?.b).toMatch(/not a gate/);
+    expect(ready?.b).toMatch(/ungraded/i);
+    expect(ready?.b).toMatch(/not asking is not a pass/);
+    expect(ready?.b).not.toMatch(/\d+%/);
+  });
+
   it("Memory review overlay names list judging and that a missing score is not clean", () => {
     const ask = docFor("/memory-review").sections.find((s) => /llm judge/i.test(s.h));
     expect(ask?.b).toMatch(/capped/);
