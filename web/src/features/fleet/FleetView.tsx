@@ -177,8 +177,13 @@ function SupervisorHandoff({ seats, wave }: { seats: { role: string; code: strin
               supervisor authenticates with an ordinary API key; the seats are for its CHILDREN.
               Handing it a seat, or handing a child the key, both fail in confusing ways. */}
           <p className="px-1 text-[11px] text-faint">
-            The supervisor needs its own <strong>API key</strong> from Settings → API Keys — not
-            a seat. Seats are what it gives its children. Its own reach is deliberately narrow:{" "}
+            The supervisor needs its own{" "}
+            <Link to={settingsPath("project/api-keys")} className="text-fg-2 underline-offset-2 hover:underline">
+              API key
+            </Link>{" "}
+            from Settings → API keys, with the <strong>Fleet admin</strong> tier — not
+            a seat. Being in a fleet needs a seat; running one needs this tier. Seats are
+            what it gives its children. Its own reach is deliberately narrow:{" "}
             <span className="font-mono">fleet_status</span> and{" "}
             <span className="font-mono">propose_allocation</span>, nothing that claims work.
           </p>
@@ -366,6 +371,9 @@ export function FleetView() {
   const [showDeadCreds, setShowDeadCreds] = React.useState(false);
   const [showGone, setShowGone] = React.useState(false);
   const [showDismissed, setShowDismissed] = React.useState(false);
+  // The role-narrowed mint is the older path. Collapsed so the empty roster cannot
+  // still teach "mint a credential below" after seats became the recommended onboard.
+  const [showWaveKey, setShowWaveKey] = React.useState(false);
   // The wave label comes BACK from the server now. It used to be hardcoded `wave-1` here, so
   // every wave for weeks landed in one bucket and End wave always ended everything.
   const [wave, setWave] = React.useState<string | null>(null);
@@ -697,7 +705,16 @@ export function FleetView() {
           <>
         <Section title="Roster" desc="Offline agents fade rather than vanish — one that died holding a branch is what you need to see.">
           {agents.length === 0 ? (
-            <Empty>No agents yet. Mint a credential below and paste it into a terminal.</Empty>
+            <Empty>
+              No agents yet. A seat is the role for this session — issue them on Wave.
+              The API key that goes in MCP config is minted in Settings.
+              <button
+                onClick={() => setTab("wave")}
+                className="mt-2 block w-full text-[12px] text-muted hover:text-fg-2"
+              >
+                Issue seats on Wave →
+              </button>
+            </Empty>
           ) : (
             <div className="space-y-2">
               {fleetAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} />)}
@@ -852,15 +869,88 @@ export function FleetView() {
                 to live beside a per-wave action, which put a once-per-machine job next
                 to one you do every run. */}
         <Section
-          title="Onboard one agent with its own credential"
-          desc="The older route: a credential narrowed to one role. Seats above are the recommended path — this stays because a role-narrowed key still works and some setups are built on one."
+          title="API keys that reach this project"
+          desc={
+            <>
+              Which key each agent authenticates with. A wave-tagged key is a wave artifact — End
+              wave sweeps those and never a hand-minted one. Mint a long-lived key in{" "}
+              <Link to={settingsPath("project/api-keys")} className="text-fg-2 underline-offset-2 hover:underline">
+                Settings → API keys
+              </Link>
+              .
+            </>
+          }
+        >
+            {(data?.credentials ?? []).length === 0 ? (
+              <Empty>No API key reaches this project yet. Mint one in Settings — a seat is not a key.</Empty>
+            ) : (
+              <div className="space-y-1.5">
+                {/* Revoked credentials collapse the same way seats do. After ending wave-1 the
+                    list was 15 dead keys deep and the one credential still in use — the
+                    operator's own — was lost in it. */}
+                {expiredCreds.length > 0 && (
+                  <div className="flex justify-end">
+                    <button onClick={clearExpiredCredentials}
+                            className="text-[11px] text-muted hover:text-[color:var(--color-st-blocked)]">
+                      Revoke the {expiredCreds.length} expired
+                    </button>
+                  </div>
+                )}
+                {liveCreds.length > 0 && deadCreds.length > 0 && (
+                  <div className="flex justify-end">
+                    <button onClick={() => setShowDeadCreds((v) => !v)}
+                            className="text-[11px] text-faint hover:text-fg-2">
+                      {showDeadCreds ? "Hide" : "Show"} {deadCreds.length} revoked
+                    </button>
+                  </div>
+                )}
+                {(showDeadCreds ? data!.credentials : liveCreds).map((c) => (
+                  <div key={c.id}
+                       className={cn("flex items-center gap-3 rounded-[9px] border border-line-2 bg-surface-2 px-3 py-2",
+                                     c.revoked && "opacity-50")}>
+                    <span className="font-mono text-[11px] text-muted-2">{c.prefix}</span>
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-fg-2">{c.name}</span>
+                    {c.posture === "single" && (
+                      <span className="font-mono text-[10px] text-faint">single</span>
+                    )}
+                    {c.wave
+                      ? <span className="font-mono text-[10px] text-[color:var(--color-st-review)]">{c.wave} · swept by End wave</span>
+                      : <span className="font-mono text-[10px] text-faint">yours · never swept</span>}
+                    <span className="font-mono text-[10px] text-faint">
+                      {c.agents} agent{c.agents === 1 ? "" : "s"}
+                    </span>
+                    {c.revoked
+                      ? <span className="font-mono text-[10px] text-faint">revoked</span>
+                      : <button onClick={() => revokeCredential(c.id)}
+                                className="text-[11px] text-muted hover:text-[color:var(--color-st-blocked)]">
+                          Revoke
+                        </button>}
+                  </div>
+                ))}
+              </div>
+            )}
+        </Section>
+
+        <Section
+          title="Legacy: wave key"
+          desc="Only if this client cannot share one MCP config. End wave revokes it. Seats on Wave are the recommended path, and an ordinary API key is minted in Settings."
         >
           {/* NOT deleted with the rest of PRD-19 E8, deliberately. G6 says nothing that works
               today stops working, and a role-narrowed credential still does — the API is
               unchanged and this repo's own tests use one. What was wrong was having two routes
               with nothing saying which to reach for, so the ambiguity is resolved by NAMING
-              the order rather than by removing the option out from under anyone. */}
-          <div className="mb-3 flex flex-wrap gap-2">
+              the order rather than by removing the option out from under anyone. Collapsed
+              so the empty roster cannot still teach this as the first thing to do. */}
+          <button
+            onClick={() => setShowWaveKey((v) => !v)}
+            aria-expanded={showWaveKey}
+            className="text-[11.5px] text-muted transition-colors hover:text-fg-2"
+          >
+            {showWaveKey ? "▾" : "▸"} Legacy: mint a wave key
+          </button>
+          {showWaveKey && (
+          <>
+          <div className="mb-3 mt-3 flex flex-wrap gap-2">
             {/* `all-in-one` is offered beside the three because the roster REPORTS it — a
                 page that counts a posture it cannot create names a category the reader has no
                 way to produce. It mints an unnarrowed credential, which is what makes the
@@ -899,64 +989,10 @@ export function FleetView() {
               <CopyRow label="3. Prime" value={primeSnippet(minted.role, undefined, scope)} />
             </div>
           )}
+          </>
+          )}
         </Section>
           </>
-        )}
-
-        {tab === "connections" && (
-          <Section
-            title="Credentials"
-            desc="Which key each agent authenticates with. A wave-tagged key is a wave artifact — End wave sweeps those and never a hand-minted one."
-          >
-            {(data?.credentials ?? []).length === 0 ? (
-              <Empty>No credentials reach this project yet.</Empty>
-            ) : (
-              <div className="space-y-1.5">
-                {/* Revoked credentials collapse the same way seats do. After ending wave-1 the
-                    list was 15 dead keys deep and the one credential still in use — the
-                    operator's own — was lost in it. */}
-                {expiredCreds.length > 0 && (
-                  <div className="flex justify-end">
-                    <button onClick={clearExpiredCredentials}
-                            className="text-[11px] text-muted hover:text-[color:var(--color-st-blocked)]">
-                      Revoke the {expiredCreds.length} expired
-                    </button>
-                  </div>
-                )}
-                {liveCreds.length > 0 && deadCreds.length > 0 && (
-                  <div className="flex justify-end">
-                    <button onClick={() => setShowDeadCreds((v) => !v)}
-                            className="text-[11px] text-faint hover:text-fg-2">
-                      {showDeadCreds ? "Hide" : "Show"} {deadCreds.length} revoked
-                    </button>
-                  </div>
-                )}
-                {(showDeadCreds ? data!.credentials : liveCreds).map((c) => (
-                  <div key={c.id}
-                       className={cn("flex items-center gap-3 rounded-[9px] border border-line-2 bg-surface-2 px-3 py-2",
-                                     c.revoked && "opacity-50")}>
-                    <span className="font-mono text-[11px] text-muted-2">{c.prefix}</span>
-                    <span className="min-w-0 flex-1 truncate text-[12px] text-fg-2">{c.name}</span>
-                    {c.posture === "single" && (
-                      <span className="font-mono text-[10px] text-faint">single</span>
-                    )}
-                    {c.wave
-                      ? <span className="font-mono text-[10px] text-[color:var(--color-st-review)]">{c.wave}</span>
-                      : <span className="font-mono text-[10px] text-faint">yours · never swept</span>}
-                    <span className="font-mono text-[10px] text-faint">
-                      {c.agents} agent{c.agents === 1 ? "" : "s"}
-                    </span>
-                    {c.revoked
-                      ? <span className="font-mono text-[10px] text-faint">revoked</span>
-                      : <button onClick={() => revokeCredential(c.id)}
-                                className="text-[11px] text-muted hover:text-[color:var(--color-st-blocked)]">
-                          Revoke
-                        </button>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </Section>
         )}
 
         {tab === "work" && (
@@ -1019,7 +1055,7 @@ export function FleetView() {
   );
 }
 
-function Section({ title, desc, children }: { title: string; desc: string; children: React.ReactNode }) {
+function Section({ title, desc, children }: { title: string; desc: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="mb-7">
       <h2 className="text-[14px] font-semibold tracking-tight">{title}</h2>

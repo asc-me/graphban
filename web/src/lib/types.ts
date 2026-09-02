@@ -573,6 +573,8 @@ export interface ApiKey {
   created_at: string;
   expires_at: string | null;
   revoked: boolean;
+  /** Set when Fleet minted this for a wave. Null/absent = hand-minted, never swept. */
+  fleet_wave?: string | null;
 }
 
 export interface ApiKeyCreated extends ApiKey {

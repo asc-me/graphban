@@ -91,7 +91,7 @@ async function mint(kind: string, name = "github-actions") {
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: kind }));
   await user.type(screen.getByPlaceholderText(/Key name/), name);
-  await user.click(screen.getByRole("button", { name: /Mint gate key|Create key|Mint credential/ }));
+  await user.click(screen.getByRole("button", { name: /Mint gate key|Mint key|Mint credential/ }));
 }
 
 beforeEach(() => {
@@ -158,7 +158,7 @@ describe("minting a gate key", () => {
     // `["read","write","gate"]` to every key would hand the gate to every agent, which is the
     // same defect as the MCP-config one and easier to introduce.
     view();
-    await mint("Agent key", "ci-agent");
+    await mint("Agent key", "claude-code");
 
     await waitFor(() => expect(createApiKey).toHaveBeenCalled());
     expect(createApiKey.mock.calls[0][3]).toBeUndefined();
@@ -184,7 +184,7 @@ describe("tool tiers (GRPH-571)", () => {
     await user.click(screen.getByRole("button", { name: "PRDs" }));
     await user.click(screen.getByRole("button", { name: "Fleet admin" }));
     await user.type(screen.getByPlaceholderText(/Key name/), "planner");
-    await user.click(screen.getByRole("button", { name: /Create key/ }));
+    await user.click(screen.getByRole("button", { name: /Mint key/ }));
 
     await waitFor(() => expect(createApiKey).toHaveBeenCalled());
     expect(createApiKey.mock.calls[0][4]).toEqual(["prd", "fleet"]);
@@ -199,10 +199,19 @@ describe("tool tiers (GRPH-571)", () => {
     await user.click(screen.getByRole("button", { name: "PRDs" }));
     await user.click(screen.getByRole("button", { name: "PRDs" }));
     await user.type(screen.getByPlaceholderText(/Key name/), "k");
-    await user.click(screen.getByRole("button", { name: /Create key/ }));
+    await user.click(screen.getByRole("button", { name: /Mint key/ }));
 
     await waitFor(() => expect(createApiKey).toHaveBeenCalled());
     expect(createApiKey.mock.calls[0][4]).toEqual([]);
+  });
+
+  it("says the Fleet admin tier is not a seat", async () => {
+    // Same word, two objects: being in a fleet needs a seat; this tier is for the
+    // supervisor or planner key. Reading it as a permission to join a wave would mint
+    // the wrong object.
+    view();
+    const btn = await screen.findByRole("button", { name: "Fleet admin" });
+    expect(btn.getAttribute("title") ?? "").toMatch(/seat/i);
   });
 
   it("says a tiered-out tool is still callable", async () => {
@@ -239,6 +248,24 @@ describe("listing", () => {
     expect(screen.getByText("Gate keys").parentElement!).toContainElement(rows[0]);
   });
 
+  it("labels a wave-tagged key so End wave sweeping it is visible on this list", async () => {
+    keyList = [
+      key({ id: "key_h", name: "hand-minted" }),
+      key({ id: "key_w", name: "fleet worker", fleet_wave: "wave-1" }),
+    ];
+    view();
+    expect(await screen.findByText(/wave-1 · swept by End wave/)).toBeInTheDocument();
+    expect(screen.queryByText(/hand-minted/)).toBeInTheDocument();
+    expect(screen.getByText("hand-minted").closest("div")?.textContent ?? "")
+      .not.toMatch(/swept by End wave/);
+  });
+
+  it("points roles at Fleet, not at minting another key", async () => {
+    view();
+    const link = await screen.findByRole("link", { name: /seats on Fleet/i });
+    expect(link).toHaveAttribute("href", "/fleet");
+  });
+
   it("says what the absence of a gate key COSTS", async () => {
     // An empty state reading "No gate keys" is true and useless. The reason the list is empty
     // is the reason the gate is running on its weak path.
@@ -261,6 +288,8 @@ describe("docs overlay", () => {
     expect(body).toMatch(/callable/i);
     expect(body).toMatch(/gate/i);
     expect(body).toMatch(/scope/i);
+    expect(body).toMatch(/seat/i);
+    expect(keys.related?.some((r) => r.label === "Fleet")).toBe(true);
     expect(docFor(settingsPath("project/providers")).title).toBe("AI providers");
     expect(docFor(settingsPath("deployment/providers")).title).toBe("AI providers");
     expect(docFor("/settings").title).toBe("Settings");

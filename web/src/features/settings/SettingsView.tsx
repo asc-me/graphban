@@ -22,7 +22,7 @@ import { errorDetail } from "@/lib/errors";
 import { keys, useApiKeys, useConfig, useMembers, usePlatform } from "@/lib/queries";
 import { adminPath, settingsPath } from "@/lib/routes";
 import type { ApiKey, PlatformConfig, Project } from "@/lib/types";
-import { NavLink, Navigate, useLocation } from "react-router-dom";
+import { Link, NavLink, Navigate, useLocation } from "react-router-dom";
 
 export function SettingsView() {
   const { data: config } = useConfig();
@@ -217,7 +217,7 @@ function HostedPane({ pathname }: { pathname: string }) {
   return <CredentialsPanel />;
 }
 
-function Section({ title, desc, children }: { title: string; desc?: string; children: React.ReactNode }) {
+function Section({ title, desc, children }: { title: string; desc?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="mb-6 max-w-2xl">
       <div className="text-[14px] font-semibold">{title}</div>
@@ -817,7 +817,7 @@ function GateKeyInstall({ apiKey }: { apiKey: string }) {
 const TOOL_TIERS: ReadonlyArray<readonly [string, string, string]> = [
   ["prd", "PRDs", "Authoring and grilling specs — write, grill, decompose, close. A coding agent reads specs; it does not write them."],
   ["codegraph", "Code graph writes", "Describing symbols and linking them. Reading the graph is core and always present."],
-  ["fleet", "Fleet admin", "Running a fleet — allocation, roles, enrolment codes, waves. Being IN a fleet needs none of this."],
+  ["fleet", "Fleet admin", "Running a fleet — allocation, roles, enrolment codes, waves. Being in a fleet needs a seat, not this tier."],
   ["misc", "Occasional", "Projects, digests, lessons, memory review. Rare, and none of it mid-task."],
 ];
 
@@ -892,7 +892,18 @@ export function ApiKeysPanel() {
   }
 
   return (
-    <Section title="API keys" desc="Long-lived scoped keys for agents to authenticate to the MCP endpoint.">
+    <Section
+      title="API keys"
+      desc={
+        <>
+          An API key is who the process is — put it in MCP config once. Roles for a wave are{" "}
+          <Link to="/fleet" className="text-fg-2 underline-offset-2 hover:underline">
+            seats on Fleet
+          </Link>
+          , not a new key.
+        </>
+      }
+    >
       {created && (
         <div className="mb-4 rounded-[11px] border border-accent/40 bg-[rgba(198,242,78,0.06)] p-3">
           <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-accent">Copy now — shown once</div>
@@ -945,7 +956,7 @@ export function ApiKeysPanel() {
               ? "Key name (e.g. laptop — acme-core)"
               : kind === "gate"
                 ? "Key name (e.g. github-actions)"
-                : "Key name (e.g. ci-agent)"
+                : "Key name (e.g. claude-code)"
           }
           className="max-w-xs"
         />
@@ -973,7 +984,7 @@ export function ApiKeysPanel() {
           <option value="365">Expires in 365 days</option>
         </select>
         <Button size="sm" onClick={create} disabled={!name.trim()}>
-          <Plus size={14} />{kind === "sync" ? "Mint credential" : kind === "gate" ? "Mint gate key" : "Create key"}
+          <Plus size={14} />{kind === "sync" ? "Mint credential" : kind === "gate" ? "Mint gate key" : "Mint key"}
         </Button>
       </div>
       {error && <p className="mb-2 text-[12px] text-st-blocked">{error}</p>}
@@ -1053,7 +1064,7 @@ export function ApiKeysPanel() {
       )}
       <KeyGroup
         title="Agent keys"
-        blurb="Read and write items, memory and claims — the credential a coding agent carries."
+        blurb="Read and write items, memory and claims — who the process is. A seat on Fleet is the role for this wave."
         rows={agentKeys}
         empty="No agent key has been minted. Nothing can reach the MCP endpoint until one is."
       >
@@ -1078,6 +1089,14 @@ export function ApiKeysPanel() {
               >
                 {projectName(k.project_id)}
               </span>
+              {k.fleet_wave && (
+                <span
+                  className="font-mono text-[9.5px] uppercase tracking-wide text-[color:var(--color-st-review)]"
+                  title="End wave sweeps this and never a hand-minted key"
+                >
+                  {k.fleet_wave} · swept by End wave
+                </span>
+              )}
               {k.expires_at && (
                 <span
                   className={cn(

@@ -179,4 +179,21 @@ describe("docs overlay routes", () => {
     expect(house?.b).toMatch(/Custom, not Unmeasured/);
     expect(house?.b).toMatch(/does not file a graduation checklist/);
   });
+
+  it("Fleet overlay talks seats, not gate keys", () => {
+    // Gate keys are minted on API keys. Naming them on Fleet is the two-pages
+    // mix that sends an operator to mint the wrong object.
+    const fleet = docFor("/fleet");
+    const body = fleet.sections.map((s) => `${s.h} ${s.b}`).join(" ");
+    expect(body).toMatch(/seat/i);
+    expect(body).not.toMatch(/gate key/i);
+    expect(fleet.related?.some((r) => r.label === "API keys")).toBe(true);
+  });
+
+  it("API keys overlay says a seat is not a key", () => {
+    const keys = docFor(settingsPath("project/api-keys"));
+    const body = keys.sections.map((s) => `${s.h} ${s.b}`).join(" ");
+    expect(body).toMatch(/seat/i);
+    expect(keys.related?.some((r) => r.label === "Fleet")).toBe(true);
+  });
 });

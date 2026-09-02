@@ -712,6 +712,10 @@ class ApiKeyOut(ORMModel):
     created_at: datetime
     expires_at: datetime | None = None
     revoked: bool = False
+    # Set when Fleet minted this for a wave. Null is a hand-minted key, never swept.
+    # Without this on the list, a wave key and an ordinary API key look the same, and
+    # End wave sweeping one of them is invisible until it happens.
+    fleet_wave: str | None = None
 
 
 class ApiKeyCreated(ApiKeyOut):
