@@ -68,6 +68,10 @@ describe("SyncLinkPanel", () => {
     expect(screen.getByPlaceholderText("cloud.graphban.dev")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("paste key…")).toBeInTheDocument();
     expect(screen.getByText(/Mint the link key there/)).toBeInTheDocument();
+    // Same object the intro names. This field used to say "Sync API key" while
+    // the paragraph said "link key".
+    expect(screen.getByText("Link key")).toBeInTheDocument();
+    expect(screen.queryByText(/Sync API key/i)).not.toBeInTheDocument();
   });
 
   it("submits the link form with URL, key, and org", async () => {
@@ -92,6 +96,10 @@ describe("SyncLinkPanel", () => {
 
     expect(await screen.findByText("linked")).toBeInTheDocument();
     expect(screen.getByText("https://cloud.agentldgr.dev")).toBeInTheDocument();
+    // Status used to label this row "Credential" — the same paste the form
+    // now calls a link key.
+    expect(screen.getByText("Link key")).toBeInTheDocument();
+    expect(screen.queryByText(/^Credential$/i)).not.toBeInTheDocument();
 
     // Scope is empty → the graph-sync checkbox does nothing yet.
     expect(screen.getByText("No project selected")).toBeInTheDocument();
