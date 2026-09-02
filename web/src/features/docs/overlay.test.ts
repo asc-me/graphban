@@ -122,6 +122,7 @@ describe("docs overlay routes", () => {
     expect(paste?.b).toMatch(/not a credential/);
     expect(paste?.b).toMatch(/--api-key/);
     expect(paste?.b).not.toMatch(/Sync API key/i);
+    expect(paste?.b).toMatch(/provider keys/);
   });
 
   it("org Deployments overlay names minting a link key", () => {
