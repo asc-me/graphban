@@ -6,11 +6,20 @@ agent's writes are identical to a user's and appear instantly in the UI.
 
 ## Endpoint & protocol
 
-- **`POST /api/mcp`** — JSON-RPC 2.0 over HTTP. Handles `initialize`, `tools/list`,
-  `tools/call`, and the `notifications/initialized` notification. Single JSON responses (no
+- **`POST /api/mcp`** — JSON-RPC 2.0 over HTTP. Dual-era (GRPH-223): handles
+  `server/discover`, `initialize`, `tools/list`, `tools/call`, and the
+  `notifications/initialized` notification. Single JSON responses (no
   SSE) keep it `curl`-friendly while remaining MCP Streamable-HTTP compatible for simple
-  calls. The server advertises MCP protocol **2025-11-25** and negotiates down to a
-  client's requested version when it's one it supports.
+  calls. A **modern-era** (protocol **2026-07-28**) request carries its version in
+  `params._meta["io.modelcontextprotocol/protocolVersion"]` plus a matching
+  `MCP-Protocol-Version` header, and is answered statelessly: `server/discover` for
+  capabilities, `resultType` on every result, cache hints (`ttlMs`/`cacheScope`) on list
+  responses, and `serverInfo` in the result `_meta`. A **legacy-era** client sees no
+  change: `initialize` negotiates within **2025-03-26 / 2025-06-18 / 2025-11-25** (never
+  echoing a modern version — a handshake selects legacy semantics), and replies keep their
+  pre-adoption shape. Modern rejections: unsupported version → `400`/`-32022` listing
+  `supported`; header/body mismatch or missing `Mcp-Method`/`Mcp-Name` → `400`/`-32020`;
+  unknown method → `404`/`-32601`.
 - **Auth** — a scoped **API key** via `X-API-Key: gb_sk_…` or `Authorization: Bearer
   gb_sk_…`. Create one in [Settings → API Keys](settings.md#api-keys-tab). Unauthenticated
   calls return `401`.
