@@ -225,8 +225,8 @@ function CloudLinkCard({
             {busy ? "Linking…" : "Link instance"}
           </Button>
           <p className="text-[11px] leading-relaxed text-faint">
-            The key is stored encrypted at rest and never shown again — the same handling as your
-            provider API keys.
+            The link key is stored encrypted at rest and never shown again — the same handling as
+            your provider keys.
           </p>
         </div>
       )}
