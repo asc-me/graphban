@@ -112,6 +112,7 @@ def test_cross_org_reads_blocked(client, tenants):
         # Added 2026-08-21 (GRPH-436). Both were absent, and both are reads whose
         # `require_readable` call could be deleted with the whole suite still green.
         ("GET", f"/api/fleet/presence?project_id={pb}", None),
+        ("GET", f"/api/live?project_id={pb}", None),
         ("GET", f"/api/projects/{pb}/counts", None),
     ]
     for method, path, body in reads:

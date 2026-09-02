@@ -1,4 +1,4 @@
-import type { Credential, CredentialIn, FleetOverview, FleetPresence, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
+import type { Credential, CredentialIn, FleetOverview, FleetPresence, LiveBoard, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -270,6 +270,11 @@ export const api = {
   // Fleet render pay for node resolution it does not use.
   fleetPresence: (projectId?: string) =>
     request<FleetPresence>(`/fleet/presence${projectId ? `?project_id=${projectId}` : ""}`),
+  live: (projectId: string, user?: string | null) => {
+    const q = new URLSearchParams({ project_id: projectId });
+    if (user) q.set("user", user);
+    return request<LiveBoard>(`/live?${q.toString()}`);
+  },
   mintFleetKey: (body: { project_id: string; role: string; wave: string; label?: string }) =>
     request<{ id: string; plaintext: string; role: string; wave: string; prefix: string }>(
       "/fleet/keys", { method: "POST", body: JSON.stringify(body) }),

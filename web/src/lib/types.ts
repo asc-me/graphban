@@ -1430,3 +1430,50 @@ export type ReindexStatus = {
   running: boolean;
   tables: { table: string; total: number; done: number; finished: boolean }[];
 };
+
+/** GET /api/live (PRD-33 D5). `unreserved` is not idle; `unrecorded` is not "no PR". */
+export type LiveFileKind = "leased" | "predicted" | "off_map";
+export type LiveFileState = "leased" | "predicted" | "off_map" | "unreserved" | "idle" | "offline";
+
+export interface LiveBoard {
+  served_at: string;
+  heartbeat_interval_seconds: number;
+  presence_ttl_seconds: number;
+  truncated: boolean;
+  total_agents: number;
+  unattributed_count: number;
+  users: LiveUser[];
+  user_counts: { user_id: string | null; label: string; online: number; total: number }[];
+}
+
+export interface LiveUser {
+  user_id: string | null;
+  label: string;
+  initials: string;
+  color: string | null;
+  online: number;
+  total: number;
+  agents: LiveAgent[];
+}
+
+export interface LiveAgent {
+  id: string;
+  key: string;
+  label: string;
+  role: string | null;
+  state: string;
+  last_seen_at: string | null;
+  worktree: string | null;
+  branch: string | null;
+  branch_orphaned: boolean;
+  file_state: LiveFileState;
+  files: { area: string; kind: LiveFileKind; reason: string | null; node_paths: string[] }[];
+  holdings: {
+    id: string;
+    title: string;
+    status: string;
+    phase: string;
+    phase_basis: string;
+    pr: { state: "recorded" | "unrecorded"; url?: string };
+  }[];
+}

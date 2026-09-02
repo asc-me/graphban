@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 113 of the 186 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 114 of the 187 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -190,6 +190,14 @@ failure the propose-only boundary exists to prevent.
 | POST | `/api/fleet/keys` | JWT | Mint a credential narrowed to one role and tagged to a wave |
 | GET | `/api/fleet/end-wave` | JWT | What ending the wave would destroy, for the confirm |
 | POST | `/api/fleet/end-wave` | JWT | Revoke the wave's keys and release everything they hold |
+
+## Live (PRD-33)
+
+| Method | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| GET | `/api/live` | JWT | Observe Live board: humans → agents → leases → recorded PRs. `project_id` required; `user` filters. JWT only, same posture as `/api/fleet/presence`. No MCP tool. |
+
+**Not a forge feed and not a filesystem watch.** PRs are URLs already stored on holdings (`recorded` / `unrecorded`). Files are leases (`unreserved` is not idle). Agents with no user sit in Unattributed, not off the board.
 
 Agent presence is **derived from last contact**, never stored — an agent that dies doesn't
 report it, so a stored status would read healthy for a process killed an hour ago. A revoked
