@@ -66,8 +66,10 @@ describe("SyncLinkPanel", () => {
     renderPanel();
     expect(await screen.findByText("not linked")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("cloud.graphban.dev")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("paste key…")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("paste link key…")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("paste key…")).not.toBeInTheDocument();
     expect(screen.getByText(/Mint the link key there/)).toBeInTheDocument();
+    expect(screen.getByText(/paste the cloud URL and link key/i)).toBeInTheDocument();
     // Same object the intro names. This field used to say "Sync API key" while
     // the paragraph said "link key".
     expect(screen.getByText("Link key")).toBeInTheDocument();
@@ -85,7 +87,7 @@ describe("SyncLinkPanel", () => {
     await screen.findByText("not linked");
 
     await user.type(screen.getByPlaceholderText("cloud.graphban.dev"), "cloud.agentldgr.dev");
-    await user.type(screen.getByPlaceholderText("paste key…"), "gb_sk_secret");
+    await user.type(screen.getByPlaceholderText("paste link key…"), "gb_sk_secret");
     await user.type(screen.getByPlaceholderText("acme"), "acme");
     await user.click(screen.getByRole("button", { name: "Link instance" }));
 
@@ -137,7 +139,7 @@ describe("SyncLinkPanel", () => {
     await screen.findByText("not linked");
 
     await user.type(screen.getByPlaceholderText("cloud.graphban.dev"), "cloud.agentldgr.dev");
-    await user.type(screen.getByPlaceholderText("paste key…"), "gb_sk_secret");
+    await user.type(screen.getByPlaceholderText("paste link key…"), "gb_sk_secret");
     await user.type(screen.getByPlaceholderText("acme"), "acme");
     await user.click(screen.getByRole("button", { name: "Link instance" }));
 
