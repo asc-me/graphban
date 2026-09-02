@@ -536,7 +536,48 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
             "duplicate_of": duplicate_of,
         })
 
-    out.sort(key=lambda r: r["confidence"], reverse=True)
+    _, _, llm_judge = _triage_prefs(db, project_id)
+    published_texts = [s.text for s, _ in published if (s.text or "").strip()][:8]
+    asked = 0
+    for row in out:
+        row.update(_empty_review_judge(cause="off" if not llm_judge else "capped"))
+        if not llm_judge:
+            row["ungraded_reason"] = JUDGE_CAUSES["off"]
+            continue
+        if row["suggestion"] == "reject":
+            # Similarity already vetoed. Spending a judge call cannot un-duplicate.
+            row["ungraded_reason"] = "similarity already vetoed — the judge is not asked"
+            continue
+        if asked >= REVIEW_JUDGE_MAX:
+            continue
+        asked += 1
+        verdict, cause = review_judge(db, row["shard"], published_texts=published_texts)
+        if verdict is None:
+            row.update(_empty_review_judge(cause=cause))
+            continue
+        row.update({
+            "judged": True,
+            "grounded": verdict["grounded"],
+            "ready": verdict["ready"],
+            "conflicts": verdict["conflicts"],
+            "judge_reason": verdict["reason"],
+            "ungraded_reason": "",
+        })
+        if verdict["reason"]:
+            row["reasons"] = list(row["reasons"]) + [f"review judge: {verdict['reason']}"]
+        # Ungrounded work that similarity wanted to accept is the fabrication the
+        # human is here to catch. Demote to review; do not auto-reject — that is
+        # still the human's call.
+        if verdict["grounded"] is False and row["suggestion"] == "accept":
+            row["suggestion"] = "review"
+            row["confidence"] = min(float(row["confidence"]), 0.45)
+
+    # Ungrounded judged rows first — those are the ones a reviewer must see.
+    # Then the original confidence order.
+    out.sort(key=lambda r: (
+        0 if (r.get("judged") and r.get("grounded") is False) else 1,
+        -float(r["confidence"]),
+    ))
     return out
 
 
@@ -658,6 +699,9 @@ JUDGE_CAUSES = {
                 "not a verdict about this candidate",
     "unparseable": "the judge did not answer in the required form",
     "error": "the judge could not be reached",
+    "off": "llm judge is off for this project",
+    "capped": "not asked this pass — the review judge is capped so a large queue cannot "
+              "stall the page",
 }
 
 # Extra causes the on-demand review endpoint can report (GRPH-650). Not in
@@ -670,6 +714,23 @@ ADVISORY_CAUSES = {
     "not_candidate": "only a candidate can be scored this way; this shard is already "
                      "published or rejected",
 }
+
+# Bound the review-queue LLM pass (GRPH-79). Similarity is cheap and always runs;
+# the judge is a chat call × JUDGE_SAMPLES. Scoring every candidate on every GET
+# would make opening Memory review a bill. Rejects are skipped (the veto already
+# decided); the rest are asked in confidence order until this cap.
+REVIEW_JUDGE_MAX = 8
+
+_REVIEW_SYSTEM = (
+    "You review a candidate memory shard for a human who will publish or reject it. "
+    "Similarity already handled duplicates. You judge what similarity cannot: whether "
+    "the claim CONTRADICTS the published memory, the linked item, or the code notes "
+    "(groundedness), and whether it is specific, durable, and non-trivial enough to "
+    "commit (readiness). Respond with ONLY a compact JSON object: "
+    '{"grounded": <true|false>, "ready": <true|false>, '
+    '"conflicts": ["<short quote or id>"], "reason": "<one short sentence>"}'
+)
+_REVIEW_QUESTION = "Score this candidate for a human reviewer. Return only the JSON object."
 
 
 def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
@@ -721,6 +782,127 @@ def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
         "quality": round(sum(v["quality"] for v in verdicts) / len(verdicts), 3),
         "reason": verdicts[0]["reason"],
     }, "ok"
+
+
+def _parse_review_judge(raw: str) -> dict | None:
+    if not raw:
+        return None
+    match = _JSON_OBJ_RE.search(raw)
+    if match is None:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or "grounded" not in data or "ready" not in data:
+        return None
+    if _NO_INPUT_RE.search(str(data.get("reason") or "")):
+        return None
+    conflicts = data.get("conflicts") or []
+    if not isinstance(conflicts, list):
+        conflicts = []
+    return {
+        "grounded": bool(data["grounded"]),
+        "ready": bool(data["ready"]),
+        "conflicts": [str(c).strip() for c in conflicts if str(c).strip()][:5],
+        "reason": str(data.get("reason") or "").strip(),
+    }
+
+
+def _review_context(db: Session, shard: MemoryShard, published_texts: list[str]) -> str:
+    """What the review judge is shown. Absence is named: empty published / no item /
+    no code match are sentences, not omitted fields."""
+    parts = [f"CANDIDATE:\n{(shard.text or '').strip() or '(empty)'}"]
+    if published_texts:
+        parts.append("PUBLISHED MEMORY (trusted):\n" + "\n".join(
+            f"- {t}" for t in published_texts[:5]))
+    else:
+        parts.append("PUBLISHED MEMORY: none — there is no trusted memory to contradict.")
+    if shard.item_id:
+        item = db.get(Item, shard.item_id)
+        if item is None:
+            parts.append(f"LINKED ITEM {shard.item_id}: missing — the pointer does not resolve.")
+        else:
+            parts.append(
+                f"LINKED ITEM {item.id} {item.title} ({item.status}):\n"
+                f"{(item.description or '(no description)')[:1200]}"
+            )
+    else:
+        parts.append("LINKED ITEM: none.")
+    pid = shard.project_id or ""
+    if pid:
+        try:
+            from app.services import code_graph as code_svc
+            hits = code_svc.search_code(db, shard.text or "", project_id=pid, top_k=3)
+        except Exception:  # noqa: BLE001 — a graph miss is unmeasured, not a crash
+            logger.exception("review judge: code search failed")
+            hits = []
+        if hits:
+            parts.append("CODE NOTES:\n" + "\n".join(
+                f"- [{n.kind}] {n.path} — {n.summary}" for n, _sc in hits))
+        else:
+            parts.append("CODE NOTES: no described nodes matched — the graph was asked.")
+    else:
+        parts.append("CODE NOTES: no project, so the code graph was not asked.")
+    return "\n\n".join(parts)
+
+
+def review_judge(db: Session, shard: MemoryShard, *,
+                 published_texts: list[str] | None = None) -> tuple[dict | None, str]:
+    """Groundedness + readiness for the human review queue (GRPH-79).
+
+    Separate from `judge_verdict`, which rates keep/quality for auto-triage and
+    cannot tell consistent-from-contradictory (GRPH-358). Stub / split / unusable
+    is ungraded, never a fabricated 0.
+    """
+    from app.services import platform as platform_svc
+
+    try:
+        resolved = platform_svc.resolve_chat(db, shard.project_id or "core")
+        provider, model = resolved.provider_id, resolved.chat
+    except Exception:  # noqa: BLE001
+        logger.exception("review judge: provider resolution failed")
+        return None, "error"
+    if provider == "stub":
+        return None, "no_provider"
+
+    context = _review_context(db, shard, published_texts or [])
+    verdicts: list[dict] = []
+    from app.providers import llm_meter
+    with llm_meter.llm_context(feature="memory.review_judge", project_id=shard.project_id or ""):
+        for _ in range(JUDGE_SAMPLES):
+            try:
+                raw = model.chat(system=_REVIEW_SYSTEM, context=context,
+                                 question=_REVIEW_QUESTION, temperature=0)
+            except Exception:  # noqa: BLE001
+                logger.exception("review judge: chat call failed")
+                return None, "error"
+            parsed = _parse_review_judge(raw)
+            if parsed is None:
+                return None, ("no_input" if _NO_INPUT_RE.search(raw or "") else "unparseable")
+            if verdicts and (parsed["grounded"] != verdicts[0]["grounded"]
+                             or parsed["ready"] != verdicts[0]["ready"]):
+                return None, "split"
+            verdicts.append(parsed)
+    first = verdicts[0]
+    return {
+        "grounded": first["grounded"],
+        "ready": first["ready"],
+        "conflicts": first["conflicts"],
+        "reason": first["reason"],
+        "samples": len(verdicts),
+    }, "ok"
+
+
+def _empty_review_judge(*, cause: str) -> dict:
+    return {
+        "judged": False,
+        "grounded": None,
+        "ready": None,
+        "conflicts": [],
+        "judge_reason": "",
+        "ungraded_reason": JUDGE_CAUSES.get(cause, cause),
+    }
 
 
 def _llm_judge(db: Session, shard: MemoryShard) -> dict | None:

@@ -487,6 +487,12 @@ export interface ScoredCandidate {
   confidence: number;
   reasons: string[];
   duplicate_of: string | null;
+  judged?: boolean;
+  grounded?: boolean | null;
+  ready?: boolean | null;
+  conflicts?: string[];
+  judge_reason?: string;
+  ungraded_reason?: string;
 }
 
 /** On-demand LLM judge (GRPH-650). `verdict` XOR `cause` — a missing quality is not 0. */

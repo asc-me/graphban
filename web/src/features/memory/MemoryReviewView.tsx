@@ -291,6 +291,40 @@ function CandidateCard({
         </span>
       </div>
       <p className="mb-2 whitespace-pre-wrap text-[13px] leading-relaxed text-ink">{shard.text}</p>
+      {score?.judged && (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          <span
+            className={cn(
+              "rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide",
+              score.grounded
+                ? "border-line-2 bg-surface-3 text-muted"
+                : "border-[rgba(255,107,107,0.3)] bg-[rgba(255,107,107,0.08)] text-st-blocked",
+            )}
+          >
+            {score.grounded ? "grounded" : "ungrounded"}
+          </span>
+          <span
+            className={cn(
+              "rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide",
+              score.ready
+                ? "border-line-2 bg-surface-3 text-muted"
+                : "border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] text-[#e0b34a]",
+            )}
+          >
+            {score.ready ? "ready" : "not ready"}
+          </span>
+        </div>
+      )}
+      {score && !score.judged && score.ungraded_reason && (
+        <p className="mb-2 font-mono text-[10.5px] text-faint">
+          not judged — {score.ungraded_reason}
+        </p>
+      )}
+      {score && (score.conflicts?.length ?? 0) > 0 && (
+        <p className="mb-2 text-[11.5px] text-st-blocked">
+          Conflicts: {(score.conflicts ?? []).join(" · ")}
+        </p>
+      )}
       {score && score.reasons.length > 0 && (
         <p className="mb-3 text-[11.5px] text-faint">Why: {score.reasons.join(" · ")}</p>
       )}

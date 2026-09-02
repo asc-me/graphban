@@ -194,9 +194,10 @@ def scored_candidates(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """The review queue with advisory accept/reject suggestions (AL-151): each candidate
-    scored by similarity to trusted/rejected memory + recurrence, most actionable first.
-    Advisory only — publishing/rejecting is still the human's call."""
+    """The review queue with advisory accept/reject suggestions (AL-151), plus
+    groundedness/readiness when the project's LLM judge is on (GRPH-79). Similarity
+    always runs. An ungraded judge is named, not a quiet zero. Advisory only —
+    publishing/rejecting is still the human's call."""
     authz.require_readable(db, user.id, project_id)
     return [
         ScoredCandidate(
@@ -205,6 +206,12 @@ def scored_candidates(
             confidence=r["confidence"],
             reasons=r["reasons"],
             duplicate_of=r["duplicate_of"],
+            judged=bool(r.get("judged")),
+            grounded=r.get("grounded"),
+            ready=r.get("ready"),
+            conflicts=list(r.get("conflicts") or []),
+            judge_reason=str(r.get("judge_reason") or ""),
+            ungraded_reason=str(r.get("ungraded_reason") or ""),
         )
         for r in mem_svc.score_candidates(db, project_id=project_id)
     ]
