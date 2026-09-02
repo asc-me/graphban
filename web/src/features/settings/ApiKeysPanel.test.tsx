@@ -292,6 +292,72 @@ describe("listing", () => {
   });
 });
 
+/**
+ * The "minted with" detail. The permissions chosen at mint time (scopes + MCP tool tiers)
+ * were never shown again after the one-time plaintext banner, which made a key's tool tiers
+ * impossible to audit once it was in an agent's config. The detail expand surfaces them.
+ */
+describe("minted-with detail", () => {
+  /** Open the chevron on the row for the key with the given name. */
+  async function expand(name: string) {
+    const user = userEvent.setup();
+    await screen.findByText(name);
+    await user.click(screen.getAllByTitle("Minted with")[0]);
+  }
+
+  it("is collapsed until the chevron is opened", async () => {
+    // The row leads with name/prefix/project; the permissions are a disclosure, not wallpaper.
+    keyList = [key({ id: "key_a", name: "claude-code", tool_tiers: ["prd"] })];
+    view();
+    await screen.findByText("claude-code");
+    expect(screen.queryByTestId("minted-with")).toBeNull();
+  });
+
+  it("shows the scopes and tier labels an agent key was minted with", async () => {
+    keyList = [key({ id: "key_a", name: "planner", scopes: ["read", "write"], tool_tiers: ["prd", "fleet"] })];
+    view();
+    await expand("planner");
+    const block = await screen.findByTestId("minted-with");
+    expect(block.textContent).toMatch(/read/);
+    expect(block.textContent).toMatch(/write/);
+    expect(block.textContent).toMatch(/PRDs/);
+    expect(block.textContent).toMatch(/Fleet admin/);
+  });
+
+  it("names core explicitly when no extra tiers were granted", async () => {
+    // Core-only is the DEFAULT, not a degraded state. An empty tools row would read as "we
+    // forgot to say" rather than "this is the default". project_id is null so the Target row
+    // ("Global…") cannot collide with the "core" chip being asserted.
+    keyList = [key({ id: "key_a", name: "plain", project_id: null, tool_tiers: [] })];
+    view();
+    await expand("plain");
+    const block = await screen.findByTestId("minted-with");
+    expect(block.textContent).toMatch(/core/);
+    expect(block.textContent).not.toMatch(/PRDs/);
+  });
+
+  it("does not advertise MCP tools for a link key — it calls none", async () => {
+    // A link key pushes a code graph and never touches the MCP endpoint, so a tools row would
+    // describe a capability it does not have. The block itself must still render (the scopes
+    // and target are real), which is why the absence is checked ON the block, not the page.
+    keyList = [key({ id: "key_l", name: "laptop", scopes: ["sync"] })];
+    view();
+    await expand("laptop");
+    const block = await screen.findByTestId("minted-with");
+    expect(block.textContent).not.toMatch(/MCP tools/);
+    expect(block.textContent).toMatch(/sync/);
+  });
+
+  it("does not advertise MCP tools for a gate key — it attests, it does not call", async () => {
+    keyList = [key({ id: "key_g", name: "ci", scopes: ["read", "write", "gate"] })];
+    view();
+    await expand("ci");
+    const block = await screen.findByTestId("minted-with");
+    expect(block.textContent).not.toMatch(/MCP tools/);
+    expect(block.textContent).toMatch(/gate/);
+  });
+});
+
 describe("docs overlay", () => {
   it("matches api-keys before the /settings catch-all", () => {
     // THE CALL. /settings/project/api-keys starts with /settings, so without this

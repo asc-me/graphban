@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Github, HardDrive, KeyRound, Plug, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { Check, ChevronRight, Copy, Github, HardDrive, KeyRound, Plug, Plus, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import * as React from "react";
 
 import { Avatar } from "@/components/ui/avatar";
@@ -857,6 +857,9 @@ export function ApiKeysPanel() {
   const [created, setCreated] = React.useState<{ plaintext: string; kind: KeyKind; projectId: string; scope: KeyScope } | null>(null);
   const [copied, setCopied] = React.useState(false);
   const [connectId, setConnectId] = React.useState<string | null>(null);
+  // Which key's "minted with" detail is open. Independent of `connectId` — the permissions a
+  // key was minted with and the snippet for wiring it into an agent are separate questions.
+  const [openDetails, setOpenDetails] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
 
   // Write access isn't in the Project shape; the backend rejects a sync key on a read-only
@@ -1085,6 +1088,14 @@ export function ApiKeysPanel() {
         {(k) => (
           <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">
             <div className="flex items-center gap-3 px-3 py-2.5">
+              <button
+                onClick={() => setOpenDetails(openDetails === k.id ? null : k.id)}
+                aria-expanded={openDetails === k.id}
+                title="Minted with"
+                className="flex-none text-faint transition-colors hover:text-fg"
+              >
+                <ChevronRight size={14} className={cn("transition-transform", openDetails === k.id && "rotate-90")} />
+              </button>
               <KeyRound size={14} className="text-muted" />
               <span className="text-[13px] text-fg-2">{k.name}</span>
               <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
@@ -1140,6 +1151,7 @@ export function ApiKeysPanel() {
                 <Trash2 size={14} />
               </button>
             </div>
+            {openDetails === k.id && <MintedWith k={k} projectName={projectName} />}
             {connectId === k.id && (
               <div className="border-t border-line px-3 pb-3">
                 <McpInstall apiKey="<YOUR_API_KEY>" keyPrefix={k.prefix} keyScope={k.project_id ? "project" : "global"} />
@@ -1164,6 +1176,14 @@ export function ApiKeysPanel() {
         {(k) => (
           <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">
             <div className="flex items-center gap-3 px-3 py-2.5">
+              <button
+                onClick={() => setOpenDetails(openDetails === k.id ? null : k.id)}
+                aria-expanded={openDetails === k.id}
+                title="Minted with"
+                className="flex-none text-faint transition-colors hover:text-fg"
+              >
+                <ChevronRight size={14} className={cn("transition-transform", openDetails === k.id && "rotate-90")} />
+              </button>
               <KeyRound size={14} className="text-muted" />
               <span className="text-[13px] text-fg-2">{k.name}</span>
               <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
@@ -1211,6 +1231,7 @@ export function ApiKeysPanel() {
                 <Trash2 size={14} />
               </button>
             </div>
+            {openDetails === k.id && <MintedWith k={k} projectName={projectName} />}
             {connectId === k.id && (
               <div className="border-t border-line px-3 pb-3">
                 <McpInstall apiKey="<YOUR_API_KEY>" keyPrefix={k.prefix} keyScope={k.project_id ? "project" : "global"} />
@@ -1234,6 +1255,14 @@ export function ApiKeysPanel() {
         {(k) => (
           <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">
             <div className="flex items-center gap-3 px-3 py-2.5">
+              <button
+                onClick={() => setOpenDetails(openDetails === k.id ? null : k.id)}
+                aria-expanded={openDetails === k.id}
+                title="Minted with"
+                className="flex-none text-faint transition-colors hover:text-fg"
+              >
+                <ChevronRight size={14} className={cn("transition-transform", openDetails === k.id && "rotate-90")} />
+              </button>
               <KeyRound size={14} className="text-muted" />
               <span className="text-[13px] text-fg-2">{k.name}</span>
               <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
@@ -1248,10 +1277,77 @@ export function ApiKeysPanel() {
                 Revoke
               </button>
             </div>
+            {openDetails === k.id && <MintedWith k={k} projectName={projectName} />}
           </div>
         )}
       </KeyGroup>
     </Section>
+  );
+}
+
+/** Human labels for the opt-in tool tiers, from the same source as the mint picker. */
+const TIER_LABEL: Record<string, string> = Object.fromEntries(
+  TOOL_TIERS.map(([id, label]) => [id, label]),
+);
+
+/**
+ * The permissions a key was minted with — chosen once at mint time and otherwise never shown
+ * again, which is what made a key's tool tiers impossible to audit after the fact.
+ *
+ * Scopes (read / write / sync / gate) are the operations the key may perform. MCP tool tiers
+ * are the specialist groups its manifest ADVERTISES, and only apply to agent keys — a link key
+ * pushes a code graph and a gate key attests, and neither calls MCP tools, so a "tools" line
+ * on them would describe a capability they do not have. `core` is named explicitly and always
+ * present: an agent key with no extra tiers is core-only BY DESIGN, not missing anything, and
+ * an empty tools row would read as "we forgot to say" rather than "this is the default".
+ */
+function MintedWith({ k, projectName }: { k: ApiKey; projectName: (id: string | null) => string }) {
+  const scopes = k.scopes ?? [];
+  const tiers = k.tool_tiers ?? [];
+  const isAgent = !scopes.includes("sync") && !scopes.includes("gate");
+  return (
+    <div className="border-t border-line px-3 py-2.5" data-testid="minted-with">
+      <div className="mb-1.5 font-mono text-[9.5px] uppercase tracking-wide text-faint">Minted with</div>
+      <div className="flex flex-col gap-1.5 text-[12px]">
+        <div className="flex items-baseline gap-3">
+          <span className="w-20 flex-none font-mono text-[10px] uppercase tracking-wide text-faint">Scopes</span>
+          <span className="flex flex-wrap gap-1">
+            {scopes.map((s) => (
+              <span key={s} className="rounded border border-line-2 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-fg-2">
+                {s}
+              </span>
+            ))}
+          </span>
+        </div>
+        {isAgent && (
+          <div className="flex items-baseline gap-3">
+            <span className="w-20 flex-none font-mono text-[10px] uppercase tracking-wide text-faint">MCP tools</span>
+            <span className="flex flex-wrap gap-1">
+              <span className="rounded border border-line-2 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-fg-2">
+                core
+              </span>
+              {tiers.map((t) => (
+                <span key={t} className="rounded border border-accent/40 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-accent">
+                  {TIER_LABEL[t] ?? t}
+                </span>
+              ))}
+            </span>
+          </div>
+        )}
+        <div className="flex items-baseline gap-3">
+          <span className="w-20 flex-none font-mono text-[10px] uppercase tracking-wide text-faint">Target</span>
+          <span className="text-fg-2">
+            {k.project_id ? `Pinned to ${projectName(k.project_id)}` : "Global — any project the owner can write"}
+          </span>
+        </div>
+        <div className="flex items-baseline gap-3">
+          <span className="w-20 flex-none font-mono text-[10px] uppercase tracking-wide text-faint">Expires</span>
+          <span className="text-fg-2">
+            {k.expires_at ? new Date(k.expires_at).toLocaleDateString() : "No expiry"}
+          </span>
+        </div>
+      </div>
+    </div>
   );
 }
 
