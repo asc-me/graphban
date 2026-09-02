@@ -195,6 +195,19 @@ describe("docs overlay routes", () => {
     }
   });
 
+  it("AI providers overlay names pending validation as not unreachable", () => {
+    const selfHost = docFor(settingsPath("deployment/providers"));
+    const hosted = docFor(settingsPath("project/providers"));
+    const tagged = docFor("/p/CORE/settings/deployment/providers");
+    for (const d of [selfHost, hosted, tagged]) {
+      const health = d.sections.find((s) => /health is of the credential/i.test(s.h));
+      expect(health?.b).toMatch(/pending validation is not unreachable/i);
+      expect(health?.b).toMatch(/nobody asked yet/);
+      expect(health?.b).toMatch(/Test connection is the ask/);
+      expect(health?.b).toMatch(/pending cannot be default/);
+    }
+  });
+
   it("PRD editor overlay names empty headings as not a clean pass", () => {
     const d = docFor("/prds/abc");
     const cov = d.sections.find((s) => /coverage/i.test(s.h));

@@ -283,7 +283,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 2, h: "Catalogue plus a custom endpoint", b: "Pick Anthropic, OpenAI, Gemini, Grok, Groq, DeepSeek, Mistral, Ollama, Qwen, Kimi, GLM, MiniMax, OpenRouter, Together, Fireworks, Perplexity, Cohere, or Custom. Every OpenAI-compat row shows an editable endpoint, pre-filled from the catalogue so the default URL is zero-typing and a gateway or local server is one field." },
       { num: 3, h: "Deployment default, then project", b: "A credential can be the box default. A project may point at one; if that pointer is dead, resolution falls back to the deployment default rather than going silent." },
       { num: 4, h: "Task models", b: "Classify, critique, and the memory judge can use a different credential. Unset inherits this project's chat — a missing role is not 'no judge'. A named credential that cannot be used is ungraded, not a quieter model." },
-      { num: 5, h: "Health is of the credential", b: "The dot is whether this credential answers, labelled in text, not a second tag. Unreachable stays selectable — it was asked and did not answer. A wrong model name is refused with the list the provider actually offers." },
+      { num: 5, h: "Health is of the credential", b: "The dot is labelled, not colour-only. Pending validation is not unreachable — nobody asked yet. Test connection is the ask; pending cannot be default. Unreachable stays selectable — it was asked and did not answer. A wrong model name is refused with the list the provider actually offers." },
     ],
     related: [{ label: "API keys", to: settingsPath("project/api-keys") }],
   },
