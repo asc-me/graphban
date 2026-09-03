@@ -94,6 +94,14 @@ describe("P28 self-host rail", () => {
     expect(screen.getByText("Activity")).toBeInTheDocument();
   });
 
+  it("shows Live next to Activity under Observe on /live", async () => {
+    wrap(<LeftNav />, "/live");
+    expect(await screen.findByText("Live")).toBeInTheDocument();
+    expect(screen.getByText("Activity")).toBeInTheDocument();
+    expect(screen.getByText("Memory")).toBeInTheDocument();
+    expect(screen.getByText("Lessons")).toBeInTheDocument();
+  });
+
   it("keeps Lessons in OBSERVE next to Memory, and does not land Observe on /lessons", () => {
     const sources = import.meta.glob("../components/shell/LeftNav.tsx", {
       query: "?raw",
@@ -104,6 +112,8 @@ describe("P28 self-host rail", () => {
     const observe = src.match(/const OBSERVE = \[[\s\S]*?\];/)?.[0] ?? "";
     expect(observe).toContain('to: "/lessons"');
     expect(observe).toContain('to: "/memory-review"');
+    expect(observe).toContain('to: "/live"');
+    expect(observe).toContain('to: "/activity"');
 
     const hostedStart = src.indexOf("const WORKSPACE");
     const hosted = src.slice(hostedStart, src.indexOf("as const", hostedStart));
@@ -113,10 +123,17 @@ describe("P28 self-host rail", () => {
     expect(les).toBeGreaterThan(mem);
     expect(hosted.slice(mem, les).match(/to:/g)?.length).toBe(1);
 
+    const act = hosted.indexOf('to: "activity"');
+    const live = hosted.indexOf('to: "live"');
+    expect(act).toBeGreaterThan(-1);
+    expect(live).toBeGreaterThan(act);
+    expect(hosted.slice(act, live).match(/to:/g)?.length).toBe(1);
+
     const def = src.slice(src.indexOf("observeDefault"), src.indexOf("observeDefault") + 180);
     expect(def).toContain("/memory-review");
     expect(def).toContain("/activity");
     expect(def).not.toContain("/lessons");
+    expect(def).not.toContain("/live");
   });
 });
 
@@ -131,6 +148,7 @@ describe("P28 hosted rail is untouched", () => {
     expect(screen.getByText("Galaxy")).toBeInTheDocument();
     expect(screen.getByText("Lessons")).toBeInTheDocument();
     expect(screen.getByText("Memory review")).toBeInTheDocument();
+    expect(screen.getByText("Live")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Plan" })).not.toBeInTheDocument();
   });
 

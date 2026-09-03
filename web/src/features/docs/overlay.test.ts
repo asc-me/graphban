@@ -28,6 +28,8 @@ const PAGES: [string, string][] = [
   ["/p/CORE/fleet", "Fleet"],
   ["/activity", "Activity"],
   ["/p/CORE/activity", "Activity"],
+  ["/live", "Live"],
+  ["/p/CORE/live", "Live"],
   ["/memory-review", "Memory review"],
   ["/p/CORE/memory-review", "Memory review"],
   ["/lessons", "Lessons"],

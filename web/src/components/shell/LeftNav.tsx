@@ -1,4 +1,4 @@
-import { BarChart3, BookMarked, Building2, Check, ChevronDown, CreditCard, GitBranch, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
+import { Activity, BarChart3, BookMarked, Building2, Check, ChevronDown, CreditCard, GitBranch, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
 import * as React from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
@@ -36,6 +36,7 @@ const WORKSPACE = [
   { to: "memory-review", icon: <Inbox size={16} />, label: "Memory review", count: "review" },
   { to: "lessons", icon: <BookMarked size={16} />, label: "Lessons" },
   { to: "activity", icon: <ScrollText size={16} />, label: "Activity" },
+  { to: "live", icon: <Activity size={16} />, label: "Live" },
   { to: "prds", icon: <BarChart3 size={16} />, label: "PRDs" },
 ] as const;
 
@@ -218,6 +219,7 @@ const BUILD = [
 ];
 const OBSERVE = [
   { to: "/activity", icon: <ScrollText size={16} />, label: "Activity" },
+  { to: "/live", icon: <Activity size={16} />, label: "Live" },
   { to: "/memory-review", icon: <Inbox size={16} />, label: "Memory", count: "review" as const },
   { to: "/lessons", icon: <BookMarked size={16} />, label: "Lessons" },
 ];

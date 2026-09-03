@@ -19,6 +19,7 @@ import { FleetView } from "@/features/fleet/FleetView";
 import { GalaxyView } from "@/features/galaxy/GalaxyView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { LessonsView } from "@/features/lessons/LessonsView";
+import { LiveView } from "@/features/live/LiveView";
 import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
 import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
 import { OrgAdminShell } from "@/features/orgadmin/OrgAdminShell";
@@ -82,6 +83,7 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["mcp-tools", <McpToolsView />],
   ["fleet", <FleetView />],
   ["activity", <ActivityView />],
+  ["live", <LiveView />],
   ["memory-review", <MemoryReviewView />],
   ["lessons", <LessonsView />],
   ["lessons/:id", <LessonsView />],

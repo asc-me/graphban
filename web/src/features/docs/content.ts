@@ -234,6 +234,22 @@ const CONTENT: Record<string, DocEntry> = {
     related: [{ label: "MCP Tools", to: "/mcp-tools" }],
   },
 
+  "/live": {
+    badge: "LIVE",
+    title: "Live",
+    tagline: "Who is on this project right now.",
+    sections: [
+      { num: 1, h: "Grouped by human", b: "Each person is one row of agents. Filter by user; Unattributed is a real bucket when a key has no user. All includes them." },
+      { num: 2, h: "Leases, not writes", b: "Files are area leases. An online agent holding work with no lease is unreserved, not idle. Predicted and off-map are labelled. Graphban cannot see the agent's disk." },
+      { num: 3, h: "Recorded PRs only", b: "A PR appears when Graphban already stored a URL on a holding. unrecorded is a word, not an empty list. Graphban does not fetch git." },
+    ],
+    related: [
+      { label: "Fleet", to: "/fleet" },
+      { label: "Code graph", to: "/code" },
+      { label: "Activity", to: "/activity" },
+    ],
+  },
+
   "/feedback-kit": {
     badge: "FEEDBACK KIT",
     title: "Feedback Kit",
