@@ -134,6 +134,16 @@ class Project(Base):
     # model meant a second credential row holding the same secret — storing one key twice so
     # that rotating it becomes two edits, one of which gets forgotten.
     model_override: Mapped[str] = mapped_column(String, default="", server_default="")
+    # The boot migration has consumed this project's legacy providers blob. The pointer
+    # alone cannot say that: removing an override rule is exactly what sets `credential_id`
+    # back to None, and a migration whose only idempotency marker is the pointer reads
+    # "removed" as "never migrated" — so the next boot re-pointed from the blob that is
+    # deliberately still on disk, and the rule the operator deleted resurrected. This flag
+    # is written when the pointer is (and by any explicit pointer edit in the console), and
+    # it outlives the clear.
+    credential_migrated: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
     # Per-task chat overrides (GRPH-316). Keys are the closed CHAT_ROLES set; a missing
     # key inherits the project's credential. Stored as JSON so a new role is not a
     # migration. Empty dict means every task uses the project pointer.

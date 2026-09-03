@@ -129,6 +129,36 @@ def test_booting_twice_does_not_duplicate(db):
     assert db.query(Credential).count() == after_first, "a second boot duplicated credentials"
 
 
+def test_removing_a_rule_then_booting_does_not_resurrect_it(db):
+    """THE BUG as the operator lives it: Remove on the credentials page, then ANY restart —
+    a deploy, a crash, a container recreation. The boot migration re-pointed from the blob
+    that is deliberately still on disk, and the removed rule showed back up in the console.
+
+    Reported on the reference deployment after the 2026.09.7 cut restarted the box."""
+    pid = "p_removed"
+    if db.get(Project, pid) is None:
+        db.add(Project(id=pid, name="P_REMOVED", tag="PREM"))
+        db.commit()
+    cfg = platform_svc.get_config(db, pid)
+    cfg.providers = {"anthropic": {"base_url": "", "api_key": secrets.encrypt("sk-rm"),
+                                   "chat_model": "claude-x"}}
+    cfg.active_chat_provider = "anthropic"
+    db.commit()
+
+    _boot()  # migrates it, as it must
+    db.expire_all()
+    assert db.get(Project, pid).credential_id is not None
+
+    platform_svc.set_project_credential(db, pid, credential_id=None, model_override="")
+
+    _boot()  # the restart that used to resurrect the rule
+
+    db.expire_all()
+    assert db.get(Project, pid).credential_id is None, (
+        "booting resurrected a rule the operator removed"
+    )
+
+
 def test_a_deployment_with_nothing_to_migrate_is_untouched(db):
     """The control. On an already-migrated deployment this must be a no-op, not a source of
     churn — otherwise "runs on every boot" is a liability rather than a safety net."""
