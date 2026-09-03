@@ -3,8 +3,17 @@ import { useLocation, useSearchParams, Link } from "react-router-dom";
 import { Avatar } from "@/components/ui/avatar";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
-import { useLive } from "@/lib/queries";
-import type { LiveAgent, LiveBoard, LiveFileState, LiveUser } from "@/lib/types";
+import { useConfig, useLive } from "@/lib/queries";
+import { projectPath } from "@/lib/routes";
+import type { LiveAgent, LiveBoard, LiveFileKind, LiveFileState, LiveUser } from "@/lib/types";
+
+/** Same mapping as Fleet: role colour is the status that role produces. */
+const ROLE_TONE: Record<string, string> = {
+  planner: "text-[#b794f6] border-[#b794f6]/40",
+  worker: "text-[color:var(--color-st-in_progress)] border-[color:var(--color-st-in_progress)]/40",
+  reviewer: "text-[color:var(--color-st-review)] border-[color:var(--color-st-review)]/40",
+  "all-in-one": "text-muted border-line-2",
+};
 
 /**
  * Observe Live (PRD-33): who is on this project right now.
@@ -14,11 +23,15 @@ import type { LiveAgent, LiveBoard, LiveFileState, LiveUser } from "@/lib/types"
  * "no PRs", Unattributed is not dropped.
  */
 export function LiveView() {
-  const { activeId } = useProjectCtx();
+  const { activeId, active } = useProjectCtx();
+  const { data: config } = useConfig();
   const { pathname } = useLocation();
   const [params] = useSearchParams();
   const user = params.get("user");
   const { data, isLoading, isError } = useLive(activeId, user);
+  const fleetTo = config?.hosted_mode && active?.tag
+    ? projectPath(active.tag, "fleet")
+    : "/fleet";
 
   if (isError) {
     return (
@@ -48,6 +61,12 @@ export function LiveView() {
           <p className="mt-0.5 text-[12.5px] text-muted">
             Who is on this project right now, what they hold, and whether a PR was recorded.
           </p>
+        </div>
+        <div className="ml-auto flex items-center gap-3">
+          <RoleCounts byRole={data.by_role ?? {}} roles={data.roles ?? []} />
+          <Link to={fleetTo} className="text-[12.5px] text-muted hover:text-fg-2">
+            Fleet
+          </Link>
         </div>
       </div>
 
@@ -172,6 +191,9 @@ function AgentRow({ agent: a, servedAt }: { agent: LiveAgent; servedAt: string }
                 {a.role}
               </span>
             )}
+            {a.parent_agent_id && (
+              <span className="font-mono text-[10px] text-faint">child</span>
+            )}
             <span className="font-mono text-[10px] text-faint">{a.state}</span>
           </div>
           <div className="mt-0.5 font-mono text-[10.5px] text-faint">
@@ -190,7 +212,7 @@ function AgentRow({ agent: a, servedAt }: { agent: LiveAgent; servedAt: string }
               {a.files.map((f, i) => (
                 <li key={`${f.area}-${i}`}>
                   {f.area}
-                  <span className="ml-1.5 text-faint">{f.kind}{f.reason ? ` · ${f.reason}` : ""}</span>
+                  <span className="ml-1.5 text-faint">{fileKindCopy(f.kind)}{f.reason ? ` · ${f.reason}` : ""}</span>
                 </li>
               ))}
             </ul>
@@ -223,9 +245,34 @@ function AgentRow({ agent: a, servedAt }: { agent: LiveAgent; servedAt: string }
   );
 }
 
+function RoleCounts({ byRole, roles }: { byRole: Record<string, number>; roles: string[] }) {
+  const shown = [...roles, "all-in-one"].filter((r) => byRole[r]);
+  if (shown.length === 0) return null;
+  return (
+    <span className="flex items-center gap-1.5">
+      {shown.map((r) => (
+        <span
+          key={r}
+          className={cn(
+            "rounded-md border px-1.5 py-0.5 font-mono text-[10px]",
+            ROLE_TONE[r] ?? "text-muted border-line-2",
+          )}
+        >
+          {byRole[r]} {r}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function fileStateCopy(state: LiveFileState): string {
   if (state === "unreserved") return "holds work with no area lease";
   return state;
+}
+
+function fileKindCopy(kind: LiveFileKind): string {
+  if (kind === "declared") return "declared on item, not reserved";
+  return kind;
 }
 
 /** Age against the payload clock (D6), not the browser clock. */
