@@ -95,6 +95,73 @@ def test_unreserved_is_not_idle(db, proj):
     assert agent["holdings"][0]["pr"]["state"] == "unrecorded"
 
 
+def test_declared_kind_does_not_win_file_state():
+    """Sabotage: put declared in the D3 priority table. Unreserved must still win."""
+    files = [{"area": "web/src", "kind": "declared", "reason": None, "node_paths": []}]
+    holdings = [{"id": "LV-1"}]
+    assert live_svc._file_state("working", holdings, files) == "unreserved"
+    assert live_svc._file_state("working", holdings, files) != "leased"
+
+
+def test_declared_files_on_unreserved_are_not_leased(db, proj):
+    """PR 3: ghost touchpoints stay declared. Mixing them into leased is the lie."""
+    db.add(Item(id="it1", project_id=proj, number=1, title="t", status="in_progress",
+                touchpoints=["web/src/live.ts", "backend/app/services/live.py"]))
+    db.commit()
+    holdings = [{"id": "LV-1", "stored_id": "it1", "title": "t", "status": "in_progress",
+                 "phase": "building", "phase_basis": "x"}]
+    got = live_svc.board(
+        db, proj,
+        list_agents=lambda *a, **k: [_agent_dict(holdings=holdings)],
+        held_areas=lambda *a, **k: {"held": [], "off_map": []},
+    )
+    agent = got["users"][0]["agents"][0]
+    assert agent["file_state"] == "unreserved"
+    kinds = {f["kind"] for f in agent["files"]}
+    assert kinds == {"declared"}
+    assert "leased" not in kinds
+    areas = {f["area"] for f in agent["files"]}
+    assert areas == {"web/src/live.ts", "backend/app/services/live.py"}
+
+
+def test_declared_does_not_appear_when_leased(db, proj):
+    db.add(Item(id="it1", project_id=proj, number=1, title="t", status="in_progress",
+                touchpoints=["web/src/live.ts"]))
+    db.commit()
+    holdings = [{"id": "LV-1", "stored_id": "it1", "title": "t", "status": "in_progress",
+                 "phase": "building", "phase_basis": "x"}]
+    got = live_svc.board(
+        db, proj,
+        list_agents=lambda *a, **k: [_agent_dict(id="a1", holdings=holdings)],
+        held_areas=lambda *a, **k: {
+            "held": [{"agent_id": "a1", "area": "web/src", "predicted": False,
+                      "node_paths": []}],
+            "off_map": [],
+        },
+    )
+    agent = got["users"][0]["agents"][0]
+    assert agent["file_state"] == "leased"
+    assert all(f["kind"] != "declared" for f in agent["files"])
+
+
+def test_by_role_is_the_full_census(db, proj):
+    roster = [
+        _agent_dict(id="a1", active_role="worker"),
+        _agent_dict(id="a2", active_role="reviewer"),
+        _agent_dict(id="a3", active_role="all-in-one"),
+    ]
+    got = live_svc.board(
+        db, proj, user_filter="missing",
+        list_agents=lambda *a, **k: roster,
+        held_areas=lambda *a, **k: {"held": [], "off_map": []},
+    )
+    assert got["users"] == []
+    assert got["by_role"]["worker"] == 1
+    assert got["by_role"]["reviewer"] == 1
+    assert got["by_role"]["all-in-one"] == 1
+    assert got["by_role"]["planner"] == 0
+
+
 def test_truncation_is_stated(db, proj, owner_key):
     roster = [_agent_dict(id=f"a{i}", key=f"LV-A{i}") for i in range(3)]
     got = live_svc.board(
@@ -155,6 +222,8 @@ def test_rest_call_returns_the_board(client, auth):
     assert "truncated" in body
     assert "heartbeat_interval_seconds" in body
     assert "presence_ttl_seconds" in body
+    assert "by_role" in body
+    assert "roles" in body
 
 
 def test_held_areas_failure_is_500(client, auth, monkeypatch):

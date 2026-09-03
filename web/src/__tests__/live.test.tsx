@@ -54,6 +54,8 @@ function emptyBoard(over: Partial<LiveBoard> = {}): LiveBoard {
     truncated: false,
     total_agents: 0,
     unattributed_count: 0,
+    by_role: {},
+    roles: ["planner", "worker", "reviewer"],
     users: [],
     user_counts: [],
     ...over,
@@ -66,6 +68,7 @@ vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
     projects: vi.fn(async () => [project]),
+    config: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
     live: vi.fn(async () => board),
   },
 }));
@@ -227,5 +230,30 @@ describe("Live board", () => {
     expect(screen.getByText("orphan-key")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "https://github.com/acme/x/pull/9" }))
       .toHaveAttribute("href", "https://github.com/acme/x/pull/9");
+  });
+
+  it("labels declared files and does not call them leased, and links Fleet", async () => {
+    board = emptyBoard({
+      total_agents: 1,
+      by_role: { worker: 1, planner: 0, reviewer: 0, "all-in-one": 0 },
+      users: [user({
+        agents: [agent({
+          file_state: "unreserved",
+          files: [{ area: "web/src/live.ts", kind: "declared", reason: null, node_paths: [] }],
+          holdings: [{
+            id: "CORE-1", title: "claim-next work", status: "in_progress",
+            phase: "building", phase_basis: "status",
+            pr: { state: "unrecorded" },
+          }],
+        })],
+      })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 1, total: 1 }],
+    });
+    renderLive();
+    expect(await screen.findByText("holds work with no area lease")).toBeInTheDocument();
+    expect(screen.getByText("declared on item, not reserved")).toBeInTheDocument();
+    expect(screen.queryByText(/^leased$/)).not.toBeInTheDocument();
+    expect(screen.getByText("1 worker")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Fleet" })).toHaveAttribute("href", "/fleet");
   });
 });

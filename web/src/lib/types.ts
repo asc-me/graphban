@@ -1432,7 +1432,7 @@ export type ReindexStatus = {
 };
 
 /** GET /api/live (PRD-33 D5). `unreserved` is not idle; `unrecorded` is not "no PR". */
-export type LiveFileKind = "leased" | "predicted" | "off_map";
+export type LiveFileKind = "leased" | "predicted" | "off_map" | "declared";
 export type LiveFileState = "leased" | "predicted" | "off_map" | "unreserved" | "idle" | "offline";
 
 export interface LiveBoard {
@@ -1442,6 +1442,8 @@ export interface LiveBoard {
   truncated: boolean;
   total_agents: number;
   unattributed_count: number;
+  by_role: Record<string, number>;
+  roles: string[];
   users: LiveUser[];
   user_counts: { user_id: string | null; label: string; online: number; total: number }[];
 }
@@ -1466,6 +1468,7 @@ export interface LiveAgent {
   worktree: string | null;
   branch: string | null;
   branch_orphaned: boolean;
+  parent_agent_id?: string | null;
   file_state: LiveFileState;
   files: { area: string; kind: LiveFileKind; reason: string | null; node_paths: string[] }[];
   holdings: {

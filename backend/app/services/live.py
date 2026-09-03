@@ -72,7 +72,10 @@ def _files_for(agent_id: str, areas: dict) -> list[dict]:
 
 
 def _file_state(agent_state: str, holdings: list, files: list[dict]) -> str:
-    """D3/D16: dominant kind. offline > leased > predicted > off_map > unreserved > idle."""
+    """D3/D16: dominant kind. offline > leased > predicted > off_map > unreserved > idle.
+
+    `declared` is PR 3 polish on unreserved only — it must not win this table.
+    """
     if agent_state == "offline":
         return "offline"
     kinds = {f["kind"] for f in files}
@@ -82,6 +85,39 @@ def _file_state(agent_state: str, holdings: list, files: list[dict]) -> str:
     if holdings:
         return "unreserved"
     return "idle"
+
+
+def _declared_files(holdings_in: list, items: dict[str, Item]) -> list[dict]:
+    """Item.touchpoints on an unreserved agent. Labelled declared, never leased."""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for h in holdings_in:
+        it = items.get(h.get("stored_id") or "")
+        if it is None:
+            continue
+        for area in it.touchpoints or []:
+            if not isinstance(area, str) or not area or area in seen:
+                continue
+            seen.add(area)
+            out.append({
+                "area": area,
+                "kind": "declared",
+                "reason": None,
+                "node_paths": [],
+            })
+    return out
+
+
+def _by_role(annotated: list[dict]) -> dict[str, int]:
+    """Full-set census, same shape as fleet_status.by_role (D2, PR 3)."""
+    counts = {r: 0 for r in fleet_svc.ROLES}
+    counts[fleet_svc.ALL_IN_ONE] = 0
+    for a in annotated:
+        role = a.get("role") or fleet_svc.ALL_IN_ONE
+        if role not in counts:
+            counts[role] = 0
+        counts[role] += 1
+    return counts
 
 
 def _user_meta(user: User | None) -> dict:
@@ -152,6 +188,9 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
             "pr": _holding_pr(items.get(h.get("stored_id"))),
         } for h in holdings_in]
         state = a.get("state") or "offline"
+        file_state = _file_state(state, holdings, files)
+        if file_state == "unreserved":
+            files = files + _declared_files(holdings_in, items)
         annotated.append({
             "id": a["id"],
             "key": a.get("key"),
@@ -162,7 +201,9 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
             "worktree": a.get("worktree"),
             "branch": a.get("branch"),
             "branch_orphaned": a.get("branch_orphaned"),
-            "file_state": _file_state(state, holdings, files),
+            "parent_agent_id": (row.parent_agent_id if row is not None else None)
+                or a.get("parent_agent_id"),
+            "file_state": file_state,
             "files": files,
             "holdings": holdings,
             "_user": _user_meta(user),
@@ -233,6 +274,8 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
         "truncated": total_agents > payload_agents,
         "total_agents": total_agents,
         "unattributed_count": unattributed_count,
+        "by_role": _by_role(annotated),
+        "roles": list(fleet_svc.ROLES),
         "users": users_out,
         "user_counts": user_counts,
     }
