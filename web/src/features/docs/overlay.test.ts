@@ -115,6 +115,8 @@ describe("docs overlay routes", () => {
     expect(d.sections[0]?.h).toMatch(/cloud org/i);
     expect(d.sections.map((s) => s.h).join(" ")).not.toMatch(/Incremental graph/);
     expect(d.sections[0]?.b).toMatch(/sync/i);
+    expect(d.sections[0]?.b).toMatch(/Link key name/);
+    expect(d.sections[0]?.b).toMatch(/not Key name/);
   });
 
   it("Cloud / Sync paste overlay names Link key, not a credential", () => {
@@ -362,6 +364,8 @@ describe("docs overlay routes", () => {
     expect(body).not.toMatch(/sync credential/i);
     expect(body).toMatch(/Link key target project/);
     expect(body).toMatch(/not Sync target/);
+    expect(body).toMatch(/Link key name/);
+    expect(body).toMatch(/not Key name/);
     const sync = docFor(settingsPath("deployment/sync"));
     expect(sync.sections[0]?.b).toMatch(/Link key/);
     expect(sync.sections[0]?.b).not.toMatch(/Sync credential/);
