@@ -269,3 +269,27 @@ def test_a_project_pointer_also_gets_the_deployment_fallback(db, project):
 
     assert isinstance(resolved.chat, FailoverChat)
     assert resolved.chat.primary_id == "cred_own"
+
+
+# ---- an empty answer fails over ---------------------------------------------------------
+
+
+def test_an_empty_answer_from_the_primary_fails_over(db, project):
+    """`require_answer` tags `EmptyAnswer` retryable, and the failover reads that tag —
+    so a provider that answers nothing hands the question to the second credential
+    instead of handing "" to the caller. The live instance did the latter for a grill."""
+    from app.providers.base import require_answer
+
+    try:
+        require_answer("   ", "openai-compat", model="grok-4.5", endpoint="https://api.x.ai/v1")
+    except Unavailable as e:
+        empty = e
+    else:
+        raise AssertionError("require_answer accepted a blank answer")
+
+    assert is_retryable(empty) is True
+    chat = FailoverChat(primary=_raising(empty), primary_id="cred_primary",
+                        fallback=_answering("from the fallback"), fallback_id="cred_fallback")
+    assert chat.chat(system="s", context="c", question="q") == "from the fallback"
+    assert chat.answered_by == "cred_fallback"
+    assert chat.failed_over is True

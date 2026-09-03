@@ -11,7 +11,7 @@ import time
 import httpx
 
 from app.config import settings
-from app.providers.base import provider_errors
+from app.providers.base import provider_errors, require_answer
 
 logger = logging.getLogger("graphban.providers.ollama")
 
@@ -117,8 +117,12 @@ class OllamaChat:
         time-to-first-byte equals total generation time, which an edge proxy capping
         TTFB (~100s on Cloudflare) will sever on a long answer. Streaming makes the
         first byte immediate while keeping the identical `-> str` contract."""
-        return "".join(self.stream(system=system, context=context, question=question,
-                                   temperature=temperature)).strip()
+        text = "".join(self.stream(system=system, context=context, question=question,
+                                   temperature=temperature))
+        # Blank is a failure, not an answer (see `EmptyAnswer`). With thinking off the
+        # likely cause is a severed stream; a server that ignored `think: false` and spent
+        # its whole budget reasoning would also land here.
+        return require_answer(text, "ollama", model=self.model, endpoint=self.base_url)
 
     def stream(self, *, system: str, context: str, question: str,
                temperature: float | None = None):

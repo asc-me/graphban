@@ -524,3 +524,29 @@ def test_an_mcp_tool_call_tags_its_spans_mcp_colon_tool(client, auth):
     # own embed wrote an untagged span, i.e. the copy did not carry the tag.
     tagged = [r for r in _spans(kind="embed") if r.feature == "mcp:add_memory"]
     assert tagged, f"no tagged embed span; saw {[(r.kind, r.feature) for r in _spans()][-8:]}"
+
+
+# ------------------------------------------------ an empty answer is a failed span
+def test_an_empty_stream_is_a_failed_span_not_a_free_success(client):
+    """The live defect (2026-09-03): a fallback provider's stream ended with no content
+    and no [DONE]; the "" was returned as the answer and the span said ok=true with zero
+    output tokens. The row must say what happened: not ok, `EmptyAnswer`, retryable."""
+    httpd, _ = _serve([(200, "sse", [])])  # headers, then nothing — the severed shape
+    tok = _tok()
+    try:
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/v1"
+        chat = providers.build_chat("custom", base_url=url, api_key="k", model="grok-4.5",
+                                    project_id=tok)
+        with pytest.raises(Exception) as ei:
+            chat.chat(system="s", context="c", question="q")
+    finally:
+        httpd.server_close()
+
+    assert type(ei.value).__name__ == "EmptyAnswer"
+    rows = _spans(project=tok)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.ok is False
+    assert row.error_class == "EmptyAnswer"
+    assert row.retryable is True
+    assert row.output_preview is None  # nothing to label — not an empty string

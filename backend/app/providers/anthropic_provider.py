@@ -6,6 +6,7 @@ the standard ANTHROPIC_API_KEY env var. Model defaults to claude-opus-4-8.
 from __future__ import annotations
 
 from app.config import settings
+from app.providers.base import require_answer
 from app.providers.toolcall import ToolCall, ToolResult, ToolSpec, ToolTurn
 
 _MAX_TOKENS = 1024
@@ -45,7 +46,8 @@ class AnthropicChat:
         record = _usage(getattr(msg, "usage", None))  # exact counts ride the response (GRPH-225)
         if record:
             llm_meter.record_usage(**record)
-        return _text(msg)
+        # Blank is a failure, not an answer (see `EmptyAnswer`).
+        return require_answer(_text(msg), "anthropic", model=self.model)
 
     def stream(self, *, system: str, context: str, question: str,
                temperature: float | None = None):

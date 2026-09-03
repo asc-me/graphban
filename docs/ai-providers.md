@@ -32,6 +32,13 @@ default thinking on, and the adapter returns a plain string, so the thinking str
 generated and then dropped — on a live grill that was 9× the latency for the same answer. A
 server that predates the field ignores it.
 
+A blank answer is an error, never a result. Every chat adapter passes its assembled text
+through `require_answer`, which raises `EmptyAnswer` (retryable, so a fallback credential is
+tried) when nothing came back; the span records `error_class=EmptyAnswer` rather than a
+successful call with zero output tokens. For OpenAI-compatible streams the message says
+whether `[DONE]` ever arrived, which separates "the model said nothing" from "the stream was
+cut upstream".
+
 ## Choosing providers
 
 Two independent selectors:
