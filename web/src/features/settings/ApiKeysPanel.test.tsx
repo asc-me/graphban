@@ -241,6 +241,10 @@ describe("tool tiers (GRPH-571)", () => {
     expect(screen.queryByRole("button", { name: "Sync credential" })).toBeNull();
     await userEvent.setup().click(screen.getByRole("button", { name: "Link key" }));
     expect(screen.getByRole("button", { name: /Mint link key/ })).toBeInTheDocument();
+    // Cloud / Sync already names this picker "Link key target project".
+    // "Sync target project" was the old name of the same object.
+    expect(screen.getByLabelText("Link key target project")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Sync target project")).not.toBeInTheDocument();
   });
 });
 
