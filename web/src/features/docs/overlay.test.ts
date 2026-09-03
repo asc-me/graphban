@@ -360,6 +360,8 @@ describe("docs overlay routes", () => {
     const body = keys.sections.map((s) => `${s.h} ${s.b}`).join(" ");
     expect(body).toMatch(/link key/i);
     expect(body).not.toMatch(/sync credential/i);
+    expect(body).toMatch(/Link key target project/);
+    expect(body).toMatch(/not Sync target/);
     const sync = docFor(settingsPath("deployment/sync"));
     expect(sync.sections[0]?.b).toMatch(/Link key/);
     expect(sync.sections[0]?.b).not.toMatch(/Sync credential/);
