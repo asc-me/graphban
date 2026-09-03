@@ -761,6 +761,11 @@ class ApiKeyOut(ORMModel):
     scopes: list[str]
     # Surfaced so the UI can show what a key was minted with. `None` means core-only.
     tool_tiers: list[str] | None = None
+    # How many tools this key's `tools/list` advertises. Filled by the router from the same
+    # manifest the MCP endpoint ships (`mcp_server.manifest_tool_count`), so the registry and
+    # `get_context` cannot disagree. `None` is "does not call MCP tools" (a sync credential),
+    # never zero — zero would read as a broken key.
+    tool_count: int | None = None
     project_id: str | None = None
     last_used: datetime | None
     created_at: datetime
