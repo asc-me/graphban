@@ -992,7 +992,7 @@ export function ApiKeysPanel() {
             value={syncTarget}
             onChange={(e) => setSyncProject(e.target.value)}
             className="rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
-            aria-label={kind === "gate" ? "Gate target project" : "Sync target project"}
+            aria-label={kind === "gate" ? "Gate target project" : "Link key target project"}
           >
             {projects.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
