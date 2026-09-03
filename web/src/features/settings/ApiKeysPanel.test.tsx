@@ -24,7 +24,7 @@
  * partition was `sync` vs everything-else, so the scope that matters would not be shown.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -368,6 +368,32 @@ describe("minted-with detail", () => {
     expect(block.textContent).not.toMatch(/PRDs/);
   });
 
+  it("shows the manifest size beside the tiers — 34 is the answer, not an absence", async () => {
+    // The operator's question ("I minted with everything and see 34 tools") is answered here,
+    // from the server's count, not a client-side sum over the tier labels.
+    keyList = [key({ id: "key_a", name: "plain", project_id: null, tool_tiers: [], tool_count: 34 })];
+    view();
+    await expand("plain");
+    expect((await screen.findByTestId("minted-with")).textContent).toMatch(/34 tools/);
+  });
+
+  it("omits the count rather than guessing when the server did not report one", async () => {
+    keyList = [key({ id: "key_a", name: "old-server", project_id: null, tool_tiers: ["prd"] })];
+    view();
+    await expand("old-server");
+    expect((await screen.findByTestId("minted-with")).textContent).not.toMatch(/\d+ tools/);
+  });
+
+  it("keeps the row itself to name, prefix and target — permissions live in the disclosure", async () => {
+    keyList = [key({ id: "key_a", name: "planner", scopes: ["read", "write"], tool_tiers: ["prd"], tool_count: 42 })];
+    view();
+    // Scoped to the row: the mint form above it has its own "PRDs" chip.
+    const row = within((await screen.findByText("planner")).closest("div")!);
+    expect(row.queryByText("PRDs")).toBeNull();
+    expect(row.queryByText(/42 tools/)).toBeNull();
+    expect(screen.getByRole("button", { name: /minted with/i })).toBeTruthy();
+  });
+
   it("does not advertise MCP tools for a link key — it calls none", async () => {
     // A link key pushes a code graph and never touches the MCP endpoint, so a tools row would
     // describe a capability it does not have. The block itself must still render (the scopes
@@ -387,67 +413,6 @@ describe("minted-with detail", () => {
     const block = await screen.findByTestId("minted-with");
     expect(block.textContent).not.toMatch(/MCP tools/);
     expect(block.textContent).toMatch(/gate/);
-  });
-});
-
-/**
- * The permissions ON the row. `MintedWith` carried scopes and tiers from the day it shipped,
- * and the registry was still reported as not showing which permissions each key has — the
- * only handle was a chevron whose label was a tooltip. What the operator asked ("I minted
- * with everything and see 34 tools") has to be answerable from the row itself.
- */
-describe("permissions on the row", () => {
-  it("shows scopes, tier labels, and the manifest size without opening anything", async () => {
-    keyList = [key({ id: "key_a", name: "planner", scopes: ["read", "write"], tool_tiers: ["prd"], tool_count: 42 })];
-    view();
-    await screen.findByText("planner");
-    expect(screen.queryByTestId("minted-with")).toBeNull();
-    const row = screen.getByTestId("key-permissions");
-    expect(row.textContent).toMatch(/read/);
-    expect(row.textContent).toMatch(/write/);
-    expect(row.textContent).toMatch(/PRDs/);
-    expect(row.textContent).toMatch(/42 tools/);
-  });
-
-  it("shows the count for a core-only key — 34 is the answer, not an absence", async () => {
-    keyList = [key({ id: "key_a", name: "plain", tool_tiers: [], tool_count: 34 })];
-    view();
-    await screen.findByText("plain");
-    expect(screen.getByTestId("key-permissions").textContent).toMatch(/34 tools/);
-  });
-
-  it("omits the count rather than guessing when the server did not report one", async () => {
-    // Summing tiers client-side would be a second copy of TOOL_TIERS. Older server: say nothing.
-    keyList = [key({ id: "key_a", name: "old-server", tool_tiers: ["prd"] })];
-    view();
-    await screen.findByText("old-server");
-    expect(screen.getByTestId("key-permissions").textContent).not.toMatch(/tools/);
-  });
-
-  it("puts no tools on a link key row — it calls none", async () => {
-    keyList = [key({ id: "key_l", name: "laptop", scopes: ["sync"], tool_count: null })];
-    view();
-    await screen.findByText("laptop");
-    const row = screen.getByTestId("key-permissions");
-    expect(row.textContent).toMatch(/sync/);
-    expect(row.textContent).not.toMatch(/tools/);
-  });
-
-  it("shows read, write and gate on a gate key row", async () => {
-    keyList = [key({ id: "key_g", name: "ci", scopes: ["read", "write", "gate"], tool_count: 34 })];
-    view();
-    await screen.findByText("ci");
-    const row = screen.getByTestId("key-permissions");
-    expect(row.textContent).toMatch(/read/);
-    expect(row.textContent).toMatch(/gate/);
-    expect(row.textContent).not.toMatch(/tools/);
-  });
-
-  it("labels the disclosure — a tooltip is not a label", async () => {
-    keyList = [key({ id: "key_a", name: "claude-code" })];
-    view();
-    await screen.findByText("claude-code");
-    expect(screen.getByRole("button", { name: /minted with/i })).toBeTruthy();
   });
 });
 
