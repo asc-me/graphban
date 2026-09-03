@@ -91,7 +91,7 @@ async function mint(kind: string, name = "github-actions") {
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: kind }));
   await user.type(screen.getByPlaceholderText(/Key name/), name);
-  await user.click(screen.getByRole("button", { name: /Mint gate key|Mint key|Mint link key/ }));
+  await user.click(screen.getByRole("button", { name: /Mint gate key|Mint agent key|Mint link key/ }));
 }
 
 beforeEach(() => {
@@ -184,7 +184,7 @@ describe("tool tiers (GRPH-571)", () => {
     await user.click(screen.getByRole("button", { name: "PRDs" }));
     await user.click(screen.getByRole("button", { name: "Fleet admin" }));
     await user.type(screen.getByPlaceholderText(/Key name/), "planner");
-    await user.click(screen.getByRole("button", { name: /Mint key/ }));
+    await user.click(screen.getByRole("button", { name: /Mint agent key/ }));
 
     await waitFor(() => expect(createApiKey).toHaveBeenCalled());
     expect(createApiKey.mock.calls[0][4]).toEqual(["prd", "fleet"]);
@@ -199,7 +199,7 @@ describe("tool tiers (GRPH-571)", () => {
     await user.click(screen.getByRole("button", { name: "PRDs" }));
     await user.click(screen.getByRole("button", { name: "PRDs" }));
     await user.type(screen.getByPlaceholderText(/Key name/), "k");
-    await user.click(screen.getByRole("button", { name: /Mint key/ }));
+    await user.click(screen.getByRole("button", { name: /Mint agent key/ }));
 
     await waitFor(() => expect(createApiKey).toHaveBeenCalled());
     expect(createApiKey.mock.calls[0][4]).toEqual([]);
@@ -245,6 +245,13 @@ describe("tool tiers (GRPH-571)", () => {
     // "Sync target project" was the old name of the same object.
     expect(screen.getByLabelText("Link key target project")).toBeInTheDocument();
     expect(screen.queryByLabelText("Sync target project")).not.toBeInTheDocument();
+  });
+
+  it("names the agent mint Mint agent key, like the other two kinds", async () => {
+    // Link and gate already name the object on the button. "Mint key" did not.
+    view();
+    expect(await screen.findByRole("button", { name: "Mint agent key" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Mint key$/ })).not.toBeInTheDocument();
   });
 });
 
