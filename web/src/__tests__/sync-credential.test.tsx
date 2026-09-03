@@ -172,6 +172,9 @@ describe("hosted Sync / Link is the cloud-org mint, not the self-host paste form
     expect(await screen.findByRole("heading", { name: /^Cloud link$/ })).toBeInTheDocument();
     expect(screen.getByText(/Mint a link key/)).toBeInTheDocument();
     expect(screen.getByText(/scoped link key/i)).toBeInTheDocument();
+    // Same leftover as API keys: the name field said "Key name" next to Mint a link key.
+    expect(screen.getByPlaceholderText("Link key name (e.g. laptop — acme-core)")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Key name (e.g. laptop — acme-core)")).not.toBeInTheDocument();
     expect(screen.queryByText(/scoped credential/i)).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("cloud.graphban.dev")).not.toBeInTheDocument();
     expect(screen.queryByPlaceholderText("paste link key…")).not.toBeInTheDocument();

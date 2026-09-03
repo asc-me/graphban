@@ -96,7 +96,7 @@ export function CloudOrgLinkPanel() {
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Key name (e.g. laptop — acme-core)"
+            placeholder="Link key name (e.g. laptop — acme-core)"
             className="max-w-xs"
           />
           <select

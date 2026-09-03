@@ -980,7 +980,7 @@ export function ApiKeysPanel() {
           onChange={(e) => setName(e.target.value)}
           placeholder={
             kind === "sync"
-              ? "Key name (e.g. laptop — acme-core)"
+              ? "Link key name (e.g. laptop — acme-core)"
               : kind === "gate"
                 ? "Key name (e.g. github-actions)"
                 : "Key name (e.g. claude-code)"
