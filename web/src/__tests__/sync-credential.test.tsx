@@ -113,6 +113,8 @@ describe("minting a sync credential", () => {
     const user = userEvent.setup();
     renderSettings();
     await user.click(screen.getByRole("link", { name: "API keys" }));
+    expect(screen.getByPlaceholderText("Agent key name (e.g. claude-code)")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Key name (e.g. claude-code)")).not.toBeInTheDocument();
     await user.type(screen.getByPlaceholderText(/claude-code/), "ci-agent");
     await user.click(screen.getByRole("button", { name: /Mint agent key/ }));
 

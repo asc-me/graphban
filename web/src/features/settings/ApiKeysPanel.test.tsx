@@ -90,7 +90,7 @@ function view() {
 async function mint(kind: string, name = "github-actions") {
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: kind }));
-  await user.type(screen.getByPlaceholderText(/Key name/), name);
+  await user.type(screen.getByPlaceholderText(/key name/i), name);
   await user.click(screen.getByRole("button", { name: /Mint gate key|Mint agent key|Mint link key/ }));
 }
 
@@ -183,7 +183,7 @@ describe("tool tiers (GRPH-571)", () => {
     await user.click(await screen.findByRole("button", { name: "Agent key" }));
     await user.click(screen.getByRole("button", { name: "PRDs" }));
     await user.click(screen.getByRole("button", { name: "Fleet admin" }));
-    await user.type(screen.getByPlaceholderText(/Key name/), "planner");
+    await user.type(screen.getByPlaceholderText(/key name/i), "planner");
     await user.click(screen.getByRole("button", { name: /Mint agent key/ }));
 
     await waitFor(() => expect(createApiKey).toHaveBeenCalled());
@@ -198,7 +198,7 @@ describe("tool tiers (GRPH-571)", () => {
     await user.click(await screen.findByRole("button", { name: "Agent key" }));
     await user.click(screen.getByRole("button", { name: "PRDs" }));
     await user.click(screen.getByRole("button", { name: "PRDs" }));
-    await user.type(screen.getByPlaceholderText(/Key name/), "k");
+    await user.type(screen.getByPlaceholderText(/key name/i), "k");
     await user.click(screen.getByRole("button", { name: /Mint agent key/ }));
 
     await waitFor(() => expect(createApiKey).toHaveBeenCalled());
@@ -255,6 +255,16 @@ describe("tool tiers (GRPH-571)", () => {
     view();
     expect(await screen.findByRole("button", { name: "Mint agent key" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Mint key$/ })).not.toBeInTheDocument();
+  });
+
+  it("names the agent and gate name fields, like Link key name", async () => {
+    // #587 named the link key field. Agent and gate still said "Key name".
+    view();
+    expect(await screen.findByPlaceholderText("Agent key name (e.g. claude-code)")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Key name (e.g. claude-code)")).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Gate key" }));
+    expect(screen.getByPlaceholderText("Gate key name (e.g. github-actions)")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Key name (e.g. github-actions)")).not.toBeInTheDocument();
   });
 });
 

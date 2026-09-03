@@ -982,8 +982,8 @@ export function ApiKeysPanel() {
             kind === "sync"
               ? "Link key name (e.g. laptop — acme-core)"
               : kind === "gate"
-                ? "Key name (e.g. github-actions)"
-                : "Key name (e.g. claude-code)"
+                ? "Gate key name (e.g. github-actions)"
+                : "Agent key name (e.g. claude-code)"
           }
           className="max-w-xs"
         />
