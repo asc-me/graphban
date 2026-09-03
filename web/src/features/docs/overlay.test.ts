@@ -123,6 +123,8 @@ describe("docs overlay routes", () => {
     expect(paste?.b).toMatch(/--api-key/);
     expect(paste?.b).not.toMatch(/Sync API key/i);
     expect(paste?.b).toMatch(/provider keys/);
+    expect(paste?.b).toMatch(/intro and placeholder/);
+    expect(paste?.b).toMatch(/not paste key/);
   });
 
   it("org Deployments overlay names minting a link key", () => {
