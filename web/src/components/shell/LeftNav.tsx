@@ -228,7 +228,9 @@ function ownsPath(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
-function sectionFromPath(pathname: string): "home" | "plan" | "build" | "observe" | null {
+type Section = "plan" | "build" | "observe";
+
+function sectionFromPath(pathname: string): Section | "home" | null {
   if (pathname === "/home" || pathname === "/") return "home";
   if (PLAN.some((n) => ownsPath(pathname, n.to))) return "plan";
   if (BUILD.some((n) => ownsPath(pathname, n.to))) return "build";
@@ -243,17 +245,29 @@ function SelfHostLeftNav() {
   const isPlatformAdmin = !!adminMe?.is_platform_admin;
   const [newProjectOpen, setNewProjectOpen] = React.useState(false);
   const { pathname } = useLocation();
-  const navigate = useNavigate();
-  const section = sectionFromPath(pathname);
+  // A header expands its section and stops there — it is a disclosure, not a link. Clicking
+  // "Observe" used to navigate to whichever child the rail guessed at, which lands you on a
+  // page you never asked for and gives you no way to *look* at a section before choosing
+  // (GRPH-P28 rev2). The route still opens the section that owns the current page, so
+  // wherever you are is always visible; the click only opens or closes.
+  const routeSection = sectionFromPath(pathname);
+  const [section, setSection] = React.useState<Section | null>(
+    routeSection === "home" ? null : routeSection,
+  );
+  const lastRoute = React.useRef(routeSection);
+  if (lastRoute.current !== routeSection) {
+    lastRoute.current = routeSection;
+    // Only a move *into* a section reopens it. Landing on Home or an unowned route leaves
+    // whatever you last opened alone rather than snapping the rail shut under you.
+    if (routeSection && routeSection !== "home") setSection(routeSection);
+  }
+  const toggle = (s: Section) => setSection((cur) => (cur === s ? null : s));
 
   const badges: Record<string, number | undefined> = {
     items: counts?.items,
     requests: counts?.requests,
     review: counts?.review || undefined,
   };
-
-  const observeDefault =
-    (counts?.review ?? 0) > 0 ? "/memory-review" : "/activity";
 
   return (
     <aside className="flex w-[216px] flex-none flex-col border-r border-line bg-[rgba(9,11,13,0.5)] px-3 py-4">
@@ -306,7 +320,7 @@ function SelfHostLeftNav() {
           label="Plan"
           expanded={section === "plan"}
           controls="nav-plan"
-          onOpen={() => navigate("/tracker")}
+          onToggle={() => toggle("plan")}
         />
         {section === "plan" && (
           <div id="nav-plan" className="flex flex-col gap-0.5 pl-2">
@@ -326,7 +340,7 @@ function SelfHostLeftNav() {
           label="Build"
           expanded={section === "build"}
           controls="nav-build"
-          onOpen={() => navigate("/code")}
+          onToggle={() => toggle("build")}
         />
         {section === "build" && (
           <div id="nav-build" className="flex flex-col gap-0.5 pl-2">
@@ -340,7 +354,7 @@ function SelfHostLeftNav() {
           label="Observe"
           expanded={section === "observe"}
           controls="nav-observe"
-          onOpen={() => navigate(observeDefault)}
+          onToggle={() => toggle("observe")}
         />
         {section === "observe" && (
           <div id="nav-observe" className="flex flex-col gap-0.5 pl-2">
@@ -367,19 +381,21 @@ function SelfHostLeftNav() {
 }
 
 function SectionHeader({
-  label, expanded, controls, onOpen,
+  label, expanded, controls, onToggle,
 }: {
   label: string;
   expanded: boolean;
   controls: string;
-  onOpen: () => void;
+  onToggle: () => void;
 }) {
+  // `aria-controls` is dropped while collapsed: the panel only exists when open, so
+  // pointing at an id that is not in the document would be a lie to a screen reader.
   return (
     <button
       type="button"
       aria-expanded={expanded}
-      aria-controls={controls}
-      onClick={onOpen}
+      aria-controls={expanded ? controls : undefined}
+      onClick={onToggle}
       className="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
     >
       <span className="flex-1 font-medium">{label}</span>
