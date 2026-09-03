@@ -437,6 +437,10 @@ describe("wiring", () => {
     expect(await screen.findByRole("heading", { name: /^credentials$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /add credential/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /add provider/i })).not.toBeInTheDocument();
+    // Heading and button already say credential. "Every provider configured"
+    // sat next to them and read as the catalog, not the object.
+    expect(screen.getByText(/every llm credential configured/i)).toBeInTheDocument();
+    expect(screen.queryByText(/every provider configured/i)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /looking for api keys\?/i }))
       .toHaveAttribute("href", "/settings/project/api-keys");
   });
