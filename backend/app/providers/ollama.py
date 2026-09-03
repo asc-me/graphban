@@ -131,6 +131,15 @@ class OllamaChat:
             headers=_headers(self.auth_key),
             json={"model": self.model, "messages": self._msgs(system, context, question),
                   "stream": True,
+                  # Thinking OFF, explicitly. Reasoning models (qwen3.x) default it on, and
+                  # this adapter's contract is a bare `str`: the `message.thinking` stream
+                  # is read below only to be dropped. Measured on ubuntu-srv's live grill
+                  # (qwen3.6:35b, a real 7k-token PRD): default 64.7s / 4,420 output tokens
+                  # of which ~16k chars were thinking; `think: false` 7.4s / 455 tokens for a
+                  # same-quality answer. Every grill call was paying 9x for text it never saw,
+                  # and blowing the 90s budget on a serial single-slot host. Servers that
+                  # predate the field ignore it.
+                  "think": False,
                   **({"options": {"temperature": temperature}} if temperature is not None else {})},
             timeout=_timeout(),
         ) as r:

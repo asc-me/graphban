@@ -18,7 +18,7 @@ runs fully offline by default and swaps in real models without touching call sit
 | Provider | Chat / extraction | Embeddings | Extra deps |
 | --- | --- | --- | --- |
 | **stub** (default) | deterministic composed reply | hashed bag-of-tokens → L2-normalized vector | none |
-| **ollama** | `POST {base}/api/chat` (+ streaming ndjson) | `POST {base}/api/embeddings` | httpx |
+| **ollama** | `POST {base}/api/chat` (+ streaming ndjson, `think: false`) | `POST {base}/api/embeddings` | httpx |
 | **anthropic** | Claude Messages API (`claude-opus-4-8`) | — (no embeddings endpoint) | `anthropic` (optional `cloud` extra) |
 | **openai** | — | `POST {base}/v1/embeddings` | httpx |
 
@@ -26,6 +26,11 @@ The **stub** is deterministic (same text → same vector/reply), which keeps the
 and makes tests reproducible. It's honest: the stub chat reply grounds itself in real project
 data and tells you how to enable a real model. Because Anthropic has no embeddings endpoint,
 **cloud embeddings** go through any OpenAI-compatible `/v1/embeddings` API.
+
+The Ollama chat request sends `think: false` explicitly. Reasoning models such as qwen3.x
+default thinking on, and the adapter returns a plain string, so the thinking stream would be
+generated and then dropped — on a live grill that was 9× the latency for the same answer. A
+server that predates the field ignores it.
 
 ## Choosing providers
 

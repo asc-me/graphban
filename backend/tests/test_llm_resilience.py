@@ -260,3 +260,43 @@ def test_health_does_not_claim_anything_about_chat(client, monkeypatch):
 
     monkeypatch.setattr(settings, "chat_provider", "anthropic")
     assert "chat_ok" not in client.get("/health").json()["providers"]
+
+
+# ---- thinking is off on the wire ---------------------------------------------
+class _FakeStreamResponse:
+    def __init__(self, lines):
+        self._lines = lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        pass
+
+    def iter_lines(self):
+        yield from self._lines
+
+
+def test_ollama_chat_sends_think_false(monkeypatch):
+    """A reasoning model (qwen3.x) defaults thinking ON, and this adapter throws the
+    thinking stream away — so leaving the field unset pays for tokens nobody reads. On
+    the live grill that was a 9x latency difference (64.7s vs 7.4s for the same PRD)."""
+    sent = {}
+
+    def fake_stream(method, url, **kw):
+        sent.update(kw["json"])
+        return _FakeStreamResponse([
+            '{"message": {"thinking": "let me ponder"}}',
+            '{"message": {"content": "answer"}}',
+            '{"message": {"content": ""}, "done": true, "prompt_eval_count": 3, "eval_count": 1}',
+        ])
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    chat = ollama.OllamaChat("https://gw.example", "qwen3.6:35b")
+    assert chat.chat(system="s", context="c", question="q") == "answer"
+    assert sent["think"] is False
+    assert sent["stream"] is True
+    assert sent["model"] == "qwen3.6:35b"
