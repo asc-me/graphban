@@ -595,7 +595,7 @@ export function CredentialsPanel() {
           <div>
             <h2 className="text-[13px] font-medium text-fg">Credentials</h2>
             <p className="text-[11px] text-faint">
-              Every provider configured on this deployment. Projects inherit the default unless they override it.
+              Every LLM credential configured on this deployment. Projects inherit the default unless they override it.
               These are LLM credentials — not Graphban API keys.
             </p>
           </div>
