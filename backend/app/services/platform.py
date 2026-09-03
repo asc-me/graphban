@@ -283,7 +283,8 @@ def resolve_chat(db: Session, project_id: str) -> Resolved:
     # The blob itself is still on disk, deliberately. The grill amended "delete it in the same
     # transaction" to "leave it as a read-only vestige", because deleting the only copy of the
     # old configuration in the same breath as writing the new one is what makes a bad migration
-    # unrecoverable. Nothing reads it now; a later migration removes it.
+    # unrecoverable. Resolution never reads it; the boot migration still does — guarded by
+    # `credential_migrated` so a pointer an operator cleared is not re-pointed from here.
     scope = scope_for(db, project_id)
     project = db.get(Project, project_id)
     pointer = getattr(project, "credential_id", None) if project is not None else None
@@ -906,6 +907,11 @@ def set_project_credential(db: Session, project_id: str, *,
             if cred is None:
                 raise LookupError(credential_id)
             project.credential_id = credential_id
+        # Any explicit operator decision on this pointer makes the legacy blob vestigial for
+        # this project. Without the flag, a pointer set and removed through the console with
+        # no boot in between is invisible to the migration's own marking — and the next boot
+        # would re-point from the blob, resurrecting a rule the operator just removed.
+        project.credential_migrated = True
     if model_override is not ...:
         project.model_override = model_override or ""
     db.commit()

@@ -25,12 +25,20 @@ either way.
 that rows, pointers, overrides and blob deletion commit together or not at all. Deleting the
 only copy of the old configuration in the same breath as writing the new one is what makes a
 bad migration unrecoverable. Rows, pointers and overrides still commit atomically; the blob is
-left as a read-only vestige that nothing consults once S6 removes resolution step 0. A later
-migration removes it, once the new path has actually served traffic.
+left as a vestige. ("Nothing consults it" was the original claim, and it was wrong in the
+direction that matters: THIS migration reads it on every boot, which is exactly how a removed
+override rule resurrected — see the next paragraph.)
 
 **A malformed entry is SKIPPED and marked, never an abort** (grill). All-or-nothing would mean
 one bad blob blocks the upgrade entirely, leaving the operator with no working deployment and
 no way in to fix the row that caused it.
+
+**A removed override rule stays removed.** The original idempotency marker was the pointer
+itself, and removing a rule is exactly what clears that pointer — so the next boot read
+"removed" as "never migrated" and re-pointed from the blob, resurrecting the rule (reference
+deployment boot log after a restart: `projects_pointed: 2, overrides: 2` on a box nobody had
+configured). Projects consumed once are marked `credential_migrated` — when the pointer is
+written here and by any explicit pointer edit in the console — and the flag outlives the clear.
 """
 from __future__ import annotations
 
@@ -188,8 +196,10 @@ def collect_entries(db: Session) -> list[dict]:
 def migrate(db: Session, scope: str = "") -> dict:
     """Run it. Rows, pointers and overrides commit together; the blob is left alone.
 
-    Idempotent by construction: a project that already has a `credential_id` is not migrated
-    again, so a re-run after a partial failure reconciles rather than duplicating.
+    Idempotent by construction: a project that already has a `credential_id` — or that has
+    been consumed once and carries `credential_migrated` — is not migrated again, so a re-run
+    after a partial failure reconciles rather than duplicating, and a pointer the operator
+    explicitly cleared stays cleared.
     """
     entries = [e for e in collect_entries(db) if not e.get("malformed")]
     malformed = [e for e in collect_entries(db) if e.get("malformed")]
@@ -197,7 +207,15 @@ def migrate(db: Session, scope: str = "") -> dict:
     already = {
         p.id for p in db.query(Project).filter(Project.credential_id.isnot(None)).all()
     }
-    entries = [e for e in entries if e["project_id"] not in already]
+    # **A cleared pointer is not "never migrated."** Removing an override rule sets
+    # credential_id back to None, and with the pointer as the ONLY marker the next boot read
+    # the clear as a project still to migrate and re-pointed it from the blob — the deleted
+    # rule resurrected (see the module docstring). The flag is written with the pointer and
+    # outlives the clear.
+    done = already | {
+        pid for (pid,) in db.query(Project.id).filter(Project.credential_migrated).all()
+    }
+    entries = [e for e in entries if e["project_id"] not in done]
 
     credentials, skipped = plan_migration(entries)
     skipped += [{**e, "why": "malformed entry"} for e in malformed]
@@ -235,6 +253,7 @@ def migrate(db: Session, scope: str = "") -> dict:
                 if project is None or pid not in group["active_projects"]:
                     continue
                 project.credential_id = match.id
+                project.credential_migrated = True
                 pointed += 1
                 reused.add(match.id)
                 # The override is relative to the EXISTING credential's model, not the one this
@@ -274,6 +293,7 @@ def migrate(db: Session, scope: str = "") -> dict:
             if pid not in group["active_projects"]:
                 continue
             project.credential_id = cred.id
+            project.credential_migrated = True
             pointed += 1
             override = group["overrides"].get(pid)
             if override:
@@ -296,6 +316,16 @@ def migrate(db: Session, scope: str = "") -> dict:
             db.add(row)
         if row.default_credential_id is None:
             row.default_credential_id = default_id
+
+    # **Upgrade path.** Pointers written before this column existed carry no flag, and the
+    # first remove after the upgrade would still resurrect without this. Mark every pointer
+    # that is already committed. Projects pointed in THIS run are flagged in the loop above;
+    # the session has not flushed them (autoflush off), which is also why this statement
+    # cannot see them and cannot double-count.
+    db.query(Project).filter(
+        Project.credential_id.isnot(None),
+        Project.credential_migrated.is_(False),
+    ).update({"credential_migrated": True}, synchronize_session="fetch")
 
     db.commit()
 

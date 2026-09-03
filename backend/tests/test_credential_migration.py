@@ -44,6 +44,7 @@ def _clean(db):
     for p in db.query(Project).all():
         p.credential_id = None
         p.model_override = ""
+        p.credential_migrated = False
     db.commit()
 
 
@@ -515,3 +516,89 @@ def test_joining_an_existing_credential_is_reported_as_reuse(db):
     assert report["credentials_reused"] == 1
     assert report["projects_pointed"] == 1
     assert report["overrides"] == 1
+
+
+# ---- a removed rule stays removed -------------------------------------------------------------
+
+
+def test_removing_an_override_rule_survives_the_next_migration(db):
+    """THE BUG. Remove on the credentials page sets `credential_id` back to None — and the
+    pointer was the migration's ONLY idempotency marker, so the next boot read "removed" as
+    "never migrated" and re-pointed from the blob that is deliberately still on disk.
+
+    Seen in the reference deployment's boot log: `projects_pointed: 2, overrides: 2` after a
+    restart on a box nobody had configured. The rules the operator deleted resurrected."""
+    _project(db, "p1", _blob("ollama", url="http://o:11434", key="", model="qwen"))
+    mig.migrate(db)
+    assert db.get(Project, "p1").credential_id is not None
+
+    platform_svc.set_project_credential(db, "p1", credential_id=None, model_override="")
+    assert db.get(Project, "p1").credential_id is None
+
+    report = mig.migrate(db)  # the next boot
+
+    assert db.get(Project, "p1").credential_id is None, (
+        "the removed rule resurrected — the migration re-pointed a pointer the operator "
+        "explicitly cleared"
+    )
+    assert db.get(Project, "p1").model_override == ""
+    assert report["projects_pointed"] == 0
+    assert report["overrides"] == 0
+
+
+def test_set_then_remove_before_any_boot_stays_removed(db):
+    """The window the setter must close on its own: a pointer set AND removed through the
+    console with no boot in between. The migration's own marking never saw that pointer, so
+    without the setter recording the operator's decision, the boot still migrates from the
+    blob and resurrects a rule that existed only in the console."""
+    _project(db, "p1", _blob("ollama", url="http://o:11434", key="", model="qwen"))
+    db.add(Credential(id="cred_manual", org_id=None, kind="anthropic", label="manual",
+                      api_key=secrets.encrypt("sk-live"), model="claude-x"))
+    db.commit()
+
+    platform_svc.set_project_credential(db, "p1", credential_id="cred_manual")
+    platform_svc.set_project_credential(db, "p1", credential_id=None, model_override="")
+
+    report = mig.migrate(db)  # the first boot AFTER the set-and-remove
+
+    assert db.get(Project, "p1").credential_id is None, (
+        "a rule removed in the console resurrected at the first boot afterwards"
+    )
+    assert report["projects_pointed"] == 0
+
+
+def test_pointers_written_before_the_flag_are_protected_on_the_first_fixed_boot(db):
+    """Upgrade path: the reference deployment's pointers were written before the flag
+    existed. The first boot on the fixed cut must mark them, or the very next remove would
+    still resurrect."""
+    _project(db, "p1", _blob(key="sk-live"))
+    mig.migrate(db)
+    p = db.get(Project, "p1")
+    p.credential_migrated = False  # the column did not exist when this pointer was written
+    db.commit()
+
+    mig.migrate(db)  # the first boot on the fixed cut
+
+    platform_svc.set_project_credential(db, "p1", credential_id=None, model_override="")
+    mig.migrate(db)  # the boot after the remove
+
+    assert db.get(Project, "p1").credential_id is None, (
+        "a pointer from before the flag resurrected after removal"
+    )
+
+
+def test_the_flag_does_not_stop_a_never_migrated_project(db):
+    """Retry semantics must survive the flag: a project whose migration never succeeded —
+    no pointer, no flag — still migrates. The flag only ever marks projects consumed once;
+    a boot that cannot finish simply tries again next boot, as before."""
+    _project(db, "p1", _blob(key="sk-one"))
+    mig.migrate(db)
+    assert db.get(Project, "p1").credential_migrated is True
+
+    _project(db, "p2", _blob(key="sk-two"))
+    report = mig.migrate(db)
+
+    assert db.get(Project, "p2").credential_id is not None, (
+        "the flag leaked: a never-migrated project was skipped"
+    )
+    assert report["credentials_created"] == 1
