@@ -1011,7 +1011,7 @@ export function ApiKeysPanel() {
           <option value="365">Expires in 365 days</option>
         </select>
         <Button size="sm" onClick={create} disabled={!name.trim()}>
-          <Plus size={14} />{kind === "sync" ? "Mint link key" : kind === "gate" ? "Mint gate key" : "Mint key"}
+          <Plus size={14} />{kind === "sync" ? "Mint link key" : kind === "gate" ? "Mint gate key" : "Mint agent key"}
         </Button>
       </div>
       {error && <p className="mb-2 text-[12px] text-st-blocked">{error}</p>}
