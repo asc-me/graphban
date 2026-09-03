@@ -383,6 +383,8 @@ describe("docs overlay routes", () => {
       expect(box?.b).toMatch(/Looking for API keys/);
       expect(box?.b).toMatch(/Anthropic credential/);
       expect(box?.b).toMatch(/not Anthropic key/);
+      expect(box?.b).toMatch(/every LLM credential configured/);
+      expect(box?.b).toMatch(/not every provider/);
     }
   });
 
