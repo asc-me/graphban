@@ -301,5 +301,5 @@ def provision_hosted(
         "password": password,
         "org_id": org.id,
         "org_name": org.name,
-        "next": "sign in, then Settings → API Keys to mint a sync credential",
+        "next": "sign in, then Settings → API keys to mint a link key",
     }
