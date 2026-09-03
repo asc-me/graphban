@@ -62,6 +62,8 @@ def test_it_creates_the_operator_and_their_org(db, hosted):
 
     assert out["provisioned"] is True
     assert out["org_name"] == "ascme-labs"
+    assert out["next"] == "sign in, then Settings → API keys to mint a link key"
+    assert "sync credential" not in out["next"]
     user = db.query(User).one()
     assert user.email == "boss@example.com" and user.initials == "AC"
     org = db.query(Organization).one()
@@ -171,6 +173,9 @@ def test_the_cli_wires_the_command(db, hosted, capsys):
     import json as _json
     out = _json.loads(capsys.readouterr().out)
     assert out["provisioned"] is True and out["org_name"] == "ascme-labs"
+    # THE CALL. provision_hosted naming the link key is not the print the operator reads.
+    assert out["next"] == "sign in, then Settings → API keys to mint a link key"
+    assert "sync credential" not in out["next"]
 
 
 def test_it_refuses_an_address_nobody_could_sign_in_with(db, hosted, monkeypatch):
