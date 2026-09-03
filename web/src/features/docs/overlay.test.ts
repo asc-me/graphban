@@ -381,6 +381,8 @@ describe("docs overlay routes", () => {
       const box = d.sections.find((s) => /this box/i.test(s.h));
       expect(box?.b).toMatch(/Provider key/);
       expect(box?.b).toMatch(/Looking for API keys/);
+      expect(box?.b).toMatch(/Anthropic credential/);
+      expect(box?.b).toMatch(/not Anthropic key/);
     }
   });
 
