@@ -1744,6 +1744,23 @@ def _missing_tiers(key: ApiKey) -> list[str]:
     """Tiers absent from this key's manifest, for `get_context` to advertise."""
     return tool_tiers.missing(list(key.tool_tiers or ()) + settings.default_tool_tier_list)
 
+
+def manifest_tool_count(key: ApiKey) -> int | None:
+    """How many tools this key's `tools/list` advertises, for the API keys registry.
+
+    The same expression `get_context` reports as `tool_count`, so the number beside a key on
+    the settings page IS the manifest that key is shipped — never a client-side guess from the
+    tier labels, which is a second copy of `TOOL_TIERS` waiting to drift. A key minted "with
+    everything" that still showed 34 tools was undiagnosable from a registry that listed
+    nothing; this is what lets the operator see it without wiring the key into an agent.
+
+    `None`, not zero, for a credential that never reaches the MCP endpoint (a `sync` key): zero
+    would read as a broken key, and "not applicable" is a different answer from "none".
+    """
+    if not {"read", "write"} & set(key.scopes or ()):
+        return None
+    return len(_visible_tools(key))
+
 # JSON-schema primitive -> (python type, label). bool is excluded from int on purpose.
 _JSON_TYPES: dict[str, tuple[type | tuple[type, ...], str]] = {
     "string": (str, "a string"),

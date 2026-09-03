@@ -1098,22 +1098,10 @@ export function ApiKeysPanel() {
         {(k) => (
           <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">
             <div className="flex items-center gap-3 px-3 py-2.5">
-              <button
-                onClick={() => setOpenDetails(openDetails === k.id ? null : k.id)}
-                aria-expanded={openDetails === k.id}
-                title="Minted with"
-                className="flex-none text-faint transition-colors hover:text-fg"
-              >
-                <ChevronRight size={14} className={cn("transition-transform", openDetails === k.id && "rotate-90")} />
-              </button>
               <KeyRound size={14} className="text-muted" />
               <span className="text-[13px] text-fg-2">{k.name}</span>
               <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
-              {k.scopes?.includes("sync") && (
-                <span className="rounded border border-accent/40 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-accent">
-                  sync
-                </span>
-              )}
+              <KeyPermissions k={k} />
               <span
                 className={cn(
                   "rounded border px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide",
@@ -1146,6 +1134,7 @@ export function ApiKeysPanel() {
               <span className="ml-auto font-mono text-[10px] text-faint-2" title={k.last_used ?? undefined}>
                 {lastUsedLabel(k.last_used)}
               </span>
+              <MintedWithToggle open={openDetails === k.id} onClick={() => setOpenDetails(openDetails === k.id ? null : k.id)} />
               {/* Sync credentials never touch the MCP endpoint, so the MCP install snippet
                   would be misleading for them — the link hand-off is shown at mint time. */}
               {!k.scopes?.includes("sync") && (
@@ -1186,22 +1175,10 @@ export function ApiKeysPanel() {
         {(k) => (
           <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">
             <div className="flex items-center gap-3 px-3 py-2.5">
-              <button
-                onClick={() => setOpenDetails(openDetails === k.id ? null : k.id)}
-                aria-expanded={openDetails === k.id}
-                title="Minted with"
-                className="flex-none text-faint transition-colors hover:text-fg"
-              >
-                <ChevronRight size={14} className={cn("transition-transform", openDetails === k.id && "rotate-90")} />
-              </button>
               <KeyRound size={14} className="text-muted" />
               <span className="text-[13px] text-fg-2">{k.name}</span>
               <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
-              {k.scopes?.includes("sync") && (
-                <span className="rounded border border-accent/40 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-accent">
-                  sync
-                </span>
-              )}
+              <KeyPermissions k={k} />
               <span
                 className={cn(
                   "rounded border px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide",
@@ -1226,6 +1203,7 @@ export function ApiKeysPanel() {
               <span className="ml-auto font-mono text-[10px] text-faint-2" title={k.last_used ?? undefined}>
                 {lastUsedLabel(k.last_used)}
               </span>
+              <MintedWithToggle open={openDetails === k.id} onClick={() => setOpenDetails(openDetails === k.id ? null : k.id)} />
               {/* Sync credentials never touch the MCP endpoint, so the MCP install snippet
                   would be misleading for them — the link hand-off is shown at mint time. */}
               {!k.scopes?.includes("sync") && (
@@ -1265,21 +1243,12 @@ export function ApiKeysPanel() {
         {(k) => (
           <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">
             <div className="flex items-center gap-3 px-3 py-2.5">
-              <button
-                onClick={() => setOpenDetails(openDetails === k.id ? null : k.id)}
-                aria-expanded={openDetails === k.id}
-                title="Minted with"
-                className="flex-none text-faint transition-colors hover:text-fg"
-              >
-                <ChevronRight size={14} className={cn("transition-transform", openDetails === k.id && "rotate-90")} />
-              </button>
               <KeyRound size={14} className="text-muted" />
               <span className="text-[13px] text-fg-2">{k.name}</span>
               <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
-              <span className="rounded border border-accent/40 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-accent">
-                gate
-              </span>
+              <KeyPermissions k={k} />
               <span className="ml-auto text-[11px] text-faint">{projectName(k.project_id ?? null)}</span>
+              <MintedWithToggle open={openDetails === k.id} onClick={() => setOpenDetails(openDetails === k.id ? null : k.id)} />
               <button
                 onClick={() => revoke(k.id)}
                 className="rounded px-1.5 py-0.5 text-[11px] text-muted hover:text-st-blocked"
@@ -1299,6 +1268,75 @@ export function ApiKeysPanel() {
 const TIER_LABEL: Record<string, string> = Object.fromEntries(
   TOOL_TIERS.map(([id, label]) => [id, label]),
 );
+
+/**
+ * What a key can do, ON the row. `MintedWith` below carried this from the day it shipped and
+ * the registry was still reported as "does not show which perms each key has" — a disclosure
+ * whose only label is a tooltip is a feature nobody finds. Scopes on every kind of key; the
+ * advertised tool groups and the manifest size on agent keys only, for the reason
+ * `MintedWith` gives.
+ *
+ * The count is the SERVER's, computed from the same manifest the MCP endpoint ships that key,
+ * never summed here from the tier labels — a second copy of `TOOL_TIERS` would drift. So
+ * "34 tools" beside a key is its `tools/list`. An older server that does not report it gets
+ * nothing rather than a guess; a link key gets nothing because it calls none.
+ */
+function KeyPermissions({ k }: { k: ApiKey }) {
+  const scopes = k.scopes ?? [];
+  const tiers = k.tool_tiers ?? [];
+  const isAgent = !scopes.includes("sync") && !scopes.includes("gate");
+  return (
+    <span className="flex flex-wrap items-center gap-1" data-testid="key-permissions">
+      {scopes.map((s) => (
+        <span
+          key={s}
+          className={cn(
+            "rounded border px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide",
+            s === "sync" || s === "gate" ? "border-accent/40 text-accent" : "border-line-2 text-fg-2",
+          )}
+        >
+          {s}
+        </span>
+      ))}
+      {isAgent &&
+        tiers.map((t) => (
+          <span
+            key={t}
+            title={`Advertises the ${TIER_LABEL[t] ?? t} tools`}
+            className="rounded border border-accent/40 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-accent"
+          >
+            {TIER_LABEL[t] ?? t}
+          </span>
+        ))}
+      {isAgent && typeof k.tool_count === "number" && (
+        <span
+          className="font-mono text-[9.5px] uppercase tracking-wide text-faint-2"
+          title="Tools in this key's tools/list. A tool outside it is still callable — tiers change what is advertised, not what is allowed."
+        >
+          {k.tool_count} tools
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** The disclosure for `MintedWith`, with its name on it. A tooltip is not a label. */
+function MintedWithToggle({ open, onClick }: { open: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-expanded={open}
+      title="Minted with"
+      className={cn(
+        "flex flex-none items-center gap-0.5 font-mono text-[9.5px] uppercase tracking-wide transition-colors hover:text-fg",
+        open ? "text-fg-2" : "text-faint",
+      )}
+    >
+      <ChevronRight size={12} className={cn("transition-transform", open && "rotate-90")} />
+      Minted with
+    </button>
+  );
+}
 
 /**
  * The permissions a key was minted with — chosen once at mint time and otherwise never shown

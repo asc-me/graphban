@@ -603,6 +603,12 @@ export interface ApiKey {
   scopes: string[];
   /** Optional MCP tool tiers (GRPH-571). Absent/empty = the core manifest. */
   tool_tiers?: string[] | null;
+  /**
+   * How many tools this key's `tools/list` advertises — the server's number, from the same
+   * manifest the MCP endpoint ships the key. `null` = the key calls no MCP tools (a link
+   * key); absent = an older server that does not report it, which is shown as nothing, not 0.
+   */
+  tool_count?: number | null;
   project_id: string | null;
   last_used: string | null;
   created_at: string;

@@ -403,3 +403,38 @@ def test_the_default_manifest_is_much_smaller_than_the_untiered_one():
     assert core < full * 0.7, f"core {core} vs full {full} — tiering is not paying for itself"
     # ~5,100 tokens per agent per turn, which is what this is actually worth.
     assert full - core > 4000, f"only {full - core} tokens saved"
+
+
+# ---- the registry shows the number the key actually gets --------------------------------
+
+def test_the_registry_reports_the_manifest_size_each_key_actually_gets(client, auth):
+    """The API keys page shows a tool count beside each agent key. A key minted "with
+    everything" that still showed 34 tools was undiagnosable from a registry that listed
+    nothing — the operator's only instrument was wiring the key into an agent and counting.
+
+    The count must be THAT key's `tools/list` length: not the server-wide total, and not a
+    client-side sum over tier labels (a second copy of `TOOL_TIERS` waiting to drift). So it
+    is asserted against the manifest the MCP endpoint ships the same key, per key.
+    """
+    core = _mint(client, auth)
+    tiered = _mint(client, auth, tiers=ALL_TIERS)
+    by_id = {k["id"]: k for k in client.get("/api/api-keys", headers=auth).json()}
+
+    assert by_id[core["id"]]["tool_count"] == len(_list(client, core["plaintext"]))
+    assert by_id[tiered["id"]]["tool_count"] == len(_list(client, tiered["plaintext"]))
+    # And the two differ, so equality above cannot be satisfied by a constant.
+    assert by_id[core["id"]]["tool_count"] == len(tt.CORE_TOOLS)
+    assert by_id[tiered["id"]]["tool_count"] == len(TOOLS)
+    # The mint response carries it too, so the one-time banner can say it.
+    assert core["tool_count"] == by_id[core["id"]]["tool_count"]
+
+
+def test_a_sync_credential_reports_no_tool_count_rather_than_zero(client, auth):
+    """A link key never calls MCP. `None` there is "not applicable"; `0` would read as a
+    broken key — the absence-reads-as-something defect pointing the other way."""
+    r = client.post("/api/api-keys", headers=auth,
+                    json={"name": "laptop", "scopes": ["sync"], "project_id": "core"})
+    assert r.status_code == 201, r.text
+    assert r.json()["tool_count"] is None
+    listed = {k["id"]: k for k in client.get("/api/api-keys", headers=auth).json()}
+    assert listed[r.json()["id"]]["tool_count"] is None

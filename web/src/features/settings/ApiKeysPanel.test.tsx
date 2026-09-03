@@ -390,6 +390,67 @@ describe("minted-with detail", () => {
   });
 });
 
+/**
+ * The permissions ON the row. `MintedWith` carried scopes and tiers from the day it shipped,
+ * and the registry was still reported as not showing which permissions each key has — the
+ * only handle was a chevron whose label was a tooltip. What the operator asked ("I minted
+ * with everything and see 34 tools") has to be answerable from the row itself.
+ */
+describe("permissions on the row", () => {
+  it("shows scopes, tier labels, and the manifest size without opening anything", async () => {
+    keyList = [key({ id: "key_a", name: "planner", scopes: ["read", "write"], tool_tiers: ["prd"], tool_count: 42 })];
+    view();
+    await screen.findByText("planner");
+    expect(screen.queryByTestId("minted-with")).toBeNull();
+    const row = screen.getByTestId("key-permissions");
+    expect(row.textContent).toMatch(/read/);
+    expect(row.textContent).toMatch(/write/);
+    expect(row.textContent).toMatch(/PRDs/);
+    expect(row.textContent).toMatch(/42 tools/);
+  });
+
+  it("shows the count for a core-only key — 34 is the answer, not an absence", async () => {
+    keyList = [key({ id: "key_a", name: "plain", tool_tiers: [], tool_count: 34 })];
+    view();
+    await screen.findByText("plain");
+    expect(screen.getByTestId("key-permissions").textContent).toMatch(/34 tools/);
+  });
+
+  it("omits the count rather than guessing when the server did not report one", async () => {
+    // Summing tiers client-side would be a second copy of TOOL_TIERS. Older server: say nothing.
+    keyList = [key({ id: "key_a", name: "old-server", tool_tiers: ["prd"] })];
+    view();
+    await screen.findByText("old-server");
+    expect(screen.getByTestId("key-permissions").textContent).not.toMatch(/tools/);
+  });
+
+  it("puts no tools on a link key row — it calls none", async () => {
+    keyList = [key({ id: "key_l", name: "laptop", scopes: ["sync"], tool_count: null })];
+    view();
+    await screen.findByText("laptop");
+    const row = screen.getByTestId("key-permissions");
+    expect(row.textContent).toMatch(/sync/);
+    expect(row.textContent).not.toMatch(/tools/);
+  });
+
+  it("shows read, write and gate on a gate key row", async () => {
+    keyList = [key({ id: "key_g", name: "ci", scopes: ["read", "write", "gate"], tool_count: 34 })];
+    view();
+    await screen.findByText("ci");
+    const row = screen.getByTestId("key-permissions");
+    expect(row.textContent).toMatch(/read/);
+    expect(row.textContent).toMatch(/gate/);
+    expect(row.textContent).not.toMatch(/tools/);
+  });
+
+  it("labels the disclosure — a tooltip is not a label", async () => {
+    keyList = [key({ id: "key_a", name: "claude-code" })];
+    view();
+    await screen.findByText("claude-code");
+    expect(screen.getByRole("button", { name: /minted with/i })).toBeTruthy();
+  });
+});
+
 describe("docs overlay", () => {
   it("matches api-keys before the /settings catch-all", () => {
     // THE CALL. /settings/project/api-keys starts with /settings, so without this

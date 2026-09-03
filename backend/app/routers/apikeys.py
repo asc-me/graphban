@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.mcp_server import manifest_tool_count
 from app.models import ApiKey, Project, User
 from app.schemas import ApiKeyCreate, ApiKeyCreated, ApiKeyOut
 from app.security import authz
@@ -13,9 +14,18 @@ from app.services import events as events_svc
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
 
+def _out(row: ApiKey) -> ApiKeyOut:
+    """A key as the registry shows it, with the size of the manifest it is actually shipped —
+    computed here rather than stored, so a change to what is core is reflected on every
+    existing key the moment it deploys."""
+    out = ApiKeyOut.model_validate(row)
+    out.tool_count = manifest_tool_count(row)
+    return out
+
+
 @router.get("", response_model=list[ApiKeyOut])
 def list_keys(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    return list(db.scalars(select(ApiKey).where(ApiKey.user_id == user.id)).all())
+    return [_out(row) for row in db.scalars(select(ApiKey).where(ApiKey.user_id == user.id))]
 
 
 @router.post("", response_model=ApiKeyCreated, status_code=201)
@@ -50,7 +60,7 @@ def create_key(body: ApiKeyCreate, db: Session = Depends(get_db), user: User = D
                            target_id=row.id, project_id=row.project_id,
                            meta={"name": row.name, "scopes": row.scopes,
                                  "tool_tiers": row.tool_tiers})
-    out = ApiKeyCreated.model_validate({**ApiKeyOut.model_validate(row).model_dump(), "plaintext": plaintext})
+    out = ApiKeyCreated.model_validate({**_out(row).model_dump(), "plaintext": plaintext})
     return out
 
 

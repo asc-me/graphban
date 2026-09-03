@@ -89,7 +89,7 @@ Every client authenticates the same way: the key in an `X-API-Key` header (or
 
 **By tier** (GRPH-571). The manifest had five tokens of headroom, so the next tool that
 needed a field had nowhere to go. A key is now minted with optional **tool tiers**, and the
-default is the *core* manifest — a core set of 33, ~8.5k tokens against ~13.6k untiered, so a plain
+default is the *core* manifest — a core set of 34, ~8.5k tokens against ~13.6k untiered, so a plain
 agent carries ~5,100 fewer tokens on every turn.
 
 | Tier | What it is for |
