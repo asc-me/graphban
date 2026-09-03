@@ -302,6 +302,115 @@ def test_publish_does_not_create_a_github_release_when_pack_fails(tmp_path, caps
     assert "source zip is not a substitute" in capsys.readouterr().err
 
 
+def test_previous_tag_is_the_latest_earlier_calver():
+    tags = {"2026.09.5", "2026.09.6", "2026.09.7", "not-a-cut"}
+    assert rel.previous_tag("2026.09.8", tags) == "2026.09.7"
+    assert rel.previous_tag("2026.09.1", tags) is None
+    assert rel.previous_tag("2026.09.8", set()) is None
+
+
+def test_parse_merge_note_uses_the_pr_title_and_skips_the_stamp():
+    got = rel.parse_merge_note(
+        "Merge pull request #576 from asc-me/feat/observe-live-page",
+        "live: Observe Live page — humans, leases, recorded PRs (GRPH-673)\n",
+    )
+    assert got == ("576", "live: Observe Live page — humans, leases, recorded PRs (GRPH-673)")
+    assert rel.parse_merge_note(
+        "Merge pull request #583 from asc-me/chore/stamp-2026.09.8",
+        "stamp: 2026.09.8\n",
+    ) is None
+    assert rel.parse_merge_note(
+        "Merge pull request #583 from asc-me/chore/stamp-2026.09.8",
+        "Stamp product version 2026.09.8\n",
+    ) is None
+
+
+def test_notes_name_an_empty_interval_and_a_missing_previous():
+    first = rel.notes_for(VER, "abc1234", previous=None, changes=[])
+    assert "first named cut" in first
+    assert "- #" not in first
+    empty = rel.notes_for(NEXT, "abc1234", previous=VER, changes=[])
+    assert f"No merges on first-parent between `{VER}`" in empty
+    unmeasured = rel.notes_for(NEXT, "abc1234", previous=VER, changes=None)
+    assert "unmeasured" in unmeasured
+    assert "not empty" in unmeasured
+
+
+def test_notes_list_merges_since_the_previous_cut():
+    body = rel.notes_for(
+        NEXT, "abc1234", previous=VER,
+        changes=[("576", "live: Observe Live page"), ("580", "docs: PRD-33")],
+    )
+    assert f"**Since {VER}**" in body
+    assert "- #576 live: Observe Live page" in body
+    assert "- #580 docs: PRD-33" in body
+    assert "abc1234" in body
+    assert rel.asset_name(NEXT) in body
+
+
+def _merge_pr(src: pathlib.Path, *, branch: str, number: str, title: str,
+              filename: str) -> None:
+    _git(src, "checkout", "-b", branch)
+    (src / "backend" / "app" / filename).write_text(f"{title}\n", encoding="utf-8")
+    _git(src, "add", "-A")
+    _git(src, "commit", "-m", title)
+    _git(src, "checkout", "main")
+    _git(src, "merge", "--no-ff", branch,
+         "-m", f"Merge pull request #{number} from asc-me/{branch}",
+         "-m", title)
+
+
+def test_list_merges_is_first_parent_oldest_first_and_drops_the_stamp(tmp_path):
+    src = make_git_src(tmp_path, version=VER)
+    _git(src, "tag", "-a", VER, "-m", VER)
+    _merge_pr(src, branch="feat/live", number="576",
+              title="live: Observe Live page", filename="live.py")
+    _merge_pr(src, branch="feat/other", number="580",
+              title="docs: PRD-33", filename="prd.md")
+    _merge_pr(src, branch="chore/stamp-2026.09.5", number="583",
+              title="stamp: 2026.09.5", filename="stamp.txt")
+    got = rel.list_merges(src, VER, "HEAD")
+    assert got == [
+        ("576", "live: Observe Live page"),
+        ("580", "docs: PRD-33"),
+    ]
+
+
+def test_THE_CALL_publish_notes_are_the_merges_since_the_last_tag(tmp_path):
+    """A boilerplate body with no merge list is the old notes_for — sabotage that."""
+    src = make_git_src(tmp_path, version=VER)
+    _git(src, "tag", "-a", VER, "-m", VER)
+    _git(src, "push", "origin", VER)
+    _merge_pr(src, branch="feat/live", number="576",
+              title="live: Observe Live page", filename="live.py")
+    rel.stamp(src, NEXT)
+    _git(src, "add", "-A")
+    _git(src, "commit", "-m", f"stamp {NEXT}")
+    _git(src, "push", "origin", "main")
+
+    out = tmp_path / "dist"
+
+    def pack(ref, dest, api_only=False):
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / rel.asset_name(NEXT)).write_bytes(b"tarball")
+        return 0
+
+    gh = FakeGH()
+    rc = rel.cmd_publish(
+        src, NEXT, ref="origin/main", out=out, fetch=False, api_only=True,
+        dry_run=False, pack=pack, gh_run=gh,
+    )
+    assert rc == 0
+    create = [c for c in gh.calls if c[:2] == ["release", "create"]]
+    assert create
+    argv = create[0]
+    assert "--notes" in argv
+    notes = argv[argv.index("--notes") + 1]
+    assert f"**Since {VER}**" in notes
+    assert "#576 live: Observe Live page" in notes
+    assert "first named cut" not in notes
+
+
 def test_dry_run_does_not_pack_or_publish(tmp_path):
     src = make_git_src(tmp_path)
     packed = []
@@ -334,6 +443,8 @@ def test_runbook_names_the_two_commands_and_the_traps():
     text = (REPO / "docs" / "release.md").read_text(encoding="utf-8")
     assert "python3 scripts/graphban_release.py stamp" in text
     assert "python3 scripts/graphban_release.py publish" in text
+    assert "python3 scripts/graphban_release.py notes" in text
+    assert "first-parent merges" in text
     assert "source zip" in text.lower()
     assert "Settings" in text and "Install" in text
     assert "fleet" in text.lower()

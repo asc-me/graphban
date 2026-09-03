@@ -8,6 +8,7 @@ that tag — compose via the host helper, native via `graphban_host.py upgrade`.
 
     python3 scripts/graphban_release.py next
     python3 scripts/graphban_release.py stamp          # writes the three version files
+    python3 scripts/graphban_release.py notes          # merges since the previous CalVer
     python3 scripts/graphban_release.py publish        # after the stamp is on origin/main
 
 Does not merge to main, does not apply to a box (Install is the operator gate),
@@ -190,10 +191,116 @@ def stamp(repo: pathlib.Path, version: str) -> list[pathlib.Path]:
     return written
 
 
-def notes_for(version: str, sha: str) -> str:
+_MERGE_PR = re.compile(r"^Merge pull request #(\d+)\b")
+_FIELD_SEP = "\x1f"
+_RECORD_SEP = "\x1e"
+
+
+def previous_tag(version: str, tags: set[str]) -> str | None:
+    """Highest CalVer tag strictly before `version`. None is first cut, not empty."""
+    parsed = parse_calver(version)
+    if parsed is None:
+        return None
+    earlier = []
+    for t in tags:
+        p = parse_calver(t)
+        if p is not None and p < parsed:
+            earlier.append((p, t))
+    if not earlier:
+        return None
+    earlier.sort()
+    return earlier[-1][1]
+
+
+def _is_stamp_merge(subject: str, title: str) -> bool:
+    """The stamp PR is this cut, not a change in it."""
+    s, t = subject.lower(), title.lower()
+    return (
+        t.startswith("stamp:")
+        or t.startswith("stamp product version")
+        or "chore/stamp-" in s
+    )
+
+
+def parse_merge_note(subject: str, body: str) -> tuple[str, str] | None:
+    """(pr_number, title) from a GitHub merge commit. None = omit (the stamp)."""
+    subject = (subject or "").strip()
+    title = ""
+    for line in (body or "").splitlines():
+        line = line.strip()
+        if line:
+            title = line
+            break
+    if not title:
+        m_from = re.search(r" from \S+/(\S+)\s*$", subject)
+        title = m_from.group(1).replace("-", " ") if m_from else subject
+    if not title or _is_stamp_merge(subject, title):
+        return None
+    m = _MERGE_PR.match(subject)
+    pr = m.group(1) if m else ""
+    return pr, title
+
+
+def list_merges(repo: pathlib.Path, previous: str, until: str, *,
+                git_run=None) -> list[tuple[str, str]] | None:
+    """First-parent merges in `previous..until`, oldest first.
+
+    None means the log could not run (missing tag, etc.) — not an empty cut.
+    """
+    run = git_run or git
+    proc = run(
+        repo, "log", "--merges", "--first-parent", "--reverse",
+        f"--format=%s{_FIELD_SEP}%b{_RECORD_SEP}",
+        f"{previous}..{until}",
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    out: list[tuple[str, str]] = []
+    for rec in (proc.stdout or "").split(_RECORD_SEP):
+        rec = rec.strip("\n")
+        if not rec.strip():
+            continue
+        subject, _, body = rec.partition(_FIELD_SEP)
+        note = parse_merge_note(subject, body)
+        if note is not None:
+            out.append(note)
+    return out
+
+
+def changes_section(previous: str | None,
+                    changes: list[tuple[str, str]] | None) -> str:
+    if previous is None:
+        return (
+            "**Since last release**\n"
+            "No previous CalVer tag — this is the first named cut, not an empty changelog.\n"
+        )
+    if changes is None:
+        return (
+            f"**Since {previous}**\n"
+            f"Could not list first-parent merges since `{previous}`. "
+            "The interval is unmeasured, not empty.\n"
+        )
+    if not changes:
+        return (
+            f"**Since {previous}**\n"
+            f"No merges on first-parent between `{previous}` and this cut.\n"
+        )
+    lines = [f"**Since {previous}**"]
+    for pr, title in changes:
+        if pr:
+            lines.append(f"- #{pr} {title}")
+        else:
+            lines.append(f"- {title}")
+    return "\n".join(lines) + "\n"
+
+
+def notes_for(version: str, sha: str, *, previous: str | None = None,
+              changes: list[tuple[str, str]] | None = None) -> str:
     return (
         f"CalVer cut of Graphban (`YYYY.MM.N`). `/health` reports this as "
         f"`version`; `git_sha` is the exact build (`{sha}`).\n\n"
+        f"{changes_section(previous, changes)}\n"
         f"**Artifact**\n"
         f"`{asset_name(version)}` is backend + Alembic, prebuilt `web/dist`, "
         f"`GIT_SHA`, no `.env`. GitHub's source zip is not this tree.\n\n"
@@ -205,6 +312,28 @@ def notes_for(version: str, sha: str) -> str:
         f"```\ncurl -s https://<host>/health\n"
         f"# version {version}, git_sha {sha}, db ok\n```\n"
     )
+
+
+def collect_notes(repo: pathlib.Path, version: str, until: str, sha_short: str, *,
+                  git_run=None) -> tuple[str, str | None, list[tuple[str, str]] | None]:
+    """Notes body plus the previous tag / merge list used to build it."""
+    run = git_run or git
+    tags = existing_tags(repo, git_run=run)
+    prev = previous_tag(version, tags)
+    if prev is None:
+        body = notes_for(version, sha_short, previous=None, changes=[])
+        return body, None, []
+    resolved = run(repo, "rev-parse", "--verify", f"refs/tags/{prev}^{{commit}}",
+                   check=False)
+    if resolved.returncode != 0:
+        fetched = run(repo, "fetch", "origin", f"refs/tags/{prev}:refs/tags/{prev}",
+                      check=False)
+        if fetched.returncode != 0:
+            body = notes_for(version, sha_short, previous=prev, changes=None)
+            return body, prev, None
+    changes = list_merges(repo, prev, until, git_run=run)
+    body = notes_for(version, sha_short, previous=prev, changes=changes)
+    return body, prev, changes
 
 
 def pack_release(ref: str, out: pathlib.Path, *, api_only: bool = False) -> int:
@@ -263,6 +392,30 @@ def cmd_stamp(repo: pathlib.Path, version: str | None, *, today: dt.date,
     return 0
 
 
+def cmd_notes(repo: pathlib.Path, version: str | None, *,
+              ref: str, fetch: bool, git_run=None) -> int:
+    """Print the GitHub Release body that publish would attach. Does not pack."""
+    run = git_run or git
+    if fetch:
+        fetched = run(repo, "fetch", "origin", "main", check=False)
+        if fetched.returncode != 0:
+            return _fail("could not fetch origin/main")
+    resolved = run(repo, "rev-parse", "--verify", f"{ref}^{{commit}}", check=False)
+    if resolved.returncode != 0 or not (resolved.stdout or "").strip():
+        return _fail(f"could not resolve {ref!r}")
+    sha = resolved.stdout.strip()
+    short = run(repo, "rev-parse", "--short", sha).stdout.strip()
+    stamped = read_stamped_at(repo, sha, git_run=run)
+    if not version:
+        version = stamped
+    version = normalize_tag(version)
+    if parse_calver(version) is None or version in PLACEHOLDERS:
+        return _fail(f"{ref} is not a named cut ({stamped or 'empty'})")
+    notes, _, _ = collect_notes(repo, version, sha, short, git_run=run)
+    print(notes.rstrip())
+    return 0
+
+
 def cmd_publish(repo: pathlib.Path, version: str | None, *,
                 ref: str, out: pathlib.Path, fetch: bool, api_only: bool,
                 dry_run: bool, git_run=None, pack=pack_release, gh_run=gh) -> int:
@@ -297,11 +450,15 @@ def cmd_publish(repo: pathlib.Path, version: str | None, *,
     if isinstance(existing, dict) and want in release_assets(existing):
         return _fail(f"GitHub already has {version} with {want} — not republishing")
 
+    notes, _prev, _changes = collect_notes(repo, version, sha, short, git_run=run)
+
     if dry_run:
         print(f"would pack {ref} ({short}) as {want}")
         print(f"would {'upload to' if existing else 'create'} GitHub Release {version} "
               f"--target {sha} with {want}")
         print("would not apply to a box")
+        print()
+        print(notes.rstrip())
         return 0
 
     out.mkdir(parents=True, exist_ok=True)
@@ -313,7 +470,6 @@ def cmd_publish(repo: pathlib.Path, version: str | None, *,
         return _fail(f"pack did not write {tarball} — refusing to publish a "
                      "source-zip-only GitHub Release")
 
-    notes = notes_for(version, short)
     if isinstance(existing, dict):
         up = gh_run(["release", "upload", version, str(tarball), "--clobber"])
         if up.returncode != 0:
@@ -359,6 +515,13 @@ def main(argv: list[str] | None = None) -> int:
     p_stamp = sub.add_parser("stamp", help="write version.py, pyproject, package.json")
     p_stamp.add_argument("version", nargs="?", default="")
 
+    p_notes = sub.add_parser(
+        "notes",
+        help="print the GitHub Release body (merges since the previous CalVer)")
+    p_notes.add_argument("version", nargs="?", default="")
+    p_notes.add_argument("--ref", default="origin/main")
+    p_notes.add_argument("--no-fetch", action="store_true")
+
     p_pub = sub.add_parser("publish",
                            help="pack + GitHub Release for the stamped ref")
     p_pub.add_argument("version", nargs="?", default="")
@@ -382,6 +545,11 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_next(repo, today=today)
     if args.cmd == "stamp":
         return cmd_stamp(repo, args.version or None, today=today)
+    if args.cmd == "notes":
+        return cmd_notes(
+            repo, args.version or None,
+            ref=args.ref, fetch=not args.no_fetch,
+        )
     if args.cmd == "publish":
         return cmd_publish(
             repo, args.version or None,

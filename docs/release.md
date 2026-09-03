@@ -57,6 +57,7 @@ After the stamp is on `origin/main`:
 ```bash
 python3 scripts/graphban_release.py publish
 python3 scripts/graphban_release.py publish --dry-run
+python3 scripts/graphban_release.py notes          # the body, without packing
 ```
 
 Packs **that commit** from a detached worktree (same trap as `deploy.sh` —
@@ -64,6 +65,12 @@ cwd is not the cut), attaches `dist-release/graphban-<tag>.tar.gz` to a
 GitHub Release marked latest, and refuses if the tarball is missing. A
 Release that already exists without the tarball gets `gh release upload`,
 which is how you repair a source-zip-only cut.
+
+Notes list first-parent merges since the previous CalVer tag, using each
+merge's PR title (`#576 live: …`). The stamp PR for this cut is omitted.
+No previous tag, a missing tag, or an empty interval are named — they are
+not a quiet empty changelog. Direct (non-merge) commits on `main` are not
+listed; this repo lands work as merges.
 
 Does not merge, does not push `main`, does not apply to a box.
 
@@ -172,11 +179,13 @@ Hand steps, if the script is the thing you do not trust yet:
 TAG=$(python3 scripts/graphban_release.py next)  # or the version already on main
 python3 scripts/graphban_pack.py "$TAG"
 gh release create "$TAG" "dist-release/graphban-${TAG}.tar.gz" \
-  --title "$TAG" --target "$(git rev-parse origin/main)" --latest
+  --title "$TAG" --target "$(git rev-parse origin/main)" --latest \
+  --notes "$(python3 scripts/graphban_release.py notes --no-fetch)"
 ```
 
 That is what `publish` runs. Prefer the script — the tarball argument is the
-load-bearing one.
+load-bearing one. The notes are merges since the previous CalVer, not a
+boilerplate body.
 
 Compose deploy without a named cut remains [deploy.md](deploy.md)
 (`scripts/deploy.sh`). This document is the cut that Updates can see.
