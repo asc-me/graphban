@@ -93,6 +93,41 @@ def provider_errors(provider: str, *, model: str = "", endpoint: str = ""):
         ), status=None, retryable=True) from e
 
 
+class EmptyAnswer(errors.Unavailable):
+    """The provider returned a well-formed response with NOTHING in it.
+
+    Its own class so the span table can tell it from a transport failure: ``error_class``
+    is the type name, and "the model answered nothing" is a different operational fact from
+    "the model was unreachable". Observed live on 2026-09-03: the xAI fallback streamed for
+    ~120s, the stream ended with no content delta and no ``[DONE]``, and the empty string
+    became a grill result recorded ``ok=true`` with zero output tokens — a blank grill,
+    reported as a success. An absence must not read as a clean result.
+
+    Retryable, because a second credential answering is exactly the failover's job here,
+    and because the observed cause (a stream severed upstream) is about the provider's
+    moment, not the credential.
+    """
+
+
+def require_answer(text: str, provider: str, *, model: str = "", endpoint: str = "",
+                   detail: str = "") -> str:
+    """Return ``text`` stripped, or raise ``EmptyAnswer`` if there is nothing in it.
+
+    Every ``chat()`` passes its assembled answer through here, so the rule lives in one place
+    and a caller holding a ``str`` can trust it is non-empty.
+    """
+    out = (text or "").strip()
+    if out:
+        return out
+    where = f"{provider}" + (f" ({endpoint})" if endpoint else "")
+    raise _tagged(EmptyAnswer(
+        f"{where} returned an empty answer" + (f" for model {model!r}" if model else "")
+        + (f": {detail}" if detail else ""),
+        hint="the provider produced no text; this is worth retrying, and if it keeps "
+             "happening check the model in Settings -> AI providers",
+    ), status=None, retryable=True)
+
+
 @runtime_checkable
 class Embedder(Protocol):
     dim: int

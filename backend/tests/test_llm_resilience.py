@@ -300,3 +300,64 @@ def test_ollama_chat_sends_think_false(monkeypatch):
     assert sent["think"] is False
     assert sent["stream"] is True
     assert sent["model"] == "qwen3.6:35b"
+
+
+# ---- an empty answer is a failure, not a result -------------------------------
+# Live on 2026-09-03: the xAI fallback streamed ~120s, ended with no content and no
+# `[DONE]`, and "" became a grill result recorded ok=true. An absence must not read as clean.
+from app.providers.base import EmptyAnswer
+
+
+def test_ollama_chat_raises_on_thinking_only_stream(monkeypatch):
+    """Everything the model produced was thinking (which the adapter drops) — the caller
+    must get an error it can fail over on, not an empty string it will file as an answer."""
+    def fake_stream(method, url, **kw):
+        return _FakeStreamResponse([
+            '{"message": {"thinking": "hmm"}}',
+            '{"message": {"content": ""}, "done": true, "prompt_eval_count": 3, "eval_count": 9}',
+        ])
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    chat = ollama.OllamaChat("https://gw.example", "qwen3.6:35b")
+    with pytest.raises(EmptyAnswer) as ei:
+        chat.chat(system="s", context="c", question="q")
+    assert ei.value.retryable is True
+    assert "empty answer" in str(ei.value) and "qwen3.6:35b" in str(ei.value)
+
+
+class _FakeSSEResponse(_FakeStreamResponse):
+    pass
+
+
+def test_compat_chat_names_a_severed_stream(monkeypatch):
+    """The live shape: bytes arrive, then the stream just ends — no content, no [DONE]."""
+    monkeypatch.setattr(httpx, "stream", lambda *a, **k: _FakeSSEResponse([
+        'data: {"choices": [{"delta": {"reasoning_content": "thinking..."}}]}',
+    ]))
+    chat = openai_compat.OpenAICompatChat("https://api.x.ai/v1", "k", "grok-4.5")
+    with pytest.raises(EmptyAnswer) as ei:
+        chat.chat(system="s", context="c", question="q")
+    assert ei.value.retryable is True
+    assert "without [DONE]" in str(ei.value)
+
+
+def test_compat_chat_distinguishes_a_completed_empty_answer(monkeypatch):
+    """[DONE] arrived and there was still nothing: the model answered blank. Still an
+    error — but it must NOT claim the stream was cut, because it was not."""
+    monkeypatch.setattr(httpx, "stream", lambda *a, **k: _FakeSSEResponse([
+        'data: {"choices": [{"delta": {"content": "   "}}]}',
+        'data: [DONE]',
+    ]))
+    chat = openai_compat.OpenAICompatChat("https://gw.example/v1", "k", "m")
+    with pytest.raises(EmptyAnswer) as ei:
+        chat.chat(system="s", context="c", question="q")
+    assert "without [DONE]" not in str(ei.value)
+
+
+def test_a_real_answer_still_passes_through_stripped(monkeypatch):
+    monkeypatch.setattr(httpx, "stream", lambda *a, **k: _FakeSSEResponse([
+        'data: {"choices": [{"delta": {"content": "  fine  "}}]}',
+        'data: [DONE]',
+    ]))
+    chat = openai_compat.OpenAICompatChat("https://gw.example/v1", "k", "m")
+    assert chat.chat(system="s", context="c", question="q") == "fine"

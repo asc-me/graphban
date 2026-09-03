@@ -9,6 +9,7 @@ import json
 import httpx
 
 from app.config import settings
+from app.providers.base import require_answer
 from app.providers.toolcall import ToolCall, ToolResult, ToolSpec, ToolTurn
 
 
@@ -45,11 +46,23 @@ class OpenAICompatChat:
         `grill_apply` is the worst case — gets severed mid-thought. Streaming makes the
         first byte immediate, so only the *total* duration matters, while callers keep
         the identical `-> str` contract."""
-        return "".join(self.stream(system=system, context=context, question=question,
-                                   temperature=temperature)).strip()
+        text = "".join(self.stream(system=system, context=context, question=question,
+                                   temperature=temperature))
+        # Blank is a failure, not an answer (see `EmptyAnswer`). Whether the stream reached
+        # `[DONE]` is the one fact that separates "the model said nothing" from "something
+        # upstream cut the stream" — the live case was the latter.
+        return require_answer(
+            text, "openai-compat", model=self.model, endpoint=self.base_url,
+            detail="" if self.last_stream_complete else "the stream ended without [DONE]",
+        )
+
+    #: Whether the most recent `stream()` saw the `[DONE]` sentinel. Read by `chat()` to say
+    #: WHY an answer was empty; a generator cannot return that alongside its chunks.
+    last_stream_complete: bool = False
 
     def stream(self, *, system: str, context: str, question: str,
                temperature: float | None = None):
+        self.last_stream_complete = False
         # include_usage was already the tool-session convention (AL-179); the plain
         # stream is where most spend happens, and the tail chunk costs nothing extra.
         # A compat endpoint that rejects the field would surface here as a provider
@@ -69,6 +82,7 @@ class OpenAICompatChat:
                     continue
                 data = line[len("data:"):].strip()
                 if data == "[DONE]":
+                    self.last_stream_complete = True
                     break
                 try:
                     chunk = json.loads(data)
