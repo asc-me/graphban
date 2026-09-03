@@ -1,7 +1,7 @@
 {
   "scope": {
     "covers": "PRDs with a document in docs/ that names its ledger row",
-    "indexed": 5,
+    "indexed": 6,
     "note": "NOT the list of PRDs. A ledger-only PRD has no repo copy to compare and is absent here by construction; anything reading `prds` as complete is seeing a fraction of them."
   },
   "prds": {
@@ -113,6 +113,29 @@
         "7. Non-goals",
         "8. Risks and open questions",
         "9. Acceptance walk"
+      ]
+    },
+    "GRPH-P33": {
+      "file": "docs/prd-33-observe-live.md",
+      "status": "approved",
+      "sections": [
+        "1. Overview",
+        "2. Problem",
+        "3. Goals",
+        "4. Non-Goals",
+        "5. Key decisions",
+        "D1 — The page, not a tab of Activity or Fleet",
+        "D2 — Group by human, filter by user",
+        "D3 — Files are leases, labelled",
+        "D4 — PRs are recorded, never fetched",
+        "D5 — One aggregation, one service function",
+        "D6 — Absence must not read as a quiet fleet",
+        "D7 — Poll on the fleet clock",
+        "6. Data model",
+        "7. Acceptance criteria",
+        "8. Phasing",
+        "9. Risks and open questions",
+        "10. Prior art — agenttrail"
       ]
     }
   },
