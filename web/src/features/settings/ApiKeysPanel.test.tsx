@@ -245,6 +245,9 @@ describe("tool tiers (GRPH-571)", () => {
     // "Sync target project" was the old name of the same object.
     expect(screen.getByLabelText("Link key target project")).toBeInTheDocument();
     expect(screen.queryByLabelText("Sync target project")).not.toBeInTheDocument();
+    // The name field sat next to "Mint link key" still saying "Key name".
+    expect(screen.getByPlaceholderText("Link key name (e.g. laptop — acme-core)")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Key name (e.g. laptop — acme-core)")).not.toBeInTheDocument();
   });
 
   it("names the agent mint Mint agent key, like the other two kinds", async () => {
