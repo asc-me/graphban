@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
 import { LeftNav } from "@/components/shell/LeftNav";
@@ -47,6 +47,11 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
+/** Renders the live pathname so a test can tell "expanded" from "navigated". */
+function Here() {
+  return <div data-testid="here">{useLocation().pathname}</div>;
+}
+
 function wrap(ui: ReactNode, path = "/tracker") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -56,6 +61,7 @@ function wrap(ui: ReactNode, path = "/tracker") {
           <Routes>
             <Route path="*" element={ui} />
           </Routes>
+          <Here />
         </ProjectProvider>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -78,13 +84,39 @@ describe("P28 self-host rail", () => {
     expect(await screen.findByText("41")).toBeInTheDocument();
   });
 
-  it("expands Build when navigating from a Plan route via the section header", async () => {
+  it("expands Build on click without leaving the current page", async () => {
     const user = userEvent.setup();
     wrap(<LeftNav />, "/tracker");
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Build" }));
     expect(await screen.findByText("Code graph")).toBeInTheDocument();
     expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
+    // A header is a disclosure, not a link: opening Build must not move you off /tracker.
+    expect(screen.getByTestId("here")).toHaveTextContent("/tracker");
+  });
+
+  it("collapses a section when its own header is clicked again", async () => {
+    const user = userEvent.setup();
+    wrap(<LeftNav />, "/tracker");
+    await screen.findByText("Tracker");
+    await user.click(screen.getByRole("button", { name: "Plan" }));
+    expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Plan" })).toHaveAttribute("aria-expanded", "false");
+    await user.click(screen.getByRole("button", { name: "Plan" }));
+    expect(screen.getByText("Tracker")).toBeInTheDocument();
+    expect(screen.getByTestId("here")).toHaveTextContent("/tracker");
+  });
+
+  it("reopens the owning section when the route moves into another one", async () => {
+    const user = userEvent.setup();
+    wrap(<LeftNav />, "/tracker");
+    await screen.findByText("Tracker");
+    await user.click(screen.getByRole("button", { name: "Observe" }));
+    expect(screen.getByText("Activity")).toBeInTheDocument();
+    // Following a child link changes the route, and the rail follows the route.
+    await user.click(screen.getByText("Activity"));
+    expect(screen.getByTestId("here")).toHaveTextContent("/activity");
+    expect(screen.getByRole("button", { name: "Observe" })).toHaveAttribute("aria-expanded", "true");
   });
 
   it("shows Memory and Lessons under Observe on /lessons (children are collapsed on /tracker)", async () => {
@@ -102,7 +134,7 @@ describe("P28 self-host rail", () => {
     expect(screen.getByText("Lessons")).toBeInTheDocument();
   });
 
-  it("keeps Lessons in OBSERVE next to Memory, and does not land Observe on /lessons", () => {
+  it("keeps Lessons in OBSERVE next to Memory, and keeps headers non-navigating", () => {
     const sources = import.meta.glob("../components/shell/LeftNav.tsx", {
       query: "?raw",
       import: "default",
@@ -129,11 +161,11 @@ describe("P28 self-host rail", () => {
     expect(live).toBeGreaterThan(act);
     expect(hosted.slice(act, live).match(/to:/g)?.length).toBe(1);
 
-    const def = src.slice(src.indexOf("observeDefault"), src.indexOf("observeDefault") + 180);
-    expect(def).toContain("/memory-review");
-    expect(def).toContain("/activity");
-    expect(def).not.toContain("/lessons");
-    expect(def).not.toContain("/live");
+    // A section header expands; it never navigates. No default landing page may creep back in.
+    const header = src.match(/function SectionHeader\(\{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(header).toContain("onToggle");
+    expect(header).not.toContain("navigate(");
+    expect(src).not.toContain("observeDefault");
   });
 });
 
