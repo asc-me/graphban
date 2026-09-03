@@ -516,7 +516,11 @@ def build_parser() -> argparse.ArgumentParser:
     it.add_argument("--json", action="store_true", help="machine-readable output for start.sh")
     it.set_defaults(func=cmd_init)
 
-    lk = sub.add_parser("link", help="store the cloud sync target (URL + org-issued credential)")
+    lk = sub.add_parser(
+        "link",
+        help="store the cloud sync target (URL + org-issued link key)",
+        description="store the cloud sync target (URL + org-issued link key)",
+    )
     lk.add_argument("--cloud-url")
     lk.add_argument("--api-key")
     lk.add_argument("--project")

@@ -106,6 +106,18 @@ def test_link_requires_both_url_and_key(cfg_path):
     assert "sync credential" not in str(e.value)
 
 
+def test_link_help_names_the_org_issued_link_key(capsys):
+    # THE CALL. Parent `graphban -h` does not list subparser help strings.
+    # `graphban link -h` is what prints description= (and --api-key as the flag).
+    with pytest.raises(SystemExit) as e:
+        cli.main(["link", "-h"])
+    assert e.value.code == 0
+    out = capsys.readouterr().out
+    assert "org-issued link key" in out
+    assert "--api-key" in out
+    assert "org-issued credential" not in out
+
+
 def test_status_reports_not_linked(cfg_path, capsys):
     assert cli.main(["status"]) == 0
     assert "Not linked" in capsys.readouterr().out
