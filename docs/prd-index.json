@@ -1,7 +1,7 @@
 {
   "scope": {
     "covers": "PRDs with a document in docs/ that names its ledger row",
-    "indexed": 6,
+    "indexed": 7,
     "note": "NOT the list of PRDs. A ledger-only PRD has no repo copy to compare and is absent here by construction; anything reading `prds` as complete is seeing a fraction of them."
   },
   "prds": {
@@ -136,6 +136,29 @@
         "8. Phasing",
         "9. Risks and open questions",
         "10. Prior art — agenttrail"
+      ]
+    },
+    "GRPH-P34": {
+      "file": "docs/prd-34-observe-live-feed.md",
+      "status": "draft",
+      "sections": [
+        "1. Overview",
+        "2. Problem",
+        "3. Goals",
+        "4. Non-Goals",
+        "5. Key decisions",
+        "D1 — Two sources, named on every row",
+        "D2 — The dispatcher writes every call",
+        "D3 — Attribution, and the counted third state",
+        "D4 — One target string per tool",
+        "D5 — Heartbeat reports, on change",
+        "D6 — Board summary and the feed read",
+        "D7 — Silence, encoded",
+        "6. Data model",
+        "7. Acceptance criteria",
+        "8. Phasing",
+        "9. Risks and open questions",
+        "10. Prior art"
       ]
     }
   },
