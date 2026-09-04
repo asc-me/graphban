@@ -296,6 +296,9 @@ def public_config():
     }
 
 
+from app.services import agent_calls as agent_calls_svc  # noqa: E402 — PRD-34 D18
+
+
 @app.get("/health")
 def health():
     """Liveness + release identity. Always HTTP 200 while the process is up (so the
@@ -326,6 +329,9 @@ def health():
         "providers": {
             "embed_ok": settings.embed_provider != "stub",
         },
+        # The observed feed's retention sweep (PRD-34 D18). Runs on the write path and
+        # swallows nothing silently: a count here is a table growing past retention.
+        "agent_calls_sweep_failed": agent_calls_svc.SWEEP_FAILED,
     }
 
 

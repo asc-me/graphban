@@ -643,6 +643,31 @@ def seat_of(db: Session, agent: Agent | None):
     return db.get(Enrolment, agent.enrolment_id)
 
 
+def agent_for_session(db: Session, session_id: str | None) -> Agent | None:
+    """The one live agent registered on this MCP connection, or None (PRD-19 E9a, PRD-34 D3).
+
+    None means "cannot say", never "nobody": a client that sends no header, a connection with
+    no registered agent, an expired seat, and — deliberately — TWO live agents on one
+    connection all land here. An orchestrator and the subagent it spawns can share a
+    transport, and guessing between them would trim one's manifest for the other and put one
+    agent's calls under the other's name on the Live feed. Both consumers (`_session_role`
+    in the dispatcher and the feed's attribution) read this one function so they cannot drift.
+    """
+    if not session_id:
+        return None
+    rows = db.scalars(select(Agent).where(Agent.mcp_session_id == session_id,
+                                          Agent.dismissed_at.is_(None))).all()
+    live = [a for a in rows if presence_state(a) != "offline"]
+    if len(live) != 1:
+        return None
+    agent = live[0]
+    # An expired seat grants no role, so it must not narrow the manifest either — the agent
+    # needs `fleet_status` to collect the directive telling it to re-enrol.
+    if session_expired(db, agent):
+        return None
+    return agent
+
+
 def session_expired(db: Session, agent: Agent | None) -> bool:
     """Did this agent's SEAT stop being valid under it?
 

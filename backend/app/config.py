@@ -252,6 +252,10 @@ class Settings(BaseSettings):
     # keeps everything. The table is telemetry, not the ledger — unbounded growth of
     # per-call rows is the difference between a cost panel and an ops incident.
     llm_span_retention_days: int = 90
+    # How long the observed feed (`agent_calls`, PRD-34 D10) keeps a row. Swept on the write
+    # path, amortised — there is no scheduler here and this did not add one. `0` or negative
+    # keeps everything.
+    agent_call_retention_days: int = 7
 
     # Org invites (AL-74b). Delivered by email; when SMTP is unconfigured the email
     # service falls back to a console/outbox transport (fine for self-host + tests).

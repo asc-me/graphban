@@ -96,7 +96,10 @@ def _principal_and_agent(e: Event) -> tuple[str, str]:
     meta = e.meta or {}
     if e.actor_type == "apikey":
         principal = (meta.get("principal") or {}).get("label") or ""
-        return principal, (e.actor_label or e.actor_id)
+        # The AGENT behind the key when the dispatcher could name it (PRD-34 D3); several
+        # agents share one credential by design, and the key label alone cannot say which.
+        agent = str(meta.get("agent_id") or "") or (e.actor_label or e.actor_id)
+        return principal, agent
     origin = str(meta.get("origin") or "")
     if origin.startswith("assistant:"):
         return (e.actor_label or e.actor_id), origin
