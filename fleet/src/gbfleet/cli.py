@@ -182,6 +182,11 @@ def build_parser() -> argparse.ArgumentParser:
     until.add_argument("--wave", default="wave", help="wave name, used in branch names")
     until.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     until.add_argument(
+        "--tier", choices=["cheap", "frontier"], default=None,
+        help="tier to REQUEST on each delegation this loop writes (PRD-35); default follows "
+             "the brief's suggestion. Observational: the child declares what it actually is",
+    )
+    until.add_argument(
         "--max-reviewers", type=int, default=1,
         help="v1 default 1. Spawn-when-needed; do not start a reviewer cohort at t=0",
     )
@@ -378,6 +383,7 @@ def _until(args) -> int:
             ),
             workspace=Path(args.workspace) if args.workspace else None,
             debug=args.debug,
+            tier=args.tier,
         )
     except RepoLocked as exc:
         print(f"gbfleet until: {exc}", file=sys.stderr)

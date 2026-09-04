@@ -15,17 +15,30 @@ without colliding*, then delegate.
    touchpoints don't overlap. This is the safety property: only fan out work that
    is in *different* clusters concurrently. Two items in the same cluster must run
    sequentially, never in parallel.
-3. For each item you intend to delegate, `get_item_details` to read the full spec,
-   blockers, and linked memory, and `related_work` to see the code-neighborhood.
-4. Delegate one cluster member at a time:
-   - Frontend-only work (`web/**`) -> `gb-frontend`.
-   - Everything else -> `gb-implementer`.
-   - Open questions / "where does X live" -> `gb-scout` first, fold the answer into
-     the delegation prompt.
-   Because subagents start with a **clean context window**, put everything the
-   worker needs *in the delegation prompt*: the item id, the spec summary, the
-   predicted touchpoints, and the relevant invariant (e.g. "this adds an MCP tool —
-   follow the MCP task-class checklist: outputSchema + count assertions + docs").
+3. For each item you intend to hand over, `get_item_details` and read its `brief`
+   (PRD-35): summary, touchpoints, blockers, task class, lessons, the `previous`
+   attempt, and a `lane` and `tier` **suggestion, each with its `basis`**. The
+   suggestion is evidence, not a decision: `basis: none` says cheap because nothing has
+   been tried; `bounced` says the last attempt failed and one tier up is the hint.
+   `related_work` shows the code-neighborhood. You decide.
+4. `delegate(id=..., lane=..., tier=...)` — type the lane and tier yourself. There is
+   no default, because a default would be the server choosing. It claims nothing and
+   returns the `brief` again. Paste `brief.text` into the spawn prompt VERBATIM: it is
+   what the child needs and carries no suggestion, so it cannot smuggle a tier in.
+5. Spawn by lane and tier, one cluster member at a time:
+   - Claude Code: `gb-frontend` for `frontend`, `gb-implementer` otherwise, and pass
+     `model: haiku` for `cheap` or inherit for `frontier` on the Agent call.
+   - Cursor / Codex: the model is fixed per file, so `gb-frontend` / `gb-implementer`
+     are `cheap` and `gb-frontend-frontier` / `gb-implementer-frontier` are `frontier`.
+   - `mixed` lane -> `gb-implementer`, and say so (it runs the frontend checks too).
+   - Open questions / "where does X live" -> `gb-scout` first, fold the answer in.
+   Tell the child to `register_agent(parent_agent_id=<your agent id>)`. That is how
+   its claim LINKS to your delegation; a child that registers without it supersedes
+   the delegation, and the Live board shows exactly that.
+6. Read the Live board. `expired, nothing claimed` under your row is a spawn that
+   died before it claimed; `superseded` is a claim by something that was not your
+   child; `requested cheap, declared frontier` is a harness that did not honour the
+   tier. None of those is an error to hide — each is the record doing its job.
 
 ## Rules
 
@@ -33,7 +46,10 @@ without colliding*, then delegate.
   guaranteed collision. Cross-cluster items are safe to run at once.
 - Don't claim items yourself — the worker calls `claim_next` / claims the specific
   id so the lease is held by whoever does the work.
-- Respect `blocked_by`: never delegate an item with unfinished dependencies.
+- Respect `blocked_by`: `delegate` refuses a blocked item and names the blocker.
+- Re-delegate after a bounce by calling `delegate` again. The brief carries the
+  bounce reason, the previous attempt's model and tier, and every prior attempt.
+  Escalating the tier is your call; the brief only says why it suggests it.
 - After a worker finishes, re-run `next_cluster` — landed touchpoints refine the
   prediction, so the safe-to-parallelize set changes.
 '''

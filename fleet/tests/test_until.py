@@ -58,6 +58,10 @@ def _clients(
     search_fails: str | None = None,
     minted_roles: list | None = None,
     on_mint=None,
+    cluster_items: list | None = None,
+    delegations: list | None = None,
+    delegate_fails: str | None = None,
+    calls: list | None = None,
 ):
     """Planner + supervisor clients sharing one mock Graphban."""
     seen_agents = {"yes": False}
@@ -67,6 +71,21 @@ def _clients(
         tool = body["params"]["name"]
         args = body["params"].get("arguments") or {}
         rid = body["id"]
+        if calls is not None:
+            calls.append(tool)
+        if tool == "get_item_details":
+            return _mcp({"id": args.get("id"), "title": "seed", "brief": {
+                "lane": {"value": "backend", "basis": ["backend/app/x.py"]},
+                "tier": {"value": "cheap", "basis": "none"},
+                "text": "Item seed",
+            }}, rid)
+        if tool == "delegate":
+            if delegate_fails:
+                return _error(delegate_fails, f"refused ({delegate_fails})", rid)
+            if delegations is not None:
+                delegations.append(dict(args))
+            return _mcp({"delegation_id": f"dlg_{len(delegations or [])}", "state": "open",
+                         "withdrew": None, "brief": {}}, rid)
         if tool == "register_agent":
             return _mcp({
                 "agent_id": "GRPH-P1",
@@ -76,8 +95,10 @@ def _clients(
             }, rid)
         if tool == "collision_clusters":
             total = 0 if seen_agents["yes"] else clusters
+            rows = [{"items": list(cluster_items[i]) if cluster_items and i < len(cluster_items) else []}
+                    for i in range(total)]
             return _mcp({
-                "clusters": [{}] * total,
+                "clusters": rows,
                 "total": total,
             }, rid)
         if tool == "propose_allocation":
@@ -513,3 +534,87 @@ def test_reviewer_instruction_does_not_teach_claim_cluster():
     assert "Call claim_review" in text
     assert "sign_off" in text
     assert "Then claim work with claim_cluster" not in text
+
+
+# ---- PRD-35 D12 / criterion 22: the delegation is written before the seat ---------------------
+
+def test_until_delegates_the_seed_before_minting_the_seat(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """One worker seat, one free cluster with a seed: `delegate` lands with the brief's lane
+    and tier, BEFORE `mint_enrolment`. The child registers on that seat, which is the
+    lineage the server links on."""
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    calls: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7", "GRPH-8"]],
+        delegations=delegations, calls=calls,
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.spawned == 1, result.detail
+    assert delegations == [{
+        "id": "GRPH-7", "lane": "backend", "tier": "cheap", "agent_id": "GRPH-P1",
+        "note": "gbfleet until, wave wave",
+    }]
+    assert calls.index("delegate") < calls.index("mint_enrolment")
+
+
+def test_a_seat_with_no_cluster_item_makes_no_delegate_call(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """Criterion 22, second half. The absence is the record: nothing was handed over."""
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    calls: list = []
+    planner, supervisor = _clients(workspace, clusters=1, delegations=delegations, calls=calls)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.spawned == 1, result.detail
+    assert delegations == []
+    assert "delegate" not in calls
+
+
+def test_the_tier_flag_is_what_the_loop_requests(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """D5: the harness commits. `--tier frontier` overrides a brief that suggests cheap."""
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]], delegations=delegations,
+    )
+    run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        tier="frontier",
+    )
+    assert [d["tier"] for d in delegations] == ["frontier"]
+
+
+def test_a_refused_delegation_does_not_stop_the_spawn(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """Another planner's open delegation, or a bounce pin, is theirs to hold. The seat is
+    still minted; the divvy decides what the child claims and the record says so."""
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]], delegations=delegations,
+        delegate_fails="conflict",
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.spawned == 1, result.detail
+    assert delegations == []

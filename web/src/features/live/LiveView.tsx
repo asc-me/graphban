@@ -7,7 +7,13 @@ import { cn } from "@/lib/cn";
 import { useConfig, useLive, useLiveFeed } from "@/lib/queries";
 import { projectPath } from "@/lib/routes";
 import type {
-  LiveAgent, LiveBoard, LiveFeedRow, LiveFileKind, LiveFileState, LiveUser,
+  LiveAgent,
+  LiveBoard,
+  LiveDelegationRow,
+  LiveFeedRow,
+  LiveFileKind,
+  LiveFileState,
+  LiveUser,
 } from "@/lib/types";
 
 /** Same mapping as Fleet: role colour is the status that role produces. */
@@ -245,6 +251,9 @@ function AgentRow({
           {open && (
             <Feed agentId={a.id} projectId={projectId} intervalMs={intervalMs} servedAt={servedAt} />
           )}
+          {/* PRD-35 D11: what this agent handed to children. null is a word; expired is the
+              third state — a spawn that never claimed. Absent on a server behind this build. */}
+          {a.delegations !== undefined && <Delegations agent={a} />}
           <div className="mt-1.5 text-[12px] text-fg-2">{fileStateCopy(a.file_state)}</div>
           {a.files.length > 0 && (
             <ul className="mt-1 space-y-0.5 font-mono text-[10.5px] text-muted">
@@ -282,6 +291,83 @@ function AgentRow({
       </div>
     </div>
   );
+}
+
+/** PRD-35 D11: per-delegator counts and rows. Every state is a word; `expired, nothing
+ *  claimed` is the one this block exists for. Tier text names requested and declared
+ *  side by side and never hides a mismatch (D8). */
+function Delegations({ agent: a }: { agent: LiveAgent }) {
+  const d = a.delegations;
+  if (!d) {
+    return <div className="mt-1.5 text-[11.5px] text-faint">no delegations</div>;
+  }
+  const total = d.open + d.claimed + d.finished + d.expired + d.closed;
+  const parts: string[] = [];
+  if (d.claimed) parts.push(`${d.claimed} claimed`);
+  if (d.open) parts.push(`${d.open} open${d.oldest_open_seconds != null ? ` (oldest ${durationLabel(d.oldest_open_seconds)})` : ""}`);
+  if (d.expired) parts.push(`${d.expired} expired`);
+  if (d.finished) parts.push(`${d.finished} finished`);
+  if (d.closed) parts.push(`${d.closed} closed`);
+  return (
+    <div className="mt-1.5 text-[11.5px]">
+      <div className="text-fg-2">
+        <span className="font-mono text-[10px] uppercase tracking-wide text-faint">delegated</span>{" "}
+        {total}: {parts.join(", ")}
+      </div>
+      {d.rows.length > 0 && (
+        <ul className="mt-0.5 space-y-0.5 font-mono text-[10.5px] text-muted">
+          {d.rows.map((r) => (
+            <li key={r.id} className={cn(r.state === "expired" && "text-[color:var(--color-st-blocked)]")}>
+              <span className="text-fg-2">{r.item}</span>
+              <span className="ml-1.5">{r.lane}</span>
+              <span className="ml-1.5">{delegationCopy(r)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function delegationCopy(r: LiveDelegationRow): string {
+  const age = r.age_seconds != null ? ` · ${durationLabel(r.age_seconds)} ago` : "";
+  switch (r.state) {
+    case "open":
+      return `open, requested ${r.requested_tier}${age}`;
+    case "expired":
+      return `expired, nothing claimed · requested ${r.requested_tier}${age}`;
+    case "claimed":
+      return `claimed by ${r.agent_id ?? "?"} (${tierCopy(r)})${age}`;
+    case "finished":
+      return `${outcomeCopy(r.outcome)} · ${r.agent_id ?? "?"} (${tierCopy(r)})`;
+    case "closed":
+      return r.closed_reason === "superseded"
+        ? `superseded by ${r.closed_by ?? "another agent"}`
+        : "withdrawn";
+  }
+}
+
+/** Requested and declared, side by side. A mismatch is stated, an undeclared tier is a
+ *  word — neither reads as satisfied (D8). */
+function tierCopy(r: LiveDelegationRow): string {
+  const model = r.declared_model ? `, ${r.declared_model}` : "";
+  if (r.declared_tier === "undeclared" || !r.declared_tier) {
+    return `requested ${r.requested_tier}, undeclared${model}`;
+  }
+  if (r.mismatch) {
+    return `requested ${r.requested_tier}, declared ${r.declared_tier}${model}`;
+  }
+  return `${r.declared_tier}${model}`;
+}
+
+function outcomeCopy(o: LiveDelegationRow["outcome"]): string {
+  switch (o) {
+    case "signed_off": return "signed off";
+    case "bounced": return "bounced";
+    case "blocked": return "blocked";
+    case "released": return "released";
+    default: return "finished";
+  }
 }
 
 /** Observed: what Graphban measured. `never` / `quiet` are words, not blanks (D7, D11). */

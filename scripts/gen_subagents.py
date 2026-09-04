@@ -251,6 +251,13 @@ Pass `parent_agent_id=<your agent id>` when a subagent of yours registers. A sub
 of your turn, not a second opinion on it — the server uses this to stop one of your own
 children reviewing your work, which would be self-review wearing two ids.
 
+Before you spawn one for an item, `get_item_details` and read its `brief`, then
+`delegate(id, lane, tier)` (PRD-35): type the lane and tier yourself — the brief suggests
+them with a `basis`, and the server never defaults them — and paste the returned
+`brief.text` into the spawn. The child's claim links to your delegation through
+`parent_agent_id`, or through a seat you minted; anyone else's claim supersedes it. A
+delegation nobody claims reads `expired` on the Live board, which is the point.
+
 ## Rules
 
 - **Do not claim work.** `claim_next` and `claim_cluster` are refused for you, and
@@ -380,17 +387,30 @@ without colliding*, then delegate.
    touchpoints don't overlap. This is the safety property: only fan out work that
    is in *different* clusters concurrently. Two items in the same cluster must run
    sequentially, never in parallel.
-3. For each item you intend to delegate, `get_item_details` to read the full spec,
-   blockers, and linked memory, and `related_work` to see the code-neighborhood.
-4. Delegate one cluster member at a time:
-   - Frontend-only work (`web/**`) -> `gb-frontend`.
-   - Everything else -> `gb-implementer`.
-   - Open questions / "where does X live" -> `gb-scout` first, fold the answer into
-     the delegation prompt.
-   Because subagents start with a **clean context window**, put everything the
-   worker needs *in the delegation prompt*: the item id, the spec summary, the
-   predicted touchpoints, and the relevant invariant (e.g. "this adds an MCP tool —
-   follow the MCP task-class checklist: outputSchema + count assertions + docs").
+3. For each item you intend to hand over, `get_item_details` and read its `brief`
+   (PRD-35): summary, touchpoints, blockers, task class, lessons, the `previous`
+   attempt, and a `lane` and `tier` **suggestion, each with its `basis`**. The
+   suggestion is evidence, not a decision: `basis: none` says cheap because nothing has
+   been tried; `bounced` says the last attempt failed and one tier up is the hint.
+   `related_work` shows the code-neighborhood. You decide.
+4. `delegate(id=..., lane=..., tier=...)` — type the lane and tier yourself. There is
+   no default, because a default would be the server choosing. It claims nothing and
+   returns the `brief` again. Paste `brief.text` into the spawn prompt VERBATIM: it is
+   what the child needs and carries no suggestion, so it cannot smuggle a tier in.
+5. Spawn by lane and tier, one cluster member at a time:
+   - Claude Code: `gb-frontend` for `frontend`, `gb-implementer` otherwise, and pass
+     `model: haiku` for `cheap` or inherit for `frontier` on the Agent call.
+   - Cursor / Codex: the model is fixed per file, so `gb-frontend` / `gb-implementer`
+     are `cheap` and `gb-frontend-frontier` / `gb-implementer-frontier` are `frontier`.
+   - `mixed` lane -> `gb-implementer`, and say so (it runs the frontend checks too).
+   - Open questions / "where does X live" -> `gb-scout` first, fold the answer in.
+   Tell the child to `register_agent(parent_agent_id=<your agent id>)`. That is how
+   its claim LINKS to your delegation; a child that registers without it supersedes
+   the delegation, and the Live board shows exactly that.
+6. Read the Live board. `expired, nothing claimed` under your row is a spawn that
+   died before it claimed; `superseded` is a claim by something that was not your
+   child; `requested cheap, declared frontier` is a harness that did not honour the
+   tier. None of those is an error to hide — each is the record doing its job.
 
 ## Rules
 
@@ -398,7 +418,10 @@ without colliding*, then delegate.
   guaranteed collision. Cross-cluster items are safe to run at once.
 - Don't claim items yourself — the worker calls `claim_next` / claims the specific
   id so the lease is held by whoever does the work.
-- Respect `blocked_by`: never delegate an item with unfinished dependencies.
+- Respect `blocked_by`: `delegate` refuses a blocked item and names the blocker.
+- Re-delegate after a bounce by calling `delegate` again. The brief carries the
+  bounce reason, the previous attempt's model and tier, and every prior attempt.
+  Escalating the tier is your call; the brief only says why it suggests it.
 - After a worker finishes, re-run `next_cluster` — landed touchpoints refine the
   prediction, so the safe-to-parallelize set changes.""",
     },
@@ -602,6 +625,7 @@ def render_readme(invariants: str, defaults: str) -> str:
             "| `gb-planner`     | frontier | no  | Pick + partition **non-colliding** work; delegate to workers |",
             "| `gb-implementer` | cheap    | yes | Backend/general workhorse — claim -> build -> both-DB tests -> review |",
             "| `gb-frontend`    | cheap    | yes | `web/` specialization + frontend invariants |",
+            "| `gb-implementer-frontier`, `gb-frontend-frontier` | frontier | yes | Cursor / Codex only: the same bodies with the frontier model knob, because those tools fix the model per file. The planner picks by the `tier` it committed in `delegate` (PRD-35). Claude Code passes the model on the Agent call instead |",
             "| `gb-scout`       | cheap    | no  | Read-only research — \"where does X live / how does Y work\" |",
             "| `gb-verifier`    | cheap    | no  | Runs the full operating loop, reports pass/fail |",
         ]
@@ -805,6 +829,33 @@ def render_cursor_rules(ledger_loop: str) -> str:
     ])
 
 
+#: Toolchains whose subagent model is fixed in the role file rather than chosen at spawn.
+FILE_PINNED_MODEL = ("cursor", "codex")
+#: The writing agents that get a `-frontier` twin on those toolchains.
+FRONTIER_TWINS = ("gb-implementer", "gb-frontend")
+
+
+def frontier_variants() -> list[dict]:
+    """The same body and discipline as the cheap agent, with the frontier knob (PRD-35 D12).
+    Only the tier and the name change, so `test_prompt_body_is_shared_across_toolchains`
+    still holds by construction and a variant cannot drift from its twin."""
+    out = []
+    for role in ROSTER:
+        if role["name"] not in FRONTIER_TWINS:
+            continue
+        out.append({
+            **role,
+            "name": f"{role['name']}-frontier",
+            "tier": "frontier",
+            "description": (
+                f"FRONTIER twin of {role['name']} — pick it when the tier you committed in "
+                f"`delegate` is frontier (PRD-35). Same prompt, same invariants; only the "
+                f"model changes. " + role["description"]
+            ),
+        })
+    return out
+
+
 def render_files() -> dict[str, str]:
     """Return {relative_path: content} for every generated file, all toolchains."""
     agents_md = AGENTS_MD.read_text()
@@ -827,6 +878,11 @@ def render_files() -> dict[str, str]:
         # staleness gate. PRD-17 §9: the client half gets EXTENDED, not replaced.
         for role in ROSTER + FLEET_ROSTER:
             files[f".{tool}/agents/{role['name']}{ext}"] = render(role)
+        # PRD-35 D12: where the model is fixed per file, the planner needs a file per
+        # tier. Claude Code chooses the model on the Agent call and gets no variant.
+        if tool in FILE_PINNED_MODEL:
+            for role in frontier_variants():
+                files[f".{tool}/agents/{role['name']}{ext}"] = render(role)
     # The ledger loop lives in AGENTS.md and nowhere else; the Cursor rule is a projection
     # of it. Before GRPH-147, AGENTS.md orientated every agent in this repo and never once
     # said to claim an item or heartbeat — the tools were exposed and the timing was not.

@@ -18,6 +18,7 @@ models plan and review; cheap models build.**
 | `gb-planner`     | frontier | no  | Pick + partition **non-colliding** work; delegate to workers |
 | `gb-implementer` | cheap    | yes | Backend/general workhorse — claim -> build -> both-DB tests -> review |
 | `gb-frontend`    | cheap    | yes | `web/` specialization + frontend invariants |
+| `gb-implementer-frontier`, `gb-frontend-frontier` | frontier | yes | Cursor / Codex only: the same bodies with the frontier model knob, because those tools fix the model per file. The planner picks by the `tier` it committed in `delegate` (PRD-35). Claude Code passes the model on the Agent call instead |
 | `gb-scout`       | cheap    | no  | Read-only research — "where does X live / how does Y work" |
 | `gb-verifier`    | cheap    | no  | Runs the full operating loop, reports pass/fail |
 

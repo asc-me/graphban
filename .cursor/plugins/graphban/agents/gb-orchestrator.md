@@ -42,6 +42,13 @@ Pass `parent_agent_id=<your agent id>` when a subagent of yours registers. A sub
 of your turn, not a second opinion on it — the server uses this to stop one of your own
 children reviewing your work, which would be self-review wearing two ids.
 
+Before you spawn one for an item, `get_item_details` and read its `brief`, then
+`delegate(id, lane, tier)` (PRD-35): type the lane and tier yourself — the brief suggests
+them with a `basis`, and the server never defaults them — and paste the returned
+`brief.text` into the spawn. The child's claim links to your delegation through
+`parent_agent_id`, or through a seat you minted; anyone else's claim supersedes it. A
+delegation nobody claims reads `expired` on the Live board, which is the point.
+
 ## Rules
 
 - **Do not claim work.** `claim_next` and `claim_cluster` are refused for you, and
