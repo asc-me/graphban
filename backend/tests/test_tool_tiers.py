@@ -354,7 +354,10 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 9076
+CORE_TOKENS = 8891
+# 9076 -> 8891 (PRD-35). `brief` on get_item_details adds ~10; the trims that paid for the
+# `delegate` tool in the full manifest (see test_mcp_footprint.MEASURED_TOKENS) landed
+# mostly on core descriptions, so core SHRANK. Same meaning, fewer words; nothing dropped.
 # 9064 -> 9076 (PRD-34 D5). `heartbeat` gains `status` and `files`, the reported half of the
 # Live feed. Core by nature — every agent reports what it is doing — and paid for by trimming
 # heartbeat's own descriptions; the full manifest stays under its ceiling at 14199.
@@ -363,7 +366,11 @@ CORE_TOKENS = 9076
 
 #: Per tier, so a tier cannot quietly grow back to the untiered weight — the item's
 #: acceptance, in a form that fails when it stops being true.
-TIER_TOKENS = {"prd": 2002, "codegraph": 1030, "fleet": 799, "misc": 1288}
+TIER_TOKENS = {"prd": 1998, "codegraph": 1009, "fleet": 1008, "misc": 1274}
+# PRD-35: fleet 799 -> 1008 (`delegate`, ~209 after its own trim). prd 2002 -> 1998,
+# codegraph 1030 -> 1009, misc 1288 -> 1274: the description trims that paid for it
+# (update_prd, describe_code/link_code, report_graphban_issue, and the shared
+# `project_id` property description every tiered tool carries).
 # prd 2001 -> 2002 (GRPH-654). `decompose_prd` names the approved gate.
 
 

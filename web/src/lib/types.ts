@@ -1511,6 +1511,45 @@ export interface LiveUser {
   agents: LiveAgent[];
 }
 
+export type LiveDelegationState = "open" | "claimed" | "finished" | "expired" | "closed";
+
+/** One delegation row on the Live board (PRD-35 D11). `declared_tier` is `"undeclared"`,
+ *  a word, when the child linked without declaring one; `mismatch` is only ever true
+ *  against a declared tier. */
+export interface LiveDelegationRow {
+  id: string;
+  item: string;
+  state: LiveDelegationState;
+  lane: "frontend" | "backend" | "mixed";
+  requested_tier: "cheap" | "frontier";
+  declared_tier: string | null;
+  declared_model: string | null;
+  mismatch: boolean;
+  delegated_by: string;
+  agent_id: string | null;
+  linked_by: "parent" | "seat" | null;
+  outcome: "signed_off" | "bounced" | "blocked" | "released" | null;
+  closed_reason: "withdrawn" | "superseded" | null;
+  closed_by: string | null;
+  note: string;
+  created_at: string | null;
+  claimed_at: string | null;
+  age_seconds: number | null;
+}
+
+/** Per-delegator block: counts per state, the oldest open age, and a bounded row list
+ *  (everything open plus the last ten closed). `null` on an agent with no delegations —
+ *  never `[]`. PR 1 ships the field; PR 2 renders it. */
+export interface LiveDelegations {
+  open: number;
+  claimed: number;
+  finished: number;
+  expired: number;
+  closed: number;
+  oldest_open_seconds: number | null;
+  rows: LiveDelegationRow[];
+}
+
 export interface LiveAgent {
   id: string;
   key: string;
@@ -1528,6 +1567,8 @@ export interface LiveAgent {
   call_state: LiveCallState;
   status: LiveStatus | null;
   status_state: LiveStatusState;
+  /** Absent on a server that predates PRD-35; the view must render the row unchanged. */
+  delegations?: LiveDelegations | null;
   file_state: LiveFileState;
   files: { area: string; kind: LiveFileKind; reason: string | null; node_paths: string[] }[];
   holdings: {

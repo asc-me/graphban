@@ -116,6 +116,7 @@ TARGETS: dict[str, Callable[[dict, Any], str]] = {
     "link_items": _item_id,
     "unlink_items": _item_id,
     "update_item": _update_item,
+    "delegate": _item_id,
     "claim_next": _claimed,
     "next_cluster": _claimed,
     "claim_cluster": _claimed,

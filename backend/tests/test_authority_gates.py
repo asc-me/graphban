@@ -176,6 +176,12 @@ def test_the_mcp_tool_surface_is_an_explicit_allowlist(client):
         # "is this worth keeping", never "am I allowed", and it is scope-gated like every
         # other write. If that ever stops being true this entry should be revisited first.
         "learning_loop", "review_recommendation",
+        # PRD-35 D3. QUALITY, not authority: `delegate` records what the caller ASKED a child
+        # to do and claims nothing — the item is still taken by a claim, under the same lease,
+        # role and reservation rules as before. It grants no reach: it is scope-gated like
+        # every other write, refused on a held or pinned item, and a delegation that nobody
+        # claims expires into a visible state rather than doing anything.
+        "delegate",
     }, "the agent-reachable surface changed — is the new tool a quality gate or an authority one?"
 
 

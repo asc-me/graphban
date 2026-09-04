@@ -93,6 +93,8 @@ TOOL_TIERS: dict[str, str] = {
     # fleet is core; RUNNING one is the tier.
     **{name: "fleet" for name in (
         "propose_allocation", "assign_role", "mint_enrolment", "retire_wave",
+        # PRD-35 D3: a lone agent never delegates; running a fleet is the tier.
+        "delegate",
     )},
 
     # ---- misc: rare, and none of it mid-task -----------------------------------------------
