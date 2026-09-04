@@ -119,6 +119,9 @@ class Toolset:
     #: Tool calls that came back as errors. Counted for the handoff note: a run that spent
     #: thirty turns being refused failed differently from one that ran out of ideas.
     refusals: int = 0
+    #: The last thing the model did, in words — what the heartbeat reports as `status`
+    #: (PRD-34 D5/D12). Empty until the first tool call, and the Live page says so.
+    last_action: str = ""
 
     @property
     def claimed_item(self) -> str | None:
@@ -136,8 +139,13 @@ class Toolset:
     #: anything is the failure the S7 walk found — see `_completion_guard`.
     COMPLETION_STATUSES = ("review", "done")
 
+    def activity(self) -> tuple[str, list[str]]:
+        """What to report on the next heartbeat: the last action and the files written so far."""
+        return self.last_action, list(self.written[-20:])
+
     def execute(self, call: ToolCall) -> ToolResult:
         """Run one tool call. Never raises for anything the model did wrong."""
+        self.last_action = _describe(call)
         if self.orientation is not None and self.orientation.handles(call.name):
             refusal = self._completion_guard(call)
             if refusal is not None:
@@ -297,6 +305,24 @@ class Toolset:
     def _record(self, path: str) -> None:
         if path not in self.written:
             self.written.append(path)
+
+
+def _describe(call: ToolCall) -> str:
+    """One line for the Live page. Names the tool and the one argument that says what it was
+    about — the same shape the server's own feed uses, so the two read alike."""
+    args = call.input if isinstance(getattr(call, "input", None), dict) else {}
+    target = args.get("path") or args.get("id") or args.get("query") or args.get("pattern") or ""
+    verb = {
+        "run_tests": "running tests",
+        "write_file": "writing",
+        "edit_file": "editing",
+        "read_file": "reading",
+        "grep": "searching for",
+        "list_dir": "listing",
+        "git_diff": "diffing",
+    }.get(call.name or "", call.name or "")
+    line = f"{verb} {target}".strip() if target else verb
+    return line[:200]
 
 
 def _tally(out: dict) -> str:

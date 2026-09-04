@@ -354,7 +354,10 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 9064
+CORE_TOKENS = 9076
+# 9064 -> 9076 (PRD-34 D5). `heartbeat` gains `status` and `files`, the reported half of the
+# Live feed. Core by nature — every agent reports what it is doing — and paid for by trimming
+# heartbeat's own descriptions; the full manifest stays under its ceiling at 14199.
 # 9066 -> 9064 (GRPH-652). `prd_coverage` names empty_sections vs gaps; shorter than
 # the gaps-only sentence, so core shrank two tokens.
 

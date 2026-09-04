@@ -416,6 +416,7 @@ function fileStateCopy(state: LiveFileState): string {
 
 function fileKindCopy(kind: LiveFileKind): string {
   if (kind === "declared") return "declared on item, not reserved";
+  if (kind === "reported") return "reported by agent, not reserved";
   return kind;
 }
 

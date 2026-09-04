@@ -870,6 +870,13 @@ class Agent(Base):
     # Nullable because most callers never send one: a client that predates this, or one that
     # drops the header, simply gets the untrimmed manifest it gets today.
     mcp_session_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    # What the agent SAYS it is doing (PRD-34 D5): one line and the paths it is editing,
+    # carried on `heartbeat`. Self-reported like `worktree` and `branch`, and rendered as
+    # such with its age — never in the observed style. Last-write-wins; the history is the
+    # `reported` rows in `agent_calls`, written only when this changed (D6/D17).
+    status_text: Mapped[str] = mapped_column(String(200), default="", server_default="")
+    status_files: Mapped[list] = mapped_column(JSON, default=list)
+    status_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     registered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 

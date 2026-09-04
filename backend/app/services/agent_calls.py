@@ -71,6 +71,10 @@ def _claimed(args: dict, result: Any) -> str:
     if isinstance(result, dict):
         if isinstance(result.get("id"), str):
             return result["id"]
+        # `claim_next` answers `{claimed, item: {...}}`; `create_item` answers the item itself.
+        item = result.get("item")
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            return item["id"]
         cluster = result.get("cluster") or result.get("items") or []
         ids = [c.get("id") for c in cluster if isinstance(c, dict) and isinstance(c.get("id"), str)]
         return ", ".join(ids)

@@ -303,6 +303,9 @@ def _run(args: argparse.Namespace) -> int:
             print(f"gbagent: {exc}", file=sys.stderr)
             return 78
         toolset = Toolset(root=root, cfg=cfg, orientation=orientation)
+        # The heartbeat thread was started before the toolset existed; from here on it
+        # reports what the model is doing (PRD-34 D12).
+        coordinator.status_source = toolset.activity
         session = OllamaSession(
             args.base_url, args.model,
             system=SYSTEM,

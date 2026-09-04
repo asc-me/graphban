@@ -112,6 +112,30 @@ def _declared_files(holdings_in: list, items: dict[str, Item]) -> list[dict]:
     return out
 
 
+def _reported_files(row: Agent | None) -> list[dict]:
+    """What the agent SAYS it is editing (PRD-34 D7). Kind `reported`, never `leased`, and
+    never in the D3/D16 priority table — a claim does not move `file_state`."""
+    if row is None:
+        return []
+    return [{"area": f, "kind": "reported", "reason": None, "node_paths": []}
+            for f in (row.status_files or []) if isinstance(f, str) and f]
+
+
+def _status_fields(row: Agent | None, *, ttl: int) -> dict:
+    """PRD-34 D6/D11: `unreported` is a word; a stale report says so and is not current."""
+    if row is None or not row.status_at:
+        return {"status": None, "status_state": "unreported"}
+    state = fleet_svc.status_state(row, ttl_seconds=ttl)
+    at = row.status_at
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return {
+        "status": {"text": row.status_text or "", "files": list(row.status_files or []),
+                   "at": at.isoformat(), "stale": state == "stale"},
+        "status_state": state,
+    }
+
+
 def _by_role(annotated: list[dict]) -> dict[str, int]:
     """Full-set census, same shape as fleet_status.by_role (D2, PR 3)."""
     counts = {r: 0 for r in fleet_svc.ROLES}
@@ -172,6 +196,7 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
     summary_fn = call_summary if call_summary is not None else calls_svc.summary
     interval = fleet_svc.heartbeat_interval_seconds()
     window = interval * CALL_WINDOW_INTERVALS
+    ttl = fleet_svc.presence_ttl_seconds()
 
     roster = list_fn(db, project_id)
     areas = areas_fn(db, project_id)
@@ -218,6 +243,10 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
         file_state = _file_state(state, holdings, files)
         if file_state == "unreserved":
             files = files + _declared_files(holdings_in, items)
+        # Reported files ride along whatever the lease state says; they are labelled and do
+        # not change it (PRD-34 D7). Skip any path already shown as a lease.
+        shown = {f["area"] for f in files}
+        files = files + [f for f in _reported_files(row) if f["area"] not in shown]
         annotated.append({
             "id": a["id"],
             "key": a.get("key"),
@@ -236,8 +265,7 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
             # The feed summary (PRD-34 D6). `never` is a word, not a null; the reported
             # status is `unreported` until PR 2 gives heartbeat something to carry.
             **_call_fields(per_agent.get(a["id"])),
-            "status": None,
-            "status_state": "unreported",
+            **_status_fields(row, ttl=ttl),
             "_user": _user_meta(user),
             "_key_id": row.api_key_id if row is not None else None,
         })

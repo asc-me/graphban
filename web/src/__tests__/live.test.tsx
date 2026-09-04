@@ -371,4 +371,24 @@ describe("Live board", () => {
     fireEvent.click(await screen.findByRole("button", { expanded: false }));
     expect(await screen.findByText("No calls recorded in the last 7 days.")).toBeInTheDocument();
   });
+
+  it("labels reported files as a claim, not a lease, and leaves file_state alone", async () => {
+    board = emptyBoard({
+      total_agents: 1,
+      users: [user({ agents: [agent({
+        file_state: "unreserved",
+        files: [{ area: "backend/app/routers/live.py", kind: "reported", reason: null, node_paths: [] }],
+        holdings: [{ id: "CORE-1", title: "w", status: "in_progress", phase: "building", phase_basis: "status", pr: { state: "unrecorded" } }],
+        status_state: "reported",
+        status: { text: "editing the router", files: ["backend/app/routers/live.py"], at: "2026-09-02T12:00:05Z", stale: false },
+      })] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 1, total: 1 }],
+    });
+    renderLive();
+    expect(await screen.findByText("holds work with no area lease")).toBeInTheDocument();
+    expect(screen.getByText("reported by agent, not reserved")).toBeInTheDocument();
+    expect(screen.queryByText(/^leased$/)).not.toBeInTheDocument();
+    expect(screen.getByText("editing the router")).toBeInTheDocument();
+    expect(screen.queryByText("stale")).not.toBeInTheDocument();
+  });
 });

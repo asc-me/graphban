@@ -762,7 +762,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "heartbeat",
-        "description": "Extend the lease on an item you've claimed so it isn't reclaimed while you work.",
+        "description": "Extend lease and presence; say what you do.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -771,8 +771,14 @@ TOOLS: list[dict[str, Any]] = [
                 # a reviewer between reviews or a worker between claims holds none either, so
                 # requiring it meant presence was maintainable only while mid-work. Found on
                 # the PRD-17 walk, alongside the role gate that refused non-workers outright.
-                "id": {"type": "string", "description": "Item whose lease to extend. Omit to report presence only."},
+                "id": {"type": "string", "description": "Item held, if any."},
                 "agent_id": {"type": "string"},
+                # PRD-34 D5: what you are doing, in your words. Optional — a loop that never
+                # fills it still works; the Live page then says `no status reported`, which
+                # is a measurement, not a blank. Caps are enforced server-side (fleet.report_status)
+                # rather than declared here: the manifest is within 40 tokens of its ceiling.
+                "status": {"type": "string", "description": "What you are doing."},
+                "files": {"type": "array", "items": {"type": "string"}},
             },
         },
     },
@@ -2661,6 +2667,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                                      wave=args.get("wave"))
     if name == "heartbeat":
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
+        reports = "status" in args or "files" in args
         if not args.get("id"):
             # Presence only. The roster's question is "who is out there", and an agent between
             # tasks is still out there — it just has no lease to extend.
@@ -2669,6 +2676,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 raise errors.Validation(
                     f"no registered agent {agent!r}",
                     hint="call register_agent first; heartbeat keeps an existing one alive")
+            if reports:
+                _report_status(db, live, args, scope_out)
             return {"agent_id": live.id, "state": live.state,
                     "heartbeat_interval_seconds": fleet_svc.heartbeat_interval_seconds(),
                     "presence_ttl_seconds": fleet_svc.presence_ttl_seconds()}
@@ -2676,7 +2685,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # One call keeps BOTH alive (PRD-17 D1). An agent that heartbeats its item lease but
         # not its presence would be declared dead while visibly working — and the roster
         # would then be reporting the opposite of what is happening.
-        fleet_svc.touch(db, agent, state="working")
+        live = fleet_svc.touch(db, agent, state="working")
+        if reports:
+            if live is None:
+                # A credential-only caller has no row to hold a status (PRD-34 D5).
+                raise errors.Validation(
+                    f"no registered agent {agent!r} to report a status for",
+                    hint="call register_agent and pass agent_id; a credential holds no status")
+            _report_status(db, live, args, scope_out)
         item = items_svc.heartbeat(db, args["id"], agent)
         if item is None:
             raise errors.Conflict(
@@ -3049,6 +3065,21 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     raise errors.Validation(f"unknown tool: {name}", hint="call tools/list for the available tools")
 
 
+def _report_status(db: Session, agent: Any, args: dict, scope_out: dict | None) -> None:
+    """Store the heartbeat's status/files and tell the dispatcher whether it CHANGED (PRD-34
+    D5/D6). The feed row is written by `_record_call`, from `scope["reported"]`, so a repeat
+    of the same status is presence and not a row."""
+    from app.services import fleet as fleet_svc
+
+    changed = fleet_svc.report_status(db, agent, args.get("status"), args.get("files"))
+    if scope_out is not None:
+        scope_out["reported"] = {
+            "changed": changed,
+            "status": agent.status_text,
+            "files": list(agent.status_files or []),
+        }
+
+
 def _audit_tool(db: Session, key: ApiKey, name: str, result: Any,
                 agent_id: str | None = None) -> None:
     """Best-effort audit of an accepted agent mutation. Pulls the target id and
@@ -3131,9 +3162,12 @@ def _record_call(db: Session, key: ApiKey, name: str, args: Any, result: Any,
 
     # A successful lease-extend is presence, already visible as last-seen; it is not what
     # the agent is doing (PRD-34 D6). A REFUSED heartbeat is a row — "not the lease holder"
-    # on repeat is what stuck looks like.
+    # on repeat is what stuck looks like. A heartbeat that CARRIED a status is a `reported`
+    # row, once, when the status or files changed (D6/D17); a repeat is presence again.
+    reported = scope.get("reported") if isinstance(scope, dict) else None
     if ok and name in calls_svc.PRESENCE_ONLY_TOOLS:
-        return
+        if not (reported and reported.get("changed")):
+            return
     if not ok:
         # A refused call may have left half a write pending on this session. The row's own
         # commit must not carry it in — the refusal is the whole point of the branch.
@@ -3143,11 +3177,16 @@ def _record_call(db: Session, key: ApiKey, name: str, args: Any, result: Any,
         # dispatcher's project local by name; this helper deliberately does not use it.
         project = scope.get("project_id") or key.project_id
         agent_id = _agent_for_call(db, key, args, session_id)
+        extra: dict = {}
+        if ok and reported and reported.get("changed"):
+            extra = {"source": "reported", "status": reported.get("status") or "",
+                     "files": list(reported.get("files") or [])}
         calls_svc.record(
             db, project_id=project, api_key_id=key.id, agent_id=agent_id,
             tool=name or "", target=calls_svc.target_for(name or "", args, result),
             ok=ok, error_code=error_code,
             duration_ms=int((time.perf_counter() - started) * 1000),
+            **extra,
         )
     except Exception:  # noqa: BLE001 — the feed must never fail the call
         logger.exception("agent_calls: could not record %r", name)

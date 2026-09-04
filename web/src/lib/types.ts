@@ -1438,7 +1438,7 @@ export type ReindexStatus = {
 };
 
 /** GET /api/live (PRD-33 D5). `unreserved` is not idle; `unrecorded` is not "no PR". */
-export type LiveFileKind = "leased" | "predicted" | "off_map" | "declared";
+export type LiveFileKind = "leased" | "predicted" | "off_map" | "declared" | "reported";
 export type LiveFileState = "leased" | "predicted" | "off_map" | "unreserved" | "idle" | "offline";
 
 /** PRD-34: the feed. `never` is a word, not a null; `unreported` is not an empty string. */
