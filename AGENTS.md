@@ -57,7 +57,7 @@ output. Deploy, then read what it actually says about a real PRD.
   functions in `backend/app/services/`. Never duplicate domain logic in a router
   or tool handler.
 - **Schema is owned by Alembic** on Postgres (`backend/alembic/versions/`,
-  currently 0001–0102). SQLite/tests use `create_all`. Never edit an applied
+  currently 0001–0103). SQLite/tests use `create_all`. Never edit an applied
   migration; add a new one.
 - **AI providers only via `backend/app/providers/`** (`Embedder`/`ChatModel`/
   `Extractor` protocols, selected by `EMBED_PROVIDER`/`CHAT_PROVIDER`). Offline
@@ -142,8 +142,11 @@ but exposing a tool does not say *when* to reach for it. That gap is why items s
    `in_progress`; two agents never get the same one. It reserves no files, so in a fleet
    prefer `claim_cluster`. Read the item with `get_item_details` before writing code — the
    description usually names the trap.
-2. **Heartbeat while you work.** `heartbeat` extends the lease so the item is not reclaimed
-   mid-change. Without it a long task looks abandoned and someone else starts it.
+2. **Heartbeat while you work, and say what you are doing.** `heartbeat` extends the lease so
+   the item is not reclaimed mid-change; without it a long task looks abandoned and someone
+   else starts it. Pass `status=` (one line, e.g. `status='running the backend suite'`) and
+   `files=[…]` for the paths you are editing — that is how the Live page knows what you are
+   doing, and a row that never says is shown as `no status reported`.
 3. **Record what you did, on the item.** `update_item(status=…, evidence=[…])` — evidence
    APPENDS, so add receipts as you get them rather than saving one summary. A status change
    with no receipt is indistinguishable from a placeholder move, and those have shipped here.

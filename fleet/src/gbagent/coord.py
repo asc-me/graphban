@@ -84,6 +84,9 @@ class Coordinator:
     client: Graphban
     item_id: str
     agent_id: str = ""
+    #: Callable returning `(status_line, files)` for the heartbeat to report (PRD-34). Set by
+    #: the CLI once the toolset exists; None means presence-only beats, which still work.
+    status_source: object | None = None
 
     @classmethod
     def connect(cls, base_url: str, api_key: str, item_id: str, agent_id: str = "",
@@ -196,6 +199,19 @@ class Coordinator:
             arguments["id"] = self.item_id
         if self.agent_id:
             arguments["agent_id"] = self.agent_id
+        # What this agent is doing, for the Live page (PRD-34 D5/D12). Read from the toolset
+        # at beat time rather than copied in, so the timer thread reports the CURRENT action.
+        # The server writes a `reported` row only when it changed, so repeating is free.
+        source = self.status_source
+        if source is not None:
+            try:
+                status, files = source()
+            except Exception:  # noqa: BLE001 — a status is never worth a missed beat
+                status, files = "", []
+            if status:
+                arguments["status"] = str(status)[:200]
+            if files:
+                arguments["files"] = [str(f) for f in files][:20]
         return self.client.call("heartbeat", **arguments)
 
     def file_wait(self, kind: str, *, title: str = "", on_self: bool = False) -> dict:

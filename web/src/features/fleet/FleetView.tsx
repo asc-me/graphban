@@ -102,7 +102,8 @@ function primeSnippet(role: string, seat?: string, project?: string) {
     return [
       "You are an all-in-one agent on a Graphban project: you plan, build, and review.",
       "Call register_agent first, then heartbeat on the interval it returns, so you appear",
-      "on the roster. Take work with claim_cluster — it reserves the files you are about to",
+      "on the roster; pass status= (one line of what you are doing) and files= (paths you",
+      "are editing) so the Live page can say so. Take work with claim_cluster — it reserves the files you are about to",
       "touch, so another agent is never handed work that collides with yours.",
       "When a change is finished, move it to review rather than done. Then call claim_review",
       "to take somebody else's finished work and sign_off or bounce it with a reason.",

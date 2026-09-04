@@ -312,6 +312,50 @@ def touch(db: Session, agent_id: str, *, state: str | None = None) -> Agent | No
     return agent
 
 
+STATUS_MAX = 200
+STATUS_FILES_MAX = 20
+
+
+def report_status(db: Session, agent: Agent, status: str | None,
+                  files: list | None) -> bool:
+    """Store what an agent says it is doing (PRD-34 D5). Returns whether anything CHANGED.
+
+    Change means the trimmed line differs, or the SET of files differs — order is irrelevant
+    (D17). Compared against the row, never an in-process cache, so a restart cannot forget
+    the last report and write it twice. The caller writes a `reported` feed row only when
+    this returns True (D6): a lease-extend that repeats yesterday's status is presence, not
+    news.
+    """
+    text = (status or "").strip()[:STATUS_MAX] if isinstance(status, str) else ""
+    paths: list[str] = []
+    for f in (files or []) if isinstance(files, list) else []:
+        if isinstance(f, str) and f.strip() and f.strip() not in paths:
+            paths.append(f.strip()[:512])
+        if len(paths) >= STATUS_FILES_MAX:
+            break
+    if status is None and files is None:
+        return False
+    changed = (text != (agent.status_text or "")) or (set(paths) != set(agent.status_files or []))
+    agent.status_text = text
+    agent.status_files = paths
+    agent.status_at = datetime.now(timezone.utc)
+    db.commit()
+    return changed
+
+
+def status_state(agent: Agent, *, ttl_seconds: int | None = None,
+                 now: datetime | None = None) -> str:
+    """`unreported` | `reported` | `stale` (PRD-34 D11). Stale is older than the presence TTL —
+    a status the agent has not repeated for longer than it takes the roster to call it
+    offline is a claim nobody has renewed."""
+    if not agent.status_at:
+        return "unreported"
+    at = agent.status_at if agent.status_at.tzinfo else agent.status_at.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    ttl = ttl_seconds if ttl_seconds is not None else presence_ttl_seconds()
+    return "stale" if (now - at).total_seconds() > ttl else "reported"
+
+
 def list_agents(db: Session, project_id: str | None = None, *,
                 lease_seconds: int = DEFAULT_LEASE_SECONDS,
                 now: datetime | None = None) -> list[dict]:

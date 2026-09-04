@@ -71,7 +71,10 @@ CEILING = 14200
 # score; eligibility unverifiable until attributed and scanned) — trimming them would
 # not claw back 80+ tokens. CORE_TOKENS 8497 → 8956 is the bill every key pays; this
 # raise is not a licence to grow core without that equality.
-MEASURED_TOKENS = 14187
+MEASURED_TOKENS = 14199
+# 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
+# it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
+# heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
 # 14185 -> 14187. `decompose_prd` names the approved gate (GRPH-654); paid inside the
 # sentence, not by raising the ceiling.
 

@@ -342,3 +342,100 @@ def test_a_successful_heartbeat_is_not_an_observed_row(client, key, db):
     res = _mcp(client, key, "heartbeat", {"agent_id": reg["agent_id"], "id": "CORE-999999"})
     assert res.get("isError")
     assert [r.ok for r in _rows(db, "heartbeat")] == [False]
+
+
+# ---- PRD-34 PR 2: reported status on heartbeat ----------------------------------------------
+
+def _agent_row(db, agent_id):
+    db.expire_all()
+    return db.get(Agent, agent_id)
+
+
+def test_status_is_a_reported_row_only_when_it_changes(client, key, db):
+    """A6 / D6. Sabotage: write on every heartbeat — this fails."""
+    reg = _ok(_mcp(client, key, "register_agent", {"label": "w", "project_id": "core"}))
+    aid = reg["agent_id"]
+    _ok(_mcp(client, key, "heartbeat", {"agent_id": aid, "status": "running tests"}))
+    _ok(_mcp(client, key, "heartbeat", {"agent_id": aid, "status": "running tests"}))
+    rows = _rows(db, "heartbeat")
+    assert len(rows) == 1
+    assert rows[0].source == "reported"
+    assert rows[0].status == "running tests"
+    _ok(_mcp(client, key, "heartbeat", {"agent_id": aid, "status": "editing the router"}))
+    assert [r.status for r in _rows(db, "heartbeat")] == ["running tests", "editing the router"]
+    row = _agent_row(db, aid)
+    assert row.status_text == "editing the router" and row.status_at is not None
+
+
+def test_file_order_does_not_make_a_change(client, key, db):
+    """A21 / D17. Sabotage: compare lists — this fails (the second beat becomes a row)."""
+    reg = _ok(_mcp(client, key, "register_agent", {"label": "w", "project_id": "core"}))
+    aid = reg["agent_id"]
+    _ok(_mcp(client, key, "heartbeat", {"agent_id": aid, "files": ["a.py", "b.py"]}))
+    _ok(_mcp(client, key, "heartbeat", {"agent_id": aid, "files": ["b.py", "a.py"]}))
+    assert len(_rows(db, "heartbeat")) == 1
+    _ok(_mcp(client, key, "heartbeat", {"agent_id": aid, "files": ["a.py"]}))
+    rows = _rows(db, "heartbeat")
+    assert len(rows) == 2
+    assert rows[-1].files == ["a.py"]
+
+
+def test_reported_files_do_not_lease_and_the_board_carries_the_status(client, key, auth, db):
+    """A8 + A10 / D7, D11. Sabotage: put `reported` in the priority table — this fails."""
+    reg = _ok(_mcp(client, key, "register_agent", {"label": "w", "project_id": "core"}))
+    aid = reg["agent_id"]
+    _ok(_mcp(client, key, "create_item", {"title": "reported files", "project_id": "core",
+                                         "status": "next"}))
+    claimed = _ok(_mcp(client, key, "claim_next", {"project_id": "core", "agent_id": aid}))
+    item = claimed["item"]
+    assert _rows(db, "claim_next")[-1].target == item["id"], "claim_next names the item it handed out"
+    _ok(_mcp(client, key, "heartbeat", {"agent_id": aid, "id": item["id"],
+                                       "status": "editing the router",
+                                       "files": ["backend/app/routers/live.py"]}))
+    board = client.get("/api/live?project_id=core", headers=auth).json()
+    a = [x for u in board["users"] for x in u["agents"] if x["id"] == aid][0]
+    assert a["file_state"] == "unreserved"
+    kinds = {f["kind"]: f for f in a["files"]}
+    assert "reported" in kinds and kinds["reported"]["area"] == "backend/app/routers/live.py"
+    assert "leased" not in kinds
+    assert a["status_state"] == "reported"
+    assert a["status"]["text"] == "editing the router"
+    assert a["status"]["stale"] is False
+    assert a["status"]["files"] == ["backend/app/routers/live.py"]
+    # Age the report past the presence TTL: stale, labelled, not current.
+    row = _agent_row(db, aid)
+    row.status_at = datetime.now(timezone.utc) - timedelta(seconds=board["presence_ttl_seconds"] + 60)
+    db.commit()
+    board = client.get("/api/live?project_id=core", headers=auth).json()
+    a = [x for u in board["users"] for x in u["agents"] if x["id"] == aid][0]
+    assert a["status_state"] == "stale" and a["status"]["stale"] is True
+
+
+def test_a_status_on_the_credential_path_is_refused(client, key, db):
+    """D5: a credential holds no status. `validation`, the same code as any unregistered beat."""
+    res = _mcp(client, key, "heartbeat", {"status": "no row for this"})
+    assert res.get("isError")
+    assert res["structuredContent"]["error"]["code"] == "validation"
+
+
+def test_the_feed_renders_reported_rows_with_status_and_files(client, key, auth, db):
+    reg = _ok(_mcp(client, key, "register_agent", {"label": "w", "project_id": "core"}))
+    aid = reg["agent_id"]
+    _ok(_mcp(client, key, "heartbeat", {"agent_id": aid, "status": "running tests", "files": ["x.py"]}))
+    feed = client.get(f"/api/live/{aid}/feed?project_id=core", headers=auth).json()
+    top = feed["rows"][0]
+    assert top["source"] == "reported" and top["status"] == "running tests" and top["files"] == ["x.py"]
+
+
+def test_the_producers_say_it():
+    """A18 / D12. Sabotage: revert the AGENTS.md line — this fails."""
+    import pathlib
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    agents = (repo / "AGENTS.md").read_text(encoding="utf-8")
+    assert "status=" in agents and "files=" in agents, "AGENTS.md step 2 must tell agents to report"
+    rule = (repo / ".cursor" / "rules" / "agentledger.mdc").read_text(encoding="utf-8")
+    assert "status=" in rule, "the generated Cursor rule must carry the clause — run scripts/gen_subagents.py"
+    fleet = (repo / "web" / "src" / "features" / "fleet" / "FleetView.tsx").read_text(encoding="utf-8")
+    assert "status=" in fleet, "the Fleet mint prompt must carry the clause"
+    coord = (repo / "fleet" / "src" / "gbagent" / "coord.py").read_text(encoding="utf-8")
+    assert 'arguments["status"]' in coord, "gbagent's timer heartbeat must send status"
