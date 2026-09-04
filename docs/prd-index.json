@@ -1,7 +1,7 @@
 {
   "scope": {
     "covers": "PRDs with a document in docs/ that names its ledger row",
-    "indexed": 7,
+    "indexed": 8,
     "note": "NOT the list of PRDs. A ledger-only PRD has no repo copy to compare and is absent here by construction; anything reading `prds` as complete is seeing a fraction of them."
   },
   "prds": {
@@ -154,6 +154,27 @@
         "D5 — Heartbeat reports, on change",
         "D6 — Board summary and the feed read",
         "D7 — Silence, encoded",
+        "6. Data model",
+        "7. Acceptance criteria",
+        "8. Phasing",
+        "9. Risks and open questions",
+        "10. Prior art"
+      ]
+    },
+    "GRPH-P35": {
+      "file": "docs/prd-35-delegation-ledger-fact.md",
+      "status": "draft",
+      "sections": [
+        "1. Overview",
+        "2. Problem",
+        "3. Goals",
+        "4. Non-Goals",
+        "5. Key decisions",
+        "D1 — Server states, harness executes, delegate declares",
+        "D2 — The brief",
+        "D3 — `delegate`",
+        "D7 — Linking",
+        "D9 — States",
         "6. Data model",
         "7. Acceptance criteria",
         "8. Phasing",
