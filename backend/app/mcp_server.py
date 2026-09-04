@@ -25,6 +25,7 @@ import base64
 import copy
 import json
 import secrets
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -3048,9 +3049,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     raise errors.Validation(f"unknown tool: {name}", hint="call tools/list for the available tools")
 
 
-def _audit_tool(db: Session, key: ApiKey, name: str, result: Any) -> None:
+def _audit_tool(db: Session, key: ApiKey, name: str, result: Any,
+                agent_id: str | None = None) -> None:
     """Best-effort audit of an accepted agent mutation. Pulls the target id and
-    project from the tool result where present (most write tools echo them)."""
+    project from the tool result where present (most write tools echo them).
+
+    `agent_id` (PRD-34 D3) names the AGENT behind the key when it can be resolved, so
+    Activity can say which of the agents sharing a credential did this."""
     target_id, project_id, meta = "", None, None
     if isinstance(result, dict):
         target_id = str(result.get("id") or result.get("request_id") or "")
@@ -3059,6 +3064,8 @@ def _audit_tool(db: Session, key: ApiKey, name: str, result: Any) -> None:
         # is auditable against its evidence, not just its green check.
         if result.get("evidence"):
             meta = {"status": result.get("status"), "evidence": result["evidence"]}
+    if agent_id:
+        meta = {**(meta or {}), "agent_id": agent_id}
     events_svc.record_key(
         db, key, action=name,
         target_type="item" if name in _ITEM_WRITE_TOOLS else "",
@@ -3087,31 +3094,64 @@ def _session_role(db: Session, request: Request) -> str | None:
     """The role of the agent registered on THIS connection, or None (PRD-19 E9a/E9b).
 
     None means "cannot say", and every caller treats that as today's behaviour rather than as
-    a restriction — a client that never sends the header, one that predates it, or a connection
-    with no registered agent all land here.
+    a restriction. Two agents on one connection resolve to None as well — see
+    `fleet.agent_for_session`, which is the one place that rule lives (PRD-34 D3 reads it too).
+    """
+    from app.services import fleet as fleet_svc
 
-    **Two agents on one connection resolve to None as well**, and that case is real: an
-    orchestrator and the subagent it spawns can share a transport. Guessing between them would
-    hand somebody a manifest trimmed for the other one, and the whole value of this is that a
-    wrong answer costs nothing — so it declines to answer instead.
+    agent = fleet_svc.agent_for_session(db, request.headers.get("mcp-session-id"))
+    return agent.active_role if agent is not None else None
+
+
+def _agent_for_call(db: Session, key: ApiKey, args: Any, session_id: str | None) -> str | None:
+    """Which agent made this call, for the feed and the ledger (PRD-34 D3).
+
+    In order: an explicit `agent_id` argument naming a registered agent on this credential;
+    else the single live agent on the connection; else None. None is COUNTED per credential
+    on the Live board, never assigned — a shared key with two live agents and no `agent_id`
+    would otherwise put one agent's queries under the other's name.
     """
     from app.models import Agent
     from app.services import fleet as fleet_svc
 
-    sid = request.headers.get("mcp-session-id")
-    if not sid:
-        return None
-    rows = db.scalars(select(Agent).where(Agent.mcp_session_id == sid,
-                                          Agent.dismissed_at.is_(None))).all()
-    live = [a for a in rows if fleet_svc.presence_state(a) != "offline"]
-    if len(live) != 1:
-        return None
-    agent = live[0]
-    # An expired seat grants no role, so it must not narrow the manifest either — the agent
-    # needs `fleet_status` to collect the directive telling it to re-enrol.
-    if fleet_svc.session_expired(db, agent):
-        return None
-    return agent.active_role
+    named = args.get("agent_id") if isinstance(args, dict) else None
+    if isinstance(named, str) and named and not fleet_svc.is_credential(named):
+        row = db.get(Agent, named)
+        if row is not None and row.api_key_id == key.id:
+            return row.id
+    agent = fleet_svc.agent_for_session(db, session_id)
+    return agent.id if agent is not None else None
+
+
+def _record_call(db: Session, key: ApiKey, name: str, args: Any, result: Any,
+                 scope: dict, session_id: str | None, *, ok: bool,
+                 error_code: str | None, started: float) -> None:
+    """One feed row per call, success or refusal (PRD-34 D2, D13). Never raises."""
+    from app.services import agent_calls as calls_svc
+
+    # A successful lease-extend is presence, already visible as last-seen; it is not what
+    # the agent is doing (PRD-34 D6). A REFUSED heartbeat is a row — "not the lease holder"
+    # on repeat is what stuck looks like.
+    if ok and name in calls_svc.PRESENCE_ONLY_TOOLS:
+        return
+    if not ok:
+        # A refused call may have left half a write pending on this session. The row's own
+        # commit must not carry it in — the refusal is the whole point of the branch.
+        db.rollback()
+    try:
+        # `test_mcp_footprint` scans the text after the last dispatch branch for the
+        # dispatcher's project local by name; this helper deliberately does not use it.
+        project = scope.get("project_id") or key.project_id
+        agent_id = _agent_for_call(db, key, args, session_id)
+        calls_svc.record(
+            db, project_id=project, api_key_id=key.id, agent_id=agent_id,
+            tool=name or "", target=calls_svc.target_for(name or "", args, result),
+            ok=ok, error_code=error_code,
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        )
+    except Exception:  # noqa: BLE001 — the feed must never fail the call
+        logger.exception("agent_calls: could not record %r", name)
+        db.rollback()
 
 
 def _rpc_result(id_: Any, result: Any) -> dict:
@@ -3371,6 +3411,20 @@ async def mcp_endpoint(
         _arg_proj = args.get("project_id") if isinstance(args, dict) else None
         if _arg_proj:
             llm_meter.project_var.set(str(_arg_proj))
+        # The observed feed (PRD-34 D2/D13): every call, success or refusal, is a row. The
+        # error branches below each return early, so they go through `_fail`, which records
+        # before it reports. `scope` is filled by `_call_tool` and is what names the project
+        # on the row; a refusal before dispatch falls back to the key's own project.
+        _started = time.perf_counter()
+        _session_id = request.headers.get("mcp-session-id")
+        deferred: list = []
+        scope: dict = {}
+
+        def _fail(code: str, message: str, hint: str | None = None) -> dict:
+            _record_call(db, key, name, args, None, scope, _session_id,
+                         ok=False, error_code=code, started=_started)
+            return _tool_error(id_, code, message, hint, modern=modern)
+
         try:
             # Validate arguments against the declared schema before dispatch, so a
             # bad call is an actionable error rather than a KeyError or a silently
@@ -3393,11 +3447,8 @@ async def mcp_endpoint(
             # Run tool dispatch (sync DB + any outbound IO like report_graphban_issue) off
             # the event loop, so a slow/hanging tool never blocks the async server — and a
             # same-host upstream loop-back can still be served concurrently.
-            deferred: list = []
-            scope: dict = {}
             result = await run_in_threadpool(
-                _call_tool, db, name, args, key,
-                request.headers.get("mcp-session-id"), deferred.append, scope)
+                _call_tool, db, name, args, key, _session_id, deferred.append, scope)
             result = _attach_resolved_project(result, scope)
             # The DOWNLINK (PRD-17 D-e). MCP is client→server: the server cannot wake an idle
             # terminal, so the orchestrator's intent rides back on whatever the agent polls
@@ -3411,7 +3462,7 @@ async def mcp_endpoint(
         except authz.Forbidden as e:
             # Authenticated but out of scope: distinct code so agents can branch
             # (retry won't help — a different key or membership grant will).
-            return _tool_error(id_, "unauthorized", str(e), getattr(e, "hint", None), modern=modern)
+            return _fail("unauthorized", str(e), getattr(e, "hint", None))
         except items_svc.MissingAttestation as e:
             # CONFLICT, not unauthorized (GRPH-543). The caller MAY complete this item; the
             # work simply is not accounted for yet. `unauthorized` would send an agent
@@ -3421,41 +3472,40 @@ async def mcp_endpoint(
             # Mapped here rather than in the update_item handler because it is the only place
             # every path into that service call passes through, and a second mapping site is
             # one refactor away from disagreeing with this one.
-            return _tool_error(id_, "conflict", str(e),
+            return _fail("conflict", str(e),
                                "move it to `review` and let an adapter attest it — a reviewer "
-                               "via sign_off with a commit, or CI holding a `gate`-scoped key", modern=modern)
+                               "via sign_off with a commit, or CI holding a `gate`-scoped key")
         except items_svc.PRCooldown as e:
             # CONFLICT for the same reason, and the hint says WAIT rather than naming an
             # action (GRPH-567). It is the only refusal in this surface that resolves on its
             # own, so telling an agent to change something would send it editing a payload
             # that is already correct.
-            return _tool_error(id_, "conflict", str(e),
+            return _fail("conflict", str(e),
                                "nothing is wrong with the call — wait for the cooldown to "
-                               "elapse and send it again", modern=modern)
+                               "elapse and send it again")
         except prd_svc.DecomposeRequiresApproval as e:
             # CONFLICT, not validation (GRPH-654). The arguments are fine; the PRD has not
             # earned approved. `validation` would send an agent editing a payload that is
             # already correct. Mapped here so REST 409 and MCP conflict cannot drift.
-            return _tool_error(id_, "conflict", str(e),
+            return _fail("conflict", str(e),
                                "finish the grill so the PRD reaches approved, then send "
-                               "create=true again", modern=modern)
+                               "create=true again")
         except errors.AppError as e:
             # Expected, agent-correctable failure: not_found | validation | conflict.
-            return _tool_error(id_, e.code, str(e), e.hint, modern=modern)
+            return _fail(e.code, str(e), e.hint)
         except ValueError as e:
             # A service rejected the input (bad enum, unknown project, etc.).
-            return _tool_error(id_, "validation", str(e), modern=modern)
+            return _fail("validation", str(e))
         except KeyError as e:
             # A required arg slipped past validation (belt and braces).
-            return _tool_error(id_, "validation", f"missing argument: {e}", modern=modern)
+            return _fail("validation", f"missing argument: {e}")
         except httpx.HTTPError as e:
             # A provider adapter that hasn't been wrapped yet (providers/base.py
             # `provider_errors` gives a far better message where it is applied). Still
             # far better than the generic handler below, whose "safe to retry once" is
             # actively wrong for a misconfiguration.
             logger.warning("provider transport failure in %r: %s", name, e)
-            return _tool_error(
-                id_, "unavailable", f"AI provider unreachable: {type(e).__name__}",
+            return _fail("unavailable", f"AI provider unreachable: {type(e).__name__}",
                 hint="check the provider base URL, key and model in Settings -> AI "
                      "providers; this is configuration, not a transient failure",
                 modern=modern,
@@ -3463,14 +3513,20 @@ async def mcp_endpoint(
         except Exception:  # noqa: BLE001 — never leak a raw 500 to a JSON-RPC client
             logger.exception("MCP tool %r failed", name)
             db.rollback()
-            return _tool_error(id_, "internal", f"internal error executing {name!r}",
-                               hint="safe to retry once; if it persists, report it", modern=modern)
+            return _fail("internal", f"internal error executing {name!r}",
+                               hint="safe to retry once; if it persists, report it")
         # Meter only successful calls, after dispatch — failed/unknown-tool calls no
         # longer inflate the MCP Tools dashboard (AL-47).
         mcp_stats.increment(db, name)
-        # Audit every accepted agent mutation, attributed to the key (AL-43).
+        # The feed row for the success path (PRD-34 D2). BEFORE the `_READ_ONLY` check: that
+        # set gates the audit ledger, not the feed — reads are most of what an agent does.
+        _record_call(db, key, name, args, result, scope, _session_id,
+                     ok=True, error_code=None, started=_started)
+        # Audit every accepted agent mutation, attributed to the key (AL-43) and, when it can
+        # be named, to the agent behind it (PRD-34 D3).
         if name not in _READ_ONLY:
-            _audit_tool(db, key, name, result)
+            _audit_tool(db, key, name, result,
+                        agent_id=_agent_for_call(db, key, args, _session_id))
         if deferred:
             # AFTER the response, not before it (GRPH-399). Completion schedules the judge and
             # the lesson extractor here; on the live instance those are two calls to a 24B

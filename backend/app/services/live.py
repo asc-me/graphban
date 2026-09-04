@@ -12,12 +12,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Agent, ApiKey, Item, User
+from app.services import agent_calls as calls_svc
 from app.services import fleet as fleet_svc
 from app.services import items as items_svc
 
 # D9: hard cap on agents in the payload. Census (`user_counts`) is still the
 # full set. No number in the PRD; match presence's board size, not a page.
 AGENT_CAP = fleet_svc.PRESENCE_CAP
+# PRD-34 D22: `calls_in_window` counts over ten heartbeat intervals. The presence TTL is
+# three and too short to count anything; `call_state` (D21) uses one.
+CALL_WINDOW_INTERVALS = 10
 
 
 def _pr_url(item: Item | None) -> str | None:
@@ -120,6 +124,19 @@ def _by_role(annotated: list[dict]) -> dict[str, int]:
     return counts
 
 
+def _call_fields(summary: dict | None) -> dict:
+    """PRD-34 D7/D11: an agent the summary did not name is `never`, not a missing key."""
+    if not summary:
+        return {"last_call": None, "calls_in_window": 0, "silence_seconds": None,
+                "call_state": "never"}
+    return {
+        "last_call": summary.get("last_call"),
+        "calls_in_window": int(summary.get("calls_in_window") or 0),
+        "silence_seconds": summary.get("silence_seconds"),
+        "call_state": summary.get("call_state") or "never",
+    }
+
+
 def _user_meta(user: User | None) -> dict:
     if user is None:
         return {"user_id": None, "label": "Unattributed", "initials": "", "color": None}
@@ -148,10 +165,13 @@ def _sort_agents(agents: list[dict]) -> list[dict]:
 
 def board(db: Session, project_id: str, *, user_filter: str | None = None,
           viewer_id: str | None = None, cap: int = AGENT_CAP,
-          list_agents=None, held_areas=None) -> dict:
-    """One Live payload. Inject list_agents/held_areas only in tests (D14 CALL)."""
+          list_agents=None, held_areas=None, call_summary=None) -> dict:
+    """One Live payload. Inject list_agents/held_areas/call_summary only in tests (D14 CALL)."""
     list_fn = list_agents if list_agents is not None else fleet_svc.list_agents
     areas_fn = held_areas if held_areas is not None else fleet_svc.held_areas
+    summary_fn = call_summary if call_summary is not None else calls_svc.summary
+    interval = fleet_svc.heartbeat_interval_seconds()
+    window = interval * CALL_WINDOW_INTERVALS
 
     roster = list_fn(db, project_id)
     areas = areas_fn(db, project_id)
@@ -171,6 +191,13 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
     if stored_ids:
         for it in db.scalars(select(Item).where(Item.id.in_(stored_ids))).all():
             items[it.id] = it
+
+    # PRD-34 D6/D19: two statements for the whole board, never one per agent. The board
+    # composes; it does not query the feed table itself (PRD-33 A12 extended, A16).
+    calls = summary_fn(db, project_id, [a["id"] for a in live],
+                       window_seconds=window, interval_seconds=interval)
+    per_agent = calls.get("agents") or {}
+    unattributed_by_key = calls.get("unattributed") or {}
 
     annotated: list[dict] = []
     for a in live:
@@ -206,21 +233,47 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
             "file_state": file_state,
             "files": files,
             "holdings": holdings,
+            # The feed summary (PRD-34 D6). `never` is a word, not a null; the reported
+            # status is `unreported` until PR 2 gives heartbeat something to carry.
+            **_call_fields(per_agent.get(a["id"])),
+            "status": None,
+            "status_state": "unreported",
             "_user": _user_meta(user),
+            "_key_id": row.api_key_id if row is not None else None,
         })
 
     groups: dict = {}
     for a in annotated:
         meta = a.pop("_user")
+        a.pop("_key_id", None)
         uid = meta["user_id"]
         g = groups.get(uid)
         if g is None:
-            g = {**meta, "online": 0, "total": 0, "agents": []}
+            g = {**meta, "online": 0, "total": 0, "agents": [],
+                 "unattributed_calls": 0, "unattributed_by_key": []}
             groups[uid] = g
         g["agents"].append(a)
         g["total"] += 1
         if _is_online(a["state"]):
             g["online"] += 1
+
+    # PRD-34 D3/D15: calls that named no agent are counted on the credential's owner, by
+    # key name, so the operator knows which harness to fix. A key with such calls and NO
+    # registered agent still gets a group — an empty roster with a non-zero count is the
+    # honest picture of "this credential is calling but never registered".
+    for key_id, n in unattributed_by_key.items():
+        key = keys.get(key_id)
+        user = users.get(key.user_id) if key is not None and key.user_id else None
+        meta = _user_meta(user)
+        uid = meta["user_id"]
+        g = groups.get(uid)
+        if g is None:
+            g = {**meta, "online": 0, "total": 0, "agents": [],
+                 "unattributed_calls": 0, "unattributed_by_key": []}
+            groups[uid] = g
+        g["unattributed_calls"] += int(n)
+        g["unattributed_by_key"].append(
+            {"key": (key.name if key is not None else None) or key_id, "calls": int(n)})
     for g in groups.values():
         g["agents"] = _sort_agents(g["agents"])
 
@@ -262,6 +315,8 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
             "color": g["color"],
             "online": g["online"],
             "total": g["total"],
+            "unattributed_calls": g["unattributed_calls"],
+            "unattributed_by_key": g["unattributed_by_key"],
             "agents": take,
         })
         if remaining <= 0:
@@ -276,6 +331,8 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
         "unattributed_count": unattributed_count,
         "by_role": _by_role(annotated),
         "roles": list(fleet_svc.ROLES),
+        "window_seconds": window,
+        "retention_days": calls_svc.retention_days(),
         "users": users_out,
         "user_counts": user_counts,
     }

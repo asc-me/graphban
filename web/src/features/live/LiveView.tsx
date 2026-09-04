@@ -1,11 +1,14 @@
+import * as React from "react";
 import { useLocation, useSearchParams, Link } from "react-router-dom";
 
 import { Avatar } from "@/components/ui/avatar";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
-import { useConfig, useLive } from "@/lib/queries";
+import { useConfig, useLive, useLiveFeed } from "@/lib/queries";
 import { projectPath } from "@/lib/routes";
-import type { LiveAgent, LiveBoard, LiveFileKind, LiveFileState, LiveUser } from "@/lib/types";
+import type {
+  LiveAgent, LiveBoard, LiveFeedRow, LiveFileKind, LiveFileState, LiveUser,
+} from "@/lib/types";
 
 /** Same mapping as Fleet: role colour is the status that role produces. */
 const ROLE_TONE: Record<string, string> = {
@@ -112,7 +115,7 @@ export function LiveView() {
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col gap-5">
             {data.users.map((u) => (
-              <UserBlock key={u.user_id ?? "unattributed"} user={u} board={data} />
+              <UserBlock key={u.user_id ?? "unattributed"} user={u} board={data} projectId={activeId} />
             ))}
           </div>
         )}
@@ -141,7 +144,7 @@ function Chip({
   );
 }
 
-function UserBlock({ user, board }: { user: LiveUser; board: LiveBoard }) {
+function UserBlock({ user, board, projectId }: { user: LiveUser; board: LiveBoard; projectId?: string }) {
   return (
     <section>
       <div className="mb-2 flex items-center gap-2.5">
@@ -155,17 +158,38 @@ function UserBlock({ user, board }: { user: LiveUser; board: LiveBoard }) {
           {user.online}/{user.total}
         </span>
       </div>
+      {/* PRD-34 D15: calls that named no agent are counted on the credential, by key name,
+          so the operator knows which harness to fix. Never assigned to an agent. */}
+      {(user.unattributed_by_key ?? []).map((k) => (
+        <div
+          key={k.key}
+          role="note"
+          className="mb-1.5 rounded-[9px] border border-dashed border-line-2 px-3 py-1.5 text-[11.5px] text-muted"
+        >
+          {k.calls} {k.calls === 1 ? "call" : "calls"} on credential{" "}
+          <span className="font-mono text-fg-2">{k.key}</span> not attributable to an agent
+        </div>
+      ))}
       <div className="flex flex-col gap-1.5">
         {user.agents.map((a) => (
-          <AgentRow key={a.id} agent={a} servedAt={board.served_at} />
+          <AgentRow
+            key={a.id}
+            agent={a}
+            servedAt={board.served_at}
+            projectId={projectId}
+            intervalMs={board.heartbeat_interval_seconds * 1000}
+          />
         ))}
       </div>
     </section>
   );
 }
 
-function AgentRow({ agent: a, servedAt }: { agent: LiveAgent; servedAt: string }) {
+function AgentRow({
+  agent: a, servedAt, projectId, intervalMs,
+}: { agent: LiveAgent; servedAt: string; projectId?: string; intervalMs: number }) {
   const offline = a.state === "offline";
+  const [open, setOpen] = React.useState(false);
   return (
     <div
       className={cn(
@@ -206,6 +230,21 @@ function AgentRow({ agent: a, servedAt }: { agent: LiveAgent; servedAt: string }
               {ageLabel(a.last_seen_at, servedAt)}
             </span>
           </div>
+          {/* PRD-34: what it is doing. Two named sources; silence is a word with an age. */}
+          <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11.5px]">
+            <button
+              type="button"
+              onClick={() => setOpen((o) => !o)}
+              aria-expanded={open}
+              className="text-left text-fg-2 hover:text-fg"
+            >
+              <CallSummary agent={a} servedAt={servedAt} />
+            </button>
+            <StatusSummary agent={a} servedAt={servedAt} />
+          </div>
+          {open && (
+            <Feed agentId={a.id} projectId={projectId} intervalMs={intervalMs} servedAt={servedAt} />
+          )}
           <div className="mt-1.5 text-[12px] text-fg-2">{fileStateCopy(a.file_state)}</div>
           {a.files.length > 0 && (
             <ul className="mt-1 space-y-0.5 font-mono text-[10.5px] text-muted">
@@ -243,6 +282,111 @@ function AgentRow({ agent: a, servedAt }: { agent: LiveAgent; servedAt: string }
       </div>
     </div>
   );
+}
+
+/** Observed: what Graphban measured. `never` / `quiet` are words, not blanks (D7, D11). */
+function CallSummary({ agent: a, servedAt }: { agent: LiveAgent; servedAt: string }) {
+  if (a.call_state === "never" || !a.last_call) {
+    return <span className="text-muted">no calls recorded</span>;
+  }
+  const age = ageLabel(a.last_call.at, servedAt);
+  return (
+    <span>
+      <span className="font-mono text-[10px] uppercase tracking-wide text-faint">observed</span>{" "}
+      <span className={cn("font-mono", !a.last_call.ok && "text-[color:var(--color-st-blocked)]")}>
+        {a.last_call.tool}
+      </span>
+      {a.last_call.target && <span className="ml-1 text-muted">{a.last_call.target}</span>}
+      <span className="ml-1.5 text-faint">{age}</span>
+      {a.call_state === "quiet" && a.silence_seconds != null && (
+        <span className="ml-1.5 text-faint">· no calls for {durationLabel(a.silence_seconds)}</span>
+      )}
+    </span>
+  );
+}
+
+/** Reported: what the agent SAID, with its age. Never rendered in the observed style (D1). */
+function StatusSummary({ agent: a, servedAt }: { agent: LiveAgent; servedAt: string }) {
+  if (a.status_state === "unreported" || !a.status) {
+    return <span className="text-faint">no status reported</span>;
+  }
+  return (
+    <span>
+      <span className="rounded border border-line-2 px-1 font-mono text-[9.5px] uppercase tracking-wide text-faint">
+        reported
+      </span>{" "}
+      <span className={cn("text-fg-2", a.status.stale && "text-faint line-through decoration-faint")}>
+        {a.status.text}
+      </span>
+      <span className="ml-1.5 text-faint">{ageLabel(a.status.at, servedAt)}</span>
+      {a.status_state === "stale" && (
+        <span className="ml-1.5 text-[color:var(--color-st-review)]">stale</span>
+      )}
+    </span>
+  );
+}
+
+function Feed({
+  agentId, projectId, intervalMs, servedAt,
+}: { agentId: string; projectId?: string; intervalMs: number; servedAt: string }) {
+  const { data, isLoading, isError } = useLiveFeed(projectId, agentId, intervalMs, true);
+  if (isError) {
+    return <div className="mt-1.5 text-[11.5px] text-muted">The feed could not be loaded.</div>;
+  }
+  if (isLoading || !data) {
+    return <div className="mt-1.5 text-[11.5px] text-muted">Loading…</div>;
+  }
+  if (data.state === "never") {
+    return (
+      <div className="mt-1.5 text-[11.5px] text-muted">
+        No calls recorded in the last {data.retention_days} days.
+      </div>
+    );
+  }
+  return (
+    <ul className="mt-1.5 space-y-0.5 border-l border-line-2 pl-2.5" aria-label="feed">
+      {data.rows.map((r) => (
+        <FeedRowView key={r.id} row={r} servedAt={data.served_at || servedAt} />
+      ))}
+    </ul>
+  );
+}
+
+function FeedRowView({ row: r, servedAt }: { row: LiveFeedRow; servedAt: string }) {
+  if (r.source === "reported") {
+    return (
+      <li className="flex flex-wrap items-baseline gap-x-2 text-[11.5px]">
+        <span className="rounded border border-line-2 px-1 font-mono text-[9.5px] uppercase tracking-wide text-faint">
+          reported
+        </span>
+        <span className="text-fg-2">{r.status}</span>
+        {(r.files ?? []).length > 0 && (
+          <span className="font-mono text-[10.5px] text-muted">{(r.files ?? []).join(", ")}</span>
+        )}
+        <span className="text-faint">{ageLabel(r.at, servedAt)}</span>
+      </li>
+    );
+  }
+  return (
+    <li
+      className={cn(
+        "flex flex-wrap items-baseline gap-x-2 text-[11.5px]",
+        !r.ok && "text-[color:var(--color-st-blocked)]",
+      )}
+    >
+      <span className="font-mono">{r.tool}</span>
+      {r.target && <span className="text-muted">{r.target}</span>}
+      {!r.ok && r.error_code && <span className="font-mono text-[10px]">{r.error_code}</span>}
+      <span className="text-faint">{ageLabel(r.at, servedAt)}</span>
+    </li>
+  );
+}
+
+function durationLabel(s: number): string {
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
 }
 
 function RoleCounts({ byRole, roles }: { byRole: Record<string, number>; roles: string[] }) {

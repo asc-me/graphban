@@ -777,6 +777,20 @@ export function useLive(projectId?: string, user?: string | null) {
 }
 
 /**
+ * One agent's feed (PRD-34 D6). Fetched only while the row is expanded, on the BOARD's clock —
+ * the board learned `heartbeat_interval_seconds` from the server, and a second cadence for
+ * the timeline would be a freshness the rows do not have (D9).
+ */
+export function useLiveFeed(projectId: string | undefined, agentId: string, intervalMs: number, enabled: boolean) {
+  return useQuery({
+    queryKey: ["live-feed", projectId, agentId],
+    queryFn: () => api.liveFeed(projectId!, agentId),
+    refetchInterval: intervalMs,
+    enabled: enabled && !!projectId,
+  });
+}
+
+/**
  * Live presence for the graph views (PRD-20 D4).
  *
  * **Polled at the interval the SERVER reports**, not a hardcoded number: presence is only as

@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     LargeBinary,
     String,
@@ -1740,6 +1741,46 @@ class Event(Base):
     target_id: Mapped[str] = mapped_column(String, default="")
     project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class AgentCall(Base):
+    """One accepted-or-refused MCP call, attributed to the AGENT that made it (PRD-34 D2).
+
+    Telemetry, not the audit ledger. `Event` is one row per accepted MUTATION, attributed to
+    the credential and kept forever (AL-43). This table is every call — reads included, which
+    is most of what a working agent does — attributed to the agent, and swept by age
+    (`AGENT_CALL_RETENTION_DAYS`). Growing `events` ten-fold with reads would change what
+    Activity is; a feed that skipped reads would show the same idle roster Live already does.
+
+    `agent_id` is NULL when the call could not be attributed (D3): no `agent_id` argument and
+    no single live agent on the connection. That row still counts, per credential — the board
+    shows the number rather than guessing which agent on a shared key made the call.
+
+    `target` is ONE string from a per-tool allowlist (D4): an item id, a query, a path. Never
+    the arguments, never the result. `files` is the only JSON column and it holds paths a
+    `reported` row carried, nothing else.
+    """
+
+    __tablename__ = "agent_calls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.id"), nullable=True, index=True)
+    api_key_id: Mapped[str] = mapped_column(ForeignKey("api_keys.id"), index=True)
+    source: Mapped[str] = mapped_column(String(16), default="observed")  # observed | reported
+    tool: Mapped[str] = mapped_column(String(64), default="")
+    target: Mapped[str] = mapped_column(String(120), default="")
+    ok: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    files: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    __table_args__ = (
+        Index("ix_agent_calls_agent_ts", "agent_id", "ts"),
+        Index("ix_agent_calls_project_ts", "project_id", "ts"),
+    )
 
 
 class AssistantThread(Base):

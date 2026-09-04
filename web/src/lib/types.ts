@@ -1441,6 +1441,46 @@ export type ReindexStatus = {
 export type LiveFileKind = "leased" | "predicted" | "off_map" | "declared";
 export type LiveFileState = "leased" | "predicted" | "off_map" | "unreserved" | "idle" | "offline";
 
+/** PRD-34: the feed. `never` is a word, not a null; `unreported` is not an empty string. */
+export type LiveCallState = "never" | "quiet" | "active";
+export type LiveStatusState = "unreported" | "reported" | "stale";
+export type LiveFeedSource = "observed" | "reported";
+
+export interface LiveLastCall {
+  tool: string;
+  target: string;
+  at: string | null;
+  ok: boolean;
+}
+
+export interface LiveStatus {
+  text: string;
+  files: string[];
+  at: string | null;
+  stale: boolean;
+}
+
+export interface LiveFeedRow {
+  id: number;
+  at: string | null;
+  source: LiveFeedSource;
+  tool: string;
+  target: string;
+  ok: boolean;
+  error_code?: string;
+  duration_ms?: number;
+  status?: string;
+  files?: string[];
+}
+
+/** GET /api/live/{agent_id}/feed. `state: "never"` with no rows is the empty. */
+export interface LiveFeed {
+  served_at: string;
+  retention_days: number;
+  state: "never" | "ok";
+  rows: LiveFeedRow[];
+}
+
 export interface LiveBoard {
   served_at: string;
   heartbeat_interval_seconds: number;
@@ -1450,6 +1490,8 @@ export interface LiveBoard {
   unattributed_count: number;
   by_role: Record<string, number>;
   roles: string[];
+  window_seconds: number;
+  retention_days: number;
   users: LiveUser[];
   user_counts: { user_id: string | null; label: string; online: number; total: number }[];
 }
@@ -1461,6 +1503,9 @@ export interface LiveUser {
   color: string | null;
   online: number;
   total: number;
+  /** PRD-34 D15: calls on this person's credentials that named no agent. Counted, never assigned. */
+  unattributed_calls: number;
+  unattributed_by_key: { key: string; calls: number }[];
   agents: LiveAgent[];
 }
 
@@ -1475,6 +1520,12 @@ export interface LiveAgent {
   branch: string | null;
   branch_orphaned: boolean;
   parent_agent_id?: string | null;
+  last_call: LiveLastCall | null;
+  calls_in_window: number;
+  silence_seconds: number | null;
+  call_state: LiveCallState;
+  status: LiveStatus | null;
+  status_state: LiveStatusState;
   file_state: LiveFileState;
   files: { area: string; kind: LiveFileKind; reason: string | null; node_paths: string[] }[];
   holdings: {

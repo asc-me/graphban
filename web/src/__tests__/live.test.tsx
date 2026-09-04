@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LiveView } from "@/features/live/LiveView";
 import { ProjectProvider } from "@/features/ProjectContext";
-import type { LiveAgent, LiveBoard, LiveUser } from "@/lib/types";
+import type { LiveAgent, LiveBoard, LiveFeed, LiveUser } from "@/lib/types";
 
 const project = {
   id: "core", tag: "CORE", name: "Core", accent: "#c6f24e", visibility: "private",
@@ -26,6 +26,12 @@ function agent(over: Partial<LiveAgent> = {}): LiveAgent {
     worktree: "/tmp/wt",
     branch: "feat/x",
     branch_orphaned: false,
+    last_call: null,
+    calls_in_window: 0,
+    silence_seconds: null,
+    call_state: "never",
+    status: null,
+    status_state: "unreported",
     file_state: "idle",
     files: [],
     holdings: [],
@@ -41,6 +47,8 @@ function user(over: Partial<LiveUser> = {}): LiveUser {
     color: "#7ca2ff",
     online: 1,
     total: 1,
+    unattributed_calls: 0,
+    unattributed_by_key: [],
     agents: [agent()],
     ...over,
   };
@@ -56,6 +64,8 @@ function emptyBoard(over: Partial<LiveBoard> = {}): LiveBoard {
     unattributed_count: 0,
     by_role: {},
     roles: ["planner", "worker", "reviewer"],
+    window_seconds: 500,
+    retention_days: 7,
     users: [],
     user_counts: [],
     ...over,
@@ -63,6 +73,7 @@ function emptyBoard(over: Partial<LiveBoard> = {}): LiveBoard {
 }
 
 let board: LiveBoard = emptyBoard();
+let feed: LiveFeed = { served_at: "2026-09-02T12:00:10Z", retention_days: 7, state: "never", rows: [] };
 
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
@@ -70,6 +81,7 @@ vi.mock("@/lib/api", () => ({
     projects: vi.fn(async () => [project]),
     config: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
     live: vi.fn(async () => board),
+    liveFeed: vi.fn(async () => feed),
   },
 }));
 
@@ -255,5 +267,108 @@ describe("Live board", () => {
     expect(screen.queryByText(/^leased$/)).not.toBeInTheDocument();
     expect(screen.getByText("1 worker")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Fleet" })).toHaveAttribute("href", "/fleet");
+  });
+
+  // ---- PRD-34 PR 1: the feed. Silence is a word; sources are named; nothing is guessed. ----
+
+  it("says no calls recorded and no status reported, never a blank", async () => {
+    board = emptyBoard({
+      total_agents: 1,
+      users: [user({ agents: [agent({ call_state: "never", last_call: null, status_state: "unreported" })] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 1, total: 1 }],
+    });
+    renderLive();
+    expect(await screen.findByText("no calls recorded")).toBeInTheDocument();
+    expect(screen.getByText("no status reported")).toBeInTheDocument();
+  });
+
+  it("shows the last observed call and how long the agent has been quiet", async () => {
+    board = emptyBoard({
+      total_agents: 1,
+      users: [user({ agents: [agent({
+        call_state: "quiet",
+        silence_seconds: 720,
+        calls_in_window: 0,
+        last_call: { tool: "search_code", target: "reservation lease", at: "2026-09-02T11:48:10Z", ok: true },
+      })] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 1, total: 1 }],
+    });
+    renderLive();
+    expect(await screen.findByText("search_code")).toBeInTheDocument();
+    expect(screen.getByText("reservation lease")).toBeInTheDocument();
+    expect(screen.getByText(/no calls for 12m/)).toBeInTheDocument();
+    expect(screen.getByText("observed")).toBeInTheDocument();
+    expect(screen.queryByText("no calls recorded")).not.toBeInTheDocument();
+  });
+
+  it("renders a reported status with its age and marks a stale one", async () => {
+    board = emptyBoard({
+      total_agents: 1,
+      users: [user({ agents: [agent({
+        status_state: "stale",
+        status: { text: "running the backend suite", files: ["backend/tests/test_live.py"], at: "2026-09-02T11:00:00Z", stale: true },
+      })] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 1, total: 1 }],
+    });
+    renderLive();
+    expect(await screen.findByText("running the backend suite")).toBeInTheDocument();
+    expect(screen.getByText("reported")).toBeInTheDocument();
+    expect(screen.getByText("stale")).toBeInTheDocument();
+    expect(screen.queryByText("no status reported")).not.toBeInTheDocument();
+  });
+
+  it("counts unattributed calls on the credential, by key name, without inventing an agent", async () => {
+    board = emptyBoard({
+      total_agents: 0,
+      users: [user({ total: 0, online: 0, agents: [], unattributed_calls: 3,
+        unattributed_by_key: [{ key: "feed-key", calls: 3 }] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 0, total: 0 }],
+    });
+    renderLive();
+    expect(await screen.findByText(/3 calls on credential/)).toBeInTheDocument();
+    expect(screen.getByText("feed-key")).toBeInTheDocument();
+    expect(screen.queryByText("unnamed agent")).not.toBeInTheDocument();
+  });
+
+  it("expands a row into its feed, with observed and reported rows marked differently", async () => {
+    board = emptyBoard({
+      total_agents: 1,
+      users: [user({ agents: [agent({
+        call_state: "active", silence_seconds: 3, calls_in_window: 4,
+        last_call: { tool: "get_item_details", target: "CORE-9", at: "2026-09-02T12:00:07Z", ok: true },
+      })] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 1, total: 1 }],
+    });
+    feed = {
+      served_at: "2026-09-02T12:00:10Z", retention_days: 7, state: "ok",
+      rows: [
+        { id: 3, at: "2026-09-02T12:00:07Z", source: "observed", tool: "get_item_details", target: "CORE-9", ok: true },
+        { id: 2, at: "2026-09-02T12:00:01Z", source: "reported", tool: "heartbeat", target: "", ok: true, status: "editing the router", files: ["backend/app/routers/live.py"] },
+        { id: 1, at: "2026-09-02T11:59:50Z", source: "observed", tool: "sign_off", target: "CORE-8", ok: false, error_code: "conflict" },
+      ],
+    };
+    renderLive();
+    const toggle = await screen.findByRole("button", { expanded: false });
+    fireEvent.click(toggle);
+    const list = await screen.findByRole("list", { name: "feed" });
+    expect(list).toBeInTheDocument();
+    expect(screen.getByText("editing the router")).toBeInTheDocument();
+    expect(screen.getByText("backend/app/routers/live.py")).toBeInTheDocument();
+    expect(screen.getByText("sign_off")).toBeInTheDocument();
+    expect(screen.getByText("conflict")).toBeInTheDocument();
+    // The reported row carries the mark; the observed rows do not.
+    expect(screen.getAllByText("reported")).toHaveLength(1);
+  });
+
+  it("says the feed is empty in words when the state is never", async () => {
+    board = emptyBoard({
+      total_agents: 1,
+      users: [user({ agents: [agent()] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 1, total: 1 }],
+    });
+    feed = { served_at: "2026-09-02T12:00:10Z", retention_days: 7, state: "never", rows: [] };
+    renderLive();
+    fireEvent.click(await screen.findByRole("button", { expanded: false }));
+    expect(await screen.findByText("No calls recorded in the last 7 days.")).toBeInTheDocument();
   });
 });

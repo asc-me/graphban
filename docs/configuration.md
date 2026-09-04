@@ -95,6 +95,7 @@ See [AI providers](ai-providers.md) for the details (and why embeddings are depl
 | --- | --- | --- |
 | `CREDENTIAL_RETRY_SECONDS` | `60` | How often the credential retry loop re-asks providers that could not be reached (PRD-25). `0` disables the background task entirely — what the test suite runs at, so a timer never fires mid-test. |
 | `LLM_SPAN_RETENTION_DAYS` | `90` | How long per-call LLM telemetry rows (`llm_call_spans`, GRPH-225) are kept. Purged once at startup, never fatal. `0` or negative keeps everything — the right answer for a self-host box with no dashboard pressure. |
+| `AGENT_CALL_RETENTION_DAYS` | `7` | How long the Observe Live feed keeps a row (`agent_calls`, PRD-34): every MCP call an agent made, attributed to it. Swept on the write path every ~200 inserts, never fatal; a failed sweep counts on `/health` as `agent_calls_sweep_failed`. `0` or negative keeps everything. |
 | `SEED_ON_START` | `false` | Load the demo dataset on an empty DB. Default off — the app starts empty and you sign up in the UI. Set `true` for a populated demo. |
 | `PUBLIC_SUBMIT_ENABLED` | `true` | Allow the public feedback endpoints |
 | `CORS_ORIGINS` | `http://localhost:8080,http://localhost:5173` | Comma-separated allowed origins |

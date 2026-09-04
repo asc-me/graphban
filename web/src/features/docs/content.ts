@@ -242,6 +242,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 1, h: "Grouped by human", b: "Each person is one row of agents. Filter by user; Unattributed is a real bucket when a key has no user. All includes them." },
       { num: 2, h: "Leases, not writes", b: "Files are area leases. An online agent holding work with no lease is unreserved, not idle. Predicted and off-map are labelled. Graphban cannot see the agent's disk." },
       { num: 3, h: "Recorded PRs only", b: "A PR appears when Graphban already stored a URL on a holding. unrecorded is a word, not an empty list. Graphban does not fetch git." },
+      { num: 4, h: "What it is doing", b: "Every call an agent makes to Graphban is a row, reads included, under its own name. Click a row for the timeline. Calls that named no agent are counted on the credential, never guessed onto one. 'No calls recorded' is a measurement, not a blank." },
     ],
     related: [
       { label: "Fleet", to: "/fleet" },
