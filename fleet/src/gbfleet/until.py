@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import adopt as adopt_mod
+from . import observe
 from . import waits as wait_mod
 from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, ToolFailed
 from .lock import hold
@@ -42,6 +43,10 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     "fleet_status",
     "register_agent",
     "search_items",
+    # PRD-35 D12: the delegation is written BEFORE the seat is minted, for the seed of the
+    # next free cluster; `get_item_details` is where the brief (lane/tier suggestion) lives.
+    "get_item_details",
+    "delegate",
 })
 
 EMPTY_TICKS = 3
@@ -119,8 +124,13 @@ def run(
     empty_ticks: int = EMPTY_TICKS,
     mint_tries: int = MINT_TRIES,
     mint_budget: float = MINT_BUDGET_S,
+    tier: str | None = None,
 ) -> Report:
-    """Hold the repo lock and run until idle, a cap, or a config refusal."""
+    """Hold the repo lock and run until idle, a cap, or a config refusal.
+
+    `tier` is what every delegation this loop writes will REQUEST (PRD-35 D5). None means
+    follow the brief's suggestion — a stated policy of this program, not a server default.
+    """
     if planner.allowed & {"mint_enrolment"} and "mint_enrolment" in ALLOWED_TOOLS:
         raise ConfigError("ALLOWED_TOOLS must not include mint_enrolment")
     if planner.allowed == ALLOWED_TOOLS:
@@ -163,6 +173,7 @@ def run(
                 mint_tries=mint_tries,
                 mint_budget=mint_budget,
                 minted_start=minted,
+                tier=tier,
             )
             result.wave = wave
             minted = result.minted
@@ -235,9 +246,11 @@ def _loop(
     mint_tries: int,
     mint_budget: float,
     minted_start: int,
+    tier: str | None = None,
 ) -> Report:
     agent_id = str(identity.get("agent_id") or identity.get("id"))
     empty = 0
+    delegated: set[str] = set()
     minted = minted_start
     mint_deadline = time.monotonic() + mint_budget
     mint_left = mint_tries
@@ -305,6 +318,9 @@ def _loop(
             if need <= 0:
                 sleep(poll)
                 continue
+            # PRD-35 D12: the fact before the seat. The child registers on the seat minted
+            # next, which is the lineage the server links on (`linked_by: seat`).
+            _delegate_next(planner, agent_id, wave_name, delegated, tier)
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
@@ -428,6 +444,57 @@ def _need_reviewer(
     if live_reviewers:
         return False
     return True
+
+
+def _delegate_next(
+    planner: Graphban,
+    agent_id: str,
+    wave_name: str,
+    delegated: set[str],
+    tier: str | None,
+) -> str | None:
+    """Write the delegation for the seed of the next free cluster, before its seat is minted.
+
+    PRD-35 D12. Returns the item id, or None when there was nothing to delegate — a seat
+    spawned without an item makes no `delegate` call, and that absence is the honest
+    record: the divvy will decide what the child actually claims.
+
+    Lane and tier come from the brief unless `--tier` was given. This loop is a program;
+    "follow the suggestion" is its stated policy (D5 forbids the SERVER defaulting, not a
+    harness choosing to agree). A refused delegate — another planner's open one, a bounce
+    pin — is reported and the spawn goes ahead; a delegation the child never claims reads
+    `expired` on Live rather than being papered over here.
+    """
+    try:
+        clusters = planner.call("collision_clusters")
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("delegate_skipped", detail=f"collision_clusters: {exc}")
+        return None
+    seed: str | None = None
+    for cluster in clusters.get("clusters") or []:
+        if not isinstance(cluster, dict) or cluster.get("held_by"):
+            continue
+        items = [i for i in (cluster.get("items") or []) if isinstance(i, str) and i]
+        if items and items[0] not in delegated:
+            seed = items[0]
+            break
+    if seed is None:
+        return None
+    try:
+        details = planner.call("get_item_details", id=seed) or {}
+        brief = details.get("brief") if isinstance(details.get("brief"), dict) else {}
+        lane = str(((brief.get("lane") or {}).get("value")) or "backend")
+        want = str(tier or ((brief.get("tier") or {}).get("value")) or "cheap")
+        planner.call(
+            "delegate", id=seed, lane=lane, tier=want, agent_id=agent_id,
+            note=f"gbfleet until, wave {wave_name}",
+        )
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("delegate_refused", item=seed, detail=str(exc))
+        return None
+    delegated.add(seed)
+    observe.emit("delegated", item=seed, lane=lane, tier=want)
+    return seed
 
 
 def _wanted_workers(

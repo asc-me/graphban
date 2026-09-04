@@ -243,6 +243,7 @@ const CONTENT: Record<string, DocEntry> = {
       { num: 2, h: "Leases, not writes", b: "Files are area leases. An online agent holding work with no lease is unreserved, not idle. Predicted and off-map are labelled. Graphban cannot see the agent's disk." },
       { num: 3, h: "Recorded PRs only", b: "A PR appears when Graphban already stored a URL on a holding. unrecorded is a word, not an empty list. Graphban does not fetch git." },
       { num: 4, h: "What it is doing", b: "Every call an agent makes to Graphban is a row, reads included, under its own name. Click a row for the timeline. Calls that named no agent are counted on the credential, never guessed onto one. 'No calls recorded' is a measurement, not a blank." },
+      { num: 5, h: "What it handed to children", b: "A planner that calls delegate before spawning gets a row per delegation under its name: open, claimed by which child and what model it declared, expired when nothing ever claimed it, superseded when a stranger took the item. Requested and declared tiers sit side by side; a mismatch is stated, never refused. 'No delegations' is a word, and 'expired, nothing claimed' is a spawn that died before it registered." },
     ],
     related: [
       { label: "Fleet", to: "/fleet" },

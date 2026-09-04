@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LiveView } from "@/features/live/LiveView";
 import { ProjectProvider } from "@/features/ProjectContext";
-import type { LiveAgent, LiveBoard, LiveFeed, LiveUser } from "@/lib/types";
+import type { LiveAgent, LiveBoard, LiveDelegationRow, LiveFeed, LiveUser } from "@/lib/types";
 
 const project = {
   id: "core", tag: "CORE", name: "Core", accent: "#c6f24e", visibility: "private",
@@ -134,7 +134,39 @@ describe("Live board", () => {
     expect(await screen.findByText("planner-two")).toBeInTheDocument();
     expect(screen.getByText("quiet-three")).toBeInTheDocument();
     expect(screen.getByText("old-server")).toBeInTheDocument();
-    expect(screen.queryByText(/delegat(ion|ed)/i)).not.toBeInTheDocument();
+    // PR 2: null is a word, absent is silence, present is a count line (criterion 15).
+    expect(screen.getAllByText("no delegations")).toHaveLength(1);
+    expect(screen.getByText(/1: 1 open \(oldest 4m\)/)).toBeInTheDocument();
+  });
+
+  it("names an expired delegation as a spawn that never claimed, and a mismatch as such (PRD-35 criteria 15, 16)", async () => {
+    const row = (over: Partial<LiveDelegationRow>): LiveDelegationRow => ({
+      id: "dlg", item: "CORE-9", state: "open", lane: "backend", requested_tier: "cheap",
+      declared_tier: null, declared_model: null, mismatch: false, delegated_by: "a2",
+      agent_id: null, linked_by: null, outcome: null, closed_reason: null, closed_by: null,
+      note: "", created_at: null, claimed_at: null, age_seconds: 700, ...over,
+    });
+    const planner = agent({
+      id: "a2", key: "CORE-A2", label: "planner-two", delegations: {
+        open: 0, claimed: 2, finished: 0, expired: 1, closed: 1, oldest_open_seconds: null,
+        rows: [
+          row({ id: "d1", item: "CORE-9", state: "expired" }),
+          row({ id: "d2", item: "CORE-10", state: "claimed", agent_id: "CORE-A7", linked_by: "parent",
+                declared_tier: "frontier", declared_model: "opus-5", mismatch: true }),
+          row({ id: "d3", item: "CORE-11", state: "claimed", agent_id: "CORE-A8", linked_by: "seat",
+                declared_tier: "undeclared" }),
+          row({ id: "d4", item: "CORE-12", state: "closed", closed_reason: "superseded", closed_by: "CORE-A9" }),
+        ],
+      },
+    });
+    board = emptyBoard({ total_agents: 1, users: [user({ agents: [planner] })] });
+    renderLive();
+    expect(await screen.findByText(/4: 2 claimed, 1 expired, 1 closed/)).toBeInTheDocument();
+    expect(screen.getByText(/expired, nothing claimed/)).toBeInTheDocument();
+    expect(screen.getByText(/claimed by CORE-A7 \(requested cheap, declared frontier, opus-5\)/)).toBeInTheDocument();
+    expect(screen.getByText(/claimed by CORE-A8 \(requested cheap, undeclared\)/)).toBeInTheDocument();
+    expect(screen.getByText(/superseded by CORE-A9/)).toBeInTheDocument();
+    expect(screen.queryByText("no delegations")).not.toBeInTheDocument();
   });
 
   it("names a filter miss as a person, not an empty project", async () => {

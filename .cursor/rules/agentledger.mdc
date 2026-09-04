@@ -26,6 +26,14 @@ but exposing a tool does not say *when* to reach for it. That gap is why items s
    claim nobody is working. Prefer `blocked` with a `blocker` over `backlog` when the reason
    will still be true tomorrow — `claim_next` reads backlog, so a known-unbuildable item
    parked there is handed straight back out.
+5. **Hand work to a child through the ledger, not just the prompt.** If you spawn a subagent
+   for an item, `delegate(id=…, lane=…, tier=…)` first and paste the returned `brief.text`
+   into the spawn; `get_item_details` carries the same brief with a lane and tier
+   *suggestion* and its `basis`, and you type the values because the server never defaults
+   them. The child registers with `parent_agent_id=<you>` (or on a seat you minted), which
+   is what links its claim to your delegation; anyone else's claim supersedes it, and a
+   delegation nobody claims reads `expired, nothing claimed` on Live — the spawn that died
+   before it registered, which nothing could show before (PRD-35).
 
 Reach for the rest by question, not by habit: `get_backlog` / `search_items` for what is
 open, `search_memory` and `related_work` for what was already learned or tried,
