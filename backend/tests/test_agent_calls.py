@@ -439,3 +439,20 @@ def test_the_producers_say_it():
     assert "status=" in fleet, "the Fleet mint prompt must carry the clause"
     coord = (repo / "fleet" / "src" / "gbagent" / "coord.py").read_text(encoding="utf-8")
     assert 'arguments["status"]' in coord, "gbagent's timer heartbeat must send status"
+
+
+# ---- PRD-34 PR 3: the write flag comes from the dispatcher's own set ------------------------
+
+def test_feed_rows_say_whether_the_call_wrote(client, key, auth, db):
+    """One enum, one owner. Sabotage: hardcode `write: True` — this fails."""
+    reg = _ok(_mcp(client, key, "register_agent", {"label": "w", "project_id": "core"}))
+    aid = reg["agent_id"]
+    _ok(_mcp(client, key, "search_items", {"query": "flag", "agent_id": aid}))
+    item = _ok(_mcp(client, key, "create_item", {"title": "flagged", "project_id": "core"}))
+    _ok(_mcp(client, key, "update_item", {"id": item["id"], "title": "flagged twice", "agent_id": aid}))
+    feed = client.get(f"/api/live/{aid}/feed?project_id=core", headers=auth).json()
+    by_tool = {r["tool"]: r for r in feed["rows"]}
+    assert by_tool["update_item"]["write"] is True
+    assert by_tool["search_items"]["write"] is False
+    src = open("app/services/agent_calls.py", encoding="utf-8").read()
+    assert "_READ_ONLY" in src and "READ_ONLY = {" not in src, "the set is imported, never copied"

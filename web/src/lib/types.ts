@@ -1467,6 +1467,8 @@ export interface LiveFeedRow {
   tool: string;
   target: string;
   ok: boolean;
+  /** Mutates state, by the server's own read-only set. The client holds no copy of that enum. */
+  write: boolean;
   error_code?: string;
   duration_ms?: number;
   status?: string;

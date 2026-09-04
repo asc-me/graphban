@@ -226,6 +226,19 @@ def record(db: Session, *, project_id: str | None, api_key_id: str | None,
 
 # ---- reads (D6, D19, D21) -------------------------------------------------------------------
 
+def _writes(tool: str) -> bool:
+    """Whether this tool mutates state, by the dispatcher's own `_READ_ONLY` set (PRD-34 PR 3).
+
+    Imported lazily and from the one place read-ness is decided: a copy of that set here
+    would be the second definition AGENTS.md's enum rule exists to forbid, and the client
+    filtering the feed by reads/writes must not hold a third. Import-time would be circular
+    (`mcp_server` imports the services); call-time is not.
+    """
+    from app.mcp_server import _READ_ONLY
+
+    return tool not in _READ_ONLY
+
+
 def _row(c: AgentCall) -> dict:
     out: dict[str, Any] = {
         "id": c.id,
@@ -234,6 +247,7 @@ def _row(c: AgentCall) -> dict:
         "tool": c.tool,
         "target": c.target,
         "ok": bool(c.ok),
+        "write": _writes(c.tool),
     }
     if c.error_code:
         out["error_code"] = c.error_code

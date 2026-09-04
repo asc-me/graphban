@@ -196,7 +196,7 @@ failure the propose-only boundary exists to prevent.
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
 | GET | `/api/live` | JWT | Observe Live board: humans → agents → leases → recorded PRs. `project_id` required; `user` filters. JWT only, same posture as `/api/fleet/presence`. No MCP tool. |
-| GET | `/api/live/{agent_id}/feed` | JWT | What one agent did, newest first (PRD-34): every MCP call it made, reads included, `source: observed`; later `reported` rows from heartbeat. `project_id` required; `limit` ≤ 200. `state: never` is the empty. 404 for an agent off this project. |
+| GET | `/api/live/{agent_id}/feed` | JWT | What one agent did, newest first (PRD-34): every MCP call it made, reads included, `source: observed`, or `reported` from a heartbeat that carried a status. Each row says `write` by the dispatcher's own read-only set. `project_id` required; `limit` ≤ 200. `state: never` is the empty. 404 for an agent off this project. |
 | POST | `/api/live/sweep` | JWT (writable) | Run the feed's retention sweep (`AGENT_CALL_RETENTION_DAYS`) by hand for `project_id`. Same code path as the amortised sweep on the write path; `/health` counts that one's failures as `agent_calls_sweep_failed`. |
 
 **Not a forge feed and not a filesystem watch.** PRs are URLs already stored on holdings (`recorded` / `unrecorded`). Files are leases (`unreserved` is not idle). Agents with no user sit in Unattributed, not off the board.
