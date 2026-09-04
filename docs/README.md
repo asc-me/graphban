@@ -31,7 +31,7 @@ fully offline with `docker compose up`.
 
 | Doc | What it covers |
 | --- | --- |
-| [MCP tools](mcp.md) | The 56 MCP tools, JSON-RPC endpoint, API-key auth, error taxonomy, call metering |
+| [MCP tools](mcp.md) | The 57 MCP tools, JSON-RPC endpoint, API-key auth, error taxonomy, call metering |
 | [Grok Build](grok-build.md) | Connect Grok Build (xAI's coding CLI) to Graphban's MCP + prime it on the loop |
 | [Cursor](cursor.md) | Connect Cursor to Graphban's MCP (user + Cursor 3 Team scope) + the sub-agent fleet |
 | [Swamp](swamp.md) | Set up Graphban + Swamp: gate keys, CI on ubuntu-srv, `@graphban/item-lifecycle` `complete` / `probe` |

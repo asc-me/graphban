@@ -1790,6 +1790,56 @@ class AgentCall(Base):
     )
 
 
+class Delegation(Base):
+    """One delegation: what a planner asked for, and what turned up to do it (PRD-35).
+
+    Written by `delegate` BEFORE the child exists — that is the point. The only trace of a
+    delegation used to be `Agent.parent_agent_id`, set when the child registered, so a child
+    that died first left nothing. `expired` (open past its own `lease_seconds`) is the third
+    state this row exists to show.
+
+    `requested_tier` is what the delegator typed; `declared_model` / `declared_tier` are
+    copied from the child's `capabilities` at link time and never gate anything (D8).
+    `outcome` and `closed_reason` are STORED at the event that produced them, because a
+    historical attempt's ending cannot be re-derived from the item once a later attempt has
+    moved it (D9). `open` / `claimed` / `expired` are derived from the row and the clock.
+    """
+
+    __tablename__ = "delegations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id"), index=True)
+    delegated_by: Mapped[str] = mapped_column(ForeignKey("agents.id"), index=True)
+    # The child, once a claim by a DECLARED child of `delegated_by` links it (D7): one that
+    # registered with `parent_agent_id` (inside the delegator's turn) or on a seat the
+    # delegator minted (a spawned process — which must NOT declare a parent, see
+    # `register_agent`). `linked_by` says which: `parent` | `seat`.
+    agent_id: Mapped[str | None] = mapped_column(ForeignKey("agents.id"), nullable=True)
+    linked_by: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    lane: Mapped[str] = mapped_column(String(16))            # frontend | backend | mixed
+    requested_tier: Mapped[str] = mapped_column(String(16))  # cheap | frontier
+    declared_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    declared_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    note: Mapped[str] = mapped_column(String(200), default="")
+    # signed_off | bounced | blocked | released — set once, at the transition.
+    outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # withdrawn (the owner re-delegated) | superseded (someone else claimed the item).
+    closed_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    closed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Copied at write so `expired` is stable when the setting later changes (D18).
+    lease_seconds: Mapped[int] = mapped_column(Integer, default=600)
+
+    __table_args__ = (
+        Index("ix_delegations_item_created", "item_id", "created_at"),
+        Index("ix_delegations_delegator_created", "delegated_by", "created_at"),
+    )
+
+
 class AssistantThread(Base):
     """A conversation with the in-app AI assistant, scoped to one item or PRD (AL-174).
 

@@ -699,6 +699,10 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         if effort_update < 0:
             raise ValueError(f"negative effort: {effort_update}")
     prev_status = item.status
+    if fields.get("status") == "blocked" and prev_status != "blocked":
+        # PRD-35 D9: a linked delegation's attempt ended here.
+        from app.services import delegation as delegation_svc
+        delegation_svc.on_outcome(db, item, "blocked")
     # THE CALL (GRPH-636). Observe answers live on this write, not a helper the
     # handler might forget. Deleting this leaves PATCH 200 and siblings still waiting.
     from app.services import gitops as gitops_svc
@@ -1399,6 +1403,10 @@ def _try_claim(db: Session, cand: Item, agent_id: str) -> Item | None:
         db.expire_all()
         item = db.get(Item, cand.id)
         stamp_baseline_at_start(db, item)
+        # PRD-35 D7: every claim path ends here, so this is the one place a delegation is
+        # linked (a declared child) or superseded (anyone else).
+        from app.services import delegation as delegation_svc
+        delegation_svc.on_claim(db, item, agent_id)
         return item
     db.commit()
     return None
@@ -1509,6 +1517,8 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
     # evidence the guard below needs (GRPH-435).
     reserved = fleet_svc.holds_reservation(db, agent_id=agent_id, item_id=item.id)
     fleet_svc.release_reservations(db, item_id=item.id)
+    from app.services import delegation as delegation_svc
+    delegation_svc.on_outcome(db, item, "released")
     # AUTHORSHIP IS NOT EARNED BY CLAIMING (GRPH-434). `built_by` is written at claim and never
     # cleared, which is right — releasing a lease must not destroy the record of who made the
     # thing (GRPH-376/377). But an agent that claimed, wrote nothing and handed the item back

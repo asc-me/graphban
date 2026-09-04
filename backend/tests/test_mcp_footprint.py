@@ -71,7 +71,14 @@ CEILING = 14200
 # score; eligibility unverifiable until attributed and scanned) — trimming them would
 # not claw back 80+ tokens. CORE_TOKENS 8497 → 8956 is the bill every key pays; this
 # raise is not a licence to grow core without that equality.
-MEASURED_TOKENS = 14199
+# 14199 -> 14184 (PRD-35). `delegate` (fleet tier, ~215) and `brief` on get_item_details
+# (~10) cost ~225; paid by trimming thirteen descriptions to the same meaning in fewer
+# words (delegate itself, get_context, add_memory, claim_cluster, graph_query,
+# register_agent, sign_off, claim_next, link_code, update_prd, suggest_next,
+# search_memory, mint_enrolment, get_lessons, describe_code, propose_allocation,
+# retire_wave, report_graphban_issue) and the shared `project_id` / `wait_seconds` /
+# `fields` property descriptions. Every third-state sentence survived. Headroom 16.
+MEASURED_TOKENS = 14184
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

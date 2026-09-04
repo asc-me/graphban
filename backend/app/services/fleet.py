@@ -636,6 +636,9 @@ OPEN_TOOLS: dict[str, str] = {
     "link_items": "a relation between two items is a statement about the work, not a claim "
                   "on it",
     "unlink_items": "the inverse of link_items and gated the same",
+    "delegate": "writes what the caller ASKED a child to do and claims nothing (PRD-35 D3); "
+                "a worker fanning out to a subagent delegates as much as a planner does, and "
+                "the manifest tier — not a role — is what keeps it off a lone agent's list",
 
     # ---- shared context: memory and the code graph ---------------------------------------
     "add_memory": "memory is shared context; a role that could not contribute would make "
@@ -1389,6 +1392,8 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     item.review_claimed_by = None
     item.review_claimed_at = None
     item.status = "done"
+    from app.services import delegation as delegation_svc
+    delegation_svc.on_outcome(db, item, "signed_off")
     if danger:
         # A self-review that leaves no trace is indistinguishable from a reviewed one, and the
         # whole bargain of danger mode is that it is VISIBLE. Recorded as a receipt rather than
@@ -1446,6 +1451,8 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     # KEPT, not just demanded (GRPH-378). Requiring a reason and dropping it left the author
     # exactly where a reasonless bounce would — the rejection arrives, the fix does not.
     item.bounce_reason = reason.strip()
+    from app.services import delegation as delegation_svc
+    delegation_svc.on_outcome(db, item, "bounced")
     item.blocker = ""
     db.commit()
     db.refresh(item)

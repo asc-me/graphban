@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Agent, ApiKey, Item, User
 from app.services import agent_calls as calls_svc
+from app.services import delegation as delegation_svc
 from app.services import fleet as fleet_svc
 from app.services import items as items_svc
 
@@ -223,6 +224,9 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
                        window_seconds=window, interval_seconds=interval)
     per_agent = calls.get("agents") or {}
     unattributed_by_key = calls.get("unattributed") or {}
+    # PRD-35 D11/D19: one query for the whole board; an agent with none is `null`, not `[]`.
+    delegations = delegation_svc.for_board(db, project_id,
+                                           retention_days=calls_svc.retention_days())
 
     annotated: list[dict] = []
     for a in live:
@@ -266,6 +270,7 @@ def board(db: Session, project_id: str, *, user_filter: str | None = None,
             # status is `unreported` until PR 2 gives heartbeat something to carry.
             **_call_fields(per_agent.get(a["id"])),
             **_status_fields(row, ttl=ttl),
+            "delegations": delegations.get(a["id"]),
             "_user": _user_meta(user),
             "_key_id": row.api_key_id if row is not None else None,
         })

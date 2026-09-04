@@ -96,9 +96,9 @@ The full manifest measures 14199 tokens against a 14200 ceiling (`test_mcp_footp
 | D4 | Tier is requested per delegation, never computed, never stored on the item | The item does not have a difficulty; an attempt has a tier. Per-attempt tiers are what make the escalation history readable. |
 | D5 | The brief's suggestion carries a `basis` and is text only | `basis` is one of `none`, `bounced`, `blocked`, `released`, `previous`. `none` suggests cheap. The delegator commits by passing `tier` to `delegate`; the suggestion is never copied in as a default. |
 | D6 | Lane is suggested from touchpoints, committed by the caller | `web/**` only is `frontend`; anything else is `backend`; both is `mixed`. Same `basis` discipline: the brief names the touchpoints that decided it. |
-| D7 | A delegation links only to a claim by a declared child of the delegator | `claimant.parent_agent_id == delegator` is the one link rule. A claim by anyone else closes the delegation as `superseded` with the claimant's id. The parent then reads the truth: my child never came, someone else took the item. |
+| D7 | A delegation links only to a claim by a declared child of the delegator | Two declarations count, and the row says which (`linked_by`): `parent`, the claimant registered with `parent_agent_id == delegator`; `seat`, it registered on an enrolment the delegator minted. The second exists because a SPAWNED process must not declare a parent (`register_agent` says so: that field feeds review independence, and a process is independent), and `gbfleet` children are spawned processes. A claim by anyone else closes the delegation as `superseded` with the claimant's id. The parent then reads the truth: my child never came, someone else took the item. |
 | D8 | Requested and declared sit side by side and never gate | The claimant's `capabilities.model` and `capabilities.tier` are copied onto the record at link time. `requested cheap, declared frontier` is a row, not an error. Absent declaration is `undeclared`, never treated as a match. |
-| D9 | Five states, derived, never written: `open`, `claimed`, `finished`, `expired`, `closed` | `open` until linked; `expired` when open past the lease; `finished` when the linked item leaves `in_progress` or `review`, with `outcome` read from the item: `signed_off`, `bounced`, `blocked`, `released`; `closed` with `reason` `withdrawn` (the delegator re-delegated) or `superseded` (someone else claimed). |
+| D9 | Five states: `open`, `claimed`, `expired` derived; `finished`, `closed` stored at their event | `open` until linked; `expired` when open past the row's own lease; `claimed` once linked. `finished` carries an `outcome` written at the transition that ended the attempt — `sign_off` → `signed_off`, `bounce` → `bounced`, `update_item(blocked)` → `blocked`, `release_item` or a lost lease taken by someone else → `released`. `closed` carries `withdrawn` (the delegator re-delegated) or `superseded` (someone else claimed). Stored rather than derived because a historical attempt's ending cannot be reproduced from the item once a later attempt has moved it; an `attempts` list re-derived from today's item would say "signed off" about the attempt that bounced. |
 | D10 | Re-delegation reads the whole history into the brief | `previous` is the immediate prior attempt with `bounce_reason`, `requested_tier`, `declared_model`, `outcome`; `attempts` is every prior delegation on the item, oldest first, one line each. Basis becomes `bounced` or `blocked` or `released`. Escalation is a new `delegate` call by the planner, never a server write. |
 | D11 | Live board shows delegations under the delegator | "2 delegated: 1 claimed by GRPH-A140 (cheap, haiku), 1 open 4m". The `delegate` call itself is an observed feed row via PRD-34 with the item as target. |
 | D12 | Generated prompts drop the rules the brief now carries | Planner body becomes: `get_item_details`, read `brief`, `delegate`, paste the returned brief into the spawn. The tier tables in `gen_subagents.py` stay and are applied per harness: where the model is chosen at call time (Claude Code) the planner prompt carries the tier table and passes the model on the spawn; where it is fixed per file (Cursor, Codex) the generator emits a frontier variant of each writing agent and the planner picks the file by lane and tier. `gbfleet` and the PRD-30 loop call `delegate` before spawning a seat. |
@@ -151,7 +151,11 @@ Refused when the item is not `ready`, when the caller holds the item's lease, wh
 
 ## D7 — Linking
 
-`claim_item`, `claim_next`, `claim_cluster` and `next_cluster` all pass through one step after a successful claim: find the open delegation for the item. If the claimant's `parent_agent_id` is the delegator, link it: write `agent_id`, `declared_model`, `declared_tier`, `claimed_at`. If the claimant is anyone else, including the delegator itself, close it as `superseded` with the claimant's id in `closed_by`. There is no claim-order link: a stranger's claim is not evidence that the child arrived, and a record that said `claimed` would hide the parent's silence. The parent doing the work it delegated is exactly the failure the record exists to show, and it reads `superseded by <parent>`.
+`claim_item`, `claim_next`, `claim_cluster` and `next_cluster` all pass through one step after a successful claim (`_try_claim` is the one write point): find the unlinked delegation for the item. If the claimant is a declared child of the delegator — `parent_agent_id == delegator`, or registered on an enrolment the delegator minted — link it: write `agent_id`, `linked_by` (`parent` | `seat`), `declared_model`, `declared_tier`, `claimed_at`. If the claimant is anyone else, including the delegator itself, close it as `superseded` with the claimant's id in `closed_by`. There is no claim-order link: a stranger's claim is not evidence that the child arrived, and a record that said `claimed` would hide the parent's silence. The parent doing the work it delegated is exactly the failure the record exists to show, and it reads `superseded by <parent>`.
+
+The same step ends an earlier linked attempt whose lease was lost: when a linked delegation's item is claimed by someone other than its child, that delegation reads `finished, released`. The item is in other hands now, and the row must not read `claimed` for a child that is gone.
+
+The seat rule matters for `gbfleet`: `register_agent` tells a spawned process not to declare a parent, because `parent_agent_id` feeds review independence and a process is independent. The seat the planner minted is the server's own record of that lineage, and it costs the fleet nothing to use it.
 
 ## D9 — States
 
@@ -162,10 +166,10 @@ State is a function of the row, the clock and the item, computed at read time, n
 | `open` | no `agent_id`, `created_at + lease > now` | "open 4m" |
 | `expired` | no `agent_id`, past the lease | "expired, nothing claimed" |
 | `claimed` | linked, item still `in_progress` or `review` | "claimed by GRPH-A140 (cheap, haiku) 12m" |
-| `finished` | linked, item elsewhere | "signed off" / "bounced: <reason>" / "blocked" / "released" |
+| `finished` | `outcome` set | "signed off" / "bounced: <reason>" / "blocked" / "released" |
 | `closed` | `closed_reason` set | "withdrawn" / "superseded by GRPH-A150" |
 
-`expired` is the third state. An operator who sees it knows a spawn failed silently. Nothing today can show that. `closed` is stored, because it records an event (a withdrawal or a stranger's claim) that the clock and the item cannot reproduce; the other four are derived.
+`expired` is the third state. An operator who sees it knows a spawn failed silently. Nothing today can show that. `finished` and `closed` are stored, because each records an event (a sign-off, a bounce, a withdrawal, a stranger's claim) that the clock and the item's current state cannot reproduce once a later attempt has moved the item; the other three are derived.
 
 ---
 
@@ -180,6 +184,9 @@ State is a function of the row, the clock and the item, computed at read time, n
 | item_id | fk items | index |
 | delegated_by | fk agents | the planner |
 | agent_id | fk agents nullable | the child, set at link |
+| linked_by | str(16) nullable | `parent` or `seat` |
+| outcome | str(16) nullable | `signed_off`, `bounced`, `blocked`, `released`; set at the transition |
+| finished_at | datetime tz nullable | |
 | closed_reason | str(16) nullable | `withdrawn` or `superseded` |
 | closed_by | fk agents nullable | who claimed, on `superseded` |
 | closed_at | datetime tz nullable | |
@@ -194,7 +201,7 @@ State is a function of the row, the clock and the item, computed at read time, n
 
 Indexes: `(item_id, created_at)`, `(delegated_by, created_at)`. No columns on `Item`. No columns on `Agent`.
 
-`services/delegation.py` (new): `brief(db, item)`, `delegate(db, agent, item, lane, tier, note)`, `on_claim(db, item, claimant)` (link or supersede), `state(row, item, now)`, `for_board(db, project_id, now)` (D19, one query). `services/live.py` reads `for_agent`. Routers stay free of model imports, as `routers/live.py` is today.
+`services/delegation.py` (new): `brief(db, item)`, `delegate(db, agent, item, lane, tier, note)`, `on_claim(db, item, claimant)` (link, supersede, or release an earlier attempt), `on_outcome(db, item, outcome)` (called from `sign_off`, `bounce`, `release_item`, `update_item`), `lineage(db, claimant, delegator)`, `state(row, now)`, `for_board(db, project_id, now)` (D19, one query). `services/live.py` reads `for_agent`. Routers stay free of model imports, as `routers/live.py` is today.
 
 `agent_calls.TARGETS` gains `delegate` with the item id as target.
 
@@ -210,12 +217,12 @@ Each is a test. Sabotage the call, not the model.
 4. `delegate` without `tier` is a validation error. Without `lane`, the same.
 5. `delegate` on a non-ready item is refused with the blocker named. On an item with an open delegation, refused with that delegation's id.
 6. `delegate` by the agent holding the item's lease is refused.
-7. After `delegate`, `claim_item` by an agent whose `parent_agent_id` is the delegator links. By an unrelated agent, the delegation reads `closed`, `superseded`, with that agent in `closed_by`. By the delegator itself, the same, with the delegator in `closed_by`.
+7. After `delegate`, `claim_item` by an agent whose `parent_agent_id` is the delegator links with `linked_by == "parent"`; by an agent registered on a seat the delegator minted, with `linked_by == "seat"`. By an unrelated agent, the delegation reads `closed`, `superseded`, with that agent in `closed_by`. By the delegator itself, the same, with the delegator in `closed_by`.
 8. Each of `claim_next`, `claim_cluster`, `next_cluster` links and supersedes the same way. One test per entry point; the sabotage removes the `on_claim` call from that one path.
 9. The claimant's `capabilities.model` and `capabilities.tier` are copied at link. A claimant with no capabilities reads `declared_tier == "undeclared"`, and the summary line says so.
 10. `requested cheap` with `declared frontier` links, reads `mismatch: true`, and refuses nothing.
 11. `state` is `open` before the lease and `expired` after, on the same row with the clock moved.
-12. A linked delegation whose item moves to `done` via `sign_off` reads `finished` with `outcome == "signed_off"`. Via `bounce`, `outcome == "bounced"` with the reason. Via `release_item`, `released`. Via `update_item(status="blocked")`, `blocked`.
+12. A linked delegation whose item moves to `done` via `sign_off` reads `finished` with `outcome == "signed_off"`. Via `bounce`, `outcome == "bounced"` with the reason. Via `release_item`, `released`. Via `update_item(status="blocked")`, `blocked`. Via a lost lease taken by another agent, `released`, with `agent_id` still naming the child that lost it.
 13. After the pin lapses, a second `delegate` on the bounced item briefs `tier.basis == "bounced"`, `tier.value == "frontier"`, and `previous` holds the first attempt's requested tier, declared model, outcome and the bounce reason. After three attempts, `attempts` lists all three in order; `previous` is the third.
 14. The suggestion is not a default: calling `delegate(tier="cheap")` on the bounced item writes `cheap`.
 15. Live board: the delegator's row carries `delegations` with counts per state and the oldest open age, from one query for the board (sabotage: a second delegator's rows leak into the first). The row for an agent with no delegations carries `delegations: null`, not `[]`. The web renders "no delegations" for null. With the field absent from the payload, as after a PR 1 deploy without PR 2, the web renders the row as it does today.

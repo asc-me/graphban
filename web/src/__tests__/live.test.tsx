@@ -112,6 +112,31 @@ describe("Live board", () => {
     expect(screen.queryByText(/idle/i)).not.toBeInTheDocument();
   });
 
+  it("renders a row unchanged whether the delegations field is absent, null or present (PRD-35 PR 1)", async () => {
+    // PR 1 ships the payload field; PR 2 renders it. A server ahead of this web build must
+    // not change what the row shows, and a server behind it must not either.
+    const withField = agent({
+      id: "a2", key: "CORE-A2", label: "planner-two", delegations: {
+        open: 1, claimed: 0, finished: 0, expired: 0, closed: 0, oldest_open_seconds: 240,
+        rows: [{
+          id: "dlg_1", item: "CORE-9", state: "open", lane: "backend", requested_tier: "cheap",
+          declared_tier: null, declared_model: null, mismatch: false, delegated_by: "a2",
+          agent_id: null, linked_by: null, outcome: null, closed_reason: null, closed_by: null,
+          note: "", created_at: "2026-09-02T11:56:00Z", claimed_at: null, age_seconds: 240,
+        }],
+      },
+    });
+    const withNull = agent({ id: "a3", key: "CORE-A3", label: "quiet-three", delegations: null });
+    const absent = agent({ id: "a4", key: "CORE-A4", label: "old-server" });
+    delete (absent as Partial<LiveAgent>).delegations;
+    board = emptyBoard({ total_agents: 3, users: [user({ online: 3, total: 3, agents: [withField, withNull, absent] })] });
+    renderLive();
+    expect(await screen.findByText("planner-two")).toBeInTheDocument();
+    expect(screen.getByText("quiet-three")).toBeInTheDocument();
+    expect(screen.getByText("old-server")).toBeInTheDocument();
+    expect(screen.queryByText(/delegat(ion|ed)/i)).not.toBeInTheDocument();
+  });
+
   it("names a filter miss as a person, not an empty project", async () => {
     board = emptyBoard({
       user_counts: [

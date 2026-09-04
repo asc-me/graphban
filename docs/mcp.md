@@ -97,7 +97,7 @@ agent carries ~5,100 fewer tokens on every turn.
 | *(core)* | Everything on the path of doing one piece of work: finding, claiming, updating and releasing items, reviewing, memory, all code-graph **reads**, and reading a PRD |
 | `prd` | **Authoring** a spec — `create_prd`, `update_prd`, `grill_prd`, `answer_grill`, `decompose_prd`, `close_prd`, `request_rebaseline`, `submit_verdict` |
 | `codegraph` | **Writing** the code graph — `describe_code`, `link_code`, `unlink_code` |
-| `fleet` | **Running** a fleet — `propose_allocation`, `assign_role`, `mint_enrolment`, `retire_wave`. Being *in* a fleet needs none of it |
+| `fleet` | **Running** a fleet — `propose_allocation`, `assign_role`, `mint_enrolment`, `retire_wave`, `delegate`. Being *in* a fleet needs none of it |
 | `misc` | `extract_lessons`, `generate_digest`, `report_graphban_issue`, `learning_loop`, `create_project`, `publish_memory`, `reject_memory` |
 
 Two things to know, because getting either wrong is expensive:
@@ -115,7 +115,7 @@ Settings → API keys. `fleet.mint` gives a planner credential the `fleet` tier 
 operator can restore the pre-tiering manifest for a whole deployment with
 `MCP_DEFAULT_TOOL_TIERS=prd,codegraph,fleet,misc` — see [configuration.md](configuration.md).
 
-## The 56 tools
+## The 57 tools
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
@@ -140,7 +140,7 @@ So the payload now carries `records_answers: false`, `turns_recorded` and
 `answer_grill` — the manifest is trimmed by scope — so an agent may have no other way to find
 out that its answers are not counting.
 
-**Every tool argues its role gate** (GRPH-516). 15 of the 56 tools are role-gated; the other
+**Every tool argues its role gate** (GRPH-516). 15 of the 57 tools are role-gated; the other
 40 are callable by every role. That was a *default* rather than a decision — `TOOLS` has had a
 completeness guard forcing each new tool to be classified as a quality gate or an authority
 one, and `TOOL_ROLES` had no equivalent, so forty tools arrived at "open to everyone" without
@@ -308,6 +308,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `claim_next` | `agent_id`, `lease_seconds`, `wait_seconds`, `project_id` | **Atomically** claim the best ready item, assign it to you, move it to in_progress. Returns `{claimed, item}`. |
 | `propose_allocation` | `project_id` | What the fleet should look like given who is online and what is ready. A proposal — nothing is assigned until `assign_role` |
 | `assign_role` | `agent_id`, `role`, `reason` | Commit a role change; it reaches the agent on its next poll as a `directive`, with no reconnect |
+| `delegate` | `id`, `lane`, `tier`, `note`, `agent_id` | Record that you are handing an item to a child you are about to spawn (PRD-35). **Claims nothing, spawns nothing.** `lane` and `tier` are required with no default — the brief suggests, you commit. Links when a declared child (`parent_agent_id`, or a seat you minted) claims the item; anyone else's claim closes it as `superseded`. Your own open one is withdrawn by re-delegating; another agent's is refused until it expires. Refused on a blocked, held or bounce-pinned item |
 | `mint_enrolment` | `agent_id`, `role`, `wave` | PLANNER ONLY. Mint a seat for an agent you are spawning, bounded by your credential — the code is returned once and grants that role for one session |
 | `retire_wave` | `agent_id`, `wave` | PLANNER ONLY. Revoke the seats YOU minted and release what agents on them hold, in one step — it does NOT stop processes, and `agents_still_running` names the ones still building against dead seats |
 | `collision_clusters` | `project_id`, `status` | Partition ready work into clusters that provably share no touch-areas; `predicted` marks lower-confidence grouping |
@@ -328,7 +329,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `search_memory` | `query`, `top_k`, `include_candidates`, `project_id` | Semantic search over **published** shards (set `include_candidates` for unreviewed ones); returns `status`, `item_id`, `source` |
 | `get_lessons` | `shard_id`, `trend`, `caught_state`, `eligibility`, `lesson_class`, `limit`, `offset`, `project_id` | The published lesson catalog with computed effectiveness, caught-issues, and org-eligibility. `score` is null when unmeasured — not a high score. `eligibility` is unverifiable until users/projects are attributed and the published cluster is scanned. Pass `shard_id` for provenance, outcomes, and history |
 | `get_backlog` | `limit`, `fields`, `project_id` | Prioritized backlog (lean rows + ranking fields by default, `fields="full"` for all) |
-| `get_item_details` | `id` | Item + linked shards + linked requests |
+| `get_item_details` | `id` | Item + linked shards + linked requests + **`brief`** (PRD-35): the delegation packet — summary, touchpoints, blockers, task class, lessons, a `lane` and `tier` **suggestion with its `basis`**, `previous` / `attempts` history, and `text` to paste into a spawn (which carries no suggestion) |
 | `suggest_next` | `project_id` | Best next item from state + memory |
 | `link_items` | `a`, `b`, `type`, `reason` | Create a typed relationship |
 | `unlink_items` | `a`, `b`, `type` | Remove a typed relationship (inverse of `link_items`); omit `type` to remove all types for the pair. Idempotent — returns `removed` |

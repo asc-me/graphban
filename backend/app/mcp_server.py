@@ -41,7 +41,7 @@ from app import errors
 from app.config import settings
 from app.version import __version__
 from app.db import get_db
-from app.models import ApiKey, ArtifactRecommendation, Item, Link, MemoryShard, Project
+from app.models import Agent, ApiKey, ArtifactRecommendation, Item, Link, MemoryShard, Project
 from app.security import authz
 from app.security.deps import get_agent_key
 from app.services import clustering as cluster_svc
@@ -59,6 +59,7 @@ from app.services import mcp_stats
 from app.services import memory as mem_svc
 from app.services import setup as setup_svc
 from app.services import tool_tiers
+from app.services import delegation as delegation_svc
 from app.services import quotas
 from app.services import artifacts as art_svc
 from app.services import prds as prd_svc
@@ -112,13 +113,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_context",
         "description": (
-            "Orient yourself: the project this API key writes to, your scopes, how many "
-            "projects and tools exist, and gitops (base branch, push-to-base, branch/PR "
-            "naming, reviewer bar). Unset gitops fields are unmeasured — not 'use main' "
-            "and not 'no requirements'. gitops.control is present when this box is "
-            "linked (linked_set | linked_unset | linked_unreachable); if "
-            "linked_unreachable, the org could not be reached — do not treat unset as "
-            "no process. Call this first when you start."
+            "Orient yourself: the project this key writes to, your scopes, project and tool counts, "
+            "and gitops (base branch, push-to-base, naming, reviewer bar). Unset gitops fields are "
+            "unmeasured — not 'use main' and not 'no requirements'. gitops.control says whether this "
+            "box is linked (linked_set | linked_unset | linked_unreachable); unreachable is not unset. "
+            "Call this first."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -241,11 +240,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "add_memory",
         "description": (
-            "Record a memory shard (decision, lesson, or note) on an item or the global scope. "
-            "ALWAYS check the returned `status`: a `candidate` will NOT come back from "
-            "search_memory unless you pass include_candidates. The project's memory write mode "
-            "decides — `review` (default) holds it for a human, `trusted` publishes on write so "
-            "you can read it back immediately. Near-duplicates are auto-rejected in every mode."
+            "Record a memory shard (decision, lesson, note) on an item or globally. ALWAYS check the "
+            "returned `status`: a `candidate` is invisible to search_memory without include_candidates. "
+            "Write mode decides — `review` (default) holds it for a human, `trusted` publishes on "
+            "write. Near-duplicates are auto-rejected in every mode."
         ),
         "inputSchema": {
             "type": "object",
@@ -260,9 +258,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_memory",
         "description": (
-            "Semantic search over memory shards — recall past context before acting. Returns "
-            "published shards ranked by similarity (with score and `status`); set "
-            "`include_candidates: true` to also see unreviewed agent notes."
+            "Semantic search over memory shards — recall past context before acting. Published shards "
+            "ranked by similarity (score, `status`); `include_candidates: true` also returns unreviewed "
+            "agent notes."
         ),
         "inputSchema": {
             "type": "object",
@@ -280,13 +278,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_lessons",
         "description": (
-            "The published lesson catalog for a project, with computed effectiveness, "
-            "caught-issues, and org-eligibility. Candidates are Memory review, not this. "
-            "score is null and caught_state is unknown when nothing has been measured — "
-            "that is not a high score. eligibility is unverifiable when distinct_users or "
-            "distinct_projects have not been attributed, or when the published cluster "
-            "was not scanned across sibling projects. Pass shard_id for one lesson's "
-            "provenance, outcomes, and history."
+            "The published lesson catalog for a project, with effectiveness, caught-issues and "
+            "org-eligibility. Candidates are Memory review, not this. score null / caught_state "
+            "unknown = unmeasured, not low. eligibility is unverifiable when users or projects were "
+            "not attributed, or sibling projects were not scanned. shard_id: one lesson's provenance, "
+            "outcomes and history."
         ),
         "inputSchema": {
             "type": "object",
@@ -356,8 +352,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "suggest_next",
         "description": (
-            "Advisory: the single best next item to work, WITHOUT claiming it (use claim_next to "
-            "lock work in a loop). Returns {item}; item is null when nothing is ready."
+            "Advisory: the single best next item, WITHOUT claiming it (claim_next locks work in a "
+            "loop). Returns {item}; item is null when nothing is ready."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -473,9 +469,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "update_prd",
         "description": (
-            "Patch a PRD's title, status (draft|review), or body. Prefer `section` — it "
-            "rewrites one `## ` heading and leaves every other byte alone. A whole-body "
-            "replace needs `base_hash` from get_prd. Returns the updated PRD."
+            "Patch a PRD's title, status (draft|review), or body. Prefer `section` — it rewrites one "
+            "`## ` heading and leaves the rest alone. A whole-body replace needs `base_hash` from "
+            "get_prd. Returns the updated PRD."
         ),
         "inputSchema": {
             "type": "object",
@@ -556,17 +552,16 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "claim_next",
         "description": (
-            "Claim ONE ready item (unblocked backlog/next) and move it to in_progress. Two agents "
-            "never get the same item, but this reserves NO files — prefer claim_cluster in a fleet. "
-            "Returns {claimed, item}; item is null when nothing is ready, and `reserved` then names "
-            "work held for somebody else."
+            "Claim ONE ready item and move it to in_progress. Two agents never get the same item, but "
+            "this reserves NO files — prefer claim_cluster in a fleet. Returns {claimed, item}; item is "
+            "null when nothing is ready, and `reserved` then names work held for somebody else."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "agent_id": {"type": "string", "description": "Who is claiming; defaults to this API key's name."},
                 "lease_seconds": {"type": "integer", "description": "Lease length; a claim with no heartbeat within this window is reclaimable (default 600)."},
-                "wait_seconds": {"type": "integer", "description": "Block up to N seconds (max 60) instead of returning empty. A directive wakes it early."},
+                "wait_seconds": {"type": "integer", "description": "Block up to N s (max 60) instead of returning empty; a directive wakes it early."},
                 "skip": {"type": "array", "items": {"type": "string"}, "description": "Ids to pass over."},
             },
         },
@@ -574,10 +569,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "propose_allocation",
         "description": (
-            "What the fleet should look like given who is online and what is ready: how many "
-            "workers and reviewers, and which cluster each worker takes. A PROPOSAL — nothing "
-            "is assigned until a planner calls assign_role. Agents beyond the free clusters "
-            "are proposed as reviewers rather than left for the divvy to refuse."
+            "What the fleet should look like given who is online and what is ready: workers, "
+            "reviewers, and which cluster each worker takes. A PROPOSAL — nothing is assigned until "
+            "assign_role. Agents beyond the free clusters are proposed as reviewers."
         ),
         "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
     },
@@ -601,6 +595,27 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "delegate",
+        "description": (
+            "Hand `id` to a child you are about to spawn (PRD-35). Claims nothing. You type `lane` "
+            "and `tier`; get_item_details `brief` suggests them with a basis. Returns the brief to "
+            "paste into the spawn. The child registers with parent_agent_id=you or on a seat you "
+            "minted, else its claim supersedes this. Re-delegating your own withdraws it; another "
+            "agent's open one is refused until it expires."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string"},
+                "lane": {"type": "string", "enum": list(delegation_svc.LANES)},
+                "tier": {"type": "string", "enum": list(delegation_svc.TIERS)},
+                "note": {"type": "string"},
+                "agent_id": {"type": "string"},
+            },
+            "required": ["id", "lane", "tier"],
+        },
+    },
+    {
         "name": "collision_clusters",
         "description": (
             "Partition ready work into clusters that provably do not share touch-areas — the "
@@ -615,12 +630,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "claim_cluster",
         "description": (
-            "The way to take work. Claims a whole non-colliding cluster and reserves its "
-            "touch-areas against work in flight, so nobody is handed work that collides with "
-            "yours. `claimed: false` names who holds the areas and when the earliest frees — "
-            "a real answer, not a failure. Write actual `touchpoints` back via update_item "
-            "when you finish. A low max_items frees nothing for others: the whole cluster is "
-            "reserved either way."
+            "The way to take work in a fleet. Claims a whole non-colliding cluster and reserves its "
+            "touch-areas against work in flight. `claimed: false` names who holds the areas and when "
+            "the earliest frees — an answer, not a failure. Write actual `touchpoints` back via "
+            "update_item when done. A low max_items frees nothing: the whole cluster is reserved."
         ),
         "inputSchema": {
             "type": "object",
@@ -628,7 +641,7 @@ TOOLS: list[dict[str, Any]] = [
                 "agent_id": {"type": "string"},
                 "max_items": {"type": "integer"},
                 "lease_seconds": {"type": "integer"},
-                "wait_seconds": {"type": "integer", "description": "Block up to N seconds (max 60) instead of returning empty. A directive wakes it early."},
+                "wait_seconds": {"type": "integer", "description": "Block up to N s (max 60) instead of returning empty; a directive wakes it early."},
             },
         },
     },
@@ -642,7 +655,7 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {"agent_id": {"type": "string"},
-                "wait_seconds": {"type": "integer", "description": "Block up to N seconds (max 60) instead of returning empty. A directive wakes it early."},
+                "wait_seconds": {"type": "integer", "description": "Block up to N s (max 60) instead of returning empty; a directive wakes it early."},
                 "skip": {"type": "array", "items": {"type": "string"}, "description": "Ids to pass over."},
             },
         },
@@ -650,9 +663,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "sign_off",
         "description": (
-            "Take a reviewed item to `done` with evidence. Refused if you built it, whatever "
-            "role you hold — and, above an effort threshold, refused without a `sabotage` "
-            "receipt showing something was broken on purpose and a test caught it."
+            "Take a reviewed item to `done` with evidence. Refused if you built it, whatever your role "
+            "— and above an effort threshold, refused without a `sabotage` receipt (something broken "
+            "on purpose, caught by a test)."
         ),
         "inputSchema": {
             "type": "object",
@@ -685,11 +698,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "register_agent",
         "description": (
-            "Register THIS process as an agent at startup, before claiming work. Two terminals on "
-            "one key become two agents. Pass `enrolment_code` if you were given a seat; without "
-            "one you are `all-in-one`. Read back `active_role` and `tools_off_limits` — your tool "
-            "list was fetched before you had a role, so it still shows tools you will be refused. "
-            "Heartbeat at the returned interval or you go offline and your items requeue."
+            "Register THIS process as an agent at startup, before claiming work. Two terminals on one "
+            "key become two agents. Pass `enrolment_code` if you were given a seat; without one you "
+            "are `all-in-one`. Read back `active_role` and `tools_off_limits` — your tool list predates "
+            "your role. Heartbeat at the returned interval or you go offline and your items requeue."
         ),
         "inputSchema": {
             "type": "object",
@@ -716,9 +728,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "mint_enrolment",
         "description": (
-            "PLANNER ONLY. Mint a seat for an agent you are spawning, bounded by your "
-            "credential. Returned once — pass it as `enrolment_code`. One seat per agent: "
-            "two on one seat cannot review each other."
+            "PLANNER ONLY. Mint a seat for an agent you are spawning, bounded by your credential. "
+            "Returned once — pass it as `enrolment_code`. One seat per agent: two on one cannot review "
+            "each other."
         ),
         "inputSchema": {
             "type": "object",
@@ -733,9 +745,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "retire_wave",
         "description": (
-            "PLANNER ONLY. Revoke the seats YOU minted and release what agents on them hold, "
-            "in one step. Does NOT stop any process — those keep building against dead seats "
-            "until something stops them, and `agents_still_running` names which."
+            "PLANNER ONLY. Revoke the seats YOU minted and release what agents on them hold. Does "
+            "NOT stop any process — `agents_still_running` names the ones still building against "
+            "dead seats."
         ),
         "inputSchema": {
             "type": "object",
@@ -798,12 +810,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "describe_code",
         "description": (
-            "Upsert the codebase's structure as a queryable graph of `nodes` and `edges`. You "
-            "have the repo in context, so you are the source of truth. Idempotent per path — "
-            "re-describe a changed file with its new `content_hash`. Pass `revision` so a reader "
-            "can tell whether the map is still current. `prune=true` after a whole "
-            "subtree marks unseen nodes stale. A `kind` "
-            "contradicting its path is corrected and returned in `kind_corrections`."
+            "Upsert the codebase's structure as a graph of `nodes` and `edges`; you have the repo, so "
+            "you are the source of truth. Idempotent per path — re-describe a changed file with its new "
+            "`content_hash`. `revision` lets a reader tell whether the map is current. `prune=true` "
+            "after a whole subtree marks unseen nodes stale. A `kind` contradicting its path is "
+            "corrected in `kind_corrections`."
         ),
         "inputSchema": {
             "type": "object",
@@ -881,10 +892,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "graph_query",
         "description": (
-            "Structure of the code graph, before you refactor. `hubs`: nodes by INBOUND edges — "
-            "what breaks if this changes. `components`: connected groups, largest first, each with "
-            "an `anchor`. `path`: shortest route between two paths, walked undirected, each hop "
-            "reporting which way the edge points. Deterministic."
+            "Structure of the code graph, before you refactor. `hubs`: nodes by INBOUND edges — what "
+            "breaks if this changes. `components`: connected groups, largest first, with an `anchor`. "
+            "`path`: shortest undirected route between two paths, each hop reporting edge direction. "
+            "Deterministic."
         ),
         "inputSchema": {
             "type": "object",
@@ -920,8 +931,8 @@ TOOLS: list[dict[str, Any]] = [
         "name": "link_code",
         "description": (
             "Link a tracker item or request to a code path — a typed edge between the work and the "
-            "code graph. `ref_id` is an item (AL-12) or request (R-31) id; the type is inferred. "
-            "Idempotent; surfaces on both the code node (code_neighbors) and the item/request."
+            "code graph. `ref_id` is an item or request id; the type is inferred. Idempotent; visible "
+            "from the code node (code_neighbors) and from the item/request."
         ),
         "inputSchema": {
             "type": "object",
@@ -1126,9 +1137,8 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "report_graphban_issue",
         "description": (
-            "Report a bug or idea about Graphban ITSELF (not your project) to its maintainers — "
-            "a limitation, broken tool, or improvement. Deduped on arrival. Returns the upstream "
-            "request id (or matched duplicates)."
+            "Report a bug or idea about Graphban ITSELF (not your project) to its maintainers. "
+            "Deduped on arrival. Returns the upstream request id (or matched duplicates)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1359,6 +1369,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "effort": {"type": "integer"}, "blocker": _STR,
             "pr": {"type": ["object", "null"]},
             "linked_shards": {"type": "array", "items": {"type": "object"}},
+            "brief": {"type": "object"},
             "linked_requests": {"type": "array", "items": {"type": "object"}},
         },
     },
@@ -1389,6 +1400,13 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "properties": {
             "workers": {"type": "integer"}, "reviewers": {"type": "integer"},
             "mapping": {"type": "array"}, "rationale": {"type": "string"},
+        },
+    },
+    "delegate": {
+        "type": "object",
+        "properties": {
+            "delegation_id": {"type": "string"}, "state": {"type": "string"},
+            "withdrew": {"type": "string"}, "brief": {"type": "object"},
         },
     },
     "assign_role": {
@@ -1594,7 +1612,7 @@ for _t in TOOLS:
     if _name in _TAKES_PROJECT:
         props["project_id"] = {
             "type": "string",
-            "description": "Overrides the key's default project.",
+            "description": "Overrides the key's project.",
         }
     if _name in _IDEMPOTENT_CREATES:
         props["idempotency_key"] = {
@@ -1605,7 +1623,7 @@ for _t in TOOLS:
         props["fields"] = {
             "type": "string",
             "enum": ["lean", "full"],
-            "description": "`lean` (default) id/title/status; `full` all fields. The reply's `fields` lists what a row carries; one absent is unreported, not empty.",
+            "description": "`lean` (default) id/title/status; `full` all fields. The reply's `fields` lists what a row carries; absent = unreported.",
         }
     if _name in _PAGED:
         props["limit"] = {"type": "integer", "description": "Max results (default 25)."}
@@ -2399,10 +2417,12 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return _paginate(rows, args,
                          fields=(LEAN_FIELDS + ranking) if lean else None)
     if name == "get_item_details":
-        _scoped_item(db, args["id"], readable)
+        item = _scoped_item(db, args["id"], readable)
         details = items_svc.get_item_details(db, args["id"])
         if details is None:
             raise errors.NotFound(f"item not found: {args['id']}")
+        # PRD-35 D2: the delegation brief rides on the read a planner already makes.
+        details["brief"] = delegation_svc.brief(db, item)
         return details
     if name == "suggest_next":
         item = items_svc.suggest_next(db, project_id=pid)
@@ -2477,6 +2497,25 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return out
     if name == "propose_allocation":
         return fleet_svc.propose_allocation(db, pid)
+    if name == "delegate":
+        item = _scoped_item(db, args["id"], readable)
+        me = _agent_for_call(db, key, args, session_id)
+        if not me:
+            raise errors.Validation("delegate needs a registered agent: pass agent_id, or "
+                                    "register_agent on this connection first")
+        agent = db.get(Agent, me)
+        try:
+            row, withdrew = delegation_svc.delegate(
+                db, agent=agent, item=item, lane=args["lane"], tier=args["tier"],
+                note=args.get("note", ""), lease_seconds=items_svc.DEFAULT_LEASE_SECONDS)
+        except delegation_svc.DelegationRefused as e:
+            detail = "; ".join(f"{k}={v}" for k, v in e.detail.items())
+            msg = f"{e} ({detail})" if detail else str(e)
+            if e.code == "validation":
+                raise errors.Validation(msg, hint=e.hint)
+            raise errors.Conflict(msg, hint=e.hint)
+        return {"delegation_id": row.id, "state": delegation_svc.state(row),
+                "withdrew": withdrew, "brief": delegation_svc.brief(db, item)}
     if name == "assign_role":
         try:
             # `agent_id` is the CALLER everywhere on this surface — the role gate reads it to
