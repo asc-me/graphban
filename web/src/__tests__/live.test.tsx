@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -342,9 +342,9 @@ describe("Live board", () => {
     feed = {
       served_at: "2026-09-02T12:00:10Z", retention_days: 7, state: "ok",
       rows: [
-        { id: 3, at: "2026-09-02T12:00:07Z", source: "observed", tool: "get_item_details", target: "CORE-9", ok: true },
-        { id: 2, at: "2026-09-02T12:00:01Z", source: "reported", tool: "heartbeat", target: "", ok: true, status: "editing the router", files: ["backend/app/routers/live.py"] },
-        { id: 1, at: "2026-09-02T11:59:50Z", source: "observed", tool: "sign_off", target: "CORE-8", ok: false, error_code: "conflict" },
+        { id: 3, at: "2026-09-02T12:00:07Z", source: "observed", tool: "get_item_details", target: "CORE-9", ok: true, write: false },
+        { id: 2, at: "2026-09-02T12:00:01Z", source: "reported", tool: "heartbeat", target: "", ok: true, write: true, status: "editing the router", files: ["backend/app/routers/live.py"] },
+        { id: 1, at: "2026-09-02T11:59:50Z", source: "observed", tool: "sign_off", target: "CORE-8", ok: false, write: true, error_code: "conflict" },
       ],
     };
     renderLive();
@@ -390,5 +390,80 @@ describe("Live board", () => {
     expect(screen.queryByText(/^leased$/)).not.toBeInTheDocument();
     expect(screen.getByText("editing the router")).toBeInTheDocument();
     expect(screen.queryByText("stale")).not.toBeInTheDocument();
+  });
+
+  // ---- PRD-34 PR 3: polish that adds no sources ----
+
+  function feedBoard() {
+    return emptyBoard({
+      total_agents: 1,
+      users: [user({ agents: [agent({ call_state: "active", silence_seconds: 1, calls_in_window: 6,
+        last_call: { tool: "get_context", target: "CORE-9", at: "2026-09-02T12:00:09Z", ok: true } })] })],
+      user_counts: [{ user_id: "u_blair", label: "Blair", online: 1, total: 1 }],
+    });
+  }
+
+  it("folds a run of identical observed calls into one row with a count, and keeps a break in the run", async () => {
+    board = feedBoard();
+    feed = {
+      served_at: "2026-09-02T12:00:10Z", retention_days: 7, state: "ok",
+      rows: [
+        { id: 6, at: "2026-09-02T12:00:09Z", source: "observed", tool: "get_context", target: "CORE-9", ok: true, write: false },
+        { id: 5, at: "2026-09-02T12:00:08Z", source: "observed", tool: "get_context", target: "CORE-9", ok: true, write: false },
+        { id: 4, at: "2026-09-02T12:00:07Z", source: "observed", tool: "get_context", target: "CORE-9", ok: true, write: false },
+        { id: 3, at: "2026-09-02T12:00:06Z", source: "observed", tool: "search_code", target: "lease", ok: true, write: false },
+        { id: 2, at: "2026-09-02T12:00:05Z", source: "observed", tool: "get_context", target: "CORE-9", ok: true, write: false },
+        { id: 1, at: "2026-09-02T12:00:04Z", source: "observed", tool: "get_context", target: "CORE-7", ok: true, write: false },
+      ],
+    };
+    renderLive();
+    fireEvent.click(await screen.findByRole("button", { expanded: false }));
+    const list = await screen.findByRole("list", { name: "feed" });
+    // 6 rows -> 4 runs: ×3, search_code, CORE-9 again (a different run), CORE-7 (different target).
+    expect(list.querySelectorAll("li")).toHaveLength(4);
+    expect(screen.getByLabelText("3 calls")).toHaveTextContent("×3");
+    // Scoped to the list: the row summary above it also names the last call.
+    expect(within(list).getAllByText("get_context")).toHaveLength(3);
+  });
+
+  it("filters the open feed by reads, writes and failures, using the server's write flag", async () => {
+    board = feedBoard();
+    feed = {
+      served_at: "2026-09-02T12:00:10Z", retention_days: 7, state: "ok",
+      rows: [
+        { id: 3, at: "2026-09-02T12:00:09Z", source: "observed", tool: "search_code", target: "lease", ok: true, write: false },
+        { id: 2, at: "2026-09-02T12:00:08Z", source: "observed", tool: "update_item", target: "CORE-9 → review", ok: true, write: true },
+        { id: 1, at: "2026-09-02T12:00:07Z", source: "observed", tool: "sign_off", target: "CORE-8", ok: false, write: true, error_code: "conflict" },
+      ],
+    };
+    renderLive();
+    fireEvent.click(await screen.findByRole("button", { expanded: false }));
+    await screen.findByRole("list", { name: "feed" });
+    fireEvent.click(screen.getByRole("button", { name: "reads" }));
+    expect(screen.getByText("search_code")).toBeInTheDocument();
+    expect(screen.queryByText("update_item")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "writes" }));
+    expect(screen.getByText("update_item")).toBeInTheDocument();
+    expect(screen.getByText("sign_off")).toBeInTheDocument();
+    expect(screen.queryByText("search_code")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "failures" }));
+    expect(screen.getByText("sign_off")).toBeInTheDocument();
+    expect(screen.queryByText("update_item")).not.toBeInTheDocument();
+    // A failed call on an item links to the tracker.
+    expect(screen.getByRole("link", { name: "CORE-8" })).toHaveAttribute("href", "/tracker");
+  });
+
+  it("says in words when a filter matches nothing, rather than an empty list", async () => {
+    board = feedBoard();
+    feed = {
+      served_at: "2026-09-02T12:00:10Z", retention_days: 7, state: "ok",
+      rows: [{ id: 1, at: "2026-09-02T12:00:09Z", source: "observed", tool: "search_code", target: "lease", ok: true, write: false }],
+    };
+    renderLive();
+    fireEvent.click(await screen.findByRole("button", { expanded: false }));
+    await screen.findByRole("list", { name: "feed" });
+    fireEvent.click(screen.getByRole("button", { name: "failures" }));
+    expect(screen.getByText("No failures in this feed.")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "feed" })).not.toBeInTheDocument();
   });
 });

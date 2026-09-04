@@ -326,10 +326,49 @@ function StatusSummary({ agent: a, servedAt }: { agent: LiveAgent; servedAt: str
   );
 }
 
+type FeedFilter = "all" | "reads" | "writes" | "failures";
+const FEED_FILTERS: FeedFilter[] = ["all", "reads", "writes", "failures"];
+
+function matchesFilter(r: LiveFeedRow, f: FeedFilter): boolean {
+  if (f === "all") return true;
+  if (f === "failures") return !r.ok;
+  if (r.source === "reported") return f === "writes"; // a report is something the agent did
+  return f === "writes" ? r.write : !r.write;
+}
+
+/** A run of identical consecutive observed rows, folded for display (PRD-34 D16). The table
+ *  stays one row per call; only the view folds, and only on (tool, target, ok, source). */
+interface FeedRun { row: LiveFeedRow; count: number; last: LiveFeedRow }
+
+function collapseRuns(rows: LiveFeedRow[]): FeedRun[] {
+  const out: FeedRun[] = [];
+  for (const r of rows) {
+    const prev = out[out.length - 1];
+    if (
+      prev
+      && r.source === "observed"
+      && prev.row.source === "observed"
+      && prev.row.tool === r.tool
+      && prev.row.target === r.target
+      && prev.row.ok === r.ok
+    ) {
+      prev.count += 1;
+      prev.last = r;
+      continue;
+    }
+    out.push({ row: r, count: 1, last: r });
+  }
+  return out;
+}
+
 function Feed({
   agentId, projectId, intervalMs, servedAt,
 }: { agentId: string; projectId?: string; intervalMs: number; servedAt: string }) {
   const { data, isLoading, isError } = useLiveFeed(projectId, agentId, intervalMs, true);
+  const [filter, setFilter] = React.useState<FeedFilter>("all");
+  const { active } = useProjectCtx();
+  const { data: config } = useConfig();
+  const trackerTo = config?.hosted_mode && active?.tag ? projectPath(active.tag, "tracker") : "/tracker";
   if (isError) {
     return <div className="mt-1.5 text-[11.5px] text-muted">The feed could not be loaded.</div>;
   }
@@ -343,16 +382,50 @@ function Feed({
       </div>
     );
   }
+  const shown = data.rows.filter((r) => matchesFilter(r, filter));
+  const runs = collapseRuns(shown);
   return (
-    <ul className="mt-1.5 space-y-0.5 border-l border-line-2 pl-2.5" aria-label="feed">
-      {data.rows.map((r) => (
-        <FeedRowView key={r.id} row={r} servedAt={data.served_at || servedAt} />
-      ))}
-    </ul>
+    <div className="mt-1.5">
+      <div className="mb-1 flex items-center gap-1" role="group" aria-label="feed filter">
+        {FEED_FILTERS.map((f) => (
+          <button
+            key={f}
+            type="button"
+            aria-pressed={filter === f}
+            onClick={() => setFilter(f)}
+            className={cn(
+              "rounded border px-1.5 py-0.5 font-mono text-[10px]",
+              filter === f ? "border-line-hover bg-surface-3 text-fg" : "border-line-2 text-muted hover:text-fg-2",
+            )}
+          >
+            {f}
+          </button>
+        ))}
+      </div>
+      {runs.length === 0 ? (
+        <div className="text-[11.5px] text-muted">No {filter} in this feed.</div>
+      ) : (
+        <ul className="space-y-0.5 border-l border-line-2 pl-2.5" aria-label="feed">
+          {runs.map((run) => (
+            <FeedRowView
+              key={run.row.id}
+              row={run.row}
+              count={run.count}
+              servedAt={data.served_at || servedAt}
+              trackerTo={trackerTo}
+            />
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
-function FeedRowView({ row: r, servedAt }: { row: LiveFeedRow; servedAt: string }) {
+const ITEM_ID = /^[A-Z][A-Z0-9]*-\d+$/;
+
+function FeedRowView({
+  row: r, count, servedAt, trackerTo,
+}: { row: LiveFeedRow; count: number; servedAt: string; trackerTo: string }) {
   if (r.source === "reported") {
     return (
       <li className="flex flex-wrap items-baseline gap-x-2 text-[11.5px]">
@@ -375,7 +448,18 @@ function FeedRowView({ row: r, servedAt }: { row: LiveFeedRow; servedAt: string 
       )}
     >
       <span className="font-mono">{r.tool}</span>
-      {r.target && <span className="text-muted">{r.target}</span>}
+      {r.target && (
+        // A failed call on an item links to the tracker (the tracker has no per-item URL
+        // yet, so this is the page, not the row).
+        !r.ok && ITEM_ID.test(r.target) ? (
+          <Link to={trackerTo} className="text-muted underline decoration-dotted" title="open the tracker">
+            {r.target}
+          </Link>
+        ) : (
+          <span className="text-muted">{r.target}</span>
+        )
+      )}
+      {count > 1 && <span className="font-mono text-[10px] text-faint" aria-label={`${count} calls`}>×{count}</span>}
       {!r.ok && r.error_code && <span className="font-mono text-[10px]">{r.error_code}</span>}
       <span className="text-faint">{ageLabel(r.at, servedAt)}</span>
     </li>
