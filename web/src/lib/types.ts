@@ -837,6 +837,11 @@ export interface GrillState {
   outstanding: string[];
   deferred: string[];
   complete: boolean;
+  /** FALSE means the outcomes above were not judged against the newest answer — the
+   *  grader could not be asked. Without it, a dead grader and a thin answer look the
+   *  same to whoever is answering (GRPH-485). */
+  graded: boolean;
+  ungraded_reason: string;
 }
 
 export interface PrdSummary {

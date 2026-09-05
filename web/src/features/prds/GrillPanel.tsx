@@ -4,6 +4,7 @@ import * as React from "react";
 
 import { Markdown } from "@/lib/markdown";
 import { api } from "@/lib/api";
+import { keys } from "@/lib/queries";
 import type { GrillMessage } from "@/lib/types";
 
 /** AL-67: interactive grill. The agent interrogates the PRD; answers accumulate;
@@ -36,9 +37,14 @@ export function GrillPanel({ prdId, onApply }: { prdId: string; onApply: (body: 
         });
       } finally {
         setStreaming(false);
+        // The round was graded server-side while that stream ran, so the progress panel
+        // beside this one is now stale — including whether the round could be graded at
+        // all. Leaving it stale is what made an ungraded round look like no progress.
+        qc.invalidateQueries({ queryKey: ["grill", prdId] });
+        qc.invalidateQueries({ queryKey: keys.prd(prdId) });
       }
     },
-    [messages, prdId],
+    [messages, prdId, qc],
   );
 
   // Kick off the opening questions once.

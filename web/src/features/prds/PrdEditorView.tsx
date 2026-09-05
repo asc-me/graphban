@@ -183,7 +183,7 @@ export function PrdEditorView() {
           ) : rightTab === "grill" ? (
             <div className="flex min-h-0 flex-1 flex-col gap-3">
               {diff && <IntentDiff diff={diff} />}
-              {grill && <GrillProgress state={grill} />}
+              {grill && <GrillProgress state={grill} prdId={id} />}
               <ApprovalEval prdId={id} grillComplete={!!grill?.complete} />
               <div className="min-h-0 flex-1">
                 <GrillPanel prdId={id} onApply={(b) => { setBody(b); setRightTab("preview"); }} />

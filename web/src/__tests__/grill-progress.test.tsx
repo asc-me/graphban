@@ -1,5 +1,7 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GrillProgress } from "@/features/prds/GrillProgress";
 import { PRD_SETTABLE_STATUSES, PRD_STATUS_ORDER } from "@/features/prds/meta";
@@ -25,13 +27,29 @@ function state(over: Partial<GrillState> = {}): GrillState {
   return {
     prd_id: "AL-P15", turns: [], questions: 4, answers: 3, grilled: true,
     dimensions: dims, outstanding: ["open_decisions"], deferred: ["contracts"],
-    complete: false, ...over,
+    complete: false, graded: true, ungraded_reason: "", ...over,
   };
 }
 
+const grillDefer = vi.fn(async (_id: string, _dimension: string, _reason: string) => state());
+vi.mock("@/lib/api", () => ({
+  api: { grillDefer: (id: string, dimension: string, reason: string) => grillDefer(id, dimension, reason) },
+}));
+
+function show(s: GrillState = state()) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <GrillProgress state={s} prdId="AL-P15" />
+    </QueryClientProvider>,
+  );
+}
+
+beforeEach(() => grillDefer.mockClear());
+
 describe("grill progress (AL-301)", () => {
   it("shows every dimension with its outcome", () => {
-    render(<GrillProgress state={state()} />);
+    show();
     expect(screen.getByText("Scope edges")).toBeInTheDocument();
     expect(screen.getByText("Failure modes")).toBeInTheDocument();
     expect(screen.getByText("Contracts")).toBeInTheDocument();
@@ -39,7 +57,7 @@ describe("grill progress (AL-301)", () => {
   });
 
   it("distinguishes a deliberate deferral from something still open", () => {
-    render(<GrillProgress state={state()} />);
+    show();
     // Both are "not answered", and conflating them is the exact failure PRD-15's
     // three-outcome design exists to prevent.
     expect(screen.getByText("deferred")).toBeInTheDocument();
@@ -48,14 +66,14 @@ describe("grill progress (AL-301)", () => {
   });
 
   it("counts progress while the grill is unfinished", () => {
-    render(<GrillProgress state={state()} />);
+    show();
     expect(screen.getByText("3/4")).toBeInTheDocument();
     expect(screen.getByText(/approves itself/)).toBeInTheDocument();
   });
 
   it("says approval was reached, not set", () => {
     const done = state({ complete: true, outstanding: [] });
-    render(<GrillProgress state={done} />);
+    show(done);
     expect(screen.getByText("Approved by grilling")).toBeInTheDocument();
     expect(screen.getByText(/not by anyone setting a status/)).toBeInTheDocument();
   });
@@ -65,19 +83,19 @@ describe("grill progress (AL-301)", () => {
      *  means an answer was recorded, NOT that it was any good. */
     const s = state();
     s.dimensions.scope_edges.graded_by = "stub";
-    render(<GrillProgress state={s} />);
+    show(s);
     expect(screen.getByText("offline")).toBeInTheDocument();
   });
 
   it("does not flag dimensions a real provider graded", () => {
-    render(<GrillProgress state={state()} />);
+    show();
     expect(screen.queryByText("offline")).not.toBeInTheDocument();
   });
 
   it("warns on a completed grill that was graded offline", () => {
     const s = state({ complete: true, outstanding: [] });
     Object.values(s.dimensions).forEach((d) => { d.graded_by = "stub"; });
-    render(<GrillProgress state={s} />);
+    show(s);
     expect(screen.getByText(/substance was not assessed/)).toBeInTheDocument();
   });
 });
@@ -92,5 +110,52 @@ describe("the status control (AL-301)", () => {
     /** It remains a real status — it just isn't pickable. Dropping it from the display
      *  metadata would leave approved PRDs rendering as unknown. */
     expect(PRD_STATUS_ORDER).toContain("approved");
+  });
+});
+
+describe("an ungraded round (GRPH-485, the read path)", () => {
+  it("says the outcomes were not judged, and why", () => {
+    /** The loop this ends: the grader is unreachable, the dimensions do not move, and
+     *  the panel reports them exactly as it would for an answer that was too thin. The
+     *  author answers again, and again. */
+    show(state({
+      graded: false,
+      ungraded_reason: "the ollama grader could not be asked, or returned something unusable.",
+    }));
+    expect(screen.getByText("Not judged this round.")).toBeInTheDocument();
+    expect(screen.getByText(/ollama grader could not be asked/)).toBeInTheDocument();
+  });
+
+  it("says nothing when the round was graded", () => {
+    show();
+    expect(screen.queryByText("Not judged this round.")).not.toBeInTheDocument();
+  });
+});
+
+describe("deferring from the panel (AL-298)", () => {
+  it("offers the exit only on what is still open", () => {
+    /** A resolved or already-deferred dimension has nothing to defer. */
+    show();
+    expect(screen.getAllByText("defer")).toHaveLength(1);
+  });
+
+  it("sends the dimension and the author's reason", async () => {
+    const user = userEvent.setup();
+    show();
+    await user.click(screen.getByText("defer"));
+    await user.type(screen.getByRole("textbox"), "settling it needs the spike");
+    await user.click(screen.getByRole("button", { name: "Defer" }));
+    expect(grillDefer).toHaveBeenCalledWith("AL-P15", "open_decisions", "settling it needs the spike");
+  });
+
+  it("refuses a deferral with no reason behind it", async () => {
+    /** A deferral is a decision that rides onto the baseline. Unexplained, it is the
+     *  hand-waving the standard exists to catch — so the control will not fire. */
+    const user = userEvent.setup();
+    show();
+    await user.click(screen.getByText("defer"));
+    expect(screen.getByRole("button", { name: "Defer" })).toBeDisabled();
+    await user.keyboard("{Enter}");
+    expect(grillDefer).not.toHaveBeenCalled();
   });
 });
