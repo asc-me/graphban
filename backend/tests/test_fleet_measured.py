@@ -159,3 +159,12 @@ def test_measured_is_scoped_to_the_project(db, api, proj, client, auth):
     _finished(db, api, other, vendor="claude", model="opus", lane="backend", tier="frontier", outcome="signed_off", minutes=5)
     rows = dsvc.measured(db, proj)
     assert [r["vendor"] for r in rows] == ["gbagent"]
+
+
+def test_a_declared_vendor_with_no_model_is_that_vendors_default_cell_not_undeclared(db, api, proj):
+    """GRPH-732: qwen-code's matrix row names no model because the binary does not enforce one;
+    a child that declared vendor=alibaba and no model must land in the ("alibaba", "") cell that
+    row matches, not in undeclared."""
+    _finished(db, api, proj, vendor="alibaba", model="", lane="backend", tier="cheap", outcome="signed_off", minutes=5)
+    rows = dsvc.measured(db, proj)
+    assert (rows[0]["vendor"], rows[0]["model"]) == ("alibaba", "")

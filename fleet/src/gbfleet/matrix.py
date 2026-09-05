@@ -360,6 +360,34 @@ def load(path: Path | None = None) -> Matrix:
     return Matrix(rows=tuple(rows), path=path)
 
 
+def vendor_of(harness: str, matrix: "Matrix | None" = None) -> str:
+    """The vendor a matrix row gives this harness, else the harness name itself."""
+    rows = (matrix or load()).rows
+    for r in rows:
+        if r.harness == harness:
+            return r.vendor
+    return harness
+
+
+def declaration(harness: str, model: str = "", tier: str | None = None,
+                matrix: "Matrix | None" = None) -> dict:
+    """What a spawned child must register as (GRPH-732): `vendor` from the matrix row,
+    `model` only when one was NAMED (a vendor default is unknowable here — qwen replaces an
+    unknown -m silently, so guessing would be a claim the binary does not enforce), `tier`
+    as requested or as the one row for this harness+model says."""
+    mat = matrix or load()
+    out: dict = {"vendor": vendor_of(harness, mat)}
+    if model:
+        out["model"] = model
+    if tier:
+        out["tier"] = tier
+    else:
+        tiers = {r.tier for r in mat.rows if r.harness == harness and (not model or r.model == model)}
+        if len(tiers) == 1:
+            out["tier"] = tiers.pop()
+    return out
+
+
 def unregistered_adapter_files() -> list[str]:
     """Adapter modules present on disk but absent from the registry — codex today. A fact the
     matrix must carry as a row (criterion 2), never as a silence."""

@@ -107,7 +107,10 @@ D16) — the profile is the API key owner's, with a per-project override, edited
 view under the Wave tab; the policy is the project's. A key whose owner has no profile, or a
 server that cannot be reached at launch, resolves on matrix order and policy alone and the
 explanation says `profile: none`. A reviewer spawn may pass `builder_vendor` so a project's
-`reviewer_cross_vendor` rule can drop the builder's vendor. Measured `quality` and `latency`
+`reviewer_cross_vendor` rule can drop the builder's vendor. Every spawned child is told, in the same sentence
+as its enrolment code, to register with `capabilities={vendor, model?, tier}` for what the
+supervisor actually launched (GRPH-732), so the ledger can attribute its outcome; only a NAMED
+model is declared, since a vendor default is unknowable from here. Measured `quality` and `latency`
 also ride on `fleet_status` (per declared vendor × model × lane × tier, with `n`); the resolver
 reads the cell for the lane being resolved, never a pooled one, and counts an axis only past
 `n ≥ 5`. The spawn reply carries `resolution`: `source` (`flag`

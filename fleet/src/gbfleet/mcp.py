@@ -397,7 +397,9 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             except wt_mod.BranchExists:
                 continue
         seat = Seat(code=code, server_url=fleet.client.base_url, api_key=fleet.client.api_key,
-                    item=(args.get("item") or None))
+                    item=(args.get("item") or None),
+                    declare=matrix_mod.declaration(adapter, model or "", tier if via_tier else None,
+                                                   fleet.matrix))
 
         def remember(child: Child) -> None:
             fleet.children.append(child)

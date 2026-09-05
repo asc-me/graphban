@@ -79,6 +79,12 @@ class Seat:
     #: server's registration reply (`assigned`) is the authority; this only lets the
     #: instruction name the item and gbagent receive `--item`. None on an unbound seat.
     item: str | None = None
+    #: What the child must DECLARE at registration — `{vendor, model, tier}` — because the
+    #: supervisor knows which adapter and model it launched and the child does not (GRPH-732).
+    #: Travels in the same sentence as the code, worktree and branch, which every vendor's
+    #: child has delivered correctly; without it a non-gbagent child registers with
+    #: `capabilities={}` and the ledger's measured cells attribute its outcome to `undeclared`.
+    declare: dict | None = None
 
     def mcp_config(self, name: str = "graphban") -> dict:
         """The vendor-neutral core of every adapter's config file.
@@ -147,8 +153,18 @@ def instruction_for(seat: Seat, worktree: Path, branch: str) -> str:
         tmpl = BOUND_INSTRUCTION
     else:
         tmpl = INSTRUCTION
-    return tmpl.format(code=seat.code, worktree=str(worktree), branch=branch,
+    text = tmpl.format(code=seat.code, worktree=str(worktree), branch=branch,
                        item=seat.item or "")
+    if seat.declare:
+        # Spliced into the SAME sentence as the code, worktree and branch — the one every
+        # vendor's child has delivered correctly — rather than a template placeholder, so the
+        # templates stay byte-identical for a seat that declares nothing (GRPH-732).
+        anchor = f"and branch={branch!r}."
+        assert anchor in text, "the register sentence moved; the declaration has nowhere to go"
+        clause = (f" and capabilities={json.dumps(seat.declare, sort_keys=True)} — declare exactly "
+                  "this; it names what you are so the ledger can attribute your outcome")
+        text = text.replace(anchor, f"and branch={branch!r}{clause}.", 1)
+    return text
 
 
 def _reject_parentage(config: dict) -> None:
