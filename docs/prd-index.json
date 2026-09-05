@@ -1,7 +1,7 @@
 {
   "scope": {
     "covers": "PRDs with a document in docs/ that names its ledger row",
-    "indexed": 10,
+    "indexed": 11,
     "note": "NOT the list of PRDs. A ledger-only PRD has no repo copy to compare and is absent here by construction; anything reading `prds` as complete is seeing a fraction of them."
   },
   "prds": {
@@ -203,7 +203,7 @@
     },
     "GRPH-P37": {
       "file": "docs/prd-37-preference-matrix.md",
-      "status": "draft",
+      "status": "approved",
       "sections": [
         "1. Overview",
         "2. Problem",
@@ -217,6 +217,23 @@
         "8. Phasing",
         "9. Risks and open questions",
         "10. Prior art"
+      ]
+    },
+    "GRPH-P38": {
+      "file": "docs/prd-38-harness-telemetry.md",
+      "status": "approved",
+      "sections": [
+        "1. Overview",
+        "2. Problem",
+        "3. Goals",
+        "4. Non-Goals",
+        "5. Key decisions",
+        "6. Data model",
+        "7. Acceptance criteria",
+        "8. Phasing",
+        "9. Risks and open questions",
+        "10. Prior art",
+        "11. Amendments"
       ]
     }
   },
