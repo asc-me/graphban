@@ -2225,6 +2225,15 @@ def enrolment_state(row: Enrolment, *, now: datetime | None = None) -> str:
     return "expired" if exp is not None and exp <= now else "unused"
 
 
+def project_of_enrolment_code(db: Session, code: str) -> str | None:
+    """Which project a seat was minted on, or None for an unknown code. A seat is project-bound
+    at mint, and a spawned child knows only its code — so when it registers without naming a
+    project, the seat is the one thing that can (PRD-36 check finding: a multi-project key's
+    DEFAULT project is not the seat's, and the child was refused for it)."""
+    row = db.scalar(select(Enrolment).where(Enrolment.code_hash == _hash_code(code)))
+    return row.project_id if row is not None else None
+
+
 def consume_enrolment(db: Session, *, code: str, project_id: str, api_key) -> Enrolment:
     """Redeem a seat, or refuse with a reason. **Nothing is written on a refusal.**
 
