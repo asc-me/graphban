@@ -36,7 +36,7 @@ from gbagent.llm import (
     ToolTurn,
 )
 from gbagent.toolset import Toolset
-from conftest import make_stub_script, stub_argv  # noqa: E402
+from conftest import telemetry_ack, make_stub_script, stub_argv  # noqa: E402
 from gbfleet.client import Graphban, NotPermitted
 
 SPEC = ToolSpec(name="read_file", description="read", input_schema={"type": "object"})
@@ -637,6 +637,9 @@ def test_the_handoff_sends_only_its_own_note(wt):
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         sent.append(body["params"])
         return _mcp({"id": "GRPH-1"}, id_=body["id"])
@@ -654,6 +657,9 @@ def test_a_handoff_that_changed_files_sends_them_as_touchpoints(wt):
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         sent.append(body["params"])
         return _mcp({"id": "GRPH-1"}, id_=body["id"])
@@ -676,6 +682,9 @@ def test_release_names_the_agent_so_the_server_can_check_the_lease():
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         sent.append(body["params"])
         return _mcp({"id": "GRPH-1"}, id_=body["id"])
@@ -700,6 +709,9 @@ def test_a_beat_carries_the_item_id_so_the_LEASE_is_extended_too(wt):
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         sent.append(body["params"])
         return _mcp({"id": "GRPH-1"}, id_=body["id"])
@@ -722,6 +734,9 @@ def test_a_beat_with_no_item_omits_id_rather_than_sending_empty(wt):
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         sent.append(body["params"])
         return _mcp({}, id_=body["id"])
@@ -744,6 +759,9 @@ def test_the_cadence_call_is_presence_only(wt):
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         sent.append(body["params"])
         return _mcp({"heartbeat_interval_seconds": 50}, id_=body["id"])

@@ -16,9 +16,14 @@ from gbagent import cli as gbagent_cli
 from gbfleet import doctor
 from gbfleet.client import ALLOWED_TOOLS, Graphban
 
+from conftest import telemetry_ack  # noqa: E402
+
 
 def _recording(payloads: dict, sent: list):
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         name = body["params"]["name"]
         sent.append((name, dict(body["params"].get("arguments") or {})))

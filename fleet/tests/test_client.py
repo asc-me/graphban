@@ -178,7 +178,11 @@ def test_the_model_door_cannot_reach_graphban():
 #: connect, before it has a role at all (PRD-17 D-b — the manifest is not trimmed by role,
 #: the call gate refuses instead). Routing it through `call` would mean putting a
 #: pseudo-tool name in every allowlist to permit reading a public document.
-NOT_TOOL_CALLS = {"list_tools"}
+#: `post_attempt` (PRD-38 D3) posts telemetry to a REST route, which is not a tool and has no
+#: entry in any tool allowlist to route through. It is exempt from THIS check and governed by
+#: its own: `ALLOWED_PATHS`, pinned below, and the `_post` helper that refuses anything else.
+#: An exemption with no replacement gate would be the second door this file exists to prevent.
+NOT_TOOL_CALLS = {"list_tools", "post_attempt"}
 
 
 def test_every_named_helper_goes_through_the_checked_call():
@@ -207,10 +211,71 @@ def test_every_named_helper_goes_through_the_checked_call():
         assert "post" not in calls, f"{helper.name} makes its own request"
 
 
-def test_the_exemptions_from_the_allowlist_are_exactly_one():
+def test_the_exemptions_from_the_allowlist_are_exactly_two():
     """`not in NOT_TOOL_CALLS` passes for every widening of NOT_TOOL_CALLS, so the set is
     pinned. The next method that skips the check should be an edit with a reason attached."""
-    assert NOT_TOOL_CALLS == {"list_tools"}
+    assert NOT_TOOL_CALLS == {"list_tools", "post_attempt"}
+
+
+def test_the_rest_surface_is_one_path_and_every_post_is_checked_against_it():
+    """The replacement gate for `post_attempt`'s exemption.
+
+    A credential with authority now reaches two surfaces on one connection pool. The tool
+    allowlist governs `/api/mcp` and says nothing about anything else, so the paths get an
+    allowlist of their own — pinned by exact equality here for the same reason the tool set
+    is, and enforced in `_post` rather than trusted to callers.
+    """
+    from gbfleet.client import ALLOWED_PATHS, ATTEMPTS_PATH
+
+    assert ALLOWED_PATHS == {"/api/fleet/attempts"}
+    assert ATTEMPTS_PATH in ALLOWED_PATHS
+
+    source = (FLEET_SRC / "gbfleet" / "client.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    cls = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "Graphban")
+    posts = [n for n in cls.body if isinstance(n, ast.FunctionDef)
+             and any(isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                     and c.func.attr == "post" for c in ast.walk(n))]
+    # `_rpc` is the MCP endpoint, governed by `ALLOWED_TOOLS`; `_post` is everything else,
+    # governed by `ALLOWED_PATHS`. Two POSTing methods, two gates, and no third.
+    assert sorted(n.name for n in posts) == ["_post", "_rpc"], (
+        "every method that issues an httpx POST must be one of the two gated ones")
+
+    server = _server(lambda r: httpx.Response(200, json={"ok": True}))
+    with pytest.raises(NotPermitted):
+        server._post("/api/items", {}, timeout=1.0)
+
+
+def test_a_telemetry_post_that_cannot_land_returns_none_rather_than_raising():
+    """D3: the supervisor posts this beside real work, twice per child. A measurement that
+    could fail a spawn would be a worse bargain than having no measurement."""
+    def refuse(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="down")
+
+    assert _server(refuse).post_attempt(enrolment_code="ENR-1", winner="gbagent:") is None
+
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("no route to host")
+
+    assert _server(unreachable).post_attempt(enrolment_code="ENR-1") is None
+
+
+def test_a_telemetry_post_sends_only_what_it_knows():
+    """A null is not a value here. Sending `turns_used: None` would have the server store a
+    null over something a previous post got right — which its merge rule forbids, but the
+    client should not be asking."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "at_1"})
+
+    reply = _server(handler).post_attempt(enrolment_id="enr_1", turns_used=None,
+                                          wall_seconds=12, adapter="gbagent")
+    assert reply == {"id": "at_1"}
+    assert seen["path"] == "/api/fleet/attempts"
+    assert seen["body"] == {"enrolment_id": "enr_1", "wall_seconds": 12, "adapter": "gbagent"}
 
 
 def test_listing_the_manifest_cannot_invoke_anything():

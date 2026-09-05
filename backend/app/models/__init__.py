@@ -247,6 +247,14 @@ class Organization(Base):
     gitops_release_defined_in: Mapped[str | None] = mapped_column(String, nullable=True)
     gitops_model: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    # PRD-38 D13: this org contributes weekly cell aggregates to the platform average, and
+    # in exchange may see it. Default false and it stays false until someone in the org says
+    # otherwise — an overlay worth having is not worth taking. Never raw rows: only rollups
+    # leave the tenancy, and turning this off recomputes the cells the org was in.
+    telemetry_share: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
+
 
 class OrgMembership(Base):
     """A user's seat in an organization (hosted-only, AL-74)."""
@@ -1910,6 +1918,212 @@ class Delegation(Base):
     __table_args__ = (
         Index("ix_delegations_item_created", "item_id", "created_at"),
         Index("ix_delegations_delegator_created", "delegated_by", "created_at"),
+    )
+
+
+class AttemptTelemetry(Base):
+    """One finished delegation, as the thing that teaches (PRD-38 D1).
+
+    `Delegation` records what was asked and what turned up; this records how it WENT, in the
+    terms a comparison needs: what kind of work it was (lane, task class, size band), who ran
+    it (vendor, model, binary version), how it ended, and — the field the whole table exists
+    for — **how it came to be sampled**. A rate over attempts that were all somebody's first
+    choice is a measurement of the preference, not of the harness, and `sampled` is what lets
+    a reader see that rather than average it away (D6).
+
+    Two writers, no ordering between them (D3). The server derives its half at the outcome
+    event. The supervisor posts the rest: `chosen_*` before the child starts, keyed by the
+    enrolment because no delegation is linked yet, and the runtime fields at child exit. Either
+    may land first; whichever creates the row leaves the other half null. `derived_at` and
+    `reported_at` say which halves arrived, so a missing number is legible as "not reported"
+    rather than as a zero.
+
+    Only FINISHED delegations keep a row. A runtime-only row whose delegation expires without
+    an outcome is swept with it: an attempt that never ran teaches nothing about the harness,
+    and keeping it would put the supervisor's failures in the harness's column.
+    """
+
+    __tablename__ = "attempt_telemetry"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    # Null only while a launch post waits for its child to claim something. Unique, so the
+    # route's upsert is the database's rule and not the service's habit.
+    delegation_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    # How a launch post addresses a row that has no delegation yet.
+    enrolment_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    item_id: Mapped[str | None] = mapped_column(ForeignKey("items.id"), nullable=True, index=True)
+
+    # ---- the runner (declared by the child, GRPH-732) ----
+    vendor: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    binary_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    # ---- the work ----
+    lane: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    tier_requested: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    tier_declared: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    task_class: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    size_band: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    attempt_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # ---- how it was sampled (D2) ----
+    chosen_winner: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    chosen_runner_up: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    chosen_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    sampled: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The child said one vendor, the supervisor launched another. Flagged, never resolved:
+    # neither side is trusted over the other, and a silent choice between them would be a
+    # guess wearing a fact's clothes.
+    declaration_mismatch: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                                       nullable=False)
+
+    # ---- how it ended ----
+    outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Null IFF the outcome is not a bounce; otherwise always one of the closed set, with
+    # anything the mapper does not recognise landing on `other` rather than on null.
+    bounce_category: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    claim_to_finish_s: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # ---- what only the supervisor knows ----
+    turns_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    turn_budget: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    wall_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    exit_meaning: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    adapter_launched: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    derived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: How many supervisor posts this row has taken. A repost that changes a value is a fact
+    #: about the reporting, and a silent overwrite would hide it.
+    report_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+
+    __table_args__ = (
+        Index("ix_attempt_telemetry_project_finished", "project_id", "derived_at"),
+        Index("ix_attempt_telemetry_cell", "vendor", "model", "lane", "tier_requested"),
+    )
+
+
+class HarnessRollup(Base):
+    """One cell, one ISO week (PRD-38 D11).
+
+    Recomputed from the raw rows rather than folded into, which is why `attempt_telemetry` is
+    kept far longer than the charts need it: a rollup that cannot be reproduced from what it
+    summarises is a number nobody can check. `median_seconds` is the median of the week's raw
+    seconds; tokens are SUMS over the attempts that reported, and `tokens_reported` counts
+    them, so no reader is ever handed an average that quietly divided by attempts which
+    printed nothing.
+
+    Weeks below the sample floor are written. The floor is a rule about reading a number, not
+    about whether the week happened, and dropping the thin weeks would erase exactly the
+    history that later lets a cell cross. A week with NO attempts is absent instead — the
+    chart draws that as a gap, because no attempts and a zero rate are different claims.
+    """
+
+    __tablename__ = "harness_rollups"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    week: Mapped[str] = mapped_column(String(8), primary_key=True)  # ISO year-week, 2026-W37
+    vendor: Mapped[str] = mapped_column(String(32), primary_key=True)
+    model: Mapped[str] = mapped_column(String(64), primary_key=True)
+    binary_version: Mapped[str] = mapped_column(String(32), primary_key=True)
+    lane: Mapped[str] = mapped_column(String(16), primary_key=True)
+    tier: Mapped[str] = mapped_column(String(16), primary_key=True)
+    task_class: Mapped[str] = mapped_column(String(16), primary_key=True)
+    size_band: Mapped[str] = mapped_column(String(1), primary_key=True)
+
+    finished: Mapped[int] = mapped_column(Integer, default=0)
+    signed_off: Mapped[int] = mapped_column(Integer, default=0)
+    bounced: Mapped[int] = mapped_column(Integer, default=0)
+    median_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    tokens_reported: Mapped[int] = mapped_column(Integer, default=0)
+    first_choice: Mapped[int] = mapped_column(Integer, default=0)
+    fallback: Mapped[int] = mapped_column(Integer, default=0)
+    explicit: Mapped[int] = mapped_column(Integer, default=0)
+    unknown: Mapped[int] = mapped_column(Integer, default=0)
+    rolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PlatformRollup(Base):
+    """The same cell across every org that opted in (PRD-38 D13, hosted only).
+
+    Holds no org id and no project id, because the overlay's whole promise is that a
+    contributing org sees a baseline without any org being visible in it. Which orgs are
+    behind a cell survives only as a COUNT, and the count is itself a floor: a cell is served
+    only with three contributing orgs, twenty attempts, and no org past 60% of them.
+    """
+
+    __tablename__ = "platform_rollups"
+
+    week: Mapped[str] = mapped_column(String(8), primary_key=True)
+    vendor: Mapped[str] = mapped_column(String(32), primary_key=True)
+    model: Mapped[str] = mapped_column(String(64), primary_key=True)
+    binary_version: Mapped[str] = mapped_column(String(32), primary_key=True)
+    lane: Mapped[str] = mapped_column(String(16), primary_key=True)
+    tier: Mapped[str] = mapped_column(String(16), primary_key=True)
+    task_class: Mapped[str] = mapped_column(String(16), primary_key=True)
+    size_band: Mapped[str] = mapped_column(String(1), primary_key=True)
+
+    orgs_contributing: Mapped[int] = mapped_column(Integer, default=0)
+    finished: Mapped[int] = mapped_column(Integer, default=0)
+    signed_off: Mapped[int] = mapped_column(Integer, default=0)
+    #: The largest share of `finished` any single contributor holds, 0-1. Stored rather than
+    #: recomputed at read, because the raw per-org counts do not survive into this table.
+    top_org_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RecommendationMark(Base):
+    """A person has seen this card at this evidence (PRD-38 D7).
+
+    Accepting and dismissing share a row because they mean the same thing to the page: the
+    card stays quiet until its evidence moves. Two tables would let one of them forget the
+    hash rule, and the returning card is the whole point — an accepted recommendation whose
+    numbers later reverse must come back and say so.
+    """
+
+    __tablename__ = "recommendation_marks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    scope: Mapped[str] = mapped_column(String(8))  # project | org
+    scope_id: Mapped[str] = mapped_column(String, index=True)
+    card_key: Mapped[str] = mapped_column(String(200))
+    evidence_hash: Mapped[str] = mapped_column(String(32))
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_recommendation_marks_card", "user_id", "scope", "scope_id", "card_key",
+              unique=True),
+    )
+
+
+class HarnessLessonMark(Base):
+    """This cell has crossed the sample floor once (PRD-38 D8).
+
+    A mark, deliberately not a counter. Crossing is an event in a cell's life, not a level it
+    can re-enter, so a cell that dips under the floor and comes back drafts nothing, a new
+    binary version inherits the mark (the lesson key omits the version), and rejecting the
+    candidate does not clear it — a rejected lesson that re-drafts itself the next night is
+    nagging dressed up as learning.
+    """
+
+    __tablename__ = "harness_lesson_marks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    #: vendor:model:lane:tier:task_class:size_band — the cell key WITHOUT the version.
+    cell_key: Mapped[str] = mapped_column(String(200))
+    first_crossed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    shard_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (
+        Index("ix_harness_lesson_marks_cell", "project_id", "cell_key", unique=True),
     )
 
 

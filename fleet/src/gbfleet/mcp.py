@@ -331,6 +331,17 @@ def _is_quiet(described: dict, quiet_after: float) -> bool:
         return False
 
 
+def _runner_up(resolution: dict | None, matrix=None) -> str:
+    """The vendor:model the resolver would have picked instead, in the same spelling a child
+    declares. Empty when nothing was second — a flag resolution has no runner-up by
+    construction, and saying "" is not the same as naming one."""
+    row = (resolution or {}).get("runner_up") or None
+    if not isinstance(row, dict):
+        return ""
+    vendor = matrix_mod.vendor_of(row.get("harness") or "", matrix)
+    return f"{vendor}:{row.get('model') or ''}"
+
+
 def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
     """Dispatch one tool. Raises nothing the caller has to translate — failures return
     a message, and `handle` wraps them in `isError`."""
@@ -396,10 +407,20 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 tree = _tree_for(fleet.repo, fleet.workspace, wave, slot)
             except wt_mod.BranchExists:
                 continue
+        declare = matrix_mod.declaration(adapter, model or "", tier if via_tier else None,
+                                         fleet.matrix)
         seat = Seat(code=code, server_url=fleet.client.base_url, api_key=fleet.client.api_key,
-                    item=(args.get("item") or None),
-                    declare=matrix_mod.declaration(adapter, model or "", tier if via_tier else None,
-                                                   fleet.matrix))
+                    item=(args.get("item") or None), declare=declare)
+        # PRD-38 D3, the launch post: what this supervisor resolved, sent BEFORE the child
+        # starts and keyed by the seat, because no delegation is linked yet. Fire-and-forget
+        # inside the client — a measurement that could fail a spawn would be a bad bargain,
+        # and a post that never lands leaves `sampled` as `unknown` rather than as a guess.
+        fleet.client.post_attempt(
+            enrolment_code=code, adapter=adapter,
+            winner=f"{declare.get('vendor', '')}:{declare.get('model', '')}",
+            runner_up=_runner_up(resolution, fleet.matrix),
+            source=("explicit" if not via_tier else (resolution or {}).get("source") or "matrix"),
+        )
 
         def remember(child: Child) -> None:
             fleet.children.append(child)
@@ -426,6 +447,14 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 else None
             ),
         )
+        # What this child was launched with, so the exit report can say whether it stopped AT
+        # its budget or finished early — the same turn count read two ways otherwise. Only
+        # this path knows it: `up` builds its Tuning elsewhere and leaves the field null,
+        # which the page renders as "not reported" rather than as no budget.
+        try:
+            child.turn_budget = int(args["turns"]) if args.get("turns") else None
+        except (TypeError, ValueError):
+            child.turn_budget = None
         adopt_mod.persist(adopt_mod.children_path(fleet.repo), fleet.children)
         described = _describe(child)
         # PRD-36 D6/D15: name what ran and what the seat handed the child. `assigned` is

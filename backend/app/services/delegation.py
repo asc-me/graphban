@@ -43,6 +43,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Agent, Delegation, Enrolment, Item, MemoryShard
+from app.services import harness as harness_svc
+from app.services.harness import WINDOW_DAYS
 logger = logging.getLogger(__name__)
 
 LANES = ("frontend", "backend", "mixed")
@@ -314,7 +316,7 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
 LATENCY_FLOOR_S = 3600
 
 
-def measured(db: Session, project_id: str | None) -> list[dict]:
+def measured(db: Session, project_id: str | None, *, window_days: int | None = None) -> list[dict]:
     """What finished delegations say about each vendor x model x lane x requested tier.
 
     `quality` is signed-off over finished attempts; `latency` is the median claim-to-finish
@@ -328,13 +330,24 @@ def measured(db: Session, project_id: str | None) -> list[dict]:
     the model its declared `capabilities.model` - the same fields the delegation record copies
     at link time (D8). A child that declared neither is counted under `undeclared`, which the
     matrix will not match and the doctor will show.
+
+    **PRD-38 D9 amends this.** Only the trailing `window_days` (default 90) count, so a stale
+    cell ages out rather than anchoring a choice forever, and each cell carries a `bands`
+    breakdown - S/M/L, from what the delegator wrote down - because a harness handed doc items
+    outscores one handed migrations and the pooled rate says who got the easy work. The cell
+    KEY is unchanged: the supervisor resolves a tier before it knows an item's band, and a
+    fifth key would leave PRD-37's reader joining on something it cannot supply.
     """
+    cutoff = _now() - timedelta(days=WINDOW_DAYS if window_days is None else window_days)
     stmt = select(Delegation).where(Delegation.outcome.is_not(None))
     if project_id:
         stmt = stmt.where(Delegation.project_id == project_id)
-    rows = db.scalars(stmt).all()
+    # Filtered in Python, not SQL: `finished_at` is nullable and a row that somehow lacks one
+    # must not be silently dropped from a count it belongs in.
+    rows = [r for r in db.scalars(stmt).all() if (_aware(r.finished_at) or cutoff) >= cutoff]
     cells: dict[tuple[str, str, str, str], dict] = {}
     agents: dict[str | None, Agent | None] = {}
+    items: dict[str | None, Item | None] = {}
     for row in rows:
         if row.agent_id not in agents:
             agents[row.agent_id] = db.get(Agent, row.agent_id) if row.agent_id else None
@@ -346,9 +359,17 @@ def measured(db: Session, project_id: str | None) -> list[dict]:
         # `undeclared` on both, which no row matches (GRPH-732).
         model = row.declared_model or ("" if vendor != UNDECLARED else UNDECLARED)
         key = (vendor, model, row.lane, row.requested_tier)
-        cell = cells.setdefault(key, {"finished": 0, "signed_off": 0, "durations": []})
+        cell = cells.setdefault(key, {"finished": 0, "signed_off": 0, "durations": [],
+                                      "bands": {}})
         cell["finished"] += 1
         cell["signed_off"] += 1 if row.outcome == "signed_off" else 0
+        if row.item_id not in items:
+            items[row.item_id] = db.get(Item, row.item_id) if row.item_id else None
+        band_item = items[row.item_id]
+        band = cell["bands"].setdefault(harness_svc.size_band(band_item),
+                                        {"n": 0, "signed_off": 0})
+        band["n"] += 1
+        band["signed_off"] += 1 if row.outcome == "signed_off" else 0
         claimed, finished = _aware(row.claimed_at), _aware(row.finished_at)
         if claimed and finished and finished >= claimed:
             cell["durations"].append((finished - claimed).total_seconds())
@@ -365,6 +386,10 @@ def measured(db: Session, project_id: str | None) -> list[dict]:
             "vendor": vendor, "model": model, "lane": lane, "tier": tier,
             "quality": {"value": round(cell["signed_off"] / cell["finished"], 3), "n": cell["finished"]},
             "latency": latency,
+            # Counts, never a verdict: the reader decides whether a band has enough behind it,
+            # exactly as it already does for `quality.n`.
+            "bands": {name: {"value": round(v["signed_off"] / v["n"], 3), "n": v["n"]}
+                      for name, v in sorted(cell["bands"].items())},
         })
     return out
 
@@ -534,11 +559,23 @@ def on_outcome(db: Session, item: Item, outcome: str) -> None:
     try:
         now = _now()
         rows = db.scalars(select(Delegation).where(Delegation.item_id == item.id)).all()
+        finished = []
         for row in rows:
             if row.agent_id and not row.outcome and not row.closed_reason:
                 row.outcome = outcome
                 row.finished_at = now
+                finished.append(row)
         db.flush()
+        # PRD-38 D1: the attempt record is derived HERE, at the event, for the same reason
+        # `outcome` is stored here — an attempt's ending cannot be re-derived from the item
+        # once a later attempt has moved it. Swallowed like the rest of this function: a
+        # telemetry row must never fail the transition it describes.
+        if finished:
+            from app.services import harness as harness_svc
+
+            for row in finished:
+                harness_svc.derive(db, row)
+            harness_svc.purge_unfinished(db, item.project_id)
     except Exception:  # noqa: BLE001 — never fail the transition
         logger.exception("delegation: on_outcome(%s) failed for %s", outcome, item.id)
 

@@ -28,7 +28,7 @@ from gbagent.config import VerifyConfig
 from gbagent.llm import ToolCall, ToolTurn
 from gbagent.orient import ORIENTATION_TOOLS, OrientationUnavailable
 from gbagent.toolset import Toolset
-from conftest import make_stub_script, stub_argv  # noqa: E402
+from conftest import telemetry_ack, make_stub_script, stub_argv  # noqa: E402
 from gbfleet.client import Graphban
 
 
@@ -46,6 +46,9 @@ def _server(handler) -> Graphban:
 
 def _listing(names, calls: list | None = None):
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         if calls is not None:
             calls.append(body)
@@ -142,6 +145,9 @@ def test_the_manifest_is_fetched_once_not_per_call():
 def test_a_server_refusal_reaches_the_model_as_something_it_can_correct():
     """Same rule as the execution layer: a wrong argument costs a turn, not the run."""
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         if body["method"] == "tools/list":
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
@@ -162,6 +168,9 @@ def test_an_outage_mid_run_is_a_result_not_a_crash():
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         calls["n"] += 1
         if body["method"] == "tools/list":
@@ -180,6 +189,9 @@ def test_an_enormous_answer_is_bounded():
     """A `get_code_map` can run to thousands of lines. Bounded here rather than by compaction,
     which only helps after the window has already been filled."""
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         if body["method"] == "tools/list":
             return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
@@ -342,6 +354,9 @@ def test_get_context_orientation_carries_gitops_and_does_not_invent_main():
 
     def dumped_get_context(gitops: dict) -> dict:
         def handler(request: httpx.Request) -> httpx.Response:
+            ack = telemetry_ack(request)
+            if ack is not None:
+                return ack
             body = json.loads(request.content)
             if body["method"] == "tools/list":
                 return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
@@ -668,6 +683,9 @@ def test_an_empty_queue_leaves_nothing_claimed():
     """`claim_next` on an empty queue answers with no item, and remembering a phantom would
     send the handoff to a row that does not exist."""
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         if body["method"] == "tools/list":
             from gbagent.orient import COORDINATION_TOOLS
@@ -731,6 +749,9 @@ def test_an_agent_id_the_model_made_up_is_overwritten_not_kept():
     sent: list = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         if body["method"] == "tools/list":
             from gbagent.orient import COORDINATION_TOOLS
@@ -756,6 +777,9 @@ def test_an_agent_with_no_identity_does_not_inject_an_empty_one():
     sent: list = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         if body["method"] == "tools/list":
             from gbagent.orient import COORDINATION_TOOLS

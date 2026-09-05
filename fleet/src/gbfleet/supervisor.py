@@ -668,8 +668,58 @@ def watch_tick(
     _enforce_the_lease(wave, children)
     if roster is not None:
         _catch_the_disowned(wave, children, roster, limits)
+    _report_exits(children, client)
     if persist is not None:
         persist()
+
+
+def _report_exits(children: list[Child], client: Graphban) -> None:
+    """PRD-38 D3, the exit report: what only this process saw about a child that has ended.
+
+    Here rather than in `_reap_all` because reaping is the END of a wave and a child that
+    exits in minute two of an hour would otherwise be reported an hour late, or not at all if
+    the supervisor dies first. `watch_tick` runs in both loops, so both get it.
+
+    Addressed by the SEAT's row id, which is what the roster gives this process; the
+    delegation id is the server's business and it binds the two itself. A child that never
+    registered has no seat id and is skipped — there is no attempt to report, and that
+    silence is already the load-bearing signal `registration_latency` exists to carry.
+
+    **Turns and tokens are deliberately absent.** They live in each vendor's own result
+    record, in a shape this repository has not measured for any vendor but one, and a parser
+    written from memory would put invented numbers in a table whose whole purpose is to be
+    checkable. The columns exist and stay null, which the page renders as "not reported".
+    """
+    for child in children:
+        if child.running or child.reported or not child.seat_id:
+            continue
+        # Marked before the post, not after: a post that fails returns None by design, and
+        # retrying it every tick for the life of the wave would turn one lost measurement
+        # into a loop.
+        child.reported = True
+        code = child.process.poll()
+        client.post_attempt(
+            enrolment_id=child.seat_id,
+            adapter=child.adapter,
+            binary_version=child.binary_version or None,
+            wall_seconds=int(time.monotonic() - child.started_at),
+            turn_budget=child.turn_budget,
+            exit_meaning=_exit_meaning(child, code),
+        )
+
+
+def _exit_meaning(child: Child, code: int | None) -> str:
+    """What the adapter says its exit code means, or the reason this supervisor stopped it.
+
+    The supervisor's own reason wins when it has one: a child killed for running past the
+    wall clock exits with whatever the signal produced, and reporting that number as the
+    vendor's verdict would attribute the supervisor's decision to the harness.
+    """
+    if child.stopped_because is not None:
+        return f"stopped: {child.stopped_because.value}"
+    if code is None:
+        return ""
+    return explain_exit(child.adapter, code) or ("ok" if code == 0 else f"exit {code}")
 
 
 def _wait_out(

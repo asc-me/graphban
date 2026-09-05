@@ -15,6 +15,8 @@ from gbfleet.until import PLANNER_TOOLS, Report, run
 
 from tests.test_supervisor import KEY, _factory, _seats
 
+from conftest import telemetry_ack  # noqa: E402
+
 
 def _mcp(payload: dict, id_: int) -> httpx.Response:
     return httpx.Response(
@@ -69,6 +71,9 @@ def _clients(
     seen_agents = {"yes": False}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         tool = body["params"]["name"]
         args = body["params"].get("arguments") or {}

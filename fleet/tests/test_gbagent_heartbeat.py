@@ -29,7 +29,7 @@ from gbagent.heartbeat import FALLBACK_INTERVAL, Heartbeat
 from gbagent.llm import ToolCall, ToolTurn
 from gbagent.orient import COORDINATION_TOOLS, ORIENTATION_TOOLS
 from gbagent.toolset import Toolset
-from conftest import make_stub_script, stub_argv  # noqa: E402
+from conftest import telemetry_ack, make_stub_script, stub_argv  # noqa: E402
 from gbfleet.client import Graphban, ProtocolError, ServerUnreachable, ToolFailed
 
 
@@ -309,6 +309,9 @@ def _claim_then_beat(wt: Path, *, tool: str, payload: dict, extra: tuple[str, ..
     wanted = (*ORIENTATION_TOOLS, *COORDINATION_TOOLS, *extra)
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         if body["method"] == "tools/list":
             tools = [{"name": n, "description": n,

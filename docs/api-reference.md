@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 119 of the 192 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 120 of the 193 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -195,6 +195,7 @@ failure the propose-only boundary exists to prevent.
 | DELETE | `/api/fleet/profile` | JWT | Remove the caller's default (no `project_id`) or their override for a project |
 | GET | `/api/fleet/policy` | JWT | The project's fleet policy (PRD-37 D4): `local_only`, `reviewer_cross_vendor`, `allowed_harnesses`; `null` = no constraint |
 | PUT | `/api/fleet/policy` | JWT | Write the policy; takes the project's write gate. Every constraint off stores `null` |
+| POST | `/api/fleet/attempts` | API key | Harness telemetry (PRD-38 D3), in two shapes on one route. At launch: `enrolment_code` + `winner`/`runner_up`/`source`/`adapter`, what the supervisor resolved before starting a child. At exit: `delegation_id` or `enrolment_id` + `binary_version`, `turns_used`, `turn_budget`, `wall_seconds`, `tokens_in`/`tokens_out`, `exit_meaning`. Upserts; a post merges non-null fields and never writes a null over a value; 202 while the outcome is still to come; 404 (never 403) for a project the key cannot write |
 
 ## Live (PRD-33)
 

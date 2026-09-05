@@ -208,6 +208,14 @@ class Child:
     held_items: list = field(default_factory=list)
     #: worker | reviewer (P30 D2). Until must not start both as a simultaneous cohort.
     role: str = "worker"
+    #: The turn budget this child was launched with, when the adapter takes one. Posted with
+    #: the exit report so a child that stopped AT its budget is distinguishable from one that
+    #: finished early — the same number read two ways otherwise.
+    turn_budget: int | None = None
+    #: PRD-38 D3: this child's exit has already been reported. A flag rather than a set held
+    #: by the caller, because `watch_tick` is shared by `up` and the MCP supervisor and the
+    #: two would keep separate sets that disagree after an adopt.
+    reported: bool = False
 
     @property
     def pid(self) -> int:

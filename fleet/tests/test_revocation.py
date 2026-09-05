@@ -30,12 +30,17 @@ from gbfleet.supervisor import Limits, up
 from tests.test_offline import Flaky, _bounded
 from tests.test_supervisor import _factory, _seats
 
+from conftest import telemetry_ack  # noqa: E402
+
 
 def _server(workspace: Path, mode: str, after: int = 2, ttl: float = 600.0):
     """Roster that disowns every agent after `after` reads, one of two ways."""
     state = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         tool = body["params"]["name"]
         if tool == "propose_allocation":
@@ -132,7 +137,8 @@ def test_a_partition_does_not_look_like_revocation(
     original = server._handle
 
     def handle_(request):
-        if json.loads(request.content)["params"]["name"] == "fleet_status":
+        if request.url.path == "/api/mcp" \
+                and json.loads(request.content)["params"]["name"] == "fleet_status":
             seen["n"] += 1
             if seen["n"] > 2:
                 server.reachable = False
