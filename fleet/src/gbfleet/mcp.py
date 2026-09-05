@@ -183,7 +183,7 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
-def read_preferences(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.Policy", str]:
+def read_preferences(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.Policy", str, "matrix_mod.Measured"]:
     """PRD-37 D9/D10: the key owner's profile and the project's policy ride on `fleet_status`,
     read ONCE at launch — a profile change is read at the next launch, not mid-run (PRD-36
     D16). A server that cannot be reached leaves both empty and says so, so a resolution made
@@ -191,12 +191,14 @@ def read_preferences(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.P
     try:
         status = client.fleet_status() or {}
     except Exception as exc:  # noqa: BLE001 - the note is the point
-        return None, matrix_mod.Policy(), f"fleet_status unreachable ({str(exc)[:80]}); resolving with no profile or policy"
+        return None, matrix_mod.Policy(), f"fleet_status unreachable ({str(exc)[:80]}); resolving with no profile or policy", {}
     profile = matrix_mod.Profile.of(status.get("profile"))
     policy = matrix_mod.Policy.of(status.get("policy"))
+    measured = matrix_mod.measured_of(status.get("measured"))
     note = (f"profile {profile.user} ({len(profile.defaults)} default(s))" if profile else "profile: none") + \
-           ("; policy on" if status.get("policy") else "; policy: none")
-    return profile, policy, note
+           ("; policy on" if status.get("policy") else "; policy: none") + \
+           f"; measured cells: {len(measured)}"
+    return profile, policy, note, measured
 
 
 @dataclass
@@ -227,6 +229,8 @@ class Fleet:
     #: PRD-37 D14: profile and policy read from the server (PR 2); None until then.
     profile: "matrix_mod.Profile | None" = None
     policy: "matrix_mod.Policy | None" = None
+    #: PRD-37 D7: `fleet_status.measured` as the resolver reads it, taken at launch with the rest.
+    measured: "matrix_mod.Measured" = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # One partition object. `start_one` is given `fleet.partition`; `watch_tick`
@@ -352,6 +356,7 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 res = mat.resolve(tier=tier, role=args.get("role") or "worker",
                                   lane=args.get("lane") or "any", profile=fleet.profile,
                                   policy=fleet.policy, installed=matrix_mod.installed_checker(),
+                                  measured=fleet.measured,
                                   builder_vendor=args.get("builder_vendor") or None)
                 if res.winner is None:
                     raise ValueError(f"no harness resolves for tier {tier!r}: {res.refused}. "

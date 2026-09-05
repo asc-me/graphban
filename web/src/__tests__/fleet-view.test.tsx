@@ -54,7 +54,7 @@ const BASE = {
   by_role: {}, posture: "single-agent",
   presence_ttl_seconds: 150, heartbeat_interval_seconds: 50,
   review_queue: [], clusters: [], seats: [], credentials: [], waves: ["wave-1"],
-  profile: null, policy: null,
+  profile: null, policy: null, measured: [],
 };
 
 /**

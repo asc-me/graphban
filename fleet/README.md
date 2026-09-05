@@ -107,7 +107,10 @@ D16) — the profile is the API key owner's, with a per-project override, edited
 view under the Wave tab; the policy is the project's. A key whose owner has no profile, or a
 server that cannot be reached at launch, resolves on matrix order and policy alone and the
 explanation says `profile: none`. A reviewer spawn may pass `builder_vendor` so a project's
-`reviewer_cross_vendor` rule can drop the builder's vendor. The spawn reply carries `resolution`: `source` (`flag`
+`reviewer_cross_vendor` rule can drop the builder's vendor. Measured `quality` and `latency`
+also ride on `fleet_status` (per declared vendor × model × lane × tier, with `n`); the resolver
+reads the cell for the lane being resolved, never a pooled one, and counts an axis only past
+`n ≥ 5`. The spawn reply carries `resolution`: `source` (`flag`
 or `matrix`), how many rows survived each step, what each step dropped and why, the winner
 with its per-axis numbers, and the runner-up. An empty resolution is a tool error naming
 the step that emptied it — there is no silent default. Measured axes need `n ≥ 5` before

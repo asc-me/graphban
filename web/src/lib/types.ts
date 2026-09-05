@@ -1356,6 +1356,18 @@ export interface FleetOverview {
   profile: FleetProfile | null;
   /** The project's hard constraints (PRD-37 D4). Null is no constraint. */
   policy: FleetPolicy | null;
+  /** What finished delegations measured, per declared vendor × model × lane × requested tier
+   *  (PRD-37 D7). Counts, never pooled; the supervisor decides whether `n` is enough. */
+  measured: FleetMeasured[];
+}
+
+export interface FleetMeasured {
+  vendor: string;
+  model: string;
+  lane: string;
+  tier: string;
+  quality: { value: number; n: number };
+  latency: { value: number; n: number; median_seconds: number } | null;
 }
 
 /** A user's harness taste (PRD-37 D3). `defaults` is an ordered ALLOWLIST — empty means

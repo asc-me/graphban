@@ -465,7 +465,7 @@ def _serve_stdio(args) -> int:
                 tiers=tiers,
                 matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
             )
-            fleet.profile, fleet.policy, pref_note = read_preferences(client)
+            fleet.profile, fleet.policy, pref_note, fleet.measured = read_preferences(client)
             print(f"gbfleet mcp: {pref_note}", file=sys.stderr)
             if acquired.takeover:
                 leftover, _occupied, notes = adopt_mod.recover(root, workspace)

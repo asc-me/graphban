@@ -138,14 +138,17 @@ local = false
 evidence = []
 
 [[rows]]
+# Adapter landed 2026-09-05 (PRD-37 D13). No model named: qwen 0.23.0 replaces an unknown -m
+# silently with its configured default, so a model here would be a claim the binary does not
+# enforce. Moves to verified by the commit naming the item a spawn walk signed off.
 harness = "qwen-code"
 model = ""
 vendor = "alibaba"
 lane = "any"
 role = "worker"
 tier = "cheap"
-status = "unregistered"
-order = 9
+status = "unverified"
+order = 4
 cost_class = "cheap"
 local = false
 evidence = []

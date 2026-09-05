@@ -262,7 +262,7 @@ def _loop(
     matrix: "matrix_mod.Matrix | None" = None,
 ) -> Report:
     from .mcp import read_preferences
-    profile, policy, pref_note = read_preferences(supervisor)
+    profile, policy, pref_note, measured = read_preferences(supervisor)
     observe.emit("preferences", detail=pref_note)
     agent_id = str(identity.get("agent_id") or identity.get("id"))
     empty = 0
@@ -361,7 +361,7 @@ def _loop(
                 # PRD-37: no flag for this tier — the matrix resolves under the profile and
                 # policy read at launch, and the log says how.
                 res = matrix.resolve(tier=want, role="worker", profile=profile, policy=policy,
-                                     installed=matrix_mod.installed_checker())
+                                     measured=measured, installed=matrix_mod.installed_checker())
                 if res.winner is not None:
                     factory = launch_for(res.winner.harness, res.winner.model)
                     observe.emit("resolved", item=seed, **{k: v for k, v in res.explain().items() if k in ("winner", "dropped", "eligible", "profile")})

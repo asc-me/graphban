@@ -141,8 +141,8 @@ def test_reviewer_cross_vendor_drops_the_builders_vendor_for_reviewers_only():
 # ---- scoring, samples and ties (criteria 9, 10, 12) ----------------------------------------------
 
 def test_measured_axes_below_min_sample_contribute_nothing_and_say_so():
-    row = _row("claude", "sonnet", cost_class="cheap")
-    key = ("claude", "sonnet", "any", "cheap")
+    row = _row("claude", "sonnet", vendor="anthropic", cost_class="cheap")
+    key = ("anthropic", "sonnet", "any", "cheap")  # measured cells are keyed by VENDOR (D7)
     prof = m.Profile(user="u", weights={"quality": 1.0})
     thin = {key: {"quality": m.Sample(value=1.0, n=m.MIN_SAMPLE - 1)}}
     fat = {key: {"quality": m.Sample(value=1.0, n=m.MIN_SAMPLE)}}
@@ -305,11 +305,15 @@ class _Server:
 def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
     from gbfleet.mcp import read_preferences
 
-    profile, policy, note = read_preferences(_Server({
+    profile, policy, note, measured = read_preferences(_Server({
         "agents": [],
         "profile": {"user": "u1", "defaults": ["gbagent", "claude"], "weights": {"cost": 1.0}, "excludes": ["grok"]},
         "policy": {"local_only": True, "reviewer_cross_vendor": False, "allowed_harnesses": []},
+        "measured": [{"vendor": "gbagent", "model": "q", "lane": "backend", "tier": "cheap",
+                      "quality": {"value": 0.8, "n": 5}, "latency": None}],
     }))
+    assert measured == {("gbagent", "q", "backend", "cheap"): {"quality": m.Sample(0.8, 5)}}
+    assert "measured cells: 1" in note
     assert profile is not None and profile.user == "u1" and profile.defaults == ("gbagent", "claude")
     assert profile.excludes == ("grok",) and profile.normalised() == {"cost": 1.0}
     assert policy.local_only is True and policy.allowed_harnesses == ()
@@ -319,10 +323,11 @@ def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
 def test_read_preferences_spells_absence_and_unreachability_rather_than_inventing_a_default():
     from gbfleet.mcp import read_preferences
 
-    profile, policy, note = read_preferences(_Server({"agents": [], "profile": None, "policy": None}))
+    profile, policy, note, measured = read_preferences(_Server({"agents": [], "profile": None, "policy": None}))
     assert profile is None and policy == m.Policy() and "profile: none" in note and "policy: none" in note
-    profile, policy, note = read_preferences(_Server(fail=True))
-    assert profile is None and policy == m.Policy()
+    assert measured == {}
+    profile, policy, note, measured = read_preferences(_Server(fail=True))
+    assert profile is None and policy == m.Policy() and measured == {}
     assert "unreachable" in note and "connection refused" in note
 
 
@@ -362,3 +367,90 @@ def test_spawn_passes_the_builders_vendor_into_a_reviewer_resolution(git_repo: P
     got = out["structuredContent"]
     assert seen == [("fake", "xai-review")], got
     assert "reviewer_cross_vendor" in got["resolution"]["dropped"]["policy"][0]
+
+
+# ---- PR 3: measured cells are per lane and per tier, joined on the vendor (D7, criterion 11) --
+
+def test_a_row_for_any_lane_reads_the_cell_of_the_lane_being_resolved_never_a_pooled_one():
+    row = _row("gbagent", "q", vendor="gbagent", cost_class="local", local=True)
+    prof = m.Profile(user="u", weights={"quality": 1.0})
+    measured = {
+        ("gbagent", "q", "backend", "cheap"): {"quality": m.Sample(1.0, 5)},
+        ("gbagent", "q", "frontend", "cheap"): {"quality": m.Sample(0.0, 5)},
+    }
+    back = _matrix(row).resolve(tier="cheap", lane="backend", profile=prof, measured=measured, installed=ALL_INSTALLED)
+    front = _matrix(row).resolve(tier="cheap", lane="frontend", profile=prof, measured=measured, installed=ALL_INSTALLED)
+    none = _matrix(row).resolve(tier="cheap", profile=prof, measured=measured, installed=ALL_INSTALLED)
+    assert back.explain()["winner"]["score"] == 1.0
+    assert front.explain()["winner"]["score"] == 0.0
+    assert none.explain()["winner"]["axes"]["quality"]["used"] is False, "no lane named: nothing pooled, unmeasured"
+
+
+def test_measured_of_reads_the_servers_list_and_skips_axes_it_did_not_measure():
+    got = m.measured_of([
+        {"vendor": "gbagent", "model": "q", "lane": "backend", "tier": "cheap",
+         "quality": {"value": 0.75, "n": 4}, "latency": {"value": 0.5, "n": 3, "median_seconds": 1800.0}},
+        {"vendor": "undeclared", "model": "undeclared", "lane": "backend", "tier": "cheap",
+         "quality": {"value": 1.0, "n": 1}, "latency": None},
+        {"broken": True},
+    ])
+    assert got[("gbagent", "q", "backend", "cheap")] == {"quality": m.Sample(0.75, 4), "latency": m.Sample(0.5, 3)}
+    assert got[("undeclared", "undeclared", "backend", "cheap")] == {"quality": m.Sample(1.0, 1)}
+    assert len(got) == 2
+    assert m.measured_of(None) == {}
+
+
+def test_doctor_shows_measured_cells_per_lane_for_a_row_that_spans_lanes():
+    row = _row("gbagent", "q", vendor="gbagent", cost_class="local", local=True)
+    measured = {("gbagent", "q", "backend", "cheap"): {"quality": m.Sample(0.8, 5)},
+                ("gbagent", "q", "frontend", "cheap"): {"quality": m.Sample(0.2, 2)}}
+    lines = m.doctor_lines(_matrix(row), ALL_INSTALLED, None, None, measured)
+    detail = next(d for n, _, d in lines if n == "matrix gbagent:q")
+    assert "quality/backend 0.80 (n=5)" in detail and "quality/frontend 0.20 (n=2, unmeasured)" in detail
+
+
+# ---- PR 3: the Qwen Code adapter (D13, criterion 16) -----------------------------------------
+
+def test_qwen_code_is_registered_and_its_matrix_row_is_unverified_with_no_model():
+    from gbfleet.adapters import ADAPTERS
+    assert "qwen-code" in ADAPTERS and ADAPTERS["qwen-code"].binary == "qwen"
+    rows = [r for r in m.load().rows if r.harness == "qwen-code"]
+    assert rows and rows[0].status == "unverified" and rows[0].model == "", (
+        "qwen 0.23.0 silently replaces an unknown -m with its default; a named model here would be unenforced")
+    assert "qwen-code" not in m.unregistered_adapter_files()
+
+
+def test_qwen_code_launch_keeps_the_seat_out_of_argv_and_the_worktree_and_rewrites_it_to_httpurl(git_repo: Path, tmp_path: Path):
+    from gbfleet.adapters import ADAPTERS, Tuning
+    from gbfleet.seat import Seat
+    from gbfleet.worktree import create
+
+    seat = Seat(code="WORKER-7F3K", server_url="https://gb.invalid", api_key="gbk_secret")
+    tree = create(git_repo, tmp_path / "w-qwen", "wave", "1")
+    instruction = tmp_path / "instruction.txt"
+    instruction.write_text("register with WORKER-7F3K")
+    launch = ADAPTERS["qwen-code"].launch(seat, tree, instruction, Path("/usr/bin/true"), model="qwen3.7-plus",
+                                          tuning=Tuning(turns="40"))
+    joined = " ".join(launch.argv)
+    assert "WORKER-7F3K" not in joined and "gbk_secret" not in joined
+    assert launch.stdin_file == instruction, "the instruction, and so the code, arrives on stdin"
+    assert "--mcp-config" in launch.argv and "--allowed-mcp-server-names" in launch.argv and "graphban" in launch.argv
+    assert launch.argv[launch.argv.index("-m") + 1] == "qwen3.7-plus"
+    assert launch.argv[launch.argv.index("--max-session-turns") + 1] == "40"
+    assert "--bare" not in launch.argv, "--bare drops the model-provider config and the child dies at once"
+    assert not str(launch.seat_path).startswith(str(tree.path)), "the seat file lives outside the worktree"
+    server = launch.config["mcpServers"]["graphban"]
+    assert server == {"httpUrl": "https://gb.invalid/api/mcp", "headers": {"X-API-Key": "gbk_secret"}}
+    assert "url" not in server and "type" not in server, "the generic shape is accepted and never connects (measured)"
+
+
+def test_qwen_code_names_its_exit_codes_and_refuses_an_unsupported_knob():
+    from gbfleet.adapters import ADAPTERS, Support, parse_version
+    a = ADAPTERS["qwen-code"]
+    assert "budget" in a.exit_meaning(55) and "max-wall-time" in a.exit_meaning(55)
+    assert a.exit_meaning(0) == "finished"
+    assert a.support.permits(parse_version("0.23.0")) and not a.support.permits(parse_version("0.22.9"))
+    assert not a.support.permits(parse_version("1.0.0"))
+    assert a.tuning == frozenset({"turns"}), "only the turn budget; effort/fallback/window are other vendors' knobs"
+    assert a.known_models(Path("/usr/bin/true")) is None, "cannot be asked, and a wrong -m is not refused by the binary either"
+    assert a.debug_argv(Path("/tmp/x")) == [], "-d writes to stderr; a path cannot be honoured, so say cannot"
