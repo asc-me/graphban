@@ -307,6 +307,65 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     }
 
 
+# ---- PRD-37 D7: the measured axes, with their sample sizes ------------------------------------
+
+#: Seconds from claim to finish at which the latency axis reads 0. An hour is the PRD-36
+#: child wall-clock default; a child that takes that long scored nothing on speed.
+LATENCY_FLOOR_S = 3600
+
+
+def measured(db: Session, project_id: str | None) -> list[dict]:
+    """What finished delegations say about each vendor x model x lane x requested tier.
+
+    `quality` is signed-off over finished attempts; `latency` is the median claim-to-finish
+    time folded onto 0-1 (instant 1.0, `LATENCY_FLOOR_S` or slower 0.0). Both carry `n`, and
+    the READER decides whether `n` is enough (gbfleet's MIN_SAMPLE) - this side states counts,
+    never verdicts. Grouped per lane and per tier requested, NEVER pooled (PRD-35 named the
+    bias: frontier only sees what cheap failed), so a row here is one cell, and an absent cell
+    is unmeasured rather than zero.
+
+    The vendor is the child's declared `capabilities.vendor` (what drives review diversity),
+    the model its declared `capabilities.model` - the same fields the delegation record copies
+    at link time (D8). A child that declared neither is counted under `undeclared`, which the
+    matrix will not match and the doctor will show.
+    """
+    stmt = select(Delegation).where(Delegation.outcome.is_not(None))
+    if project_id:
+        stmt = stmt.where(Delegation.project_id == project_id)
+    rows = db.scalars(stmt).all()
+    cells: dict[tuple[str, str, str, str], dict] = {}
+    agents: dict[str | None, Agent | None] = {}
+    for row in rows:
+        if row.agent_id not in agents:
+            agents[row.agent_id] = db.get(Agent, row.agent_id) if row.agent_id else None
+        agent = agents[row.agent_id]
+        caps = (agent.capabilities or {}) if agent is not None else {}
+        vendor = caps.get("vendor") if isinstance(caps.get("vendor"), str) and caps.get("vendor") else UNDECLARED
+        model = row.declared_model or UNDECLARED
+        key = (vendor, model, row.lane, row.requested_tier)
+        cell = cells.setdefault(key, {"finished": 0, "signed_off": 0, "durations": []})
+        cell["finished"] += 1
+        cell["signed_off"] += 1 if row.outcome == "signed_off" else 0
+        claimed, finished = _aware(row.claimed_at), _aware(row.finished_at)
+        if claimed and finished and finished >= claimed:
+            cell["durations"].append((finished - claimed).total_seconds())
+    out = []
+    for (vendor, model, lane, tier), cell in sorted(cells.items()):
+        durations = sorted(cell["durations"])
+        latency = None
+        if durations:
+            mid = len(durations) // 2
+            median = durations[mid] if len(durations) % 2 else (durations[mid - 1] + durations[mid]) / 2
+            latency = {"value": round(max(0.0, min(1.0, 1.0 - median / LATENCY_FLOOR_S)), 3),
+                       "n": len(durations), "median_seconds": round(median, 1)}
+        out.append({
+            "vendor": vendor, "model": model, "lane": lane, "tier": tier,
+            "quality": {"value": round(cell["signed_off"] / cell["finished"], 3), "n": cell["finished"]},
+            "latency": latency,
+        })
+    return out
+
+
 # ---- the write (D3, D14, D15) ---------------------------------------------------------------
 
 def _open_rows(db: Session, item: Item) -> list[Delegation]:

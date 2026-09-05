@@ -47,6 +47,7 @@ without stopping the other.
 | `gbagent` | `gbagent 0.1.0` | **exactly `0.1.0`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
 | `cursor-agent` | `2026.04.17-787b533` | 2026.1 – 2027.1 | none; reads `.cursor/mcp.json` from the project dir | stdin | **yes** — forced |
 | `grok` | `grok 1.0.5 (5115b46bc909) [stable]` | 1.0 – 2.0 | project-scoped `<worktree>/.grok/config.toml` (**TOML**), needs `--trust` | `--prompt-file <path>` | yes — `.grok/config.toml`, see below |
+| `qwen-code` | `0.23.0` | 0.23 – 1.0 | `--mcp-config <path>` + `--allowed-mcp-server-names graphban`; the entry must be `httpUrl` | stdin | **no** — private temp file |
 | `codex` | — | — | — | — | **not implemented** |
 
 Every row above was read off a binary that was actually run on macOS, except `codex`.
@@ -75,6 +76,7 @@ Omit it and the argv is byte-identical to before this existed.
 | `cursor-agent` | `--model <model>` | **sometimes.** `--list-models` works, but an account with no entitlements answers *"No models available for this account"* — a fact about the account, not the model, so that case passes through too |
 | `grok` | `-m <MODEL>` (also `--model`) | **yes.** `grok models` enumerated `grok-4.6` (default) and `grok-4.5` on the machine this was written on |
 | `gbagent` | `--model <model>` | **when an endpoint is configured.** `gbagent models` asks it what it serves; with no `GBAGENT_BASE_URL` there is nothing to ask and the model passes through |
+| `qwen-code` | `-m <model>` | **no.** No listing flag, and worse than unchecked: `-m bogus-model-name` ran the configured default (`qwen3.7-plus`) with no warning anywhere (measured 2026-09-05 on 0.23.0). A named model for this vendor is a claim the binary will not enforce |
 
 **Checked and unchecked must not read the same.** A validated model and one nobody could
 verify are different states, and collapsing them would let `claude` look as guarded as
@@ -134,6 +136,7 @@ for cheap reasoning and pay for expensive: the setting evaporates, the bill does
 | `grok` | `--reasoning-effort <effort>` (alias `--effort`) | no — see below |
 | `cursor-agent` | none | n/a; either knob is refused |
 | `gbagent` | `--turns <n>` and `--window <tokens>` | n/a — neither is a name to validate, and neither has a default anywhere |
+| `qwen-code` | `--turns <n>` (spelled `--max-session-turns` on the binary) | n/a — a count, not a name |
 
 **Both exist because a spawned child is unattended.** An overloaded model on an interactive
 session is a wait; on a child it is a dead registration window — the process starts, cannot
@@ -223,6 +226,32 @@ falsify without touching the repository, so it is dated rather than stated flat.
 are advertised from the server's own manifest — but it cannot CLAIM its own work: `claim_next`
 is deliberately absent from `coord.WORKER_TOOLS`. It refuses at startup with exit 78 naming the
 slice that owns the gap, rather than starting, doing nothing useful and exiting 0.
+
+## `qwen-code` — measured on 0.23.0, 2026-09-05 (PRD-37 D13)
+
+Every line here was read off `qwen` 0.23.0 by running it against the live server, because the
+obvious shapes were wrong in ways the binary does not report.
+
+- **Headless prompt is stdin.** `--help` says the positional prompt "is appended to input on
+  stdin"; stdin alone runs one-shot and `-o json` ends with a `result` record. Nothing that
+  carries the seat touches argv.
+- **`--mcp-config <path>` works, but only spelled `httpUrl`.** The seat's vendor-neutral
+  `{"type": "http", "url": …}` entry is accepted without a word and never connects — the init
+  record says `disconnected`, zero tools. The same URL and headers as `{"httpUrl": …}` connected
+  and listed 57 `mcp__graphban__*` tools. The adapter rewrites the seat into that shape.
+- **`--allowed-mcp-server-names graphban` is required.** Without it the child also loads every
+  server in the operator's `~/.qwen/settings.json` — another credential, another identity, in
+  the child's tool list. `--bare` is not the fix: it also drops the model-provider config and
+  the child dies at once (`No auth type is selected`, exit 1).
+- **A wrong `-m` is not refused.** `-m bogus-model-name` ran `qwen3.7-plus`. So the matrix row
+  ships with **no model** and stays `unverified` until a spawn walk signs an item off.
+- **Exit codes:** 0 normal; **55** `FatalBudgetExceededError` when `--max-wall-time` or
+  `--max-tool-calls` is exceeded (the JSON tail names which); 1 when the run could not start.
+- **Debug:** `-d` exists but writes to stderr with no file flag, so `--debug` gets nothing from
+  this vendor and the support matrix says so.
+
+Not yet done: a spawn walk. The row is a claim about a binary that connects, not about a model
+that builds; that is what moves it to `verified`.
 
 ## Versions do not share a scheme
 

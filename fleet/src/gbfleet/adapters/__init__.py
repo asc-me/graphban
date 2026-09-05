@@ -380,6 +380,7 @@ from .claude import ClaudeCode  # noqa: E402
 from .cursor import CursorAgent  # noqa: E402
 from .gbagent import GbAgent  # noqa: E402
 from .grok import Grok  # noqa: E402
+from .qwen_code import QwenCode  # noqa: E402
 
 #: Only vendors whose flags and version strings were read off a real binary. `codex` is
 #: absent on purpose — see `adapters/codex.py`. A fabricated adapter fails as a child
@@ -389,7 +390,7 @@ from .grok import Grok  # noqa: E402
 #: the rest and gets no special handling anywhere in `resolve` — G4 says deleting it must
 #: change nothing about how the fleet is arbitrated.
 ADAPTERS: dict[str, Adapter] = {
-    a.name: a for a in (ClaudeCode(), CursorAgent(), GbAgent(), Grok())
+    a.name: a for a in (ClaudeCode(), CursorAgent(), GbAgent(), Grok(), QwenCode())
 }
 
 __all__ = [

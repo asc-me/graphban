@@ -601,6 +601,7 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     project's fleet policy ride on this roster because it is the call a supervisor already
     makes on every tick — no new tool, no schema property.
     """
+    from app.services import delegation as delegation_svc
     from app.services import fleet_profiles
 
     agents = list_agents(db, project_id, lease_seconds=lease_seconds)
@@ -624,6 +625,9 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         "presence_ttl_seconds": presence_ttl_seconds(lease_seconds),
         "heartbeat_interval_seconds": heartbeat_interval_seconds(lease_seconds),
         **fleet_profiles.attach(db, {}, user_id=caller_user_id, project_id=project_id),
+        # PRD-37 D7: per vendor x model x lane x tier, with `n`. The supervisor's matrix
+        # scores measured axes only past its own sample floor; this side states counts.
+        "measured": delegation_svc.measured(db, project_id),
     }
 
 

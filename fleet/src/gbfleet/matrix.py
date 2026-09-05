@@ -130,9 +130,30 @@ class Sample:
     n: int
 
 
-#: `{(harness, model, lane, tier): {"quality": Sample, "latency": Sample}}` — read from the
-#: ledger by the caller. Absent means unmeasured.
+#: `{(vendor, model, lane, tier): {"quality": Sample, "latency": Sample}}` — read off
+#: `fleet_status.measured` (PRD-37 D7). Keyed by VENDOR because that is what a child declares
+#: (`capabilities.vendor`) and what the ledger can therefore attribute; the matrix row carries
+#: its vendor, so the join is exact. Absent means unmeasured, never zero.
 Measured = dict[tuple[str, str, str, str], dict[str, Sample]]
+
+
+def measured_of(rows: list[dict] | None) -> Measured:
+    """The server's `measured` list as the lookup `resolve` reads. Cells with no latency
+    carry quality alone; a `None` axis is simply absent."""
+    out: Measured = {}
+    for r in rows or []:
+        try:
+            key = (str(r["vendor"]), str(r.get("model") or ""), str(r["lane"]), str(r["tier"]))
+        except (KeyError, TypeError):
+            continue
+        cell: dict[str, Sample] = {}
+        for axis in ("quality", "latency"):
+            s = r.get(axis)
+            if isinstance(s, dict) and s.get("value") is not None:
+                cell[axis] = Sample(value=float(s["value"]), n=int(s.get("n") or 0))
+        if cell:
+            out[key] = cell
+    return out
 
 
 @dataclass
@@ -200,7 +221,7 @@ class Matrix:
         for r in rows:
             why = _policy_reason(r, policy, role, builder_vendor)
             if why:
-                dropped.append(f"{r.key} ({why}; would have scored {self._score(r, profile, measured)[0]:.2f})")
+                dropped.append(f"{r.key} ({why}; would have scored {self._score(r, profile, measured, lane)[0]:.2f})")
             else:
                 kept.append(r)
         rows = kept
@@ -249,7 +270,7 @@ class Matrix:
             return res
 
         # 5. score, then ties: verified > unverified, the user's defaults order, matrix order.
-        scored = [(r, *self._score(r, profile, measured)) for r in rows]
+        scored = [(r, *self._score(r, profile, measured, lane)) for r in rows]
 
         def rank(entry):
             r, score, _ = entry
@@ -263,10 +284,13 @@ class Matrix:
         return res
 
     @staticmethod
-    def _score(row: Row, profile: Profile | None, measured: Measured | None) -> tuple[float, dict]:
+    def _score(row: Row, profile: Profile | None, measured: Measured | None,
+               lane: str = "any") -> tuple[float, dict]:
         """A weighted sum over the axes the user weighted (D6). Unweighted profile: every axis
         counts equally, which is what "no preference" means. Measured axes below MIN_SAMPLE
-        contribute nothing and say so (D7)."""
+        contribute nothing and say so (D7). The measured cell is the one for the lane being
+        RESOLVED — a row for `any` lane resolved for `backend` reads the backend cell, never
+        a pooled one; resolving with no lane named reads nothing and says unmeasured."""
         weights = profile.normalised() if profile else {}
         if not weights:
             weights = {a: 1.0 / len(AXES) for a in AXES}
@@ -274,7 +298,8 @@ class Matrix:
             "cost": COST_AXIS.get(row.cost_class, 0.0),
             "locality": 1.0 if row.local else 0.0,
         }
-        m = (measured or {}).get((row.harness, row.model, row.lane, row.tier), {})
+        cell_lane = lane if lane != "any" else row.lane
+        m = (measured or {}).get((row.vendor, row.model, cell_lane, row.tier), {})
         for axis in ("quality", "latency"):
             s = m.get(axis)
             if s is None or s.n < MIN_SAMPLE:
@@ -375,6 +400,20 @@ def installed_checker(binary_overrides: dict[str, str] | None = None) -> Callabl
     return check
 
 
+def _cells_for(measured: Measured | None, row: Row) -> dict[str, Sample]:
+    """For the doctor's row line: every measured axis for this vendor/model/tier, labelled by
+    lane when the row spans lanes. Shown, never pooled."""
+    out: dict[str, Sample] = {}
+    for (vendor, model, lane, tier), cell in (measured or {}).items():
+        if (vendor, model, tier) != (row.vendor, row.model, row.tier):
+            continue
+        if row.lane != "any" and lane != row.lane:
+            continue
+        for axis, s in cell.items():
+            out[f"{axis}/{lane}" if row.lane == "any" else axis] = s
+    return out
+
+
 def doctor_lines(matrix: Matrix, installed: Callable[[Row], tuple[bool, str]],
                  profile: Profile | None, policy: Policy | None,
                  measured: Measured | None = None) -> list[tuple[str, str, str]]:
@@ -386,7 +425,7 @@ def doctor_lines(matrix: Matrix, installed: Callable[[Row], tuple[bool, str]],
         ok, why = installed(r)
         ev = r.latest
         ev_text = (f"{ev.item} {ev.date}" + (f", +{len(r.evidence) - 1} more" if len(r.evidence) > 1 else "")) if ev else "no evidence"
-        m = (measured or {}).get((r.harness, r.model, r.lane, r.tier), {})
+        m = _cells_for(measured, r)
         meas = ", ".join(f"{k} {v.value:.2f} (n={v.n}{'' if v.n >= MIN_SAMPLE else ', unmeasured'})" for k, v in m.items()) or "unmeasured"
         detail = f"{r.role}/{r.tier}/{r.lane} · {r.status} · {ev_text} · installed: {'yes' if ok else 'no — ' + why} · {meas}"
         if not ok:
