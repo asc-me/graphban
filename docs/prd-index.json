@@ -1,7 +1,7 @@
 {
   "scope": {
     "covers": "PRDs with a document in docs/ that names its ledger row",
-    "indexed": 9,
+    "indexed": 10,
     "note": "NOT the list of PRDs. A ledger-only PRD has no repo copy to compare and is absent here by construction; anything reading `prds` as complete is seeing a fraction of them."
   },
   "prds": {
@@ -194,6 +194,24 @@
         "D1 — The bound seat",
         "D3 — Claim at registration",
         "D6 — Tier resolution in the supervisor",
+        "6. Data model",
+        "7. Acceptance criteria",
+        "8. Phasing",
+        "9. Risks and open questions",
+        "10. Prior art"
+      ]
+    },
+    "GRPH-P37": {
+      "file": "docs/prd-37-preference-matrix.md",
+      "status": "draft",
+      "sections": [
+        "1. Overview",
+        "2. Problem",
+        "3. Goals",
+        "4. Non-Goals",
+        "5. Key decisions",
+        "D5 — Resolution",
+        "D8 — The explanation",
         "6. Data model",
         "7. Acceptance criteria",
         "8. Phasing",
