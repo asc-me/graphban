@@ -75,6 +75,10 @@ class Seat:
     #: worker | reviewer. The enrolment's role, stamped at mint. Instruction and
     #: gbagent's tool set follow this, not a guess.
     role: str = "worker"
+    #: The item a BOUND seat carries (PRD-36 D7), as the parent told the supervisor. The
+    #: server's registration reply (`assigned`) is the authority; this only lets the
+    #: instruction name the item and gbagent receive `--item`. None on an unbound seat.
+    item: str | None = None
 
     def mcp_config(self, name: str = "graphban") -> dict:
         """The vendor-neutral core of every adapter's config file.
@@ -121,9 +125,30 @@ REVIEWER_INSTRUCTION = (
 )
 
 
+BOUND_INSTRUCTION = (
+    "Register with `register_agent` using enrolment_code={code!r}, worktree={worktree!r} "
+    "and branch={branch!r}.\n"
+    "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
+    "no parent. Declaring one would make you and your reviewer count as one call tree, "
+    "and review across this fleet would stop meaning anything.\n"
+    "This seat is BOUND to {item}: registering on it claims that item for you. Read the "
+    "reply's `assigned`. If `assigned.state` is `claimed`, you HOLD {item} — read it with "
+    "get_item_details, build it, move it to review with evidence. Do NOT call "
+    "claim_cluster or claim_next; you have your work. If `assigned.state` is `taken`, "
+    "somebody else holds it (the reply says who): EXIT — that is the normal end of your "
+    "run, not a failure."
+)
+
+
 def instruction_for(seat: Seat, worktree: Path, branch: str) -> str:
-    tmpl = REVIEWER_INSTRUCTION if seat.role == "reviewer" else INSTRUCTION
-    return tmpl.format(code=seat.code, worktree=str(worktree), branch=branch)
+    if seat.role == "reviewer":
+        tmpl = REVIEWER_INSTRUCTION
+    elif seat.item:
+        tmpl = BOUND_INSTRUCTION
+    else:
+        tmpl = INSTRUCTION
+    return tmpl.format(code=seat.code, worktree=str(worktree), branch=branch,
+                       item=seat.item or "")
 
 
 def _reject_parentage(config: dict) -> None:

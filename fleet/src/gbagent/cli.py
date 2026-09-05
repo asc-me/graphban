@@ -114,7 +114,7 @@ class NotRegistered(RuntimeError):
     """
 
 
-def register(client, *, code: str, model: str, worktree: str, branch: str) -> tuple[str, str]:
+def register(client, *, code: str, model: str, worktree: str, branch: str) -> tuple[str, str, dict]:
     """Redeem the seat and come back with this child's server-side identity.
 
     Takes the client rather than building one, so the wiring is testable without a server —
@@ -149,7 +149,11 @@ def register(client, *, code: str, model: str, worktree: str, branch: str) -> tu
             "this seat cannot create_item — a worker that cannot file a human wait "
             "is a mis-mint (P30 D11)"
         )
-    return agent_id, role
+    # PRD-36 D4: what a BOUND seat handed this child. `none` on an unbound seat; a server
+    # that predates PRD-36 sends no key, which reads the same as `none` here.
+    assigned = me.get("assigned") if isinstance(me.get("assigned"), dict) else {}
+    return agent_id, role, {"item": assigned.get("item"), "state": assigned.get("state") or "none",
+                            "reason": assigned.get("reason"), "held_by": assigned.get("held_by")}
 
 
 def enrolment_code(instruction: str) -> str:
@@ -262,7 +266,7 @@ def _run(args: argparse.Namespace) -> int:
             )
             return 78
         try:
-            agent_id, role = register(
+            agent_id, role, assigned = register(
                 Coordinator.connect(base_url, api_key, item_id="").client,
                 code=code, model=args.model, worktree=str(root), branch=args.branch,
             )
@@ -270,6 +274,21 @@ def _run(args: argparse.Namespace) -> int:
             print(f"gbagent: {exc}", file=sys.stderr)
             return 78
         print(f"gbagent: registered {agent_id} as {role!r}", file=sys.stderr)
+        # PRD-36 D3/D4: the server's answer outranks --item. `claimed` means this child
+        # already HOLDS the seat's item — no claim_cluster, and the heartbeat carries it from
+        # the first beat. `taken` means somebody else holds it: exit, the normal end of a
+        # run with nothing to do, and say who.
+        if assigned["state"] == "claimed" and assigned["item"]:
+            args.item = str(assigned["item"])
+            print(f"gbagent: this seat handed me {args.item}", file=sys.stderr)
+        elif assigned["state"] == "taken":
+            print(
+                f"gbagent: this seat was bound to {assigned['item']} but it is {assigned['reason']}"
+                + (f" by {assigned['held_by']}" if assigned.get("held_by") else "")
+                + " — nothing to do, exiting",
+                file=sys.stderr,
+            )
+            return 0
     assignment = assignment_for(args.item, role=role)
     tools = REVIEWER_TOOLS if role == "reviewer" else WORKER_TOOLS
     coordinator = Coordinator.connect(base_url, api_key, item_id=args.item,

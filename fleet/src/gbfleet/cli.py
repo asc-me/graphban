@@ -27,6 +27,7 @@ from .lock import hold
 from .mcp import Fleet, serve
 from .state import repo_root
 from .supervisor import DEFAULT_MAX_WORKERS, Limits, Wave, up
+from .tiers import TierTable
 from .until import PLANNER_TOOLS, emit as emit_until, run as run_until
 from .worktree import Worktree
 
@@ -156,6 +157,12 @@ def build_parser() -> argparse.ArgumentParser:
     stdio.add_argument("--server", required=True, help="Graphban base URL")
     stdio.add_argument("--workspace", default=None, help="where worktrees go")
     stdio.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
+    stdio.add_argument(
+        "--tier", action="append", default=[], metavar="NAME=ADAPTER[:MODEL]",
+        help="what a tier means on this machine, e.g. cheap=gbagent:qwen3.6:35b-a3b-coding-mtp-det "
+             "or frontier=claude:opus; repeatable. spawn(tier=...) resolves through it (PRD-36). "
+             "Fixed for the life of the process",
+    )
 
     until = sub.add_parser(
         "until",
@@ -182,9 +189,14 @@ def build_parser() -> argparse.ArgumentParser:
     until.add_argument("--wave", default="wave", help="wave name, used in branch names")
     until.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     until.add_argument(
-        "--tier", choices=["cheap", "frontier"], default=None,
-        help="tier to REQUEST on each delegation this loop writes (PRD-35); default follows "
+        "--request", choices=["cheap", "frontier"], default=None,
+        help="tier to REQUEST on each delegation this loop writes (PRD-35/36); default follows "
              "the brief's suggestion. Observational: the child declares what it actually is",
+    )
+    until.add_argument(
+        "--tier", action="append", default=[], metavar="NAME=ADAPTER[:MODEL]",
+        help="what a tier means on this machine (PRD-36 D6), repeatable. When the requested "
+             "tier is mapped here its adapter runs the child; otherwise --adapter does",
     )
     until.add_argument(
         "--max-reviewers", type=int, default=1,
@@ -357,6 +369,12 @@ def _until(args) -> int:
         print(f"gbfleet until: {exc}", file=sys.stderr)
         return 2
 
+    try:
+        tiers = TierTable.parse(args.tier)
+    except ValueError as exc:
+        print(f"gbfleet until: {exc}", file=sys.stderr)
+        return 2
+
     pool: list[Seat] = []
     if args.seats_file:
         pool = read_seats(args.seats_file, args.server, api_key)
@@ -383,7 +401,9 @@ def _until(args) -> int:
             ),
             workspace=Path(args.workspace) if args.workspace else None,
             debug=args.debug,
-            tier=args.tier,
+            request=args.request,
+            tiers=tiers,
+            launch_for=lambda name, model="": make_adapter_factory(name, None, model),
         )
     except RepoLocked as exc:
         print(f"gbfleet until: {exc}", file=sys.stderr)
@@ -421,6 +441,11 @@ def _serve_stdio(args) -> int:
 
     workspace = Path(args.workspace) if args.workspace else root.parent / f"{root.name}-gbfleet"
     try:
+        tiers = TierTable.parse(args.tier)
+    except ValueError as exc:
+        print(f"gbfleet stdio: {exc}", file=sys.stderr)
+        return 2
+    try:
         with hold(root) as acquired:
             fleet = Fleet(
                 repo=root,
@@ -429,6 +454,7 @@ def _serve_stdio(args) -> int:
                 launch_for=lambda name, model="", tuning=None: make_adapter_factory(name, None, model, tuning),
                 lock=acquired,
                 limits=Limits(max_workers=args.max_workers),
+                tiers=tiers,
             )
             if acquired.takeover:
                 leftover, _occupied, notes = adopt_mod.recover(root, workspace)

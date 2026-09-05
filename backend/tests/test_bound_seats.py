@@ -317,3 +317,29 @@ def test_a_delegation_to_somebody_else_does_not_block_review_of_a_different_buil
     assert items_svc.claim_item(db, item, stranger) is not None  # supersedes
     _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": stranger}))
     assert not fleet_svc.delegated_by(db, _stored(db, item), planner)
+
+
+# ---- PR 2 / D15: the roster carries what a bound seat handed each agent ----------------------
+
+def test_the_roster_reads_assigned_from_the_seat_and_the_item(client, key, proj, db):
+    """`spawn` echoes this, so the parent learns at registration. Derived at read time —
+    `claimed` while the child holds the seat's item, `taken` with the holder once it does
+    not, None on an unbound seat."""
+    planner = _agent(client, key, "planner")
+    item = _item(client, key)
+    out = _ok(_delegate(client, key, item, planner))
+    reg = _ok(_mcp(client, key, "register_agent", {"label": "child", "enrolment_code": out["enrolment_code"]}))
+    child = reg["agent_id"]
+    rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
+    assert rows[child]["assigned"] == {"item": item, "state": "claimed", "held_by": None}
+    assert rows[planner]["assigned"] is None
+    # The lease lapses and a stranger takes the item: the same row now reads taken.
+    stored = _stored(db, item)
+    stored.claimed_at = datetime.now(timezone.utc) - timedelta(seconds=items_svc.DEFAULT_LEASE_SECONDS + 5)
+    for r in db.scalars(select(AreaReservation).where(AreaReservation.agent_id == child)).all():
+        r.expires_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+    db.commit()
+    stranger = _agent(client, key, "stranger")
+    assert items_svc.claim_item(db, item, stranger) is not None
+    rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
+    assert rows[child]["assigned"] == {"item": item, "state": "taken", "held_by": stranger}

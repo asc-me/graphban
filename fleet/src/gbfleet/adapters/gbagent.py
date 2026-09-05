@@ -135,6 +135,7 @@ class GbAgent(Adapter):
                 # `await_registration` matches on worktree, and D-g is one worker one
                 # worktree; the branch goes with it so the roster row names the diff.
                 "--branch", tree.branch,
+                *(["--item", seat.item] if seat.item else []),
                 *self.model_argv(model),
                 *self.tuning_argv(tuning or Tuning()),
             ],

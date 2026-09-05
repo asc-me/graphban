@@ -38,6 +38,12 @@ without colliding*, then delegate.
    Tell the child to `register_agent(parent_agent_id=<your agent id>)`. That is how
    its claim LINKS to your delegation; a child that registers without it supersedes
    the delegation, and the Live board shows exactly that.
+   - A cheaper model OUTSIDE this harness (PRD-36): call `delegate(..., seat=true)`
+     instead — it mints a worker seat bound to the item and returns `enrolment_code` —
+     then `gbfleet spawn(enrolment_code=..., tier="cheap", item=<id>)`. The child
+     registers on the seat, which claims the item for it and links your delegation;
+     the spawn reply's `assigned` says `claimed` or `taken` (and who). Keep working;
+     read the outcome from the item, not from a reply.
 6. Read the Live board. `expired, nothing claimed` under your row is a spawn that
    died before it claimed; `superseded` is a claim by something that was not your
    child; `requested cheap, declared frontier` is a harness that did not honour the

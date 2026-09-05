@@ -180,6 +180,9 @@ class Child:
     #: adapter has no such flag, which is reported rather than left to be inferred.
     debug_path: Path | None = None
     agent_id: str | None = None
+    #: PRD-36 D15: what the roster says a bound seat handed this child, captured when it
+    #: registered. None when the seat was unbound or the roster predates PRD-36.
+    assigned: dict | None = None
     binary_version: str = ""
     #: The enrolment's ROW id, read off the roster once the child registers. Never the
     #: code: a code is single-use and short-lived, and a log file is neither.
@@ -334,6 +337,8 @@ def await_registration(
                 # `enrolled` was a bare boolean and a supervisor could not name the seat
                 # its own child had redeemed.
                 child.seat_id = agent.get("enrolment_id")
+                got = agent.get("assigned")
+                child.assigned = got if isinstance(got, dict) else None
                 child.registration_latency = time.monotonic() - child.started_at
                 held = [h.get("id") for h in (agent.get("holdings") or []) if h.get("id")]
                 if held:

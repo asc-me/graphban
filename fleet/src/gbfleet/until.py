@@ -25,6 +25,7 @@ from . import waits as wait_mod
 from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, ToolFailed
 from .lock import hold
 from .seat import Seat
+from .tiers import TierTable
 from .spawn import Child
 from .supervisor import (
     DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Wave, _reap_all, _start,
@@ -124,12 +125,16 @@ def run(
     empty_ticks: int = EMPTY_TICKS,
     mint_tries: int = MINT_TRIES,
     mint_budget: float = MINT_BUDGET_S,
-    tier: str | None = None,
+    request: str | None = None,
+    tiers: TierTable | None = None,
+    launch_for: Callable[..., LaunchFactory] | None = None,
 ) -> Report:
     """Hold the repo lock and run until idle, a cap, or a config refusal.
 
-    `tier` is what every delegation this loop writes will REQUEST (PRD-35 D5). None means
+    `request` is what every delegation this loop writes will REQUEST (PRD-35 D5). None means
     follow the brief's suggestion — a stated policy of this program, not a server default.
+    `tiers` is the operator's tier table (PRD-36 D6): when the requested tier is mapped,
+    `launch_for(adapter, model)` builds the child's launch; otherwise `launch_factory` does.
     """
     if planner.allowed & {"mint_enrolment"} and "mint_enrolment" in ALLOWED_TOOLS:
         raise ConfigError("ALLOWED_TOOLS must not include mint_enrolment")
@@ -173,7 +178,9 @@ def run(
                 mint_tries=mint_tries,
                 mint_budget=mint_budget,
                 minted_start=minted,
-                tier=tier,
+                request=request,
+                tiers=tiers or TierTable(),
+                launch_for=launch_for,
             )
             result.wave = wave
             minted = result.minted
@@ -246,11 +253,14 @@ def _loop(
     mint_tries: int,
     mint_budget: float,
     minted_start: int,
-    tier: str | None = None,
+    request: str | None = None,
+    tiers: TierTable | None = None,
+    launch_for: Callable[..., LaunchFactory] | None = None,
 ) -> Report:
     agent_id = str(identity.get("agent_id") or identity.get("id"))
     empty = 0
     delegated: set[str] = set()
+    tiers = tiers or TierTable()
     minted = minted_start
     mint_deadline = time.monotonic() + mint_budget
     mint_left = mint_tries
@@ -318,19 +328,30 @@ def _loop(
             if need <= 0:
                 sleep(poll)
                 continue
-            # PRD-35 D12: the fact before the seat. The child registers on the seat minted
-            # next, which is the lineage the server links on (`linked_by: seat`).
-            _delegate_next(planner, agent_id, wave_name, delegated, tier)
-            seat, minted_one = _take_seat(
-                pool, planner, agent_id, wave_name, server, api_key,
-                mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
-                role="worker",
-            )
-            if minted_one:
+            # PRD-36 D9: the delegation mints the BOUND seat the child will register on, so
+            # the child claims the seed rather than whatever the divvy hands it. When the
+            # server refused a bound seat (areas held) the delegation stands without one
+            # and the seat is minted as before; when nothing was delegable, likewise.
+            seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated, request)
+            if code:
+                seat = Seat(code=code, server_url=server, api_key=api_key, role="worker",
+                            item=seed)
                 minted += 1
-                mint_left -= 1
+            else:
+                seat, minted_one = _take_seat(
+                    pool, planner, agent_id, wave_name, server, api_key,
+                    mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
+                    role="worker",
+                )
+                if minted_one:
+                    minted += 1
+                    mint_left -= 1
+            factory = launch_factory
+            if want and want in tiers.lanes and launch_for is not None:
+                lane = tiers.resolve(want)
+                factory = launch_for(lane.adapter, lane.model)
             _spawn_one(
-                wave, children, occupied, persist, seat, launch_factory,
+                wave, children, occupied, persist, seat, factory,
                 repo, workspace, wave_name, supervisor, limits, planner, debug,
             )
             continue
@@ -451,8 +472,8 @@ def _delegate_next(
     agent_id: str,
     wave_name: str,
     delegated: set[str],
-    tier: str | None,
-) -> str | None:
+    request: str | None,
+) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
     PRD-35 D12. Returns the item id, or None when there was nothing to delegate — a seat
@@ -469,7 +490,7 @@ def _delegate_next(
         clusters = planner.call("collision_clusters")
     except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
         observe.emit("delegate_skipped", detail=f"collision_clusters: {exc}")
-        return None
+        return None, None, None
     seed: str | None = None
     for cluster in clusters.get("clusters") or []:
         if not isinstance(cluster, dict) or cluster.get("held_by"):
@@ -479,22 +500,38 @@ def _delegate_next(
             seed = items[0]
             break
     if seed is None:
-        return None
+        return None, None, None
     try:
         details = planner.call("get_item_details", id=seed) or {}
         brief = details.get("brief") if isinstance(details.get("brief"), dict) else {}
         lane = str(((brief.get("lane") or {}).get("value")) or "backend")
-        want = str(tier or ((brief.get("tier") or {}).get("value")) or "cheap")
-        planner.call(
-            "delegate", id=seed, lane=lane, tier=want, agent_id=agent_id,
-            note=f"gbfleet until, wave {wave_name}",
-        )
+        want = str(request or ((brief.get("tier") or {}).get("value")) or "cheap")
     except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
         observe.emit("delegate_refused", item=seed, detail=str(exc))
-        return None
+        return None, None, None
+    note = f"gbfleet until, wave {wave_name}"
+    code: str | None = None
+    try:
+        # PRD-36 D9: a BOUND seat. The server refuses one when the seed's areas are held
+        # by someone else (D13); then the delegation is written without a seat and the
+        # divvy decides, exactly as before PRD-36.
+        reply = planner.call("delegate", id=seed, lane=lane, tier=want, agent_id=agent_id,
+                             note=note, seat=True, wave=wave_name)
+        got = reply.get("enrolment_code") if isinstance(reply, dict) else None
+        code = str(got) if got else None
+    except ToolFailed as exc:
+        observe.emit("bound_seat_refused", item=seed, detail=str(exc))
+        try:
+            planner.call("delegate", id=seed, lane=lane, tier=want, agent_id=agent_id, note=note)
+        except (ToolFailed, NotPermitted, ServerUnreachable) as exc2:
+            observe.emit("delegate_refused", item=seed, detail=str(exc2))
+            return None, None, None
+    except (NotPermitted, ServerUnreachable) as exc:
+        observe.emit("delegate_refused", item=seed, detail=str(exc))
+        return None, None, None
     delegated.add(seed)
-    observe.emit("delegated", item=seed, lane=lane, tier=want)
-    return seed
+    observe.emit("delegated", item=seed, lane=lane, tier=want, bound=bool(code))
+    return seed, code, want
 
 
 def _wanted_workers(

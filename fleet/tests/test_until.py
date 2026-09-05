@@ -62,6 +62,8 @@ def _clients(
     delegations: list | None = None,
     delegate_fails: str | None = None,
     calls: list | None = None,
+    bound_seats: bool = False,
+    bound_refused: bool = False,
 ):
     """Planner + supervisor clients sharing one mock Graphban."""
     seen_agents = {"yes": False}
@@ -82,10 +84,14 @@ def _clients(
         if tool == "delegate":
             if delegate_fails:
                 return _error(delegate_fails, f"refused ({delegate_fails})", rid)
+            if bound_refused and args.get("seat"):
+                return _error("conflict", "areas are reserved by GRPH-A9", rid)
             if delegations is not None:
                 delegations.append(dict(args))
             return _mcp({"delegation_id": f"dlg_{len(delegations or [])}", "state": "open",
-                         "withdrew": None, "brief": {}}, rid)
+                         "withdrew": None, "brief": {},
+                         "enrolment_code": (f"WORKER-BOUND{len(delegations or [])}"
+                                            if (bound_seats and args.get("seat")) else None)}, rid)
         if tool == "register_agent":
             return _mcp({
                 "agent_id": "GRPH-P1",
@@ -559,8 +565,10 @@ def test_until_delegates_the_seed_before_minting_the_seat(
     assert result.spawned == 1, result.detail
     assert delegations == [{
         "id": "GRPH-7", "lane": "backend", "tier": "cheap", "agent_id": "GRPH-P1",
-        "note": "gbfleet until, wave wave",
+        "note": "gbfleet until, wave wave", "seat": True, "wave": "wave",
     }]
+    # The stub returned no enrolment_code, so the seat was minted the old way — after the
+    # delegation, as PRD-35 D12 required.
     assert calls.index("delegate") < calls.index("mint_enrolment")
 
 
@@ -595,7 +603,7 @@ def test_the_tier_flag_is_what_the_loop_requests(
         git_repo, _factory(scripts, "works_then_exits"),
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
-        tier="frontier",
+        request="frontier",
     )
     assert [d["tier"] for d in delegations] == ["frontier"]
 
@@ -618,3 +626,66 @@ def test_a_refused_delegation_does_not_stop_the_spawn(
     )
     assert result.spawned == 1, result.detail
     assert delegations == []
+
+
+# ---- PRD-36 D9 / criteria 12, 13: the loop mints BOUND seats ----------------------------------
+
+def _capturing_factory(scripts, which: str, captured: list):
+    """The fake launch, plus the instruction text as the child would read it. Read here, at
+    launch, because the worktree and its instruction file are reaped with the wave."""
+    inner = _factory(scripts, which)
+
+    def factory(seat, tree, instruction_file, debug_file=None):
+        captured.append(Path(instruction_file).read_text(encoding="utf-8"))
+        return inner(seat, tree, instruction_file, debug_file)
+    return factory
+
+
+def test_until_mints_a_bound_seat_through_delegate_and_skips_mint_enrolment(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """Criterion 12. The delegation carries seat=true, the server answers with the seat's
+    code, no mint_enrolment call is made, and the child's instruction names the item."""
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    calls: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7", "GRPH-8"]],
+        delegations=delegations, calls=calls, bound_seats=True,
+    )
+    captured: list = []
+    result = run(
+        git_repo, _capturing_factory(scripts, "works_then_exits", captured),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.spawned == 1, result.detail
+    assert delegations[0]["seat"] is True and delegations[0]["id"] == "GRPH-7"
+    assert "mint_enrolment" not in calls, "a bound seat is minted by the delegation itself"
+    instruction = captured[0]
+    assert "BOUND to GRPH-7" in instruction and "WORKER-BOUND1" in instruction
+    assert "claim_cluster" in instruction and "Do NOT call claim_cluster" in instruction
+
+
+def test_a_refused_bound_seat_falls_back_to_an_unbound_delegation(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """Criterion 13 / D13: the areas were held, so the delegation stands without a seat and
+    the seat is minted the old way — the divvy decides what the child claims."""
+    workspace = tmp_path / "ws"
+    delegations: list = []
+    calls: list = []
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[["GRPH-7"]],
+        delegations=delegations, calls=calls, bound_seats=True, bound_refused=True,
+    )
+    captured: list = []
+    result = run(
+        git_repo, _capturing_factory(scripts, "works_then_exits", captured),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.spawned == 1, result.detail
+    assert [d.get("seat") for d in delegations] == [None], "the retry carried no seat"
+    assert "mint_enrolment" in calls
+    assert "BOUND" not in captured[0]

@@ -258,6 +258,11 @@ them with a `basis`, and the server never defaults them — and paste the return
 `parent_agent_id`, or through a seat you minted; anyone else's claim supersedes it. A
 delegation nobody claims reads `expired` on the Live board, which is the point.
 
+To run it on a cheaper model through the fleet, `delegate(..., seat=true)` mints a worker
+seat BOUND to the item; `gbfleet spawn(enrolment_code, tier="cheap", item=<id>)` runs it on
+the adapter the operator mapped to that tier, and registering on the seat claims the item
+for the child (PRD-36). You may not sign off work you delegated; a reviewer does.
+
 ## Rules
 
 - **Do not claim work.** `claim_next` and `claim_cluster` are refused for you, and
@@ -407,6 +412,12 @@ without colliding*, then delegate.
    Tell the child to `register_agent(parent_agent_id=<your agent id>)`. That is how
    its claim LINKS to your delegation; a child that registers without it supersedes
    the delegation, and the Live board shows exactly that.
+   - A cheaper model OUTSIDE this harness (PRD-36): call `delegate(..., seat=true)`
+     instead — it mints a worker seat bound to the item and returns `enrolment_code` —
+     then `gbfleet spawn(enrolment_code=..., tier="cheap", item=<id>)`. The child
+     registers on the seat, which claims the item for it and links your delegation;
+     the spawn reply's `assigned` says `claimed` or `taken` (and who). Keep working;
+     read the outcome from the item, not from a reply.
 6. Read the Live board. `expired, nothing claimed` under your row is a spawn that
    died before it claimed; `superseded` is a claim by something that was not your
    child; `requested cheap, declared frontier` is a harness that did not honour the

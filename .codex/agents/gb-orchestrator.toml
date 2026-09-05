@@ -46,6 +46,11 @@ them with a `basis`, and the server never defaults them — and paste the return
 `parent_agent_id`, or through a seat you minted; anyone else's claim supersedes it. A
 delegation nobody claims reads `expired` on the Live board, which is the point.
 
+To run it on a cheaper model through the fleet, `delegate(..., seat=true)` mints a worker
+seat BOUND to the item; `gbfleet spawn(enrolment_code, tier="cheap", item=<id>)` runs it on
+the adapter the operator mapped to that tier, and registering on the seat claims the item
+for the child (PRD-36). You may not sign off work you delegated; a reviewer does.
+
 ## Rules
 
 - **Do not claim work.** `claim_next` and `claim_cluster` are refused for you, and
