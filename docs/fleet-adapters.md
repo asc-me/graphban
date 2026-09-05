@@ -250,8 +250,13 @@ obvious shapes were wrong in ways the binary does not report.
 - **Debug:** `-d` exists but writes to stderr with no file flag, so `--debug` gets nothing from
   this vendor and the support matrix says so.
 
-Not yet done: a spawn walk. The row is a claim about a binary that connects, not about a model
-that builds; that is what moves it to `verified`.
+**Spawn walk, 2026-09-05 (GRPH-731), on the deployed box:** `spawn(adapter="qwen-code",
+turns=40)` onto a bound seat. The child registered in 12 s, claimed the item on registration,
+appended a section to this file, committed and pushed `gb/p37walk3-1`, and moved the item to
+review in 61 s — on the operator's configured default model, since `-m` is unenforced. The
+matrix row is `verified` on that item. One gap it showed: the child registered with **no
+`capabilities`**, so the ledger's measured cells attribute its outcome to `undeclared` rather
+than to this vendor — the instruction a spawned child reads does not yet tell it what to declare.
 
 ## Versions do not share a scheme
 

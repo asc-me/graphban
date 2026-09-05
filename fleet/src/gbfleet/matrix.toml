@@ -140,15 +140,17 @@ evidence = []
 [[rows]]
 # Adapter landed 2026-09-05 (PRD-37 D13). No model named: qwen 0.23.0 replaces an unknown -m
 # silently with its configured default, so a model here would be a claim the binary does not
-# enforce. Moves to verified by the commit naming the item a spawn walk signed off.
+# enforce; the walk ran on the operator's configured default (qwen3.7-plus at the time).
 harness = "qwen-code"
 model = ""
 vendor = "alibaba"
 lane = "any"
 role = "worker"
 tier = "cheap"
-status = "unverified"
+status = "verified"
 order = 4
 cost_class = "cheap"
 local = false
-evidence = []
+evidence = [
+  { item = "GRPH-731", date = "2026-09-05", outcome = "review", note = "spawn walk on the deployed box: registered on the bound seat in 12s, claimed, appended the doc section, committed and pushed gb/p37walk3-1, moved the item to review in 61s" },
+]
