@@ -86,7 +86,7 @@ Graphban server mints a worker seat *bound* to the item and returns its code; th
 claims the item server-side, so the child holds it from its first call and never touches
 `claim_cluster`; the spawn reply echoes the roster's `assigned` block (`claimed`, or
 `taken` with who holds it). `tier` resolves through a table the operator names at launch —
-`gbfleet stdio --tier cheap=gbagent:qwen3.6:35b-a3b-coding-mtp-det --tier
+`gbfleet mcp --tier cheap=gbagent:qwen3.6:35b-a3b-coding-mtp-det --tier
 frontier=claude:opus` — fixed for the life of the process; an unmapped tier is refused
 naming the flag, and an explicit `adapter` overrides it. `gbfleet until` takes the same
 `--tier` table plus `--request cheap|frontier` for what its own delegations ask, and mints
