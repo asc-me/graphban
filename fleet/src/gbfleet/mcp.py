@@ -79,7 +79,7 @@ TOOLS: list[dict[str, Any]] = [
                 "tier": {
                     "type": "string",
                     "description": (
-                        "A tier the operator mapped at launch (`gbfleet stdio --tier "
+                        "A tier the operator mapped at launch (`gbfleet mcp --tier "
                         "cheap=gbagent:<model>`), resolved to adapter+model here (PRD-36 D6). "
                         "`adapter`/`model` override it when both are given. Unmapped: refused "
                         "naming the flag."
