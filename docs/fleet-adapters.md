@@ -255,8 +255,11 @@ turns=40)` onto a bound seat. The child registered in 12 s, claimed the item on 
 appended a section to this file, committed and pushed `gb/p37walk3-1`, and moved the item to
 review in 61 s — on the operator's configured default model, since `-m` is unenforced. The
 matrix row is `verified` on that item. One gap it showed: the child registered with **no
-`capabilities`**, so the ledger's measured cells attribute its outcome to `undeclared` rather
-than to this vendor — the instruction a spawned child reads does not yet tell it what to declare.
+`capabilities`**, so the ledger's measured cells attributed its outcome to `undeclared` rather
+than to this vendor. Closed by GRPH-732: the instruction every spawned child reads now carries
+`capabilities={vendor, model?, tier}` in the same sentence as the code, worktree and branch —
+the supervisor knows what it launched and the child does not — and a declared vendor with no
+model is counted as that vendor's default, which is the row `qwen-code` has.
 
 ## Versions do not share a scheme
 

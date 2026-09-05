@@ -483,3 +483,80 @@ def test_doctor_without_a_server_says_the_resolutions_assume_nothing(git_repo: P
     report = doctor_mod.run(repo=git_repo, out=io.StringIO())
     by = {f.name: f for f in report.findings}
     assert by["matrix preferences"].status == "UNKNOWN" and "no profile" in by["matrix preferences"].detail
+
+
+# ---- GRPH-732: the child is told what to declare, because only the supervisor knows ------------
+
+def test_declaration_names_the_vendor_from_the_matrix_and_only_a_named_model():
+    assert m.declaration("claude", "opus", "frontier") == {"vendor": "anthropic", "model": "opus", "tier": "frontier"}
+    assert m.declaration("qwen-code") == {"vendor": "alibaba", "tier": "cheap"}, "no model: a vendor default is unknowable here"
+    assert m.declaration("gbagent", "qwen3.6:35b-a3b-coding-mtp-det") == {"vendor": "gbagent", "model": "qwen3.6:35b-a3b-coding-mtp-det", "tier": "cheap"}
+    assert m.declaration("claude", "opus") == {"vendor": "anthropic", "model": "opus", "tier": "frontier"}, "two rows, one tier"
+    assert m.declaration("claude") == {"vendor": "anthropic"}, "opus is frontier and sonnet cheap: no single tier, so none declared"
+    assert m.declaration("nobody", "x") == {"vendor": "nobody", "model": "x"}, "an unknown harness declares itself"
+
+
+def test_the_instruction_carries_the_declaration_beside_the_code_and_the_code_still_parses():
+    from gbagent import cli as gbagent_cli
+    from gbfleet.seat import Seat, instruction_for
+    seat = Seat(code="WORKER-7F3K", server_url="https://gb.invalid", api_key="k", item="GRPH-1",
+                declare={"vendor": "alibaba", "tier": "cheap"})
+    text = instruction_for(seat, Path("/w"), "gb/x-1")
+    assert 'capabilities={"tier": "cheap", "vendor": "alibaba"}' in text
+    assert "enrolment_code='WORKER-7F3K'" in text and "branch='gb/x-1'" in text
+    assert gbagent_cli.enrolment_code(text) == "WORKER-7F3K", "gbagent reads the code out of this text; the clause must not disturb it"
+    bare = instruction_for(Seat(code="WORKER-7F3K", server_url="https://gb.invalid", api_key="k"), Path("/w"), "gb/x-1")
+    assert "capabilities" not in bare, "no declaration, no clause — the old text byte for byte"
+
+
+def test_spawn_hands_the_child_a_seat_that_declares_what_was_launched(git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch):
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
+    seen_seats = []
+
+    def launch_for(name, model="", tuning=None):
+        inner = _factory(scripts, "works_then_waits", adapter="fake")
+
+        def factory(seat, tree, instruction_file, debug_file=None):
+            seen_seats.append(seat)
+            return inner(seat, tree, instruction_file, debug_file)
+        return factory
+
+    rows = (_row("fake", "qwen-local", vendor="fakeco", cost_class="local", local=True, status="verified", evidence=[EV]),)
+    f = Fleet(repo=git_repo, workspace=tmp_path / "ws", client=_server(tmp_path / "ws"), launch_for=launch_for,
+              matrix=_matrix(*rows))
+    _call(f, "spawn", tier="cheap", enrolment_code="WORKER-1")
+    assert seen_seats and seen_seats[0].declare == {"vendor": "fakeco", "model": "qwen-local", "tier": "cheap"}
+    _call(f, "spawn", adapter="fake", enrolment_code="WORKER-2")
+    assert seen_seats[1].declare == {"vendor": "fakeco", "tier": "cheap"}, "explicit adapter, no model named: vendor and the row's one tier"
+
+
+def test_until_hands_its_bound_worker_a_seat_that_declares_the_resolved_harness(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    from gbfleet.until import run
+    from tests.test_until import _clients, KEY
+
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (r.harness == "fake", "not here")))
+    workspace = tmp_path / "ws"
+    seats: list = []
+
+    def launch_for(name, model=""):
+        inner = _factory(scripts, "works_then_exits", adapter=name)
+
+        def factory(seat, tree, instruction_file, debug_file=None):
+            seats.append((seat.declare, Path(instruction_file).read_text(encoding="utf-8")))
+            return inner(seat, tree, instruction_file, debug_file)
+        return factory
+
+    planner, supervisor = _clients(workspace, clusters=1, cluster_items=[["GRPH-7"]], delegations=[])
+    mat = _matrix(_row("fake", "qwen-local", vendor="fakeco", cost_class="local", local=True))
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        request="cheap", tiers=TierTable(), launch_for=launch_for, matrix=mat,
+    )
+    assert result.spawned == 1, result.detail
+    declare, text = seats[0]
+    assert declare == {"vendor": "fakeco", "model": "qwen-local", "tier": "cheap"}
+    assert 'capabilities={"model": "qwen-local", "tier": "cheap", "vendor": "fakeco"}' in text

@@ -341,7 +341,10 @@ def measured(db: Session, project_id: str | None) -> list[dict]:
         agent = agents[row.agent_id]
         caps = (agent.capabilities or {}) if agent is not None else {}
         vendor = caps.get("vendor") if isinstance(caps.get("vendor"), str) and caps.get("vendor") else UNDECLARED
-        model = row.declared_model or UNDECLARED
+        # A declared vendor with no model ran that vendor's DEFAULT — the matrix row that names
+        # no model (qwen-code) — so the cell says "" and joins it. Nothing declared at all is
+        # `undeclared` on both, which no row matches (GRPH-732).
+        model = row.declared_model or ("" if vendor != UNDECLARED else UNDECLARED)
         key = (vendor, model, row.lane, row.requested_tier)
         cell = cells.setdefault(key, {"finished": 0, "signed_off": 0, "durations": []})
         cell["finished"] += 1

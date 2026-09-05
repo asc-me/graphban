@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -184,6 +184,7 @@ def run(
                 tiers=tiers or TierTable(),
                 launch_for=launch_for,
                 matrix=matrix,
+                adapter=adapter,
             )
             result.wave = wave
             minted = result.minted
@@ -260,6 +261,7 @@ def _loop(
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
     matrix: "matrix_mod.Matrix | None" = None,
+    adapter: str = "",
 ) -> Report:
     from .mcp import read_preferences
     profile, policy, pref_note, measured = read_preferences(supervisor)
@@ -354,9 +356,11 @@ def _loop(
                     minted += 1
                     mint_left -= 1
             factory = launch_factory
+            chosen = (adapter, "")
             if want and want in tiers.lanes and launch_for is not None:
                 lane = tiers.resolve(want)
                 factory = launch_for(lane.adapter, lane.model)
+                chosen = (lane.adapter, lane.model)
             elif want and launch_for is not None and matrix is not None:
                 # PRD-37: no flag for this tier — the matrix resolves under the profile and
                 # policy read at launch, and the log says how.
@@ -364,9 +368,13 @@ def _loop(
                                      measured=measured, installed=matrix_mod.installed_checker())
                 if res.winner is not None:
                     factory = launch_for(res.winner.harness, res.winner.model)
+                    chosen = (res.winner.harness, res.winner.model)
                     observe.emit("resolved", item=seed, **{k: v for k, v in res.explain().items() if k in ("winner", "dropped", "eligible", "profile")})
                 else:
                     observe.emit("resolve_refused", item=seed, detail=res.refused)
+            # GRPH-732: the child is told what it is, because only this side knows.
+            if chosen[0]:
+                seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
             _spawn_one(
                 wave, children, occupied, persist, seat, factory,
                 repo, workspace, wave_name, supervisor, limits, planner, debug,
@@ -387,6 +395,8 @@ def _loop(
             if minted_one:
                 minted += 1
                 mint_left -= 1
+            if adapter:
+                seat = replace(seat, declare=matrix_mod.declaration(adapter, "", None, matrix))
             before = len(wave.spawned)
             _spawn_one(
                 wave, children, occupied, persist, seat, launch_factory,
