@@ -94,6 +94,11 @@ SPECS: list[ToolSpec] = [
 ]
 
 
+#: GRPH-709: build/test oracle runs per change. Three, like the contract every harness in this
+#: repo states: not green after three runs of the same oracle, stop and report with the last log.
+TEST_RUN_CAP = 3
+
+
 @dataclass
 class Toolset:
     """Dispatch for the execution layer, plus what it saw happen.
@@ -111,6 +116,11 @@ class Toolset:
     #: The last `run_tests` outcome, as returned by `verify.run_tests`. `None` means the tests
     #: were never run — which is NOT the same as a clean run, and the handoff note says so.
     last_tests: dict | None = None
+    #: GRPH-709: `run_tests` calls since the last write/edit. The oracle is deterministic; a
+    #: fourth run on an unchanged tree is a model that has stopped learning from it.
+    runs_since_edit: int = 0
+    #: Set when the cap refused a run. The loop reads it and hands the item over.
+    tests_capped: bool = False
     #: Paths the model wrote or edited, in order, deduplicated.
     written: list[str] = field(default_factory=list)
     #: Files this run has read IN FULL, path -> content hash at the time (GRPH-515).
@@ -229,6 +239,18 @@ class Toolset:
         return f"edited {path} ({out['replaced']} replacement)"
 
     def _do_run_tests(self) -> str:
+        if self.runs_since_edit >= TEST_RUN_CAP:
+            # GRPH-709. Refused, not run: the fourth run of a deterministic oracle on an
+            # unchanged tree produces the same answer and spends a turn getting it. The loop
+            # sees `tests_capped` and hands the item over with the last log (D6).
+            self.tests_capped = True
+            raise ToolError(
+                f"run_tests refused: the suite has run {TEST_RUN_CAP} times on this change with "
+                f"no edit in between (last: {_tally(self.last_tests) if self.last_tests else 'n/a'}, "
+                f"{'PASS' if self.last_tests and self.last_tests['ok'] else 'FAIL'}). Make a code "
+                "change, or stop — this run is being handed over with the last log."
+            )
+        self.runs_since_edit += 1
         out = verify.run_tests(self.root, self.cfg)
         self.last_tests = out
         if out["ok"]:
@@ -305,6 +327,8 @@ class Toolset:
     def _record(self, path: str) -> None:
         if path not in self.written:
             self.written.append(path)
+        # An edit is a new change: the oracle may say something new about it (GRPH-709).
+        self.runs_since_edit = 0
 
 
 def _describe(call: ToolCall) -> str:

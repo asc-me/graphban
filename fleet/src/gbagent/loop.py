@@ -34,6 +34,7 @@ clean.
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -41,7 +42,7 @@ from typing import Callable
 from . import compact as compaction
 from .coord import Coordinator, HandoffFailed
 from .heartbeat import Heartbeat
-from .llm import ToolTurn
+from .llm import ToolCall, ToolResult, ToolTurn
 from .toolset import Toolset
 
 #: Turns, not tool calls: one turn is one round trip to the model, which is the thing that costs
@@ -188,6 +189,7 @@ def run(
     report(Trace(turn=turns, kind="turn", text=_clip(turn.text)))
 
     first_write: int | None = None
+    repeats = _Repeats()
 
     while turn.wants_tools and turn.tool_calls:
         if turns >= budget:
@@ -202,6 +204,7 @@ def run(
             return _give_up(coordinator, toolset, turns, budget, turn, compactions,
                             first_write, why=heartbeat.gone)
         results = []
+        stop_because = ""
         for call in turn.tool_calls:
             result = toolset.execute(call)
             results.append(result)
@@ -211,7 +214,20 @@ def run(
             # id. Waiting until give-up leaves every beat as presence-only for the
             # whole successful run (600s lease, 1800s run_tests).
             coordinator.adopt(toolset.claimed_item)
+            if not stop_because:
+                stop_because = repeats.saw(call, result, toolset)
         session.add_results(results)
+        if toolset.tests_capped:
+            # GRPH-709: the oracle ran three times on this change. Hand over with the last log.
+            from .toolset import TEST_RUN_CAP
+            return _give_up(coordinator, toolset, turns, budget, turn, compactions, first_write,
+                            why=(f"the test suite ran {TEST_RUN_CAP} times on this change with "
+                                 "no edit in between and the model asked for a fourth — loops "
+                                 "have exits"))
+        if stop_because:
+            # GRPH-710: two shapes of not-learning, both exits.
+            return _give_up(coordinator, toolset, turns, budget, turn, compactions, first_write,
+                            why=stop_because)
         if first_write is None and toolset.written:
             # The turn the work started on. Recorded here rather than counted afterwards
             # because the toolset only knows THAT a write happened, not when.
@@ -264,6 +280,64 @@ def run(
         turns_to_first_write=first_write,
         slowest_turn=slowest,
     )
+
+
+#: GRPH-710: identical failing tool results in a row before the loop stops. The third is
+#: the last: two are a retry, three are a model repeating itself unchanged.
+IDENTICAL_FAILURES = 3
+#: GRPH-710: edit->run_tests cycles that ended on the SAME failing test set before the loop
+#: stops. Two ruled-out causes with one outcome is a bug outside the model's picture.
+SAME_FAILING_SET_CYCLES = 2
+
+
+def _normalise(text: str) -> str:
+    """A failure's shape without its numbers: timestamps, durations, line numbers and
+    counts all vary between two runs that failed identically."""
+    return " ".join(re.sub(r"\d+", "#", text or "").split())[:2000]
+
+
+class _Repeats:
+    """Watches tool results for the two shapes of not-learning (GRPH-710)."""
+
+    def __init__(self) -> None:
+        self.identical = 0
+        self.last_failure: tuple[str, str] | None = None
+        self.cycles_same = 0
+        self.last_failing_set: frozenset[str] | None = None
+        self.edited_since_run = False
+
+    def saw(self, call: ToolCall, result: ToolResult, toolset: Toolset) -> str:
+        """Returns the reason to stop, or ""."""
+        if call.name in ("write_file", "edit_file") and not result.is_error:
+            self.edited_since_run = True
+        failed = result.is_error or (call.name == "run_tests" and result.content.startswith("FAIL"))
+        if not failed:
+            self.identical = 0
+            self.last_failure = None
+            if call.name == "run_tests":
+                self.cycles_same = 0
+                self.last_failing_set = None
+            return ""
+        key = (call.name, _normalise(result.content))
+        if key == self.last_failure:
+            self.identical += 1
+        else:
+            self.identical = 1
+            self.last_failure = key
+        if self.identical >= IDENTICAL_FAILURES:
+            return (f"the same {call.name} failure came back {self.identical} times in a row, "
+                    "unchanged — repeating it would not produce new information")
+        if call.name == "run_tests" and toolset.last_tests and not toolset.last_tests["ok"]:
+            names = frozenset(toolset.last_tests.get("failed_tests") or [])
+            if self.edited_since_run and names:
+                self.cycles_same = self.cycles_same + 1 if names == self.last_failing_set else 1
+                self.last_failing_set = names
+                self.edited_since_run = False
+                if self.cycles_same >= SAME_FAILING_SET_CYCLES:
+                    return (f"{self.cycles_same} edit-and-test cycles ended on the same failing "
+                            f"tests ({', '.join(sorted(names))}) — the change is not moving, and "
+                            "the cause is outside this run's picture")
+        return ""
 
 
 def _compact_now(session) -> bool:
