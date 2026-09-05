@@ -1,6 +1,8 @@
-import { Check, CircleDashed, PauseCircle } from "lucide-react";
+import { AlertTriangle, Check, CircleDashed, PauseCircle } from "lucide-react";
+import * as React from "react";
 
 import { cn } from "@/lib/cn";
+import { useGrillDefer } from "@/lib/queries";
 import type { GrillDimensionState, GrillState } from "@/lib/types";
 
 /** How approval was earned (AL-301 / PRD-15 D7).
@@ -26,8 +28,10 @@ const OUTCOME_META = {
   unanswered: { icon: CircleDashed, color: "#8b949e", label: "open" },
 } as const;
 
-export function GrillProgress({ state }: { state: GrillState }) {
+export function GrillProgress({ state, prdId }: { state: GrillState; prdId: string }) {
   const names = Object.keys(state.dimensions);
+  const defer = useGrillDefer(prdId);
+  const [deferring, setDeferring] = React.useState<string | null>(null);
   if (!names.length) return null;
 
   // Only the stub's mechanical bar is worth calling out — a real provider grading is the
@@ -47,9 +51,35 @@ export function GrillProgress({ state }: { state: GrillState }) {
         )}
       </div>
 
+      {/* The round was not judged, so the rows below are the PREVIOUS round's verdicts
+          (GRPH-485). Said before them, because a reader who takes them for current will
+          answer again into the same void — which is the loop this exists to break. */}
+      {!state.graded && (
+        <div className="mb-2.5 flex gap-2 rounded-[9px] border border-[#4a3a12] bg-[rgba(224,179,74,0.08)] px-2.5 py-2">
+          <AlertTriangle size={13} className="mt-0.5 flex-none text-[#e0b34a]" />
+          <p className="text-[11px] leading-snug text-fg-2">
+            <span className="font-medium text-[#e0b34a]">Not judged this round.</span>{" "}
+            {state.ungraded_reason ||
+              "the grader could not be asked, so the outcomes below are the previous round's."}
+          </p>
+        </div>
+      )}
+
       <div className="flex flex-col gap-1.5">
         {names.map((name) => (
-          <DimensionRow key={name} name={name} state={state.dimensions[name]} />
+          <DimensionRow
+            key={name}
+            name={name}
+            state={state.dimensions[name]}
+            deferring={deferring === name}
+            onDefer={() => setDeferring(name)}
+            onCancel={() => setDeferring(null)}
+            onConfirm={(reason) => {
+              defer.mutate({ dimension: name, reason });
+              setDeferring(null);
+            }}
+            pending={defer.isPending}
+          />
         ))}
       </div>
 
@@ -71,9 +101,56 @@ export function GrillProgress({ state }: { state: GrillState }) {
   );
 }
 
-function DimensionRow({ name, state }: { name: string; state: GrillDimensionState }) {
+function DimensionRow({
+  name, state, deferring, onDefer, onCancel, onConfirm, pending,
+}: {
+  name: string;
+  state: GrillDimensionState;
+  deferring: boolean;
+  onDefer: () => void;
+  onCancel: () => void;
+  onConfirm: (reason: string) => void;
+  pending: boolean;
+}) {
   const meta = OUTCOME_META[state.outcome] ?? OUTCOME_META.unanswered;
   const Icon = meta.icon;
+  const [reason, setReason] = React.useState("");
+
+  // Deferring is the AUTHOR's decision, never the model's inference, so it is a control
+  // the author operates — and the reason is required, because a deferral with no words
+  // behind it is the hand-waving the standard exists to catch. It rides onto the
+  // baseline as the note on this dimension.
+  if (deferring) {
+    return (
+      <div className="flex items-center gap-1.5">
+        <input
+          autoFocus
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && reason.trim()) onConfirm(reason.trim());
+            if (e.key === "Escape") onCancel();
+          }}
+          placeholder={`Why is ${(DIMENSION_LABEL[name] ?? name).toLowerCase()} being left open?`}
+          className="min-w-0 flex-1 rounded-md border border-line-2 bg-surface-2 px-2 py-1 text-[11.5px] outline-none placeholder:text-faint focus:border-line-hover"
+        />
+        <button
+          onClick={() => onConfirm(reason.trim())}
+          disabled={!reason.trim() || pending}
+          className="flex-none rounded-md border border-line-2 px-2 py-1 font-mono text-[9.5px] uppercase text-[#e0b34a] transition-colors hover:bg-surface-3 disabled:opacity-40"
+        >
+          Defer
+        </button>
+        <button
+          onClick={onCancel}
+          className="flex-none rounded-md px-1.5 py-1 font-mono text-[9.5px] uppercase text-faint transition-colors hover:text-fg-2"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-start gap-2 text-[12px]">
       <Icon size={13} className="mt-0.5 flex-none" style={{ color: meta.color }} />
@@ -93,6 +170,16 @@ function DimensionRow({ name, state }: { name: string; state: GrillDimensionStat
         >
           offline
         </span>
+      )}
+      {state.outcome === "unanswered" && (
+        <button
+          onClick={onDefer}
+          disabled={pending}
+          title="Leave this dimension deliberately open, with a reason. Deferring completes the grill; it does not skip it."
+          className="ml-auto flex-none rounded border border-line-2 px-1 font-mono text-[9px] uppercase text-faint transition-colors hover:text-[#e0b34a] disabled:opacity-40"
+        >
+          defer
+        </button>
       )}
     </div>
   );

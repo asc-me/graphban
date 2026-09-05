@@ -354,6 +354,26 @@ export function useGrillState(id: string) {
   });
 }
 
+/** Deliberately leave one dimension open (AL-298).
+ *
+ * The server has honoured this since the grill could first conclude, and `api.grillDefer`
+ * has wrapped it — with no call site anywhere in the app. An author stuck in a grill that
+ * will not converge had the exit only over HTTP. Invalidates the PRD too: a deferral can
+ * be what completes the grill, and completing it moves `status` to `approved`.
+ */
+export function useGrillDefer(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { dimension: string; reason: string }) =>
+      api.grillDefer(id, v.dimension, v.reason),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["grill", id] });
+      qc.invalidateQueries({ queryKey: keys.prd(id) });
+      qc.invalidateQueries({ queryKey: keys.prds });
+    },
+  });
+}
+
 export function usePrd(id: string) {
   return useQuery({ queryKey: keys.prd(id), queryFn: () => api.prd(id), enabled: !!id });
 }

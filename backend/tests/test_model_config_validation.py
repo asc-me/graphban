@@ -207,6 +207,56 @@ def test_an_ungraded_round_says_so_instead_of_reading_as_a_thin_answer(client, a
     assert "chat model" in out["ungraded_reason"], "the reason must point at the likely cause"
 
 
+def test_the_ungraded_fact_outlives_the_round_that_produced_it(client, auth, monkeypatch, db):
+    """The half GRPH-485 left open: every LATER read said nothing.
+
+    `classify_grill` returned `graded=False` to whoever triggered the round, and
+    `answer_grill` relays it — but the fact lived only in that response. The PRD editor
+    does not read that response; it polls `GET /prds/{id}/grill`, which re-derived
+    completion from the dimension rows and so reported a confident `graded` with the
+    previous round's outcomes. Same loop as the original incident, one surface over:
+    the author answers, the panel does not move, and nothing says a grader failed.
+    """
+    from app.services import prds as prd_svc
+
+    prd = _grilled_prd(client, auth, db)
+    monkeypatch.setattr(prd_svc, "_classify_dimensions", lambda *a, **k: None)
+    monkeypatch.setattr(prd_svc, "_grader_id", lambda *a, **k: "ollama")
+    prd_svc.classify_grill(db, prd)
+
+    # A plain read, with no grading in flight — the request the editor actually makes.
+    state = client.get(f"/api/prds/{prd.id}/grill", headers=auth).json()
+
+    assert state["graded"] is False, (
+        "grill_state reports the round as graded; an author cannot tell a dead grader "
+        "from a thin answer on the surface they are actually looking at"
+    )
+    assert "could not be asked" in state["ungraded_reason"]
+    # The outcomes are still served — stale, and now labelled as such, rather than hidden.
+    assert set(state["dimensions"]) == set(prd_svc.DIMENSIONS)
+
+
+def test_a_grader_that_comes_back_stops_being_accused(client, auth, monkeypatch, db):
+    """The clearing half. A flag that only ever gets set would leave every PRD that once
+    met a broken grader permanently claiming its outcomes are stale, which is the same
+    defect pointed the other way."""
+    from app.services import prds as prd_svc
+
+    prd = _grilled_prd(client, auth, db)
+    monkeypatch.setattr(prd_svc, "_classify_dimensions", lambda *a, **k: None)
+    monkeypatch.setattr(prd_svc, "_grader_id", lambda *a, **k: "ollama")
+    prd_svc.classify_grill(db, prd)
+    assert client.get(f"/api/prds/{prd.id}/grill", headers=auth).json()["graded"] is False
+
+    # The grader answers this time.
+    monkeypatch.setattr(prd_svc, "_grader_id", lambda *a, **k: "stub")
+    prd_svc.classify_grill(db, prd)
+
+    state = client.get(f"/api/prds/{prd.id}/grill", headers=auth).json()
+    assert state["graded"] is True
+    assert state["ungraded_reason"] == ""
+
+
 def test_a_graded_round_reports_graded_true(client, auth, monkeypatch, db):
     """The control. Without it `graded` could be hardcoded false and the test above
     would still pass."""

@@ -1090,6 +1090,16 @@ class Prd(Base):
     grill_from_seq: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
+    # Why the LAST grading attempt produced no verdict, or "" when it produced one
+    # (GRPH-485 on the read path). `classify_grill` already returns this, and
+    # `answer_grill` already relays it — but it lived only in that one response, so every
+    # later read of the grill saw stale outcomes with nothing to say they were stale. An
+    # author answering in the UI got "still outstanding" whether the grader was down or
+    # their answer was thin, which is the loop GRPH-485 was written to end. Persisting it
+    # is what lets `grill_state` tell those apart on a plain GET.
+    grill_ungraded_reason: Mapped[str] = mapped_column(
+        Text, default="", server_default="", nullable=False
+    )
     updated: Mapped[str] = mapped_column(String, default="")  # display date from design
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(

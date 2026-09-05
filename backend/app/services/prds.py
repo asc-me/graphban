@@ -765,6 +765,18 @@ def _classify_dimensions(db: Session, prd: Prd, history: list[dict]) -> dict | N
     return out or None
 
 
+def _set_ungraded(db: Session, prd: Prd, reason: str) -> None:
+    """Record (or clear) why the last grading attempt produced no verdict.
+
+    Written on both paths on purpose. Setting it without clearing it would leave a PRD
+    permanently accusing a grader that has since come back, which is the same defect one
+    step over: state that cannot be told apart from the truth."""
+    if prd.grill_ungraded_reason == reason:
+        return
+    prd.grill_ungraded_reason = reason
+    db.commit()
+
+
 def _grader_id(db: Session, prd: Prd) -> str:
     """Which provider is standing behind these verdicts."""
     try:
@@ -832,18 +844,24 @@ def classify_grill(db: Session, prd: Prd) -> dict:
         if _grader_id(db, prd) != "stub":
             logger.warning("grill classify: unusable verdict for %s; leaving dimensions "
                            "unchanged rather than applying the offline bar", prd.id)
-            return completion(
-                db, prd.id, graded=False,
-                ungraded_reason=(
-                    f"the {_grader_id(db, prd)} grader could not be asked, or returned "
-                    "something unusable. The outcomes below are the previous round's — "
-                    "this answer has NOT been judged. Check the project's chat model "
-                    "before answering again."
-                ),
+            reason = (
+                f"the {_grader_id(db, prd)} grader could not be asked, or returned "
+                "something unusable. The outcomes below are the previous round's — "
+                "this answer has NOT been judged. Check the project's chat model "
+                "before answering again."
             )
+            # Stored, not just returned. The caller that triggered this round is told
+            # directly; everyone who READS the grill afterwards — the editor's progress
+            # panel, a second session, the author returning tomorrow — sees the same
+            # dimensions and, without this, nothing to say a grader ever failed against
+            # them. That silence is the loop: answer, no movement, answer again.
+            _set_ungraded(db, prd, reason)
+            return completion(db, prd.id, graded=False, ungraded_reason=reason)
         graded, grader = _stub_classification(answers), "stub"
     else:
         graded, grader = verdicts, _grader_id(db, prd)
+    # A round that graded clears the flag: the outcomes below are this answer's.
+    _set_ungraded(db, prd, "")
 
     existing = {
         d.dimension: d.outcome
@@ -2683,7 +2701,11 @@ def grill_state(db: Session, prd_id: str) -> dict:
     session can answer it."""
     turns = grill_turns(db, prd_id)
     window = grill_window(db, prd_id)
-    done = completion(db, prd_id)
+    prd = get_prd(db, prd_id)
+    # The last attempt's grading outcome, not this call's — nothing is re-graded on a
+    # read. FALSE means the dimensions below were not judged against the newest answer.
+    reason = (prd.grill_ungraded_reason or "") if prd is not None else ""
+    done = completion(db, prd_id, graded=not reason, ungraded_reason=reason)
     return {
         "prd_id": prd_id,
         "turns": [{"seq": t.seq, "role": t.role, "text": t.text,
@@ -2702,6 +2724,11 @@ def grill_state(db: Session, prd_id: str) -> dict:
         "outstanding": done["outstanding"],
         "deferred": done["deferred"],
         "complete": done["complete"],
+        # Carried so a plain GET can tell "the grader was down" from "your answer was
+        # thin" (GRPH-485). `answer_grill` has returned these since; every other reader
+        # of the grill was left to infer it from outcomes that had not moved.
+        "graded": done["graded"],
+        "ungraded_reason": done["ungraded_reason"],
         # Whether the BODY has caught up with what the grill settled (GRPH-430). A finished
         # grill and a stale document look identical from every downstream surface, so the
         # one place that knows both says so.
