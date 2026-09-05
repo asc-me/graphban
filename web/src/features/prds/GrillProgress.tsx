@@ -65,6 +65,21 @@ export function GrillProgress({ state, prdId }: { state: GrillState; prdId: stri
         </div>
       )}
 
+      {/* Only when the round WAS graded. An ungraded round has already explained itself
+          above, and the standstill is that outage's consequence — saying it twice would
+          point at the author's answers for something the grader did. */}
+      {state.graded && state.stall?.stalled && !state.complete && (
+        <div className="mb-2.5 rounded-[9px] border border-line-2 bg-surface-3/40 px-2.5 py-2">
+          <p className="text-[11px] leading-snug text-fg-2">
+            <span className="font-medium">
+              {state.stall.answers_since_progress} answers, nothing moved.
+            </span>{" "}
+            Another answer on the same ground is unlikely to land. Defer a dimension with
+            a reason, or check the project&rsquo;s chat model.
+          </p>
+        </div>
+      )}
+
       <div className="flex flex-col gap-1.5">
         {names.map((name) => (
           <DimensionRow

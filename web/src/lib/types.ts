@@ -842,6 +842,9 @@ export interface GrillState {
    *  same to whoever is answering (GRPH-485). */
   graded: boolean;
   ungraded_reason: string;
+  /** Answers that changed nothing. A grill can be perfectly healthy and still be going
+   *  nowhere, and until this nothing said so — the author was left to notice it. */
+  stall: { answers_since_progress: number; stalled: boolean; since_seq: number };
 }
 
 export interface PrdSummary {

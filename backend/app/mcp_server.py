@@ -1511,6 +1511,12 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             # answering into a void (GRPH-485).
             "graded": {"type": "boolean"},
             "ungraded_reason": _STR,
+            # `answers_since_progress` and `stalled` are RETURNED but not declared here,
+            # like `body_absorbed` beside them. The manifest is at its ceiling with ~4
+            # tokens of room (see test_mcp_footprint), declaring two more keys costs that
+            # in every agent's context on every session, and these are self-describing in
+            # a reply the agent is already reading. The ratchet checks that declared keys
+            # are emitted, not that emitted keys are declared, so this stays honest.
         },
     },
     "grill_prd": {
@@ -2879,6 +2885,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # downstream (GRPH-430). An answer is recorded against a body that does not yet say
         # it, and the agent that just relayed it is the one positioned to fix that.
         absorption = prd_svc.grill_absorption(db, prd.id)
+        stalled = prd_svc.stall(db, prd.id)
         return {
             "prd_id": prd.key,
             "complete": done["complete"],
@@ -2893,6 +2900,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # answer — the incident GRPH-485 exists to end.
             "graded": done["graded"],
             "ungraded_reason": done["ungraded_reason"],
+            # Said HERE rather than left for the relaying agent to infer from outcomes
+            # that have not moved — the same reasoning as `graded` above, one loop out:
+            # `graded` distinguishes "not judged" from "judged and found wanting", and
+            # this distinguishes "judged and found wanting, repeatedly" from progress.
+            # Neither exit is this tool's to take, and there is deliberately no MCP
+            # tool that takes them: deferring is the author's decision (the route and
+            # the panel control are theirs), and a broken grader is the operator's to
+            # fix. A stalled agent's move is to SAY so, not to unblock itself.
+            "answers_since_progress": stalled["answers_since_progress"],
+            "stalled": stalled["stalled"],
         }
     if name == "grill_prd":
         prd = prd_svc.get_prd(db, args["prd_id"])

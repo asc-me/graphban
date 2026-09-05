@@ -1100,6 +1100,17 @@ class Prd(Base):
     grill_ungraded_reason: Mapped[str] = mapped_column(
         Text, default="", server_default="", nullable=False
     )
+    # Where "answers that moved nothing" starts counting: the seq of the turn AFTER the
+    # one on the transcript when a dimension outcome last CHANGED. A BOUNDARY, like
+    # `grill_from_seq` above — storing the last moving seq instead would make the default
+    # `0` mean both "never moved" and "moved at seq 0", and seq 0 is a real turn.
+    #
+    # Stamped rather than derived because a DEFERRAL is progress and cites no turn:
+    # `turn_seq` names the answer a verdict cites, a deferral cites none, and repurposing
+    # that field to mean "when this changed" would put a pointer where provenance is read.
+    grill_progress_seq: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     updated: Mapped[str] = mapped_column(String, default="")  # display date from design
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
