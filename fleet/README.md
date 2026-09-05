@@ -101,8 +101,13 @@ tier and role → the project's policy (`local_only`, `allowed_harnesses`,
 `reviewer_cross_vendor`) → the user's profile (an ordered allowlist of harnesses, weights
 over `cost`/`quality`/`latency`/`locality`, excludes) → `failed` rows out → what this
 machine has installed → score → ties (verified first, then the user's own order, then the
-row's `order`). Profile and policy come from the server (PR 2); until then every
-resolution says `profile: none`. The spawn reply carries `resolution`: `source` (`flag`
+row's `order`). Profile and policy come from the server: `gbfleet mcp` and `gbfleet until`
+read them off `fleet_status` **once at launch** (a change is read at the next launch, PRD-36
+D16) — the profile is the API key owner's, with a per-project override, edited in the Fleet
+view under the Wave tab; the policy is the project's. A key whose owner has no profile, or a
+server that cannot be reached at launch, resolves on matrix order and policy alone and the
+explanation says `profile: none`. A reviewer spawn may pass `builder_vendor` so a project's
+`reviewer_cross_vendor` rule can drop the builder's vendor. The spawn reply carries `resolution`: `source` (`flag`
 or `matrix`), how many rows survived each step, what each step dropped and why, the winner
 with its per-axis numbers, and the runner-up. An empty resolution is a tool error naming
 the step that emptied it — there is no silent default. Measured axes need `n ≥ 5` before

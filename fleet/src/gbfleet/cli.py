@@ -24,7 +24,7 @@ from dataclasses import replace
 from .spawn import Launch
 from .state import NotARepository
 from .lock import hold
-from .mcp import Fleet, serve
+from .mcp import Fleet, serve, read_preferences
 from .state import repo_root
 from .supervisor import DEFAULT_MAX_WORKERS, Limits, Wave, up
 from .tiers import TierTable
@@ -465,6 +465,8 @@ def _serve_stdio(args) -> int:
                 tiers=tiers,
                 matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
             )
+            fleet.profile, fleet.policy, pref_note = read_preferences(client)
+            print(f"gbfleet mcp: {pref_note}", file=sys.stderr)
             if acquired.takeover:
                 leftover, _occupied, notes = adopt_mod.recover(root, workspace)
                 fleet.children.extend(leftover)

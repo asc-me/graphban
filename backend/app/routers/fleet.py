@@ -15,8 +15,10 @@ from app.db import get_db
 from app.models import Enrolment, User
 from app.security import authz
 from app.security.deps import get_current_user
+from app.models import Project
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
+from app.services import fleet_profiles
 
 router = APIRouter(prefix="/fleet", tags=["fleet"])
 
@@ -31,7 +33,7 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
     idle reviewer next to work it could already be taking.
     """
     authz.require_readable(db, user.id, project_id)
-    status = fleet_svc.fleet_status(db, project_id)
+    status = fleet_svc.fleet_status(db, project_id, caller_user_id=user.id)
     return {
         **status,
         "review_queue": fleet_svc.review_queue(db, project_id),
@@ -229,3 +231,86 @@ def end_wave(body: EndWaveIn, db: Session = Depends(get_db),
                            target_id=body.project_id or "", project_id=body.project_id,
                            meta=out)
     return out
+
+
+# ---- PRD-37: harness preferences and fleet policy -----------------------------------------
+#
+# The server stores and serves; the supervisor resolves. These routes exist for the Fleet
+# view. A profile is the CALLER's own — there is no route that edits somebody else's taste.
+# Policy is a project setting and takes the project's write gate, like every other one.
+
+class ProfileIn(BaseModel):
+    project_id: str | None = None
+    defaults: list[str] = []
+    weights: dict[str, float] = {}
+    excludes: list[str] = []
+
+
+class PolicyIn(BaseModel):
+    project_id: str
+    local_only: bool = False
+    reviewer_cross_vendor: bool = False
+    allowed_harnesses: list[str] = []
+
+
+@router.get("/profile")
+def read_profile(project_id: str | None = None, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """The caller's default and project override side by side, plus which one is in force."""
+    if project_id:
+        authz.require_readable(db, user.id, project_id)
+    return fleet_profiles.both(db, user.id, project_id)
+
+
+@router.put("/profile")
+def write_profile(body: ProfileIn, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    if body.project_id:
+        authz.require_readable(db, user.id, body.project_id)
+    try:
+        row = fleet_profiles.set_profile(db, user_id=user.id, project_id=body.project_id,
+                                         defaults=body.defaults, weights=body.weights,
+                                         excludes=body.excludes)
+    except fleet_profiles.ProfileInvalid as e:
+        raise HTTPException(422, str(e))
+    events_svc.record_user(db, user, action="set_fleet_profile", target_type="fleet_profile",
+                           target_id=row.id, project_id=body.project_id,
+                           meta={"scope": "project" if body.project_id else "default"})
+    return fleet_profiles.summary(row)
+
+
+@router.delete("/profile")
+def delete_profile(project_id: str | None = None, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    if project_id:
+        authz.require_readable(db, user.id, project_id)
+    cleared = fleet_profiles.clear_profile(db, user_id=user.id, project_id=project_id)
+    if cleared:
+        events_svc.record_user(db, user, action="clear_fleet_profile", target_type="fleet_profile",
+                               target_id=user.id, project_id=project_id,
+                               meta={"scope": "project" if project_id else "default"})
+    return {"cleared": cleared}
+
+
+@router.get("/policy")
+def read_policy(project_id: str, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    authz.require_readable(db, user.id, project_id)
+    return {"project_id": project_id, "policy": fleet_profiles.policy_of(db, project_id)}
+
+
+@router.put("/policy")
+def write_policy(body: PolicyIn, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    authz.require_writable(db, user.id, body.project_id)
+    project = db.get(Project, body.project_id)
+    if project is None:
+        raise HTTPException(404, "project not found")
+    try:
+        policy = fleet_profiles.set_policy(db, project, body.model_dump(exclude={"project_id"}))
+    except fleet_profiles.ProfileInvalid as e:
+        raise HTTPException(422, str(e))
+    events_svc.record_user(db, user, action="set_fleet_policy", target_type="project",
+                           target_id=body.project_id, project_id=body.project_id,
+                           meta={"policy": policy})
+    return {"project_id": body.project_id, "policy": policy}

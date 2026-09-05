@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 117 of the 190 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 119 of the 192 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -190,6 +190,11 @@ failure the propose-only boundary exists to prevent.
 | POST | `/api/fleet/keys` | JWT | Mint a credential narrowed to one role and tagged to a wave |
 | GET | `/api/fleet/end-wave` | JWT | What ending the wave would destroy, for the confirm |
 | POST | `/api/fleet/end-wave` | JWT | Revoke the wave's keys and release everything they hold |
+| GET | `/api/fleet/profile` | JWT | The caller's harness preferences (PRD-37): default and per-project override side by side, plus which one is in force. `project_id` optional |
+| PUT | `/api/fleet/profile` | JWT | Write the caller's own profile — `defaults` (ordered allowlist), `weights` (0–1 per axis), `excludes`; `project_id` makes it an override. 422 names the field it refuses |
+| DELETE | `/api/fleet/profile` | JWT | Remove the caller's default (no `project_id`) or their override for a project |
+| GET | `/api/fleet/policy` | JWT | The project's fleet policy (PRD-37 D4): `local_only`, `reviewer_cross_vendor`, `allowed_harnesses`; `null` = no constraint |
+| PUT | `/api/fleet/policy` | JWT | Write the policy; takes the project's write gate. Every constraint off stores `null` |
 
 ## Live (PRD-33)
 

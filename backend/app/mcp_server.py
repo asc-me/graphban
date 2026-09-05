@@ -2443,7 +2443,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         if details is None:
             raise errors.NotFound(f"item not found: {args['id']}")
         # PRD-35 D2: the delegation brief rides on the read a planner already makes.
-        details["brief"] = delegation_svc.brief(db, item)
+        details["brief"] = delegation_svc.brief(db, item, user_id=key.user_id)
         return details
     if name == "suggest_next":
         item = items_svc.suggest_next(db, project_id=pid)
@@ -2538,7 +2538,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.Conflict(msg, hint=e.hint)
         return {"delegation_id": row.id, "state": delegation_svc.state(row),
                 "withdrew": withdrew, "enrolment_code": code,
-                "brief": delegation_svc.brief(db, item)}
+                "brief": delegation_svc.brief(db, item, user_id=key.user_id)}
     if name == "assign_role":
         try:
             # `agent_id` is the CALLER everywhere on this surface — the role gate reads it to
@@ -2729,7 +2729,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 minted_by = fleet_svc.minter_for(db, args["agent_id"], key)
             except fleet_svc.NotYourAgent as e:
                 raise errors.Validation(str(e))
-        return fleet_svc.fleet_status(db, pid, minted_by=minted_by)
+        return fleet_svc.fleet_status(db, pid, minted_by=minted_by, caller_user_id=key.user_id)
     if name == "retire_wave":
         try:
             minter = fleet_svc.minter_for(db, args["agent_id"], key)

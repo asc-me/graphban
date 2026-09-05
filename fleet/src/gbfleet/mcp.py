@@ -88,6 +88,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "role": {"type": "string", "description": "worker (default) or reviewer; picks the matrix rows when `tier` resolves through it (PRD-37)."},
                 "lane": {"type": "string", "description": "frontend | backend | mixed; narrows the matrix rows. Default any."},
+                "builder_vendor": {"type": "string", "description": "For a reviewer spawn: the vendor that built the item, so a project's reviewer_cross_vendor policy can drop it (PRD-37 D12)."},
                 "item": {
                     "type": "string",
                     "description": (
@@ -180,6 +181,22 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
 ]
+
+
+def read_preferences(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.Policy", str]:
+    """PRD-37 D9/D10: the key owner's profile and the project's policy ride on `fleet_status`,
+    read ONCE at launch — a profile change is read at the next launch, not mid-run (PRD-36
+    D16). A server that cannot be reached leaves both empty and says so, so a resolution made
+    without them is explained as `profile: none` rather than mistaken for a preference."""
+    try:
+        status = client.fleet_status() or {}
+    except Exception as exc:  # noqa: BLE001 - the note is the point
+        return None, matrix_mod.Policy(), f"fleet_status unreachable ({str(exc)[:80]}); resolving with no profile or policy"
+    profile = matrix_mod.Profile.of(status.get("profile"))
+    policy = matrix_mod.Policy.of(status.get("policy"))
+    note = (f"profile {profile.user} ({len(profile.defaults)} default(s))" if profile else "profile: none") + \
+           ("; policy on" if status.get("policy") else "; policy: none")
+    return profile, policy, note
 
 
 @dataclass
@@ -334,7 +351,8 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 mat = fleet.matrix or matrix_mod.load()
                 res = mat.resolve(tier=tier, role=args.get("role") or "worker",
                                   lane=args.get("lane") or "any", profile=fleet.profile,
-                                  policy=fleet.policy, installed=matrix_mod.installed_checker())
+                                  policy=fleet.policy, installed=matrix_mod.installed_checker(),
+                                  builder_vendor=args.get("builder_vendor") or None)
                 if res.winner is None:
                     raise ValueError(f"no harness resolves for tier {tier!r}: {res.refused}. "
                                      + json.dumps(res.explain()["dropped"]))

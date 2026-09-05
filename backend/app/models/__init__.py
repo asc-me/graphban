@@ -173,6 +173,12 @@ class Project(Base):
     memory_llm_judge: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false(), nullable=False
     )
+    # The fleet's hard constraints (PRD-37 D4): `{local_only, reviewer_cross_vendor,
+    # allowed_harnesses}`. A FILTER the supervisor applies before any preference is scored, so
+    # a strong taste cannot outvote a rule. NULL is no constraint — the resolver reads absence
+    # as "nothing removed", and says so. Never read by the server itself: it travels in
+    # `fleet_status` and the brief for the supervisor that holds the matrix.
+    fleet_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # May an agent operate this project's QUALITY gates (AL-282 / PRD-14 D2)? Off by
     # default: it moves the AL-49 boundary, so it is the owner's decision, not a default.
     # It never reaches an AUTHORITY gate — credential minting, retag, org/tenant — which
@@ -1827,6 +1833,33 @@ class AgentCall(Base):
     __table_args__ = (
         Index("ix_agent_calls_agent_ts", "agent_id", "ts"),
         Index("ix_agent_calls_project_ts", "project_id", "ts"),
+    )
+
+
+class FleetProfile(Base):
+    """A user's harness taste (PRD-37 D3): which harnesses to consider, in order, and how to
+    weigh the axes. One row per user with a NULL `project_id` is the default; a row naming a
+    project overrides it there. Facts about harnesses live in the committed matrix and rules
+    in `Project.fleet_policy`; this table holds only preference, which is why nothing here can
+    add a harness the matrix lacks or keep one the policy removed.
+
+    `defaults` is an ordered ALLOWLIST; empty means every matrix row is considered. `weights`
+    is `{cost, quality, latency, locality}` each 0–1, normalised by the reader; a weight of 0
+    is indifference, never exclusion — that is `excludes`.
+    """
+
+    __tablename__ = "fleet_profiles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
+    defaults: Mapped[list] = mapped_column(JSON, default=list)
+    weights: Mapped[dict] = mapped_column(JSON, default=dict)
+    excludes: Mapped[list] = mapped_column(JSON, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_fleet_profiles_user_project", "user_id", "project_id", unique=True),
     )
 
 

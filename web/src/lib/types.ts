@@ -1350,6 +1350,41 @@ export interface FleetOverview {
   /** Waves that still own an un-revoked seat or key — newest first. History is not offered:
    *  ending a wave that owns nothing is noise on a destructive control. */
   waves: string[];
+  /** The caller's harness profile that RESOLVES here (PRD-37 D14): the project override when
+   *  one exists, else the default, else null. Null is "no taste recorded", never "prefers
+   *  nothing" — the supervisor resolves on the matrix and policy alone and says so. */
+  profile: FleetProfile | null;
+  /** The project's hard constraints (PRD-37 D4). Null is no constraint. */
+  policy: FleetPolicy | null;
+}
+
+/** A user's harness taste (PRD-37 D3). `defaults` is an ordered ALLOWLIST — empty means
+ *  every matrix row is considered; `weights` are 0–1 per axis and normalised by the reader;
+ *  a weight of 0 is indifference, never exclusion — that is `excludes`. */
+export interface FleetProfile {
+  user: string;
+  project_id: string | null;
+  scope: "default" | "project";
+  defaults: string[];
+  weights: Partial<Record<FleetAxis, number>>;
+  excludes: string[];
+  updated_at: string | null;
+}
+
+export type FleetAxis = "cost" | "quality" | "latency" | "locality";
+export const FLEET_AXES: FleetAxis[] = ["cost", "quality", "latency", "locality"];
+
+/** Applied as a FILTER before any preference is scored: a rule a strong taste cannot outvote. */
+export interface FleetPolicy {
+  local_only: boolean;
+  reviewer_cross_vendor: boolean;
+  allowed_harnesses: string[];
+}
+
+export interface FleetProfileRead {
+  default: FleetProfile | null;
+  override: FleetProfile | null;
+  profile: FleetProfile | null;
 }
 
 export interface FleetCredential {

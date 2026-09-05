@@ -264,7 +264,8 @@ def _text(item: Item, *, summary: str, touchpoints: list[str], blocked_by: list[
     return "\n".join(lines)
 
 
-def brief(db: Session, item: Item) -> dict:
+def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
+    from app.services import fleet_profiles
     from app.services import items as items_svc
     from app.services import prioritization
 
@@ -300,6 +301,9 @@ def brief(db: Session, item: Item) -> dict:
         "text": _text(item, summary=summary, touchpoints=touchpoints, blocked_by=blocked_by,
                       checklist=checklist, lessons=lessons, previous=previous,
                       attempts=attempts),
+        # PRD-37 D9: the caller's profile and the project's policy, for the supervisor that
+        # resolves the tier. NOT in `text` — the spawn text carries no suggestion (PRD-35 D5).
+        **fleet_profiles.attach(db, {}, user_id=user_id, project_id=item.project_id),
     }
 
 

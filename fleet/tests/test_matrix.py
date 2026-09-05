@@ -287,3 +287,78 @@ def test_until_resolves_an_unflagged_request_through_the_matrix_and_the_log_says
     assert result.spawned == 1, result.detail
     assert launched == [("fake", "qwen-local")], "the matrix, not the default factory, chose the launch"
     assert [d["tier"] for d in delegations] == ["cheap"]
+
+
+# ---- PR 2: profile and policy arrive on fleet_status, read once at launch (D9, D10, D14) -----
+
+class _Server:
+    def __init__(self, status=None, fail=False):
+        self.status, self.fail, self.calls = status, fail, 0
+
+    def fleet_status(self, **kw):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("connection refused")
+        return self.status
+
+
+def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
+    from gbfleet.mcp import read_preferences
+
+    profile, policy, note = read_preferences(_Server({
+        "agents": [],
+        "profile": {"user": "u1", "defaults": ["gbagent", "claude"], "weights": {"cost": 1.0}, "excludes": ["grok"]},
+        "policy": {"local_only": True, "reviewer_cross_vendor": False, "allowed_harnesses": []},
+    }))
+    assert profile is not None and profile.user == "u1" and profile.defaults == ("gbagent", "claude")
+    assert profile.excludes == ("grok",) and profile.normalised() == {"cost": 1.0}
+    assert policy.local_only is True and policy.allowed_harnesses == ()
+    assert "u1" in note and "policy on" in note
+
+
+def test_read_preferences_spells_absence_and_unreachability_rather_than_inventing_a_default():
+    from gbfleet.mcp import read_preferences
+
+    profile, policy, note = read_preferences(_Server({"agents": [], "profile": None, "policy": None}))
+    assert profile is None and policy == m.Policy() and "profile: none" in note and "policy: none" in note
+    profile, policy, note = read_preferences(_Server(fail=True))
+    assert profile is None and policy == m.Policy()
+    assert "unreachable" in note and "connection refused" in note
+
+
+def test_spawn_under_the_launch_profile_and_policy_explains_who_and_what_decided(fleet: Fleet, monkeypatch):
+    """Criterion 6 through spawn: the profile's allowlist names no harness the matrix has, so
+    even though `fake` is installed nothing spawns, and the refusal names the profile."""
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (r.harness == "fake", "not here")))
+    fleet.profile = m.Profile(user="alex", defaults=("nobody",))
+    out = _call(fleet, "spawn", tier="cheap", enrolment_code="WORKER-1")
+    assert out.get("isError") and "your profile's defaults or excludes removed every row" in out["content"][0]["text"]
+    assert fleet.children == []
+
+    fleet.profile = m.Profile(user="alex", defaults=("fake", "ghost"), weights={"cost": 1.0})
+    fleet.policy = m.Policy(local_only=True)
+    out = _call(fleet, "spawn", tier="cheap", enrolment_code="WORKER-1")
+    res = out["structuredContent"]["resolution"]
+    assert res["profile"] == {"user": "alex", "defaults": ["fake", "ghost"], "weights": {"cost": 1.0}}
+    assert res["dropped"]["policy"] == ["ghost:x (local_only; would have scored 0.60)"]
+    assert res["winner"]["harness"] == "fake"
+
+
+def test_spawn_passes_the_builders_vendor_into_a_reviewer_resolution(git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch):
+    """Criterion 14 through spawn: under reviewer_cross_vendor the row sharing the builder's
+    vendor is dropped; the other vendor's row runs."""
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
+    seen: list[tuple[str, str]] = []
+
+    def launch_for(name, model="", tuning=None):
+        seen.append((name, model))
+        return _factory(scripts, "works_then_waits", adapter="fake")
+
+    rows = (_row("fake", "anth-review", vendor="anthropic", role="reviewer", tier="frontier", cost_class="frontier"),
+            _row("fake", "xai-review", vendor="xai", role="reviewer", tier="frontier", cost_class="frontier", order=2))
+    f = Fleet(repo=git_repo, workspace=tmp_path / "ws", client=_server(tmp_path / "ws"), launch_for=launch_for,
+              matrix=_matrix(*rows), policy=m.Policy(reviewer_cross_vendor=True))
+    out = _call(f, "spawn", tier="frontier", role="reviewer", builder_vendor="anthropic", enrolment_code="REVIEWER-1")
+    got = out["structuredContent"]
+    assert seen == [("fake", "xai-review")], got
+    assert "reviewer_cross_vendor" in got["resolution"]["dropped"]["policy"][0]

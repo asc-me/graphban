@@ -1,4 +1,4 @@
-import type { Credential, CredentialIn, FleetOverview, FleetPresence, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
+import type { Credential, CredentialIn, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -270,6 +270,19 @@ export const api = {
   // Fleet render pay for node resolution it does not use.
   fleetPresence: (projectId?: string) =>
     request<FleetPresence>(`/fleet/presence${projectId ? `?project_id=${projectId}` : ""}`),
+  // PRD-37: harness preferences (the caller's own) and the project's fleet policy. The server
+  // stores and serves; the supervisor resolves — nothing here picks a harness.
+  fleetProfile: (projectId?: string) =>
+    request<FleetProfileRead>(`/fleet/profile${projectId ? `?project_id=${projectId}` : ""}`),
+  saveFleetProfile: (body: { project_id: string | null; defaults: string[];
+                             weights: Partial<Record<string, number>>; excludes: string[] }) =>
+    request<FleetProfile>("/fleet/profile", { method: "PUT", body: JSON.stringify(body) }),
+  clearFleetProfile: (projectId?: string | null) =>
+    request<{ cleared: boolean }>(`/fleet/profile${projectId ? `?project_id=${projectId}` : ""}`,
+                                  { method: "DELETE" }),
+  saveFleetPolicy: (body: { project_id: string } & FleetPolicy) =>
+    request<{ project_id: string; policy: FleetPolicy | null }>(
+      "/fleet/policy", { method: "PUT", body: JSON.stringify(body) }),
   liveFeed: (projectId: string, agentId: string, limit = 50) => {
     const q = new URLSearchParams({ project_id: projectId, limit: String(limit) });
     return request<LiveFeed>(`/live/${encodeURIComponent(agentId)}/feed?${q.toString()}`);
