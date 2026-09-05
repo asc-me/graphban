@@ -120,6 +120,13 @@ class OllamaEmbedder:
                 payload = r.json()
                 from app.providers import llm_meter
 
+                # No `load_ms` here, and not an oversight: the legacy `/api/embeddings`
+                # returns ONLY `embedding` — no `load_duration`, no `total_duration`, not
+                # even the token count this line hopefully asks for. Verified against
+                # ollama 0.32.15 on ms-s1-ubt, where this is the path the steady background
+                # embeds actually take, so their spans carry a NULL `load_ms` meaning
+                # "nobody said" rather than "loaded instantly". `/api/embed` above does
+                # report it. Do not add a `_load_ms(payload)` call here expecting a number.
                 llm_meter.record_usage(input=payload.get("prompt_eval_count"))
                 return payload["embedding"]
             except Exception as e:  # noqa: BLE001 — retried, then re-raised below
