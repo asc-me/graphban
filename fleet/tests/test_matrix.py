@@ -411,11 +411,12 @@ def test_doctor_shows_measured_cells_per_lane_for_a_row_that_spans_lanes():
 
 # ---- PR 3: the Qwen Code adapter (D13, criterion 16) -----------------------------------------
 
-def test_qwen_code_is_registered_and_its_matrix_row_is_unverified_with_no_model():
+def test_qwen_code_is_registered_and_its_matrix_row_is_verified_by_a_named_walk_with_no_model():
     from gbfleet.adapters import ADAPTERS
     assert "qwen-code" in ADAPTERS and ADAPTERS["qwen-code"].binary == "qwen"
     rows = [r for r in m.load().rows if r.harness == "qwen-code"]
-    assert rows and rows[0].status == "unverified" and rows[0].model == "", (
+    assert rows and rows[0].status == "verified" and rows[0].latest.item == "GRPH-731"
+    assert rows[0].model == "", (
         "qwen 0.23.0 silently replaces an unknown -m with its default; a named model here would be unenforced")
     assert "qwen-code" not in m.unregistered_adapter_files()
 
