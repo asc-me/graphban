@@ -124,3 +124,20 @@ def test_gbagent_is_launched_with_item_only_for_a_bound_seat(tmp_path: Path):
                              tree, tmp_path / "i", tmp_path / "gbagent", model="qwen")
     assert "--item" in bound.argv and bound.argv[bound.argv.index("--item") + 1] == "GRPH-7"
     assert "--item" not in unbound.argv
+
+
+def test_spawn_passes_turns_and_window_through_to_the_tuning(git_repo: Path, tmp_path: Path, scripts, state: Path):
+    """gbagent refuses to guess either (PRD-24 D6/D7), and `spawn` had no way to say them —
+    found by the PRD-36 criterion-18 check: the child exited 2 before registering."""
+    workspace = tmp_path / "ws"
+    seen: list = []
+
+    def launch_for(name, model="", tuning=None):
+        seen.append(tuning)
+        return _factory(scripts, "works_then_waits", adapter=name)
+
+    f = Fleet(repo=git_repo, workspace=workspace, client=_server(workspace), launch_for=launch_for)
+    out = _call(f, "spawn", adapter="fake", enrolment_code="WORKER-1", turns=40, window=262144)
+    assert not out.get("isError"), out
+    assert seen[0].turns == "40" and seen[0].window == "262144"
+    assert seen[0].named() == {"turns", "window"}

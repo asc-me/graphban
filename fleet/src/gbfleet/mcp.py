@@ -108,6 +108,21 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "grok only. Reasoning effort, passed through unvalidated.",
                 },
+                "turns": {
+                    "type": "string",
+                    "description": (
+                        "gbagent only. Turn budget (PRD-24 D6). Required for gbagent: the "
+                        "adapter refuses to guess it, so a gbagent spawn without it exits "
+                        "before registering."
+                    ),
+                },
+                "window": {
+                    "type": "string",
+                    "description": (
+                        "gbagent only. The model's context window in tokens (PRD-24 D7). "
+                        "Required for gbagent, for the same reason as `turns`."
+                    ),
+                },
                 "debug": {
                     "type": "boolean",
                     "description": (
@@ -351,6 +366,8 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 Tuning(
                     fallback_model=args.get("fallback_model") or "",
                     effort=args.get("effort") or "",
+                    turns=str(args.get("turns") or ""),
+                    window=str(args.get("window") or ""),
                 ),
             ),
             fleet.client, fleet.limits,
