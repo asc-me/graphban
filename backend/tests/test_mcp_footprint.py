@@ -81,7 +81,9 @@ CEILING = 14200
 # 14184 -> 14197 (PRD-36). `delegate` gains `seat` and `wave` and returns `enrolment_code`;
 # `register_agent` returns `assigned`. Paid by trimming learning_loop, publish_memory,
 # reject_memory, code_neighbors and fleet_status to the same meaning in fewer words.
-MEASURED_TOKENS = 14197
+# 14197 -> 14192 (GRPH-719). `register_agent` returns `project_id` (+~6); paid by trimming
+# suggest_next and unlink_items. Headroom 8.
+MEASURED_TOKENS = 14192
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

@@ -352,8 +352,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "suggest_next",
         "description": (
-            "Advisory: the single best next item, WITHOUT claiming it (claim_next locks work in a "
-            "loop). Returns {item}; item is null when nothing is ready."
+            "Advisory: the single best next item, WITHOUT claiming it (claim_next locks work). "
+            "Returns {item}; null when nothing is ready."
+        
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -374,9 +375,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "unlink_items",
         "description": (
-            "Remove a typed relationship between two items — the inverse of link_items. Omit "
-            "`type` to remove every link type for the (a, b) pair. Idempotent: returns "
-            "`removed` (0 if the link didn't exist)."
+            "Remove a typed relationship between two items — the inverse of link_items. Omit `type` "
+            "to remove every link type for the pair. Idempotent; returns `removed`."
+        
         ),
         "inputSchema": {
             "type": "object",
@@ -1457,7 +1458,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "active_role": {"type": "string"}, "eligible_roles": {"type": "array"},
             "heartbeat_interval_seconds": {"type": "integer"},
             "presence_ttl_seconds": {"type": "integer"},
-            "assigned": {"type": "object"},
+            "assigned": {"type": "object"}, "project_id": {"type": "string"},
         },
     },
     "retire_wave": {
@@ -2704,6 +2705,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             "presence_ttl_seconds": fleet_svc.presence_ttl_seconds(),
             # PRD-36 D4: what a bound seat handed this agent. `none` on an unbound seat,
             # never a missing key.
+            # GRPH-719: the project this agent was registered on. A spawned child holds a
+            # code and a credential and nothing else; on a key spanning projects it must pass
+            # this on every later call or its reads land on the credential's default.
+            "project_id": agent.project_id,
             "assigned": assigned or {"item": None, "state": "none", "reason": None,
                                      "held_by": None},
         }

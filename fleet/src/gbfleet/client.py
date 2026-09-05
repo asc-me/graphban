@@ -89,6 +89,12 @@ class Graphban:
     #: widening `ALLOWED_TOOLS` to cover a worker, which would hand the supervisor authority
     #: PRD-22 §4 says it must not have, for no reason but sharing a transport.
     allowed: frozenset[str] = ALLOWED_TOOLS
+    #: The project every call names unless the caller names one (GRPH-718/719). A credential
+    #: spanning several projects resolves to its DEFAULT project when a call names none, and
+    #: that is not the project the seat was minted on — the supervisor then polls a roster
+    #: its child never appears on, and the child reads a backlog that is not its own.
+    #: Empty means today's behaviour: the server picks.
+    project_id: str = ""
     _ids: Iterator[int] = field(default_factory=lambda: itertools.count(1), repr=False)
     _http: httpx.Client | None = field(default=None, repr=False)
 
@@ -130,6 +136,8 @@ class Graphban:
                 "`gbagent.coord.WORKER_TOOLS` for the agent. Say why in the same commit."
             )
 
+        if self.project_id and "project_id" not in arguments:
+            arguments = {**arguments, "project_id": self.project_id}
         result = self._rpc("tools/call", {"name": tool, "arguments": arguments}, label=tool)
 
         if result.get("isError"):

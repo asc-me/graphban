@@ -250,6 +250,39 @@ def check_adapter(report: Report, name: str) -> None:
     report.add(f"adapter {name}", PASS, f"{found.binary} — {found.version}")
 
 
+def check_project(report: Report, server: str, api_key: str | None, project: str) -> None:
+    """GRPH-718. A key that reads several projects resolves a call naming none to its
+    DEFAULT, which on the walk was not the project the seats were minted on: the child
+    registered elsewhere and the supervisor polled a roster it never appeared on."""
+    if not api_key:
+        report.add("project", UNKNOWN, "no key to ask with")
+        return
+    client = Graphban(base_url=server, api_key=api_key, allowed=frozenset({"get_context"}))
+    try:
+        ctx = client.call("get_context")
+    except Exception as exc:  # noqa: BLE001 - reported, never fatal here
+        report.add("project", UNKNOWN, f"get_context: {str(exc)[:120]}")
+        return
+    finally:
+        client.close()
+    readable = [p for p in (ctx.get("readable_projects") or []) if isinstance(p, str)]
+    default = ctx.get("project_id")
+    if project:
+        if readable and project not in readable:
+            report.add("project", FAIL, f"--project {project!r} is not readable by this key "
+                       f"(readable: {', '.join(readable)})", "mint a key scoped to that project")
+        else:
+            report.add("project", PASS, f"--project {project}")
+    elif len(readable) > 1:
+        report.add("project", FAIL,
+                   f"this key reads {len(readable)} projects and no --project was given; calls "
+                   f"will land on {default!r}, and a child on a seat minted elsewhere never "
+                   "appears on the roster this supervisor polls",
+                   f"pass --project <id> (one of: {', '.join(readable)})")
+    else:
+        report.add("project", PASS, f"{default} (the key's only project)")
+
+
 def check_server(report: Report, server: str, api_key: str | None) -> None:
     if not api_key:
         report.add("api key", FAIL, "$GBFLEET_API_KEY is not set",
@@ -306,6 +339,7 @@ def run(
     api_key: str | None = None,
     seats_file: str | None = None,
     out=None,
+    project: str = "",
 ) -> Report:
     """Every check that can be made without spawning anything.
 
@@ -334,6 +368,8 @@ def run(
                    "pass --adapter to check the vendor you intend to run")
     if server:
         check_server(report, server, api_key)
+    if server:
+        check_project(report, server, api_key, project)
     else:
         report.add("server reachable", UNKNOWN, "no --server given")
     check_seats(report, seats_file)

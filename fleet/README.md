@@ -94,6 +94,15 @@ bound seats for the seeds it delegates, so the divvy no longer decides what its 
 claim. The outcome comes back through the ledger — the item moving on the board — never as
 a reply in the parent's context.
 
+**Name the project.** A credential that spans several projects resolves a call that names
+none to its *default* project, and that is not where the seats were minted: the child
+registers on the seat's project (the server takes it from the seat), but the supervisor's
+roster read and the child's own reads land elsewhere — the child never appears on the
+roster the supervisor polls and reads a backlog that is not its own. `gbfleet mcp`,
+`gbfleet until` and `gbfleet doctor` take `--project <id>`, named on every call; `doctor`
+fails a multi-project key that gives none. The child learns its project from the
+registration reply and names it afterwards (GRPH-718, GRPH-719).
+
 Vendors and what each of them needs: [`docs/fleet-adapters.md`](https://github.com/asc-me/graphban/blob/main/docs/fleet-adapters.md).
 
 ## Development

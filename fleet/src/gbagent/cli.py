@@ -114,7 +114,7 @@ class NotRegistered(RuntimeError):
     """
 
 
-def register(client, *, code: str, model: str, worktree: str, branch: str) -> tuple[str, str, dict]:
+def register(client, *, code: str, model: str, worktree: str, branch: str) -> tuple[str, str, dict, str]:
     """Redeem the seat and come back with this child's server-side identity.
 
     Takes the client rather than building one, so the wiring is testable without a server —
@@ -152,8 +152,12 @@ def register(client, *, code: str, model: str, worktree: str, branch: str) -> tu
     # PRD-36 D4: what a BOUND seat handed this child. `none` on an unbound seat; a server
     # that predates PRD-36 sends no key, which reads the same as `none` here.
     assigned = me.get("assigned") if isinstance(me.get("assigned"), dict) else {}
+    # GRPH-719: the project this child landed on. Named on every later call, so a credential
+    # spanning several projects does not send the child's reads to its default project.
+    # A server that predates the field sends none, and the client then names nothing.
+    project = str(me.get("project_id") or "")
     return agent_id, role, {"item": assigned.get("item"), "state": assigned.get("state") or "none",
-                            "reason": assigned.get("reason"), "held_by": assigned.get("held_by")}
+                            "reason": assigned.get("reason"), "held_by": assigned.get("held_by")}, project
 
 
 def enrolment_code(instruction: str) -> str:
@@ -254,6 +258,7 @@ def _run(args: argparse.Namespace) -> int:
     # cold worktree look like a broken adapter. Presence-only heartbeats (no item id)
     # keep the roster alive during setup. Do not stretch registration to 900s.
     agent_id = args.agent_id
+    project = ""
     role = ""
     if not agent_id:
         code = enrolment_code(written)
@@ -266,7 +271,7 @@ def _run(args: argparse.Namespace) -> int:
             )
             return 78
         try:
-            agent_id, role, assigned = register(
+            agent_id, role, assigned, project = register(
                 Coordinator.connect(base_url, api_key, item_id="").client,
                 code=code, model=args.model, worktree=str(root), branch=args.branch,
             )
@@ -292,7 +297,7 @@ def _run(args: argparse.Namespace) -> int:
     assignment = assignment_for(args.item, role=role)
     tools = REVIEWER_TOOLS if role == "reviewer" else WORKER_TOOLS
     coordinator = Coordinator.connect(base_url, api_key, item_id=args.item,
-                                      agent_id=agent_id, allowed=tools)
+                                      agent_id=agent_id, allowed=tools, project_id=project)
     heartbeat = Heartbeat(coordinator)
     heartbeat.start()
     session = None
