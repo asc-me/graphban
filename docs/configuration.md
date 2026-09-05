@@ -83,6 +83,7 @@ mail is simply not sent, so an invite can be "issued" and never arrive.
 | `ANTHROPIC_API_KEY` | — | Read by the `anthropic` SDK |
 | `ANTHROPIC_MODEL` | `claude-opus-4-8` | |
 | `OLLAMA_AUTH_KEY` | *(empty)* | Bearer token, for an Ollama behind a reverse proxy |
+| `OLLAMA_KEEP_ALIVE` | *(empty — Ollama's own 5m)* | How long Ollama holds the model resident: `30m`, `1h`, `-1` to pin. Measured cost of a reload: 9.7s for a 24B model, and on a single-slot host nobody else can use those seconds either |
 | `LLM_TIMEOUT_SECONDS` | `90` | Per model call. A local coding model can exceed this |
 | `EMBED_MAX_RETRIES` | `2` | Retries before an embedding write gives up |
 | `REQUIRE_REAL_EMBEDDINGS` | `false` | **Refuses to write a stub vector.** Without it a misconfigured provider silently fills the index with vectors that match nothing |

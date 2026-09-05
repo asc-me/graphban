@@ -24,6 +24,22 @@ def _headers(auth_key: str) -> dict:
     return {"Authorization": f"Bearer {auth_key}"} if auth_key else {}
 
 
+def _keep_alive() -> dict:
+    """`{"keep_alive": ...}` when this install has an opinion, `{}` when it does not.
+
+    Empty is not a value to send: `keep_alive: ""` is not "leave it alone", and Ollama's
+    own default (5m) is the behaviour every install had before this existed. Omitting the
+    key is the only way to say nothing.
+
+    Measured on ms-s1-ubt, where the grill lives: the model unloads in the gap while an
+    author reads the questions, and the next round pays 9.7s reloading 15GB of
+    mistral-small3.1:24b before it can begin — on a ~16s grill, and on a host that serves
+    one request at a time, so that 9.7s is also 9.7s nobody else can use.
+    """
+    v = (settings.ollama_keep_alive or "").strip()
+    return {"keep_alive": v} if v else {}
+
+
 class OllamaEmbedder:
     def __init__(self, base_url: str, model: str, dim: int, auth_key: str = ""):
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
@@ -50,7 +66,7 @@ class OllamaEmbedder:
             r = httpx.post(
                 f"{self.base_url}/api/embed",
                 headers=_headers(self.auth_key),
-                json={"model": self.model, "input": list(texts)},
+                json={"model": self.model, "input": list(texts), **_keep_alive()},
                 timeout=_timeout(),
             )
             r.raise_for_status()
@@ -80,7 +96,7 @@ class OllamaEmbedder:
                 r = httpx.post(
                     f"{self.base_url}/api/embeddings",
                     headers=_headers(self.auth_key),
-                    json={"model": self.model, "prompt": text or ""},
+                    json={"model": self.model, "prompt": text or "", **_keep_alive()},
                     timeout=_timeout(),
                 )
                 r.raise_for_status()
@@ -135,6 +151,7 @@ class OllamaChat:
             headers=_headers(self.auth_key),
             json={"model": self.model, "messages": self._msgs(system, context, question),
                   "stream": True,
+                  **_keep_alive(),
                   # Thinking OFF, explicitly. Reasoning models (qwen3.x) default it on, and
                   # this adapter's contract is a bare `str`: the `message.thinking` stream
                   # is read below only to be dropped. Measured on ubuntu-srv's live grill
