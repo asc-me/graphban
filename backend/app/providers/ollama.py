@@ -24,6 +24,20 @@ def _headers(auth_key: str) -> dict:
     return {"Authorization": f"Bearer {auth_key}"} if auth_key else {}
 
 
+def _load_ms(obj: dict) -> float | None:
+    """Milliseconds this call spent loading the model, or None if the server did not say.
+
+    Ollama reports `load_duration` in NANOSECONDS on the same final line the counts come
+    from. Measured on ms-s1-ubt: cold, 10.24s of an 11.86s call — 86% of it — and warm, a
+    genuine 0.0. Both are facts worth keeping, and they are different facts from an older
+    server that reports neither, which is why absence stays None.
+    """
+    ns = obj.get("load_duration")
+    if not isinstance(ns, (int, float)):
+        return None
+    return round(ns / 1_000_000, 1)
+
+
 def _keep_alive() -> dict:
     """`{"keep_alive": ...}` when this install has an opinion, `{}` when it does not.
 
@@ -74,7 +88,10 @@ class OllamaEmbedder:
             vectors = body.get("embeddings")
             from app.providers import llm_meter
 
-            llm_meter.record_usage(input=body.get("prompt_eval_count"))
+            # The embed model unloads on the same timer the chat model does, and a
+            # re-index that reloads bge-m3 per batch pays it per batch.
+            llm_meter.record_usage(input=body.get("prompt_eval_count"),
+                                   load_ms=_load_ms(body))
             if isinstance(vectors, list) and len(vectors) == len(texts):
                 return vectors
             logger.warning("ollama /api/embed returned %s vectors for %d inputs; falling back "
@@ -178,7 +195,8 @@ class OllamaChat:
                     from app.providers import llm_meter
 
                     llm_meter.record_usage(input=obj.get("prompt_eval_count"),
-                                           output=obj.get("eval_count"))
+                                           output=obj.get("eval_count"),
+                                           load_ms=_load_ms(obj))
                     break
 
     def tool_session(self, *, system: str, context: str, question: str):

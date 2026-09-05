@@ -80,10 +80,17 @@ _sink_var: contextvars.ContextVar[dict | None] = contextvars.ContextVar("llm_usa
 _inside_var: contextvars.ContextVar[bool] = contextvars.ContextVar("llm_inside", default=False)
 
 
-def record_usage(**tokens: int | None) -> None:
-    """Adapter-side hook: report the exact token counts of the call being made now.
+# The sink keys that are TOKEN COUNTS. `tokens_source` is decided by whether any of
+# these arrived, so a non-token measurement landing in the same sink must not be mistaken
+# for one: `load_ms` alone would otherwise stamp a span "reported" with no tokens in it.
+_TOKEN_KEYS = ("input", "output", "cache_read", "cache_write")
 
-    Keys: input, output, cache_read, cache_write. A no-op outside a metered call — this
+
+def record_usage(**tokens: int | None) -> None:
+    """Adapter-side hook: report what the provider said about the call being made now.
+
+    Keys: input, output, cache_read, cache_write — and `load_ms`, how long the provider
+    spent loading the model before it could answer. A no-op outside a metered call — this
     is deliberately not an error, because adapters cannot know whether the object was
     wrapped (a bare OpenAICompatChat built directly in a test is equally legal).
     """
@@ -91,7 +98,7 @@ def record_usage(**tokens: int | None) -> None:
     if sink is not None:
         for k, v in tokens.items():
             if v is not None:
-                sink[k] = int(v)
+                sink[k] = float(v) if k == "load_ms" else int(v)
 
 
 @contextmanager
@@ -236,7 +243,7 @@ def _emit(meta: dict, kind: str, sink: dict, started: float, *,
         for k, v in result.usage.items():  # tool turns carry their usage on the result
             sink.setdefault(k, v)
 
-    reported = bool(sink)
+    reported = any(k in sink for k in _TOKEN_KEYS)
     if reported:
         input_tokens = sink.get("input")
         output_tokens = sink.get("output")
@@ -267,6 +274,8 @@ def _emit(meta: dict, kind: str, sink: dict, started: float, *,
         "cache_write_tokens": sink.get("cache_write"),
         "tokens_source": source,
         "latency_ms": latency_ms,
+        # None when the provider did not say. Absence is not a warm call.
+        "load_ms": sink.get("load_ms"),
         "cost_usd": cost,
         "ok": error is None,
         "error_class": type(error).__name__ if error else "",
@@ -460,6 +469,53 @@ def _wrap_session_factory(factory: Callable, meta: dict) -> Callable:
                 setattr(session, name, _wrap(fn, "tool_turn", bound, gen))
         return session
     return outer
+
+
+# -------------------------------------------------------------------------- reload cost
+# How many recent calls to look at. A window, not all time: the question is "am I paying
+# reloads NOW", and a keep-alive change made this morning must be visible by lunchtime
+# rather than averaged away against last month.
+LOAD_WINDOW = 50
+
+
+def load_summary(db, *, project_id: str, window: int = LOAD_WINDOW) -> dict:
+    """Of the recent calls that REPORTED a load time, how many paid one, and how much.
+
+    Answers the only question that makes a keep-alive setting decidable: is this
+    deployment reloading models, or is the model already resident when calls arrive?
+    Nobody can pick "30m" over "5m" without it, and a knob nobody can set well is a worse
+    product than no knob.
+
+    Spans with `load_ms IS NULL` are EXCLUDED, not counted as zero. A provider that never
+    reports loading (Anthropic, OpenAI) would otherwise dilute the share toward zero and
+    report a reloading box as healthy — the same absence-as-clean failure this column was
+    added with a NULL to avoid. `reporting` says how many rows the answer rests on, so a
+    caller can tell "no reloads" from "nothing that can measure one".
+    """
+    from sqlalchemy import select
+
+    from app.models import LlmCallSpan
+
+    # `project_id` is REQUIRED, not an optional narrowing. An unscoped answer is a
+    # cross-tenant read on a hosted box — the count alone reports how busy the other orgs
+    # are — so the route vets a project first and there is no "all of it" to ask for.
+    rows = db.execute(
+        select(LlmCallSpan.load_ms, LlmCallSpan.provider, LlmCallSpan.model)
+        .where(LlmCallSpan.load_ms.is_not(None), LlmCallSpan.project_id == project_id)
+        .order_by(LlmCallSpan.ts.desc())
+        .limit(window)
+    ).all()
+    reloads = [r for r in rows if (r.load_ms or 0) > 0]
+    return {
+        "window": window,
+        "reporting": len(rows),
+        "reloads": len(reloads),
+        "reload_ms_total": round(sum(r.load_ms for r in reloads), 1),
+        "worst_ms": round(max((r.load_ms for r in reloads), default=0.0), 1),
+        # Which model is actually costing the time — on a box with a 24B chat model and a
+        # small embed model, one of them is nearly all of it and they need different answers.
+        "models": sorted({f"{r.provider}:{r.model}" for r in reloads}),
+    }
 
 
 # -------------------------------------------------------------------------- housekeeping

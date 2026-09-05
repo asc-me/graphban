@@ -118,8 +118,12 @@ vi.mock("@/lib/api", () => ({
     setProjectCredential: (p: string, body: Record<string, unknown>) =>
       setProjectCredential(p, body),
     setProjectRoles: vi.fn(async () => ({ project_id: "core", chat_roles: {}, known_roles: [] })),
+    modelLoads: vi.fn(async (_projectId: string) => loads),
   },
 }));
+
+let loads = { window: 50, reporting: 0, reloads: 0, reload_ms_total: 0, worst_ms: 0,
+              models: [] as string[] };
 
 function show() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -719,5 +723,39 @@ describe("collapsing, health, editing and overrides", () => {
     expect(setProjectCredential).toHaveBeenCalledWith("core", {
       credential_id: null, model_override: "",
     });
+  });
+});
+
+
+describe("the model-load reading (why OLLAMA_KEEP_ALIVE is not a field here)", () => {
+  it("says what reloading is costing, and what to set", async () => {
+    loads = { window: 50, reporting: 40, reloads: 11, reload_ms_total: 94300,
+              worst_ms: 10240, models: ["ollama:mistral-small3.1:24b"] };
+    show();
+    expect(await screen.findByText(/11 of the last 40 measured calls/)).toBeInTheDocument();
+    expect(screen.getByText(/94.3s in total, worst 10.2s/)).toBeInTheDocument();
+    expect(screen.getByText("OLLAMA_KEEP_ALIVE")).toBeInTheDocument();
+  });
+
+  it("says so plainly when the model is already resident", async () => {
+    loads = { window: 50, reporting: 40, reloads: 0, reload_ms_total: 0, worst_ms: 0, models: [] };
+    show();
+    expect(await screen.findByText(/None of the last 40 measured calls/)).toBeInTheDocument();
+    expect(screen.getByText(/Nothing to tune/)).toBeInTheDocument();
+  });
+
+  it("stays silent when nothing could measure a load", async () => {
+    /** Zero reloads out of zero measurable calls is not a clean bill of health. Anthropic
+     *  and OpenAI never report loading at all, so "no reloads" on a box that only talks to
+     *  them would be a claim about something nobody looked at. */
+    loads = { window: 50, reporting: 0, reloads: 0, reload_ms_total: 0, worst_ms: 0, models: [] };
+    show();
+    await screen.findByText("Credentials");
+    // Absence is only evidence AFTER the answer has landed. Asserting it straight away
+    // passes whether the panel is silent or simply has not been told anything yet — which
+    // it did, silently, until a sabotage that rendered the block failed to fail.
+    await waitFor(() => expect(vi.mocked(api.modelLoads)).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText("Credentials")).toBeInTheDocument());
+    expect(screen.queryByText("Model loading")).not.toBeInTheDocument();
   });
 });

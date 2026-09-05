@@ -361,6 +361,14 @@ export function useGrillState(id: string) {
  * will not converge had the exit only over HTTP. Invalidates the PRD too: a deferral can
  * be what completes the grill, and completing it moves `status` to `approved`.
  */
+export function useModelLoads(projectId: string) {
+  return useQuery({
+    queryKey: ["model-loads", projectId],
+    queryFn: () => api.modelLoads(projectId),
+    enabled: !!projectId,
+  });
+}
+
 export function useGrillDefer(id: string) {
   const qc = useQueryClient();
   return useMutation({

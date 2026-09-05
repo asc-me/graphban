@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 116 of the 189 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 117 of the 190 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -244,6 +244,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | GET | `/api/platform/credentials` | JWT | Every credential in the caller's scope with `state`, derived `used_by`, and `falling_back` — projects pointing here that are NOT getting it because the row is unreachable or out of scope (PRD-25 §4). Never returns a key, only `key_set` |
 | POST | `/api/platform/credentials` | JWT |
 | PATCH / DELETE | `/api/platform/credentials/{id}` | JWT | Add, edit (rotation is an edit — the row id never moves) or remove a credential. `409` naming every referencing project and role while anything points at it |
+| GET | `/api/platform/model-loads` | JWT | Scoped to a `project_id` the caller can read — box-wide would be a cross-tenant read, since the count alone reports how much traffic other orgs put through the box. Whether this box is paying to reload models between calls: of the recent spans that could MEASURE a load, how many waited and for how long. Spans whose provider does not report loading are excluded, not counted as warm — `reporting` says how many rows the answer rests on, so zero reloads out of zero measurable calls is distinguishable from a clean bill of health. The reading behind `OLLAMA_KEEP_ALIVE` |
 | POST / GET | `/api/platform/reindex` | JWT | Start a re-index of every embedded row in the scope, or read its per-table progress (PRD-25 S4b) |
 | POST | `/api/platform/credentials/{id}/retry` | JWT |
 | PUT | `/api/platform/credentials/defaults` | JWT | Set the scope's default / fallback / embedding credential. `422` for one that has never been validated |
