@@ -365,3 +365,14 @@ def test_registering_on_a_seat_without_naming_a_project_lands_on_the_seats_proje
     # A project named explicitly still wins, and a seat from elsewhere is still refused there.
     e = _mcp(client, wide, "register_agent", {"label": "x", "enrolment_code": out["enrolment_code"], "project_id": other})
     assert e.get("isError")
+
+
+def test_the_registration_reply_names_the_project_the_agent_landed_on(client, auth, proj, db):
+    """GRPH-719: the child's later calls need a project to name; the reply is where it learns it."""
+    reg = _ok(_mcp(client, key_for(client, auth, proj), "register_agent", {"label": "who-am-i"}))
+    assert reg["project_id"] == proj
+
+
+def key_for(client, auth, proj):
+    return client.post("/api/api-keys", json={"name": "k", "project_id": proj,
+                                              "scopes": ["read", "write"]}, headers=auth).json()["plaintext"]

@@ -354,7 +354,8 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 8892
+CORE_TOKENS = 8887
+# 8892 -> 8887 (GRPH-719): register_agent's `project_id` output, minus two core description trims.
 # 8891 -> 8892 (PRD-36): `assigned` on register_agent's output, `code_neighbors` trimmed.
 # 9076 -> 8891 (PRD-35). `brief` on get_item_details adds ~10; the trims that paid for the
 # `delegate` tool in the full manifest (see test_mcp_footprint.MEASURED_TOKENS) landed

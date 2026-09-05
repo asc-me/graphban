@@ -138,6 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
     doc.add_argument("--workspace", default=None, help="where worktrees would go")
     doc.add_argument("--adapter", default="", help="vendor you intend to run")
     doc.add_argument("--server", default="", help="Graphban base URL")
+    doc.add_argument("--project", default="", help="the Graphban project this fleet works; named on every call so a credential spanning several projects lands where the seats were minted (GRPH-718)")
     doc.add_argument("--seats-file", default=None, help="seats file `up` would read")
 
     stdio = sub.add_parser(
@@ -155,6 +156,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     stdio.add_argument("--repo", default=".", help="repository to supervise (default: cwd)")
     stdio.add_argument("--server", required=True, help="Graphban base URL")
+    stdio.add_argument("--project", default="", help="the Graphban project this fleet works; named on every call so a credential spanning several projects lands where the seats were minted (GRPH-718)")
     stdio.add_argument("--workspace", default=None, help="where worktrees go")
     stdio.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     stdio.add_argument(
@@ -177,6 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     until.add_argument("--repo", default=".", help="repository to supervise (default: cwd)")
     until.add_argument("--server", required=True, help="Graphban base URL")
+    until.add_argument("--project", default="", help="the Graphban project this fleet works; named on every call so a credential spanning several projects lands where the seats were minted (GRPH-718)")
     until.add_argument(
         "--seats-file", default=None,
         help="optional pre-minted enrolment codes, consumed before minting",
@@ -379,8 +382,8 @@ def _until(args) -> int:
     if args.seats_file:
         pool = read_seats(args.seats_file, args.server, api_key)
 
-    planner = Graphban(base_url=args.server, api_key=api_key, allowed=PLANNER_TOOLS)
-    supervisor = Graphban(base_url=args.server, api_key=api_key, allowed=ALLOWED_TOOLS)
+    planner = Graphban(base_url=args.server, api_key=api_key, allowed=PLANNER_TOOLS, project_id=args.project)
+    supervisor = Graphban(base_url=args.server, api_key=api_key, allowed=ALLOWED_TOOLS, project_id=args.project)
     try:
         result = run_until(
             Path(args.repo),
@@ -432,7 +435,7 @@ def _serve_stdio(args) -> int:
         return 2
 
     repo = Path(args.repo)
-    client = Graphban(base_url=args.server, api_key=api_key, allowed=SPAWN_READS)
+    client = Graphban(base_url=args.server, api_key=api_key, allowed=SPAWN_READS, project_id=args.project)
     try:
         root = repo_root(repo)
     except NotARepository as exc:
@@ -494,6 +497,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             server=args.server,
             api_key=os.environ.get(API_KEY_ENV),
             seats_file=args.seats_file,
+            project=args.project,
         )
         # FAIL only. An UNKNOWN is loud in the report and does not stop a run — refusing
         # on a check that could not be made would ground the fleet on a slow network.
@@ -526,7 +530,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"gbfleet up: no seats in {args.seats_file}", file=sys.stderr)
         return 2
 
-    client = Graphban(base_url=args.server, api_key=api_key, allowed=SPAWN_READS)
+    client = Graphban(base_url=args.server, api_key=api_key, allowed=SPAWN_READS, project_id=args.project)
     try:
         wave = up(
             Path(args.repo),
