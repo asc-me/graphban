@@ -579,7 +579,8 @@ def restore_on_work(db: Session, agent_id: str) -> None:
 
 def fleet_status(db: Session, project_id: str | None = None, *,
                  lease_seconds: int = DEFAULT_LEASE_SECONDS,
-                 minted_by: str | None = None) -> dict:
+                 minted_by: str | None = None,
+                 caller_user_id: str | None = None) -> dict:
     """The roster plus the clock every member must obey.
 
     The intervals travel WITH the roster on purpose: an agent that does not know the
@@ -595,7 +596,13 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     what made the transition invisible.
 
     Omitted when not asked for, so nothing changes for an agent that does not mint.
+
+    `caller_user_id` is the API key's owner (PRD-37 D14): their harness profile and the
+    project's fleet policy ride on this roster because it is the call a supervisor already
+    makes on every tick — no new tool, no schema property.
     """
+    from app.services import fleet_profiles
+
     agents = list_agents(db, project_id, lease_seconds=lease_seconds)
     live = [a for a in agents if a["state"] != "offline"]
     # Counted BY ROLE, not just totalled. "4 agents online" is the same number whether it is a
@@ -616,6 +623,7 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         "roles": list(ROLES),
         "presence_ttl_seconds": presence_ttl_seconds(lease_seconds),
         "heartbeat_interval_seconds": heartbeat_interval_seconds(lease_seconds),
+        **fleet_profiles.attach(db, {}, user_id=caller_user_id, project_id=project_id),
     }
 
 

@@ -12,7 +12,8 @@ import { errorDetail } from "@/lib/errors";
 import { useFleet } from "@/lib/queries";
 import { settingsPath } from "@/lib/routes";
 import { WAVE_ROLES } from "./wave";
-import type { FleetAgent } from "@/lib/types";
+import type { FleetAgent, FleetPolicy, FleetProfile } from "@/lib/types";
+import { FLEET_AXES } from "@/lib/types";
 
 /**
  * The Fleet view (PRD-17 D5).
@@ -869,6 +870,14 @@ export function FleetView() {
           )}
         </Section>
 
+        <Preferences
+          projectId={activeId}
+          scope={scope}
+          profile={data?.profile ?? null}
+          policy={data?.policy ?? null}
+          onSaved={() => { void refetch(); }}
+        />
+
           </>
         )}
 
@@ -1062,6 +1071,189 @@ export function FleetView() {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * PRD-37: what the supervisor weighs when a tier has no `--tier` flag. Two boxes, two
+ * owners. PREFERENCES are the signed-in user's — an ordered allowlist of harnesses and
+ * weights over four axes — and apply wherever their API key runs a supervisor, with a
+ * per-project override. POLICY is the project's and is a FILTER: a rule taste cannot outvote.
+ *
+ * Nothing here chooses a harness. The matrix of what is verified lives in the supervisor's
+ * repository and the machine decides what is installed; this view records taste and rules,
+ * and the spawn reply explains what they did.
+ */
+function Preferences({ projectId, scope, profile, policy, onSaved }: {
+  projectId: string; scope: string; profile: FleetProfile | null; policy: FleetPolicy | null;
+  onSaved: () => void;
+}) {
+  const [defaults, setDefaults] = React.useState("");
+  const [excludes, setExcludes] = React.useState("");
+  const [weights, setWeights] = React.useState<Record<string, number>>({});
+  const [overrideHere, setOverrideHere] = React.useState(false);
+  const [localOnly, setLocalOnly] = React.useState(false);
+  const [crossVendor, setCrossVendor] = React.useState(false);
+  const [allowed, setAllowed] = React.useState("");
+  const [note, setNote] = React.useState("");
+  const [error, setError] = React.useState("");
+
+  // The form follows the SERVER's answer, not its own last edit: after a save the payload
+  // comes back through the fleet read, and a stale form beside a fresh badge would be two
+  // answers to "what is my profile".
+  React.useEffect(() => {
+    setDefaults((profile?.defaults ?? []).join(", "));
+    setExcludes((profile?.excludes ?? []).join(", "));
+    setWeights({ ...(profile?.weights ?? {}) });
+    setOverrideHere(profile?.scope === "project");
+  }, [profile]);
+  React.useEffect(() => {
+    setLocalOnly(policy?.local_only ?? false);
+    setCrossVendor(policy?.reviewer_cross_vendor ?? false);
+    setAllowed((policy?.allowed_harnesses ?? []).join(", "));
+  }, [policy]);
+
+  const names = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
+
+  async function saveProfile() {
+    setError(""); setNote("");
+    try {
+      const saved = await api.saveFleetProfile({
+        project_id: overrideHere ? projectId : null,
+        defaults: names(defaults), excludes: names(excludes), weights,
+      });
+      setNote(saved.scope === "project"
+        ? `Saved for ${scope} only. Your default profile still applies elsewhere.`
+        : "Saved as your default. It applies in every project without an override.");
+      onSaved();
+    } catch (e) {
+      setError(errorDetail(e, "could not save the profile"));
+    }
+  }
+
+  async function clearOverride() {
+    setError(""); setNote("");
+    try {
+      const out = await api.clearFleetProfile(projectId);
+      setNote(out.cleared ? `Override for ${scope} removed; your default applies here again.`
+                          : "There was no override here to remove.");
+      onSaved();
+    } catch (e) {
+      setError(errorDetail(e, "could not clear the override"));
+    }
+  }
+
+  async function savePolicy() {
+    setError(""); setNote("");
+    try {
+      const out = await api.saveFleetPolicy({
+        project_id: projectId, local_only: localOnly, reviewer_cross_vendor: crossVendor,
+        allowed_harnesses: names(allowed),
+      });
+      setNote(out.policy ? `Policy saved for ${scope}.` : `Policy cleared for ${scope}: no constraint.`);
+      onSaved();
+    } catch (e) {
+      setError(errorDetail(e, "could not save the policy"));
+    }
+  }
+
+  const field = "h-8 w-full rounded-md border border-line-2 bg-transparent px-2 text-[12.5px]";
+  return (
+    <Section
+      title="Harness preferences"
+      desc={
+        <>
+          What a supervisor weighs when a tier has no <code>--tier</code> flag (PRD-37). Preferences
+          are yours and travel with your API key; policy is the project&apos;s and is a filter a
+          preference cannot outvote. The spawn reply explains what each one did.
+        </>
+      }
+    >
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="rounded-[11px] border border-line-2 p-3" data-testid="fleet-profile">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[12.5px] font-medium">Your profile</span>
+            <span className="text-[11px] text-muted" data-testid="fleet-profile-scope">
+              {profile ? (profile.scope === "project" ? `override for ${scope}` : "your default")
+                       : "none recorded — matrix order and policy alone"}
+            </span>
+          </div>
+          <label className="block text-[11.5px] text-muted">
+            Harnesses to consider, in order (empty = all)
+            <input className={field} aria-label="Default harnesses" value={defaults}
+                   onChange={(e) => setDefaults(e.target.value)} placeholder="gbagent, claude" />
+          </label>
+          <label className="mt-2 block text-[11.5px] text-muted">
+            Never use
+            <input className={field} aria-label="Excluded harnesses" value={excludes}
+                   onChange={(e) => setExcludes(e.target.value)} placeholder="grok, gbagent:qwen3-coder:30b" />
+          </label>
+          <div className="mt-2 grid grid-cols-4 gap-2">
+            {FLEET_AXES.map((axis) => (
+              <label key={axis} className="block text-[11.5px] capitalize text-muted">
+                {axis}
+                <input className={field} type="number" min={0} max={1} step={0.05}
+                       aria-label={`Weight ${axis}`}
+                       value={weights[axis] ?? ""}
+                       onChange={(e) => {
+                         const v = e.target.value;
+                         setWeights((w) => {
+                           const next = { ...w };
+                           if (v === "") delete next[axis]; else next[axis] = Number(v);
+                           return next;
+                         });
+                       }} />
+              </label>
+            ))}
+          </div>
+          <p className="mt-1 text-[11px] text-muted">
+            Weights are 0–1 and normalised; blank or 0 means indifferent, not excluded. Measured
+            axes (quality, latency) count only once five attempts exist.
+          </p>
+          <label className="mt-2 flex items-center gap-2 text-[12px]">
+            <input type="checkbox" checked={overrideHere} onChange={(e) => setOverrideHere(e.target.checked)} />
+            Save for {scope} only (override my default here)
+          </label>
+          <div className="mt-2 flex gap-2">
+            <Button size="sm" onClick={() => { void saveProfile(); }}>Save profile</Button>
+            {profile?.scope === "project" && (
+              <Button size="sm" variant="ghost" onClick={() => { void clearOverride(); }}>Remove override</Button>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-[11px] border border-line-2 p-3" data-testid="fleet-policy">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[12.5px] font-medium">Project policy</span>
+            <span className="text-[11px] text-muted" data-testid="fleet-policy-state">
+              {policy ? "constraints on" : "no constraint"}
+            </span>
+          </div>
+          <label className="flex items-center gap-2 text-[12px]">
+            <input type="checkbox" checked={localOnly} onChange={(e) => setLocalOnly(e.target.checked)} />
+            Local only — no cloud harness or model
+          </label>
+          <label className="mt-1 flex items-center gap-2 text-[12px]">
+            <input type="checkbox" checked={crossVendor} onChange={(e) => setCrossVendor(e.target.checked)} />
+            Reviewer from a different vendor than the builder
+          </label>
+          <label className="mt-2 block text-[11.5px] text-muted">
+            Allowed harnesses (empty = any)
+            <input className={field} aria-label="Allowed harnesses" value={allowed}
+                   onChange={(e) => setAllowed(e.target.value)} placeholder="gbagent, claude" />
+          </label>
+          <p className="mt-1 text-[11px] text-muted">
+            A constraint removes rows before anything is scored. Saving with everything off
+            stores no policy at all.
+          </p>
+          <div className="mt-2">
+            <Button size="sm" onClick={() => { void savePolicy(); }}>Save policy</Button>
+          </div>
+        </div>
+      </div>
+      {note && <p className="mt-2 text-[12px] text-muted" role="status">{note}</p>}
+      {error && <p className="mt-2 text-[12px] text-red-500" role="alert">{error}</p>}
+    </Section>
   );
 }
 

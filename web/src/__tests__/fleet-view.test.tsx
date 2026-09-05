@@ -17,6 +17,9 @@ const api = vi.hoisted(() => ({
   revokeKey: vi.fn(),
   issueSeats: vi.fn(),
   reissueSeat: vi.fn(),
+  saveFleetProfile: vi.fn(),
+  clearFleetProfile: vi.fn(),
+  saveFleetPolicy: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({ api }));
 
@@ -51,6 +54,7 @@ const BASE = {
   by_role: {}, posture: "single-agent",
   presence_ttl_seconds: 150, heartbeat_interval_seconds: 50,
   review_queue: [], clusters: [], seats: [], credentials: [], waves: ["wave-1"],
+  profile: null, policy: null,
 };
 
 /**
@@ -826,5 +830,93 @@ describe("Fleet view", () => {
     fleet.data = { ...BASE };
     renderView();
     expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\s*core/);
+  });
+});
+
+
+// ---- PRD-37: preferences and policy (criterion 3, the view half) ---------------------------
+
+describe("harness preferences", () => {
+  beforeEach(() => {
+    api.saveFleetProfile.mockReset();
+    api.saveFleetPolicy.mockReset();
+    api.clearFleetProfile.mockReset();
+    fleet.refetch.mockReset();
+  });
+
+  it("says plainly when no profile is recorded rather than showing an empty one as a choice", async () => {
+    fleet.data = { ...BASE };
+    const user = userEvent.setup();
+    renderView();
+    await openWave(user);
+    expect(screen.getByTestId("fleet-profile-scope").textContent).toMatch(/none recorded/);
+    expect(screen.getByTestId("fleet-policy-state").textContent).toMatch(/no constraint/);
+  });
+
+  it("renders the stored profile and policy and names the override scope", async () => {
+    fleet.data = {
+      ...BASE,
+      profile: { user: "u1", project_id: "core", scope: "project", defaults: ["gbagent", "claude"],
+                 weights: { cost: 1, quality: 0.25 }, excludes: ["grok"], updated_at: null },
+      policy: { local_only: true, reviewer_cross_vendor: false, allowed_harnesses: ["gbagent"] },
+    };
+    const user = userEvent.setup();
+    renderView();
+    await openWave(user);
+    expect(screen.getByTestId("fleet-profile-scope").textContent).toMatch(/override for core/);
+    expect((screen.getByLabelText("Default harnesses") as HTMLInputElement).value).toBe("gbagent, claude");
+    expect((screen.getByLabelText("Excluded harnesses") as HTMLInputElement).value).toBe("grok");
+    expect((screen.getByLabelText("Weight cost") as HTMLInputElement).value).toBe("1");
+    expect((screen.getByLabelText("Allowed harnesses") as HTMLInputElement).value).toBe("gbagent");
+    expect((screen.getByLabelText(/Local only/) as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole("button", { name: /Remove override/ })).toBeTruthy();
+  });
+
+  it("saves the profile with parsed names and weights, then refetches the fleet read", async () => {
+    fleet.data = { ...BASE };
+    api.saveFleetProfile.mockResolvedValue({ scope: "default" });
+    const user = userEvent.setup();
+    renderView();
+    await openWave(user);
+    await user.type(screen.getByLabelText("Default harnesses"), "gbagent, claude");
+    await user.type(screen.getByLabelText("Weight cost"), "1");
+    await user.click(screen.getByRole("button", { name: /Save profile/ }));
+    await waitFor(() => expect(api.saveFleetProfile).toHaveBeenCalledTimes(1));
+    expect(api.saveFleetProfile.mock.calls[0][0]).toEqual({
+      project_id: null, defaults: ["gbagent", "claude"], excludes: [], weights: { cost: 1 },
+    });
+    expect(fleet.refetch).toHaveBeenCalled();
+    expect(screen.getByRole("status").textContent).toMatch(/Saved as your default/);
+  });
+
+  it("saves an override for the active project when asked, and the policy with the project id", async () => {
+    fleet.data = { ...BASE };
+    api.saveFleetProfile.mockResolvedValue({ scope: "project" });
+    api.saveFleetPolicy.mockResolvedValue({ project_id: "core", policy: { local_only: true, reviewer_cross_vendor: false, allowed_harnesses: [] } });
+    const user = userEvent.setup();
+    renderView();
+    await openWave(user);
+    await user.click(screen.getByLabelText(/Save for core only/));
+    await user.click(screen.getByRole("button", { name: /Save profile/ }));
+    await waitFor(() => expect(api.saveFleetProfile).toHaveBeenCalledTimes(1));
+    expect(api.saveFleetProfile.mock.calls[0][0].project_id).toBe("core");
+
+    await user.click(screen.getByLabelText(/Local only/));
+    await user.click(screen.getByRole("button", { name: /Save policy/ }));
+    await waitFor(() => expect(api.saveFleetPolicy).toHaveBeenCalledTimes(1));
+    expect(api.saveFleetPolicy.mock.calls[0][0]).toEqual({
+      project_id: "core", local_only: true, reviewer_cross_vendor: false, allowed_harnesses: [],
+    });
+  });
+
+  it("shows the server's refusal instead of pretending the save happened", async () => {
+    fleet.data = { ...BASE };
+    api.saveFleetProfile.mockRejectedValue(new Error("weight cost must be between 0 and 1, got 1.5"));
+    const user = userEvent.setup();
+    renderView();
+    await openWave(user);
+    await user.click(screen.getByRole("button", { name: /Save profile/ }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/between 0 and 1/));
+    expect(fleet.refetch).not.toHaveBeenCalled();
   });
 });
