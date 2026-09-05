@@ -27,7 +27,8 @@ function state(over: Partial<GrillState> = {}): GrillState {
   return {
     prd_id: "AL-P15", turns: [], questions: 4, answers: 3, grilled: true,
     dimensions: dims, outstanding: ["open_decisions"], deferred: ["contracts"],
-    complete: false, graded: true, ungraded_reason: "", ...over,
+    complete: false, graded: true, ungraded_reason: "",
+    stall: { answers_since_progress: 0, stalled: false, since_seq: 0 }, ...over,
   };
 }
 
@@ -157,5 +158,35 @@ describe("deferring from the panel (AL-298)", () => {
     expect(screen.getByRole("button", { name: "Defer" })).toBeDisabled();
     await user.keyboard("{Enter}");
     expect(grillDefer).not.toHaveBeenCalled();
+  });
+});
+
+describe("a grill that has stopped moving", () => {
+  const stuck = { answers_since_progress: 4, stalled: true, since_seq: 2 };
+
+  it("names the standstill and both real ways out", () => {
+    show(state({ stall: stuck }));
+    expect(screen.getByText("4 answers, nothing moved.")).toBeInTheDocument();
+    // The two exits that exist. Approving is not among them, deliberately.
+    expect(screen.getByText(/Defer a dimension with a reason/)).toBeInTheDocument();
+    expect(screen.getByText(/chat model/)).toBeInTheDocument();
+  });
+
+  it("stays quiet while the grill is moving", () => {
+    show();
+    expect(screen.queryByText(/nothing moved/)).not.toBeInTheDocument();
+  });
+
+  it("does not blame the author for a grader that was never asked", () => {
+    /** An ungraded round cannot move a dimension, so it looks exactly like a stall.
+     *  Saying both points at the answers for something the outage did. */
+    show(state({ stall: stuck, graded: false, ungraded_reason: "the ollama grader could not be asked." }));
+    expect(screen.getByText("Not judged this round.")).toBeInTheDocument();
+    expect(screen.queryByText(/nothing moved/)).not.toBeInTheDocument();
+  });
+
+  it("stays quiet once the grill is finished", () => {
+    show(state({ stall: stuck, complete: true, outstanding: [] }));
+    expect(screen.queryByText(/nothing moved/)).not.toBeInTheDocument();
   });
 });

@@ -551,9 +551,15 @@ def set_dimension(
             GrillDimension.prd_id == prd_id, GrillDimension.dimension == dimension
         )
     )
+    # Absence IS `unanswered`, so writing an unanswered verdict onto a dimension that had
+    # no row is not progress — it is the same standing still, now with a row. Only a real
+    # change of outcome moves the mark.
+    before = row.outcome if row is not None else _BLOCKING
     if row is None:
         row = GrillDimension(prd_id=prd_id, dimension=dimension, outcome=outcome)
         db.add(row)
+    if before != outcome:
+        _mark_progress(db, prd_id)
     row.outcome = outcome
     row.note = note
     row.turn_seq = turn_seq
@@ -561,6 +567,59 @@ def set_dimension(
     db.commit()
     db.refresh(row)
     return row
+
+
+# How many answers may land without moving anything before the grill is failing to
+# converge. Two is an ordinary round — a question gets a partial answer and is asked
+# again. Three is a pattern, and by then an author has typed three answers into a grill
+# that is telling them nothing.
+STALL_AFTER_ANSWERS = 3
+
+
+def _mark_progress(db: Session, prd_id: str) -> None:
+    """Record that the grill just moved: nothing up to here counts as a stalled answer.
+
+    Stored as the seq of the NEXT turn, so the default 0 means "counting from the start"
+    rather than "moved at turn 0" — seq 0 is a real turn, and a mark that cannot tell
+    those apart is one more absence reading as a result.
+    """
+    prd = db.get(Prd, prd_id)
+    if prd is None:
+        return
+    last = db.scalar(select(func.max(GrillTurn.seq)).where(GrillTurn.prd_id == prd_id))
+    prd.grill_progress_seq = 0 if last is None else last + 1
+
+
+def stall(db: Session, prd_id: str) -> dict:
+    """Answers given since anything last moved, and whether that has become a pattern.
+
+    The loop this names: the grill keeps asking, the author keeps answering, no dimension
+    changes, and every surface reports the same unchanged outcomes as though the last
+    answer simply had not been good enough. Nothing was broken and nothing said so.
+
+    This DIAGNOSES; it decides nothing. It cannot approve, cannot defer, and cannot grade
+    — the two real moves out of a stall are the author's (defer a dimension) and the
+    operator's (fix the grader), and a signal that quietly made either of them would be
+    the escalation-to-approved this deliberately is not.
+    """
+    prd = db.get(Prd, prd_id)
+    if prd is None:
+        return {"answers_since_progress": 0, "stalled": False, "since_seq": 0}
+    # A rebaseline moves the evidence window past old progress; answers are counted
+    # inside the current interrogation only, exactly as `completion` grades it.
+    window = grill_window(db, prd_id)
+    since = max(prd.grill_progress_seq, window)
+    answers = db.scalar(
+        select(func.count()).select_from(GrillTurn).where(
+            GrillTurn.prd_id == prd_id, GrillTurn.role == "user",
+            GrillTurn.seq >= since,
+        )
+    ) or 0
+    return {
+        "answers_since_progress": answers,
+        "stalled": answers >= STALL_AFTER_ANSWERS,
+        "since_seq": since,
+    }
 
 
 def completion(db: Session, prd_id: str, *, graded: bool = True, ungraded_reason: str = "") -> dict:
@@ -2729,6 +2788,10 @@ def grill_state(db: Session, prd_id: str) -> dict:
         # of the grill was left to infer it from outcomes that had not moved.
         "graded": done["graded"],
         "ungraded_reason": done["ungraded_reason"],
+        # Answers that moved nothing (GRPH-P15 follow-up). A grill can be perfectly
+        # healthy and still be going nowhere; nothing before this could say so, so the
+        # author was left to notice it themselves after the fourth or fifth round.
+        "stall": stall(db, prd_id),
         # Whether the BODY has caught up with what the grill settled (GRPH-430). A finished
         # grill and a stale document look identical from every downstream surface, so the
         # one place that knows both says so.
