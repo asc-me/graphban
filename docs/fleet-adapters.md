@@ -562,3 +562,13 @@ not.
 
 Refusing is loud and takes ten seconds to fix. Writing the seat anyway is silent and
 changes what every worker in the fleet is allowed to do.
+
+## Verified on the deployed instance
+
+On 2026-09-05 a session delegated GRPH-731 to a bound seat and gbfleet resolved the
+cheap tier through the preference matrix with no `--tier` flag. The resolution was
+automatic: the seat carried the tier from the ledger, the supervisor looked it up in
+`matrix.toml`, and the child started on the harness and model that row names — no
+caller intervention, no override. The whole path from delegation to a running worker
+is what this document describes, and it worked end to end on a live server with real
+items.
