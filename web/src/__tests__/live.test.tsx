@@ -191,27 +191,35 @@ describe("Live board", () => {
     renderLive();
     expect(await screen.findByText("busy-one")).toBeInTheDocument();
     expect(screen.getByText("dead-holder")).toBeInTheDocument();
-    expect(screen.getByText("orphan-branch")).toBeInTheDocument();
     expect(screen.getByText("unclaimed-delegator")).toBeInTheDocument();
-    // Collapsed, and the count is stated — never a silent omission.
+    // Collapsed, and each count is stated — never a silent omission. Two groups, because an
+    // orphaned branch is a fact worth its own number (78 of 134 on the deployed board).
     expect(screen.queryByText("quiet-one")).not.toBeInTheDocument();
     expect(screen.queryByText("quiet-two")).not.toBeInTheDocument();
+    expect(screen.queryByText("orphan-branch")).not.toBeInTheDocument();
+    const orphanToggle = screen.getByRole("button", { name: /1 offline agent with only an orphaned branch/ });
     const toggle = screen.getByRole("button", { name: /2 offline agents holding nothing/ });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("quiet-one")).toBeInTheDocument();
     expect(screen.getByText("quiet-two")).toBeInTheDocument();
+    expect(screen.queryByText("orphan-branch")).not.toBeInTheDocument();
+    fireEvent.click(orphanToggle);
+    expect(screen.getByText("orphan-branch")).toBeInTheDocument();
     // The header counts still come from the server: 1 online of 6.
     expect(screen.getByText("1/6")).toBeInTheDocument();
   });
 
-  it("does not render the collapse when every offline agent holds something", async () => {
-    const holder = agent({ id: "h1", key: "CORE-H1", label: "dead-holder", state: "offline", branch_orphaned: true });
+  it("does not render a collapse when every offline agent holds work", async () => {
+    const holder = agent({
+      id: "h1", key: "CORE-H1", label: "dead-holder", state: "offline", branch_orphaned: true,
+      holdings: [{ id: "CORE-9", title: "held work", status: "in_progress", phase: "building", phase_basis: "x", pr: { state: "unrecorded" } }],
+    });
     board = emptyBoard({ total_agents: 1, users: [user({ online: 0, total: 1, agents: [holder] })] });
     renderLive();
     expect(await screen.findByText("dead-holder")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /holding nothing/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /offline agent/ })).not.toBeInTheDocument();
   });
 
   it("names a filter miss as a person, not an empty project", async () => {

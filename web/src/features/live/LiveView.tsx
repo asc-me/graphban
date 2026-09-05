@@ -150,21 +150,49 @@ function Chip({
   );
 }
 
-/** PRD-33 D12 says fade, never hide. An offline agent that still HOLDS something — a
- *  holding, a file lease, an orphaned branch, a delegation nobody claimed — is the row that
- *  rule exists for, and it stays in view. An offline agent holding nothing is a dead process
- *  with nothing to show, and 130 of them buried the rows that matter on the deployed board
- *  (GRPH-708). Those collapse under a header that STATES the count; nothing is dropped. */
-function holdsSomething(a: LiveAgent): boolean {
+/** PRD-33 D12 says fade, never hide. An offline agent that still HOLDS work — a holding, a
+ *  file lease, a delegation nobody claimed — is the row that rule exists for, and it stays in
+ *  view. The rest collapse under headers that STATE their counts (GRPH-708); nothing is
+ *  dropped. Two groups, because they are two different facts: an agent holding nothing is a
+ *  dead process with nothing to show, and an agent whose only hold is an orphaned branch is a
+ *  dead process that left a branch behind — read on the deployed board, 78 of the 134 offline
+ *  rows were the second kind, so folding them into "holding nothing" would have hidden a
+ *  count worth knowing, and leaving them out of the collapse kept the page a scroll. */
+type OfflineKind = "held" | "orphan" | "quiet";
+
+function offlineKind(a: LiveAgent): OfflineKind {
   const d = a.delegations;
-  return a.holdings.length > 0 || a.files.length > 0 || a.branch_orphaned
-    || (!!d && d.open + d.expired > 0);
+  if (a.holdings.length > 0 || a.files.length > 0 || (!!d && d.open + d.expired > 0)) {
+    return "held";
+  }
+  return a.branch_orphaned ? "orphan" : "quiet";
+}
+
+function Collapsed({
+  agents, label, row,
+}: { agents: LiveAgent[]; label: string; row: (a: LiveAgent) => React.ReactNode }) {
+  const [show, setShow] = React.useState(false);
+  if (agents.length === 0) return null;
+  return (
+    <div className="rounded-[11px] border border-dashed border-line-2 px-3.5 py-2 text-[12px]">
+      <button
+        type="button"
+        aria-expanded={show}
+        onClick={() => setShow((v) => !v)}
+        className="text-muted hover:text-fg-2"
+      >
+        {agents.length} offline {agents.length === 1 ? "agent" : "agents"} {label}
+        <span className="ml-1.5 font-mono text-[10px] text-faint">{show ? "hide" : "show"}</span>
+      </button>
+      {show && <div className="mt-1.5 flex flex-col gap-1.5">{agents.map(row)}</div>}
+    </div>
+  );
 }
 
 function UserBlock({ user, board, projectId }: { user: LiveUser; board: LiveBoard; projectId?: string }) {
-  const [showQuiet, setShowQuiet] = React.useState(false);
-  const shown = user.agents.filter((a) => a.state !== "offline" || holdsSomething(a));
-  const quiet = user.agents.filter((a) => a.state === "offline" && !holdsSomething(a));
+  const shown = user.agents.filter((a) => a.state !== "offline" || offlineKind(a) === "held");
+  const orphans = user.agents.filter((a) => a.state === "offline" && offlineKind(a) === "orphan");
+  const quiet = user.agents.filter((a) => a.state === "offline" && offlineKind(a) === "quiet");
   const row = (a: LiveAgent) => (
     <AgentRow
       key={a.id}
@@ -201,20 +229,8 @@ function UserBlock({ user, board, projectId }: { user: LiveUser; board: LiveBoar
       ))}
       <div className="flex flex-col gap-1.5">
         {shown.map(row)}
-        {quiet.length > 0 && (
-          <div className="rounded-[11px] border border-dashed border-line-2 px-3.5 py-2 text-[12px]">
-            <button
-              type="button"
-              aria-expanded={showQuiet}
-              onClick={() => setShowQuiet((v) => !v)}
-              className="text-muted hover:text-fg-2"
-            >
-              {quiet.length} offline {quiet.length === 1 ? "agent" : "agents"} holding nothing
-              <span className="ml-1.5 font-mono text-[10px] text-faint">{showQuiet ? "hide" : "show"}</span>
-            </button>
-            {showQuiet && <div className="mt-1.5 flex flex-col gap-1.5">{quiet.map(row)}</div>}
-          </div>
-        )}
+        <Collapsed agents={orphans} label="with only an orphaned branch" row={row} />
+        <Collapsed agents={quiet} label="holding nothing" row={row} />
       </div>
     </section>
   );
