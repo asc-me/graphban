@@ -26,6 +26,8 @@ from gbfleet.supervisor import Limits, Partition, up
 
 from tests.test_supervisor import KEY, _factory, _seats
 
+from conftest import telemetry_ack  # noqa: E402
+
 TTL = 0.3
 
 
@@ -50,6 +52,12 @@ class Flaky:
         self.calls += 1
         if not self.reachable:
             raise httpx.ConnectError("no route to host")
+
+        ack = telemetry_ack(request)
+
+        if ack is not None:
+
+            return ack
 
         body = json.loads(request.content)
         tool = body["params"]["name"]
@@ -115,7 +123,8 @@ def _cut_off_after(server: Flaky, rosters: int):
     seen = {"n": 0}
 
     def handle(request):
-        if json.loads(request.content)["params"]["name"] == "fleet_status":
+        if request.url.path == "/api/mcp" \
+                and json.loads(request.content)["params"]["name"] == "fleet_status":
             seen["n"] += 1
             if seen["n"] > rosters:
                 server.reachable = False
@@ -175,7 +184,8 @@ def test_a_short_partition_does_not_stop_anyone(git_repo: Path, tmp_path: Path, 
     original = server._handle
 
     def handle(request):
-        if json.loads(request.content)["params"]["name"] == "fleet_status":
+        if request.url.path == "/api/mcp" \
+                and json.loads(request.content)["params"]["name"] == "fleet_status":
             calls["n"] += 1
             server.reachable = not (3 <= calls["n"] <= 5)
         return original(request)
@@ -263,6 +273,9 @@ def test_a_ceiling_that_was_never_learned_stops_rather_than_running_on(
     original = server._handle
 
     def handle(request):
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         if body["params"]["name"] == "fleet_status":
             seen["ttl_reads"] += 1
@@ -304,6 +317,9 @@ def test_work_reclaimed_during_a_partition_is_reported_not_replayed(
     original = server._handle
 
     def handle(request):
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         if body["params"]["name"] == "fleet_status":
             calls["n"] += 1
@@ -346,7 +362,8 @@ def test_a_partition_that_changed_nothing_reports_nothing(
     original = server._handle
 
     def handle(request):
-        if json.loads(request.content)["params"]["name"] == "fleet_status":
+        if request.url.path == "/api/mcp" \
+                and json.loads(request.content)["params"]["name"] == "fleet_status":
             calls["n"] += 1
             server.reachable = not (3 <= calls["n"] <= 5)
         return original(request)

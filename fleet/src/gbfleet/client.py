@@ -42,6 +42,17 @@ import httpx
 #: what makes the backstop prompt rather than inferential.
 ALLOWED_TOOLS: frozenset[str] = frozenset({"fleet_status", "propose_allocation"})
 
+#: The REST paths this client may POST to (PRD-38 D3). `ALLOWED_TOOLS` governs `/api/mcp` and
+#: says nothing about anything else, so a route that is not a tool would otherwise be a second
+#: surface on a credential with authority, reached by whoever thought of it first. Pinned by
+#: exact equality in `test_client.py` for the same reason the tool set is.
+ATTEMPTS_PATH = "/api/fleet/attempts"
+ALLOWED_PATHS: frozenset[str] = frozenset({ATTEMPTS_PATH})
+
+#: Short on purpose. This is a measurement posted beside real work; a supervisor waiting on it
+#: is a supervisor not starting a child.
+ATTEMPT_TIMEOUT = 2.0
+
 
 class NotPermitted(RuntimeError):
     """The supervisor tried to make a call PRD-22 §4 says it may not make."""
@@ -153,6 +164,41 @@ class Graphban:
         if isinstance(structured, dict):
             return structured
         raise ProtocolError(f"{tool}: reply carried no structuredContent")
+
+    def post_attempt(self, **payload: Any) -> dict | None:
+        """Telemetry, on the ONE REST path this client may reach (PRD-38 D3).
+
+        `ALLOWED_TOOLS` governs `/api/mcp`; a REST route is a second surface on the same
+        credential, so it gets a pinned allowlist of its own rather than being ungoverned by
+        virtue of not being a tool.
+
+        **Never raises, and never blocks anything.** The supervisor calls this twice per
+        child — once before it starts one, once after it exits — and a measurement that could
+        fail a spawn would be a worse bargain than having no measurement. A post that does not
+        land returns None, and the server then reads `sampled` as `unknown`, which is a value
+        the page shows rather than a gap it hides.
+        """
+        return self._post(ATTEMPTS_PATH, payload, timeout=ATTEMPT_TIMEOUT)
+
+    def _post(self, path: str, payload: dict, *, timeout: float) -> dict | None:
+        if path not in ALLOWED_PATHS:
+            raise NotPermitted(
+                f"this client may not POST {path!r}. Permitted: {sorted(ALLOWED_PATHS)}. "
+                "A REST surface on a credential with authority is widened deliberately or "
+                "not at all."
+            )
+        url = self.base_url.rstrip("/") + path
+        body = {k: v for k, v in payload.items() if v is not None}
+        try:
+            reply = self._client().post(url, json=body, timeout=timeout)
+        except httpx.HTTPError:
+            return None
+        if reply.status_code >= 400:
+            return None
+        try:
+            return reply.json()
+        except ValueError:
+            return None
 
     def list_tools(self) -> list[dict]:
         """The server's own tool manifest — name, description and input schema.

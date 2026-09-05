@@ -12,6 +12,8 @@ from gbagent.orient import COORDINATION_TOOLS
 from gbfleet.client import ALLOWED_TOOLS, Graphban, NotPermitted
 from gbfleet.waits import WAIT_TAGS, ids as wait_ids
 
+from conftest import telemetry_ack  # noqa: E402
+
 
 def _mcp(payload, *, id_=1):
     return httpx.Response(
@@ -39,6 +41,9 @@ def test_file_wait_blocks_the_original_and_does_not_send_it_to_review():
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         sent.append(body["params"])
         name = body["params"]["name"]
@@ -73,6 +78,9 @@ def test_on_self_tags_the_original_and_blocks_it():
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         sent.append(body["params"])
         name = body["params"]["name"]
@@ -93,6 +101,9 @@ def test_on_self_tags_the_original_and_blocks_it():
 
 def test_wait_ids_come_from_search_not_from_blocker_text():
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         tag = (body["params"]["arguments"].get("tags") or [""])[0]
         rows = [{"id": f"GRPH-{tag.split(':')[-1]}"}] if tag == "wait:merge" else []

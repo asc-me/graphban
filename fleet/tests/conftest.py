@@ -9,6 +9,20 @@ from pathlib import Path
 import pytest
 
 
+
+#: PRD-38 D3: the supervisor posts telemetry on a REST path beside `/api/mcp`, over the same
+#: transport, so a fake server that understands only JSON-RPC now sees requests it cannot
+#: parse. Handlers call this FIRST and return its answer when it is not None. It is here
+#: rather than repeated in each test because the alternative — every handler growing its own
+#: guard — is how one of them ends up silently answering an MCP call with 200 and nothing.
+def telemetry_ack(request):
+    """A 200 for anything that is not the MCP endpoint, else None (the handler's own job)."""
+    import httpx
+
+    if request.url.path == "/api/mcp":
+        return None
+    return httpx.Response(200, json={"ok": True, "path": request.url.path})
+
 def _git(root: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=root, capture_output=True, text=True, check=True

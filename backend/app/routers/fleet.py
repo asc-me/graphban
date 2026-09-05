@@ -8,17 +8,19 @@ Session-authenticated, unlike the MCP surface beside it. The caller here is a hu
 how to spend a fleet, not an agent working inside one.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Enrolment, User
+from app.models import ApiKey, Enrolment, User
 from app.security import authz
-from app.security.deps import get_current_user
+from app.security.deps import get_agent_key, get_current_user
 from app.models import Project
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
 from app.services import fleet_profiles
+from app.services import harness as harness_svc
 
 router = APIRouter(prefix="/fleet", tags=["fleet"])
 
@@ -314,3 +316,77 @@ def write_policy(body: PolicyIn, db: Session = Depends(get_db),
                            target_id=body.project_id, project_id=body.project_id,
                            meta={"policy": policy})
     return {"project_id": body.project_id, "policy": policy}
+
+
+class AttemptIn(BaseModel):
+    """The supervisor's post, in either of its two shapes (PRD-38 D3).
+
+    Every field optional because the two shapes share one route: at launch the supervisor
+    names the seat and what it resolved; at exit it names the delegation and what the run
+    cost. Nothing here is required together with anything else except an address — a post
+    that names neither has nowhere to land.
+    """
+
+    # --- the address ---
+    # A launch post knows the code it is about to hand a child; an exit post knows the seat's
+    # ROW id, read off the roster when the child registered, and typically not the delegation.
+    enrolment_code: str | None = None
+    enrolment_id: str | None = None
+    delegation_id: str | None = None
+    # --- the launch shape ---
+    winner: str | None = None
+    runner_up: str | None = None
+    source: str | None = None
+    adapter: str | None = None
+    # --- the exit shape ---
+    binary_version: str | None = None
+    turns_used: int | None = None
+    turn_budget: int | None = None
+    wall_seconds: int | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    exit_meaning: str | None = None
+
+
+@router.post("/attempts")
+def post_attempt(body: AttemptIn, db: Session = Depends(get_db),
+                 key: ApiKey = Depends(get_agent_key)):
+    """What only the supervisor knows, posted twice per child (PRD-38 D3).
+
+    **Authenticated by the key, not by a session**, because the caller is a supervisor process
+    and not a human — the same shape `learning_loop` and the sync routes already use. It wants
+    WRITE on the project, since a read-only credential has no business adding measurements to
+    somebody's cells.
+
+    There is no ordering requirement against the server's own derivation: whichever arrives
+    first creates the row, and `harness.derive` fills its half whenever the outcome lands. A
+    post for a delegation this key cannot read answers 404 rather than 403 — a key must not be
+    able to learn that an id exists by the shape of its refusal.
+    """
+    if not (body.enrolment_code or body.enrolment_id or body.delegation_id):
+        raise HTTPException(
+            422, "an attempt post names an enrolment_code, an enrolment_id or a delegation_id")
+    target = harness_svc.target_for(db, enrolment_code=body.enrolment_code,
+                                    enrolment_id=body.enrolment_id,
+                                    delegation_id=body.delegation_id)
+    if target is None or not authz.can_write(db, key.user_id, target.project_id):
+        raise HTTPException(404, "no such attempt")
+    if body.enrolment_code:
+        row = harness_svc.record_launch(db, target=target, winner=body.winner,
+                                        runner_up=body.runner_up, source=body.source,
+                                        adapter=body.adapter)
+    else:
+        row = harness_svc.record_exit(db, target=target, values={
+            "binary_version": body.binary_version, "turns_used": body.turns_used,
+            "turn_budget": body.turn_budget, "wall_seconds": body.wall_seconds,
+            "tokens_in": body.tokens_in, "tokens_out": body.tokens_out,
+            "exit_meaning": body.exit_meaning, "adapter_launched": body.adapter,
+        })
+    db.commit()
+    # 202 means stored but not yet counted, and it is the honest answer to every post that
+    # arrives before the outcome does — which a launch post always is. The runtime facts are
+    # true whether or not an outcome ever follows; the supervisor must not read "stored" as
+    # "in the numbers".
+    if row.derived_at is None:
+        return JSONResponse(status_code=202, content=harness_svc.row_dict(row))
+    return harness_svc.row_dict(row)

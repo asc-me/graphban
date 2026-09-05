@@ -29,7 +29,7 @@ from gbfleet.adapters import (
 )
 from gbfleet.seat import Seat
 from gbfleet.worktree import SEAT_FILES, create
-from conftest import console_script, make_stub_binary  # noqa: E402
+from conftest import telemetry_ack, console_script, make_stub_binary  # noqa: E402
 
 GBAGENT = ADAPTERS["gbagent"]
 BINARY = console_script("gbagent")
@@ -427,6 +427,9 @@ def test_the_id_the_server_returned_is_the_one_the_run_uses():
     sent: list = []
 
     def handler(request):
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         sent.append(body["params"]["arguments"])
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
@@ -464,6 +467,9 @@ def test_a_seat_that_cannot_create_is_a_mis_mint():
     import httpx
 
     def handler(request):
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
             "structuredContent": {
@@ -482,6 +488,9 @@ def test_a_registration_returning_no_id_is_refused_rather_than_used_empty():
     import httpx
 
     def handler(request):
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"],
                                          "result": {"structuredContent": {"active_role": "worker"}}})

@@ -25,6 +25,8 @@ from gbfleet.supervisor import AllocationRead, Limits, up
 from gbfleet.worktree import Disposition, SEAT_FILES, Worktree, create, is_seat_file, orphans, reap, salvage_message
 from gbfleet.hostos import is_owner_only  # noqa: E402
 
+from conftest import telemetry_ack  # noqa: E402
+
 CODE = "WORKER-7F3K"
 KEY = "gbk_test"
 
@@ -51,6 +53,12 @@ def _server(
     def handler(request: httpx.Request) -> httpx.Response:
         if unreachable:
             raise httpx.ConnectError("no route to host")
+
+        ack = telemetry_ack(request)
+
+        if ack is not None:
+
+            return ack
 
         body = json.loads(request.content)
         tool = body["params"]["name"]

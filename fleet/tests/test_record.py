@@ -15,6 +15,8 @@ from gbagent.coord import WORKER_TOOLS
 from gbfleet.client import ALLOWED_TOOLS, Graphban
 from gbfleet.record import measured
 
+from conftest import telemetry_ack  # noqa: E402
+
 
 def _mcp(payload, *, id_=1):
     return httpx.Response(
@@ -28,6 +30,9 @@ def test_measured_sends_this_reaps_paths_only():
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         sent.append(body["params"])
         return _mcp({"id": "GRPH-1", "touchpoints": ["a.py"]}, id_=body["id"])
@@ -60,6 +65,9 @@ def test_blank_and_duplicate_paths_are_not_sent():
     sent: list[dict] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
         body = json.loads(request.content)
         sent.append(body["params"]["arguments"])
         return _mcp({}, id_=body["id"])
