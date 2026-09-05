@@ -43,6 +43,7 @@ from typing import Any, Callable, TextIO
 
 from . import worktree as wt_mod
 from .adapters import AdapterError, Tuning
+from .tiers import TierTable
 from .client import Graphban
 from .lock import Acquired
 from .seat import Seat
@@ -74,7 +75,25 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "adapter": {"type": "string", "description": "Vendor to run. Named, never inferred."},
+                "adapter": {"type": "string", "description": "Vendor to run. Named, never inferred. Optional when `tier` is given."},
+                "tier": {
+                    "type": "string",
+                    "description": (
+                        "A tier the operator mapped at launch (`gbfleet stdio --tier "
+                        "cheap=gbagent:<model>`), resolved to adapter+model here (PRD-36 D6). "
+                        "`adapter`/`model` override it when both are given. Unmapped: refused "
+                        "naming the flag."
+                    ),
+                },
+                "item": {
+                    "type": "string",
+                    "description": (
+                        "The item this seat is BOUND to (from delegate(seat=true)), so the "
+                        "instruction names it and gbagent gets --item. The registration "
+                        "reply's `assigned` is the authority; this only tells the child what "
+                        "to expect."
+                    ),
+                },
                 "enrolment_code": {"type": "string", "description": "The seat. Single-use."},
                 "wave": {"type": "string", "description": "Names the branch: gb/<wave>-<n>."},
                 "fallback_model": {
@@ -106,7 +125,7 @@ TOOLS: list[dict[str, Any]] = [
                     ),
                 },
             },
-            "required": ["adapter", "enrolment_code"],
+            "required": ["enrolment_code"],
         },
     },
     {
@@ -165,6 +184,9 @@ class Fleet:
     #: Same record `up` uses, so the MCP watch tick writes wall-clock and disown
     #: failures somewhere `ps` and a later `until` can read (P30 D6).
     wave: Wave = field(default_factory=Wave)
+    #: PRD-36 D6/D16: what each tier means on this machine, named at launch, fixed for
+    #: the life of the process.
+    tiers: TierTable = field(default_factory=TierTable)
 
     def __post_init__(self) -> None:
         # One partition object. `start_one` is given `fleet.partition`; `watch_tick`
@@ -270,9 +292,19 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
     a message, and `handle` wraps them in `isError`."""
     if name == "spawn":
         adapter = args.get("adapter") or ""
+        model = args.get("model") or ""
+        tier = args.get("tier") or ""
         code = args.get("enrolment_code") or ""
-        if not adapter or not code:
-            raise ValueError("spawn needs both `adapter` and `enrolment_code`")
+        if not code:
+            raise ValueError("spawn needs `enrolment_code`")
+        via_tier = bool(tier) and not adapter
+        if via_tier:
+            # PRD-36 D6: the table resolves; the supervisor chooses nothing. An explicit
+            # adapter wins over the tier, and the reply says which ran either way.
+            lane = fleet.tiers.resolve(tier)
+            adapter, model = lane.adapter, (model or lane.model)
+        if not adapter:
+            raise ValueError("spawn needs `adapter` or a mapped `tier`")
 
         live = sum(1 for child in fleet.children if child.running)
         if live >= fleet.limits.max_workers:
@@ -304,7 +336,8 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 tree = _tree_for(fleet.repo, fleet.workspace, wave, slot)
             except wt_mod.BranchExists:
                 continue
-        seat = Seat(code=code, server_url=fleet.client.base_url, api_key=fleet.client.api_key)
+        seat = Seat(code=code, server_url=fleet.client.base_url, api_key=fleet.client.api_key,
+                    item=(args.get("item") or None))
 
         def remember(child: Child) -> None:
             fleet.children.append(child)
@@ -314,7 +347,7 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             tree, seat,
             fleet.launch_for(
                 adapter,
-                args.get("model") or "",
+                model,
                 Tuning(
                     fallback_model=args.get("fallback_model") or "",
                     effort=args.get("effort") or "",
@@ -331,6 +364,11 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
         )
         adopt_mod.persist(adopt_mod.children_path(fleet.repo), fleet.children)
         described = _describe(child)
+        # PRD-36 D6/D15: name what ran and what the seat handed the child. `assigned` is
+        # None when the seat was unbound; `tier` is None when adapter/model were explicit.
+        described["model"] = model
+        described["tier"] = tier if via_tier else None
+        described["assigned"] = child.assigned
         # Said once, at spawn, for the same reason the wave summary says it: an operator
         # who asked for debug and gets a quiet log from an adapter that has no debug flag
         # would reasonably conclude the child is fine.

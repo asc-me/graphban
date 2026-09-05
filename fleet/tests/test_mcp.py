@@ -77,7 +77,9 @@ def test_spawn_takes_no_count(fleet: Fleet):
     properties = spawn["inputSchema"]["properties"]
     for counting in ("count", "n", "workers", "how_many"):
         assert counting not in properties
-    assert set(spawn["inputSchema"]["required"]) == {"adapter", "enrolment_code"}
+    # PRD-36 D6: `tier` may stand in for `adapter`; the seat is the only thing always required.
+    assert set(spawn["inputSchema"]["required"]) == {"enrolment_code"}
+    assert "tier" in properties and "item" in properties
 
 
 def test_initialize_answers_without_a_credential(fleet: Fleet):

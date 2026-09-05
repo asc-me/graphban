@@ -79,6 +79,21 @@ GBFLEET_API_KEY=... gbfleet mcp --server https://cloud.agentldgr.dev
 it holds both servers, so it can read `collision_clusters` and `get_backlog` itself, mint
 that many seats, and call `spawn` once each. The supervisor executes.
 
+**Delegate to a seat (PRD-36).** A parent that wants one item built on a cheaper model
+does it in two calls and keeps working: `delegate(id, lane, tier, seat=true)` on the
+Graphban server mints a worker seat *bound* to the item and returns its code; then
+`spawn(enrolment_code=<code>, tier="cheap", item=<id>)` here. Registering on a bound seat
+claims the item server-side, so the child holds it from its first call and never touches
+`claim_cluster`; the spawn reply echoes the roster's `assigned` block (`claimed`, or
+`taken` with who holds it). `tier` resolves through a table the operator names at launch —
+`gbfleet stdio --tier cheap=gbagent:qwen3.6:35b-a3b-coding-mtp-det --tier
+frontier=claude:opus` — fixed for the life of the process; an unmapped tier is refused
+naming the flag, and an explicit `adapter` overrides it. `gbfleet until` takes the same
+`--tier` table plus `--request cheap|frontier` for what its own delegations ask, and mints
+bound seats for the seeds it delegates, so the divvy no longer decides what its children
+claim. The outcome comes back through the ledger — the item moving on the board — never as
+a reply in the parent's context.
+
 Vendors and what each of them needs: [`docs/fleet-adapters.md`](https://github.com/asc-me/graphban/blob/main/docs/fleet-adapters.md).
 
 ## Development

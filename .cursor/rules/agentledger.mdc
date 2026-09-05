@@ -33,7 +33,12 @@ but exposing a tool does not say *when* to reach for it. That gap is why items s
    them. The child registers with `parent_agent_id=<you>` (or on a seat you minted), which
    is what links its claim to your delegation; anyone else's claim supersedes it, and a
    delegation nobody claims reads `expired, nothing claimed` on Live — the spawn that died
-   before it registered, which nothing could show before (PRD-35).
+   before it registered, which nothing could show before (PRD-35). To run the child on a
+   cheaper model outside your own harness, add `seat=true`: the delegation mints a worker
+   seat bound to the item, and `gbfleet spawn(enrolment_code, tier="cheap", item=…)` runs it
+   on whatever the operator mapped that tier to; registering on the seat claims the item, so
+   the child holds it before its first tool call (PRD-36). You may not sign off your own
+   delegation's work; another agent reviews it.
 
 Reach for the rest by question, not by habit: `get_backlog` / `search_items` for what is
 open, `search_memory` and `related_work` for what was already learned or tried,

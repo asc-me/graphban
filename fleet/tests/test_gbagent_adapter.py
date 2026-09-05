@@ -432,10 +432,11 @@ def test_the_id_the_server_returned_is_the_one_the_run_uses():
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": body["id"], "result": {
             "structuredContent": {"agent_id": "GRPH-A99", "active_role": "worker"}}})
 
-    agent_id, role = cli.register(_client(handler), code="WORKER-1", model="qwen",
-                                  worktree="/w", branch="wave/1")
+    agent_id, role, assigned = cli.register(_client(handler), code="WORKER-1", model="qwen",
+                                            worktree="/w", branch="wave/1")
 
     assert agent_id == "GRPH-A99" and role == "worker"
+    assert assigned["state"] == "none", "a server with no `assigned` key reads as none, not as a crash"
     assert sent[0]["enrolment_code"] == "WORKER-1"
     assert sent[0]["worktree"] == "/w", "await_registration matches on this"
     assert sent[0]["branch"] == "wave/1"

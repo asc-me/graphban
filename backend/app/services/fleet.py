@@ -451,6 +451,7 @@ def list_agents(db: Session, project_id: str | None = None, *,
         ids = [a.id for a in agents]
         for it in db.scalars(select(Item).where(Item.claimed_by.in_(ids))).all():
             held.setdefault(it.claimed_by, []).append(it)
+    assigned = _assigned_for(db, agents)
     out = []
     for a in agents:
         state = ("offline" if a.api_key_id in dead_keys
@@ -495,7 +496,39 @@ def list_agents(db: Session, project_id: str | None = None, *,
             # because three of the four adapters are vendors we do not control — see
             # `holding_phase`. They cost no extra query: `held` already loaded the full rows.
             "holdings": [_holding_dict(i, state) for i in held.get(a.id, [])],
+            # PRD-36 D15: what a BOUND seat handed this agent, derived from the seat and the
+            # item at read time so the supervisor can echo it from the roster. None on an
+            # unbound seat or no seat.
+            "assigned": assigned.get(a.id),
         })
+    return out
+
+
+def _assigned_for(db: Session, agents: list[Agent]) -> dict[str, dict]:
+    """`{agent_id: {item, state, held_by}}` for every agent on a bound seat. Two queries
+    whatever the roster size. `claimed` when the agent holds the seat's item; `taken` with
+    the holder otherwise — the same word the registration reply used."""
+    seat_ids = [a.enrolment_id for a in agents if a.enrolment_id]
+    if not seat_ids:
+        return {}
+    seats = {s.id: s for s in db.scalars(select(Enrolment).where(
+        Enrolment.id.in_(seat_ids), Enrolment.item_id.isnot(None))).all()}
+    if not seats:
+        return {}
+    items = {i.id: i for i in db.scalars(select(Item).where(
+        Item.id.in_({s.item_id for s in seats.values()}))).all()}
+    out: dict[str, dict] = {}
+    for a in agents:
+        seat = seats.get(a.enrolment_id) if a.enrolment_id else None
+        if seat is None:
+            continue
+        item = items.get(seat.item_id)
+        if item is None:
+            out[a.id] = {"item": seat.item_id, "state": "taken", "held_by": None}
+        elif item.claimed_by == a.id:
+            out[a.id] = {"item": item.key, "state": "claimed", "held_by": None}
+        else:
+            out[a.id] = {"item": item.key, "state": "taken", "held_by": item.claimed_by}
     return out
 
 
