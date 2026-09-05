@@ -300,10 +300,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "publish_memory",
         "description": (
-            "SUBMIT one of your candidate shards for adjudication — you do not publish it, an "
-            "independent judge decides. Returns `{shard, verdict}`; `kept: false` means the "
-            "judge rejected it, a normal outcome. Needs the project to allow agent adjudication "
-            "and a real chat model, else the shard stays a candidate."
+            "SUBMIT one of your candidate shards for adjudication — an independent judge decides, "
+            "not you. Returns `{shard, verdict}`; `kept: false` is a normal outcome. Needs the project "
+            "to allow agent adjudication and a real chat model, else the shard stays a candidate."
+        
         ),
         "inputSchema": {
             "type": "object",
@@ -314,10 +314,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "reject_memory",
         "description": (
-            "Discard one of your candidate shards — a note you now know is wrong, "
-            "superseded, or noise. Unlike publishing this needs no judge: removing your "
-            "own candidate takes nothing out of the trusted pool. The shard is kept for "
-            "provenance and never surfaces in search."
+            "Discard one of your candidate shards — wrong, superseded, or noise. No judge needed: "
+            "removing your own candidate takes nothing out of the trusted pool. Kept for provenance, "
+            "never surfaces in search."
+        
         ),
         "inputSchema": {
             "type": "object",
@@ -610,6 +610,8 @@ TOOLS: list[dict[str, Any]] = [
                 "lane": {"type": "string", "enum": list(delegation_svc.LANES)},
                 "tier": {"type": "string", "enum": list(delegation_svc.TIERS)},
                 "note": {"type": "string"},
+                "seat": {"type": "boolean", "description": "Also mint a worker seat bound to `id`: registering on it claims the item."},
+                "wave": {"type": "string"},
                 "agent_id": {"type": "string"},
             },
             "required": ["id", "lane", "tier"],
@@ -762,8 +764,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "fleet_status",
         "description": (
             "Who else is working this project: agents, roles, presence, and what each holds. "
-            "Presence is derived from last contact, so a dead agent reads `offline` with nothing "
-            "having reported it. `agent_id` adds the seats you minted."
+            "Presence is derived from last contact, so a dead agent reads `offline` unreported. "
+            "`agent_id` adds the seats you minted."
+        
         ),
         "inputSchema": {
             "type": "object",
@@ -880,8 +883,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "code_neighbors",
         "description": (
             "The neighborhood around a code path: incoming/outgoing edges by type plus work items "
-            "touching it. Answers what depends on this / what it depends on / what work touches it. "
-            "Works even for a path that isn't a described node yet."
+            "touching it — what depends on this, what it depends on, what work touches it. Works for "
+            "a path that is not a described node yet."
+        
         ),
         "inputSchema": {
             "type": "object",
@@ -1098,10 +1102,10 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "learning_loop",
         "description": (
-            "Read the learning loop. `view`: recommendations (pending proposals), artifact "
-            "(one, with its draft and whether it may install), usage (uses is null for a "
-            "tier whose use cannot be OBSERVED, never 0), stale (only observable tiers — "
-            "zero uses elsewhere is not evidence of disuse)."
+            "Read the learning loop. `view`: recommendations (pending), artifact (one, with its draft "
+            "and install verdict), usage (uses null = a tier whose use cannot be OBSERVED, never 0), "
+            "stale (observable tiers only; zero uses elsewhere is not disuse)."
+        
         ),
         "inputSchema": {
             "type": "object",
@@ -1406,7 +1410,8 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {
             "delegation_id": {"type": "string"}, "state": {"type": "string"},
-            "withdrew": {"type": "string"}, "brief": {"type": "object"},
+            "withdrew": {"type": "string"}, "enrolment_code": {"type": "string"},
+            "brief": {"type": "object"},
         },
     },
     "assign_role": {
@@ -1452,6 +1457,7 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "active_role": {"type": "string"}, "eligible_roles": {"type": "array"},
             "heartbeat_interval_seconds": {"type": "integer"},
             "presence_ttl_seconds": {"type": "integer"},
+            "assigned": {"type": "object"},
         },
     },
     "retire_wave": {
@@ -2511,9 +2517,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                                     "register_agent on this connection first")
         agent = db.get(Agent, me)
         try:
-            row, withdrew = delegation_svc.delegate(
+            row, withdrew, code = delegation_svc.delegate(
                 db, agent=agent, item=item, lane=args["lane"], tier=args["tier"],
-                note=args.get("note", ""), lease_seconds=items_svc.DEFAULT_LEASE_SECONDS)
+                note=args.get("note", ""), lease_seconds=items_svc.DEFAULT_LEASE_SECONDS,
+                seat=bool(args.get("seat")), api_key=key, wave=args.get("wave"))
         except delegation_svc.DelegationRefused as e:
             detail = "; ".join(f"{k}={v}" for k, v in e.detail.items())
             msg = f"{e} ({detail})" if detail else str(e)
@@ -2521,7 +2528,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 raise errors.Validation(msg, hint=e.hint)
             raise errors.Conflict(msg, hint=e.hint)
         return {"delegation_id": row.id, "state": delegation_svc.state(row),
-                "withdrew": withdrew, "brief": delegation_svc.brief(db, item)}
+                "withdrew": withdrew, "enrolment_code": code,
+                "brief": delegation_svc.brief(db, item)}
     if name == "assign_role":
         try:
             # `agent_id` is the CALLER everywhere on this surface — the role gate reads it to
@@ -2644,6 +2652,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.Validation(str(e))
         return _item_dict(item)
     if name == "register_agent":
+        assigned: dict = {}
         try:
             agent = fleet_svc.register_agent(
                 db, project_id=pid, api_key=key, label=args.get("label", ""),
@@ -2651,6 +2660,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 branch=args.get("branch", ""), role_hint=args.get("role_hint"),
                 parent_agent_id=args.get("parent_agent_id"),
                 enrolment_code=args.get("enrolment_code"),
+                assigned_out=assigned,
             )
         except fleet_svc.EnrolmentError as e:
             # `unauthorized`, not `validation`: the code was understood and refused. An agent
@@ -2684,6 +2694,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # of documentation to stay alive is one that eventually does not.
             "heartbeat_interval_seconds": fleet_svc.heartbeat_interval_seconds(),
             "presence_ttl_seconds": fleet_svc.presence_ttl_seconds(),
+            # PRD-36 D4: what a bound seat handed this agent. `none` on an unbound seat,
+            # never a missing key.
+            "assigned": assigned or {"item": None, "state": "none", "reason": None,
+                                     "held_by": None},
         }
     if name == "mint_enrolment":
         try:

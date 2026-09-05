@@ -311,9 +311,16 @@ def _open_rows(db: Session, item: Item) -> list[Delegation]:
 
 
 def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
-             note: str = "", lease_seconds: int) -> tuple[Delegation, str | None]:
+             note: str = "", lease_seconds: int, seat: bool = False, api_key=None,
+             wave: str | None = None) -> tuple[Delegation, str | None, str | None]:
     """Write what the delegator asked for. Claims nothing, spawns nothing. Returns the new
-    row and the id of the caller's own open delegation it withdrew, if any (D14)."""
+    row, the id of the caller's own open delegation it withdrew (PRD-35 D14), and the bound
+    seat's enrolment code when `seat` was asked for (PRD-36 D2), else None.
+
+    A bound seat is refused, before anything is written, when the item's touch areas are
+    reserved by someone else (PRD-36 D13): a steered claim bypasses the divvy, so the
+    collision check the divvy would have made happens here and names the holder.
+    """
     from app.services import fleet as fleet_svc
     from app.services import items as items_svc
 
@@ -341,6 +348,24 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
                 hint="wait for the pin to lapse, or let the author retry",
                 detail={"pinned_to": holder, "pinned_until": until.isoformat() if until else None})
     now = _now()
+    holders: list[str] = []
+    if seat:
+        from app.services import collision as collision_svc
+
+        # The mint gate is the mint gate: whoever may call mint_enrolment may bind a seat.
+        fleet_svc.check_tool_role(db, tool="mint_enrolment", api_key=api_key, agent_id=agent.id)
+        areas, _ = collision_svc.touch_areas(db, item, item.project_id)
+        taken = fleet_svc.active_reservations(db, item.project_id, now=now)
+        blocked = [r.area for r in taken if r.agent_id != agent.id]
+        if fleet_svc.areas_collide(areas, blocked):
+            holders = sorted({r.agent_id for r in taken
+                              if r.agent_id != agent.id
+                              and fleet_svc.areas_collide(areas, [r.area])})
+            raise DelegationRefused(
+                f"{item.key}'s areas are reserved by {', '.join(holders)}; a bound seat "
+                "would claim straight through that collision",
+                hint="delegate another item, or delegate without a seat and let the divvy decide",
+                detail={"held_by": ", ".join(holders)})
     withdrew: str | None = None
     for row in _open_rows(db, item):
         if row.delegated_by == agent.id:
@@ -367,7 +392,12 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
     db.add(row)
     db.commit()
     db.refresh(row)
-    return row, withdrew
+    code: str | None = None
+    if seat:
+        _, code = fleet_svc.mint_enrolment_as(
+            db, minter_id=agent.id, project_id=item.project_id, role="worker",
+            api_key=api_key, wave=wave, item_id=item.id, delegation_id=row.id)
+    return row, withdrew, code
 
 
 def _new_id() -> str:

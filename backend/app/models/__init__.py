@@ -774,6 +774,11 @@ class Enrolment(Base):
     # past an authorship ban keyed on agent id.
     issued_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     minted_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    # A BOUND seat (PRD-36 D1): the item the child will claim at registration, and the
+    # delegation that asked for it. NULL on both is today's seat — the child takes work
+    # through the divvy. Worker-role only: steering a reviewer to one item is refused.
+    item_id: Mapped[str | None] = mapped_column(ForeignKey("items.id"), nullable=True)
+    delegation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consumed_by: Mapped[str | None] = mapped_column(String, nullable=True)
