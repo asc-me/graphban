@@ -150,7 +150,30 @@ function Chip({
   );
 }
 
+/** PRD-33 D12 says fade, never hide. An offline agent that still HOLDS something — a
+ *  holding, a file lease, an orphaned branch, a delegation nobody claimed — is the row that
+ *  rule exists for, and it stays in view. An offline agent holding nothing is a dead process
+ *  with nothing to show, and 130 of them buried the rows that matter on the deployed board
+ *  (GRPH-708). Those collapse under a header that STATES the count; nothing is dropped. */
+function holdsSomething(a: LiveAgent): boolean {
+  const d = a.delegations;
+  return a.holdings.length > 0 || a.files.length > 0 || a.branch_orphaned
+    || (!!d && d.open + d.expired > 0);
+}
+
 function UserBlock({ user, board, projectId }: { user: LiveUser; board: LiveBoard; projectId?: string }) {
+  const [showQuiet, setShowQuiet] = React.useState(false);
+  const shown = user.agents.filter((a) => a.state !== "offline" || holdsSomething(a));
+  const quiet = user.agents.filter((a) => a.state === "offline" && !holdsSomething(a));
+  const row = (a: LiveAgent) => (
+    <AgentRow
+      key={a.id}
+      agent={a}
+      servedAt={board.served_at}
+      projectId={projectId}
+      intervalMs={board.heartbeat_interval_seconds * 1000}
+    />
+  );
   return (
     <section>
       <div className="mb-2 flex items-center gap-2.5">
@@ -177,15 +200,21 @@ function UserBlock({ user, board, projectId }: { user: LiveUser; board: LiveBoar
         </div>
       ))}
       <div className="flex flex-col gap-1.5">
-        {user.agents.map((a) => (
-          <AgentRow
-            key={a.id}
-            agent={a}
-            servedAt={board.served_at}
-            projectId={projectId}
-            intervalMs={board.heartbeat_interval_seconds * 1000}
-          />
-        ))}
+        {shown.map(row)}
+        {quiet.length > 0 && (
+          <div className="rounded-[11px] border border-dashed border-line-2 px-3.5 py-2 text-[12px]">
+            <button
+              type="button"
+              aria-expanded={showQuiet}
+              onClick={() => setShowQuiet((v) => !v)}
+              className="text-muted hover:text-fg-2"
+            >
+              {quiet.length} offline {quiet.length === 1 ? "agent" : "agents"} holding nothing
+              <span className="ml-1.5 font-mono text-[10px] text-faint">{showQuiet ? "hide" : "show"}</span>
+            </button>
+            {showQuiet && <div className="mt-1.5 flex flex-col gap-1.5">{quiet.map(row)}</div>}
+          </div>
+        )}
       </div>
     </section>
   );
@@ -298,6 +327,7 @@ function AgentRow({
  *  side by side and never hides a mismatch (D8). */
 function Delegations({ agent: a }: { agent: LiveAgent }) {
   const d = a.delegations;
+  const trackerTo = useTrackerTo();
   if (!d) {
     return <div className="mt-1.5 text-[11.5px] text-faint">no delegations</div>;
   }
@@ -318,7 +348,9 @@ function Delegations({ agent: a }: { agent: LiveAgent }) {
         <ul className="mt-0.5 space-y-0.5 font-mono text-[10.5px] text-muted">
           {d.rows.map((r) => (
             <li key={r.id} className={cn(r.state === "expired" && "text-[color:var(--color-st-blocked)]")}>
-              <span className="text-fg-2">{r.item}</span>
+              <Link to={trackerTo} className="text-fg-2 underline decoration-dotted" title="open the tracker">
+                {r.item}
+              </Link>
               <span className="ml-1.5">{r.lane}</span>
               <span className="ml-1.5">{delegationCopy(r)}</span>
             </li>
@@ -447,14 +479,19 @@ function collapseRuns(rows: LiveFeedRow[]): FeedRun[] {
   return out;
 }
 
+/** The tracker has no per-item URL yet, so an item id links to the page, not the row. */
+function useTrackerTo(): string {
+  const { active } = useProjectCtx();
+  const { data: config } = useConfig();
+  return config?.hosted_mode && active?.tag ? projectPath(active.tag, "tracker") : "/tracker";
+}
+
 function Feed({
   agentId, projectId, intervalMs, servedAt,
 }: { agentId: string; projectId?: string; intervalMs: number; servedAt: string }) {
   const { data, isLoading, isError } = useLiveFeed(projectId, agentId, intervalMs, true);
   const [filter, setFilter] = React.useState<FeedFilter>("all");
-  const { active } = useProjectCtx();
-  const { data: config } = useConfig();
-  const trackerTo = config?.hosted_mode && active?.tag ? projectPath(active.tag, "tracker") : "/tracker";
+  const trackerTo = useTrackerTo();
   if (isError) {
     return <div className="mt-1.5 text-[11.5px] text-muted">The feed could not be loaded.</div>;
   }

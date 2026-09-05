@@ -167,6 +167,51 @@ describe("Live board", () => {
     expect(screen.getByText(/claimed by CORE-A8 \(requested cheap, undeclared\)/)).toBeInTheDocument();
     expect(screen.getByText(/superseded by CORE-A9/)).toBeInTheDocument();
     expect(screen.queryByText("no delegations")).not.toBeInTheDocument();
+    // Item ids link to the tracker, as failed feed rows do (no per-item URL yet).
+    expect(screen.getByRole("link", { name: "CORE-9" })).toHaveAttribute("href", "/tracker");
+  });
+
+  it("collapses offline agents holding nothing under a stated count, and keeps held ones in view (GRPH-708)", async () => {
+    const online = agent({ id: "a1", key: "CORE-A1", label: "busy-one", state: "working" });
+    const quietA = agent({ id: "q1", key: "CORE-Q1", label: "quiet-one", state: "offline" });
+    const quietB = agent({ id: "q2", key: "CORE-Q2", label: "quiet-two", state: "offline" });
+    const deadHolder = agent({
+      id: "h1", key: "CORE-H1", label: "dead-holder", state: "offline",
+      holdings: [{ id: "CORE-9", title: "held work", status: "in_progress", phase: "building", phase_basis: "x", pr: { state: "unrecorded" } }],
+    });
+    const orphan = agent({ id: "o1", key: "CORE-O1", label: "orphan-branch", state: "offline", branch_orphaned: true });
+    const unclaimed = agent({
+      id: "d1", key: "CORE-D1", label: "unclaimed-delegator", state: "offline",
+      delegations: { open: 0, claimed: 0, finished: 0, expired: 1, closed: 0, oldest_open_seconds: null, rows: [] },
+    });
+    board = emptyBoard({
+      total_agents: 6,
+      users: [user({ online: 1, total: 6, agents: [online, quietA, quietB, deadHolder, orphan, unclaimed] })],
+    });
+    renderLive();
+    expect(await screen.findByText("busy-one")).toBeInTheDocument();
+    expect(screen.getByText("dead-holder")).toBeInTheDocument();
+    expect(screen.getByText("orphan-branch")).toBeInTheDocument();
+    expect(screen.getByText("unclaimed-delegator")).toBeInTheDocument();
+    // Collapsed, and the count is stated — never a silent omission.
+    expect(screen.queryByText("quiet-one")).not.toBeInTheDocument();
+    expect(screen.queryByText("quiet-two")).not.toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: /2 offline agents holding nothing/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("quiet-one")).toBeInTheDocument();
+    expect(screen.getByText("quiet-two")).toBeInTheDocument();
+    // The header counts still come from the server: 1 online of 6.
+    expect(screen.getByText("1/6")).toBeInTheDocument();
+  });
+
+  it("does not render the collapse when every offline agent holds something", async () => {
+    const holder = agent({ id: "h1", key: "CORE-H1", label: "dead-holder", state: "offline", branch_orphaned: true });
+    board = emptyBoard({ total_agents: 1, users: [user({ online: 0, total: 1, agents: [holder] })] });
+    renderLive();
+    expect(await screen.findByText("dead-holder")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /holding nothing/ })).not.toBeInTheDocument();
   });
 
   it("names a filter miss as a person, not an empty project", async () => {
@@ -259,6 +304,9 @@ describe("Live board", () => {
     });
     renderLive();
     expect(await screen.findByText(/Showing .* of 40 agents/)).toBeInTheDocument();
+    // An offline agent holding nothing sits behind the stated count (GRPH-708); once shown
+    // it is faded, never hidden (D12).
+    fireEvent.click(screen.getByRole("button", { name: /1 offline agent holding nothing/ }));
     const gone = await screen.findByText("gone-one");
     expect(gone.closest("div[class*='opacity']")).toBeTruthy();
   });
