@@ -55,11 +55,16 @@ def _fleet_write_line() -> int:
 
 
 def test_the_one_writer_lives_inside_claim_cluster():
-    """Not just in the right FILE — in the right function.
+    """Not just in the right FILE — in the right function, reached only from a claim.
 
     `claim_cluster` writes reservations in the same transaction as the claims that justify
     them. A writer that drifted into a helper could reserve areas nobody claimed, which reads
     identically on the graph and is a lie about the fleet.
+
+    PRD-36 D3 added a second claim path that reserves: a BOUND seat's registration claims one
+    item and reserves its areas, and hands the claim back if the reservation fails. So the
+    construction moved into `reserve_areas`, and this guard now pins its CALLERS: exactly the
+    two functions that claim first. Any third caller is a reservation nobody claimed.
     """
     tree = ast.parse(FLEET.read_text())
     holders = [
@@ -73,7 +78,23 @@ def test_the_one_writer_lives_inside_claim_cluster():
             for sub in ast.walk(node)
         )
     ]
-    assert holders == ["claim_cluster"], f"AreaReservation is written by {holders}"
+    assert holders == ["reserve_areas"], f"AreaReservation is written by {holders}"
+    callers = sorted(
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and any(
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id == "reserve_areas"
+            for sub in ast.walk(node)
+        )
+    )
+    assert callers == ["_claim_bound_seat", "claim_cluster"], (
+        f"reserve_areas is reached from {callers}. Only a function that has just CLAIMED the "
+        "item may reserve its areas — a reservation nobody claimed renders presence no lease "
+        "governs (PRD-20 §1.3; PRD-36 D3 is the one sanctioned addition)."
+    )
 
 
 def test_presence_and_graph_queries_contain_no_write():

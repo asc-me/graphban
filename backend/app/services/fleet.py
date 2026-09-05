@@ -221,8 +221,15 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
                    capabilities: dict | None = None, worktree: str = "",
                    branch: str = "", role_hint: str | None = None,
                    parent_agent_id: str | None = None,
-                   enrolment_code: str | None = None) -> Agent:
+                   enrolment_code: str | None = None,
+                   assigned_out: dict | None = None,
+                   lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Agent:
     """Register a connected process as an agent, and tell it what role it holds.
+
+    `assigned_out`, when given, is filled with the PRD-36 D3/D4 answer for a BOUND seat:
+    `{"item", "state", "reason", "held_by"}` with `state` one of `claimed`, `taken`, `none`.
+    Registration itself is never refused for the claim's sake — the child must exist to be
+    told what happened (D4).
 
     **Always creates a row. Never reuses one by label.** Two identical Claude Code windows on
     one machine is a legitimate fleet shape, and matching an existing agent by label would
@@ -287,7 +294,65 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
         seat.consumed_by = agent.id
     db.commit()
     db.refresh(agent)
+    assigned = _claim_bound_seat(db, agent, seat, lease_seconds=lease_seconds)
+    if assigned_out is not None:
+        assigned_out.update(assigned)
     return agent
+
+
+def _claim_bound_seat(db: Session, agent: Agent, seat: "Enrolment | None", *,
+                      lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
+    """Claim a bound seat's item for the agent that just registered on it (PRD-36 D3).
+
+    Runs AFTER registration has committed, so a refused claim leaves a registered agent that
+    is told `taken` (D4). The claim goes through `claim_item`, which is the one write point
+    every claim path uses and which links the delegation by seat lineage inside it (PRD-35
+    D7); the item's touch areas are then reserved against this agent the way `claim_cluster`
+    reserves a one-item cluster. Claim and reservations are one unit: if the reservations
+    cannot be written, the claim is handed back with `release_item` and the reply reads
+    `taken` with the reason — a claim without its reservations is the collision the divvy
+    exists to prevent (D14).
+    """
+    if seat is None or not seat.item_id:
+        return {"item": None, "state": "none", "reason": None, "held_by": None}
+    from app.services import collision as collision_svc
+
+    item = db.get(Item, seat.item_id)
+    if item is None:
+        return {"item": seat.item_id, "state": "taken", "reason": "missing", "held_by": None}
+    out = {"item": item.key, "state": "taken", "reason": None, "held_by": None}
+    now = datetime.now(timezone.utc)
+    if item.blocker:
+        out["reason"] = "blocked"
+        return out
+    if not items_svc.claimable(item, lease_seconds=lease_seconds, now=now):
+        holder = item.claimed_by if item.claimed_by else None
+        out["reason"] = "held" if holder else f"status:{item.status}"
+        out["held_by"] = holder
+        return out
+    pin = bounce_pin_holder(item, now=now)
+    if pin is not None and pin != agent.id:
+        out["reason"] = "pinned"
+        out["held_by"] = pin
+        return out
+    claimed = items_svc.claim_item(db, item.id, agent.id, lease_seconds=lease_seconds)
+    if claimed is None:
+        db.refresh(item)
+        out["reason"] = "held"
+        out["held_by"] = item.claimed_by
+        return out
+    try:
+        areas, source = collision_svc.touch_areas(db, item, item.project_id)
+        reserve_areas(db, agent_id=agent.id, item_id=item.id, areas=areas,
+                      expires_at=now + timedelta(seconds=lease_seconds),
+                      predicted=(source == "predicted"))
+        db.commit()
+    except Exception as exc:  # noqa: BLE001 — hand the claim back rather than hold it unreserved
+        db.rollback()
+        items_svc.release_item(db, item.id, agent.id)
+        out["reason"] = f"reservation failed: {exc.__class__.__name__}"
+        return out
+    return {"item": item.key, "state": "claimed", "reason": None, "held_by": None}
 
 
 def touch(db: Session, agent_id: str, *, state: str | None = None) -> Agent | None:
@@ -1055,6 +1120,20 @@ NOT_INDEPENDENT = ("the only work in review was built by an agent you are not di
                    "so review means something")
 
 
+def delegated_by(db: Session, item: Item, agent_id: str) -> bool:
+    """Did `agent_id` delegate the item to its current builder? Read from the delegation
+    record (PRD-36 D19): the delegation linked to `item.built_by`, if any."""
+    if not item.built_by or not agent_id:
+        return False
+    from app.models import Delegation
+
+    row = db.scalars(
+        select(Delegation).where(Delegation.item_id == item.id,
+                                 Delegation.agent_id == item.built_by)
+        .order_by(Delegation.created_at.desc())).first()
+    return row is not None and row.delegated_by == agent_id
+
+
 def _independent_of_author(db: Session, item: Item, agent_id: str, *,
                            api_key=None) -> bool:
     """Is this caller independent of whoever built the item? False when it built it itself.
@@ -1185,6 +1264,8 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         # role system is to promote a worker to reviewer while it holds its own item; it does
         # not work, because an agent's id does not change when its role does.
         if it.built_by != agent_id
+        # PRD-36 D19: never hand a delegator its own delegation to review.
+        and not delegated_by(db, it, agent_id)
         # Already being reviewed by somebody else — while their claim is still LIVE. A
         # reviewer that went silent releases it, the same way a worker's lease releases.
         and (review_claim_holder(it, lease_seconds=lease_seconds) or agent_id) == agent_id
@@ -1282,6 +1363,13 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # differently, and this is exactly the kind of gate where a later refactor makes one of
     # them read the weaker condition.
     indep = _independent_of_author(db, item, agent_id, api_key=api_key)
+    if delegated_by(db, item, agent_id):
+        # PRD-36 D19: the delegator chose the item, wrote the brief and picked the tier. That
+        # is co-authorship of the plan, and review exists to be a second opinion. Refused on
+        # the delegation record, never on parentage; a bounce is still allowed.
+        raise SelfReview(
+            f"{agent_id} delegated {item.key} to {item.built_by} and cannot sign it off; "
+            "another agent has to review a delegated item")
     danger = (item.built_by == agent_id or not indep) and \
         self_review_allowed(db, item=item, agent_id=agent_id)
     if item.built_by and item.built_by == agent_id and not danger:
@@ -1798,6 +1886,17 @@ def areas_collide(a: list[str], b: list[str]) -> list[str]:
     return out
 
 
+def reserve_areas(db: Session, *, agent_id: str, item_id: str, areas: list[str],
+                  expires_at: datetime, predicted: bool) -> None:
+    """THE one place an `AreaReservation` is constructed (PRD-20 §1.3, guarded by
+    `test_area_reservation_has_exactly_one_construction_site`). `claim_cluster` reserves a
+    cluster's areas through it; a bound seat's registration reserves one item's areas through
+    it (PRD-36 D3). Adds rows; the caller commits, in the same transaction as the claim."""
+    for area in areas:
+        db.add(AreaReservation(agent_id=agent_id, item_id=item_id, area=area,
+                               expires_at=expires_at, predicted=predicted))
+
+
 def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                   max_items: int = 3,
                   lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
@@ -1834,11 +1933,10 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
             # `_try_claim` resolved it against us. Try the next cluster rather than failing:
             # a loser that gives up entirely turns a race into an idle agent.
             continue
-        expires = now + timedelta(seconds=lease_seconds)
-        for area in (cluster.get("areas") or []):
-            db.add(AreaReservation(agent_id=agent_id, item_id=claimed[0].id,
-                                   area=area, expires_at=expires,
-                                   predicted=bool(cluster.get("predicted"))))
+        reserve_areas(db, agent_id=agent_id, item_id=claimed[0].id,
+                      areas=cluster.get("areas") or [],
+                      expires_at=now + timedelta(seconds=lease_seconds),
+                      predicted=bool(cluster.get("predicted")))
         db.commit()
         return {"claimed": True,
                 "items": [{"id": it.key, "stored_id": it.id, "title": it.title} for it in claimed],
@@ -1995,7 +2093,8 @@ def _hash_code(code: str) -> str:
 
 def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None = None,
                     issued_by: str | None = None, minted_by: str | None = None,
-                    reissued_from: str | None = None) -> tuple[Enrolment, str]:
+                    reissued_from: str | None = None, item_id: str | None = None,
+                    delegation_id: str | None = None) -> tuple[Enrolment, str]:
     """Mint one SEAT and return (row, plaintext). The code is shown once.
 
     One seat per agent, never one per role: two agents redeeming the same code would share an
@@ -2007,12 +2106,17 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
 
     if role not in ROLES + (ALL_IN_ONE,):
         raise ValueError(f"unknown role: {role!r}")
+    if item_id and role != "worker":
+        # PRD-36 D1: a reviewer takes review through claim_review and must not be steered
+        # to one item by whoever minted its seat.
+        raise ValueError(f"a bound seat is worker-only; cannot bind an item to a {role!r} seat")
     body = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(6))
     code = f"{role.upper().replace('-', '')}-{body}"
     row = Enrolment(
         id=str(uuid.uuid4()), project_id=project_id, code_hash=_hash_code(code),
         code_prefix=code.split("-")[-1][:2], role=role, wave=wave,
         issued_by=issued_by, minted_by=minted_by, reissued_from=reissued_from,
+        item_id=item_id or None, delegation_id=delegation_id or None,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=ENROLMENT_TTL_MINUTES),
     )
     db.add(row)
@@ -2022,7 +2126,8 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
 
 
 def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str,
-                      api_key, wave: str | None = None) -> tuple[Enrolment, str]:
+                      api_key, wave: str | None = None, item_id: str | None = None,
+                      delegation_id: str | None = None) -> tuple[Enrolment, str]:
     """A planner mints a seat for an agent it is about to spawn (PRD-19 E7 / D-g).
 
     An orchestrator cannot paste a code out of a UI, so the capability has to exist for an
@@ -2049,7 +2154,8 @@ def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str
         raise authz.Forbidden(
             f"this credential is eligible for {', '.join(allowed)}; cannot mint a {role!r} seat",
             hint="mint a credential for that role in the Fleet view first")
-    return issue_enrolment(db, project_id=project_id, role=role, wave=wave, minted_by=minter_id)
+    return issue_enrolment(db, project_id=project_id, role=role, wave=wave, minted_by=minter_id,
+                           item_id=item_id, delegation_id=delegation_id)
 
 
 def reissue_enrolment(db: Session, *, enrolment_id: str) -> tuple[Enrolment, str]:

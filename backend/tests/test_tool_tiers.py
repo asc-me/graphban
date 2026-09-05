@@ -354,7 +354,8 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 8891
+CORE_TOKENS = 8892
+# 8891 -> 8892 (PRD-36): `assigned` on register_agent's output, `code_neighbors` trimmed.
 # 9076 -> 8891 (PRD-35). `brief` on get_item_details adds ~10; the trims that paid for the
 # `delegate` tool in the full manifest (see test_mcp_footprint.MEASURED_TOKENS) landed
 # mostly on core descriptions, so core SHRANK. Same meaning, fewer words; nothing dropped.
@@ -366,7 +367,9 @@ CORE_TOKENS = 8891
 
 #: Per tier, so a tier cannot quietly grow back to the untiered weight — the item's
 #: acceptance, in a form that fails when it stops being true.
-TIER_TOKENS = {"prd": 1998, "codegraph": 1009, "fleet": 1008, "misc": 1274}
+TIER_TOKENS = {"prd": 1998, "codegraph": 1009, "fleet": 1055, "misc": 1238}
+# PRD-36: fleet +`seat`/`wave` on delegate and its `enrolment_code`; misc trims (learning_loop,
+# publish_memory, reject_memory); codegraph and prd moved by the shared-description trims.
 # PRD-35: fleet 799 -> 1008 (`delegate`, ~209 after its own trim). prd 2002 -> 1998,
 # codegraph 1030 -> 1009, misc 1288 -> 1274: the description trims that paid for it
 # (update_prd, describe_code/link_code, report_graphban_issue, and the shared

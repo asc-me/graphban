@@ -78,7 +78,10 @@ CEILING = 14200
 # search_memory, mint_enrolment, get_lessons, describe_code, propose_allocation,
 # retire_wave, report_graphban_issue) and the shared `project_id` / `wait_seconds` /
 # `fields` property descriptions. Every third-state sentence survived. Headroom 16.
-MEASURED_TOKENS = 14184
+# 14184 -> 14197 (PRD-36). `delegate` gains `seat` and `wave` and returns `enrolment_code`;
+# `register_agent` returns `assigned`. Paid by trimming learning_loop, publish_memory,
+# reject_memory, code_neighbors and fleet_status to the same meaning in fewer words.
+MEASURED_TOKENS = 14197
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
