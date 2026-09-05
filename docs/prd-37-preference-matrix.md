@@ -1,7 +1,7 @@
 # PRD-37 — Preference matrix: committed harness/model facts, project policy, user weights, supervisor-side resolution
 
 **Ledger id:** GRPH-P37
-**Status:** draft — v0.1, not yet grilled.
+**Status:** approved — v1.0, grill complete 2026-09-05. Shipped in PRs #626, #627, #628 (items GRPH-723–727) with the doctor fix #629, the qwen-code row verified in #631, and the declared-capabilities gap closed in #633. Deployed 2026-09-05.
 **Depends on:** PRD-36 (tier table, `spawn(tier)`, bound seats) · PRD-35 (the delegation record and its deferred outcome statistics) · PRD-22 (adapters, `Support`, `doctor`) · PRD-24 (gbagent, the qwen finding)
 **Complemented by:** the Fleet view (edits profiles and policy) · `gbfleet doctor` (prints the matrix against the machine) · `harness-kit` review of 2026-09-04 (the routing-table idea, kept; its hook enforcement, not)
 **Touches:** `fleet/src/gbfleet/matrix.toml` (new; the PRD first said `fleet/matrix.yaml` — TOML because gbfleet is httpx-thin, PRD-22 D-e, and `tomllib` is stdlib; package data so an installed wheel carries it) · `fleet/src/gbfleet/matrix.py` (new) · `fleet/src/gbfleet/{mcp,until,doctor,cli}.py` · `fleet/src/gbfleet/adapters/qwen_code.py` (new) and `adapters/__init__.py` · `backend/app/models/__init__.py` (`FleetProfile` new, `Project.fleet_policy`) · `backend/alembic/versions/` · `backend/app/services/fleet.py` · `backend/app/routers/fleet.py` · `backend/app/mcp_server.py` (result payloads only) · `web/src/features/fleet/` · `docs/fleet-adapters.md` · `docs/mcp.md`
