@@ -197,6 +197,18 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "nomic-embed-text"
     ollama_chat_model: str = "llama3.1:8b"
     ollama_auth_key: str = ""  # optional bearer for a Caddy-guarded public Ollama endpoint
+    # How long Ollama should hold the model resident after a call. Empty means "say
+    # nothing", which leaves the server's own default (5m) in charge — the behaviour every
+    # install had before this existed, so nobody's memory policy changes by upgrading.
+    #
+    # Worth setting because Graphban's calls are BURSTY in a way a generic default cannot
+    # know: a grill round, then a minute while the author types, then another round. On
+    # ms-s1-ubt that gap expires the 5m window and the next call pays a measured 9.7s to
+    # reload mistral-small3.1:24b — 9.7s of a ~16s grill spent on a model that was resident
+    # a moment earlier. Accepts Ollama's own forms: "30m", "1h", seconds as a number, or
+    # "-1" to pin indefinitely. Pinning costs the model's full weight in RAM (15GB here),
+    # which is why this is the operator's call and not a default.
+    ollama_keep_alive: str = ""
 
     openai_base_url: str = "https://api.openai.com/v1"
     openai_api_key: str = ""

@@ -308,6 +308,59 @@ def test_ollama_chat_sends_think_false(monkeypatch):
 from app.providers.base import EmptyAnswer
 
 
+def test_ollama_keep_alive_is_sent_only_when_the_install_has_an_opinion(monkeypatch):
+    """Measured on ms-s1-ubt: the model unloads in the gap while an author reads the
+    grill's questions, and the next round pays 9.7s reloading 15GB before it can start.
+    That host serves one request at a time, so it is 9.7s nobody else can use either.
+
+    Silence is the default, deliberately. `keep_alive: ""` is not "leave it alone", and
+    an upgrade must not quietly change how long every existing install pins a model in
+    RAM — that is the operator's memory budget, not ours.
+    """
+    sent = {}
+
+    def fake_stream(method, url, **kw):
+        sent.clear()
+        sent.update(kw["json"])
+        return _FakeStreamResponse(['{"message": {"content": "answer"}}'])
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    chat = ollama.OllamaChat("https://gw.example", "m")
+
+    monkeypatch.setattr(ollama.settings, "ollama_keep_alive", "")
+    chat.chat(system="s", context="c", question="q")
+    assert "keep_alive" not in sent, "an unset knob must send nothing, not an empty string"
+
+    monkeypatch.setattr(ollama.settings, "ollama_keep_alive", "30m")
+    chat.chat(system="s", context="c", question="q")
+    assert sent["keep_alive"] == "30m"
+
+
+def test_ollama_keep_alive_reaches_the_embedder_too(monkeypatch):
+    """The chat model is not the only thing that unloads. A re-index that reloads bge-m3
+    per batch pays the same toll, and an operator setting one knob reasonably expects it
+    to mean their Ollama, not their chat model."""
+    sent = {}
+
+    class _R:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"embeddings": [[0.0, 1.0]]}
+
+    def fake_post(url, **kw):
+        sent.update(kw["json"])
+        return _R()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(ollama.settings, "ollama_keep_alive", "1h")
+    ollama.OllamaEmbedder("https://gw.example", "bge-m3", 2).embed_many(["hello"])
+    assert sent["keep_alive"] == "1h"
+
+
 def test_ollama_chat_raises_on_thinking_only_stream(monkeypatch):
     """Everything the model produced was thinking (which the adapter drops) — the caller
     must get an error it can fail over on, not an empty string it will file as an answer."""
