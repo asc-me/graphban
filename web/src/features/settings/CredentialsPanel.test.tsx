@@ -118,7 +118,7 @@ vi.mock("@/lib/api", () => ({
     setProjectCredential: (p: string, body: Record<string, unknown>) =>
       setProjectCredential(p, body),
     setProjectRoles: vi.fn(async () => ({ project_id: "core", chat_roles: {}, known_roles: [] })),
-    modelLoads: vi.fn(async () => loads),
+    modelLoads: vi.fn(async (_projectId: string) => loads),
   },
 }));
 

@@ -122,7 +122,7 @@ def test_the_summary_counts_only_calls_that_paid(client, auth, db):
     _span(db, load_ms=0.0)
     _span(db, load_ms=0.0)
 
-    out = client.get("/api/platform/model-loads", headers=auth).json()
+    out = client.get("/api/platform/model-loads?project_id=core", headers=auth).json()
 
     assert out["reporting"] == 3
     assert out["reloads"] == 1
@@ -144,7 +144,7 @@ def test_providers_that_cannot_measure_a_reload_are_excluded_not_counted_as_warm
     for _ in range(20):
         _span(db, load_ms=None, provider="anthropic", model="claude-opus-4-8")
 
-    out = client.get("/api/platform/model-loads", headers=auth).json()
+    out = client.get("/api/platform/model-loads?project_id=core", headers=auth).json()
 
     assert out["reporting"] == 1, "spans that cannot measure a load were counted as evidence"
     assert out["reloads"] == 1
@@ -153,6 +153,18 @@ def test_providers_that_cannot_measure_a_reload_are_excluded_not_counted_as_warm
 def test_nothing_measurable_is_not_a_clean_bill(client, auth, db):
     """Zero reloads out of zero reporting calls must be distinguishable from zero out of
     fifty. `reporting` is what tells them apart, so it has to be there and be honest."""
-    out = client.get("/api/platform/model-loads", headers=auth).json()
+    out = client.get("/api/platform/model-loads?project_id=core", headers=auth).json()
     assert out["reporting"] == 0
     assert out["reloads"] == 0
+
+
+def test_another_org_cannot_read_this_box_s_model_loads(client, auth, db):
+    """CI caught this, not me. The first cut took `project_id` and answered for whoever
+    was named — and on a hosted box the count alone reports how much traffic the other
+    orgs are putting through it, while `models` names what they run. Scoped through a
+    project the caller can read, exactly like `list_credentials`.
+    """
+    r = client.get("/api/platform/model-loads?project_id=someone-elses-project", headers=auth)
+    assert r.status_code in (403, 404), (
+        f"a project the caller cannot read answered with {r.status_code}"
+    )

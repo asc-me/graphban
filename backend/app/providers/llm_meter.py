@@ -478,7 +478,7 @@ def _wrap_session_factory(factory: Callable, meta: dict) -> Callable:
 LOAD_WINDOW = 50
 
 
-def load_summary(db, *, project_id: str = "", window: int = LOAD_WINDOW) -> dict:
+def load_summary(db, *, project_id: str, window: int = LOAD_WINDOW) -> dict:
     """Of the recent calls that REPORTED a load time, how many paid one, and how much.
 
     Answers the only question that makes a keep-alive setting decidable: is this
@@ -496,13 +496,15 @@ def load_summary(db, *, project_id: str = "", window: int = LOAD_WINDOW) -> dict
 
     from app.models import LlmCallSpan
 
-    stmt = (select(LlmCallSpan.load_ms, LlmCallSpan.provider, LlmCallSpan.model)
-            .where(LlmCallSpan.load_ms.is_not(None))
-            .order_by(LlmCallSpan.ts.desc())
-            .limit(window))
-    if project_id:
-        stmt = stmt.where(LlmCallSpan.project_id == project_id)
-    rows = db.execute(stmt).all()
+    # `project_id` is REQUIRED, not an optional narrowing. An unscoped answer is a
+    # cross-tenant read on a hosted box — the count alone reports how busy the other orgs
+    # are — so the route vets a project first and there is no "all of it" to ask for.
+    rows = db.execute(
+        select(LlmCallSpan.load_ms, LlmCallSpan.provider, LlmCallSpan.model)
+        .where(LlmCallSpan.load_ms.is_not(None), LlmCallSpan.project_id == project_id)
+        .order_by(LlmCallSpan.ts.desc())
+        .limit(window)
+    ).all()
     reloads = [r for r in rows if (r.load_ms or 0) > 0]
     return {
         "window": window,

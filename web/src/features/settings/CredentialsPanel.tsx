@@ -590,7 +590,7 @@ export function CredentialsPanel() {
 
   return (
     <div className="flex flex-col gap-6">
-      <ModelLoadReading />
+      <ModelLoadReading projectId={projectId} />
       <section className="flex flex-col gap-3">
         <header className="flex items-center justify-between">
           <div>
@@ -715,8 +715,8 @@ export function CredentialsPanel() {
  *  not a clean bill of health, and printing "no reloads" there would be a claim about a
  *  box nobody has looked at.
  */
-function ModelLoadReading() {
-  const { data } = useModelLoads();
+function ModelLoadReading({ projectId }: { projectId: string }) {
+  const { data } = useModelLoads(projectId);
   if (!data || data.reporting === 0) return null;
 
   const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`;

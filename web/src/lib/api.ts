@@ -364,7 +364,8 @@ export const api = {
   updateCheck: () => request<UpdateCheck>("/platform/update-check"),
   // Is this box paying to reload models between calls? The reading behind
   // OLLAMA_KEEP_ALIVE — see the panel for why the setting is not a field.
-  modelLoads: () => request<ModelLoads>("/platform/model-loads"),
+  modelLoads: (projectId: string) =>
+    request<ModelLoads>(`/platform/model-loads${projectQuery(projectId)}`),
   updateApply: (tag: string) =>
     request<{ ok: boolean; started: boolean; tag: string }>("/platform/update-apply", {
       method: "POST",

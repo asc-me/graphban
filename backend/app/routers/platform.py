@@ -75,15 +75,22 @@ def list_providers(_: User = Depends(get_current_user)):
 
 
 @router.get("/model-loads")
-def model_loads(project_id: str = "", db: Session = Depends(get_db),
-                _: User = Depends(get_current_user)):
+def model_loads(project_id: str = "core", db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
     """Is this deployment paying to reload models between calls?
 
     The measurement behind `OLLAMA_KEEP_ALIVE`. Local providers report how long they
     spent loading before they could answer; a warm call reports a real zero. Without this
     the setting is a number nobody can choose, and the honest default (send nothing) looks
     identical to a well-tuned one.
+
+    Scoped to a PROJECT the caller can read, like `list_credentials` below and for the
+    same reason. Box-wide would be a cross-tenant read: on a hosted deployment the count
+    alone tells a tenant how much traffic everyone else is putting through the box, and
+    `models` names what other orgs are running. `test_cross_tenant` caught exactly that —
+    the first cut took an unvetted `project_id` and answered for any org that was named.
     """
+    authz.require_readable(db, user.id, project_id)
     from app.providers import llm_meter
 
     return llm_meter.load_summary(db, project_id=project_id)

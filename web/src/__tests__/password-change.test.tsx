@@ -33,7 +33,7 @@ vi.mock("@/lib/queries", () => ({
   useReindexStatus: () => ({ data: { running: false, tables: [] } }),
   // The panel's model-load reading. Undefined data renders nothing, which is what a
   // test about credentials wants — the reading has its own tests.
-  useModelLoads: () => ({ data: undefined }),
+  useModelLoads: (_projectId: string) => ({ data: undefined }),
   // The credentials panel colours each project tag with that project's accent (PRD-25 S5).
   useProjects: () => ({ data: [] }),
 }));
