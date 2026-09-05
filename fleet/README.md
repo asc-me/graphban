@@ -87,12 +87,29 @@ claims the item server-side, so the child holds it from its first call and never
 `claim_cluster`; the spawn reply echoes the roster's `assigned` block (`claimed`, or
 `taken` with who holds it). `tier` resolves through a table the operator names at launch —
 `gbfleet mcp --tier cheap=gbagent:qwen3.6:35b-a3b-coding-mtp-det --tier
-frontier=claude:opus` — fixed for the life of the process; an unmapped tier is refused
-naming the flag, and an explicit `adapter` overrides it. `gbfleet until` takes the same
-`--tier` table plus `--request cheap|frontier` for what its own delegations ask, and mints
-bound seats for the seeds it delegates, so the divvy no longer decides what its children
-claim. The outcome comes back through the ledger — the item moving on the board — never as
-a reply in the parent's context.
+frontier=claude:opus` — fixed for the life of the process, and an explicit `adapter`
+overrides it. `gbfleet until` takes the same `--tier` table plus `--request cheap|frontier`
+for what its own delegations ask, and mints bound seats for the seeds it delegates, so the
+divvy no longer decides what its children claim. The outcome comes back through the ledger
+— the item moving on the board — never as a reply in the parent's context.
+
+**The preference matrix (PRD-37).** A tier with no `--tier` flag resolves through
+`src/gbfleet/matrix.toml`, a committed table of harness × model × lane × role × tier rows
+with a status (`verified`, `unverified`, `failed`, `unregistered`) and the item that proved
+it — facts only, reviewed like code. Resolution runs in a fixed order: the rows for the
+tier and role → the project's policy (`local_only`, `allowed_harnesses`,
+`reviewer_cross_vendor`) → the user's profile (an ordered allowlist of harnesses, weights
+over `cost`/`quality`/`latency`/`locality`, excludes) → `failed` rows out → what this
+machine has installed → score → ties (verified first, then the user's own order, then the
+row's `order`). Profile and policy come from the server (PR 2); until then every
+resolution says `profile: none`. The spawn reply carries `resolution`: `source` (`flag`
+or `matrix`), how many rows survived each step, what each step dropped and why, the winner
+with its per-axis numbers, and the runner-up. An empty resolution is a tool error naming
+the step that emptied it — there is no silent default. Measured axes need `n ≥ 5` before
+they count and say `unmeasured` until then. `--matrix PATH` on `mcp`, `until` and `doctor`
+swaps the file; `gbfleet doctor` prints every row against this machine and what each
+role/tier would resolve to. The file is TOML, not the YAML the PRD first wrote, because
+gbfleet is httpx-thin by requirement and `tomllib` is standard library.
 
 **Name the project.** A credential that spans several projects resolves a call that names
 none to its *default* project, and that is not where the seats were minted: the child

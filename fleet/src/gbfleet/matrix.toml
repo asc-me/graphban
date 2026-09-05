@@ -1,0 +1,151 @@
+# The preference matrix (PRD-37 D2): what runs which kind of work, and what proved it.
+#
+# FACTS ONLY. Taste lives in a user's profile (server-side, PRD-37 D3) and constraints in a
+# project's policy (D4); this file states which harness × model pairs are verified, for what,
+# with the item that proved it. A row moves to `verified` or `failed` by a commit naming the
+# item — never by a job. TOML because gbfleet is httpx-thin by requirement (PRD-22 D-e) and
+# `tomllib` is in the standard library; PRD-37 wrote "yaml" before that constraint was checked.
+#
+# status: verified | unverified | failed | unregistered (the harness has no adapter in ADAPTERS,
+#         which is a fact worth a row rather than a silence — codex today, qwen-code until its
+#         adapter lands).
+# evidence: newest LAST. `status` is read against the newest entry; history stays here.
+# order: preference within a tier when scores tie (after verified-over-unverified and the
+#        user's own defaults order — PRD-37 D6).
+# cost_class: local | cheap | frontier  →  cost axis 1.0 | 0.6 | 0.2.
+
+[[rows]]
+harness = "gbagent"
+model = "qwen3.6:35b-a3b-coding-mtp-det"
+vendor = "gbagent"
+lane = "any"
+role = "worker"
+tier = "cheap"
+status = "verified"
+order = 1
+cost_class = "local"
+local = true
+evidence = [
+  { item = "GRPH-497", date = "2026-08-25", outcome = "signed_off", note = "PRD-24 acceptance walk 4: a correct fix, 9 tests with controls" },
+  { item = "GRPH-720", date = "2026-09-05", outcome = "review", note = "PRD-36 criterion 18: bound seat, doc item, moved to review in 35s" },
+  { item = "GRPH-722", date = "2026-09-05", outcome = "review", note = "PRD-36 criterion 18 second pass: spawn echoed assigned=claimed" },
+]
+
+[[rows]]
+harness = "gbagent"
+model = "qwen3-coder:30b"
+vendor = "gbagent"
+lane = "any"
+role = "worker"
+tier = "cheap"
+status = "failed"
+order = 9
+cost_class = "local"
+local = true
+evidence = [
+  { item = "GRPH-497", date = "2026-08-25", outcome = "failed", note = "PRD-24 acceptance walks 1-3: 93 min, zero usable lines, three distinct failures" },
+]
+
+[[rows]]
+harness = "claude"
+model = "opus"
+vendor = "anthropic"
+lane = "any"
+role = "worker"
+tier = "frontier"
+status = "unverified"
+order = 1
+cost_class = "frontier"
+local = false
+evidence = []
+
+[[rows]]
+harness = "claude"
+model = "opus"
+vendor = "anthropic"
+lane = "any"
+role = "reviewer"
+tier = "frontier"
+status = "unverified"
+order = 1
+cost_class = "frontier"
+local = false
+evidence = []
+
+[[rows]]
+harness = "claude"
+model = "sonnet"
+vendor = "anthropic"
+lane = "any"
+role = "worker"
+tier = "cheap"
+status = "unverified"
+order = 2
+cost_class = "cheap"
+local = false
+evidence = []
+
+[[rows]]
+harness = "grok"
+model = "grok-4.5"
+vendor = "xai"
+lane = "any"
+role = "worker"
+tier = "frontier"
+status = "unverified"
+order = 2
+cost_class = "frontier"
+local = false
+evidence = []
+
+[[rows]]
+harness = "grok"
+model = "grok-4.5"
+vendor = "xai"
+lane = "any"
+role = "reviewer"
+tier = "frontier"
+status = "unverified"
+order = 2
+cost_class = "frontier"
+local = false
+evidence = []
+
+[[rows]]
+harness = "cursor-agent"
+model = "composer-2.5"
+vendor = "cursor"
+lane = "any"
+role = "worker"
+tier = "cheap"
+status = "unverified"
+order = 3
+cost_class = "cheap"
+local = false
+evidence = []
+
+[[rows]]
+harness = "codex"
+model = ""
+vendor = "openai"
+lane = "any"
+role = "worker"
+tier = "frontier"
+status = "unregistered"
+order = 9
+cost_class = "frontier"
+local = false
+evidence = []
+
+[[rows]]
+harness = "qwen-code"
+model = ""
+vendor = "alibaba"
+lane = "any"
+role = "worker"
+tier = "cheap"
+status = "unregistered"
+order = 9
+cost_class = "cheap"
+local = false
+evidence = []

@@ -26,6 +26,7 @@ from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, To
 from .lock import hold
 from .seat import Seat
 from .tiers import TierTable
+from . import matrix as matrix_mod
 from .spawn import Child
 from .supervisor import (
     DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Wave, _reap_all, _start,
@@ -128,6 +129,7 @@ def run(
     request: str | None = None,
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
+    matrix: "matrix_mod.Matrix | None" = None,
 ) -> Report:
     """Hold the repo lock and run until idle, a cap, or a config refusal.
 
@@ -181,6 +183,7 @@ def run(
                 request=request,
                 tiers=tiers or TierTable(),
                 launch_for=launch_for,
+                matrix=matrix,
             )
             result.wave = wave
             minted = result.minted
@@ -256,6 +259,7 @@ def _loop(
     request: str | None = None,
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
+    matrix: "matrix_mod.Matrix | None" = None,
 ) -> Report:
     agent_id = str(identity.get("agent_id") or identity.get("id"))
     empty = 0
@@ -350,6 +354,14 @@ def _loop(
             if want and want in tiers.lanes and launch_for is not None:
                 lane = tiers.resolve(want)
                 factory = launch_for(lane.adapter, lane.model)
+            elif want and launch_for is not None and matrix is not None:
+                # PRD-37: no flag for this tier — the matrix resolves, and the report says how.
+                res = matrix.resolve(tier=want, role="worker", installed=matrix_mod.installed_checker())
+                if res.winner is not None:
+                    factory = launch_for(res.winner.harness, res.winner.model)
+                    observe.emit("resolved", item=seed, **{k: v for k, v in res.explain().items() if k in ("winner", "dropped", "eligible", "profile")})
+                else:
+                    observe.emit("resolve_refused", item=seed, detail=res.refused)
             _spawn_one(
                 wave, children, occupied, persist, seat, factory,
                 repo, workspace, wave_name, supervisor, limits, planner, debug,
