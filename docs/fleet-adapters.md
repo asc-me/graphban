@@ -53,6 +53,13 @@ Every row above was read off a binary that was actually run on macOS, except `co
 `gbagent` is the one first-party row — see below for why its version column looks different
 from the rest.
 
+This table is *support*: what each binary needs to run. Which harness and model a `spawn`
+resolves to for a tier is a different table — the **preference matrix** in
+`fleet/src/gbfleet/matrix.toml` (PRD-37), one row per harness × model × lane × role × tier
+with a status and the item that proved it. `codex` is a `status = "unregistered"` row there
+so the file's existence never reads as support; `gbfleet doctor` prints every row against
+this machine and what each role/tier would resolve to. See `fleet/README.md`.
+
 ## Naming a model (GRPH-483)
 
 Every vendor takes one and spells it differently. The supervisor **carries** the value and

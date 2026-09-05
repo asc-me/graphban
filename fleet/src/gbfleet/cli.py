@@ -28,6 +28,7 @@ from .mcp import Fleet, serve
 from .state import repo_root
 from .supervisor import DEFAULT_MAX_WORKERS, Limits, Wave, up
 from .tiers import TierTable
+from . import matrix as matrix_mod
 from .until import PLANNER_TOOLS, emit as emit_until, run as run_until
 from .worktree import Worktree
 
@@ -139,6 +140,7 @@ def build_parser() -> argparse.ArgumentParser:
     doc.add_argument("--adapter", default="", help="vendor you intend to run")
     doc.add_argument("--server", default="", help="Graphban base URL")
     doc.add_argument("--project", default="", help="the Graphban project this fleet works; named on every call so a credential spanning several projects lands where the seats were minted (GRPH-718)")
+    doc.add_argument("--matrix", default="", help="path to a preference matrix (PRD-37); default is the one shipped with gbfleet")
     doc.add_argument("--seats-file", default=None, help="seats file `up` would read")
 
     stdio = sub.add_parser(
@@ -157,6 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
     stdio.add_argument("--repo", default=".", help="repository to supervise (default: cwd)")
     stdio.add_argument("--server", required=True, help="Graphban base URL")
     stdio.add_argument("--project", default="", help="the Graphban project this fleet works; named on every call so a credential spanning several projects lands where the seats were minted (GRPH-718)")
+    stdio.add_argument("--matrix", default="", help="path to a preference matrix (PRD-37); default is the one shipped with gbfleet")
     stdio.add_argument("--workspace", default=None, help="where worktrees go")
     stdio.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     stdio.add_argument(
@@ -180,6 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     until.add_argument("--repo", default=".", help="repository to supervise (default: cwd)")
     until.add_argument("--server", required=True, help="Graphban base URL")
     until.add_argument("--project", default="", help="the Graphban project this fleet works; named on every call so a credential spanning several projects lands where the seats were minted (GRPH-718)")
+    until.add_argument("--matrix", default="", help="path to a preference matrix (PRD-37); default is the one shipped with gbfleet")
     until.add_argument(
         "--seats-file", default=None,
         help="optional pre-minted enrolment codes, consumed before minting",
@@ -407,6 +411,7 @@ def _until(args) -> int:
             request=args.request,
             tiers=tiers,
             launch_for=lambda name, model="": make_adapter_factory(name, None, model),
+            matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
         )
     except RepoLocked as exc:
         print(f"gbfleet until: {exc}", file=sys.stderr)
@@ -458,6 +463,7 @@ def _serve_stdio(args) -> int:
                 lock=acquired,
                 limits=Limits(max_workers=args.max_workers),
                 tiers=tiers,
+                matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
             )
             if acquired.takeover:
                 leftover, _occupied, notes = adopt_mod.recover(root, workspace)
@@ -498,6 +504,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             api_key=os.environ.get(API_KEY_ENV),
             seats_file=args.seats_file,
             project=args.project,
+            matrix_path=args.matrix or None,
         )
         # FAIL only. An UNKNOWN is loud in the report and does not stop a run — refusing
         # on a check that could not be made would ground the fleet on a slow network.

@@ -44,6 +44,7 @@ from typing import Any, Callable, TextIO
 from . import worktree as wt_mod
 from .adapters import AdapterError, Tuning
 from .tiers import TierTable
+from . import matrix as matrix_mod
 from .client import Graphban
 from .lock import Acquired
 from .seat import Seat
@@ -85,6 +86,8 @@ TOOLS: list[dict[str, Any]] = [
                         "naming the flag."
                     ),
                 },
+                "role": {"type": "string", "description": "worker (default) or reviewer; picks the matrix rows when `tier` resolves through it (PRD-37)."},
+                "lane": {"type": "string", "description": "frontend | backend | mixed; narrows the matrix rows. Default any."},
                 "item": {
                     "type": "string",
                     "description": (
@@ -202,6 +205,11 @@ class Fleet:
     #: PRD-36 D6/D16: what each tier means on this machine, named at launch, fixed for
     #: the life of the process.
     tiers: TierTable = field(default_factory=TierTable)
+    #: PRD-37: the committed matrix, resolved through when a tier has no --tier flag.
+    matrix: "matrix_mod.Matrix | None" = None
+    #: PRD-37 D14: profile and policy read from the server (PR 2); None until then.
+    profile: "matrix_mod.Profile | None" = None
+    policy: "matrix_mod.Policy | None" = None
 
     def __post_init__(self) -> None:
         # One partition object. `start_one` is given `fleet.partition`; `watch_tick`
@@ -313,11 +321,25 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
         if not code:
             raise ValueError("spawn needs `enrolment_code`")
         via_tier = bool(tier) and not adapter
+        resolution: dict | None = None
         if via_tier:
-            # PRD-36 D6: the table resolves; the supervisor chooses nothing. An explicit
-            # adapter wins over the tier, and the reply says which ran either way.
-            lane = fleet.tiers.resolve(tier)
-            adapter, model = lane.adapter, (model or lane.model)
+            # PRD-36 D6: an explicit --tier flag is the resolution, and the reply says
+            # `source: flag`. Without one, PRD-37 resolves through the matrix, policy,
+            # profile and what this machine has installed — and explains itself (D8).
+            if tier in fleet.tiers.lanes:
+                lane = fleet.tiers.resolve(tier)
+                adapter, model = lane.adapter, (model or lane.model)
+                resolution = {"source": "flag", "tier": tier, "adapter": adapter, "model": model}
+            else:
+                mat = fleet.matrix or matrix_mod.load()
+                res = mat.resolve(tier=tier, role=args.get("role") or "worker",
+                                  lane=args.get("lane") or "any", profile=fleet.profile,
+                                  policy=fleet.policy, installed=matrix_mod.installed_checker())
+                if res.winner is None:
+                    raise ValueError(f"no harness resolves for tier {tier!r}: {res.refused}. "
+                                     + json.dumps(res.explain()["dropped"]))
+                adapter, model = res.winner.harness, (model or res.winner.model)
+                resolution = res.explain()
         if not adapter:
             raise ValueError("spawn needs `adapter` or a mapped `tier`")
 
@@ -386,6 +408,7 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
         described["model"] = model
         described["tier"] = tier if via_tier else None
         described["assigned"] = child.assigned
+        described["resolution"] = resolution
         # Said once, at spawn, for the same reason the wave summary says it: an operator
         # who asked for debug and gets a quiet log from an adapter that has no debug flag
         # would reasonably conclude the child is fine.

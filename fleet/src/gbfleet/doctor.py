@@ -340,6 +340,7 @@ def run(
     seats_file: str | None = None,
     out=None,
     project: str = "",
+    matrix_path: str | None = None,
 ) -> Report:
     """Every check that can be made without spawning anything.
 
@@ -373,6 +374,28 @@ def run(
     else:
         report.add("server reachable", UNKNOWN, "no --server given")
     check_seats(report, seats_file)
+    check_matrix(report, matrix_path)
 
     report.render(out)
     return report
+
+
+def check_matrix(report: Report, matrix_path: str | None = None) -> None:
+    """PRD-37 D11: every row against this machine, then what each tier resolves to. An
+    adapter file that is not registered is a line here, never a silence (criterion 2)."""
+    from . import matrix as matrix_mod
+
+    try:
+        mat = matrix_mod.load(Path(matrix_path) if matrix_path else None)
+    except Exception as exc:  # noqa: BLE001 - a bad matrix is the finding
+        report.add("matrix", FAIL, f"could not load: {str(exc)[:200]}",
+                   "fix the row the message names; a verified row needs evidence")
+        return
+    report.add("matrix", PASS, f"{len(mat.rows)} row(s) from {mat.path}")
+    for name in matrix_mod.unregistered_adapter_files():
+        if not any(r.harness == name and r.status == "unregistered" for r in mat.rows):
+            report.add(f"matrix {name}", FAIL, "an adapter file exists but is not registered and "
+                       "has no matrix row saying so", f"add a row with status = \"unregistered\" for {name}")
+    installed = matrix_mod.installed_checker()
+    for name, status, detail in matrix_mod.doctor_lines(mat, installed, None, None):
+        report.add(name, status, detail)

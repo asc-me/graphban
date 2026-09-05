@@ -71,7 +71,8 @@ def test_spawn_by_tier_resolves_adapter_and_model_and_says_so(fleet: Fleet):
 def test_spawn_with_an_unmapped_tier_is_a_tool_error_naming_the_flag(fleet: Fleet):
     out = _call(fleet, "spawn", tier="turbo", enrolment_code="WORKER-1")
     assert out.get("isError")
-    assert "--tier turbo=" in out["content"][0]["text"]
+    # PRD-37: an unflagged tier falls through to the matrix, which has no such tier either.
+    assert "no harness resolves for tier 'turbo'" in out["content"][0]["text"]
     assert fleet.children == []
 
 
