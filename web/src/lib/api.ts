@@ -1,4 +1,4 @@
-import type { Credential, CredentialIn, FleetOverview, FleetPresence, LiveBoard, LiveFeed, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
+import type { Credential, CredentialIn, FleetOverview, FleetPresence, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -362,6 +362,9 @@ export const api = {
       body: JSON.stringify(body),
     }),
   updateCheck: () => request<UpdateCheck>("/platform/update-check"),
+  // Is this box paying to reload models between calls? The reading behind
+  // OLLAMA_KEEP_ALIVE — see the panel for why the setting is not a field.
+  modelLoads: () => request<ModelLoads>("/platform/model-loads"),
   updateApply: (tag: string) =>
     request<{ ok: boolean; started: boolean; tag: string }>("/platform/update-apply", {
       method: "POST",

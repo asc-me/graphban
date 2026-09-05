@@ -2100,6 +2100,12 @@ class LlmCallSpan(Base):
     cache_write_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_source: Mapped[str] = mapped_column(String(12), default="none")  # reported | estimated | none
     latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
+    # How much of `latency_ms` was the model being loaded into memory, when the provider
+    # says (Ollama reports `load_duration` on the line this already reads for token
+    # counts). NULL means NOBODY SAID — a provider that does not report this is not a
+    # provider that loaded in zero milliseconds, and only one of those two is a warm call.
+    # Measured cold on ms-s1-ubt: 10.24s of an 11.86s call, 86% of it. Warm: a real 0.0.
+    load_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     ok: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     error_class: Mapped[str] = mapped_column(String(64), default="")

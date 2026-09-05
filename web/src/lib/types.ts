@@ -827,6 +827,20 @@ export interface IntentDiff {
   changed?: number;
 }
 
+/** Recent calls that could measure their own model-load time (GRPH-P15 follow-up).
+ *
+ *  `reporting` is load-bearing: zero reloads out of zero measurable calls is not a clean
+ *  bill of health, and a panel that cannot tell those apart would report a box that
+ *  reloads on every call as fine. Anthropic and OpenAI never report loading at all. */
+export interface ModelLoads {
+  window: number;
+  reporting: number;
+  reloads: number;
+  reload_ms_total: number;
+  worst_ms: number;
+  models: string[];
+}
+
 export interface GrillState {
   prd_id: string;
   turns: { seq: number; role: string; text: string; via: string; actor: string }[];

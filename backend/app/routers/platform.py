@@ -74,6 +74,21 @@ def list_providers(_: User = Depends(get_current_user)):
     return {"providers": provider_registry.PROVIDERS}
 
 
+@router.get("/model-loads")
+def model_loads(project_id: str = "", db: Session = Depends(get_db),
+                _: User = Depends(get_current_user)):
+    """Is this deployment paying to reload models between calls?
+
+    The measurement behind `OLLAMA_KEEP_ALIVE`. Local providers report how long they
+    spent loading before they could answer; a warm call reports a real zero. Without this
+    the setting is a number nobody can choose, and the honest default (send nothing) looks
+    identical to a well-tuned one.
+    """
+    from app.providers import llm_meter
+
+    return llm_meter.load_summary(db, project_id=project_id)
+
+
 @router.get("/credentials")
 def list_credentials(project_id: str = "core", db: Session = Depends(get_db),
                      user: User = Depends(get_current_user)):

@@ -32,7 +32,7 @@ import { Input } from "@/components/ui/input";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import { keys, useCredentials, useProjects, useReindexStatus } from "@/lib/queries";
+import { keys, useCredentials, useModelLoads, useProjects, useReindexStatus } from "@/lib/queries";
 import { settingsPath } from "@/lib/routes";
 import type { AiProvider, Credential, Project } from "@/lib/types";
 import { Link } from "react-router-dom";
@@ -590,6 +590,7 @@ export function CredentialsPanel() {
 
   return (
     <div className="flex flex-col gap-6">
+      <ModelLoadReading />
       <section className="flex flex-col gap-3">
         <header className="flex items-center justify-between">
           <div>
@@ -697,5 +698,54 @@ export function CredentialsPanel() {
           projectId={projectId} onChanged={refresh} onError={onError} />
       )}
     </div>
+  );
+}
+
+
+/** Is this box paying to reload models between calls?
+ *
+ *  This panel is where an operator decides how their instance talks to its models, so it
+ *  is where the cost of NOT keeping one resident belongs. `OLLAMA_KEEP_ALIVE` is
+ *  deliberately not a field here: how long a 15GB model is pinned is the box's RAM
+ *  budget, one credential's setting would silently contradict another pointed at the same
+ *  host, and — the reason that decided it — nobody can choose 30m over 5m without this
+ *  number. A knob nobody can set well is worse than no knob.
+ *
+ *  Silent when nothing can measure a load. Zero reloads out of zero measurable calls is
+ *  not a clean bill of health, and printing "no reloads" there would be a claim about a
+ *  box nobody has looked at.
+ */
+function ModelLoadReading() {
+  const { data } = useModelLoads();
+  if (!data || data.reporting === 0) return null;
+
+  const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+  const paying = data.reloads > 0;
+  return (
+    <section
+      className={cn("rounded-[11px] border px-3 py-2.5",
+                    paying ? "border-[#4a3a12] bg-[rgba(224,179,74,0.07)]" : "border-line-2 bg-surface-2/60")}
+    >
+      <div className="font-mono text-[10px] uppercase tracking-wide text-faint">Model loading</div>
+      {paying ? (
+        <p className="mt-1.5 text-[11.5px] leading-relaxed text-fg-2">
+          <span className="font-medium text-[#e0b34a]">
+            {data.reloads} of the last {data.reporting} measured calls waited for a model to
+            load
+          </span>{" "}
+          — {seconds(data.reload_ms_total)} in total, worst {seconds(data.worst_ms)}
+          {data.models.length > 0 && <> ({data.models.join(", ")})</>}. Set{" "}
+          <code className="font-mono text-[10.5px] text-fg">OLLAMA_KEEP_ALIVE</code> (say{" "}
+          <code className="font-mono text-[10.5px] text-fg">30m</code>) to keep it resident
+          between calls; it costs that model&rsquo;s full weight in RAM for as long as you ask
+          for.
+        </p>
+      ) : (
+        <p className="mt-1.5 text-[11.5px] leading-relaxed text-muted">
+          None of the last {data.reporting} measured calls waited for a model to load — the
+          model is resident when work arrives. Nothing to tune.
+        </p>
+      )}
+    </section>
   );
 }
