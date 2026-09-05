@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import logging
 import re
@@ -548,10 +549,16 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
             # Similarity already vetoed. Spending a judge call cannot un-duplicate.
             row["ungraded_reason"] = "similarity already vetoed — the judge is not asked"
             continue
-        if asked >= REVIEW_JUDGE_MAX:
+        verdict, cause = review_judge(db, row["shard"], published_texts=published_texts,
+                                      allow_call=asked < REVIEW_JUDGE_MAX)
+        if cause == "capped":
+            # The row already reads as capped from the reset above.
             continue
-        asked += 1
-        verdict, cause = review_judge(db, row["shard"], published_texts=published_texts)
+        if cause != "cached":
+            # The cap counts MODEL CALLS, not rows. A failed call spent the slot too, and
+            # a cached row spent nothing — so a queue whose verdicts are already known
+            # keeps judging new candidates instead of re-buying old ones.
+            asked += 1
         if verdict is None:
             row.update(_empty_review_judge(cause=cause))
             continue
@@ -847,13 +854,38 @@ def _review_context(db: Session, shard: MemoryShard, published_texts: list[str])
     return "\n\n".join(parts)
 
 
+def _judge_cache_key(context: str, provider: str, model) -> str:
+    """What makes two askings the same asking.
+
+    The CONTEXT string is the whole question — candidate text, the published memory it is
+    checked against, the linked item, the code match — so hashing it means the cache
+    invalidates on anything the judge can actually see, and on nothing it cannot. The
+    sample count rides along because unanimity across three is part of what the verdict
+    means; drop to one sample and the same words are a weaker claim.
+    """
+    parts = [context, provider, str(getattr(model, "model", "")), str(JUDGE_SAMPLES)]
+    return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
+
+
 def review_judge(db: Session, shard: MemoryShard, *,
-                 published_texts: list[str] | None = None) -> tuple[dict | None, str]:
+                 published_texts: list[str] | None = None,
+                 allow_call: bool = True) -> tuple[dict | None, str]:
     """Groundedness + readiness for the human review queue (GRPH-79).
 
     Separate from `judge_verdict`, which rates keep/quality for auto-triage and
     cannot tell consistent-from-contradictory (GRPH-358). Stub / split / unusable
     is ungraded, never a fabricated 0.
+
+    A verdict already reached for this exact question is REUSED, and the cause is
+    `cached`. Before that, every load of the review queue re-asked the model about every
+    candidate — up to 24 calls a page on a host that serves one at a time. It also made
+    the queue's own answer unstable: three fresh samples can split where the last three
+    agreed, so refreshing the page could change a candidate's suggestion without anything
+    about the candidate changing.
+
+    `allow_call=False` means the caller's budget is spent: report `capped` rather than
+    ask. A cache HIT still returns, because it costs nothing — which is the point, and
+    why a cap counted in model calls lets more candidates get judged over time.
     """
     from app.services import platform as platform_svc
 
@@ -867,6 +899,12 @@ def review_judge(db: Session, shard: MemoryShard, *,
         return None, "no_provider"
 
     context = _review_context(db, shard, published_texts or [])
+    key = _judge_cache_key(context, provider, model)
+    if shard.review_judge_key == key and shard.review_judge_verdict:
+        return dict(shard.review_judge_verdict), "cached"
+    if not allow_call:
+        return None, "capped"
+
     verdicts: list[dict] = []
     from app.providers import llm_meter
     with llm_meter.llm_context(feature="memory.review_judge", project_id=shard.project_id or ""):
@@ -885,13 +923,20 @@ def review_judge(db: Session, shard: MemoryShard, *,
                 return None, "split"
             verdicts.append(parsed)
     first = verdicts[0]
-    return {
+    verdict = {
         "grounded": first["grounded"],
         "ready": first["ready"],
         "conflicts": first["conflicts"],
         "reason": first["reason"],
         "samples": len(verdicts),
-    }, "ok"
+    }
+    # Stored only here, on the success path. Every `return None` above is a failure of the
+    # moment — unreachable, split, unparseable — and writing those would make a transient
+    # outage a permanent fact about the candidate.
+    shard.review_judge_key = key
+    shard.review_judge_verdict = verdict
+    db.commit()
+    return dict(verdict), "ok"
 
 
 def _empty_review_judge(*, cause: str) -> dict:

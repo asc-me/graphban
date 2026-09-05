@@ -962,6 +962,20 @@ class MemoryShard(Base):
     project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True)
     item_id: Mapped[str | None] = mapped_column(ForeignKey("items.id"), nullable=True)
     text: Mapped[str] = mapped_column(Text)
+    # The review judge's last verdict, and the exact question it answered (GRPH-P15
+    # follow-up). Keyed on a digest of the CONTEXT the judge was shown — candidate text,
+    # the published memory it was checked against, the linked item, the code match — plus
+    # the model and the sample count, so anything the verdict actually depends on changing
+    # invalidates it, and nothing else does.
+    #
+    # Only SUCCESSFUL verdicts are stored. A grader that was unreachable, split with
+    # itself, or answered unparseably said something about that moment, not about this
+    # candidate; caching it would turn a transient failure into a permanent property of
+    # the shard, which is this codebase's oldest defect wearing a cache.
+    review_judge_key: Mapped[str] = mapped_column(
+        String, default="", server_default="", nullable=False
+    )
+    review_judge_verdict: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     scope: Mapped[str] = mapped_column(String, default="global")  # global/item
     source: Mapped[str] = mapped_column(String, default="")
     # Lifecycle (AL-49): agent self-reports enter as `candidate` and only reach the
