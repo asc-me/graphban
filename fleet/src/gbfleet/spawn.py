@@ -309,6 +309,14 @@ def spawn(
     )
 
 
+def _resolved(path: str) -> str:
+    """One spelling for one directory. Falls back to the string when it cannot resolve."""
+    try:
+        return os.path.realpath(path) if path else path
+    except OSError:
+        return path
+
+
 def await_registration(
     child: Child,
     roster: Callable[[], dict],
@@ -326,12 +334,16 @@ def await_registration(
     cooperative identification and not authentication — which is all it needs to be,
     since the child is ours and the server is what actually decides anything.
     """
-    target = str(child.worktree)
+    # Compared RESOLVED (GRPH-718 walk finding): the child reports `os.path.realpath` of its
+    # worktree, and a supervisor started with `--workspace ../x` or through a symlink carries
+    # the unresolved spelling — the same directory, two strings, and a child that registered
+    # was reported never_registered and killed.
+    target = _resolved(str(child.worktree))
     deadline = child.started_at + window
 
     def matched() -> dict | None:
         for agent in roster().get("agents") or []:
-            if agent.get("worktree") == target:
+            if _resolved(str(agent.get("worktree") or "")) == target:
                 child.agent_id = agent.get("id")
                 # Available since GRPH-451 put the seat on the roster. Before that,
                 # `enrolled` was a bare boolean and a supervisor could not name the seat
