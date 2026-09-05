@@ -2101,6 +2101,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         or (key.project_id if key.project_id in allowed else None)
         or (allowed[0] if allowed else None)
     )
+    if name == "register_agent" and not requested and args.get("enrolment_code"):
+        # The seat names its project. A spawned child holds a code and a credential, not a
+        # project id, and on a key spanning several projects the guess below would land it
+        # on the wrong one and `consume_enrolment` would refuse the seat it was minted for.
+        # Only within the key's scope: a seat cannot widen a credential.
+        seat_pid = fleet_svc.project_of_enrolment_code(db, str(args.get("enrolment_code")))
+        if seat_pid and seat_pid in allowed:
+            pid = seat_pid
     # SAY WHEN THE PROJECT WAS GUESSED (GRPH-482). The last clause above is an ordering:
     # a key spanning several projects, called without `project_id`, lands in whichever
     # sorts first — no error, and nothing in the response naming the project it chose.

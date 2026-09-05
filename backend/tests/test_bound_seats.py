@@ -343,3 +343,25 @@ def test_the_roster_reads_assigned_from_the_seat_and_the_item(client, key, proj,
     assert items_svc.claim_item(db, item, stranger) is not None
     rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
     assert rows[child]["assigned"] == {"item": item, "state": "taken", "held_by": stranger}
+
+
+# ---- the seat names its project (found by the criterion-18 check) ------------------------------
+
+def test_registering_on_a_seat_without_naming_a_project_lands_on_the_seats_project(client, auth, proj, db):
+    """A spawned child knows its code and its credential, not a project id. On a key that spans
+    projects, the default project is not the seat's — the check's child was refused with
+    "that seat belongs to a different project". The seat decides, within the key's scope."""
+    other = client.post("/api/projects", json={"name": "Elsewhere"}, headers=auth).json()["id"]
+    wide = client.post("/api/api-keys", json={"name": "wide", "scopes": ["read", "write"]},
+                       headers=auth).json()["plaintext"]
+    planner = _agent(client, wide, "planner", project_id=proj)
+    item = _item(client, wide, project_id=proj)
+    out = _ok(_delegate(client, wide, item, planner, project_id=proj))
+    # No project_id on the registration — exactly what gbagent sends.
+    reg = _ok(_mcp(client, wide, "register_agent", {"label": "child", "enrolment_code": out["enrolment_code"]}))
+    child = db.get(Agent, reg["agent_id"])
+    assert child.project_id == proj
+    assert reg["assigned"]["state"] == "claimed" and reg["assigned"]["item"] == item
+    # A project named explicitly still wins, and a seat from elsewhere is still refused there.
+    e = _mcp(client, wide, "register_agent", {"label": "x", "enrolment_code": out["enrolment_code"], "project_id": other})
+    assert e.get("isError")
