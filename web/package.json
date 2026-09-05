@@ -1,7 +1,7 @@
 {
   "name": "graphban-web",
   "private": true,
-  "version": "2026.09.13",
+  "version": "2026.09.14",
   "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
   "packageManager": "pnpm@10.32.1",
