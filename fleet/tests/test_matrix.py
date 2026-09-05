@@ -454,3 +454,31 @@ def test_qwen_code_names_its_exit_codes_and_refuses_an_unsupported_knob():
     assert a.tuning == frozenset({"turns"}), "only the turn budget; effort/fallback/window are other vendors' knobs"
     assert a.known_models(Path("/usr/bin/true")) is None, "cannot be asked, and a wrong -m is not refused by the binary either"
     assert a.debug_argv(Path("/tmp/x")) == [], "-d writes to stderr; a path cannot be honoured, so say cannot"
+
+
+# ---- fix: the doctor resolves under the profile the server serves, as a spawn would ----------
+
+def test_doctor_resolves_under_the_servers_profile_policy_and_measured_cells(git_repo: Path, monkeypatch):
+    from gbfleet import doctor as doctor_mod
+
+    def fake_read(client):
+        return (m.Profile(user="alex", defaults=("gbagent", "claude"), weights={"cost": 1.0}),
+                m.Policy(local_only=True), "profile alex (2 default(s)); policy on; measured cells: 1",
+                {("gbagent", "qwen3.6:35b-a3b-coding-mtp-det", "backend", "cheap"): {"quality": m.Sample(0.8, 5)}})
+    import gbfleet.mcp as mcp_mod
+    monkeypatch.setattr(mcp_mod, "read_preferences", fake_read)
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
+    report = doctor_mod.run(repo=git_repo, out=io.StringIO(), server="http://gb.invalid", api_key="k", project="p")
+    by = {f.name: f for f in report.findings}
+    assert by["matrix preferences"].status == "PASS" and "profile alex" in by["matrix preferences"].detail
+    assert "profile alex" in by["resolve worker/cheap"].detail, "the resolution line names whose profile decided"
+    assert "quality/backend 0.80 (n=5)" in by["matrix gbagent:qwen3.6:35b-a3b-coding-mtp-det"].detail
+    assert "local_only" in by["resolve worker/frontier"].detail or by["resolve worker/frontier"].status == "UNKNOWN", (
+        "a local_only policy must show on the frontier resolution: every frontier row is cloud")
+
+
+def test_doctor_without_a_server_says_the_resolutions_assume_nothing(git_repo: Path):
+    from gbfleet import doctor as doctor_mod
+    report = doctor_mod.run(repo=git_repo, out=io.StringIO())
+    by = {f.name: f for f in report.findings}
+    assert by["matrix preferences"].status == "UNKNOWN" and "no profile" in by["matrix preferences"].detail

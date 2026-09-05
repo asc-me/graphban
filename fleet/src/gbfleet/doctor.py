@@ -374,16 +374,20 @@ def run(
     else:
         report.add("server reachable", UNKNOWN, "no --server given")
     check_seats(report, seats_file)
-    check_matrix(report, matrix_path)
+    check_matrix(report, matrix_path, server=server, api_key=api_key, project=project)
 
     report.render(out)
     return report
 
 
-def check_matrix(report: Report, matrix_path: str | None = None) -> None:
-    """PRD-37 D11: every row against this machine, then what each tier resolves to. An
-    adapter file that is not registered is a line here, never a silence (criterion 2)."""
+def check_matrix(report: Report, matrix_path: str | None = None, *, server: str = "",
+                 api_key: str | None = None, project: str = "") -> None:
+    """PRD-37 D11: every row against this machine, then what each tier resolves to UNDER THE
+    OPERATOR'S PROFILE — read off `fleet_status` exactly as `mcp` and `until` read it at
+    launch, so the doctor's answer is the answer a spawn would give. An adapter file that is
+    not registered is a line here, never a silence (criterion 2)."""
     from . import matrix as matrix_mod
+    from .mcp import read_preferences
 
     try:
         mat = matrix_mod.load(Path(matrix_path) if matrix_path else None)
@@ -396,6 +400,18 @@ def check_matrix(report: Report, matrix_path: str | None = None) -> None:
         if not any(r.harness == name and r.status == "unregistered" for r in mat.rows):
             report.add(f"matrix {name}", FAIL, "an adapter file exists but is not registered and "
                        "has no matrix row saying so", f"add a row with status = \"unregistered\" for {name}")
+    profile, policy, measured = None, None, None
+    if server and api_key:
+        client = Graphban(base_url=server, api_key=api_key, project_id=project or None)
+        try:
+            profile, policy, note, measured = read_preferences(client)
+        finally:
+            client.close()
+        report.add("matrix preferences", PASS if "unreachable" not in note else UNKNOWN, note,
+                   "" if "unreachable" not in note else "the resolutions below assume no profile and no policy")
+    else:
+        report.add("matrix preferences", UNKNOWN, "no server or key: resolving with no profile, no policy, nothing measured",
+                   "pass --server and set GBFLEET_API_KEY to see what a spawn would actually resolve")
     installed = matrix_mod.installed_checker()
-    for name, status, detail in matrix_mod.doctor_lines(mat, installed, None, None):
+    for name, status, detail in matrix_mod.doctor_lines(mat, installed, profile, policy, measured):
         report.add(name, status, detail)
