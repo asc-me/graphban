@@ -24,6 +24,7 @@ the supervisor's failures in the harness's column.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -32,7 +33,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Agent, AttemptTelemetry, Delegation, Enrolment, Item
+from app.models import (Agent, AttemptTelemetry, Delegation, Enrolment,
+                        HarnessRollup, Item)
 
 logger = logging.getLogger(__name__)
 
@@ -456,4 +458,268 @@ def row_dict(row: AttemptTelemetry) -> dict:
         "derived": row.derived_at is not None,
         "reported": row.reported_at is not None,
         "report_count": row.report_count,
+    }
+
+
+# ---- rollups and the page's read (D11, D6, D5) ------------------------------------------------
+
+#: A rate needs this many finished attempts before it counts (PRD-37 `MIN_SAMPLE`). The floor is
+#: a rule about READING a number, never about whether a week happened — which is why the rollup
+#: below writes thin weeks and this constant is applied at the read.
+FLOOR = 5
+
+#: Above this share of one sampling reason, a rate carries the "sampled by preference" badge.
+#: Visual only: it never alters a denominator, and the rules read the same undivided rate.
+SKEW_SHARE = 0.8
+
+#: Below this share of attempts reporting tokens, the cost proxy is not shown at all. A partial
+#: numerator over a full denominator makes a vendor that prints nothing look cheap.
+COST_COVERAGE = 0.8
+
+CELL_KEYS = ("vendor", "model", "binary_version", "lane", "tier", "task_class", "size_band")
+
+
+def week_of(when: datetime) -> str:
+    """ISO year-week, e.g. `2026-W37`. The week a rollup row is a fact about."""
+    year, week, _ = _aware(when).isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def _cell_of(row: AttemptTelemetry) -> tuple:
+    return (row.vendor or "", row.model or "", row.binary_version or "", row.lane or "",
+            row.tier_requested or "", row.task_class or "", row.size_band or "")
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def roll(db: Session, project_id: str, *, weeks: set[str] | None = None) -> int:
+    """Recompute `harness_rollups` from the raw rows. Returns the number of rows written.
+
+    Recomputed, never folded into: a rollup that cannot be reproduced from what it summarises
+    is a number nobody can check, and that is the whole reason `attempt_telemetry` is kept far
+    longer than any chart needs it. Deleting the weeks first is what makes a re-roll idempotent
+    rather than cumulative.
+
+    Weeks with attempts are written even below the floor. A week with NO attempts is left
+    absent, because no attempts and a zero rate are different claims and the chart draws the
+    absence as a gap.
+    """
+    rows = db.scalars(select(AttemptTelemetry).where(
+        AttemptTelemetry.project_id == project_id,
+        AttemptTelemetry.derived_at.is_not(None))).all()
+    buckets: dict[tuple, dict] = {}
+    for row in rows:
+        week = week_of(row.derived_at)
+        if weeks is not None and week not in weeks:
+            continue
+        cell = buckets.setdefault((week, *_cell_of(row)), {
+            "finished": 0, "signed_off": 0, "bounced": 0, "seconds": [],
+            "tokens_in": 0, "tokens_out": 0, "tokens_reported": 0, "signed_off_reported": 0,
+            "first_choice": 0, "fallback": 0, "explicit": 0, "unknown": 0})
+        cell["finished"] += 1
+        cell["signed_off"] += 1 if row.outcome == "signed_off" else 0
+        cell["bounced"] += 1 if row.outcome == "bounced" else 0
+        if row.claim_to_finish_s is not None:
+            cell["seconds"].append(float(row.claim_to_finish_s))
+        # Tokens are SUMMED over the attempts that reported, with the count of those attempts
+        # beside them. No average is stored, which is what keeps "not reported" from becoming
+        # a zero the moment a week is aggregated.
+        if row.tokens_in is not None or row.tokens_out is not None:
+            cell["tokens_in"] += row.tokens_in or 0
+            cell["tokens_out"] += row.tokens_out or 0
+            cell["tokens_reported"] += 1
+            cell["signed_off_reported"] += 1 if row.outcome == "signed_off" else 0
+        cell[row.sampled if row.sampled in SAMPLED else "unknown"] += 1
+
+    touched = weeks if weeks is not None else {k[0] for k in buckets}
+    existing = db.scalars(select(HarnessRollup).where(
+        HarnessRollup.project_id == project_id)).all()
+    for old in existing:
+        if weeks is None or old.week in touched:
+            db.delete(old)
+    db.flush()
+    now = _now()
+    for (week, vendor, model, version, lane, tier, task_class, band), cell in buckets.items():
+        db.add(HarnessRollup(
+            project_id=project_id, week=week, vendor=vendor, model=model,
+            binary_version=version, lane=lane, tier=tier, task_class=task_class,
+            size_band=band, finished=cell["finished"], signed_off=cell["signed_off"],
+            bounced=cell["bounced"],
+            median_seconds=(int(_median(cell["seconds"])) if cell["seconds"] else None),
+            tokens_in=cell["tokens_in"] or None, tokens_out=cell["tokens_out"] or None,
+            tokens_reported=cell["tokens_reported"],
+            signed_off_reported=cell["signed_off_reported"],
+            first_choice=cell["first_choice"], fallback=cell["fallback"],
+            explicit=cell["explicit"], unknown=cell["unknown"], rolled_at=now))
+    db.flush()
+    return len(buckets)
+
+
+def roll_if_stale(db: Session, project_id: str) -> int:
+    """Re-roll only the weeks whose raw rows have moved since they were last rolled.
+
+    The nightly job is the ordinary path; this is what keeps a page honest between runs
+    without recomputing a year of weeks to answer one request.
+    """
+    rolled: dict[str, datetime] = {
+        r.week: _aware(r.rolled_at) for r in db.scalars(select(HarnessRollup).where(
+            HarnessRollup.project_id == project_id)).all()}
+    stale: set[str] = set()
+    for row in db.scalars(select(AttemptTelemetry).where(
+            AttemptTelemetry.project_id == project_id,
+            AttemptTelemetry.derived_at.is_not(None))).all():
+        week = week_of(row.derived_at)
+        seen = max(t for t in (_aware(row.derived_at), _aware(row.reported_at)) if t)
+        if week not in rolled or rolled[week] is None or rolled[week] < seen:
+            stale.add(week)
+    # A week whose raw rows are all gone (retention) leaves a rollup nothing refreshes; that is
+    # correct — the rollup is the surviving fact — so `stale` only ever names weeks with rows.
+    return roll(db, project_id, weeks=stale) if stale else 0
+
+
+def _version_key(version: str) -> tuple:
+    """Order versions numerically where they look numeric, alphabetically where they do not.
+
+    `0.23.0` before `0.100.0` is the whole point; a string sort puts them the other way round
+    and the page would then default to a version that is not the current one.
+    """
+    parts = re.split(r"[.\-+]", version or "")
+    out: list = []
+    for part in parts:
+        out.append((0, int(part), "") if part.isdigit() else (1, 0, part))
+    return (len(out) > 0, tuple(out))
+
+
+def _skew(sampling: dict) -> dict | None:
+    """The lopsidedness of a cell's sampling, or None when nothing dominates.
+
+    A badge, not a correction: the rate beside it counts every attempt in the cell, and the
+    counts are shown so a reader can do their own arithmetic. What it says is "this number is
+    honest about what happened and is not a fair comparison against a cell chosen differently".
+    """
+    total = sum(sampling.values())
+    if not total:
+        return None
+    reason, count = max(sampling.items(), key=lambda kv: kv[1])
+    share = count / total
+    return {"reason": reason, "share": round(share, 3)} if share > SKEW_SHARE else None
+
+
+def _cost(tokens_in: int, tokens_out: int, reported: int, signed_off_reported: int,
+          finished: int) -> dict:
+    """Tokens per signed-off item, or a stated refusal to compare.
+
+    Suppressed below `COST_COVERAGE`, and the refusal carries the two counts rather than a
+    shrug, because "3 of 11 attempts reported tokens" is a fact a reader can act on and
+    "unavailable" is not.
+    """
+    coverage = (reported / finished) if finished else 0.0
+    if not reported or coverage < COST_COVERAGE:
+        return {"comparable": False, "reported": reported, "finished": finished,
+                "reason": f"not comparable: {reported} of {finished} attempts reported tokens"}
+    if not signed_off_reported:
+        return {"comparable": False, "reported": reported, "finished": finished,
+                "reason": "no signed-off attempt reported tokens"}
+    return {"comparable": True, "reported": reported, "finished": finished,
+            "tokens_per_signed_off": round((tokens_in + tokens_out) / signed_off_reported, 1),
+            "tokens_in": tokens_in, "tokens_out": tokens_out}
+
+
+def report(db: Session, project_id: str, *, window_days: int | None = None,
+           versions: str = "current") -> dict:
+    """The Harness page's whole read: one entry per cell, each with its weekly series.
+
+    `versions="current"` keeps only the newest `binary_version` seen for each vendor+model and
+    names the others in `versions_seen`, which is what "defaults to the current version and
+    shows both on request" means (criterion 7). Every cell carries `n`, `below_floor`, its
+    sampling counts and skew badge, and a cost proxy that says when it will not compare.
+    """
+    roll_if_stale(db, project_id)
+    window = WINDOW_DAYS if window_days is None else window_days
+    cutoff = week_of(_now() - timedelta(days=window))
+    rows = [r for r in db.scalars(select(HarnessRollup).where(
+        HarnessRollup.project_id == project_id)).all() if r.week >= cutoff]
+
+    cells: dict[tuple, dict] = {}
+    for row in rows:
+        key = (row.vendor, row.model, row.binary_version, row.lane, row.tier,
+               row.task_class, row.size_band)
+        cell = cells.setdefault(key, {
+            "finished": 0, "signed_off": 0, "bounced": 0, "tokens_in": 0, "tokens_out": 0,
+            "tokens_reported": 0, "signed_off_reported": 0,
+            "sampling": {r: 0 for r in SAMPLED}, "series": [], "medians": []})
+        cell["finished"] += row.finished
+        cell["signed_off"] += row.signed_off
+        cell["bounced"] += row.bounced
+        cell["tokens_in"] += row.tokens_in or 0
+        cell["tokens_out"] += row.tokens_out or 0
+        cell["tokens_reported"] += row.tokens_reported
+        cell["signed_off_reported"] += row.signed_off_reported or 0
+        for reason in SAMPLED:
+            cell["sampling"][reason] += getattr(row, reason)
+        if row.median_seconds is not None:
+            cell["medians"].append(float(row.median_seconds))
+        cell["series"].append({
+            "week": row.week, "finished": row.finished, "signed_off": row.signed_off,
+            "rate": round(row.signed_off / row.finished, 3) if row.finished else None,
+            # Every point carries its own floor verdict. A thin week is drawn grey and left
+            # unconnected rather than dropped, because dropping it would let a reader join two
+            # solid points across a gap that was never measured.
+            "below_floor": row.finished < FLOOR,
+            "median_seconds": row.median_seconds,
+        })
+
+    # "Current" is per vendor+model, not per cell: one binary runs every lane, and picking the
+    # newest version separately in each cell would show two versions side by side and call
+    # both current.
+    newest: dict[tuple, str] = {}
+    for (vendor, model, version, *_rest) in cells:
+        seen = newest.get((vendor, model))
+        if seen is None or _version_key(version) > _version_key(seen):
+            newest[(vendor, model)] = version
+    versions_seen: dict[tuple, list[str]] = {}
+    for (vendor, model, version, *_rest) in cells:
+        versions_seen.setdefault((vendor, model), [])
+        if version not in versions_seen[(vendor, model)]:
+            versions_seen[(vendor, model)].append(version)
+
+    out = []
+    for key, cell in sorted(cells.items()):
+        vendor, model, version, lane, tier, task_class, band = key
+        if versions == "current" and version != newest[(vendor, model)]:
+            continue
+        out.append({
+            "key": dict(zip(CELL_KEYS, key)),
+            "finished": cell["finished"],
+            "signed_off": cell["signed_off"],
+            "bounced": cell["bounced"],
+            "rate": round(cell["signed_off"] / cell["finished"], 3) if cell["finished"] else None,
+            "below_floor": cell["finished"] < FLOOR,
+            "sampling": cell["sampling"],
+            "skew": _skew(cell["sampling"]),
+            "median_seconds": (int(_median(cell["medians"])) if cell["medians"] else None),
+            "cost": _cost(cell["tokens_in"], cell["tokens_out"], cell["tokens_reported"],
+                          cell["signed_off_reported"], cell["finished"]),
+            "versions_seen": sorted(versions_seen[(vendor, model)], key=_version_key),
+            "is_current_version": version == newest[(vendor, model)],
+            "series": sorted(cell["series"], key=lambda p: p["week"]),
+        })
+    return {
+        "project_id": project_id,
+        "window_days": window,
+        "versions": versions,
+        "floor": FLOOR,
+        "skew_share": SKEW_SHARE,
+        "generated_at": _now().isoformat(),
+        "cells": out,
+        # Named rather than left to be counted off a list the page may have filtered. A fleet
+        # whose every cell is thin is the ordinary state of a small instance, and the page has
+        # to be able to say so instead of looking empty.
+        "below_floor_count": sum(1 for c in out if c["below_floor"]),
     }

@@ -15,6 +15,8 @@ export const keys = {
   items: ["items"] as const,
   counts: (projectId?: string) => ["counts", projectId] as const,
   shards: ["shards"] as const,
+  harness: (projectId: string, versions: string, windowDays?: number) =>
+    ["harness", projectId, versions, windowDays ?? null] as const,
   lessons: (projectId: string, filters?: LessonFilters) =>
     ["lessons", projectId, filters ?? {}] as const,
   lesson: (projectId: string, id: string) => ["lesson", projectId, id] as const,
@@ -672,6 +674,19 @@ export function usePromoteCluster() {
     mutationFn: (v: { publishId: string; rejectIds: string[] }) =>
       api.promoteCluster(v.publishId, v.rejectIds),
     onSuccess: () => invalidateReview(qc),
+  });
+}
+
+/** PRD-38: the Harness page's whole read. Every number arrives with its `n` attached. */
+export function useHarness(
+  projectId?: string,
+  opts: { versions?: "current" | "all"; windowDays?: number } = {},
+) {
+  const versions = opts.versions ?? "current";
+  return useQuery({
+    queryKey: keys.harness(projectId ?? "", versions, opts.windowDays),
+    queryFn: () => api.harness(projectId!, { versions, windowDays: opts.windowDays }),
+    enabled: !!projectId,
   });
 }
 

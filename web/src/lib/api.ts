@@ -1,3 +1,4 @@
+import type { HarnessReport } from "@/lib/types";
 import type { Credential, CredentialIn, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
@@ -530,6 +531,12 @@ export const api = {
   judgeShard: (id: string) =>
     request<CandidateJudge>(`/memory/shards/${id}/judge`, { method: "POST" }),
 
+  harness: (projectId: string, opts: { windowDays?: number; versions?: "current" | "all" } = {}) => {
+    const q = new URLSearchParams({ project_id: projectId });
+    if (opts.windowDays) q.set("window_days", String(opts.windowDays));
+    if (opts.versions) q.set("versions", opts.versions);
+    return request<HarnessReport>(`/harness?${q.toString()}`);
+  },
   lessons: (projectId: string, filters: LessonFilters = {}) => {
     const q = new URLSearchParams({ project_id: projectId });
     if (filters.trend) q.set("trend", filters.trend);

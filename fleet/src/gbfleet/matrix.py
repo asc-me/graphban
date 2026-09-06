@@ -136,6 +136,13 @@ class Sample:
 #: its vendor, so the join is exact. Absent means unmeasured, never zero.
 Measured = dict[tuple[str, str, str, str], dict[str, Sample]]
 
+#: `{(vendor, model, lane, tier): {"S": Sample, "M": Sample, "L": Sample}}` — the same cells
+#: split by difficulty band (PRD-38 D9). NOT part of the resolution: the supervisor picks a
+#: tier before it knows an item's band, so this is shown to a person and read by nobody else.
+#: A harness handed doc items outscores one handed migrations, and the pooled rate cannot say
+#: which happened.
+Bands = dict[tuple[str, str, str, str], dict[str, Sample]]
+
 
 def measured_of(rows: list[dict] | None) -> Measured:
     """The server's `measured` list as the lookup `resolve` reads. Cells with no latency
@@ -151,6 +158,30 @@ def measured_of(rows: list[dict] | None) -> Measured:
             s = r.get(axis)
             if isinstance(s, dict) and s.get("value") is not None:
                 cell[axis] = Sample(value=float(s["value"]), n=int(s.get("n") or 0))
+        if cell:
+            out[key] = cell
+    return out
+
+
+def bands_of(rows: list[dict] | None) -> Bands:
+    """The same cells' `bands` breakdown, for the doctor to PRINT (PRD-38 D9).
+
+    Deliberately a second function and a second structure: `measured_of` feeds the resolver,
+    and nothing that feeds the resolver should quietly gain a dimension the resolver cannot
+    supply a value for.
+    """
+    out: Bands = {}
+    for r in rows or []:
+        try:
+            key = (str(r["vendor"]), str(r.get("model") or ""), str(r["lane"]), str(r["tier"]))
+        except (KeyError, TypeError):
+            continue
+        bands = r.get("bands")
+        if not isinstance(bands, dict):
+            continue
+        cell = {str(name): Sample(value=float(v["value"]), n=int(v.get("n") or 0))
+                for name, v in bands.items()
+                if isinstance(v, dict) and v.get("value") is not None}
         if cell:
             out[key] = cell
     return out
@@ -428,6 +459,29 @@ def installed_checker(binary_overrides: dict[str, str] | None = None) -> Callabl
     return check
 
 
+def _bands_for(bands: "Bands | None", row: Row) -> dict[str, Sample]:
+    """The band breakdown for this row's cells, summed across lanes when the row spans them.
+
+    Summed rather than listed per lane: the row line is already long, and the question a band
+    answers ("was this measured on easy work?") is not lane-specific. `n` is what makes the
+    sum honest — a band with one sample says so.
+    """
+    totals: dict[str, list[tuple[float, int]]] = {}
+    for (vendor, model, lane, tier), cell in (bands or {}).items():
+        if (vendor, model, tier) != (row.vendor, row.model, row.tier):
+            continue
+        if row.lane != "any" and lane != row.lane:
+            continue
+        for name, s in cell.items():
+            totals.setdefault(name, []).append((s.value, s.n))
+    out: dict[str, Sample] = {}
+    for name, seen in totals.items():
+        n = sum(c for _, c in seen)
+        if n:
+            out[name] = Sample(value=sum(v * c for v, c in seen) / n, n=n)
+    return out
+
+
 def _cells_for(measured: Measured | None, row: Row) -> dict[str, Sample]:
     """For the doctor's row line: every measured axis for this vendor/model/tier, labelled by
     lane when the row spans lanes. Shown, never pooled."""
@@ -444,7 +498,8 @@ def _cells_for(measured: Measured | None, row: Row) -> dict[str, Sample]:
 
 def doctor_lines(matrix: Matrix, installed: Callable[[Row], tuple[bool, str]],
                  profile: Profile | None, policy: Policy | None,
-                 measured: Measured | None = None) -> list[tuple[str, str, str]]:
+                 measured: Measured | None = None,
+                 bands: Bands | None = None) -> list[tuple[str, str, str]]:
     """(name, status, detail) per row, then per tier: what this machine resolves to (D11).
     A row whose harness is not installed on this machine is UNKNOWN with the reason, never a
     silent drop; a verified row with no adapter at all fails in load() (D17)."""
@@ -455,7 +510,13 @@ def doctor_lines(matrix: Matrix, installed: Callable[[Row], tuple[bool, str]],
         ev_text = (f"{ev.item} {ev.date}" + (f", +{len(r.evidence) - 1} more" if len(r.evidence) > 1 else "")) if ev else "no evidence"
         m = _cells_for(measured, r)
         meas = ", ".join(f"{k} {v.value:.2f} (n={v.n}{'' if v.n >= MIN_SAMPLE else ', unmeasured'})" for k, v in m.items()) or "unmeasured"
-        detail = f"{r.role}/{r.tier}/{r.lane} · {r.status} · {ev_text} · installed: {'yes' if ok else 'no — ' + why} · {meas}"
+        # PRD-38 D9: the same cells split by difficulty band, printed beside the pooled rate
+        # so a reader can see whether a good number came from doc fixes. Shown, never scored.
+        b = _bands_for(bands, r)
+        band_text = " · bands " + ", ".join(
+            f"{name} {v.value:.2f} (n={v.n})" for name, v in sorted(b.items())) if b else ""
+        detail = (f"{r.role}/{r.tier}/{r.lane} · {r.status} · {ev_text} · "
+                  f"installed: {'yes' if ok else 'no — ' + why} · {meas}{band_text}")
         if not ok:
             # Not installed HERE is a fact about this machine, not about the row: UNKNOWN. A
             # verified row whose harness has no adapter at all is caught by load() (D17).
