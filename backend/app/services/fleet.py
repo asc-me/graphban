@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import Agent, AreaReservation, Enrolment, Item, Project
+from app.services import harness as harness_svc
 from app.services import items as items_svc
 from app.services import keys as keys_svc
 from app.services.items import DEFAULT_LEASE_SECONDS
@@ -1316,6 +1317,13 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         and (review_claim_holder(it, lease_seconds=lease_seconds) or agent_id) == agent_id
         # And separate enough for the review to mean anything (GRPH-361).
         and (me is None or independent(me, db.get(Agent, it.built_by) if it.built_by else None))
+        # GRPH-754: and its branch is actually READABLE. An item goes to `review` when the
+        # child says so, but the branch is published when its supervisor reaps it a few
+        # seconds later — and a reviewer handed the item inside that window fetches a 404 and
+        # bounces work that is fine. Measured on the deployed instance, twice. Withheld only
+        # while a supervisor is known to be coming and only for a grace period; an unsupervised
+        # item is never withheld, because nothing would ever arrive to release it.
+        and not harness_svc.publish_pending(db, it)
     ]
     if not candidates:
         return None

@@ -348,6 +348,10 @@ class AttemptIn(BaseModel):
     tokens_in: int | None = None
     tokens_out: int | None = None
     exit_meaning: str | None = None
+    #: The supervisor put this attempt's branch on the remote (GRPH-754). Until it does, the
+    #: server withholds the item from `claim_review` — an item is not reviewable until its
+    #: work is reachable.
+    branch_published: bool | None = None
 
 
 @router.post("/attempts")
@@ -383,6 +387,8 @@ def post_attempt(body: AttemptIn, db: Session = Depends(get_db),
             "turn_budget": body.turn_budget, "wall_seconds": body.wall_seconds,
             "tokens_in": body.tokens_in, "tokens_out": body.tokens_out,
             "exit_meaning": body.exit_meaning, "adapter_launched": body.adapter,
+            "branch_published_at": (harness_svc.published_now()
+                                    if body.branch_published else None),
         })
     db.commit()
     # 202 means stored but not yet counted, and it is the honest answer to every post that
