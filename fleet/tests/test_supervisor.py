@@ -647,6 +647,37 @@ def test_up_accepts_project_because_main_reads_it():
     assert build_parser().parse_args(base + ["--project", "agentledger"]).project == "agentledger"
 
 
+def test_main_up_prints_the_wave_report_after_a_wave(tmp_path: Path, monkeypatch, capsys):
+    """`main()` bound `report = doctor.run(...)` in the doctor branch, which made `report` a
+    local of the whole function, so `up`'s `report(wave)` raised UnboundLocalError AFTER the
+    wave had run, reaped and pushed. Only the report was lost — the quietest possible
+    failure of a supervisor — and it hid behind the missing `--project` for as long as
+    that came first. This drives `main(["up", ...])` to the report line with the wave itself
+    stubbed, so the parser, the env, the seats file and the tail all run for real."""
+    from gbfleet import cli
+    from gbfleet.supervisor import Wave
+
+    seats = tmp_path / "seats.txt"
+    seats.write_text("WORKER-AAA\n", encoding="utf-8")
+    monkeypatch.setenv(cli.API_KEY_ENV, KEY)
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: (lambda *a, **k: None))
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "Graphban", _Client)
+    monkeypatch.setattr(cli, "up", lambda *a, **k: Wave(reason="idle"))
+
+    rc = cli.main(["up", "--repo", str(tmp_path), "--server", "http://gb.invalid",
+                   "--seats-file", str(seats), "--adapter", "claude"])
+    assert rc == 0
+    assert capsys.readouterr().out.strip(), "the wave report was not printed"
+
+
 def test_a_mistyped_seats_line_is_refused_at_read(tmp_path: Path):
     """Refused before any worktree exists, and the refusal quotes the token, so `itm=`
     is not read as an unbound seat that then claims whatever the divvy hands it."""

@@ -508,7 +508,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _serve_stdio(args)
 
     if args.command == "doctor":
-        report = doctor.run(
+        # Not `report`: that name is the module-level wave printer, and binding it here made
+        # it a local of ALL of main(), so `up`'s `report(wave)` below raised UnboundLocalError
+        # after the wave had run, reaped and pushed. The report was the only thing lost,
+        # which is the quietest way a supervisor can fail.
+        findings = doctor.run(
             repo=Path(args.repo),
             workspace=Path(args.workspace) if args.workspace else None,
             adapter=args.adapter,
@@ -520,7 +524,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         # FAIL only. An UNKNOWN is loud in the report and does not stop a run — refusing
         # on a check that could not be made would ground the fleet on a slow network.
-        return 0 if report.ok else 1
+        return 0 if findings.ok else 1
 
     if args.command == "until":
         return _until(args)
