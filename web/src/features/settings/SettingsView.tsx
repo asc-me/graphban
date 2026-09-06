@@ -1089,6 +1089,18 @@ export function ApiKeysPanel() {
           </div>
         </div>
       )}
+      {/* The mint hazard (PRD-39 G6): an agent with an unnarrowed key (all-in-one posture)
+          can call `mint_enrolment` to create a fresh identity, defeating the authorship ban
+          that prevents an agent from reviewing its own work. This is stated here because
+          this is where the all-in-one posture is actually chosen — and nowhere in `gbfleet`,
+          which cannot produce it. */}
+      {kind === "agent" && (
+        <p className="mb-4 text-[12px] text-faint" data-testid="mint-hazard">
+          An agent on this key can mint itself a fresh seat — the authorship ban that stops
+          an agent reviewing its own work is keyed on identity, and a new seat is a new identity.
+          For a fleet, mint role-narrowed wave keys on the Fleet view instead.
+        </p>
+      )}
       <KeyGroup
         title="Agent keys"
         blurb="Read and write items, memory and claims — who the process is. A seat on Fleet is the role for this wave."

@@ -20,7 +20,6 @@ import type {
 const ROLE_TONE: Record<string, string> = {
   planner: "text-[#b794f6] border-[#b794f6]/40",
   worker: "text-[color:var(--color-st-in_progress)] border-[color:var(--color-st-in_progress)]/40",
-  reviewer: "text-[color:var(--color-st-review)] border-[color:var(--color-st-review)]/40",
   "all-in-one": "text-muted border-line-2",
 };
 

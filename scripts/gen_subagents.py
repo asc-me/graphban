@@ -45,14 +45,13 @@ TOOLCHAINS = ("cursor", "claude", "codex")
 # the Fleet view emits the config with the keys in it. Cursor holds several server entries with
 # different literal headers perfectly well, so roles stay ENFORCED rather than advisory.
 PLUGIN_DIR = ".cursor/plugins/graphban"
-WAVE_ROLES = ("planner", "worker", "reviewer")
+WAVE_ROLES = ("planner", "worker")
 # MUST match web/src/features/fleet/wave.ts. A rename on one side makes the Fleet view's
 # pasted block stop matching this config, which reads as "the key is wrong" rather than "the
 # name is" — a test asserts the two agree.
 ROLE_ENV = {
     "planner": "GRAPHBAN_PLANNER_KEY",
     "worker": "GRAPHBAN_WORKER_KEY",
-    "reviewer": "GRAPHBAN_REVIEWER_KEY",
 }
 PLUGIN_URL_PLACEHOLDER = "http://localhost:8000/api/mcp"
 

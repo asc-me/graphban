@@ -10,6 +10,6 @@
  * `all-in-one` is deliberately absent: a wave is the fleet shape, and an un-enrolled agent
  * already gets the single-agent posture without needing a seat for it.
  */
-export const WAVE_ROLES = ["planner", "worker", "reviewer"] as const;
+export const WAVE_ROLES = ["planner", "worker"] as const;
 
 export type WaveRole = (typeof WAVE_ROLES)[number];
