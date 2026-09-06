@@ -493,41 +493,193 @@ finding for this PRD and not a number to raise.
 
 ## 5. Slices
 
-In ship order. S1 is independent of everything below it and is where the token cost lives; it
-does not wait for the merge.
+<!-- framing -->
 
-- **S1 — the supervision axis.** D-e, D-f, the one-line hazard of D-g, and the agent-facing
-  instruction that a backlog is a job for `until` rather than for a frontier context (the
-  `AGENTS.md` and `gen_subagents.py` edits already in the tree). `doctor` names the mode; the
-  Fleet view and `fleet/README.md` present `deterministic` as the default. No server change.
-- **S2 — attestation on authorship.** D-j. The `built_by` check at the attestation write, the
-  merged-worker manifest measured against the footprint ceiling, and the sabotage pair: a
-  `gate`-scoped worker attesting its own item is refused; attesting another's is accepted; an
-  adapter key with no agent is unchanged. Its own release, ahead of S3.
-- **S3 — the merge, server side.** `ROLES`, `TOOL_ROLES`, `eligible_roles` resolving legacy
-  `reviewer` on read, the seat branch of `register_agent` resolving `seat.role` the same way
-  (D-b), `mint_fleet_key` granting `gate` to `worker`, `propose_allocation` reduced to
-  planner/worker (its "at least one reviewer as soon as there are two agents" branch deletes;
-  the "one worker per free cluster" reasoning stays and now has somewhere to put the surplus
-  agent: the review queue). No migration, no client changes.
-- **S4 — the ceiling proof.** Tests that `done` is unreachable except through `sign_off` for
-  every role except `all-in-one`, including the path D-c closes and the legacy-key ordering the
-  grill asked about. Sabotage: delete the ceiling branch and confirm a test fails; delete the
-  `sign_off` authorship assert and confirm a *different* one fails; delete the D-j check and
-  confirm a third.
-- **S5 — the matrix.** `role` out of `matrix.py`, `matrix.toml`, `mcp.py:spawn` and `doctor`;
-  `reviewer_cross_vendor` deleted; the one-release shim that accepts and ignores `role=` (D-d).
-- **S6 — the loop.** One seat-instruction template (D-h) and the gbagent loop that consumes it.
-  `until.py` loses `max_reviewers` and the reviewer mint path; `reviewer_fails` and
-  `_need_reviewer` are re-keyed on unheld review rows rather than on a child's role (D-i), and
-  `REVIEWER_FAILS` keeps its value under a role-free name. `until` keeps its `review-unsigned`
-  exit as the backstop — "should now be rare" is not evidence, and the acceptance walk has to
-  produce the stranded case on demand (§7.7).
-- **S7 — the surface and the docs for the merge.** `wave.ts` `WAVE_ROLES`, `FleetView`,
-  `presence.ts`, the mint hazard in the API-key dialog (D-g). PRD-17's role vocabulary updated
-  in place, `docs/mcp.md`, `docs/fleet-adapters.md`, `AGENTS.md`. `test_docs_sync`,
-  `test_docs_completeness` and `test_prd_sync`'s `KNOWN_BODY_DIVERGENCE` for PRD-17 all bind
-  here.
+In ship order, and each slice below is its own section so that it is its own item. **S1 — the
+supervision axis** — shipped in PR #643 on 2026-09-06 (the `AGENTS.md` / `gen_subagents.py`
+instruction that a backlog is a job for `until`, regenerated across the three toolchains) and is
+not listed again. It was independent of everything below and was where the token cost lived.
+The remaining six are the merge and its precondition; **S2 is its own release and S3 does not
+start until S2 has landed** (D-j).
+
+Every slice carries the same loop: read the decision it names in §4, write the sabotage in §6
+FIRST and watch it fail, then build until it passes, on both database engines. "Should now be
+rare" is not evidence anywhere in this PRD.
+
+---
+
+## S2 — Attestation keyed on authorship (D-j), measured before the merge
+
+**What.** A write that carries an `attestation` receipt or a `head_commit` is refused when the
+caller is a registered agent **and** is the item's `built_by`. Today the only check is the
+`gate` scope on the key (`mcp_server.py:2078`, purpose at `authz.py:158`); this adds the
+authorship comparison beside it, keyed on the same column `claim_review` (`fleet.py:1311`) and
+`sign_off` (`fleet.py:1420`) already use. Nothing else about `gate` changes in this slice:
+`mint_fleet_key` still grants it to `reviewer` and `all-in-one` only — S3 extends it to
+`worker`, and that is why this must land first.
+
+**Untouched, deliberately.** An adapter key (CI, a sync bridge) carries no agent identity, so
+the comparison has nothing to compare and the write proceeds exactly as today; the owner-bounded
+`key_gate_ids` check (`authz.py:166`) is not changed. `all-in-one` is outside the check as it is
+outside the ceiling — in that posture the human is the reviewer (PRD-17).
+
+**The refusal names the column.** The message says `built_by`, not "not permitted": the next
+person to hit it must be able to tell an authorship refusal from a scope refusal without reading
+the source.
+
+**Measure the manifest.** `gate` swaps the tool schema through `_with_attestation`
+(`mcp_server.py:1747`). After S3 every merged-worker manifest will carry that shape, and
+`test_mcp_footprint` has eight tokens of headroom (`MEASURED_TOKENS` 14192 / `CEILING` 14200).
+Measure a `worker` key's `tools/list` **with** `gate` now, record the number in §7.11 of this
+PRD, and if it does not fit, the answer is a smaller attestation shape — not a bigger ceiling.
+That finding, if it comes, blocks S3.
+
+**Sabotage (write these first).** A `gate`-scoped registered agent calls `update_item` with an
+`attestation` receipt on the item it built → refused, and the refusal text contains `built_by`.
+The same agent attests an item built by another → accepted. A `gate`-scoped key with no
+registered agent attests either → accepted. Delete the new comparison and confirm exactly the
+first test fails.
+
+**Acceptance:** §7.4 (the attestation half) and §7.11.
+
+---
+
+## S3 — The merge, server side (D-a, D-b)
+
+**What.** `ROLES` becomes `("planner", "worker")`. `TOOL_ROLES` moves `claim_review`,
+`sign_off` and `bounce` from `("reviewer",)` to `("worker",)`; `release_item` collapses to
+`("worker",)`. `mint_fleet_key` grants `gate` to `worker` (S2 made that safe).
+`propose_allocation` proposes only `planner` and `worker`: its "at least one reviewer as soon
+as there are two agents" branch deletes, and the "one worker per free cluster" reasoning stays
+and now has somewhere to put the surplus agent — the review queue. A one-seat wave is named as
+the `all-in-one` posture, not as a fleet with a missing reviewer.
+
+**Stored values resolve; requested values are refused (D-b).** `eligible_roles` maps a stored
+`"reviewer"` in `ApiKey.roles` to `worker` on read, and a key stored as `["reviewer"]` must
+resolve to exactly `("worker",)` — asserted explicitly, never "not empty", because the fallthrough
+for an empty tuple is "all roles" and that is a silent widening. `register_agent`'s seat branch
+(`fleet.py:254`) resolves `seat.role` through the same function, so a pre-merge reviewer seat
+redeemed after the deploy registers as `worker`; today it copies the string unvalidated, and
+`tools_off_limits` answers an unknown role with `[]` (`fleet.py:975`) — told nothing is off
+limits, refused on every call, quarantined in three. `role_hint="reviewer"` clamps silently, as
+any hint does today. `assign_role` and `mint_enrolment` with `role="reviewer"` are refused with
+`unknown role` **and the two roles that exist** — today the message names only the bad value.
+
+**No migration.** No `api_keys.roles` rewrite: a rewrite has no inverse, and resolving on read
+makes rollback restore the old behaviour exactly. Hosted orgs' credentials are not touched.
+
+**The named widening.** A narrowed reviewer credential can now claim fresh work and keeps
+`gate`. Stated in the release notes, not only in a test.
+
+**Sabotage.** A key stored as `["reviewer"]` → `eligible_roles` returns exactly `("worker",)`.
+Redeem a seat stored as `reviewer` → `active_role == "worker"` and `tools_off_limits` is
+non-empty. `assign_role(role="reviewer")` → refused, message lists `planner, worker`.
+`propose_allocation` for 1, 2 and 4 agents → no `reviewer` anywhere in the mapping or the
+rationale. The mint argument's guard — `mint_enrolment` stays `("planner",)` — still passes.
+
+**Acceptance:** §7.1, §7.10.
+
+---
+
+## S4 — The ceiling proof (D-c), on both engines
+
+**What.** Tests, not code, unless a test finds something. `done` is unreachable except through
+`sign_off` for every role except `all-in-one`. Today `WORKER_STATUS_CEILING = "review"` refuses
+`update_item(status="done")` and `release_item(to_status="done")` when `role == "worker"`
+(`fleet.py:936-955`) and **`reviewer` is exempt** — it has a path to `done` through
+`update_item` that never evaluates `built_by`. After S3 every merged agent is under the ceiling,
+so the merge is a narrowing here. This slice proves it rather than asserting it.
+
+**The ordering the grill asked about.** Resolution happens at the ceiling (`eligible_roles`) and
+at assignment (`active_role`), both before `role_for_call`, so the ceiling reads the resolved
+string. A merged agent on a legacy reviewer key must be caught on both calls.
+
+**Sabotage — three independent deletions, three different failures.** (1) Delete the ceiling
+branch → a test fails. (2) Delete the `sign_off` authorship assert → a *different* test fails.
+(3) Delete the S2 comparison → a third fails. If any two deletions fail the same test, the ban
+has one site where it claims three, and that is the finding.
+
+**Acceptance:** §7.3, §7.4 (the `done` half).
+
+---
+
+## S5 — The matrix loses `role` (D-d)
+
+**What.** `matrix.ROLES` is deleted, `role` leaves the row schema in `matrix.py` and
+`matrix.toml`, and `resolve()`, `spawn` (`gbfleet/mcp.py:89`) and `doctor` lose their `role`
+parameter. The key becomes harness × model × lane × tier. `LANES` is **not** extended — every
+one of the ten rows is `lane = "any"`, the axis has never carried a value, and the two rows
+that were `role = "reviewer"` are already `tier = "frontier"`, which is what D-f keys on.
+
+**The shim.** `role=` is accepted and ignored for one release, with a deprecation note in the
+reply. There is nothing to map it to — it named authority, and every spawn is a `worker` now —
+so no default is invented. Nothing is orphaned: the measured-cell key is
+`(vendor, model, lane, tier)` (`matrix.py:302`) and never carried `role`.
+
+**`reviewer_cross_vendor` goes with it.** It is keyed on `role == "reviewer"`
+(`matrix.py:325`) and is a client-side copy of the server's `claim_review` preference
+(`fleet.py:1327`), which sees the real author's vendor at claim time. Delete the policy, its
+config key and its `doctor` line; the server copy is the whole policy from here.
+
+**Sabotage.** Load a `matrix.toml` row carrying `role` → loads, reply carries the deprecation
+note. Call `spawn(role="reviewer")` → spawns, reply carries the note, the chosen row is the one
+`tier` picks. Two-vendor fleet: `claim_review` hands the item to the other vendor. Single-vendor
+fleet: `claim_review` still hands it out and the reply says the preference could not be met.
+`doctor` output contains no `reviewer` and no `cross_vendor`.
+
+**Acceptance:** §7.9.
+
+---
+
+## S6 — One loop, and `until` re-keyed off the role (D-h, D-i)
+
+**What, in the child.** `INSTRUCTION` and `REVIEWER_INSTRUCTION` (`seat.py:105`, `116`)
+collapse into one template: try `claim_review`, fall through to `claim_cluster`, exit when both
+are empty — a priority order evaluated every iteration, not phases (GRPH-429: a build lease and
+a review claim may coexist on one agent). Both calls stay `wait_seconds=0`; nothing arbitrates
+the order and that is accepted, because the review queue draining is the wave's tail. The
+gbagent loop that consumes the instruction changes to match.
+
+**What, in `until`.** The `review-unsigned` backstop is built from the role S3 deletes:
+`live_reviewers`, `_need_reviewer` and `reviewer_fails` are all keyed on
+`child.role == "reviewer"` (`until.py:281`, `294-295`), so after the merge the counter would
+never increment and the wave would spawn workers forever against an item nobody can sign.
+Re-key it on the fact it measures — a child was spawned against unheld review rows, exited, and
+the rows are still unheld. `REVIEWER_FAILS = 3` keeps its value under a role-free name.
+`max_reviewers` and the reviewer mint path go; the merged worker pulls from whichever queue
+has work. `gbfleet up` keeps failing loudly on a stranded last item, exit 1, and the reason
+names `until` as the remedy.
+
+**Sabotage.** Seed a review queue longer than the build queue → the backlog still drains.
+Produce the stranded item on demand (the last item built by the only remaining child) → under
+`up`, `review-unsigned` exit 1 naming `until`; under `until`, a worker is spawned and signs it,
+exit 0. A child that registers and exits without claiming, three times → `review-unsigned` after
+exactly three spawns, not two and not four. Delete the re-keyed counter → that test fails.
+
+**Acceptance:** §7.2, §7.5, §7.6, §7.7, §7.8.
+
+---
+
+## S7 — The surface and the docs for the merge (D-e, D-g)
+
+**What.** `wave.ts` `WAVE_ROLES`, `FleetView`, `presence.ts` and the Live view lose `reviewer`;
+`doctor` reports the supervision mode by name and the Fleet view presents `deterministic` as
+the default and `driven` as the escalation for bounce adjudication and resume. The mint hazard
+— an agent that can both mint and build defeats the authorship ban by minting itself a fresh
+identity (`fleet.py:674`) — goes into the API-key mint dialog in Settings, where the
+`all-in-one` posture is actually chosen, and nowhere in `gbfleet`, which cannot produce it.
+
+**Docs.** PRD-17's role vocabulary updated in place; `docs/mcp.md`, `docs/fleet-adapters.md`,
+`fleet/README.md`, `AGENTS.md` (regenerate with `scripts/gen_subagents.py`; the always-applied
+Cursor rule is capped at 4000 chars). `test_docs_sync`, `test_docs_completeness` and
+`test_prd_sync`'s `KNOWN_BODY_DIVERGENCE` for PRD-17 all bind here, and the frontend guards
+that assert `all-in-one` is not one of the three role colours still pass with two.
+
+**Sabotage.** `grep -rn reviewer web/src fleet/src docs/*.md AGENTS.md` returns only the
+historical mentions this PRD lists, each annotated. The API-key dialog test asserts the hazard
+sentence is rendered for an unnarrowed key and absent for a role-narrowed one.
+
+**Acceptance:** §7.8.
 
 ---
 
