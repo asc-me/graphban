@@ -89,9 +89,9 @@ def test_two_registrations_on_one_key_are_two_agents(db, proj, key):
 
 
 def test_a_role_hint_is_honoured_when_the_credential_permits_it(db, proj, key):
-    a = fleet.register_agent(db, project_id=proj, api_key=key, role_hint="reviewer")
+    a = fleet.register_agent(db, project_id=proj, api_key=key, role_hint="planner")
 
-    assert a.active_role == "reviewer"
+    assert a.active_role == "planner"
 
 
 def test_a_role_hint_beyond_the_ceiling_is_clamped_not_refused(db, proj, key):
@@ -101,7 +101,7 @@ def test_a_role_hint_beyond_the_ceiling_is_clamped_not_refused(db, proj, key):
     key.roles = ["worker"]
     db.commit()
 
-    a = fleet.register_agent(db, project_id=proj, api_key=key, role_hint="reviewer")
+    a = fleet.register_agent(db, project_id=proj, api_key=key, role_hint="planner")
 
     assert a.active_role == "worker"
 
@@ -303,12 +303,12 @@ def test_a_narrowed_key_still_specialises(db, proj, key):
     """All-in-one is for an UNNARROWED credential. A fleet key names one role and must still
     produce that role — otherwise every fleet member would register unrestricted and the
     ceiling would mean nothing."""
-    key.roles = ["reviewer"]
+    key.roles = ["worker"]
     db.commit()
 
     a = fleet.register_agent(db, project_id=proj, api_key=key)
 
-    assert a.active_role == "reviewer"
+    assert a.active_role == "worker"
 
 
 def test_asking_for_a_role_still_gets_it(db, proj, key):
@@ -323,11 +323,11 @@ def test_the_roster_counts_by_role_and_names_the_posture(db, proj, key):
     review them, and those need opposite actions."""
     fleet.register_agent(db, project_id=proj, api_key=key)                      # all-in-one
     fleet.register_agent(db, project_id=proj, api_key=key, role_hint="worker")
-    fleet.register_agent(db, project_id=proj, api_key=key, role_hint="reviewer")
+    fleet.register_agent(db, project_id=proj, api_key=key, role_hint="planner")
 
     out = fleet.fleet_status(db, proj)
 
-    assert out["by_role"] == {"planner": 0, "worker": 1, "reviewer": 1, "all-in-one": 1}
+    assert out["by_role"] == {"planner": 1, "worker": 1, "all-in-one": 1}
     assert out["posture"] == "fleet", "somebody has specialised"
 
 
@@ -346,7 +346,7 @@ def test_an_all_in_one_agent_can_be_specialised_later(db, proj, key):
     assigns roles rather than re-registering anybody."""
     a = fleet.register_agent(db, project_id=proj, api_key=key)
 
-    fleet.assign_role(db, agent_id=a.id, role="reviewer", reason="fleet time")
+    fleet.assign_role(db, agent_id=a.id, role="planner", reason="fleet time")
 
-    assert a.active_role == "reviewer"
-    assert fleet.role_for_call(db, api_key=key, agent_id=a.id)[0] == "reviewer", "now bound"
+    assert a.active_role == "planner"
+    assert fleet.role_for_call(db, api_key=key, agent_id=a.id)[0] == "planner", "now bound"

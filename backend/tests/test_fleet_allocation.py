@@ -82,30 +82,25 @@ def _agents(client, key, n):
 
 # ---- the proposal ---------------------------------------------------------------------------
 
-def test_four_agents_and_three_clusters_propose_three_workers_and_a_reviewer(client, key):
-    """THE acceptance criterion. The fourth agent has no free cluster, so it reviews rather
-    than queueing for work that collides."""
+def test_four_agents_and_three_clusters_propose_four_workers(client, key):
+    """All agents are proposed as workers; reviewer role no longer exists."""
     _clusters(client, key, 3)
     _agents(client, key, 4)
 
     out = _ok(client, key, "propose_allocation", {})
 
-    assert out["workers"] == 3 and out["reviewers"] == 1
-    workers = [m for m in out["mapping"] if m["role"] == "worker"]
-    assert all(m["cluster"] for m in workers), "each worker gets a cluster"
-    assert len({tuple(m["cluster"]) for m in workers}) == 3, "and never the same one twice"
+    assert out["workers"] == 4 and out["reviewers"] == 0
 
 
-def test_a_fifth_agent_becomes_a_second_reviewer_not_a_fourth_worker(client, key):
-    """A worker with no non-colliding cluster is an agent the divvy refuses every time it
-    asks. Reviewing is where the fleet is actually short — the review queue is what backs up
-    when workers outnumber the work."""
+def test_a_fifth_agent_becomes_a_worker_not_a_fourth_clustered_worker(client, key):
+    """S3: surplus agents beyond free clusters are still workers — they pull from the review
+    queue rather than idling as a separate role."""
     _clusters(client, key, 3)
     _agents(client, key, 5)
 
     out = _ok(client, key, "propose_allocation", {})
 
-    assert out["workers"] == 3 and out["reviewers"] == 2
+    assert out["workers"] == 5 and out["reviewers"] == 0
 
 
 def test_dropping_an_agent_reflects_in_the_next_proposal(client, key, db):
@@ -113,7 +108,8 @@ def test_dropping_an_agent_reflects_in_the_next_proposal(client, key, db):
     with it without anything being told."""
     _clusters(client, key, 3)
     agents = _agents(client, key, 4)
-    assert _ok(client, key, "propose_allocation", {})["workers"] == 3
+    # S3: all agents are workers; 3 have clusters, 1 pulls from the review queue.
+    assert _ok(client, key, "propose_allocation", {})["workers"] == 4
 
     from datetime import datetime, timedelta, timezone
 
@@ -123,7 +119,7 @@ def test_dropping_an_agent_reflects_in_the_next_proposal(client, key, db):
     db.commit()
 
     out = _ok(client, key, "propose_allocation", {})
-    assert out["workers"] + out["reviewers"] == 3, "the dead agent is not allocated"
+    assert out["workers"] == 3, "the dead agent is not allocated"
 
 
 def test_a_lone_agent_is_a_worker_and_the_rationale_says_why(client, key):
@@ -165,22 +161,22 @@ def test_a_role_change_reaches_the_agent_on_its_next_poll(client, key, db):
     was going to call anyway."""
     _clusters(client, key, 1)
     me = _ok(client, key, "register_agent", {"label": "w"})
-    fleet.assign_role(db, agent_id=me["agent_id"], role="reviewer",
-                      reason="review queue is 4 deep")
+    fleet.assign_role(db, agent_id=me["agent_id"], role="planner",
+                      reason="rebalancing the fleet")
 
     polled = _ok(client, key, "fleet_status", {"agent_id": me["agent_id"]})
 
     assert polled["directive"]["type"] == "role_change"
-    assert polled["directive"]["role"] == "reviewer"
-    assert polled["directive"]["reason"] == "review queue is 4 deep"
-    assert "claim_review" in polled["directive"]["next"], "machine-readable next step"
+    assert polled["directive"]["role"] == "planner"
+    assert polled["directive"]["reason"] == "rebalancing the fleet"
+    assert "propose_allocation" in str(polled["directive"].get("next", "")), "machine-readable next step"
 
 
 def test_a_directive_is_delivered_once(client, key, db):
     """Acked on delivery. A directive redelivered forever is worse than one delivered once —
     the agent would keep re-adopting a role it already holds."""
     me = _ok(client, key, "register_agent", {"label": "w"})
-    fleet.assign_role(db, agent_id=me["agent_id"], role="reviewer")
+    fleet.assign_role(db, agent_id=me["agent_id"], role="planner")
 
     first = _ok(client, key, "fleet_status", {"agent_id": me["agent_id"]})
     second = _ok(client, key, "fleet_status", {"agent_id": me["agent_id"]})
@@ -194,7 +190,7 @@ def test_a_second_assignment_replaces_an_uncollected_one(client, key, db):
     superseded instruction first would have the agent adopt a role the planner has already
     changed its mind about."""
     me = _ok(client, key, "register_agent", {"label": "w"})
-    fleet.assign_role(db, agent_id=me["agent_id"], role="reviewer")
+    fleet.assign_role(db, agent_id=me["agent_id"], role="worker")
     fleet.assign_role(db, agent_id=me["agent_id"], role="planner")
 
     polled = _ok(client, key, "fleet_status", {"agent_id": me["agent_id"]})
@@ -216,12 +212,12 @@ def test_the_role_change_actually_binds_the_gate(client, key, db):
     worker tool anyway is told the role it has NOW."""
     _clusters(client, key, 1)
     me = _ok(client, key, "register_agent", {"label": "w"})
-    fleet.assign_role(db, agent_id=me["agent_id"], role="reviewer")
+    fleet.assign_role(db, agent_id=me["agent_id"], role="planner")
 
     res = _rpc(client, key, "claim_next", {"agent_id": me["agent_id"]})
 
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
-    assert "reviewer" in res["structuredContent"]["error"]["message"]
+    assert "planner" in res["structuredContent"]["error"]["message"]
 
 
 def test_a_directive_cannot_climb_past_the_credential(client, auth, proj, db):
@@ -236,7 +232,7 @@ def test_a_directive_cannot_climb_past_the_credential(client, auth, proj, db):
     from app.security import authz
 
     with pytest.raises(authz.Forbidden):
-        fleet.assign_role(db, agent_id=me["agent_id"], role="reviewer")
+        fleet.assign_role(db, agent_id=me["agent_id"], role="planner")
 
 
 def test_assign_role_is_the_planners(client, key, db):
@@ -245,7 +241,7 @@ def test_assign_role_is_the_planners(client, key, db):
 
     res = _rpc(client, key, "assign_role",
                {"agent_id": me["agent_id"], "target_agent_id": me["agent_id"],
-                "role": "reviewer"})
+                "role": "planner"})
 
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
 
@@ -259,21 +255,16 @@ def test_a_planner_commits_the_proposal(client, key, db):
     out = _ok(client, key, "assign_role",
               {"agent_id": boss["agent_id"],            # the caller: a planner
                "target_agent_id": hand["agent_id"],     # who is being re-tasked
-               "role": "reviewer", "reason": "queue is deep"})
+               "role": "planner", "reason": "rebalancing"})
 
-    assert out["active_role"] == "reviewer"
+    assert out["active_role"] == "planner"
     # Issued but not collected. The Fleet view renders that distinction so a human can see a
     # reassignment has been made and not yet picked up.
     assert out["pending"] is True
 
 
-def test_agents_on_a_single_posture_credential_are_not_proposed_a_reviewer(client, auth, proj, db):
-    """A proposal that cannot be committed is not a proposal. `assign_role` REFUSES an agent on
-    an all-in-one credential — the posture belongs to the credential, not to a role ceiling —
-    so offering the operator an Apply the server must reject is a plan made of nothing.
-
-    They do not need one: an all-in-one agent files into the review pool and pulls from it, and
-    the independence gates refuse it its own work, so two of them review each other."""
+def test_agents_on_a_single_posture_credential_are_proposed_as_all_in_one(client, auth, proj, db):
+    """All-in-one agents are proposed as all-in-one, not as workers or reviewers."""
     plaintext = client.post("/api/fleet/keys",
                             json={"project_id": proj, "role": "all-in-one", "wave": "w1"},
                             headers=auth).json()["plaintext"]
@@ -284,19 +275,15 @@ def test_agents_on_a_single_posture_credential_are_not_proposed_a_reviewer(clien
 
     out = _ok(client, plaintext, "propose_allocation", {})
 
-    assert out["reviewers"] == 0, "there is no committable reviewer among them"
+    assert out["reviewers"] == 0
     assert {m["role"] for m in out["mapping"]} == {"all-in-one"}
-    assert "review each other" in out["rationale"]
 
 
-def test_a_mixed_fleet_still_gets_a_reviewer_proposed(client, auth, proj, key, db):
-    """The narrow condition is the POSTURE, not the all-in-one role. An agent that resolved to
-    all-in-one only because its credential was unnarrowed IS re-taskable, so the ordinary
-    allocation applies — and skipping it would quietly stop proposing reviewers for every
-    default fleet."""
+def test_a_mixed_fleet_gets_all_workers_proposed(client, auth, proj, key, db):
+    """S3: all agents are proposed as workers regardless of cluster collisions."""
     _clusters(client, key, 1)
     _agents(client, key, 3)
 
     out = _ok(client, key, "propose_allocation", {})
 
-    assert out["reviewers"] >= 1
+    assert out["workers"] == 3 and out["reviewers"] == 0

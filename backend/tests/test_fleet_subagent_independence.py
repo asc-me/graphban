@@ -153,7 +153,7 @@ def test_a_real_fleet_still_reviews_itself(client, auth, proj, db):
                              json={"project_id": proj, "role": "worker", "wave": "w1"},
                              headers=auth).json()["plaintext"]
     reviewer_key = client.post("/api/fleet/keys",
-                               json={"project_id": proj, "role": "reviewer", "wave": "w1"},
+                               json={"project_id": proj, "role": "worker", "wave": "w1"},
                                headers=auth).json()["plaintext"]
     caps = {"vendor": "anthropic", "host": "macbook"}
     w = _ok(client, worker_key, "register_agent", {"label": "w", "capabilities": caps})
@@ -379,14 +379,14 @@ def test_a_subagent_with_its_own_seat_is_refused_through_the_surface(client, aut
     plaintext = client.post("/api/api-keys", json={"name": "sub", "project_id": proj},
                             headers=auth).json()["plaintext"]
     codes = client.post("/api/fleet/seats",
-                        json={"project_id": proj, "roles": ["worker", "reviewer"],
+                        json={"project_id": proj, "roles": ["worker", "worker"],
                               "wave": "w1"}, headers=auth).json()["seats"]
     parent = _ok(client, plaintext, "register_agent",
                  {"label": "orchestrator", "enrolment_code": codes[0]["code"]})
     child = _ok(client, plaintext, "register_agent",
                 {"label": "verifier", "enrolment_code": codes[1]["code"],
                  "parent_agent_id": parent["agent_id"]})
-    assert child["active_role"] == "reviewer" and child["enrolled"] is True
+    assert child["active_role"] == "worker" and child["enrolled"] is True
 
     item = _ok(client, plaintext, "create_item", {"title": "the parent's work", "status": "next"})
     _ok(client, plaintext, "claim_next", {"agent_id": parent["agent_id"]})

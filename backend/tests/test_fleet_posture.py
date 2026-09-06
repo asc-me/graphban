@@ -101,9 +101,9 @@ def test_an_ordinary_key_has_no_posture_and_still_honours_a_hint(client, auth, p
     raw = client.post("/api/api-keys", json={"name": "shared", "project_id": proj},
                       headers=auth).json()["plaintext"]
 
-    me = _ok(client, raw, "register_agent", {"label": "w", "role_hint": "reviewer"})
+    me = _ok(client, raw, "register_agent", {"label": "w", "role_hint": "planner"})
 
-    assert me["active_role"] == "reviewer"
+    assert me["active_role"] == "planner"
 
 
 # ---- the hint cannot narrow the posture ------------------------------------------------------
@@ -175,9 +175,9 @@ def test_a_fleet_agent_can_still_be_re_tasked(client, auth, proj, db):
                       headers=auth).json()["plaintext"]
     me = _ok(client, raw, "register_agent", {"label": "w"})
 
-    out = fleet.assign_role(db, agent_id=me["agent_id"], role="reviewer")
+    out = fleet.assign_role(db, agent_id=me["agent_id"], role="planner")
 
-    assert out.active_role == "reviewer"
+    assert out.active_role == "planner"
 
 
 def test_posture_can_never_widen_a_narrowed_ceiling(client, auth, proj, db):

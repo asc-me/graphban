@@ -23,10 +23,24 @@ from app.services import items as items_svc
 from app.services import keys as keys_svc
 from app.services.items import DEFAULT_LEASE_SECONDS
 
-# The three roles, in the order a fleet fills them. `worker` is the default because a lone
+# The two roles, in the order a fleet fills them. `worker` is the default because a lone
 # agent that registered without a hint should be able to do work rather than wait to be told.
-ROLES = ("planner", "worker", "reviewer")
+# `reviewer` merged into `worker` in S3 (PRD-39): a worker now claims, builds, AND reviews.
+ROLES = ("planner", "worker")
 DEFAULT_ROLE = "worker"
+
+
+def _resolve_stored_role(role: str) -> str:
+    """Map a stored `"reviewer"` to `"worker"` on read (S3 / PRD-39 D-b).
+
+    No migration rewrites `api_keys.roles` or `enrolments.role`: a rewrite has no inverse,
+    and resolving on read makes rollback restore the old behaviour exactly. A key stored as
+    `["reviewer"]` resolves to exactly `("worker",)` — asserted explicitly, never "not empty",
+    because the fallthrough for an empty tuple is "all roles" and that is a silent widening.
+    """
+    if role == "reviewer":
+        return "worker"
+    return role
 
 # The fourth posture, and NOT a role: an agent doing everything, because nobody else is here.
 #
@@ -204,16 +218,20 @@ def is_single_posture(api_key) -> bool:
 def eligible_roles(api_key) -> tuple[str, ...]:
     """The roles a credential permits — the CEILING, not the assignment.
 
-    An empty or missing list means all three. That is the migration position for keys minted
+    An empty or missing list means all roles. That is the migration position for keys minted
     before PRD-17 (nothing in flight breaks), and it is safe only because this is a ceiling:
     a key still cannot grant a role that does not exist, and `assign_role` is what actually
     moves an agent. Read it as "unspecified", not as "none" — a key resolving to no roles at
     all would silently make every agent on it unable to work, which is an absence behaving
     like a decision.
+
+    Stored `"reviewer"` values resolve to `"worker"` on read (S3 / PRD-39 D-b). A key stored
+    as `["reviewer"]` returns exactly `("worker",)` — asserted explicitly, never "not empty",
+    because the fallthrough for an empty tuple is "all roles" and that is a silent widening.
     """
     roles = getattr(api_key, "roles", None) or []
-    allowed = tuple(r for r in roles if r in ROLES)
-    return allowed or ROLES
+    resolved = tuple(_resolve_stored_role(r) for r in roles if r in ROLES or r == "reviewer")
+    return resolved or ROLES
 
 
 # ---- D1: the registry ---------------------------------------------------------------------
@@ -255,7 +273,8 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
     if seat is not None:
         # The seat IS the grant. A hint alongside it is ignored rather than merged — two
         # sources for one fact is how the role ended up self-declared in the first place.
-        role = seat.role
+        # A pre-merge reviewer seat redeemed after the deploy registers as worker (S3 D-b).
+        role = _resolve_stored_role(seat.role)
     elif is_single_posture(api_key) and set(allowed) >= set(ROLES):
         # All-in-one was chosen for this credential, so a hint cannot narrow it. The ceiling is
         # re-checked rather than trusted: posture may only decline to NARROW, never WIDEN, or a
@@ -461,7 +480,8 @@ def list_agents(db: Session, project_id: str | None = None, *,
             "id": a.id,      # frozen, internal — what `claimed_by` and `reviewed_by` store
             "key": a.key,    # rendered from the project's CURRENT tag (PRD-13)
             "label": a.label,
-            "active_role": a.active_role,
+            # Pre-merge "reviewer" resolves to "worker" on read (S3 D-b).
+            "active_role": _resolve_stored_role(a.active_role),
             "state": state,
             "capabilities": a.capabilities or {},
             # The DISPLAY PREFIX only — `gb_sk_ab12`. Never the plaintext, which is not stored
@@ -612,7 +632,9 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     # actions — the second is a review queue about to back up. `all-in-one` is reported beside
     # the roles rather than folded into one of them, because an unspecialised agent is the
     # DEFAULT posture and showing it as a worker would misdescribe the commonest deployment.
-    by_role = {r: sum(1 for a in live if a["active_role"] == r) for r in ROLES}
+    # Pre-merge "reviewer" agents resolve to "worker" on read (S3 D-b).
+    by_role = {r: sum(1 for a in live
+                       if _resolve_stored_role(a["active_role"]) == r) for r in ROLES}
     by_role[ALL_IN_ONE] = sum(1 for a in live if a["active_role"] == ALL_IN_ONE)
     seats = list_enrolments(db, project_id, minted_by=minted_by) if minted_by else None
     return {
@@ -651,9 +673,9 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     "claim_next": ("worker",),
     "next_cluster": ("worker",),
     "claim_cluster": ("worker",),
-    # A reviewer holds a REVIEW claim, which is a hold it must be able to hand back — the
-    # release verb is one verb for whichever hold you have, not one per role (GRPH-429).
-    "release_item": ("worker", "reviewer"),
+    # The release verb is one verb for whichever hold you have, not one per role (GRPH-429).
+    # S3 merged reviewer into worker, so the reviewer entry collapsed to worker alone.
+    "release_item": ("worker",),
     # `heartbeat` is NOT here, and was, which is the bug. It does two jobs: extend an item
     # LEASE and extend agent PRESENCE. Grouping it with the claiming tools gated both — so a
     # reviewer or planner was refused the only call that keeps it on the roster, registered
@@ -662,12 +684,12 @@ TOOL_ROLES: dict[str, tuple[str, ...]] = {
     # apart. The lease half needs no role gate because it is already bounded by ownership —
     # `items.heartbeat` only extends a lease the caller holds.
     # PRD authorship is the planner's.
-    # Review belongs to the reviewer, and `claim_next` to the worker — the two halves of the
-    # ban. A reviewer that could claim fresh work would drift into being a worker holding
-    # review authority, which is self-review with extra steps.
-    "claim_review": ("reviewer",),
-    "sign_off": ("reviewer",),
-    "bounce": ("reviewer",),
+    # S3 merged reviewer into worker: a worker now claims review, signs off, and bounces.
+    # The self-review ban is keyed on authorship (`built_by != agent_id`), not on role,
+    # so merging the roles costs no invariant that is keyed on authorship.
+    "claim_review": ("worker",),
+    "sign_off": ("worker",),
+    "bounce": ("worker",),
     # Allocation is the planner's whole job. `propose_allocation` is a read and ungated so a
     # worker can see the shape of the fleet; committing it is not.
     "assign_role": ("planner",),
@@ -776,7 +798,7 @@ OPEN_TOOLS: dict[str, str] = {
     "propose_allocation": f"{UNARGUED}: the orchestrator planning a fleet allocation, beside "
                           f"assign_role and mint_enrolment which are planner-gated",
     "submit_verdict": f"{UNARGUED}: review-shaped, while sign_off and bounce are "
-                      f"reviewer-only",
+                      f"worker-only",
     "review_recommendation": f"{UNARGUED}: approves or rejects a proposed artifact — the "
                              f"human boundary, and which fleet role may stand at it is "
                              f"undecided",
@@ -858,7 +880,8 @@ def role_for_call(db: Session, *, api_key, agent_id: str | None) -> tuple[str, s
             # Its ceiling is still the credential's, so a narrowed key cannot reach this.
             if agent.active_role == ALL_IN_ONE:
                 return "*", agent.id
-            return agent.active_role, agent.id
+            # Pre-merge "reviewer" resolves to "worker" on read (S3 D-b).
+            return _resolve_stored_role(agent.active_role), agent.id
     allowed = eligible_roles(api_key)
     if len(allowed) == 1:
         return allowed[0], None
@@ -938,9 +961,9 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
         status = (args or {}).get("status")
         if status in _BEYOND_WORKER:
             raise authz.Forbidden(
-                f"update_item(status={status!r}) requires role 'reviewer'; "
+                f"update_item(status={status!r}) is beyond the worker ceiling; "
                 f"{who} is registered as 'worker'",
-                hint="move it to 'review'; a reviewer takes it from there",
+                hint="move it to 'review'; the self-review ban gates sign-off",
             )
 
     # `release_item` is how a worker hands work back — the release verb is shared across
@@ -950,9 +973,9 @@ def check_tool_role(db: Session, *, tool: str, api_key, agent_id: str | None,
         to_status = (args or {}).get("to_status", "next")
         if to_status in _BEYOND_WORKER:
             raise authz.Forbidden(
-                f"release_item(to_status={to_status!r}) requires role 'reviewer'; "
+                f"release_item(to_status={to_status!r}) is beyond the worker ceiling; "
                 f"{who} is registered as 'worker'",
-                hint="release_item does not write `done`; a reviewer takes it from there",
+                hint="release_item does not write `done`; the self-review ban gates sign-off",
             )
 
 
@@ -970,7 +993,10 @@ def tools_off_limits(role: str) -> list[str]:
 
     All-in-one is unrestricted, so the honest answer for it is an empty list rather than a
     reassuring sentence.
+
+    Pre-merge "reviewer" resolves to "worker" on read (S3 D-b).
     """
+    role = _resolve_stored_role(role)
     if role == ALL_IN_ONE or role not in ROLES:
         return []
     return sorted(name for name, allowed in TOOL_ROLES.items() if role not in allowed)
@@ -978,11 +1004,9 @@ def tools_off_limits(role: str) -> list[str]:
 
 def _hint_for(tool: str, role: str) -> str:
     if role == "worker":
-        return "your work moves to review; a reviewer takes it from there"
+        return "your work moves to review; the self-review ban gates sign-off"
     if role == "planner":
         return "planners allocate rather than claim; use propose_allocation"
-    if role == "reviewer":
-        return "reviewers take work through claim_review, not claim_next"
     return "call fleet_status to see the roles this project has available"
 
 
@@ -1221,7 +1245,7 @@ def could_review(db: Session, *, item: Item, exclude_agent_id: str,
     — it is the review gate switched off for everyone.
 
     Eligibility is the union of the two gates a real reviewer passes: it must be able to CALL
-    `claim_review` (a worker and a planner cannot), and it must be `independent` of the author.
+    `claim_review` (a planner cannot), and it must be `independent` of the author.
     Anything offline, quarantined, dismissed or on an expired seat cannot act at all, so
     counting it would let a dead agent hold a gate open.
     """
@@ -1232,7 +1256,7 @@ def could_review(db: Session, *, item: Item, exclude_agent_id: str,
         cand = db.get(Agent, row["id"])
         if cand is None or session_expired(db, cand):
             continue
-        if cand.active_role not in ("reviewer", ALL_IN_ONE):
+        if cand.active_role not in ("worker", ALL_IN_ONE):
             continue
         if independent(cand, author):
             return cand.id
@@ -2077,21 +2101,16 @@ def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
     from app.security.apikey import generate_api_key
 
     if role not in ROLES + (ALL_IN_ONE,):
-        raise ValueError(f"unknown role: {role!r}")
-    # `gate` follows the REVIEWER role (GRPH-543). Completion needs an `attestation`, and only
-    # a gate-scoped key may write one — so a credential that can sign work off must be able to
-    # attest it, or the verdict it is entitled to give cannot be recorded.
+        raise ValueError(
+            f"unknown role: {role!r}; valid roles are {', '.join(ROLES)}")
+    # `gate` follows the worker role (GRPH-543, S3). Completion needs an `attestation`, and
+    # only a gate-scoped key may write one — so a credential that can sign work off must be
+    # able to attest it, or the verdict it is entitled to give cannot be recorded. S2 moved
+    # the gate scope onto authorship, making it safe for worker to carry gate.
     #
-    # This matters most in the single-agent posture, where there is no reviewer agent and the
-    # human is the reviewer: without it an all-in-one agent could never finish anything, and
-    # its work would park in `review` with nothing explaining why it stopped. That is exactly
-    # the failure `test_the_capability_the_hint_used_to_cost_is_kept` was written against, and
-    # this gate would otherwise have re-created it one layer down.
-    #
-    # A worker- or planner-only key does NOT get it. A worker's ceiling is `review` by design,
-    # and handing it the means to attest would return the capability the role gate removes.
+    # A planner-only key does NOT get it. A planner cannot build, so it has no work to attest.
     scopes = ["read", "write"]
-    if role in ("reviewer", ALL_IN_ONE):
+    if role in ("worker", ALL_IN_ONE):
         scopes.append("gate")
     # The `fleet` and `prd` tool tiers (GRPH-571) come with the credential rather than being
     # asked for. A planner without `propose_allocation` or `assign_role` cannot do the job it
@@ -2158,10 +2177,11 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
     import uuid
 
     if role not in ROLES + (ALL_IN_ONE,):
-        raise ValueError(f"unknown role: {role!r}")
+        raise ValueError(
+            f"unknown role: {role!r}; valid roles are {', '.join(ROLES)}")
     if item_id and role != "worker":
-        # PRD-36 D1: a reviewer takes review through claim_review and must not be steered
-        # to one item by whoever minted its seat.
+        # PRD-36 D1: a bound seat is worker-only — a worker takes review through claim_review
+        # and must not be steered to one item by whoever minted its seat.
         raise ValueError(f"a bound seat is worker-only; cannot bind an item to a {role!r} seat")
     body = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(6))
     code = f"{role.upper().replace('-', '')}-{body}"
@@ -2276,10 +2296,13 @@ def consume_enrolment(db: Session, *, code: str, project_id: str, api_key) -> En
         raise EnrolmentError(f"that seat is already {state}"
                              + (" — reissue it from the Fleet view" if state == "consumed" else ""))
     allowed = eligible_roles(api_key)
-    if row.role != ALL_IN_ONE and row.role not in allowed:
+    # A pre-merge reviewer seat resolves to worker on read (S3 D-b), so the ceiling check
+    # compares resolved values — a key eligible for worker can redeem a stored reviewer seat.
+    seat_role = _resolve_stored_role(row.role)
+    if seat_role != ALL_IN_ONE and seat_role not in allowed:
         raise EnrolmentError(
             f"this credential is eligible for {', '.join(allowed)}; the seat grants "
-            f"{row.role!r}. Mint a credential for that role, or issue a "
+            f"{seat_role!r}. Mint a credential for that role, or issue a "
             f"{allowed[0]!r} seat")
     return row
 
@@ -2699,10 +2722,8 @@ def propose_allocation(db: Session, project_id: str | None = None, *,
 
     - **One worker per free cluster, never more.** A fourth worker with no non-colliding
       cluster is not a worker — it is an agent that will be refused by the divvy every time it
-      asks. Proposing it as a REVIEWER puts it where the fleet is actually short, and the
-      review queue is the thing that backs up when workers outnumber the work.
-    - **At least one reviewer as soon as there are two agents.** With one agent there is
-      nobody to review anything, so a reviewer proposal would idle the only worker.
+      asks. S3 merged reviewer into worker, so surplus agents beyond the free clusters become
+      workers that pull from the review queue — the place the fleet is actually short.
     - Offline and quarantined agents are not allocated. They cannot act, and counting them
       produces a plan whose arithmetic is right and whose fleet does not exist.
     """
@@ -2757,23 +2778,25 @@ def propose_allocation(db: Session, project_id: str | None = None, *,
                              "cluster": (free_clusters[0]["items"] if free_clusters else [])}],
                 "rationale": "one agent: nobody to review for, so it works"}
 
-    want_workers = min(len(free_clusters), n - 1) if free_clusters else 0
+    # S3: every agent is a worker. Surplus agents beyond the free clusters pull from the
+    # review queue — the place the fleet is actually short — rather than idling as a
+    # separate "reviewer" role that no longer exists.
+    want_with_cluster = min(len(free_clusters), n) if free_clusters else 0
     mapping = []
     for i, agent in enumerate(roster):
-        if i < want_workers:
+        if i < want_with_cluster:
             mapping.append({"agent": agent["id"], "role": "worker",
                             "cluster": free_clusters[i]["items"]})
         else:
-            mapping.append({"agent": agent["id"], "role": "reviewer", "cluster": []})
-    reviewers = n - want_workers
+            mapping.append({"agent": agent["id"], "role": "worker", "cluster": []})
     return {
-        "workers": want_workers,
-        "reviewers": reviewers,
+        "workers": n,
+        "reviewers": 0,
         "mapping": mapping,
         "rationale": (
             f"{len(free_clusters)} free cluster(s) for {n} agent(s): "
-            f"{want_workers} worker(s), {reviewers} reviewer(s). "
-            "Agents beyond the free clusters review rather than queue for work that collides."
+            f"{want_with_cluster} worker(s) with a cluster, "
+            f"{n - want_with_cluster} pulling from the review queue."
         ),
     }
 
@@ -2796,7 +2819,8 @@ def assign_role(db: Session, *, agent_id: str, role: str, reason: str = "") -> A
     if agent is None:
         raise ValueError(f"unknown agent: {agent_id}")
     if role not in ROLES + (ALL_IN_ONE,):
-        raise ValueError(f"unknown role: {role!r}")
+        raise ValueError(
+            f"unknown role: {role!r}; valid roles are {', '.join(ROLES)}")
     key = db.get(ApiKey, agent.api_key_id) if agent.api_key_id else None
     if key is not None and role != ALL_IN_ONE and is_single_posture(key):
         # The same narrowing that `register_agent` refuses, arriving through the other door.
@@ -2860,7 +2884,8 @@ def pending_directive(agent: Agent, *, expired: bool = False) -> dict | None:
     reason = (agent.capabilities or {}).get("directive_reason") or ""
     return {
         "type": "role_change",
-        "role": agent.active_role,
+        # Pre-merge "reviewer" resolves to "worker" on read (S3 D-b).
+        "role": _resolve_stored_role(agent.active_role),
         "reason": reason,
         # The machine-readable next step, so an agent adopts the role without parsing prose.
         "next": _directive_next(agent.active_role),
@@ -2868,8 +2893,8 @@ def pending_directive(agent: Agent, *, expired: bool = False) -> dict | None:
 
 
 def _directive_next(role: str) -> str:
-    if role == "reviewer":
-        return "call claim_review — your worker tools now return unauthorized"
+    # A pre-merge reviewer resolves to worker (S3 D-b).
+    role = _resolve_stored_role(role)
     if role == "planner":
         return "call propose_allocation — you no longer claim work yourself"
     return "call claim_cluster — you are working again"

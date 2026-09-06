@@ -570,9 +570,9 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "propose_allocation",
         "description": (
-            "What the fleet should look like given who is online and what is ready: workers, "
-            "reviewers, and which cluster each worker takes. A PROPOSAL — nothing is assigned until "
-            "assign_role. Agents beyond the free clusters are proposed as reviewers."
+            "What the fleet should look like given who is online and what is ready: workers "
+            "and which cluster each worker takes. A PROPOSAL — nothing is assigned until "
+            "assign_role. Agents beyond the free clusters pull from the review queue."
         ),
         "inputSchema": {"type": "object", "properties": {"project_id": {"type": "string"}}},
     },
@@ -713,7 +713,8 @@ TOOLS: list[dict[str, Any]] = [
                 "capabilities": {"type": "object", "description": "{vendor, model, tier, readonly, host}; vendor drives review diversity."},
                 "worktree": {"type": "string"},
                 "branch": {"type": "string"},
-                "role_hint": {"type": "string", "enum": list(fleet_svc.ROLES)},
+                # "reviewer" is accepted for backwards compat and clamps silently (S3 D-b).
+                "role_hint": {"type": "string", "enum": list(fleet_svc.ROLES) + ["reviewer"]},
                 "enrolment_code": {"type": "string", "description": "Your seat, e.g. 'WORKER-7F3K'. Grants your role and beats role_hint. Single-use."},
                 # "who spawned you" is the phrasing that caused the trouble: a process a
                 # supervisor launched has an obvious answer to it, and the answer is wrong.
@@ -784,7 +785,7 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 # OPTIONAL. Heartbeat does two jobs — extend an item LEASE and extend agent
                 # PRESENCE — and only the first needs an item. A planner never holds one, and
-                # a reviewer between reviews or a worker between claims holds none either, so
+                # a worker between claims or reviews holds none either, so
                 # requiring it meant presence was maintainable only while mid-work. Found on
                 # the PRD-17 walk, alongside the role gate that refused non-workers outright.
                 "id": {"type": "string", "description": "Item held, if any."},
@@ -1724,8 +1725,8 @@ def _visible_tools(key: ApiKey, role: str | None = None) -> list[dict]:
     call.
 
     Role (PRD-17 D-b): a key whose `roles` name a single role never gets to call the other
-    roles' tools either, so those are dead weight in exactly the same way. A reviewer
-    credential carries no `claim_next`; a worker credential carries no `sign_off`.
+    roles' tools either, so those are dead weight in exactly the same way. A planner
+    credential carries no `claim_next`; a worker credential carries `sign_off` and `bounce`.
 
     **This gates on the KEY's ceiling, not on the agent's ACTIVE role, and the distinction is
     the whole reason it is safe without SSE.** PRD-17 rules out trimming per active role, and
@@ -1749,8 +1750,8 @@ def _visible_tools(key: ApiKey, role: str | None = None) -> list[dict]:
     allowed = set(fleet_svc.eligible_roles(key))
     # E9b: the SESSION's role, when this connection carries exactly one registered agent, is
     # narrower than the credential and is what the agent will actually be judged by. It never
-    # widens — an intersection, so a worker seat on a reviewer-only key still sees neither
-    # role's extra tools rather than gaining the worker's.
+    # widens — an intersection, so a planner seat on a worker-only key still sees neither
+    # role's extra tools rather than gaining the planner's.
     if role and role != fleet_svc.ALL_IN_ONE:
         allowed = allowed & {role}
     if not allowed >= set(fleet_svc.ROLES):
@@ -2661,7 +2662,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 target_id=args.get("id", ""), project_id=pid,
                 meta={"reason": str(e), "agent_id": args.get("agent_id")})
             # Conflict, not unauthorized: the caller IS permitted to sign this off — the work
-            # simply is not accounted for yet. `unauthorized` would send a reviewer hunting a
+            # simply is not accounted for yet. `unauthorized` would send a worker hunting a
             # permissions problem it does not have.
             raise errors.Conflict(str(e), hint=(
                 "dispatch two opposing-lens critics, or run the passes yourself, and record "
@@ -3625,7 +3626,7 @@ async def mcp_endpoint(
             # every path into that service call passes through, and a second mapping site is
             # one refactor away from disagreeing with this one.
             return _fail("conflict", str(e),
-                               "move it to `review` and let an adapter attest it — a reviewer "
+                               "move it to `review` and let an adapter attest it — a worker "
                                "via sign_off with a commit, or CI holding a `gate`-scoped key")
         except items_svc.PRCooldown as e:
             # CONFLICT for the same reason, and the hint says WAIT rather than naming an

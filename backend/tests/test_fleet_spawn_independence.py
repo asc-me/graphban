@@ -62,7 +62,7 @@ def _spawned_pair(db, proj, client, key):
     _, pcode = _seat(db, proj, "planner")
     boss = _ok(client, key, "register_agent", {"label": "planner", "enrolment_code": pcode})
     w = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
-    r = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "reviewer"})
+    r = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
 
     worker = _ok(client, key, "register_agent",
                  {"label": "w", "enrolment_code": w["enrolment_code"]})
@@ -89,7 +89,7 @@ def test_a_spawned_pair_is_independent_in_both_directions(client, key, proj, db)
     assert fleet.independent(worker, reviewer) is True
 
 
-@pytest.mark.parametrize("who", ["worker", "reviewer"])
+@pytest.mark.parametrize("who", ["worker", "second"])
 def test_declaring_a_parent_flips_it_in_both_directions(client, key, proj, db, who):
     """The control, and without it the assertions above prove nothing.
 

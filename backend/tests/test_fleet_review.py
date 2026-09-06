@@ -584,21 +584,18 @@ def test_danger_mode_does_not_relax_adversarial_evidence(client, agent_key, proj
     assert "adversarial evidence" in err["message"]
 
 
-def test_a_worker_present_does_not_block_a_solo_reviewer(client, agent_key, proj, db):
-    """The eligibility half of `could_review`: a WORKER cannot call `claim_review`, so its
-    presence is not a reviewer's presence. Counting it would leave danger mode refusing on a
-    project where nothing can ever review — the exact stall the mode exists to end.
-
-    Written because sabotaging the role filter left the suite green: the earlier tests each had
-    a single agent, so the filter was never reached."""
+def test_a_worker_present_does_block_self_review(client, agent_key, proj, db):
+    """S3: a worker CAN now call `claim_review`, so its presence IS a reviewer's presence.
+    Danger mode requires that NOBODY else could review — and a worker who is independent of
+    the author could review, so self-review is blocked."""
     a = _aio(client, agent_key, label="A")
     _register(client, agent_key, "worker", label="W")
     item_key = _built_by_aio(client, agent_key, a, title="A's work")
     _danger(db, proj)
 
-    out = _ok(client, agent_key, "sign_off", {"id": item_key, "agent_id": a["agent_id"]})
-
-    assert out["status"] == "done"
+    # A worker is now an eligible reviewer, so danger mode does not apply.
+    err = _refused(client, agent_key, "sign_off", {"id": item_key, "agent_id": a["agent_id"]})
+    assert err["code"] == "unauthorized"
 
 
 def test_a_planner_present_does_not_block_it_either(client, agent_key, proj, db):

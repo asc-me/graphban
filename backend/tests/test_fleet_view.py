@@ -65,12 +65,12 @@ def test_a_minted_fleet_key_is_narrowed_to_one_role(client, auth, proj, db):
     """The D2 ceiling, applied at mint time. An agent on this credential cannot register into
     a different role however its client config is written."""
     made = client.post("/api/fleet/keys",
-                       json={"project_id": proj, "role": "reviewer", "wave": "w1"},
+                       json={"project_id": proj, "role": "worker", "wave": "w1"},
                        headers=auth)
 
     assert made.status_code == 201, made.text
     row = db.get(ApiKey, made.json()["id"])
-    assert row.roles == ["reviewer"]
+    assert row.roles == ["worker"]
     assert row.fleet_wave == "w1"
     assert row.expires_at is not None, "fleet credentials are ephemeral by default"
 
@@ -78,12 +78,12 @@ def test_a_minted_fleet_key_is_narrowed_to_one_role(client, auth, proj, db):
 def test_the_role_ceiling_actually_binds_the_agent(client, auth, proj):
     """Minting with a narrow `roles` list would be decorative if registration ignored it."""
     raw = client.post("/api/fleet/keys",
-                      json={"project_id": proj, "role": "reviewer", "wave": "w1"},
+                      json={"project_id": proj, "role": "worker", "wave": "w1"},
                       headers=auth).json()["plaintext"]
 
-    me = _mcp(client, raw, "register_agent", {"label": "r", "role_hint": "worker"})
+    me = _mcp(client, raw, "register_agent", {"label": "r", "role_hint": "planner"})
 
-    assert me["active_role"] == "reviewer", "the hint cannot climb past the credential"
+    assert me["active_role"] == "worker", "the hint cannot climb past the credential"
 
 
 def test_an_unknown_role_is_refused(client, auth, proj):

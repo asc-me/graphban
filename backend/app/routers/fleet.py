@@ -32,7 +32,7 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
 
     One request rather than three because the view renders them together and a partial fleet
     picture is worse than a slow one — a roster that arrives before the review queue shows an
-    idle reviewer next to work it could already be taking.
+    idle worker next to review it could already be signing off on.
     """
     authz.require_readable(db, user.id, project_id)
     status = fleet_svc.fleet_status(db, project_id, caller_user_id=user.id)
@@ -104,7 +104,7 @@ def mint_fleet_key(body: FleetKeyIn, db: Session = Depends(get_db),
 
 class SeatsIn(BaseModel):
     project_id: str
-    # ONE ENTRY PER AGENT, repeats included: ["planner", "worker", "worker", "reviewer"].
+    # ONE ENTRY PER AGENT, repeats included: ["planner", "worker", "worker", "worker"].
     # Two agents on one seat share a session and cannot review each other.
     roles: list[str]
     # Blank means "the next one" — computed server-side, because the client hardcoded wave-1
