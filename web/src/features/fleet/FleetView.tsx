@@ -251,9 +251,9 @@ function heartbeatLabel(at: string | null): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-function AgentRow({ a, onDismiss, onRetask, dismissed }: {
+function AgentRow({ a, onDismiss, onRetask, roles = [], dismissed }: {
   a: FleetAgent; onDismiss?: (id: string, undo?: boolean) => void;
-  onRetask?: (id: string, role: string) => void; dismissed?: boolean;
+  onRetask?: (id: string, role: string) => void; roles?: string[]; dismissed?: boolean;
 }) {
   const offline = a.state === "offline";
   const quarantined = a.state === "quarantined";
@@ -330,7 +330,15 @@ function AgentRow({ a, onDismiss, onRetask, dismissed }: {
             value={a.active_role}
             onChange={(e) => onRetask(a.id, e.target.value)}
           >
-            {["planner", "worker", "reviewer"].map((r) => (
+            {/* Its CURRENT role first, even if the server no longer offers it: a selector
+                that omitted it would render as though the agent held a different one. */}
+            {!roles.includes(a.active_role) && (
+              <option value={a.active_role}>{a.active_role}</option>
+            )}
+            {/* From the SERVER's list, never a literal. `fleet_status` carries `roles`
+                because the role set is the server's to define — PRD-39 reduced it to two and
+                a hard-coded third here would offer a role every save then refuses. */}
+            {roles.map((r) => (
               <option key={r} value={r}>{r}</option>
             ))}
           </select>
@@ -774,13 +782,15 @@ export function FleetView() {
             </Empty>
           ) : (
             <div className="space-y-2">
-              {fleetAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask} />)}
+              {fleetAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask}
+                                        roles={data?.roles ?? []} />)}
               {soloAgents.length > 0 && (
                 <>
                   <div className="pt-1 text-[11px] text-faint">
                     {soloAgents.length} un-enrolled · single-agent — API key, no seat
                   </div>
-                  {soloAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask} />)}
+                  {soloAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask}
+                                        roles={data?.roles ?? []} />)}
                 </>
               )}
               {goneAgents.length > 0 && (
@@ -789,7 +799,8 @@ export function FleetView() {
                   {showGone ? "Hide" : "Show"} {goneAgents.length} gone
                 </button>
               )}
-              {showGone && goneAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask} />)}
+              {showGone && goneAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask}
+                                        roles={data?.roles ?? []} />)}
               {dismissed.length > 0 && (
                 <button onClick={() => setShowDismissed((v) => !v)}
                         className="w-full text-left text-[11px] text-faint hover:text-fg-2">
