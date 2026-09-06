@@ -581,6 +581,12 @@ rationale. The mint argument's guard — `mint_enrolment` stays `("planner",)` �
 
 ---
 
+**Release note (the sentence the merge commit carries).** *A credential narrowed to `reviewer`
+can now claim fresh work, and keeps `gate`. `reviewer` resolves to `worker` on read; nothing
+stored is rewritten, and rolling back restores the old behaviour exactly.* Release notes are
+built from merge subjects since the previous CalVer (`scripts/graphban_release.py notes`), so
+the S3 PR title states the widening rather than a changelog file nobody reads.
+
 ## S4 — The ceiling proof (D-c), on both engines
 
 **What.** Tests, not code, unless a test finds something. `done` is unreachable except through
@@ -761,9 +767,17 @@ A walk, on a real project, against a deployed instance:
     **Measured 2026-09-06, S2 (GRPH-755, `gb/p39-s2-1`):** a `worker` key's manifest **with**
     `gate` is **8,159 tokens across 31 tools**; the attestation shape `_with_attestation` adds
     costs **101 tokens**; headroom under the 14,200 `CEILING` is **6,041**. `MEASURED_TOKENS`
-    (14,192) is unaffected, because `_with_attestation` runs at manifest time, not at tool
-    definition time, so the footprint test never sees it. It fits; §8's manifest question is
-    answered and S3 is not blocked on it.
+    (14,192) is unaffected by S2, because `_with_attestation` runs at manifest time, not at
+    tool definition time, so the footprint test never sees it. It fits; §8's manifest question
+    is answered and S3 is not blocked on it.
+
+    **Measured again after S3 (GRPH-756, `gb/p39-s3-1`):** `reviewer` leaving the role enums
+    takes nine tokens off every manifest — `MEASURED_TOKENS` is **14,183**, headroom 17 under
+    the 14,200 ceiling. §8's other prediction is now measured too: on a core-tier key a registered
+    *worker* session narrows **nothing** (saved = 0 chars, asserted `== 0`), because the
+    planner's tools were already tiered away and every remaining role-gated tool is the
+    worker's; a *planner* session still drops all six claim/review tools, so the E9
+    mechanism is idle for workers and intact for planners. `test_mcp_footprint` says both.
 
 ## 8. Open questions
 

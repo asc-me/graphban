@@ -275,6 +275,12 @@ def register_agent(db: Session, *, project_id: str, api_key, label: str = "",
         # sources for one fact is how the role ended up self-declared in the first place.
         # A pre-merge reviewer seat redeemed after the deploy registers as worker (S3 D-b).
         role = _resolve_stored_role(seat.role)
+        if role != seat.role:
+            # Kept on the agent, not only in the reply: the reply is read once by a client
+            # that may not print it, and the Fleet view is where a human asks "why is this
+            # seat a worker when I minted a reviewer". Same shelf as `directive_reason`.
+            capabilities = dict(capabilities or {})
+            capabilities["role_stored"] = seat.role
     elif is_single_posture(api_key) and set(allowed) >= set(ROLES):
         # All-in-one was chosen for this credential, so a hint cannot narrow it. The ceiling is
         # re-checked rather than trusted: posture may only decline to NARROW, never WIDEN, or a

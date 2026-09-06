@@ -129,6 +129,33 @@ def test_a_stored_reviewer_seat_registers_as_worker(client, auth, proj, db):
     me = _ok(client, plaintext, "register_agent",
              {"label": "pre-merge", "enrolment_code": code})
     assert me["active_role"] == "worker"
+    # §7.1: the reply names both what was stored and what it resolved to. A client that
+    # minted a reviewer and got a worker is told, not left to notice.
+    assert me["role_resolved"] == {"stored": "reviewer", "resolved": "worker"}, me
+
+
+def test_a_seat_that_needed_no_resolution_says_nothing_about_it(client, auth, proj, db):
+    """The `role_resolved` field appears only when resolution changed the value — a worker
+    seat that registered as a worker has nothing to explain, and a field that always
+    reads `{"stored": "worker", "resolved": "worker"}` would teach clients to ignore it."""
+    from datetime import datetime, timedelta, timezone
+    import secrets
+    from app.models import Enrolment
+    from app.services.fleet import _hash_code
+
+    plaintext = client.post(
+        "/api/api-keys", json={"name": "s3plain", "project_id": proj},
+        headers=auth).json()["plaintext"]
+    body = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+    code = f"WORKER-{body}"
+    db.add(Enrolment(
+        id="test-seat-plain", project_id=proj, code_hash=_hash_code(code),
+        code_prefix=body[:2], role="worker", wave="w1",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=30)))
+    db.commit()
+    me = _ok(client, plaintext, "register_agent", {"label": "plain", "enrolment_code": code})
+    assert me["active_role"] == "worker"
+    assert "role_resolved" not in me, me
 
 
 def test_a_stored_reviewer_seat_has_non_empty_tools_off_limits(client, auth, proj, db):

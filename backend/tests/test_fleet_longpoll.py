@@ -128,7 +128,7 @@ def test_a_directive_wakes_the_park_early(client, key, db):
     re-tasked agent works the old role for a full minute and D6's promise is only true for
     agents that happened not to be parked."""
     me = _ok(client, key, "register_agent", {"label": "w"})
-    fleet.assign_role(db, agent_id=me["agent_id"], role="reviewer", reason="queue is deep")
+    fleet.assign_role(db, agent_id=me["agent_id"], role="worker", reason="queue is deep")  # all-in-one → worker is a real re-task; `reviewer` is not a role since PRD-39 S3
 
     slept = []
     out = fleet.park(db, lambda _s: None, agent_id=me["agent_id"],
@@ -143,12 +143,12 @@ def test_the_directive_is_still_delivered_exactly_once(client, key, db):
     places would consume it before the agent ever saw it — the wake-up eating the message it
     woke up for."""
     me = _ok(client, key, "register_agent", {"label": "w"})
-    fleet.assign_role(db, agent_id=me["agent_id"], role="reviewer")
+    fleet.assign_role(db, agent_id=me["agent_id"], role="worker")
 
     first = _ok(client, key, "claim_review",
                 {"agent_id": me["agent_id"], "wait_seconds": 1})
 
-    assert first["directive"]["role"] == "reviewer"
+    assert first["directive"]["role"] == "worker"  # a worker collects it on claim_review, its tool since S3
     second = _ok(client, key, "claim_review", {"agent_id": me["agent_id"]})
     assert "directive" not in second
 
@@ -196,7 +196,7 @@ def test_claim_cluster_parks_on_a_miss_rather_than_answering_instantly(client, k
 
 
 def test_claim_review_accepts_a_wait(client, key):
-    me = _ok(client, key, "register_agent", {"label": "r", "role_hint": "reviewer"})
+    me = _ok(client, key, "register_agent", {"label": "r", "role_hint": "worker"})
 
     out = _ok(client, key, "claim_review", {"agent_id": me["agent_id"], "wait_seconds": 1})
 

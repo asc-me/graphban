@@ -129,12 +129,16 @@ def test_a_worker_cannot_mint_a_bound_seat_and_writes_no_delegation(client, auth
     assert [r for r in db.scalars(select(Enrolment)).all() if r.item_id] == []
 
 
-def test_a_bound_reviewer_seat_cannot_be_minted(db, proj):
-    """3 / D1."""
+def test_a_bound_seat_is_worker_only(db, proj):
+    """3 / D1. Since PRD-39 S3 `reviewer` is not a role at all, so that request is refused
+    one step earlier (`unknown role`); the D1 rule itself is still exercised by `planner`,
+    which exists and still may not carry a bound item."""
     item = Item(id="it-r", project_id=proj, number=1, title="x", status="next")
     db.add(item); db.commit()
-    with pytest.raises(ValueError, match="worker-only"):
+    with pytest.raises(ValueError, match="unknown role"):
         fleet_svc.issue_enrolment(db, project_id=proj, role="reviewer", item_id="it-r")
+    with pytest.raises(ValueError, match="worker-only"):
+        fleet_svc.issue_enrolment(db, project_id=proj, role="planner", item_id="it-r")
 
 
 def test_a_bound_seat_is_refused_when_the_areas_are_held(client, key, proj, db):

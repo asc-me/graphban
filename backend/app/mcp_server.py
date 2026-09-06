@@ -2714,8 +2714,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         if session_id:
             agent.mcp_session_id = session_id
             db.commit()
+        # §7.1 (PRD-39): a seat stored as a role the server no longer has says what was
+        # stored AND what it became, so the client is told rather than left to compare.
+        # Reply-only, deliberately: the manifest's outputSchema is footprint, and a field
+        # that appears on one registration in a hundred is not worth eight tokens on all.
+        stored = (agent.capabilities or {}).get("role_stored")
+        resolved = ({"role_resolved": {"stored": stored, "resolved": agent.active_role}}
+                    if stored and stored != agent.active_role else {})
         return {
             "agent_id": agent.id, "key": agent.key, "active_role": agent.active_role,
+            **resolved,
             "eligible_roles": list(fleet_svc.eligible_roles(key)),
             # Stated rather than inferred from `active_role`: `all-in-one` is BOTH the granted
             # seat role and what an un-enrolled agent gets, so a client cannot tell the
