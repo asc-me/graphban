@@ -13,7 +13,6 @@ import type { Pos } from "./layout";
 export const ROLE_HEX: Record<string, string> = {
   planner: "#b794f6",
   worker: "#c6f24e", // --color-st-in_progress
-  reviewer: "#e0b34a", // --color-st-review
   "all-in-one": "#8b949e", // --color-muted
 };
 

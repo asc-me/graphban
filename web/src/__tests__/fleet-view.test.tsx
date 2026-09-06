@@ -279,7 +279,7 @@ describe("Fleet view", () => {
     expect(screen.queryByRole("button", { name: "all-in-one" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /API key in Settings/ }))
       .toHaveAttribute("href", settingsPath("project/api-keys"));
-    for (const r of ["planner", "worker", "reviewer"]) {
+    for (const r of ["planner", "worker"]) {
       expect(screen.getByRole("button", { name: r })).toBeInTheDocument();
     }
   });
@@ -291,11 +291,11 @@ describe("Fleet view", () => {
     renderView();
     await openLegacyWaveKey(user);
 
-    for (const r of ["planner", "worker", "reviewer"]) {
+    for (const r of ["planner", "worker"]) {
       await user.click(screen.getByRole("button", { name: r }));
       const chosen = screen.getByRole("button", { name: r });
       expect(chosen).toHaveAttribute("aria-pressed", "true");
-      for (const other of ["planner", "worker", "reviewer"].filter((x) => x !== r)) {
+      for (const other of ["planner", "worker"].filter((x) => x !== r)) {
         const notChosen = screen.getByRole("button", { name: other });
         expect(notChosen).toHaveAttribute("aria-pressed", "false");
         const classes = (el: Element) => new Set((el.className || "").split(/\s+/).filter(Boolean));
@@ -308,17 +308,17 @@ describe("Fleet view", () => {
 
   it("mints a role-narrowed credential and shows all three pastes", async () => {
     api.mintFleetKey.mockResolvedValue({
-      id: "k1", plaintext: "gb_sk_secret", role: "reviewer", wave: "wave-1", prefix: "gb_sk_ab",
+      id: "k1", plaintext: "gb_sk_secret", role: "worker", wave: "wave-1", prefix: "gb_sk_ab",
     });
     const user = userEvent.setup();
     renderView();
     await openLegacyWaveKey(user);
 
-    await user.click(screen.getByRole("button", { name: "reviewer" }));
-    await user.click(screen.getByRole("button", { name: /Mint a reviewer wave key/ }));
+    await user.click(screen.getByRole("button", { name: "worker" }));
+    await user.click(screen.getByRole("button", { name: /Mint a worker wave key/ }));
 
     await waitFor(() => expect(api.mintFleetKey).toHaveBeenCalledWith(
-      expect.objectContaining({ role: "reviewer", project_id: "core" })));
+      expect.objectContaining({ role: "worker", project_id: "core" })));
     expect(await screen.findByText(/1. Key/)).toBeInTheDocument();
     expect(screen.getByText(/3. Prime/)).toBeInTheDocument();
     // The Connect step is the SHARED generator from Settings, not a local stub. The first

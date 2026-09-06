@@ -381,10 +381,26 @@ def run(
     else:
         report.add("server reachable", UNKNOWN, "no --server given")
     check_seats(report, seats_file)
+    check_supervision_mode(report)
     check_matrix(report, matrix_path, server=server, api_key=api_key, project=project)
 
     report.render(out)
     return report
+
+
+def check_supervision_mode(report: Report) -> None:
+    """PRD-39 G4: the two supervision modes have names, and the cheap one is the default.
+
+    `deterministic` is `gbfleet up` — no LLM in the loop, the operator decided the count
+    by minting seats. `driven` is `gbfleet until` — an LLM adjudicates bounces and decides
+    when to mint the next worker. The deterministic mode is the default; driven is the
+    escalation for when bounces need judgement rather than a retry.
+    """
+    report.add(
+        "supervision mode",
+        PASS,
+        "deterministic (gbfleet up) is the default; driven (gbfleet until) escalates for bounce adjudication",
+    )
 
 
 def check_matrix(report: Report, matrix_path: str | None = None, *, server: str = "",

@@ -25,15 +25,13 @@ import { FLEET_AXES } from "@/lib/types";
 
 /**
  * Role colour is the STATUS that role produces, not a fourth colour vocabulary. A worker is
- * the colour of `in_progress` because that is what a worker's items become; a reviewer is the
- * colour of `review`. The roster then rhymes with the tracker rather than asking a reader to
- * learn a second mapping.
+ * the colour of `in_progress` because that is what a worker's items become. The roster then
+ * rhymes with the tracker rather than asking a reader to learn a second mapping.
  */
 const ROLE_TONE: Record<string, string> = {
   planner: "text-[#b794f6] border-[#b794f6]/40",
   worker: "text-[color:var(--color-st-in_progress)] border-[color:var(--color-st-in_progress)]/40",
-  reviewer: "text-[color:var(--color-st-review)] border-[color:var(--color-st-review)]/40",
-  // Deliberately NOT one of the three colours. An all-in-one agent is not a worker that
+  // Deliberately NOT one of the two role colours. An all-in-one agent is not a worker that
   // happens to also review — it is the other posture, where the human is the reviewer and no
   // server-side gate applies. Tinting it as a role would say the opposite.
   "all-in-one": "text-muted border-line-2",
@@ -93,7 +91,7 @@ function primeSnippet(role: string, seat?: string, project?: string) {
     // default install: `AreaReservation` has exactly one writer, inside `claim_cluster`, so
     // the reservation table stayed permanently empty and anything reading live presence
     // rendered nothing. The server had always disagreed — `_directive_next` tells every
-    // non-planner, non-reviewer role to "call claim_cluster" — and only the paste-in prompt
+    // non-planner role to "call claim_cluster" — and only the paste-in prompt
     // said otherwise.
     //
     // It also used to say "you are the only agent" and "move items to done yourself". Both
@@ -114,8 +112,7 @@ function primeSnippet(role: string, seat?: string, project?: string) {
   }
   const duty =
     role === "planner" ? "Read collision_clusters and allocate. Do not claim work yourself."
-    : role === "reviewer" ? "Take work with claim_review — never your own — then sign_off or bounce with a reason."
-    : "claim_cluster, work it, write actual touchpoints back with update_item, then move it to review.";
+    : "claim_cluster, work it, write actual touchpoints back with update_item, then move it to review. When a change is finished, call claim_review to take somebody else's work and sign_off or bounce it with a reason.";
   // The seat is substituted, so a human pastes a FILLED prompt rather than editing one —
   // that edit is the step where a code gets mangled or lands in the terminal next door.
   const call = seat
@@ -330,7 +327,7 @@ function AgentRow({ a, onDismiss, onRetask, dismissed }: {
             value={a.active_role}
             onChange={(e) => onRetask(a.id, e.target.value)}
           >
-            {["planner", "worker", "reviewer"].map((r) => (
+            {["planner", "worker"].map((r) => (
               <option key={r} value={r}>{r}</option>
             ))}
           </select>
@@ -623,6 +620,12 @@ export function FleetView() {
                   ? "specialised roles — the fleet reviews itself"
                   : "single-agent — you are the reviewer"}
               </span>
+              {/* The supervision mode is NAMED (PRD-39 G4). `deterministic` is the default —
+                  no LLM in the loop, the operator decided the count. `driven` is the
+                  escalation for bounce adjudication and resume. */}
+              <span className="text-[11px] text-faint">
+                · deterministic
+              </span>
             </div>
           )}
         </div>
@@ -813,7 +816,7 @@ export function FleetView() {
           desc="One seat per agent. A seat grants a role for one session and expires — paste it into the prompt, not the config. A WAVE is one round of work: its name becomes the branch prefix, and ending it revokes every seat and releases every lease it issued."
         >
           {/* Seats, not credentials. The credential goes into the client config ONCE and
-              stays; a seat is what makes an agent a worker or a reviewer for this run. That
+              stays; a seat is what makes an agent a worker or a planner for this run. That
               split is what lets a client storing one MCP config for every agent — Cursor —
               run a fleet at all. */}
           <div className="mb-3 flex flex-wrap items-center gap-2">
