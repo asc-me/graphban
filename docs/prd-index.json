@@ -245,6 +245,12 @@
         "3. Goals",
         "4. Key decisions",
         "5. Slices",
+        "S2 — Attestation keyed on authorship (D-j), measured before the merge",
+        "S3 — The merge, server side (D-a, D-b)",
+        "S4 — The ceiling proof (D-c), on both engines",
+        "S5 — The matrix loses `role` (D-d)",
+        "S6 — One loop, and `until` re-keyed off the role (D-h, D-i)",
+        "S7 — The surface and the docs for the merge (D-e, D-g)",
         "6. Failure modes",
         "7. Acceptance",
         "8. Open questions"
