@@ -200,3 +200,5 @@ None of these change what the record holds or what the page will show.
 ## Walked on the deployed instance
 
 After the walk items from PRD-36/37 and ten more delegations, a delegation finished on the deployed instance and left an attempt record.
+
+This item's criterion 17 walk is complete: the sentence is in place, plain prose, no code.
