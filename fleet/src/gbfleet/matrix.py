@@ -2,15 +2,15 @@
 
 Three layers, three owners, and this module joins them at spawn time:
 
-- **Facts** — `matrix.toml`, committed, one row per harness × model × lane × role × tier with a
+- **Facts** — `matrix.toml`, committed, one row per harness × model × lane × tier with a
   status and the items that proved it. Loaded by `load()`.
-- **Policy** — a project's hard constraints (`local_only`, `allowed_harnesses`,
-  `reviewer_cross_vendor`). A constraint REMOVES rows and never adjusts a score, so a strong
+- **Policy** — a project's hard constraints (`local_only`, `allowed_harnesses`).
+  A constraint REMOVES rows and never adjusts a score, so a strong
   preference cannot outvote it (D4).
 - **Preferences** — a user's `defaults` (an ordered allowlist of harnesses), `weights` over
   four axes, and `excludes`. Taste, scored last (D3, D6).
 
-`resolve()` runs the steps in a fixed order — rows for the tier and role → policy → profile →
+`resolve()` runs the steps in a fixed order — rows for the tier → policy → profile →
 installed → score → ties — and keeps every step's casualties, because a resolution nobody can
 read is the hook-pack failure mode this design exists to avoid (D8). The server stores and
 shows profiles and policy; it never calls this. Only the machine that will spawn knows what
@@ -31,7 +31,6 @@ from . import adapters as adapters_mod
 
 STATUSES = ("verified", "unverified", "failed", "unregistered")
 LANES = ("frontend", "backend", "mixed", "any")
-ROLES = ("worker", "reviewer")
 TIERS = ("cheap", "frontier")
 AXES = ("cost", "quality", "latency", "locality")
 COST_AXIS = {"local": 1.0, "cheap": 0.6, "frontier": 0.2}
@@ -59,7 +58,6 @@ class Row:
     model: str
     vendor: str
     lane: str
-    role: str
     tier: str
     status: str
     order: int
@@ -75,8 +73,8 @@ class Row:
     def latest(self) -> Evidence | None:
         return self.evidence[-1] if self.evidence else None
 
-    def matches(self, tier: str, role: str, lane: str) -> bool:
-        return self.tier == tier and self.role == role and self.lane in (lane, "any")
+    def matches(self, tier: str, lane: str) -> bool:
+        return self.tier == tier and self.lane in (lane, "any")
 
 
 @dataclass(frozen=True)
@@ -84,7 +82,6 @@ class Policy:
     """A project's hard constraints (D4). All off is no constraint."""
     local_only: bool = False
     allowed_harnesses: tuple[str, ...] = ()
-    reviewer_cross_vendor: bool = False
 
     @classmethod
     def of(cls, raw: dict | None) -> "Policy":
@@ -92,7 +89,6 @@ class Policy:
         return cls(
             local_only=bool(raw.get("local_only")),
             allowed_harnesses=tuple(str(h) for h in (raw.get("allowed_harnesses") or [])),
-            reviewer_cross_vendor=bool(raw.get("reviewer_cross_vendor")),
         )
 
 
@@ -192,7 +188,6 @@ class Resolution:
     """What happened at each step, so the reply and the log can say it (D8)."""
     source: str
     tier: str
-    role: str
     lane: str
     profile: Profile | None
     eligible: dict = field(default_factory=dict)
@@ -220,7 +215,7 @@ class Resolution:
                     "local": row.local, "axes": axes}
         return {
             "source": self.source,
-            "tier": self.tier, "role": self.role, "lane": self.lane,
+            "tier": self.tier, "lane": self.lane,
             "eligible": dict(self.eligible),
             "dropped": {k: list(v) for k, v in self.dropped.items() if v},
             # PRD-38 D7: everything a replay needs to re-rank THIS resolution under a proposed
@@ -249,30 +244,29 @@ class Matrix:
     rows: tuple[Row, ...]
     path: Path
 
-    def for_(self, tier: str, role: str, lane: str) -> list[Row]:
-        return [r for r in self.rows if r.matches(tier, role, lane)]
+    def for_(self, tier: str, lane: str) -> list[Row]:
+        return [r for r in self.rows if r.matches(tier, lane)]
 
     def resolve(
-        self, *, tier: str, role: str = "worker", lane: str = "any",
+        self, *, tier: str, lane: str = "any",
         profile: Profile | None = None, policy: Policy | None = None,
         installed: Callable[[Row], tuple[bool, str]] | None = None,
         measured: Measured | None = None,
-        builder_vendor: str | None = None,
     ) -> Resolution:
         """D5, in order. Every step records what it dropped and why."""
         policy = policy or Policy()
-        res = Resolution(source="matrix", tier=tier, role=role, lane=lane, profile=profile)
-        rows = self.for_(tier, role, lane)
+        res = Resolution(source="matrix", tier=tier, lane=lane, profile=profile)
+        rows = self.for_(tier, lane)
         res.eligible["matrix"] = len(rows)
         if not rows:
-            res.refused = f"the matrix has no {role} row for tier {tier!r}, lane {lane!r}"
+            res.refused = f"the matrix has no row for tier {tier!r}, lane {lane!r}"
             return res
 
         # 1. policy — a constraint removes; it is explained WITH the score it would have had
         #    (D15), so a user sees taste lose to a rule rather than see an absence.
         kept, dropped = [], []
         for r in rows:
-            why = _policy_reason(r, policy, role, builder_vendor)
+            why = _policy_reason(r, policy)
             if why:
                 score = self._score(r, profile, measured, lane)[0]
                 dropped.append(f"{r.key} ({why}; would have scored {score:.2f})")
@@ -385,28 +379,40 @@ class Matrix:
         return score, axes
 
 
-def _policy_reason(row: Row, policy: Policy, role: str, builder_vendor: str | None) -> str:
+def _policy_reason(row: Row, policy: Policy) -> str:
     if policy.local_only and not row.local:
         return "local_only"
     if policy.allowed_harnesses and row.harness not in policy.allowed_harnesses:
         return "not in allowed_harnesses"
-    if role == "reviewer" and policy.reviewer_cross_vendor and builder_vendor and row.vendor == builder_vendor:
-        return f"reviewer_cross_vendor: same vendor as the builder ({builder_vendor})"
     return ""
 
 
 def load(path: Path | None = None) -> Matrix:
     """Read and validate the matrix. Refuses a row that claims more than its evidence."""
+    mat, _notes = load_with_notes(path)
+    return mat
+
+
+def load_with_notes(path: Path | None = None) -> tuple[Matrix, list[str]]:
+    """Read and validate the matrix, returning deprecation notes alongside.
+
+    S5 (GRPH-758): `role` is accepted and ignored for one release. A row carrying it loads;
+    the note says so. The old `load()` still works and discards the notes.
+    """
     path = Path(path) if path else DEFAULT_PATH
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     rows: list[Row] = []
+    notes: list[str] = []
     for i, r in enumerate(raw.get("rows") or [], 1):
         try:
             status = str(r["status"])
             if status not in STATUSES:
                 raise MatrixError(f"row {i}: status {status!r} is not one of {STATUSES}")
-            if r.get("lane", "any") not in LANES or r["role"] not in ROLES or r["tier"] not in TIERS:
-                raise MatrixError(f"row {i}: lane/role/tier outside {LANES}/{ROLES}/{TIERS}")
+            if r.get("lane", "any") not in LANES or r["tier"] not in TIERS:
+                raise MatrixError(f"row {i}: lane/tier outside {LANES}/{TIERS}")
+            if "role" in r:
+                notes.append(f"row {i}: `role` is deprecated and ignored (S5/GRPH-758); "
+                             "the key is now harness × model × lane × tier")
             ev = tuple(Evidence(item=str(e["item"]), date=str(e["date"]), outcome=str(e["outcome"]),
                                 note=str(e.get("note", ""))) for e in (r.get("evidence") or []))
             if status in ("verified", "failed") and not ev:
@@ -419,13 +425,13 @@ def load(path: Path | None = None) -> Matrix:
                                   "`status = \"unregistered\"` rather than read as usable")
             rows.append(Row(
                 harness=str(r["harness"]), model=str(r.get("model", "")), vendor=str(r.get("vendor", "")),
-                lane=str(r.get("lane", "any")), role=str(r["role"]), tier=str(r["tier"]), status=status,
+                lane=str(r.get("lane", "any")), tier=str(r["tier"]), status=status,
                 order=int(r.get("order", 99)), cost_class=str(r.get("cost_class", "frontier")),
                 local=bool(r.get("local", False)), evidence=ev,
             ))
         except KeyError as exc:
             raise MatrixError(f"row {i}: missing {exc}") from None
-    return Matrix(rows=tuple(rows), path=path)
+    return Matrix(rows=tuple(rows), path=path), notes
 
 
 def vendor_of(harness: str, matrix: "Matrix | None" = None) -> str:
@@ -456,7 +462,7 @@ def declaration(harness: str, model: str = "", tier: str | None = None,
     return out
 
 
-def explicit_resolution(harness: str, model: str, *, role: str = "worker", lane: str = "any",
+def explicit_resolution(harness: str, model: str, *, lane: str = "any",
                         tier: str = "", matrix: "Matrix | None" = None) -> dict | None:
     """What the matrix says about a row somebody named OUTRIGHT (GRPH-772).
 
@@ -484,7 +490,7 @@ def explicit_resolution(harness: str, model: str, *, role: str = "worker", lane:
              "axes": {}}
     return {
         "source": "explicit",
-        "tier": tier or row.tier, "role": role, "lane": lane,
+        "tier": tier or row.tier, "lane": lane,
         "eligible": {"named": 1},
         "dropped": {},
         "shortlist": [entry],
@@ -592,7 +598,7 @@ def doctor_lines(matrix: Matrix, installed: Callable[[Row], tuple[bool, str]],
         b = _bands_for(bands, r)
         band_text = " · bands " + ", ".join(
             f"{name} {v.value:.2f} (n={v.n})" for name, v in sorted(b.items())) if b else ""
-        detail = (f"{r.role}/{r.tier}/{r.lane} · {r.status} · {ev_text} · "
+        detail = (f"{r.tier}/{r.lane} · {r.status} · {ev_text} · "
                   f"installed: {'yes' if ok else 'no — ' + why} · {meas}{band_text}")
         if not ok:
             # Not installed HERE is a fact about this machine, not about the row: UNKNOWN. A
@@ -603,14 +609,13 @@ def doctor_lines(matrix: Matrix, installed: Callable[[Row], tuple[bool, str]],
         else:
             out.append((f"matrix {r.key}", "PASS", detail))
     for tier in TIERS:
-        for role in ROLES:
-            res = matrix.resolve(tier=tier, role=role, profile=profile, policy=policy,
-                                 installed=installed, measured=measured)
-            if res.winner is None:
-                out.append((f"resolve {role}/{tier}", "UNKNOWN", f"nothing: {res.refused}"))
-            else:
-                w = res.explain()["winner"]
-                out.append((f"resolve {role}/{tier}", "PASS",
-                            f"{w['harness']}:{w['model']} ({w['status']}, score {w['score']}) · profile "
-                            f"{res.profile.user if res.profile else 'none'} · dropped {sum(len(v) for v in res.dropped.values())}"))
+        res = matrix.resolve(tier=tier, profile=profile, policy=policy,
+                             installed=installed, measured=measured)
+        if res.winner is None:
+            out.append((f"resolve {tier}", "UNKNOWN", f"nothing: {res.refused}"))
+        else:
+            w = res.explain()["winner"]
+            out.append((f"resolve {tier}", "PASS",
+                        f"{w['harness']}:{w['model']} ({w['status']}, score {w['score']}) · profile "
+                        f"{res.profile.user if res.profile else 'none'} · dropped {sum(len(v) for v in res.dropped.values())}"))
     return out
