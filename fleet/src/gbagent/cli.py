@@ -39,7 +39,10 @@ import gbfleet
 
 from . import loop
 from .config import ConfigRefused, load, prepare
-from .coord import REVIEWER_COORDINATION, REVIEWER_TOOLS, WORKER_TOOLS, Coordinator
+from .coord import (
+    MERGED_COORDINATION, MERGED_TOOLS, REVIEWER_COORDINATION, REVIEWER_TOOLS,
+    WORKER_TOOLS, Coordinator,
+)
 from .heartbeat import Heartbeat
 from .llm import ModelUnreachable, OllamaSession
 from .orient import (
@@ -79,30 +82,21 @@ SYSTEM = (
 def assignment_for(item: str, role: str = "worker") -> str:
     """What the model is told to work on.
 
-    `--item` is optional from S7 on. Without one the model calls `claim_cluster` itself,
-    which is what AC-5 asks for — an agent that cannot take its own work is not a fleet
-    member — and what P30 D3 requires, so two workers are not handed items that share
-    files. With one it works the item it was handed, which is what a re-run of a stuck
-    item needs.
+    S6 (PRD-39 D-h): one loop — try `claim_review`, fall through to `claim_cluster`,
+    exit when both are empty. The role parameter is kept for backward compatibility
+    but no longer changes the assignment: a worker now claims, builds, AND reviews.
 
-    The claim instruction says `wait_seconds=0` and what to do with nothing: PRD-22 D-c makes
-    exiting on an empty queue the normal end of a worker's life, and a model that waits instead
-    is a process nobody will notice is idle.
+    `--item` is optional from S7 on. Without one the model calls `claim_review` then
+    `claim_cluster` itself. With one it works the item it was handed.
     """
-    if role == "reviewer":
-        if item:
-            return f"You are reviewing {item}. Do not claim anything else."
-        return (
-            "Call claim_review with wait_seconds=0. If there is nothing to review, "
-            "say DONE and stop. You may sign_off work you did not build. Do not call "
-            "claim_cluster."
-        )
     if item:
         return f"You are working on {item}. Do not claim anything else."
     return (
-        "Call claim_cluster with wait_seconds=0 to take the next ready non-colliding "
-        "cluster, then build it. If there is nothing to claim, say DONE and stop — "
-        "exiting on an empty queue is the normal end of your run, not a failure."
+        "Call claim_review with wait_seconds=0. If there is nothing to review, "
+        "call claim_cluster with wait_seconds=0 to take the next ready non-colliding "
+        "cluster. If both are empty, say DONE and stop — exiting on an empty queue "
+        "is the normal end of your run, not a failure. You may sign_off work you "
+        "did not build."
     )
 
 
@@ -151,10 +145,10 @@ def register(client, *, code: str, model: str, worktree: str, branch: str) -> tu
         raise NotRegistered("register_agent returned no agent_id")
     role = str(me.get("active_role") or "")
     off = me.get("tools_off_limits") or []
-    if role != "reviewer" and "create_item" in off:
+    if "create_item" in off:
         # P30 D11. A worker that cannot create cannot file a typed human wait.
         # That seat is a mis-mint, not a child that should limp on with free-text
-        # `blocker`. Reviewers do not file waits.
+        # `blocker`. S6: reviewer merged into worker, so every child is a worker.
         raise NotRegistered(
             "this seat cannot create_item — a worker that cannot file a human wait "
             "is a mis-mint (P30 D11)"
@@ -305,7 +299,8 @@ def _run(args: argparse.Namespace) -> int:
             )
             return 0
     assignment = assignment_for(args.item, role=role)
-    tools = REVIEWER_TOOLS if role == "reviewer" else WORKER_TOOLS
+    # S6 (PRD-39 D-h): merged worker gets both build and review tools.
+    tools = MERGED_TOOLS
     coordinator = Coordinator.connect(base_url, api_key, item_id=args.item,
                                       agent_id=agent_id, allowed=tools, project_id=project)
     heartbeat = Heartbeat(coordinator)
@@ -325,14 +320,10 @@ def _run(args: argparse.Namespace) -> int:
             return 78  # EX_CONFIG. Distinct from a crash, and from giving up.
 
         try:
-            if role == "reviewer":
-                orientation = build_orientation(
-                    coordinator.client, extra=REVIEWER_COORDINATION, agent_id=agent_id,
-                )
-            else:
-                orientation = build_orientation(
-                    coordinator.client, extra=COORDINATION_TOOLS, agent_id=agent_id,
-                )
+            # S6 (PRD-39 D-h): merged worker orientation covers both build and review.
+            orientation = build_orientation(
+                coordinator.client, extra=MERGED_COORDINATION, agent_id=agent_id,
+            )
         except OrientationUnavailable as exc:
             print(f"gbagent: {exc}", file=sys.stderr)
             return 78

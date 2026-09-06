@@ -137,29 +137,23 @@ class Seat:
         }
 
 
-#: What the child is told at startup. The negation is deliberate and is the supervisor's
-#: half of D-b — weak on its own (a prompt is the weakest guard there is), which is why
-#: GRPH-445 also narrows the tool description the child actually reads.
+#: What the child is told at startup. S6 (PRD-39 D-h): one loop for every worker —
+#: try `claim_review`, fall through to `claim_cluster`, exit when both are empty.
+#: A build lease and a review claim may coexist on one agent (GRPH-429), so the
+#: priority order is evaluated every iteration, not as phases. Both calls stay
+#: `wait_seconds=0`; nothing arbitrates the order and that is accepted, because
+#: the review queue draining is the wave's tail.
 INSTRUCTION = (
     "Register with `register_agent` using enrolment_code={code!r}, worktree={worktree!r} "
     "and branch={branch!r}.\n"
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    "Then claim work with claim_cluster (wait_seconds=0) and EXIT when there is "
-    "nothing to claim. Do not call claim_next — it reserves no files. Exiting on "
-    "empty is the normal end of your run, not a failure."
-)
-
-REVIEWER_INSTRUCTION = (
-    "Register with `register_agent` using enrolment_code={code!r}, worktree={worktree!r} "
-    "and branch={branch!r}.\n"
-    "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
-    "no parent. Declaring one would make you and the author count as one call tree, "
-    "and review across this fleet would stop meaning anything.\n"
-    "You are a REVIEWER. Call claim_review with wait_seconds=0. If there is nothing "
-    "to review, EXIT — that is the normal end of your run. You may sign_off work you "
-    "did not build. Do not call claim_cluster or claim_next."
+    "Call claim_review with wait_seconds=0. If there is nothing to review, call "
+    "claim_cluster with wait_seconds=0 to take the next ready non-colliding cluster. "
+    "EXIT when both are empty — exiting on an empty queue is the normal end of your "
+    "run, not a failure. Do not call claim_next — it reserves no files. You may "
+    "sign_off work you did not build."
 )
 
 
@@ -179,9 +173,7 @@ BOUND_INSTRUCTION = (
 
 
 def instruction_for(seat: Seat, worktree: Path, branch: str) -> str:
-    if seat.role == "reviewer":
-        tmpl = REVIEWER_INSTRUCTION
-    elif seat.item:
+    if seat.item:
         tmpl = BOUND_INSTRUCTION
     else:
         tmpl = INSTRUCTION

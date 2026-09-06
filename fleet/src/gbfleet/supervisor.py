@@ -87,10 +87,6 @@ class Limits:
     #: blamed on the network. A child in one long tool call will trip this and that is
     #: fine; it is an observation, not an accusation.
     quiet_after: float = 300.0
-    #: P30 D2. v1 default one reviewer. Several items in review: mint one; claim_review
-    #: picks. In-flight includes a live reviewer child this wave spawned that has not
-    #: claimed yet.
-    max_reviewers: int = 1
 
 
 @dataclass(frozen=True)

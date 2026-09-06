@@ -62,6 +62,13 @@ REVIEWER_TOOLS: frozenset[str] = frozenset(
      *ORIENTATION_TOOLS, *REVIEWER_COORDINATION}
 )
 
+#: S6 (PRD-39 D-h): the merged worker claims, builds, AND reviews. Union of
+#: WORKER_TOOLS with claim_review and sign_off. The server still refuses the author
+#: on sign_off (independent()) — this set only says what the child may TRY.
+MERGED_TOOLS: frozenset[str] = WORKER_TOOLS | {"claim_review", "sign_off"}
+#: The coordination tuple for the merged worker's orientation layer.
+MERGED_COORDINATION: tuple[str, ...] = COORDINATION_TOOLS + REVIEWER_COORDINATION
+
 
 class HandoffFailed(RuntimeError):
     """The handoff could not be written, so the item must NOT be released.
