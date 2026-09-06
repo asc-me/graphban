@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 127 of the 200 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 132 of the 200 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -30,6 +30,7 @@ All endpoints are under `/api` (proxied by the web tier and served directly by t
 | POST | `/api/auth/refresh` | none | Refresh token → new tokens |
 | POST | `/api/auth/password-reset` | none | Ask for a reset link. **Always 202 with the same body**, registered address or not — otherwise it is an account-enumeration oracle. Rate-limited on its own bucket so reset attempts cannot lock the account out of `login` |
 | POST | `/api/auth/password-reset/confirm` | none | Spend the link once and set a new password → tokens. Every prior session is revoked |
+| POST | `/api/auth/logout` | JWT | Bump `token_version`, so every access AND refresh token issued so far — on any device — stops validating immediately. What `gb logout` calls, which is why criterion 3 of PRD-40 checks the token against the server rather than checking that a file was deleted |
 | GET | `/api/auth/me` | JWT | Current user |
 | GET | `/api/auth/me/memberships` | JWT | Current user's project access |
 
@@ -188,6 +189,10 @@ failure the propose-only boundary exists to prevent.
 | --- | --- | --- | --- |
 | GET | `/api/fleet` | JWT | Roster + review queue + cluster board in one read |
 | POST | `/api/fleet/keys` | JWT | Mint a credential narrowed to one role and tagged to a wave |
+| POST | `/api/fleet/seats` | JWT | Issue a wave of seats — `roles` is ONE ENTRY PER AGENT, repeats included (`["planner", "worker", "worker"]`), because two agents sharing a seat share a session and cannot review each other. A blank `wave` means the next one, computed server-side. Each enrolment code is returned **once** and is not stored anywhere in plaintext |
+| POST | `/api/fleet/seats/{seat_id}/reissue` | JWT | Replace a spent seat. The dead row stays, as the record that something died |
+| POST | `/api/fleet/seats/revoke-unused` | JWT | Throw away seats nobody redeemed, for a `wave` or the whole project. Consumed seats are untouched — they record which agent took what, and ending the wave is what stops live sessions |
+| POST | `/api/fleet/keys/revoke-expired` | JWT | Revoke credentials that have already expired. Expired only: a live key is somebody's running agent |
 | PUT | `/api/fleet/agents/{agent_id}/role` | JWT | Re-task a live agent as the human who owns the credential (GRPH-774): `{role, reason}`. Takes the project's WRITE gate. The credential ceiling still decides — a role the key does not permit is 409, and an all-in-one posture refuses; widening a ceiling means minting a different credential. Lands on the agent's next poll |
 | GET | `/api/fleet/end-wave` | JWT | What ending the wave would destroy, for the confirm |
 | POST | `/api/fleet/end-wave` | JWT | Revoke the wave's keys and release everything they hold |
