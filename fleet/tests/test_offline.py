@@ -44,6 +44,12 @@ class Flaky:
         self.holdings = holdings or []
         self.reachable = True
         self.calls = 0
+        #: Worktrees this fake has ever seen. A REAL roster comes from the server and an agent
+        #: leaves it by presence TTL, not the instant its directory goes; this one is derived
+        #: from directories on disk, so once the supervisor reaps an exited child (GRPH-750)
+        #: the roster would empty mid-wave and the test would be asserting about a fixture's
+        #: timing rather than about partitions.
+        self._seen: dict[str, Path] = {}
 
     def client(self) -> Graphban:
         return Graphban("http://gb.invalid", KEY, transport=httpx.MockTransport(self._handle))
@@ -65,9 +71,10 @@ class Flaky:
             payload = {"workers": 0, "reviewers": 0, "mapping": [],
                        "rationale": "no agents online — nothing to allocate"}
         else:
-            trees = sorted(
-                p for p in self.workspace.glob("*") if p.is_dir() and p.name != "logs"
-            )
+            for p in self.workspace.glob("*"):
+                if p.is_dir() and p.name != "logs":
+                    self._seen[p.name] = p
+            trees = [self._seen[name] for name in sorted(self._seen)]
             payload = {
                 "agents": [
                     {
