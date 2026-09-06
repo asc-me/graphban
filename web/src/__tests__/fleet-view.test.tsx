@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   endWavePreview: vi.fn(),
   endWave: vi.fn(),
   dismissAgent: vi.fn(),
+  setAgentRole: vi.fn(),
   revokeExpiredKeys: vi.fn(),
   revokeUnusedSeats: vi.fn(),
   revokeKey: vi.fn(),
@@ -918,5 +919,70 @@ describe("harness preferences", () => {
     await user.click(screen.getByRole("button", { name: /Save profile/ }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/between 0 and 1/));
     expect(fleet.refetch).not.toHaveBeenCalled();
+  });
+});
+
+
+// ---- GRPH-774: the human above the fleet ------------------------------------------------
+
+describe("re-tasking an agent", () => {
+  it("offers a role selector on a roster row", async () => {
+    fleet.data = { ...BASE, online: 1, total: 1,
+                   by_role: { planner: 0, worker: 1, reviewer: 0 }, agents: [AGENT] };
+    renderView();
+    const select = await screen.findByTestId("agent-role");
+    expect(select).toHaveValue("worker");
+  });
+
+  it("sends the new role and refreshes", async () => {
+    fleet.data = { ...BASE, online: 1, total: 1,
+                   by_role: { planner: 0, worker: 1, reviewer: 0 }, agents: [AGENT] };
+    api.setAgentRole.mockResolvedValueOnce({ agent_id: "GB-A1", active_role: "planner",
+                                             takes_effect: "on the agent's next poll" });
+    renderView();
+    fireEvent.change(await screen.findByTestId("agent-role"), { target: { value: "planner" } });
+    await waitFor(() =>
+      expect(api.setAgentRole).toHaveBeenCalledWith("GB-A1", "planner",
+                                                    "re-tasked from the Fleet view"));
+    await waitFor(() => expect(fleet.refetch).toHaveBeenCalled());
+  });
+
+  it("shows no selector for an all-in-one credential, because narrowing it is not a role change", async () => {
+    fleet.data = { ...BASE, online: 1, total: 1, by_role: {},
+                   agents: [{ ...AGENT, credential_posture: "single" }] };
+    renderView();
+    expect(screen.queryByTestId("agent-role")).not.toBeInTheDocument();
+  });
+
+  it("surfaces the ceiling's refusal instead of failing silently", async () => {
+    fleet.data = { ...BASE, online: 1, total: 1,
+                   by_role: { planner: 0, worker: 1, reviewer: 0 }, agents: [AGENT] };
+    api.setAgentRole.mockRejectedValueOnce(
+      new Error("GB-A1's credential permits only 'worker'"));
+    renderView();
+    fireEvent.change(await screen.findByTestId("agent-role"), { target: { value: "planner" } });
+    expect(await screen.findByText(/credential permits only/)).toBeInTheDocument();
+  });
+
+  it("says what an agent was last refused for, rather than showing it as idle", async () => {
+    fleet.data = { ...BASE, online: 1, total: 1,
+                   by_role: { planner: 0, worker: 1, reviewer: 0 },
+                   agents: [{ ...AGENT, state: "idle", last_refusal: {
+                     tool: "mint_enrolment", count: 2, at: new Date().toISOString(),
+                     reason: "mint_enrolment requires role 'planner'; GB-A1 is registered as 'worker'",
+                   } }] };
+    renderView();
+    const line = await screen.findByTestId("agent-refusal");
+    expect(line).toHaveTextContent("refused mint_enrolment ×2");
+    expect(line).toHaveTextContent("requires role 'planner'");
+  });
+
+  it("shows nothing when the agent has recovered", async () => {
+    fleet.data = { ...BASE, online: 1, total: 1,
+                   by_role: { planner: 0, worker: 1, reviewer: 0 },
+                   agents: [{ ...AGENT, last_refusal: null }] };
+    renderView();
+    await screen.findByTestId("agent-role");
+    expect(screen.queryByTestId("agent-refusal")).not.toBeInTheDocument();
   });
 });

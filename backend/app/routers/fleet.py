@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import ApiKey, Enrolment, User
+from app.models import Agent, ApiKey, Enrolment, User
 from app.security import authz
 from app.security.deps import get_agent_key, get_current_user
 from app.models import Project
@@ -181,6 +181,57 @@ def revoke_expired_keys(body: RevokeSeatsIn, db: Session = Depends(get_db),
 
 class DismissIn(BaseModel):
     undo: bool = False
+
+
+class AgentRoleIn(BaseModel):
+    role: str
+    reason: str = ""
+
+
+@router.put("/agents/{agent_id}/role")
+def set_agent_role(agent_id: str, body: AgentRoleIn, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Re-task a live agent, as the human who owns the credential (GRPH-774).
+
+    `assign_role` existed only as a planner-gated MCP tool, so agents could re-task each other
+    and the person above all of them could not. A project whose only live agent is a worker was
+    then deadlocked: the worker may not promote itself — that containment is PRD-19 E7 and it
+    stays — no planner existed to promote it, and there was no button. Measured on Super-Arc,
+    where a worker was refused `mint_enrolment` with the project's only planner three days cold.
+
+    **The credential ceiling still applies**, because this delegates to the same
+    `fleet_svc.assign_role` an agent calls. A human may move an agent within what its key
+    permits and never past it, and an all-in-one posture still refuses. Widening a ceiling
+    means minting a different credential, and keeping those two acts apart is the point of
+    having a ceiling at all.
+
+    Takes effect on the agent's NEXT POLL, like every other directive — `role_assigned_at >
+    role_acked_at` is the whole mechanism.
+    """
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(404, "agent not found")
+    # The project gate, not a fleet-specific one: re-tasking an agent is a change to how this
+    # project's work gets done, so it takes the same write permission every other such change
+    # does. 404 rather than 403 for a project the caller cannot see, as everywhere else.
+    authz.require_writable(db, user.id, agent.project_id)
+    try:
+        updated = fleet_svc.assign_role(db, agent_id=agent_id, role=body.role,
+                                        reason=body.reason)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except authz.Forbidden as e:
+        # The ceiling refusing is not a server error and not the caller's mistake to guess at:
+        # it names the credential and what would have to change.
+        raise HTTPException(409, str(e))
+    events_svc.record_user(db, user, action="assign_role", target_type="agent",
+                           target_id=agent_id, project_id=agent.project_id,
+                           meta={"role": body.role, "reason": body.reason})
+    db.commit()
+    return {"agent_id": updated.id, "active_role": updated.active_role,
+            "assigned_at": updated.role_assigned_at.isoformat()
+            if updated.role_assigned_at else None,
+            "takes_effect": "on the agent's next poll"}
 
 
 @router.post("/agents/{agent_id}/dismiss")

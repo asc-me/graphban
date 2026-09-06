@@ -2176,7 +2176,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         # Refusals are audited with the agent AND the human principal behind the key, both
         # stamped server-side — a compromised client still produces a correctly attributed
         # trail, because none of it comes from anything the client sent.
-        count = fleet_svc.record_refusal(db, agent_id=_agent_id)
+        count = fleet_svc.record_refusal(db, agent_id=_agent_id, tool=name,
+                                         reason=str(refusal))
         meta = {"tool": name, "reason": str(refusal), "agent_id": _agent_id,
                 "consecutive_refusals": count}
         if _agent_id and count >= fleet_svc.QUARANTINE_AFTER_REFUSALS:
