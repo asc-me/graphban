@@ -1,7 +1,7 @@
 {
   "scope": {
     "covers": "PRDs with a document in docs/ that names its ledger row",
-    "indexed": 12,
+    "indexed": 13,
     "note": "NOT the list of PRDs. A ledger-only PRD has no repo copy to compare and is absent here by construction; anything reading `prds` as complete is seeing a fraction of them."
   },
   "prds": {
@@ -254,6 +254,20 @@
         "6. Failure modes",
         "7. Acceptance",
         "8. Open questions"
+      ]
+    },
+    "GRPH-P40": {
+      "file": "docs/prd-40-gb-cli.md",
+      "status": "approved",
+      "sections": [
+        "1. Overview",
+        "2. Problem",
+        "3. Goals",
+        "4. Non-Goals",
+        "5. Key decisions",
+        "6. Acceptance criteria",
+        "7. Phasing",
+        "8. Risks and open questions"
       ]
     }
   },
