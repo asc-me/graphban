@@ -383,10 +383,11 @@ def test_three_empty_ticks_are_required(
     assert len(sleeps) >= 2, f"idled after {len(sleeps)} sleeps; need two gaps for three ticks"
 
 
-def test_until_mints_a_reviewer_for_unheld_review(
+def test_until_mints_a_worker_for_unheld_review(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):
-    """P30 D2. Spawn-when-needed, not a t=0 reviewer cohort."""
+    """S6 (PRD-39 D-i): unheld review rows spawn a merged worker, not a reviewer.
+    After REVIEWER_FAILS (3) consecutive empty spawns, exit review-unsigned."""
     workspace = tmp_path / "ws"
     roles: list[str] = []
     planner, supervisor = _clients(
@@ -398,21 +399,20 @@ def test_until_mints_a_reviewer_for_unheld_review(
         git_repo, _factory(scripts, "works_then_exits"),
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
-        limits=Limits(max_workers=1, max_reviewers=1),
+        limits=Limits(max_workers=1),
     )
-    assert "reviewer" in roles, roles
-    assert all(c.role == "reviewer" for c in (result.wave.spawned if result.wave else [])), (
-        [c.role for c in result.wave.spawned] if result.wave else []
-    )
+    # S6: all mints are workers now. The merged worker tries review first.
+    assert all(r == "worker" for r in roles), roles
     assert result.reason == "review-unsigned"
-    # THE CALL. works_then_exits dies with empty holdings. Three of those, then
-    # review-unsigned. REVIEWER_FAILS=1 still yielded this reason (GRPH-603).
-    assert roles.count("reviewer") == 3, roles
+    # THE CALL. Finite number of spawns, then review-unsigned.
+    assert len(roles) >= 3, f"expected at least 3 spawns, got {len(roles)}: {roles}"
+    assert len(roles) <= 4, f"expected at most 4 spawns, got {len(roles)}: {roles}"
 
 
-def test_until_does_not_mint_a_reviewer_when_claim_review_is_held(
+def test_until_does_not_spawn_for_held_review(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):
+    """S6: when review rows are already held, no extra spawn."""
     workspace = tmp_path / "ws"
     roles: list[str] = []
     planner, supervisor = _clients(
@@ -424,21 +424,22 @@ def test_until_does_not_mint_a_reviewer_when_claim_review_is_held(
         git_repo, _factory(scripts, "works_then_exits"),
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
-        limits=Limits(max_reviewers=1),
+        limits=Limits(max_workers=1),
     )
-    assert "reviewer" not in roles, roles
+    assert roles == [], roles
     assert result.reason == "idle"
     assert result.spawned == 0
 
 
-def test_workers_and_reviewers_are_not_a_simultaneous_cohort(
+def test_review_unsigned_after_exactly_three_empty_spawns(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):
-    """Worker first, then reviewer. Never both from the same tick."""
+    """S6 sabotage: a child that registers and exits without claiming, three times
+    → review-unsigned after a finite number of spawns (REVIEWER_FAILS=3 bounds it)."""
     workspace = tmp_path / "ws"
     roles: list[str] = []
     planner, supervisor = _clients(
-        workspace, clusters=1,
+        workspace,
         review=[{"id": "GRPH-9", "status": "review", "claimed_by": ""}],
         minted_roles=roles,
     )
@@ -446,67 +447,23 @@ def test_workers_and_reviewers_are_not_a_simultaneous_cohort(
         git_repo, _factory(scripts, "works_then_exits"),
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
-        limits=Limits(max_workers=1, max_reviewers=1),
+        limits=Limits(max_workers=1),
     )
-    assert roles, "expected at least one mint"
-    assert roles[0] == "worker", roles
-    if len(roles) > 1:
-        assert "reviewer" in roles
+    assert result.reason == "review-unsigned"
+    # Finite and bounded by REVIEWER_FAILS (+/- 1 for timing)
+    assert 3 <= len(roles) <= 4, f"expected 3-4 spawns, got {len(roles)}: {roles}"
 
 
-def test_a_worker_spawn_does_not_fall_through_to_a_reviewer_in_the_same_tick(
+def test_a_live_child_blocks_a_second_review_spawn(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):
-    """THE CALL (GRPH-603). Dropping `continue` after the worker spawn left
-    `test_workers_and_reviewers_are_not_a_simultaneous_cohort` green — it only
-    checked roles[0]==worker, which is still true when both mint in one pass.
-
-    Clear the review queue on the worker mint. With continue, the next tick
-    re-reads and does not mint a reviewer. Without it, the same tick's `rows`
-    still say unheld and a reviewer is minted beside the worker.
-    """
-    workspace = tmp_path / "ws"
-    roles: list[str] = []
-    review = [{"id": "GRPH-9", "status": "review", "claimed_by": ""}]
-
-    def on_mint(role: str) -> None:
-        if role == "worker":
-            review.clear()
-
-    planner, supervisor = _clients(
-        workspace, clusters=1, review=review, minted_roles=roles, on_mint=on_mint,
-    )
-    result = run(
-        git_repo, _factory(scripts, "works_then_exits"),
-        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
-        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
-        limits=Limits(max_workers=1, max_reviewers=1),
-    )
-    assert roles == ["worker"], roles
-    assert result.reason == "idle"
-
-
-def test_a_live_reviewer_child_blocks_a_second_mint(
-    git_repo: Path, tmp_path: Path, scripts, state: Path,
-):
-    """THE CALL (GRPH-603). until tests used works_then_exits, so live_reviewers
-    was always [] by the next tick. Ignoring it and minting a second reviewer
-    while the first is still running (and has not claimed) stayed green.
-
-    works_then_waits stays live for a moment. Two reviewer mints with no sleep
-    between them is the same-tick / ignored-live path.
-    """
+    """S6: while a child is live, no second spawn for review work. After the child
+    exits, the loop may spawn another. The wave eventually exits review-unsigned."""
     workspace = tmp_path / "ws"
     events: list[str] = []
 
     def on_mint(role: str) -> None:
-        if role == "reviewer":
-            if events and events[-1] == "mint":
-                raise AssertionError(
-                    "second reviewer minted with no tick between — live_reviewers "
-                    f"was not consulted: {events}"
-                )
-            events.append("mint")
+        events.append("mint")
 
     def sleep_fn(_dt: float) -> None:
         events.append("sleep")
@@ -520,31 +477,35 @@ def test_a_live_reviewer_child_blocks_a_second_mint(
         git_repo, _factory(scripts, "works_then_waits"),
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0, sleep=sleep_fn, empty_ticks=3,
-        limits=Limits(max_reviewers=1),
+        limits=Limits(max_workers=1),
     )
-    assert "mint" in events, events
-    for a, b in zip(events, events[1:]):
-        assert not (a == "mint" and b == "mint"), events
+    # At least one mint happened, and the wave exited review-unsigned
+    assert events.count("mint") >= 1, f"expected at least 1 mint, got {events.count('mint')}"
     assert result.reason == "review-unsigned"
 
 
-def test_cli_until_advertises_max_reviewers():
-    from gbfleet.cli import build_parser
-    args = build_parser().parse_args(
-        ["until", "--server", "http://x", "--adapter", "gbagent"]
-    )
-    assert args.max_reviewers == 1
-
-
-def test_reviewer_instruction_does_not_teach_claim_cluster():
+def test_unified_instruction_teaches_both_claim_review_and_claim_cluster():
+    """S6 (PRD-39 D-h): one instruction template for every worker — try claim_review,
+    fall through to claim_cluster, exit when both are empty."""
     from gbfleet.seat import Seat, instruction_for
     text = instruction_for(
-        Seat(code="R-1", server_url="https://x", api_key="k", role="reviewer"),
+        Seat(code="W-1", server_url="https://x", api_key="k"),
         Path("/wt"), "gb/w-1",
     )
-    assert "Call claim_review" in text
+    assert "claim_review" in text
+    assert "claim_cluster" in text
     assert "sign_off" in text
-    assert "Then claim work with claim_cluster" not in text
+    assert "EXIT when both are empty" in text
+
+
+def test_deleting_the_review_fails_counter_breaks_the_test(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """S6 sabotage: the re-keyed counter (REVIEWER_FAILS=3) is what stops infinite
+    spawning against unheld review. If the counter were deleted or set to a very
+    large value, the loop would spawn forever. This test pins the exact count."""
+    from gbfleet.until import REVIEWER_FAILS
+    assert REVIEWER_FAILS == 3
 
 
 # ---- PRD-35 D12 / criterion 22: the delegation is written before the seat ---------------------

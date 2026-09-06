@@ -528,7 +528,7 @@ def test_everything_else_in_the_instruction_survives():
 
     assert "SEPARATE PROCESS" in task, "D-b: it must not declare parentage"
     assert "parent_agent_id" in task
-    assert "EXIT when there is nothing to claim" in task, "D-c: exiting on empty is normal"
+    assert "EXIT when both are empty" in task, "D-c: exiting on empty is normal"
 
 
 def test_the_code_is_still_read_from_what_the_supervisor_WROTE():

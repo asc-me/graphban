@@ -62,6 +62,16 @@ REVIEWER_TOOLS: frozenset[str] = frozenset(
      *ORIENTATION_TOOLS, *REVIEWER_COORDINATION}
 )
 
+#: S6 (PRD-39 D-h): the merged worker claims, builds, AND reviews. Union of
+#: WORKER_TOOLS with claim_review and sign_off. The server still refuses the author
+#: on sign_off (independent()) — this set only says what the child may TRY.
+# Derived, not listed, so the two cannot drift. NOTE: neither tuple carries `bounce` —
+# a gbagent reviewer has never been able to bounce, only sign off, which is the wrong half
+# of review to be missing. Pre-existing, and its own item; not widened here.
+MERGED_TOOLS: frozenset[str] = WORKER_TOOLS | frozenset(REVIEWER_COORDINATION)
+#: The coordination tuple for the merged worker's orientation layer.
+MERGED_COORDINATION: tuple[str, ...] = COORDINATION_TOOLS + REVIEWER_COORDINATION
+
 
 class HandoffFailed(RuntimeError):
     """The handoff could not be written, so the item must NOT be released.

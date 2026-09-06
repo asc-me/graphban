@@ -616,8 +616,8 @@ def test_seats_are_read_from_a_file_ignoring_blanks_and_comments(tmp_path: Path)
 def test_a_seats_line_can_bind_an_item_and_name_a_role(tmp_path: Path):
     """`until` builds Seat(item=..., role=...) in-process (PRD-36 D7). A seats file could
     say neither, so a bound seat handed to `up` produced a child that held its item AND
-    was told to claim_cluster on top of it, and a reviewer seat produced a child told it
-    was a worker. The line now carries both, and the instruction follows."""
+    was told to claim_cluster on top of it. S6: reviewer merged into worker, so the
+    unified instruction teaches both claim_review and claim_cluster."""
     from gbfleet.seat import instruction_for
 
     path = tmp_path / "seats.txt"
@@ -631,7 +631,8 @@ def test_a_seats_line_can_bind_an_item_and_name_a_role(tmp_path: Path):
         ("WORKER-CCC", "worker", None),
     ]
     assert "BOUND to GRPH-755" in instruction_for(seats[0], tmp_path, "gb/x")
-    assert "You are a REVIEWER" in instruction_for(seats[1], tmp_path, "gb/x")
+    # S6: unified instruction for all unbound seats
+    assert "claim_review" in instruction_for(seats[1], tmp_path, "gb/x")
     assert "claim_cluster" in instruction_for(seats[2], tmp_path, "gb/x")
 
 

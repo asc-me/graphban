@@ -670,13 +670,19 @@ def test_cli_run_is_what_passes_coordination_tools_into_orientation():
     from gbagent import cli
     from gbagent.orient import COORDINATION_TOOLS
 
+    from gbagent.coord import MERGED_COORDINATION
+
     src = inspect.getsource(cli._run)
-    assert "extra=COORDINATION_TOOLS" in src, (
-        "cli._run no longer passes COORDINATION_TOOLS into orientation — a spawned "
-        "fleet child will not advertise claim_cluster"
+    # S6 (PRD-39 D-h): the production site passes the MERGED tuple — the worker's
+    # coordination verbs plus the review verbs it owns since S3. Pinned by name so
+    # swapping it for either half alone goes red here.
+    assert "extra=MERGED_COORDINATION" in src, (
+        "cli._run no longer passes MERGED_COORDINATION into orientation — a spawned "
+        "fleet child will not advertise claim_cluster and claim_review"
     )
-    assert "claim_cluster" in COORDINATION_TOOLS
-    assert "claim_next" not in COORDINATION_TOOLS
+    assert set(COORDINATION_TOOLS) <= set(MERGED_COORDINATION)
+    assert "claim_cluster" in MERGED_COORDINATION and "claim_review" in MERGED_COORDINATION
+    assert "claim_next" not in MERGED_COORDINATION
 
 
 def test_an_empty_queue_leaves_nothing_claimed():

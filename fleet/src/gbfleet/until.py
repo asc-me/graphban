@@ -54,8 +54,9 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
 EMPTY_TICKS = 3
 MINT_TRIES = 3
 MINT_BUDGET_S = 30.0
-#: Consecutive reviewer register/claim failures on a still-non-empty review queue
-#: before until stops minting reviewers (P30 D2).
+#: S6 (PRD-39 D-i): consecutive spawns that exited against unheld review rows before
+#: until stops trying. Re-keyed off the fact it measures (a child exited and the
+#: review rows are still unheld) rather than off a role that no longer exists.
 REVIEWER_FAILS = 3
 
 #: 4xx-shaped server refusals that will not change this process. Quota is config, not idle.
@@ -273,18 +274,24 @@ def _loop(
     minted = minted_start
     mint_deadline = time.monotonic() + mint_budget
     mint_left = mint_tries
-    reviewer_fails = 0
+    review_fails = 0
 
     while True:
         watch_tick(wave, children, limits, supervisor, debug=debug, persist=persist)
         finished = [c for c in children if not c.running]
         if finished:
+            # S6 (PRD-39 D-i): re-keyed off the fact it measures — a child exited
+            # and there are still unheld review rows. Not off a role.
+            try:
+                rows_for_reap = _review_rows(planner)
+            except (NotPermitted, ToolFailed, ServerUnreachable):
+                rows_for_reap = []
+            unheld_at_reap = [r for r in rows_for_reap if not r.get("claimed_by")]
             for child in finished:
-                if child.role == "reviewer":
-                    if child.held_items:
-                        reviewer_fails = 0
-                    else:
-                        reviewer_fails += 1
+                if unheld_at_reap and not child.held_items:
+                    review_fails += 1
+                elif child.held_items:
+                    review_fails = 0
             _reap_all(wave, finished)
             children[:] = [c for c in children if c.running]
             persist()
@@ -293,8 +300,6 @@ def _loop(
                 return _finish(wave, "handoff-failed", 1, minted, planner)
 
         live = [c for c in children if c.running]
-        live_workers = [c for c in live if c.role != "reviewer"]
-        live_reviewers = [c for c in live if c.role == "reviewer"]
         holdings = _any_holdings(supervisor)
         try:
             rows = _review_rows(planner)
@@ -315,7 +320,7 @@ def _loop(
             ) from exc
 
         try:
-            need = _wanted_workers(planner, supervisor, live_n=len(live_workers),
+            need = _wanted_workers(planner, supervisor, live_n=len(live),
                                    max_workers=limits.max_workers)
         except ServerUnreachable:
             # D-i: no new spawns while unreachable. Live children run to their lease.
@@ -329,7 +334,7 @@ def _loop(
             empty = 0
             # Re-read before minting into a cluster that just filled (allocation race).
             try:
-                need = _wanted_workers(planner, supervisor, live_n=len(live_workers),
+                need = _wanted_workers(planner, supervisor, live_n=len(live),
                                        max_workers=limits.max_workers)
             except ServerUnreachable:
                 sleep(poll)
@@ -381,16 +386,21 @@ def _loop(
             )
             continue
 
-        if _need_reviewer(rows, live_reviewers, limits.max_reviewers):
+        # S6 (PRD-39 D-i): unheld review rows need a merged worker. Re-keyed off the
+        # fact it measures — a child was spawned against unheld review rows, exited,
+        # and the rows are still unheld — not off a role that no longer exists.
+        # A live child blocks a second spawn (just as live_reviewers did before).
+        unheld_review = [r for r in rows if not r.get("claimed_by")]
+        if unheld_review and need <= 0 and not live:
             empty = 0
-            if reviewer_fails >= REVIEWER_FAILS:
+            if review_fails >= REVIEWER_FAILS:
                 wave.reason = "review-unsigned"
                 return _finish(wave, "review-unsigned", 1, minted, planner,
                                review=reviews, waits=waits)
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
-                role="reviewer",
+                role="worker",
             )
             if minted_one:
                 minted += 1
@@ -403,7 +413,7 @@ def _loop(
                 repo, workspace, wave_name, supervisor, limits, planner, debug,
             )
             if len(wave.spawned) == before:
-                reviewer_fails += 1
+                review_fails += 1
             continue
 
         if live or holdings:
@@ -478,20 +488,6 @@ def _spawn_one(
     persist()
     if len(wave.spawned) == before and wave.failures:
         raise ConfigError(wave.failures[-1])
-
-
-def _need_reviewer(
-    rows: list[dict], live_reviewers: list[Child], max_reviewers: int,
-) -> bool:
-    """Spawn-when-needed. Unheld review, no in-flight reviewer, under the cap."""
-    if max_reviewers <= 0:
-        return False
-    unheld = [r for r in rows if not r.get("claimed_by")]
-    if not unheld:
-        return False
-    if live_reviewers:
-        return False
-    return True
 
 
 def _delegate_next(
@@ -592,8 +588,8 @@ def _take_seat(
     sleep: Callable[[float], None],
     role: str = "worker",
 ) -> tuple[Seat, bool]:
-    """Pre-minted pool first (workers). Reviewers always mint role=reviewer."""
-    if role == "worker" and pool:
+    """Pre-minted pool first (workers). S6: all seats are workers now."""
+    if pool:
         return pool.pop(0), False
     code = _mint(planner, agent_id, wave_name, mint_left=mint_left,
                  mint_deadline=mint_deadline, sleep=sleep, role=role)
