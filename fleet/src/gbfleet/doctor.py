@@ -389,17 +389,21 @@ def run(
 
 
 def check_supervision_mode(report: Report) -> None:
-    """PRD-39 G4: the two supervision modes have names, and the cheap one is the default.
+    """PRD-39 G4 / D-e: the two supervision modes have names, and the cheap one is the default.
 
-    `deterministic` is `gbfleet up` — no LLM in the loop, the operator decided the count
-    by minting seats. `driven` is `gbfleet until` — an LLM adjudicates bounces and decides
-    when to mint the next worker. The deterministic mode is the default; driven is the
-    escalation for when bounces need judgement rather than a retry.
+    `deterministic` is `gbfleet up` AND `gbfleet until` — no LLM in the loop; `up` runs the
+    seats it is handed, `until` mints just in time and stops when there is no ready work, no
+    unsigned review and no live lease. `driven` is a planner holding the local stdio server
+    (`gbfleet mcp`): a frontier context polls child state and adjudicates bounces for the
+    length of the wave, which is the expensive loop. Deterministic is the default; driven is
+    the escalation for bounce adjudication and resume. (The first version of this line called
+    `until` driven — it is the opposite, and is the whole point of `until`.)
     """
     report.add(
         "supervision mode",
         PASS,
-        "deterministic (gbfleet up) is the default; driven (gbfleet until) escalates for bounce adjudication",
+        "deterministic (gbfleet up, gbfleet until: no LLM in the loop) is the default; "
+        "driven (a planner on gbfleet mcp) escalates for bounce adjudication and resume",
     )
 
 
