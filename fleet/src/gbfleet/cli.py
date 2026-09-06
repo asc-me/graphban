@@ -80,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--repo", default=".", help="repository to supervise (default: cwd)")
     run.add_argument("--server", required=True, help="Graphban base URL")
+    run.add_argument("--project", default="", help="the Graphban project this fleet works; named on every call so a credential spanning several projects lands where the seats were minted (GRPH-718)")
     run.add_argument(
         "--seats-file", required=True, help="one enrolment code per line; '-' reads stdin"
     )

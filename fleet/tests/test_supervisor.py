@@ -635,6 +635,18 @@ def test_a_seats_line_can_bind_an_item_and_name_a_role(tmp_path: Path):
     assert "claim_cluster" in instruction_for(seats[2], tmp_path, "gb/x")
 
 
+def test_up_accepts_project_because_main_reads_it():
+    """GRPH-718 added `--project` to doctor, mcp and until, and `main()` passes
+    `args.project` for `up` too — but `up`'s parser never got the flag, so every `up`
+    since died with AttributeError after reading its seats and before any spawn. Found
+    running GRPH-P39's S2 on a bound seat."""
+    from gbfleet.cli import build_parser
+
+    base = ["up", "--server", "http://gb.invalid", "--seats-file", "s.txt", "--adapter", "claude"]
+    assert build_parser().parse_args(base).project == ""
+    assert build_parser().parse_args(base + ["--project", "agentledger"]).project == "agentledger"
+
+
 def test_a_mistyped_seats_line_is_refused_at_read(tmp_path: Path):
     """Refused before any worktree exists, and the refusal quotes the token, so `itm=`
     is not read as an unbound seat that then claims whatever the divvy hands it."""
