@@ -778,6 +778,10 @@ A walk, on a real project, against a deployed instance:
     planner's tools were already tiered away and every remaining role-gated tool is the
     worker's; a *planner* session still drops all six claim/review tools, so the E9
     mechanism is idle for workers and intact for planners. `test_mcp_footprint` says both.
+    A single-role fleet key's manifest saving fell with the role: a *reviewer* key saved >15%
+    of the full manifest (it dropped the worker's claim tools on top of the planner's); the
+    keys that exist now save **13.1% (worker)** and **12.7% (planner)**. `test_mcp_role_manifest`
+    asserts a 10% floor for both; the fleet tool tier is 1,046 tokens (was 1,055).
 
 ## 8. Open questions
 

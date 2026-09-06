@@ -313,7 +313,7 @@ def test_the_gates_that_exist_are_unchanged_by_this():
     from app.services.fleet import TOOL_ROLES
 
     assert TOOL_ROLES["claim_next"] == ("worker",)
-    assert TOOL_ROLES["sign_off"] == ("reviewer",)
+    assert TOOL_ROLES["sign_off"] == ("worker",)  # the worker's since PRD-39 S3 (reviewer merged in)
     assert TOOL_ROLES["mint_enrolment"] == ("planner",)
     assert set(TOOL_ROLES) >= {"claim_next", "claim_cluster", "next_cluster", "claim_review",
                                "sign_off", "bounce", "release_item", "assign_role",

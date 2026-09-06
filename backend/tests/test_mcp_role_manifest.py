@@ -65,32 +65,22 @@ def _fleet_key(client, auth, proj, role):
 
 # ---- what each credential is shipped -------------------------------------------------------
 
-def test_a_reviewer_key_is_not_shipped_the_worker_tools(client, auth, proj):
-    names = _list(client, _fleet_key(client, auth, proj, "reviewer"))
-
-    assert "claim_review" in names and "sign_off" in names
-    for worker_only in ("claim_next", "claim_cluster"):
-        assert worker_only not in names
-    # `release_item` LEFT that list in GRPH-429, and this is the second time a tool has been
-    # wrongly filed under "worker" here — see `heartbeat` below. Both were classified by the
-    # job they do for a worker rather than by what they mean: heartbeat extends a lease AND
-    # presence; release hands back whatever hold you have, and a reviewer holds one too. A
-    # reviewer that could not release sat on an item it had refused for a full lease while
-    # `claim_review` handed it the same item on every call.
-    assert "release_item" in names, "a reviewer holds a claim, so it must be able to give it back"
-    # `heartbeat` was in that list, and that is precisely how the bug shipped: it reads as a
-    # worker tool because it extends an item lease, but it ALSO extends agent PRESENCE, which
-    # every role needs. A reviewer was refused the only call keeping it on the roster and
-    # vanished 150s after registering. Found on the PRD-17 walk.
-    assert "heartbeat" in names, "presence is not a worker's privilege"
-
-
-def test_a_worker_key_is_not_shipped_the_reviewer_tools(client, auth, proj):
+def test_a_worker_key_is_shipped_the_review_tools(client, auth, proj):
+    """PRD-39 S3: `reviewer` merged into `worker`, so the worker's credential carries the
+    review verbs it used to be refused. `release_item` stays — a worker now holds a review
+    claim as well as a build lease, and hands either back with the one verb (GRPH-429)."""
     names = _list(client, _fleet_key(client, auth, proj, "worker"))
+    for verb in ("claim_next", "claim_cluster", "claim_review", "sign_off", "bounce",
+                 "release_item", "heartbeat"):
+        assert verb in names, verb
 
-    assert "claim_next" in names and "claim_cluster" in names
-    for reviewer_only in ("claim_review", "sign_off", "bounce"):
-        assert reviewer_only not in names
+
+def test_a_worker_key_is_not_shipped_the_planner_tools(client, auth, proj):
+    """The contrast that still exists after PRD-39 S3. A worker is never a planner: it cannot
+    mint, re-task or retire, and its manifest does not pretend otherwise."""
+    names = _list(client, _fleet_key(client, auth, proj, "worker"))
+    for planner_only in ("mint_enrolment", "assign_role", "retire_wave"):
+        assert planner_only not in names, planner_only
 
 
 def test_a_planner_key_carries_allocation_but_not_the_work(client, auth, proj):
@@ -152,7 +142,7 @@ def test_the_scope_gate_still_runs_first(client, auth):
 def test_get_context_reports_the_count_it_was_shipped(client, auth, proj):
     """The number an agent is told must match the manifest it received, or `tool_count`
     becomes a fact about the server rather than about this connection."""
-    raw = _fleet_key(client, auth, proj, "reviewer")
+    raw = _fleet_key(client, auth, proj, "worker")
 
     reported = _call(client, raw, "get_context")["structuredContent"]["tool_count"]
 
@@ -166,7 +156,9 @@ def test_a_tool_absent_from_the_manifest_is_still_refused_by_the_gate(client, au
     """THE property that makes this safe to be an optimisation. A manifest can only fail to
     MENTION a tool; the call gate refuses it. If trimming were the only protection, an agent
     that hardcoded a tool name would walk straight through."""
-    raw = _fleet_key(client, auth, proj, "reviewer")
+    # A planner: refused `claim_next` and not shipped it. (Was a reviewer, which is a worker
+    # since PRD-39 S3 and IS shipped claim_next now.)
+    raw = _fleet_key(client, auth, proj, "planner")
     assert "claim_next" not in _list(client, raw)
 
     res = _call(client, raw, "claim_next")
@@ -183,7 +175,7 @@ def test_the_saving_is_real_and_measured(client, auth, proj):
 
     class Key:
         scopes = ["read", "write"]
-        roles = ["reviewer"]
+        roles = ["worker"]
         # Every tier, so this measures the ROLE gate alone. A stub with no `tool_tiers`
         # attribute is what this test had before GRPH-571 and it would now measure both
         # filters at once, reporting a saving the role gate did not make.
@@ -191,4 +183,15 @@ def test_the_saving_is_real_and_measured(client, auth, proj):
 
     narrowed = json.dumps({"tools": _visible_tools(Key())})
 
-    assert len(narrowed) < len(full) * 0.85, "a single-role key should save >15%"
+    # PRD-39 S3, measured on 2026-09-06: the >15% this asserted was a REVIEWER key's — it
+    # dropped the three worker claim tools on top of the planner's. That role is gone, and the
+    # two that exist save less: worker 13.1% (it carries the review verbs now), planner 12.7%.
+    # §8 of the PRD predicted the merge "may reduce the saving for a narrowed session"; this
+    # is that number. The floor is 10% for both, which is a measured fact with a margin, not
+    # a threshold picked to pass.
+    assert len(narrowed) < len(full) * 0.90, "a worker key should still save >10%"
+
+    class Planner(Key):
+        roles = ["planner"]
+    planner = json.dumps({"tools": _visible_tools(Planner())})
+    assert len(planner) < len(full) * 0.90, "a planner key should still save >10%"

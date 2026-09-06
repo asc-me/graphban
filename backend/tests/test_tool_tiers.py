@@ -258,7 +258,7 @@ def test_a_fleet_credential_is_minted_with_the_tier_it_needs(client, auth, role)
     reviewer its tools at fleet-mint works for a Fleet-view credential and silently does not
     for an ENROLLED one, because a seat is taken on a hand-minted key that has no tiers — the
     same agent, two ways in, two different manifests. `review_recommendation` is core instead;
-    `test_an_enrolled_reviewer_is_shipped_the_read_its_job_needs` is the guard.
+    `test_an_enrolled_worker_is_shipped_the_read_its_review_job_needs` is the guard.
     """
     proj = client.post("/api/projects", json={"name": f"Tier{role}"}, headers=auth).json()["id"]
     key = client.post("/api/fleet/keys",
@@ -303,7 +303,7 @@ def test_the_authority_the_role_grants_the_credential_must_show(client, auth, ro
         assert needed in names, f"a {role} was shipped no {needed}"
 
 
-def test_an_enrolled_reviewer_is_shipped_the_read_its_job_needs(client, auth):
+def test_an_enrolled_worker_is_shipped_the_read_its_review_job_needs(client, auth):
     """The path that made `review_recommendation` core.
 
     PRD-19's recommended setup is one hand-minted credential per agent with the role granted
@@ -315,7 +315,7 @@ def test_an_enrolled_reviewer_is_shipped_the_read_its_job_needs(client, auth):
                             json={"name": "enrol", "project_id": proj},
                             headers=auth).json()["plaintext"]
     seat = client.post("/api/fleet/seats",
-                       json={"project_id": proj, "roles": ["reviewer"], "wave": "w1"},
+                       json={"project_id": proj, "roles": ["worker"], "wave": "w1"},  # the reviewer's verbs are the worker's since PRD-39 S3
                        headers=auth).json()["seats"][0]["code"]
     sid = client.post("/api/mcp",
                       json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
@@ -331,7 +331,7 @@ def test_an_enrolled_reviewer_is_shipped_the_read_its_job_needs(client, auth):
     ).json()["result"]["tools"]}
 
     for needed in ("claim_review", "sign_off", "bounce", "review_recommendation"):
-        assert needed in names, f"an enrolled reviewer was not shipped {needed}"
+        assert needed in names, f"an enrolled (reviewing) worker was not shipped {needed}"
 
 
 def test_a_worker_credential_runs_on_core(client, auth):
@@ -368,7 +368,8 @@ CORE_TOKENS = 8887
 
 #: Per tier, so a tier cannot quietly grow back to the untiered weight — the item's
 #: acceptance, in a form that fails when it stops being true.
-TIER_TOKENS = {"prd": 1998, "codegraph": 1009, "fleet": 1055, "misc": 1238}
+# fleet 1055 → 1046: `reviewer` left the role enums (PRD-39 S3).
+TIER_TOKENS = {"prd": 1998, "codegraph": 1009, "fleet": 1046, "misc": 1238}
 # PRD-36: fleet +`seat`/`wave` on delegate and its `enrolment_code`; misc trims (learning_loop,
 # publish_memory, reject_memory); codegraph and prd moved by the shared-description trims.
 # PRD-35: fleet 799 -> 1008 (`delegate`, ~209 after its own trim). prd 2002 -> 1998,
