@@ -499,3 +499,48 @@ def test_serve_starts_the_watch_loop(fleet: Fleet, monkeypatch):
         writer.close()
         worker.join(timeout=2.0)
         stdin.close()
+
+
+def test_serve_reaps_once_more_on_the_way_out(fleet: Fleet, monkeypatch):
+    """A child that exits between the last tick and shutdown must not keep its work.
+
+    Measured on the deployed instance: the supervisor closed about twenty seconds after its
+    child was stopped, so the reap never ran — the worktree stayed, nothing was committed,
+    nothing was pushed, and the item sat in review naming a branch that did not exist. `up`
+    has always ended with `_reap_all`; this surface ended by simply stopping.
+
+    Sabotage: drop the final `fleet.tick()` from serve's `finally` and this fails.
+    """
+    import io as _io
+
+    ticks = []
+    original = fleet.tick
+
+    def count(*, debug: bool = False):
+        ticks.append(len(ticks))
+        return original(debug=debug)
+
+    monkeypatch.setattr(fleet, "tick", count)
+    # Closed stdin: serve does its startup tick and returns immediately, so anything after the
+    # loop is the ONLY place a second tick can come from.
+    serve(fleet, stdin=_io.StringIO(""), stdout=_io.StringIO(), poll=60.0)
+    assert len(ticks) >= 2, (
+        f"serve ticked {len(ticks)} time(s): nothing reaped what exited before shutdown"
+    )
+
+
+def test_a_failed_shutdown_reap_is_reported_and_does_not_raise(fleet: Fleet, monkeypatch):
+    """Shutdown must not fail on the way out — but it must not go quiet either, because a
+    worktree left behind is work a reviewer will never see."""
+    import io as _io
+
+    calls = {"n": 0}
+
+    def boom(*, debug: bool = False):
+        calls["n"] += 1
+        raise RuntimeError("reap exploded")
+
+    monkeypatch.setattr(fleet, "tick", boom)
+    serve(fleet, stdin=_io.StringIO(""), stdout=_io.StringIO(), poll=60.0)
+    assert any("final reap on shutdown failed" in f for f in fleet.wave.failures), \
+        fleet.wave.failures

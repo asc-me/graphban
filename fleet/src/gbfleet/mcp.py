@@ -609,6 +609,23 @@ def serve(fleet: Fleet, stdin: TextIO | None = None, stdout: TextIO | None = Non
     finally:
         halt.set()
         watcher.join(timeout=5.0)
+        # ONE last pass, after the ticker has stopped and before this process goes.
+        #
+        # A child that exits between the final tick and shutdown was, until this, left with
+        # its worktree intact, its work uncommitted, its branch unpushed and its item sitting
+        # in review pointing at nothing. `up` has always ended with `_reap_all`; this surface
+        # ended by simply stopping. Measured on the deployed instance: a supervisor closed
+        # about twenty seconds after its child was stopped, and the work never reached the
+        # branch the item named.
+        #
+        # Deliberately AFTER `halt`, so it cannot race the ticker into reaping the same child
+        # twice, and it reaps only what has already exited — `watch_tick` skips a running
+        # child, because removing the worktree it is still writing would destroy the work
+        # this exists to save.
+        try:
+            fleet.tick()
+        except Exception as exc:  # noqa: BLE001 — shutdown must not fail on the way out
+            fleet.wave.failures.append(f"final reap on shutdown failed: {exc}")
 
 
 def _write(sink: TextIO, message: dict) -> None:
