@@ -86,9 +86,8 @@ TOOLS: list[dict[str, Any]] = [
                         "naming the flag."
                     ),
                 },
-                "role": {"type": "string", "description": "worker (default) or reviewer; picks the matrix rows when `tier` resolves through it (PRD-37)."},
+                "role": {"type": "string", "description": "DEPRECATED (S5/GRPH-758): accepted and ignored. The matrix key is now harness × model × lane × tier; role has been removed."},
                 "lane": {"type": "string", "description": "frontend | backend | mixed; narrows the matrix rows. Default any."},
-                "builder_vendor": {"type": "string", "description": "For a reviewer spawn: the vendor that built the item, so a project's reviewer_cross_vendor policy can drop it (PRD-37 D12)."},
                 "item": {
                     "type": "string",
                     "description": (
@@ -379,11 +378,10 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 resolution = {"source": "flag", "tier": tier, "adapter": adapter, "model": model}
             else:
                 mat = fleet.matrix or matrix_mod.load()
-                res = mat.resolve(tier=tier, role=args.get("role") or "worker",
+                res = mat.resolve(tier=tier,
                                   lane=args.get("lane") or "any", profile=fleet.profile,
                                   policy=fleet.policy, installed=matrix_mod.installed_checker(),
-                                  measured=fleet.measured,
-                                  builder_vendor=args.get("builder_vendor") or None)
+                                  measured=fleet.measured)
                 if res.winner is None:
                     raise ValueError(f"no harness resolves for tier {tier!r}: {res.refused}. "
                                      + json.dumps(res.explain()["dropped"]))
@@ -445,7 +443,7 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             # What goes instead is the matrix's own view of the row that ran, marked `explicit`
             # so it is never mistaken for a choice the resolver made.
             resolution=(resolution if via_tier else matrix_mod.explicit_resolution(
-                adapter, model or "", role=args.get("role") or "worker",
+                adapter, model or "",
                 lane=args.get("lane") or "any", tier=tier, matrix=fleet.matrix)),
         )
 
@@ -496,6 +494,12 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
         if args.get("debug") and child.debug_path is None:
             described["debug_unavailable"] = (
                 f"{child.adapter} has no debug flag; output sampling only"
+            )
+        # S5 (GRPH-758): role is deprecated. If the caller passed it, say so in the reply.
+        if args.get("role"):
+            described["role_deprecated"] = (
+                "`role` is deprecated and was ignored (S5/GRPH-758); "
+                "the matrix key is now harness × model × lane × tier"
             )
         return described
 

@@ -129,12 +129,14 @@ def test_re_tasking_is_audited_against_the_human_who_did_it(client, auth, key, d
     from app.models import Event
 
     who = _worker(client, key)
-    _set_role(client, auth, who, "reviewer", reason="needs a second pair of eyes")
+    # `planner`, not a literal third role: PRD-39 reduced ROLES to (planner, worker) and a
+    # test naming a role that no longer exists is how this file turned main red.
+    _set_role(client, auth, who, "planner", reason="the only agent on the project")
     rows = [e for e in db.scalars(select(Event)).all()
             if e.action == "assign_role" and e.target_id == who]
     assert rows, "no audit row for a role change"
     assert rows[-1].actor_type == "user"
-    assert rows[-1].meta.get("reason") == "needs a second pair of eyes"
+    assert rows[-1].meta.get("reason") == "the only agent on the project"
 
 
 # ---- the roster says what an agent was refused for -------------------------------------------

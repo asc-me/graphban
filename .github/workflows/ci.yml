@@ -19,6 +19,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       frontend: ${{ steps.filter.outputs.frontend }}
       fleet: ${{ steps.filter.outputs.fleet }}
+      cli: ${{ steps.filter.outputs.cli }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -47,6 +48,16 @@ jobs:
             # pyproject and venv. Its suite reads backend/pyproject.toml to derive the
             # dependencies it must NOT share, so a backend dependency change has to run
             # it too — otherwise the thin-install guard goes stale without failing.
+            # graphban-cli is a third distribution (PRD-40 D2). Its suite derives the
+            # dependencies it must NOT share from the backend's own list, so a backend
+            # dependency change has to run it too, or the thin-install guard goes stale
+            # without failing. It also reads fleet/pyproject.toml to check the entry point
+            # does not collide.
+            cli:
+              - 'cli/**'
+              - 'backend/pyproject.toml'
+              - 'fleet/pyproject.toml'
+              - '.github/workflows/ci.yml'
             fleet:
               - 'fleet/**'
               - 'backend/pyproject.toml'
@@ -206,6 +217,26 @@ jobs:
       - run: uv pip install -e ".[dev]"
       - run: .venv/bin/python -m pytest -q
 
+  cli-tests:
+    name: CLI tests
+    needs: changes
+    if: needs.changes.outputs.cli == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: cli/pyproject.toml
+      - run: uv venv --python 3.12 .venv
+      # Installed, not just importable: the packaging guard asserts against the declared
+      # entry point, and an uninstalled tree would let a collision through.
+      - run: uv pip install -e ".[dev]"
+      - run: .venv/bin/python -m pytest -q
+
   # A single required check, so branch protection has one name to point at whatever the
   # filters decided to run. Without it a skipped job reads as "pending" forever on a
   # protected branch — the filter would look like it had wedged CI rather than saved time.
@@ -218,7 +249,7 @@ jobs:
     # Every job defined above must appear here. A job that runs but is not needed by this
     # gate is worse than no job: it burns the minutes and reports nowhere.
     # `test_ci_gate_covers_every_job` in the backend suite is what enforces that.
-    needs: [changes, backend-sqlite, backend-postgres, backend-packaging, frontend, fleet]
+    needs: [changes, backend-sqlite, backend-postgres, backend-packaging, frontend, fleet, cli-tests]
     # `always()` so a failed/skipped suite still runs the gate (otherwise a broken
     # filter looks like a green PR). Fork PRs are excluded: this job talks to the
     # LAN ledger on ubuntu-srv, and a public repo must not run untrusted checkout
