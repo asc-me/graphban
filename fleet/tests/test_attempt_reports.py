@@ -204,3 +204,83 @@ def test_the_supervisors_own_kill_is_not_reported_as_the_vendors_verdict(recorde
     _tick(fleet.client, [child])
     report = [b for path, b in posts if b.get("enrolment_id")][0]
     assert report["exit_meaning"] == f"stopped: {Reason.WALL_CLOCK.value}"
+
+
+# ---- the walk finding: a child that exits must leave its work ON ITS BRANCH -----------------
+
+def _dirty_worktree(git_repo: Path, tmp_path: Path):
+    """A real linked worktree with an uncommitted edit — what every walk child left behind."""
+    import subprocess
+
+    from gbfleet import worktree as wt
+
+    tree = wt.create(git_repo, tmp_path / "kid", wave="w", agent_id="A1")
+    (tree.path / "note.md").write_text("work the child did\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tree.path), "add", "-A"], check=True,
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(tree.path), "reset", "-q"], check=True,
+                   capture_output=True)
+    return tree
+
+
+def test_a_child_that_exits_has_its_work_salvaged_onto_its_branch(recorded, git_repo: Path,
+                                                                  tmp_path: Path):
+    """The finding, as a test. `_reap_all` has always salvaged — but it runs at the END of a
+    wave, which only `up` has. On the MCP surface a child could exit, be stopped, and leave
+    its worktree uncommitted forever: the reviewer reads the BRANCH and saw nothing.
+
+    Sabotage: drop `_reap_exited` from `watch_tick` and the branch stays at its base.
+    """
+    import subprocess
+
+    fleet, _ = recorded
+    tree = _dirty_worktree(git_repo, tmp_path)
+    before = subprocess.run(["git", "-C", str(git_repo), "rev-parse", tree.branch],
+                            capture_output=True, text=True).stdout.strip()
+
+    child = _exited()
+    child.worktree, child.branch, child.base = tree.path, tree.branch, tree.base
+    _tick(fleet.client, [child])
+
+    after = subprocess.run(["git", "-C", str(git_repo), "rev-parse", tree.branch],
+                           capture_output=True, text=True).stdout.strip()
+    assert after != before, "the child's work never reached its branch"
+    files = subprocess.run(["git", "-C", str(git_repo), "show", "--pretty=format:",
+                            "--name-only", after], capture_output=True, text=True).stdout
+    assert "note.md" in files
+    assert child.reaped is True
+
+
+def test_a_running_child_is_not_reaped(recorded, git_repo: Path, tmp_path: Path):
+    """Reaping removes the worktree. Doing it to a live child would delete the work it is
+    still writing."""
+    class _Live(_Dead):
+        def poll(self):
+            return None
+
+    fleet, _ = recorded
+    tree = _dirty_worktree(git_repo, tmp_path)
+    child = _exited()
+    child.worktree, child.branch, child.base = tree.path, tree.branch, tree.base
+    child.process = _Live()
+    _tick(fleet.client, [child])
+    assert child.reaped is False
+    assert tree.path.exists(), "a running child's worktree was removed"
+
+
+def test_a_child_is_reaped_once_however_many_ticks_run(recorded, git_repo: Path,
+                                                       tmp_path: Path):
+    """The second tick must not report a failure for work that is safely on its branch."""
+    from gbfleet.supervisor import Wave
+
+    fleet, _ = recorded
+    tree = _dirty_worktree(git_repo, tmp_path)
+    child = _exited()
+    child.worktree, child.branch, child.base = tree.path, tree.branch, tree.base
+
+    wave = Wave()
+    from gbfleet.supervisor import Limits, watch_tick
+    for _ in range(3):
+        watch_tick(wave, [child], Limits(), fleet.client, debug=False)
+    assert len(wave.reaped) == 1
+    assert wave.failures == [], wave.failures
