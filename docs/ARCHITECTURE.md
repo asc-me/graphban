@@ -154,3 +154,7 @@ web/src/
   observability, backups, SQLite-first packaging.
 - **In-memory rate limiting** on public endpoints (per-process) — fine for local/single
   instance; a shared store is needed for multi-instance.
+
+## Walked on the deployed instance
+
+A delegation finished on the deployed instance and left an attempt record.
