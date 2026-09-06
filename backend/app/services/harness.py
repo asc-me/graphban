@@ -349,7 +349,8 @@ def target_for(db: Session, *, enrolment_code: str | None = None,
 
 def record_launch(db: Session, *, target: Target, winner: str | None,
                   runner_up: str | None = None, source: str | None = None,
-                  adapter: str | None = None) -> AttemptTelemetry:
+                  adapter: str | None = None,
+                  resolution: dict | None = None) -> AttemptTelemetry:
     """What the supervisor resolved, posted before the child starts.
 
     Keyed by the SEAT, because at launch there is no delegation to key on: the planner minted
@@ -370,6 +371,7 @@ def record_launch(db: Session, *, target: Target, winner: str | None,
     row.enrolment_id = row.enrolment_id or seat.id
     _merge(row, {"chosen_winner": winner, "chosen_runner_up": runner_up,
                  "chosen_source": source, "adapter_launched": adapter,
+                 "resolution": resolution,
                  "project_id": seat.project_id, "item_id": seat.item_id})
     row.report_count = (row.report_count or 0) + 1
     row.reported_at = _now()
@@ -723,3 +725,142 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
         # to be able to say so instead of looking empty.
         "below_floor_count": sum(1 for c in out if c["below_floor"]),
     }
+
+
+# ---- recommendations: what a person has seen, and what a cell teaches (D7, D8) ---------------
+
+#: PRD-16 calls this out on the shard; the Lessons page scores it like any other lesson.
+LESSON_SOURCE = "harness-telemetry"
+
+
+def _lesson_key(cell: dict) -> str:
+    """The dedup key: the cell WITHOUT its binary version.
+
+    A point release is not a new thing to learn, so 0.23.0 and 0.100.0 of one harness share a
+    mark. Crossing the floor is an event in a cell's life, not a level it can re-enter.
+    """
+    k = cell["key"]
+    return ":".join([k["vendor"], k["model"], k["lane"], k["tier"], k["task_class"],
+                     k["size_band"]])
+
+
+def marks_for(db: Session, *, user_id: str, scope: str, scope_id: str) -> dict[str, "RecommendationMark"]:
+    from app.models import RecommendationMark
+
+    rows = db.scalars(select(RecommendationMark).where(
+        RecommendationMark.user_id == user_id,
+        RecommendationMark.scope == scope,
+        RecommendationMark.scope_id == scope_id)).all()
+    return {r.card_key: r for r in rows}
+
+
+def mark_card(db: Session, *, user_id: str, scope: str, scope_id: str, card_key: str,
+              evidence_hash: str, action: str) -> "RecommendationMark":
+    """Record that this person has seen this card at this evidence (D7).
+
+    Accept and dismiss share the row deliberately. Both mean "stay quiet until the numbers
+    move", and two tables would let one of them forget the hash rule — which is the half that
+    makes an accepted recommendation come back when its evidence reverses.
+    """
+    from app.models import RecommendationMark
+
+    if action not in ("accept", "dismiss"):
+        raise AttemptRefused(f"unknown action {action!r}", status=422)
+    row = db.scalar(select(RecommendationMark).where(
+        RecommendationMark.user_id == user_id,
+        RecommendationMark.scope == scope,
+        RecommendationMark.scope_id == scope_id,
+        RecommendationMark.card_key == card_key))
+    if row is None:
+        row = RecommendationMark(id=f"rm_{uuid.uuid4().hex[:12]}", user_id=user_id, scope=scope,
+                                 scope_id=scope_id, card_key=card_key,
+                                 evidence_hash=evidence_hash)
+        db.add(row)
+    row.evidence_hash = evidence_hash
+    if action == "accept":
+        row.accepted_at = _now()
+        row.dismissed_at = None
+    else:
+        row.dismissed_at = _now()
+        row.accepted_at = None
+    db.flush()
+    return row
+
+
+def draft_lesson(db: Session, project_id: str, *, text: str, provenance: dict,
+                 origin: str) -> str | None:
+    """Write a lesson CANDIDATE into the PRD-16 review inbox. Never publishes.
+
+    `auto_triage=False` on purpose: the scorer that publishes candidates on similarity has no
+    business acting on a number this PRD produced, and "nothing is published by this PRD" is
+    a claim that has to be enforced at the call rather than asserted in a docstring.
+    """
+    from app.services import memory as memory_svc
+
+    try:
+        shard = memory_svc.add_memory(
+            db, text_body=text, scope="global", source=LESSON_SOURCE, project_id=project_id,
+            status="candidate", origin=origin, auto_triage=False, fresh=False)
+    except Exception:  # noqa: BLE001 — a lesson draft must never fail the read that produced it
+        logger.exception("harness: lesson draft failed for %s", project_id)
+        return None
+    logger.info("harness: drafted lesson %s for %s (%s)", shard.id, project_id, provenance)
+    return shard.id
+
+
+def lessons_for_crossings(db: Session, project_id: str, report: dict) -> list[str]:
+    """A cell crossing the floor for the first time drafts one candidate (D8).
+
+    The mark is permanent, which is what makes "first" mean first: a cell that dips back under
+    the floor and returns drafts nothing, a new binary version inherits the mark, and a
+    rejected candidate does not come back the next night. A lesson that re-drafts itself after
+    a human said no is nagging dressed as learning.
+    """
+    from app.models import HarnessLessonMark
+
+    existing = {m.cell_key for m in db.scalars(select(HarnessLessonMark).where(
+        HarnessLessonMark.project_id == project_id)).all()}
+    drafted: list[str] = []
+    for cell in report["cells"]:
+        if cell["below_floor"] or cell["rate"] is None:
+            continue
+        key = _lesson_key(cell)
+        if key in existing:
+            continue
+        k = cell["key"]
+        runner = _runner_up_cell(report, cell)
+        text = (f"For {k['lane']}/{k['task_class']} items of size {k['size_band']} at tier "
+                f"{k['tier']} in the last {report['window_days']} days, "
+                f"{k['vendor']}:{k['model']} signed off {cell['signed_off']}/{cell['finished']}"
+                + (f"; {_cell_label(runner)} signed off "
+                   f"{runner['signed_off']}/{runner['finished']}." if runner else "."))
+        shard_id = draft_lesson(db, project_id, text=text,
+                                provenance={"cell": k, "why": "crossed the sample floor"},
+                                origin="agent:harness-telemetry")
+        db.add(HarnessLessonMark(id=f"hlm_{uuid.uuid4().hex[:12]}", project_id=project_id,
+                                 cell_key=key, first_crossed_at=_now(), shard_id=shard_id))
+        existing.add(key)
+        if shard_id:
+            drafted.append(shard_id)
+    db.flush()
+    return drafted
+
+
+def _cell_label(cell: dict) -> str:
+    return f"{cell['key']['vendor']}:{cell['key']['model']}"
+
+
+def _runner_up_cell(report: dict, cell: dict) -> dict | None:
+    """The best OTHER vendor:model measured in the same lane, tier, class and band.
+
+    A lesson that named only the winner would be a recommendation without an alternative, and
+    the reader could not tell whether the number was good or merely the only one there is.
+    """
+    k = cell["key"]
+    rivals = [c for c in report["cells"]
+              if c is not cell and not c["below_floor"] and c["rate"] is not None
+              and (c["key"]["lane"], c["key"]["tier"], c["key"]["task_class"],
+                   c["key"]["size_band"]) == (k["lane"], k["tier"], k["task_class"],
+                                              k["size_band"])
+              and _cell_label(c) != _cell_label(cell)]
+    return max(rivals, key=lambda c: c["rate"]) if rivals else None

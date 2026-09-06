@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 121 of the 194 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 123 of the 196 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -197,6 +197,8 @@ failure the propose-only boundary exists to prevent.
 | PUT | `/api/fleet/policy` | JWT | Write the policy; takes the project's write gate. Every constraint off stores `null` |
 | POST | `/api/fleet/attempts` | API key | Harness telemetry (PRD-38 D3), in two shapes on one route. At launch: `enrolment_code` + `winner`/`runner_up`/`source`/`adapter`, what the supervisor resolved before starting a child. At exit: `delegation_id` or `enrolment_id` + `binary_version`, `turns_used`, `turn_budget`, `wall_seconds`, `tokens_in`/`tokens_out`, `exit_meaning`. Upserts; a post merges non-null fields and never writes a null over a value; 202 while the outcome is still to come; 404 (never 403) for a project the key cannot write |
 | GET | `/api/harness` | JWT | The Harness page's whole read (PRD-38 PR 2): one entry per vendor x model x version x lane x tier x task class x size band, each with its weekly series, `n`, `below_floor`, sampling counts, skew badge, median seconds and a cost proxy that states when it will not compare. `window_days` (default 90); `versions=current` (default, newest binary per vendor+model) or `all` |
+| GET | `/api/harness/recommendations` | JWT | Cards the four PRD-38 rules produce (R1 promote, R2 demote, R3 reweight, R4 policy): each with the cells it fired on, the sibling cells it did not, its thresholds, drafted text or target, and a **replay** re-ranking the resolutions recorded at launch under the proposed change. Hides cards this caller already accepted or dismissed at the same `evidence_hash` (`include_seen=true` shows them). Reading also drafts lesson candidates for cells that just crossed the sample floor; nothing is published |
+| POST | `/api/harness/recommendations/mark` | JWT | Record that this caller accepted or dismissed a card at this evidence (`card_key`, `evidence_hash`, `action`). **Applies nothing** — R1/R2 accept by a commit somebody makes, R3/R4 by PUTting the PRD-37 profile or policy routes. An accepted card drafts a lesson candidate; when its numbers move the hash moves and the card returns |
 
 ## Live (PRD-33)
 

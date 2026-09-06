@@ -338,6 +338,8 @@ class AttemptIn(BaseModel):
     runner_up: str | None = None
     source: str | None = None
     adapter: str | None = None
+    #: PRD-37 D8's explanation, recorded so a recommendation can replay it (PRD-38 D7).
+    resolution: dict | None = None
     # --- the exit shape ---
     binary_version: str | None = None
     turns_used: int | None = None
@@ -374,7 +376,7 @@ def post_attempt(body: AttemptIn, db: Session = Depends(get_db),
     if body.enrolment_code:
         row = harness_svc.record_launch(db, target=target, winner=body.winner,
                                         runner_up=body.runner_up, source=body.source,
-                                        adapter=body.adapter)
+                                        adapter=body.adapter, resolution=body.resolution)
     else:
         row = harness_svc.record_exit(db, target=target, values={
             "binary_version": body.binary_version, "turns_used": body.turns_used,

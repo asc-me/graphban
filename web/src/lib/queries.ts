@@ -17,6 +17,7 @@ export const keys = {
   shards: ["shards"] as const,
   harness: (projectId: string, versions: string, windowDays?: number) =>
     ["harness", projectId, versions, windowDays ?? null] as const,
+  harnessCards: (projectId: string) => ["harness-cards", projectId] as const,
   lessons: (projectId: string, filters?: LessonFilters) =>
     ["lessons", projectId, filters ?? {}] as const,
   lesson: (projectId: string, id: string) => ["lesson", projectId, id] as const,
@@ -687,6 +688,26 @@ export function useHarness(
     queryKey: keys.harness(projectId ?? "", versions, opts.windowDays),
     queryFn: () => api.harness(projectId!, { versions, windowDays: opts.windowDays }),
     enabled: !!projectId,
+  });
+}
+
+/** PRD-38 D7: the drafted recommendations, and the mark that quiets one until its numbers move. */
+export function useHarnessCards(projectId?: string) {
+  return useQuery({
+    queryKey: keys.harnessCards(projectId ?? ""),
+    queryFn: () => api.harnessRecommendations(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+export function useMarkHarnessCard(projectId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { card_key: string; evidence_hash: string; action: "accept" | "dismiss" }) =>
+      api.markHarnessRecommendation({ project_id: projectId!, ...body }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["harness-cards", projectId] });
+    },
   });
 }
 

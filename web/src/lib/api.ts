@@ -1,4 +1,4 @@
-import type { HarnessReport } from "@/lib/types";
+import type { HarnessRecommendations, HarnessReport } from "@/lib/types";
 import type { Credential, CredentialIn, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
@@ -537,6 +537,18 @@ export const api = {
     if (opts.versions) q.set("versions", opts.versions);
     return request<HarnessReport>(`/harness?${q.toString()}`);
   },
+  harnessRecommendations: (projectId: string, opts: { windowDays?: number } = {}) => {
+    const q = new URLSearchParams({ project_id: projectId });
+    if (opts.windowDays) q.set("window_days", String(opts.windowDays));
+    return request<HarnessRecommendations>(`/harness/recommendations?${q.toString()}`);
+  },
+  markHarnessRecommendation: (body: {
+    project_id: string; card_key: string; evidence_hash: string; action: "accept" | "dismiss";
+  }) =>
+    request<{ card_key: string; state: string; evidence_hash: string; lesson_drafted: string | null }>(
+      "/harness/recommendations/mark",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   lessons: (projectId: string, filters: LessonFilters = {}) => {
     const q = new URLSearchParams({ project_id: projectId });
     if (filters.trend) q.set("trend", filters.trend);
