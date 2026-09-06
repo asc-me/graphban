@@ -198,3 +198,42 @@ def test_doctor_json_is_parsed_and_the_human_rendering_is_absent(home, monkeypat
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
     assert all("side" in line for line in payload["lines"])
+
+
+# ---- what the deployed walk found (criterion 13) ----------------------------------------------
+
+def test_the_local_summary_line_says_what_happened_not_the_childs_banner(home, monkeypatch):
+    """The walk read `FAIL local gbfleet  gbfleet 0.1.0 doctor` — a version number standing
+    where the reason belongs. The child's report is a REPORT, in its own field; promoting
+    some line of it into `detail` would be parsing the supervisor's output, which is the one
+    thing D5 is careful not to do."""
+    class Done:
+        returncode, stdout, stderr = 1, "gbfleet 0.1.0 doctor\n\n  [FAIL] api key — unset\n", ""
+
+    monkeypatch.setattr("gb.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
+    monkeypatch.setattr("gb.doctor.subprocess.run", lambda *a, **kw: Done())
+    monkeypatch.setattr("gb.doctor.authenticated", lambda url: _Server())
+    lines, code = doctor.run("http://gb.invalid", "core", "")
+
+    local_line = [l for l in lines if l["side"] == "local"][0]
+    assert "0.1.0" not in local_line["detail"], "the child's banner is not this line's reason"
+    assert "exited 1" in local_line["detail"]
+    assert "[FAIL] api key" in local_line["report"], "the report is kept, in its own field"
+    assert code == 1
+
+
+def test_the_childs_report_is_indented_under_its_summary(home, monkeypatch):
+    """A reader scanning the summary column must be able to skip a page of somebody else's
+    report without losing the two lines they came for."""
+    class Done:
+        returncode, stdout, stderr = 0, "gbfleet 0.1.0 doctor\n  [PASS] repository\n", ""
+
+    monkeypatch.setattr("gb.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
+    monkeypatch.setattr("gb.doctor.subprocess.run", lambda *a, **kw: Done())
+    monkeypatch.setattr("gb.doctor.authenticated", lambda url: _Server())
+    lines, _ = doctor.run("http://gb.invalid", "core", "")
+    rendered = doctor.render(lines).splitlines()
+
+    summary = [i for i, r in enumerate(rendered) if r.startswith("PASS") and "local" in r][0]
+    assert rendered[summary + 1].startswith("    "), "the report must not sit in column zero"
+    assert not any(r.startswith("gbfleet 0.1.0") for r in rendered)

@@ -24,8 +24,10 @@ PASS, FAIL, UNKNOWN = "PASS", "FAIL", "UNKNOWN"
 SEVERITY = {PASS: 0, UNKNOWN: 1, FAIL: 2}
 
 
-def _line(side: str, status: str, name: str, detail: str = "") -> dict:
-    return {"side": side, "status": status, "name": name, "detail": detail}
+def _line(side: str, status: str, name: str, detail: str = "", report: str = "") -> dict:
+    """One finding. `detail` is this line's own reason; `report` is another tool's output,
+    kept in its own field so it can never be mistaken for one."""
+    return {"side": side, "status": status, "name": name, "detail": detail, "report": report}
 
 
 def ledger(url: str, project: str) -> list[dict]:
@@ -109,7 +111,14 @@ def local(url: str, project: str, api_key: str) -> list[dict]:
         return [_line("local", UNKNOWN, "gbfleet", f"could not run: {exc}")]
     status = PASS if done.returncode == 0 else FAIL
     body = (done.stdout or done.stderr or "").strip()
-    return [_line("local", status, "gbfleet", body)]
+    # The summary line says what HAPPENED; the child's report goes underneath, verbatim, in
+    # its own field. Putting the body in `detail` put the child's banner where the reason
+    # belongs — the walk read `FAIL local gbfleet  gbfleet 0.1.0 doctor`, which names a
+    # version and explains nothing. Choosing some line of the body to promote instead would
+    # be parsing the supervisor's output, which is the thing D5 is careful not to do.
+    verdict = "every check passed" if status is PASS else f"exited {done.returncode}"
+    return [_line("local", status, "gbfleet",
+                  f"`gbfleet doctor` {verdict}; its own report follows", report=body)]
 
 
 def _environ() -> dict:
@@ -128,6 +137,10 @@ def run(url: str, project: str, api_key: str = "") -> tuple[list[dict], int]:
 
 def render(lines: list[dict]) -> str:
     width = max((len(l["name"]) for l in lines), default=0)
-    return "\n".join(
-        f"{l['status']:<7} {l['side']:<6} {l['name']:<{width}}  {l['detail']}".rstrip()
-        for l in lines)
+    out = []
+    for l in lines:
+        out.append(f"{l['status']:<7} {l['side']:<6} {l['name']:<{width}}  {l['detail']}".rstrip())
+        # Indented, so a reader scanning the summary column can skip a page of somebody
+        # else's report without losing the two lines they came for.
+        out += [f"    {row}".rstrip() for row in (l.get("report") or "").splitlines()]
+    return "\n".join(out)
