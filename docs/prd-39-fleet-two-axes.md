@@ -758,7 +758,12 @@ A walk, on a real project, against a deployed instance:
 11. A merged-worker key's `tools/list` fits under `test_mcp_footprint`'s ceiling, measured, and
     the number is recorded in this PRD before S3 begins.
 
----
+    **Measured 2026-09-06, S2 (GRPH-755, `gb/p39-s2-1`):** a `worker` key's manifest **with**
+    `gate` is **8,159 tokens across 31 tools**; the attestation shape `_with_attestation` adds
+    costs **101 tokens**; headroom under the 14,200 `CEILING` is **6,041**. `MEASURED_TOKENS`
+    (14,192) is unaffected, because `_with_attestation` runs at manifest time, not at tool
+    definition time, so the footprint test never sees it. It fits; §8's manifest question is
+    answered and S3 is not blocked on it.
 
 ## 8. Open questions
 
