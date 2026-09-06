@@ -462,3 +462,85 @@ def test_an_adapter_the_matrix_does_not_know_gets_no_invented_status(recorded):
     from gbfleet import matrix as m
 
     assert m.explicit_resolution("nosuch-harness", "") is None
+
+# ---- PRD-38 D3: what a run cost, from the vendor's own record -------------------------------
+
+def test_the_exit_report_carries_what_the_vendors_record_says(recorded, git_repo: Path,
+                                                              tmp_path: Path):
+    """The endpoint reports tokens on every turn and the loop was dropping all but the last,
+    so every cell read "not comparable: 0 of N attempts reported tokens" while the numbers
+    were being computed and thrown away.
+
+    Sabotage: drop `**facts` from the post and the ledger is blind again.
+    """
+    fleet, posts = recorded
+    child = _exited(adapter="gbagent")
+    child.log_dir = tmp_path / "logs"
+    child.log_dir.mkdir(parents=True, exist_ok=True)
+    (child.log_dir / "stdout.log").write_text(
+        'gbagent: some human line\n'
+        '{"gbagent": {"status": "finished", "exit": 0, "turns": 7, '
+        '"tokens_in": 91000, "tokens_out": 4100, "compactions": 1}}\n',
+        encoding="utf-8")
+    _tick(fleet.client, [child])
+
+    report = [b for path, b in posts if b.get("enrolment_id")][0]
+    assert report["turns_used"] == 7
+    assert report["tokens_in"] == 91000 and report["tokens_out"] == 4100
+
+
+def test_a_vendor_that_prints_no_record_reports_no_tokens(recorded, tmp_path: Path):
+    """"Not reported" and "zero" are different claims, and only one of them is true here."""
+    fleet, posts = recorded
+    child = _exited(adapter="fake")
+    child.log_dir = tmp_path / "quiet"
+    child.log_dir.mkdir(parents=True, exist_ok=True)
+    (child.log_dir / "stdout.log").write_text("nothing machine-readable\n", encoding="utf-8")
+    _tick(fleet.client, [child])
+
+    report = [b for path, b in posts if b.get("enrolment_id")][0]
+    assert "tokens_in" not in report and "tokens_out" not in report
+    assert "turns_used" not in report
+
+
+def test_a_run_whose_endpoint_reported_no_usage_sends_null_not_zero(recorded, tmp_path: Path):
+    """Sabotage: emit 0 for an unreported total and a run nobody measured looks free."""
+    fleet, posts = recorded
+    child = _exited(adapter="gbagent")
+    child.log_dir = tmp_path / "nousage"
+    child.log_dir.mkdir(parents=True, exist_ok=True)
+    (child.log_dir / "stdout.log").write_text(
+        '{"gbagent": {"status": "finished", "exit": 0, "turns": 3, '
+        '"tokens_in": null, "tokens_out": null}}\n', encoding="utf-8")
+    _tick(fleet.client, [child])
+
+    report = [b for path, b in posts if b.get("enrolment_id")][0]
+    assert report["turns_used"] == 3
+    assert "tokens_in" not in report and "tokens_out" not in report
+
+
+def test_the_last_record_wins(recorded, tmp_path: Path):
+    """A run that printed a record, was resumed and printed another is describing the same
+    attempt twice; the later one is the one that finished."""
+    fleet, posts = recorded
+    child = _exited(adapter="gbagent")
+    child.log_dir = tmp_path / "twice"
+    child.log_dir.mkdir(parents=True, exist_ok=True)
+    (child.log_dir / "stdout.log").write_text(
+        '{"gbagent": {"turns": 2, "tokens_in": 10, "tokens_out": 1}}\n'
+        '{"gbagent": {"turns": 9, "tokens_in": 900, "tokens_out": 90}}\n', encoding="utf-8")
+    _tick(fleet.client, [child])
+
+    report = [b for path, b in posts if b.get("enrolment_id")][0]
+    assert report["turns_used"] == 9 and report["tokens_in"] == 900
+
+
+def test_a_malformed_record_does_not_take_the_supervisor_down(recorded, tmp_path: Path):
+    """A vendor's broken output is not this process's crash."""
+    fleet, posts = recorded
+    child = _exited(adapter="gbagent")
+    child.log_dir = tmp_path / "broken"
+    child.log_dir.mkdir(parents=True, exist_ok=True)
+    (child.log_dir / "stdout.log").write_text('{"gbagent": {"turns": ]]]\n', encoding="utf-8")
+    _tick(fleet.client, [child])
+    assert [b for path, b in posts if b.get("enrolment_id")], "no report was sent at all"

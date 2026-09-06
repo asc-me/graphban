@@ -283,6 +283,24 @@ def default_exit_meaning(code: int) -> str:
     return f"exited {code}"
 
 
+def result_facts(adapter: str, stdout: str) -> dict:
+    """What a vendor's own result record says a run cost (PRD-38 D3).
+
+    Vendors that print one get parsed; vendors that print nothing return {} and their token
+    fields stay NULL in the ledger, which the page renders as "not reported". Guessing a
+    shape here would put invented numbers in the one table whose purpose is to be checkable,
+    so a vendor is added to this only after its record has been measured.
+    """
+    impl = ADAPTERS.get(adapter)
+    reader = getattr(impl, "result_facts", None) if impl is not None else None
+    if reader is None:
+        return {}
+    try:
+        return reader(stdout) or {}
+    except Exception:  # noqa: BLE001 — a vendor's malformed record is not this process's crash
+        return {}
+
+
 def explain_exit(adapter: str, code: int | None) -> str | None:
     """What the supervisor records: the vendor's words, not the raw status."""
     if code is None:

@@ -85,6 +85,37 @@ class GbAgent(Adapter):
             argv += ["--window", str(tuning.window)]
         return argv
 
+    @staticmethod
+    def result_facts(stdout: str) -> dict:
+        """Read gbagent's own result record: one JSON line on stdout, last one wins.
+
+        LAST rather than first: a run that printed a record, was resumed and printed another
+        is describing the same attempt twice, and the later one is the one that finished.
+        """
+        import json as _json
+
+        found: dict = {}
+        for line in (stdout or "").splitlines():
+            line = line.strip()
+            if not line.startswith("{") or '"gbagent"' not in line:
+                continue
+            try:
+                payload = _json.loads(line).get("gbagent")
+            except ValueError:
+                continue
+            if isinstance(payload, dict):
+                found = payload
+        if not found:
+            return {}
+        # Only what the ledger records, and only when it was actually said. `tokens_in: None`
+        # is the endpoint declining to report, and must not arrive as a zero.
+        out = {"turns_used": found.get("turns")}
+        for key in ("tokens_in", "tokens_out"):
+            if found.get(key) is not None:
+                out[key] = found[key]
+        return {k: v for k, v in out.items() if v is not None}
+
+
     def known_models(self, binary: Path) -> frozenset[str] | None:
         """`gbagent models`, which asks the configured endpoint what it actually serves.
 

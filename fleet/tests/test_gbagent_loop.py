@@ -1046,3 +1046,55 @@ def test_writing_twice_in_one_run_is_not_blocked_by_its_own_first_write(wt):
                                  input={"path": "new.py", "content": "second\n"}))
 
     assert result.is_error is False
+
+
+
+# ---- PRD-38 D3: a run reports what it spent --------------------------------------------------
+
+def _spent(name: str = "read_file", *, tin: int, tout: int, **kw) -> ToolTurn:
+    return ToolTurn(tool_calls=[ToolCall(id="c", name=name, input=kw or {"path": "a.py"})],
+                    wants_tools=True, usage={"input": tin, "output": tout})
+
+
+def test_the_loop_sums_every_turns_tokens_not_just_the_last(wt):
+    """`Outcome.usage` keeps only the LAST turn's, so a ten-turn run reported one turn's cost
+    and the ledger's cost proxy read "not comparable" on every cell while the endpoint was
+    reporting the numbers all along.
+
+    Sabotage: sum only the final turn and this fails.
+    """
+    session = FakeSession([
+        _spent(tin=100, tout=10),
+        _spent(tin=200, tout=20, path="b.py"),
+        ToolTurn(text="done", wants_tools=False, usage={"input": 300, "output": 30}),
+    ])
+    out = loop.run(session, _toolset(wt), coordinator=FakeCoordinator(), window=WINDOW,
+                   budget=10)
+    assert out.status == "finished"
+    assert out.tokens_in == 600 and out.tokens_out == 60
+    # And `usage` still means what it always meant, which the compaction check reads.
+    assert out.usage == {"input": 300, "output": 30}
+
+
+def test_a_run_that_gives_up_still_reports_what_it_spent(wt):
+    """The expensive runs are the ones that burn the budget. Reporting zero for them would
+    flatter the harness exactly where it cost the most."""
+    session = FakeSession([_spent(tin=500, tout=50), _spent(tin=500, tout=50, path="b.py")])
+    out = loop.run(session, _toolset(wt), coordinator=FakeCoordinator(), window=WINDOW,
+                   budget=2)
+    assert out.status == "stuck"
+    assert out.tokens_in == 1000 and out.tokens_out == 100
+
+
+def test_an_endpoint_that_reports_no_usage_produces_a_record_of_nulls(wt):
+    """Zero is unavoidable in the sum; what matters is that the RECORD says null, so the
+    ledger never reads an unmeasured run as a free one."""
+    from gbagent.cli import _result_record
+
+    session = FakeSession([ToolTurn(text="done", wants_tools=False)])
+    out = loop.run(session, _toolset(wt), coordinator=FakeCoordinator(), window=WINDOW,
+                   budget=5)
+    assert out.tokens_in == 0 and out.tokens_out == 0
+    record = _result_record(out)
+    assert record["tokens_in"] is None and record["tokens_out"] is None
+    assert record["turns"] == out.turns
