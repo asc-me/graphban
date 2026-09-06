@@ -83,7 +83,9 @@ CEILING = 14200
 # reject_memory, code_neighbors and fleet_status to the same meaning in fewer words.
 # 14197 -> 14192 (GRPH-719). `register_agent` returns `project_id` (+~6); paid by trimming
 # suggest_next and unlink_items. Headroom 8.
-MEASURED_TOKENS = 14192
+# 14192 → 14183 with S3 of PRD-39: `reviewer` left the role enums, nine tokens on every
+# manifest. Recorded in docs/prd-39-fleet-two-axes.md §7.11.
+MEASURED_TOKENS = 14183
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
@@ -554,26 +556,20 @@ def test_the_recorded_manifest_size_is_the_real_one():
     )
 
 
-def test_a_session_scoped_manifest_actually_saves_the_tokens(client, auth):
-    """The number O6 was decided on. An unrestricted credential is what enrolment recommends,
-    so before E9 every agent carried the full manifest on every turn — the cost is per-request
-    for the life of the session, not once at connect.
-
-    Asserted as a floor rather than an exact figure: the manifest grows, and a test that
-    pinned the saving to a percentage would fail for the wrong reason every time a tool
-    lands."""
-    proj = client.post("/api/projects", json={"name": "FootprintSession"},
+def _session_manifest(client, auth, role):
+    """(full, narrowed) manifests for a fresh core-tier key: the credential's own, and the
+    same connection's after registering on a seat of `role`."""
+    proj = client.post("/api/projects", json={"name": f"FootprintSession-{role}"},
                        headers=auth).json()["id"]
     plaintext = client.post("/api/api-keys", json={"name": "fleet", "project_id": proj},
                             headers=auth).json()["plaintext"]
     seat = client.post("/api/fleet/seats",
-                       json={"project_id": proj, "roles": ["reviewer"], "wave": "w1"},
+                       json={"project_id": proj, "roles": [role], "wave": "w1"},
                        headers=auth).json()["seats"][0]["code"]
     sid = client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
                                         "params": {}},
                       headers={"X-API-Key": plaintext}).headers["mcp-session-id"]
     full = _rpc(client, plaintext, "tools/list")["result"]["tools"]
-
     client.post("/api/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
                                   "params": {"name": "register_agent",
                                              "arguments": {"label": "R",
@@ -584,38 +580,38 @@ def test_a_session_scoped_manifest_actually_saves_the_tokens(client, auth):
                                  "params": {}},
                            headers={"X-API-Key": plaintext, "Mcp-Session-Id": sid},
                            ).json()["result"]["tools"]
+    return full, narrowed
 
+
+def test_a_worker_session_narrows_nothing_a_core_key_had_not_already(client, auth):
+    """PRD-39 §8 predicted this and S3 made it true: role narrowing removes only role-GATED
+    tools, and on a core-tier key the planner's are already tiered away, so the only gated
+    tools left were the worker's and the reviewer's — which are all the worker's now. A
+    registered worker's session manifest is therefore its credential's manifest, exactly.
+
+    Asserted as `== 0` on purpose. Before S3 this test measured "a registered REVIEWER
+    carries less", and the number it produced was the three worker-only claim tools it did
+    not carry. That saving is gone because the role is gone, and a test that quietly
+    accepted `>= 0` would be reporting the mechanism as intact when it is idle.
+    """
+    full, narrowed = _session_manifest(client, auth, "worker")
     saved = len(json.dumps(full)) - len(json.dumps(narrowed))
-    assert saved > 0, "the whole point is that a registered reviewer carries less"
-
-    # **The 10% floor this used to carry was REMOVED, and the reason is the finding rather
-    # than an excuse.** GRPH-571 made the credential's own manifest core-only, and role
-    # narrowing can only remove role-GATED tools — most of which tiering had already taken
-    # out. So E9's share fell to ~9.7% of a much smaller base, and the old floor failed while
-    # the agent was strictly better off. Lowering the threshold to go green would have
-    # recorded the opposite of what happened.
-    #
-    # What is asserted instead is the number that describes what an ENROLLED REVIEWER
-    # ACTUALLY PAYS, against the untiered manifest it would have carried before either
-    # optimisation existed. That is the quantity O6 was arguing about; E9's percentage of the
-    # post-tiering base was only ever a proxy for it.
-    untiered = len(json.dumps([t for t in TOOLS]))
-    carried = len(json.dumps(narrowed))
-    # MEASURED: 31066 against 54468 untiered — 57%. The threshold is the measurement plus a
-    # little room, not a round number picked to pass: a reviewer that started carrying 64%
-    # would mean one of the two filters had stopped removing something, which is the event
-    # worth catching.
-    assert carried < untiered * 0.65, (
-        f"a registered reviewer carries {carried} chars against {untiered} untiered — the two "
-        "optimisations together are not paying for themselves"
-    )
-    # And role narrowing still removes something on top of tiering, which is the claim this
-    # test was originally written to make. Kept as a direct assertion now that its percentage
-    # is no longer a useful proxy for it.
-    assert carried < len(json.dumps(full)), "the session narrowed nothing"
+    assert saved == 0, (
+        f"a worker session saved {saved} chars on a core-tier key — some tool is gated to "
+        f"a role other than worker/planner, and PRD-39 S3 says there is no such role")
 
 
-# ---- the project parameter (GRPH-474) ------------------------------------------------------
+def test_a_planner_session_still_narrows(client, auth):
+    """The E9 mechanism is not gone with the reviewer: a planner never claims, so its
+    session drops every worker-gated tool. This is the number that still says the
+    session-scoped manifest is real. Floor, not a figure — the manifest grows."""
+    full, narrowed = _session_manifest(client, auth, "planner")
+    saved = len(json.dumps(full)) - len(json.dumps(narrowed))
+    assert saved > 0, "a planner session narrowed nothing — the E9 mechanism is idle"
+    assert len(json.dumps(narrowed)) < len(json.dumps(full))
+    names = {t["name"] for t in narrowed}
+    assert not names & {"claim_next", "claim_cluster", "next_cluster", "claim_review",
+                        "sign_off", "bounce"}, names
 
 def _dispatch_blocks() -> dict[str, str]:
     """Each tool's dispatch branch, from its `if name == "x"` to the next one."""

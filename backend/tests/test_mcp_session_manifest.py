@@ -82,15 +82,18 @@ def test_the_manifest_narrows_to_the_registered_role(client, auth, proj, key):
     before = _tools(client, key, sid=sid)
     assert "claim_cluster" in before and "sign_off" in before
 
-    _register(client, key, sid=sid, label="R", enrolment_code=_seat(client, auth, proj, "reviewer"))
+    _register(client, key, sid=sid, label="R", enrolment_code=_seat(client, auth, proj, "planner"))
 
     after = _tools(client, key, sid=sid)
-    assert "sign_off" in after, "a reviewer keeps its own tools"
+    # A planner, since PRD-39 S3 made the reviewer a worker: the role whose manifest still
+    # differs from the worker's is the one that never claims.
+    assert "get_context" in after, "the shared reads stay"
+    assert "sign_off" not in after, "and the review verbs, the worker's since S3, go with the worker's"
     assert "claim_cluster" not in after, "and stops carrying the worker's"
     assert len(after) < len(before)
 
 
-def test_a_worker_and_a_reviewer_on_one_credential_get_different_manifests(
+def test_a_worker_and_a_planner_on_one_credential_get_different_manifests(
         client, auth, proj, key):
     """The configuration enrolment exists for: ONE credential, roles from seats. Before this,
     both agents received an identical untrimmed list."""
@@ -99,12 +102,13 @@ def test_a_worker_and_a_reviewer_on_one_credential_get_different_manifests(
     _register(client, key, sid=w_sid, label="W",
               enrolment_code=_seat(client, auth, proj, "worker"))
     _register(client, key, sid=r_sid, label="R",
-              enrolment_code=_seat(client, auth, proj, "reviewer"))
+              enrolment_code=_seat(client, auth, proj, "planner"))
 
-    worker, reviewer = _tools(client, key, sid=w_sid), _tools(client, key, sid=r_sid)
+    worker, planner = _tools(client, key, sid=w_sid), _tools(client, key, sid=r_sid)
 
-    assert "claim_cluster" in worker and "claim_cluster" not in reviewer
-    assert "sign_off" in reviewer and "sign_off" not in worker
+    assert "claim_cluster" in worker and "claim_cluster" not in planner
+    # Since PRD-39 S3 the review verbs are the worker's, and the planner has none of them.
+    assert "sign_off" in worker and "sign_off" not in planner
 
 
 def test_a_client_that_sends_no_session_id_sees_what_it_always_saw(client, auth, proj, key):
@@ -134,7 +138,7 @@ def test_two_agents_on_one_connection_are_not_guessed_between(client, auth, proj
     parent = _register(client, key, sid=sid, label="P",
                        enrolment_code=_seat(client, auth, proj, "worker"))
     _register(client, key, sid=sid, label="S", parent_agent_id=parent["agent_id"],
-              enrolment_code=_seat(client, auth, proj, "reviewer"))
+              enrolment_code=_seat(client, auth, proj, "planner"))
 
     tools = _tools(client, key, sid=sid)
 
@@ -150,7 +154,7 @@ def test_trimming_never_decides_what_may_be_called(client, auth, proj, key, db):
     it calls it anyway, with a role refusal rather than an unknown-tool error."""
     sid = _rpc(client, key, "initialize").headers["mcp-session-id"]
     me = _register(client, key, sid=sid, label="R",
-                   enrolment_code=_seat(client, auth, proj, "reviewer"))
+                   enrolment_code=_seat(client, auth, proj, "planner"))
     assert "claim_cluster" not in _tools(client, key, sid=sid)
 
     r = _rpc(client, key, "tools/call",
@@ -158,7 +162,7 @@ def test_trimming_never_decides_what_may_be_called(client, auth, proj, key, db):
              sid=sid).json()
 
     text = r["result"]["content"][0]["text"]
-    assert "unauthorized" in text and "reviewer" in text
+    assert "unauthorized" in text and "planner" in text
 
 
 def test_an_expired_seat_does_not_narrow_the_manifest(client, auth, proj, key, db):
@@ -167,7 +171,7 @@ def test_an_expired_seat_does_not_narrow_the_manifest(client, auth, proj, key, d
     manifest toward a session that is already over."""
     sid = _rpc(client, key, "initialize").headers["mcp-session-id"]
     me = _register(client, key, sid=sid, label="R",
-                   enrolment_code=_seat(client, auth, proj, "reviewer"))
+                   enrolment_code=_seat(client, auth, proj, "planner"))
     client.post("/api/fleet/end-wave", json={"project_id": proj, "wave": "w1"},
                 headers=auth)
 
@@ -205,7 +209,7 @@ def test_a_registered_session_still_narrows_without_the_probe(client, auth, proj
     sid = _rpc(client, key, "initialize").headers["mcp-session-id"]
     before = _tools(client, key, sid=sid)
     _register(client, key, sid=sid, label="R",
-              enrolment_code=_seat(client, auth, proj, "reviewer"))
+              enrolment_code=_seat(client, auth, proj, "planner"))
 
     after = _tools(client, key, sid=sid)
 
@@ -221,18 +225,21 @@ def test_register_names_the_tools_the_role_will_be_refused(client, auth, proj, k
     exists, so a fleet agent holds all 52 tools all session and finds the edge by walking into
     it — and three refusals in a row is how `quarantine` decides an agent has stopped
     listening, so discovering the boundary by trial costs the agent its place in the fleet."""
-    out = _register(client, key, label="R", enrolment_code=_seat(client, auth, proj, "reviewer"))
+    out = _register(client, key, label="R", enrolment_code=_seat(client, auth, proj, "planner"))
 
     assert "claim_cluster" in out["tools_off_limits"]
     assert "claim_next" in out["tools_off_limits"]
-    assert "sign_off" not in out["tools_off_limits"], "its own tools are not off limits"
+    assert "sign_off" in out["tools_off_limits"], "the review verbs are the worker's since PRD-39 S3"
+    assert "assign_role" not in out["tools_off_limits"], "its own tools are not off limits"
 
 
 def test_a_worker_is_told_a_different_boundary(client, auth, proj, key):
     """Same call, opposite answer — otherwise it is a constant wearing a field's name."""
     out = _register(client, key, label="W", enrolment_code=_seat(client, auth, proj, "worker"))
 
-    assert "sign_off" in out["tools_off_limits"] and "claim_review" in out["tools_off_limits"]
+    assert "mint_enrolment" in out["tools_off_limits"] and "assign_role" in out["tools_off_limits"]
+    assert "sign_off" not in out["tools_off_limits"] and "claim_review" not in out["tools_off_limits"], \
+        "the review verbs are the worker's own since PRD-39 S3"
     assert "claim_cluster" not in out["tools_off_limits"]
 
 
@@ -251,9 +258,9 @@ def test_the_list_matches_what_the_gate_actually_refuses(client, auth, proj, key
     TOOL_ROLES itself so a new gated tool cannot be added without appearing here."""
     from app.services import fleet
 
-    out = _register(client, key, label="R", enrolment_code=_seat(client, auth, proj, "reviewer"))
+    out = _register(client, key, label="R", enrolment_code=_seat(client, auth, proj, "planner"))
 
     for name in out["tools_off_limits"]:
-        assert "reviewer" not in fleet.TOOL_ROLES[name], f"{name} is not actually refused"
-    refused = {n for n, roles in fleet.TOOL_ROLES.items() if "reviewer" not in roles}
+        assert "planner" not in fleet.TOOL_ROLES[name], f"{name} is not actually refused"
+    refused = {n for n, roles in fleet.TOOL_ROLES.items() if "planner" not in roles}
     assert set(out["tools_off_limits"]) == refused, "every refused tool is named, not a sample"

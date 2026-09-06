@@ -76,7 +76,7 @@ def test_a_worker_cannot_mark_an_item_done(client, agent_key, db):
                    {"id": item_key, "status": "done", "agent_id": me["agent_id"]})
 
     assert err["code"] == "unauthorized"
-    assert "reviewer" in err["message"] and "worker" in err["message"]
+    assert "worker" in err["message"]
     assert err["hint"], "a refusal must carry the machine-readable next step (AL-47)"
     after = _ok(client, agent_key, "get_item_details", {"id": item_key})
     assert after["status"] == "review", "the item did not move"
@@ -137,8 +137,8 @@ def test_a_planner_does_not_quietly_do_the_work(client, agent_key):
     assert err["code"] == "unauthorized" and "worker" in err["message"]
 
 
-def test_a_reviewer_does_not_claim_fresh_work(client, agent_key):
-    me = _register(client, agent_key, "reviewer")
+def test_a_planner_does_not_claim_fresh_work(client, agent_key):
+    me = _register(client, agent_key, "planner")
 
     err = _refused(client, agent_key, "claim_next", {"agent_id": me["agent_id"]})
 
@@ -287,7 +287,7 @@ def test_a_worker_cannot_release_to_done_through_release_item(client, agent_key,
                    {"id": item_key, "to_status": "done", "agent_id": me["agent_id"]})
 
     assert err["code"] == "unauthorized"
-    assert "reviewer" in err["message"] and "worker" in err["message"]
+    assert "worker" in err["message"]
     assert err["hint"], "a refusal must carry the machine-readable next step (AL-47)"
     after = _ok(client, agent_key, "get_item_details", {"id": item_key})
     assert after["status"] == "review", "the item did not move"
@@ -339,12 +339,16 @@ def test_a_worker_does_not_answer_the_grill(client, agent_key):
     assert err["code"] == "unauthorized" and "planner" in err["message"]
 
 
-def test_a_reviewer_does_not_answer_the_grill(client, agent_key):
-    me = _register(client, agent_key, "reviewer")
+def test_a_worker_cannot_answer_the_grill(client, agent_key):
+    """answer_grill is planner-only; a worker is refused."""
+    author = _register(client, agent_key, "planner")
+    prd = _ok(client, agent_key, "create_prd",
+              {"title": "Spec", "body": "## D1\n\nwork", "agent_id": author["agent_id"]})
+    worker = _register(client, agent_key, "worker")
 
     err = _refused(client, agent_key, "answer_grill",
-                   {"prd_id": "GRPH-P1", "answer": "relayed from the author",
-                    "agent_id": me["agent_id"]})
+                   {"prd_id": prd["id"], "answer": "relayed from the author",
+                    "agent_id": worker["agent_id"]})
 
     assert err["code"] == "unauthorized"
 

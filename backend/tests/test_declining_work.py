@@ -80,14 +80,14 @@ def test_skipping_everything_is_an_empty_answer_not_a_wrong_one(client, auth, pr
     assert got["claimed"] is False
 
 
-def test_a_reviewer_can_pass_over_its_own_work(client, auth, proj, key):
+def test_a_reviewing_worker_can_pass_over_its_own_work(client, auth, proj, key):
     """THE case. `claim_review` handed a reviewer the item it had built, and the server could
     not refuse it because `built_by` was null — nothing recorded an author, so `independent`
     returns True. The discipline is the reviewer's, so the surface has to let it act on one."""
     worker = _ok(client, key, "register_agent", {"label": "w",
                                                  "enrolment_code": _seat(client, auth, proj, "worker")})
     rev = _ok(client, key, "register_agent", {"label": "r",
-                                              "enrolment_code": _seat(client, auth, proj, "reviewer")})
+                                              "enrolment_code": _seat(client, auth, proj, "worker")})
     mine = _ok(client, key, "create_item", {"title": "the reviewer's own", "status": "review"})
     theirs = _ok(client, key, "create_item", {"title": "somebody else's", "status": "next"})
     _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
@@ -101,13 +101,13 @@ def test_a_reviewer_can_pass_over_its_own_work(client, auth, proj, key):
 
 # ---- releasing: a hold is a hold, whichever one you have -------------------------------------
 
-def test_a_reviewer_can_hand_back_a_review_claim(client, auth, proj, key, db):
+def test_a_reviewing_worker_can_hand_back_a_review_claim(client, auth, proj, key, db):
     """`release_item` was worker-only, so a reviewer holding an item it would not judge had no
     exit at all — it waited out a 600s lease while the queue handed it the same item."""
     worker = _ok(client, key, "register_agent", {"label": "w",
                                                  "enrolment_code": _seat(client, auth, proj, "worker")})
     rev = _ok(client, key, "register_agent", {"label": "r",
-                                              "enrolment_code": _seat(client, auth, proj, "reviewer")})
+                                              "enrolment_code": _seat(client, auth, proj, "worker")})
     item = _ok(client, key, "create_item", {"title": "work", "status": "next"})
     _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
     _ok(client, key, "update_item", {"id": item["id"], "status": "review",

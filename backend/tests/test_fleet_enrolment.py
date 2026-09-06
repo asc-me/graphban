@@ -94,7 +94,7 @@ def test_two_seats_for_one_role_are_different_seats(db, proj):
 
 
 def test_a_fresh_seat_is_unused_and_expires_within_the_ttl(db, proj):
-    row, _ = _seat(db, proj, "reviewer")
+    row, _ = _seat(db, proj, "worker")
 
     assert fleet.enrolment_state(row) == "unused"
     remaining = row.expires_at.replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)
@@ -134,23 +134,23 @@ def test_list_enrolments_keeps_the_dead_seat_after_reissue(db, proj):
 def test_a_seat_grants_its_role_on_a_shared_credential(client, key, proj, db):
     """G2: the role is ENFORCED on a credential that permits everything, because the server
     issued the grant rather than the agent asserting it."""
-    _, code = _seat(db, proj, "reviewer")
+    _, code = _seat(db, proj, "worker")
 
     me = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": code})
 
-    assert me["active_role"] == "reviewer"
+    assert me["active_role"] == "worker"
     assert me["enrolled"] is True
 
 
 def test_the_seat_beats_a_conflicting_role_hint(client, key, proj, db):
     """Two sources for one fact is how the role came to be self-declared. The seat wins and
     the hint is ignored, not merged."""
-    _, code = _seat(db, proj, "reviewer")
+    _, code = _seat(db, proj, "worker")
 
     me = _ok(client, key, "register_agent",
-             {"label": "r", "role_hint": "worker", "enrolment_code": code})
+             {"label": "r", "role_hint": "planner", "enrolment_code": code})
 
-    assert me["active_role"] == "reviewer"
+    assert me["active_role"] == "worker"
 
 
 def test_registering_without_a_seat_is_all_in_one_and_says_so(client, key):
@@ -198,7 +198,7 @@ def test_a_seat_from_another_project_is_refused(client, auth, key, proj, db):
     """A seat is scoped to the project that issued it. Redeeming across projects would let a
     credential with two project scopes borrow a role it was never granted there."""
     other = client.post("/api/projects", json={"name": "Elsewhere"}, headers=auth).json()["id"]
-    _, code = _seat(db, other, "reviewer")
+    _, code = _seat(db, other, "worker")
 
     res = _rpc(client, key, "register_agent", {"label": "x", "enrolment_code": code})
 
@@ -214,13 +214,13 @@ def test_a_seat_cannot_grant_a_role_the_credential_forbids(client, auth, proj, d
     narrow = client.post("/api/fleet/keys",
                          json={"project_id": proj, "role": "worker", "wave": "w1"},
                          headers=auth).json()["plaintext"]
-    _, code = _seat(db, proj, "reviewer")
+    _, code = _seat(db, proj, "planner")
 
     res = _rpc(client, narrow, "register_agent", {"label": "x", "enrolment_code": code})
 
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
     msg = res["structuredContent"]["error"]["message"]
-    assert "worker" in msg and "reviewer" in msg, "the refusal names both sides"
+    assert "worker" in msg and "planner" in msg, "the refusal names both sides"
 
 
 def test_a_refused_ceiling_does_not_burn_the_seat(client, auth, proj, db):
@@ -230,7 +230,7 @@ def test_a_refused_ceiling_does_not_burn_the_seat(client, auth, proj, db):
     narrow = client.post("/api/fleet/keys",
                          json={"project_id": proj, "role": "worker", "wave": "w1"},
                          headers=auth).json()["plaintext"]
-    row, code = _seat(db, proj, "reviewer")
+    row, code = _seat(db, proj, "planner")
     _rpc(client, narrow, "register_agent", {"label": "x", "enrolment_code": code})
 
     db.refresh(row)
@@ -241,7 +241,7 @@ def test_a_refused_ceiling_does_not_burn_the_seat(client, auth, proj, db):
     wide = client.post("/api/api-keys", json={"name": "wide", "project_id": proj},
                        headers=auth).json()["plaintext"]
     me = _ok(client, wide, "register_agent", {"label": "retry", "enrolment_code": code})
-    assert me["active_role"] == "reviewer"
+    assert me["active_role"] == "planner"
 
 
 def test_a_refused_registration_mints_no_agent(client, key, proj, db):
@@ -288,7 +288,7 @@ def test_two_seats_on_one_credential_can_review_each_other(client, key, proj, db
     the setup a client that stores a single MCP config is stuck with. Two seats make them two
     sessions, and the SERVER decided that rather than an agent claiming it."""
     _, wcode = _seat(db, proj, "worker")
-    _, rcode = _seat(db, proj, "reviewer")
+    _, rcode = _seat(db, proj, "worker")
     w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": wcode})
     r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": rcode})
     _built_by(client, key, w["agent_id"])
@@ -318,7 +318,7 @@ def test_an_enrolled_agent_beside_an_unenrolled_one_falls_back(client, key, proj
     """An enrolment on one side proves nothing about the other — the un-enrolled process could
     be anything, including the same one twice. So the rule falls through to the declared
     discriminators, exactly as strict as before: neither declared anything, so no."""
-    _, code = _seat(db, proj, "reviewer")
+    _, code = _seat(db, proj, "worker")
     w = _ok(client, key, "register_agent", {"label": "w"})
     r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": code})
     _built_by(client, key, w["agent_id"])
@@ -331,7 +331,7 @@ def test_an_enrolled_agent_beside_an_unenrolled_one_falls_back(client, key, proj
 def test_the_fallback_still_works_when_only_one_is_enrolled(client, key, proj, db):
     """...and it is the SAME fallback, not a weaker one. A declared difference still earns
     independence when one side happens to hold a seat."""
-    _, code = _seat(db, proj, "reviewer")
+    _, code = _seat(db, proj, "worker")
     w = _ok(client, key, "register_agent",
             {"label": "w", "capabilities": {"instance": "solo-1"}})
     r = _ok(client, key, "register_agent",
@@ -346,7 +346,7 @@ def test_a_seat_does_not_launder_a_call_tree(client, key, proj, db):
     own seat is still inside its parent's call tree — and D-g trap 2 keeps a planner from
     setting itself as parent on seats it mints, which would collapse the opposite way."""
     _, pcode = _seat(db, proj, "worker")
-    _, ccode = _seat(db, proj, "reviewer")
+    _, ccode = _seat(db, proj, "worker")
     parent = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": pcode})
     child = _ok(client, key, "register_agent",
                 {"label": "c", "enrolment_code": ccode,
@@ -366,10 +366,10 @@ def test_a_wave_issues_one_seat_per_agent_including_repeats(client, auth, proj):
     that deduplicated roles would quietly provision a wave that cannot review itself."""
     out = client.post("/api/fleet/seats",
                       json={"project_id": proj, "wave": "w1",
-                            "roles": ["planner", "worker", "worker", "reviewer"]},
+                            "roles": ["planner", "worker", "worker", "worker"]},
                       headers=auth).json()["seats"]
 
-    assert [s["role"] for s in out] == ["planner", "worker", "worker", "reviewer"]
+    assert [s["role"] for s in out] == ["planner", "worker", "worker", "worker"]
     assert len({s["code"] for s in out}) == 4, "four seats, four codes"
     assert len({s["id"] for s in out}) == 4
 
@@ -378,22 +378,22 @@ def test_the_roster_call_reports_seat_state(client, auth, proj, key, db):
     """Read together with the roster because it is one question — "three agents online, one
     seat still unused" — and two calls would let the page render half of it."""
     codes = client.post("/api/fleet/seats",
-                        json={"project_id": proj, "wave": "w1", "roles": ["worker", "reviewer"]},
+                        json={"project_id": proj, "wave": "w1", "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
     _ok(client, key, "register_agent", {"label": "w", "enrolment_code": codes[0]["code"]})
 
     seats = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["seats"]
 
-    by_role = {s["role"]: s for s in seats}
-    assert by_role["worker"]["state"] == "consumed"
-    assert by_role["reviewer"]["state"] == "unused"
+    by_id = {s["id"]: s for s in seats}
+    assert by_id[codes[0]["id"]]["state"] == "consumed"
+    assert by_id[codes[1]["id"]]["state"] == "unused"
 
 
 def test_the_roster_never_hands_a_code_back(client, auth, proj):
     """Shown once, like a key. A seat is short-lived and still a bearer token while it lives,
     and this endpoint is read by every agent on the project — not only by whoever issued it."""
     issued = client.post("/api/fleet/seats",
-                         json={"project_id": proj, "wave": "w1", "roles": ["reviewer"]},
+                         json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
                          headers=auth).json()["seats"][0]
 
     out = client.get(f"/api/fleet?project_id={proj}", headers=auth)
@@ -434,13 +434,13 @@ def test_a_reissued_seat_actually_works(client, auth, proj, key, db):
     """Asserting only on `state` would pass against a row that reads unused and is refused for
     some other reason — the same vacuity that let a sabotage through earlier in this PRD."""
     first = client.post("/api/fleet/seats",
-                        json={"project_id": proj, "wave": "w1", "roles": ["reviewer"]},
+                        json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
                         headers=auth).json()["seats"][0]
     fresh = client.post(f"/api/fleet/seats/{first['id']}/reissue", headers=auth).json()
 
     me = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": fresh["code"]})
 
-    assert me["active_role"] == "reviewer" and me["enrolled"] is True
+    assert me["active_role"] == "worker" and me["enrolled"] is True
 
 
 def test_issuing_no_roles_is_refused(client, auth, proj):
@@ -550,7 +550,7 @@ def test_the_preview_names_the_seats_it_will_revoke(client, auth, proj, key, db)
     """A confirm that says "are you sure?" teaches people to click through it. The preview and
     the act share ONE selector, so the number named is the number delivered."""
     client.post("/api/fleet/seats",
-                json={"project_id": proj, "wave": "w1", "roles": ["worker", "reviewer"]},
+                json={"project_id": proj, "wave": "w1", "roles": ["worker", "worker"]},
                 headers=auth)
 
     preview = client.get(f"/api/fleet/end-wave?project_id={proj}&wave=w1", headers=auth).json()
@@ -597,7 +597,7 @@ def test_a_worker_cannot_mint(client, key, proj, db):
     _, wcode = _seat(db, proj, "worker")
     me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": wcode})
 
-    res = _rpc(client, key, "mint_enrolment", {"agent_id": me["agent_id"], "role": "reviewer"})
+    res = _rpc(client, key, "mint_enrolment", {"agent_id": me["agent_id"], "role": "planner"})
 
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
 
@@ -637,7 +637,7 @@ def test_two_agents_a_planner_seated_can_review_each_other(client, key, proj, db
     _, pcode = _seat(db, proj, "planner")
     boss = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": pcode})
     w = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
-    r = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "reviewer"})
+    r = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
 
     worker = _ok(client, key, "register_agent",
                  {"label": "w", "enrolment_code": w["enrolment_code"]})
@@ -658,10 +658,10 @@ def test_a_planner_cannot_mint_past_its_own_credential(client, auth, proj, db):
     me = _ok(client, narrow, "register_agent", {"label": "p", "role_hint": "planner"})
 
     res = _rpc(client, narrow, "mint_enrolment",
-               {"agent_id": me["agent_id"], "role": "reviewer"})
+               {"agent_id": me["agent_id"], "role": "worker"})
 
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
-    assert "reviewer" in res["structuredContent"]["error"]["message"]
+    assert "worker" in res["structuredContent"]["error"]["message"]
 
 
 # ---- found on the PRD-17 acceptance walk, 2026-08-13 -------------------------------------------
@@ -718,7 +718,7 @@ def test_every_role_can_keep_itself_alive(client, key, proj, db):
     """`heartbeat` was gated to ("worker",), so a reviewer or planner was refused the only call
     that keeps it on the roster. Both registered fine and vanished 150s later with their
     terminals open — observed on the walk as `role_refused ... heartbeat` for each."""
-    for role in ("planner", "reviewer"):
+    for role in ("planner", "worker"):
         _, code = _seat(db, proj, role)
         me = _ok(client, key, "register_agent", {"label": role, "enrolment_code": code})
 
@@ -784,7 +784,7 @@ def test_revoking_unused_seats_leaves_the_consumed_ones(client, auth, proj, key,
     """A consumed seat is the record of which agent took what. Clearing leftovers must not
     erase that — and it must not stop a live agent either; ending the wave is what does."""
     issued = client.post("/api/fleet/seats",
-                         json={"project_id": proj, "roles": ["worker", "worker", "reviewer"]},
+                         json={"project_id": proj, "roles": ["worker", "worker", "worker"]},
                          headers=auth).json()["seats"]
     me = _ok(client, key, "register_agent",
              {"label": "w", "enrolment_code": issued[0]["code"]})
@@ -877,7 +877,7 @@ def test_ending_a_wave_does_not_let_an_agent_review_its_own_work(client, auth, p
     from app.models import Item
 
     seats = client.post("/api/fleet/seats",
-                        json={"project_id": proj, "roles": ["worker", "reviewer"]},
+                        json={"project_id": proj, "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
     w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
     _ok(client, key, "create_item", {"title": "mine", "status": "next"})
@@ -914,7 +914,7 @@ def test_signing_off_keeps_the_record_of_who_built_it(client, auth, proj, key, d
     from app.models import Item
 
     seats = client.post("/api/fleet/seats",
-                        json={"project_id": proj, "roles": ["worker", "reviewer"]},
+                        json={"project_id": proj, "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
     w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
     r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": seats[1]["code"]})
@@ -939,7 +939,7 @@ def test_a_bounce_pins_to_the_author_not_the_lease(client, auth, proj, key, db):
     from app.models import Item
 
     seats = client.post("/api/fleet/seats",
-                        json={"project_id": proj, "roles": ["worker", "reviewer"]},
+                        json={"project_id": proj, "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
     w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
     r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": seats[1]["code"]})
@@ -965,7 +965,7 @@ def test_a_subagent_cannot_sign_its_parents_work_after_a_wave_ends(client, auth,
     the same call tree. Resolve the author from the LEASE and, after an End wave has released
     it, independence is computed against None — so a subagent signs off its parent's work."""
     seats = client.post("/api/fleet/seats",
-                        json={"project_id": proj, "roles": ["worker", "reviewer"]},
+                        json={"project_id": proj, "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
     parent = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": seats[0]["code"]})
     _ok(client, key, "create_item", {"title": "parent work", "status": "next"})
@@ -978,7 +978,7 @@ def test_a_subagent_cannot_sign_its_parents_work_after_a_wave_ends(client, auth,
     # made this test vacuous: End wave revoked its seat too, so it was refused for SESSION
     # EXPIRY and never reached the independence check the test exists to exercise. A sabotage
     # that resolved the author from the released lease passed against that version.
-    fresh = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["reviewer"]},
+    fresh = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["worker"]},
                         headers=auth).json()["seats"][0]
     child = _ok(client, key, "register_agent",
                 {"label": "c", "enrolment_code": fresh["code"],
@@ -997,7 +997,7 @@ def test_a_bounce_after_a_wave_ends_still_pins_to_the_author(client, auth, proj,
     from app.models import Item
 
     seats = client.post("/api/fleet/seats",
-                        json={"project_id": proj, "roles": ["worker", "reviewer"]},
+                        json={"project_id": proj, "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
     w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
     _ok(client, key, "create_item", {"title": "bounce after wave", "status": "next"})
@@ -1006,7 +1006,7 @@ def test_a_bounce_after_a_wave_ends_still_pins_to_the_author(client, auth, proj,
         {"id": got["item"]["id"], "status": "review", "agent_id": w["agent_id"]})
     client.post("/api/fleet/end-wave", json={"project_id": proj}, headers=auth)
 
-    fresh = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["reviewer"]},
+    fresh = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["worker"]},
                         headers=auth).json()["seats"][0]
     r = _ok(client, key, "register_agent", {"label": "r2", "enrolment_code": fresh["code"]})
     _ok(client, key, "bounce", {"id": got["item"]["id"], "agent_id": r["agent_id"],

@@ -231,7 +231,7 @@ def test_the_roster_carries_the_seat_not_just_whether_there_is_one(client, key, 
         return json.loads(res["content"][0]["text"])
 
     _, one = _seat(db, proj, "worker")
-    _, two = _seat(db, proj, "reviewer")
+    _, two = _seat(db, proj, "worker")  # two worker seats: `reviewer` is not a role (PRD-39 S3)
     a = _ok("register_agent", {"label": "w", "enrolment_code": one})
     b = _ok("register_agent", {"label": "r", "enrolment_code": two})
 
@@ -273,7 +273,7 @@ def test_a_planner_can_now_retire_the_seats_it_minted(client, key, proj, db):
     """The whole of §6, end to end over MCP: mint, then retire."""
     boss = _planner(client, key, proj, db)
     _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
-    _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "reviewer"})
+    _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
 
     out = _ok(client, key, "retire_wave", {"agent_id": boss["agent_id"]})
 
