@@ -2001,6 +2001,11 @@ class AttemptTelemetry(Base):
 
     derived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: When the supervisor reported putting this attempt's branch on the remote (GRPH-754).
+    #: NULL means "not yet, or nobody is going to" — the two are told apart by whether a
+    #: launch post exists, not by guessing from the null.
+    branch_published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
     #: How many supervisor posts this row has taken. A repost that changes a value is a fact
     #: about the reporting, and a silent overwrite would hide it.
     report_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)

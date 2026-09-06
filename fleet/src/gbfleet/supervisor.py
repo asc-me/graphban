@@ -673,12 +673,12 @@ def watch_tick(
     if roster is not None:
         _catch_the_disowned(wave, children, roster, limits)
     _report_exits(children, client)
-    _reap_exited(wave, children)
+    _reap_exited(wave, children, client)
     if persist is not None:
         persist()
 
 
-def _reap_exited(wave: Wave, children: list[Child]) -> None:
+def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = None) -> None:
     """Salvage a child's work onto its branch as soon as it exits (PRD-38 walk finding).
 
     `_reap_all` has always done this — `worktree.reap` salvages whatever the worker left
@@ -720,10 +720,11 @@ def _reap_exited(wave: Wave, children: list[Child]) -> None:
         if git_paths is not None:
             wave.touched[child.branch] = tp_mod.including_stream(
                 child.adapter, git_paths, child.stdout_text())
-        _publish(wave, tree)
+        _publish(wave, tree, client=client, child=child)
 
 
-def _publish(wave: Wave, tree: Worktree) -> None:
+def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
+             child: Child | None = None) -> None:
     """Put the child's branch where the reviewer can read it (GRPH-750).
 
     A step AFTER the reap rather than part of salvage. Salvage commits, which the supervisor
@@ -747,6 +748,12 @@ def _publish(wave: Wave, tree: Worktree) -> None:
     wave.published[tree.branch] = pushed
     if not pushed.ok and not pushed.skipped:
         wave.failures.append(f"{tree.branch}: {pushed.reason}")
+    # GRPH-754: tell the server the work is now readable. Until this lands the server withholds
+    # the item from `claim_review`, so a reviewer can no longer be handed an item whose branch
+    # it will fetch a 404 for — measured on the deployed instance, twice. Only on a real push:
+    # saying "published" about a branch that skipped would re-open the window it closes.
+    if pushed.ok and client is not None and child is not None and child.seat_id:
+        client.post_attempt(enrolment_id=child.seat_id, branch_published=True)
 
 
 def _report_exits(children: list[Child], client: Graphban) -> None:

@@ -430,6 +430,47 @@ def record_exit(db: Session, *, target: Target, values: dict) -> AttemptTelemetr
     return row
 
 
+#: How long an item in review waits for its branch to be published before the server hands it
+#: out anyway. The reap follows the child's exit by one watch tick, so this is generous; it is a
+#: BACKSTOP, not a schedule. Never hiding work outranks never showing an unpublished branch: a
+#: supervisor that dies must not take the review with it.
+PUBLISH_GRACE_SECONDS = 180
+
+
+def published_now() -> datetime:
+    """The moment a supervisor reported publishing. A function so the route never has to
+    reach for a clock, and `_merge`'s never-write-a-null rule keeps a later post from
+    un-publishing what an earlier one recorded."""
+    return _now()
+
+
+def publish_pending(db: Session, item: Item) -> bool:
+    """Is a supervisor about to publish this item's branch, and hasn't yet? (GRPH-754)
+
+    Three conditions, and each one is there to stop this from hiding work:
+
+    - a launch post exists for the item's latest attempt, so we KNOW a supervisor launched it
+      and is going to report. An item nobody supervised — a human's branch, an agent running
+      standalone — is never withheld, because nothing will ever arrive to release it.
+    - that attempt has no `branch_published_at` yet.
+    - the item entered review less than `PUBLISH_GRACE_SECONDS` ago. Past that the server hands
+      it out regardless: a supervisor that died mid-reap must not make the work unreviewable.
+
+    `updated_at` stands in for "entered review", which is what stamps it in the ordinary case.
+    An evidence append moves it too, and the cost of that is a few more seconds of waiting.
+    """
+    if not item.branch or item.status != "review":
+        return False
+    row = db.scalar(select(AttemptTelemetry)
+                    .where(AttemptTelemetry.item_id == item.id,
+                           AttemptTelemetry.chosen_source.is_not(None))
+                    .order_by(AttemptTelemetry.id.desc()))
+    if row is None or row.branch_published_at is not None:
+        return False
+    since = _aware(item.updated_at)
+    return bool(since and (_now() - since).total_seconds() < PUBLISH_GRACE_SECONDS)
+
+
 def row_dict(row: AttemptTelemetry) -> dict:
     """What the route echoes back. Nulls stay null: a token count nobody reported is not zero."""
     return {
@@ -459,6 +500,7 @@ def row_dict(row: AttemptTelemetry) -> dict:
         "exit_meaning": row.exit_meaning,
         "derived": row.derived_at is not None,
         "reported": row.reported_at is not None,
+        "branch_published": row.branch_published_at is not None,
         "report_count": row.report_count,
     }
 
