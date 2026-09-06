@@ -1971,6 +1971,11 @@ class AttemptTelemetry(Base):
     chosen_winner: Mapped[str | None] = mapped_column(String(96), nullable=True)
     chosen_runner_up: Mapped[str | None] = mapped_column(String(96), nullable=True)
     chosen_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: PRD-37 D8's explanation, as it stood when this child was launched: the scored
+    #: shortlist, every drop with the score it would have had, and the profile that applied.
+    #: A recommendation's replay re-ranks THIS, rather than simulating today's matrix over an
+    #: attempt made under a different one.
+    resolution: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     sampled: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The child said one vendor, the supervisor launched another. Flagged, never resolved:
     # neither side is trusted over the other, and a silent choice between them would be a

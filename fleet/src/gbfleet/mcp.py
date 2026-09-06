@@ -435,6 +435,10 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             winner=f"{declare.get('vendor', '')}:{declare.get('model', '')}",
             runner_up=_runner_up(resolution, fleet.matrix),
             source=("explicit" if not via_tier else (resolution or {}).get("source") or "matrix"),
+            # PRD-38 D7: the whole explanation, not just its verdict. A recommendation's replay
+            # re-ranks THIS resolution under a proposed change, and it can only do that if the
+            # scores and statuses that produced it were written down at the time.
+            resolution=resolution,
         )
 
         def remember(child: Child) -> None:

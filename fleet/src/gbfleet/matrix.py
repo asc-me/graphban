@@ -198,6 +198,10 @@ class Resolution:
     eligible: dict = field(default_factory=dict)
     dropped: dict = field(default_factory=dict)
     scored: list = field(default_factory=list)
+    #: The same drops as `dropped`, structurally (PRD-38 D7). The strings are for a person;
+    #: these are what lets a REPLAY re-rank a resolution that already happened without
+    #: re-running the resolver against a matrix that has moved since.
+    dropped_rows: list = field(default_factory=list)
     winner: Row | None = None
     runner_up: Row | None = None
     refused: str = ""
@@ -209,17 +213,35 @@ class Resolution:
             row, score, axes = entry
             return {"harness": row.harness, "model": row.model, "status": row.status,
                     "score": round(score, 3), "axes": axes}
+        def full(entry) -> dict:
+            row, score, axes = entry
+            return {"harness": row.harness, "model": row.model, "vendor": row.vendor,
+                    "status": row.status, "score": round(score, 3), "order": row.order,
+                    "local": row.local, "axes": axes}
         return {
             "source": self.source,
             "tier": self.tier, "role": self.role, "lane": self.lane,
             "eligible": dict(self.eligible),
             "dropped": {k: list(v) for k, v in self.dropped.items() if v},
+            # PRD-38 D7: everything a replay needs to re-rank THIS resolution under a proposed
+            # change — every candidate's score and status, and every drop with the score it
+            # would have had. Recorded facts, so a card speaks about resolutions that really
+            # happened rather than simulating today's matrix over last month's work.
+            "shortlist": [full(e) for e in self.scored],
+            "dropped_rows": list(self.dropped_rows),
             "winner": row_out(next((s for s in self.scored if s[0] is self.winner), None)),
             "runner_up": row_out(next((s for s in self.scored if s[0] is self.runner_up), None)),
             "profile": ({"user": self.profile.user, "defaults": list(self.profile.defaults),
                          "weights": self.profile.normalised()} if self.profile else "none"),
             "refused": self.refused or None,
         }
+
+
+def _dropped_row(row: Row, stage: str, why: str, score: float) -> dict:
+    """One dropped candidate, with the score it would have had (D15 in structured form)."""
+    return {"harness": row.harness, "model": row.model, "vendor": row.vendor,
+            "status": row.status, "score": round(score, 3), "order": row.order,
+            "local": row.local, "stage": stage, "why": why}
 
 
 @dataclass(frozen=True)
@@ -252,7 +274,9 @@ class Matrix:
         for r in rows:
             why = _policy_reason(r, policy, role, builder_vendor)
             if why:
-                dropped.append(f"{r.key} ({why}; would have scored {self._score(r, profile, measured, lane)[0]:.2f})")
+                score = self._score(r, profile, measured, lane)[0]
+                dropped.append(f"{r.key} ({why}; would have scored {score:.2f})")
+                res.dropped_rows.append(_dropped_row(r, "policy", why, score))
             else:
                 kept.append(r)
         rows = kept
@@ -268,8 +292,14 @@ class Matrix:
             for r in rows:
                 if profile.defaults and r.harness not in profile.defaults:
                     dropped.append(f"{r.key} (not in your defaults)")
+                    res.dropped_rows.append(_dropped_row(
+                        r, "profile", "not in your defaults",
+                        self._score(r, profile, measured, lane)[0]))
                 elif r.harness in profile.excludes or r.key in profile.excludes:
                     dropped.append(f"{r.key} (in your excludes)")
+                    res.dropped_rows.append(_dropped_row(
+                        r, "profile", "in your excludes",
+                        self._score(r, profile, measured, lane)[0]))
                 else:
                     kept.append(r)
             rows = kept
@@ -280,6 +310,10 @@ class Matrix:
             return res
 
         # 3. failed rows never spawn (D16); unverified ones may, and are marked.
+        for r in rows:
+            if r.status == "failed":
+                res.dropped_rows.append(_dropped_row(
+                    r, "failed", "marked failed", self._score(r, profile, measured, lane)[0]))
         rows = [r for r in rows if r.status != "failed"]
         res.eligible["after_failed"] = len(rows)
         if not rows:
@@ -293,6 +327,9 @@ class Matrix:
             for r in rows:
                 ok, why = installed(r)
                 (kept if ok else dropped).append(r if ok else f"{r.key} ({why})")
+                if not ok:
+                    res.dropped_rows.append(_dropped_row(
+                        r, "installed", why, self._score(r, profile, measured, lane)[0]))
             rows = kept
             res.dropped["installed"] = dropped
         res.eligible["after_installed"] = len(rows)

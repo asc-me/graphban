@@ -1711,3 +1711,47 @@ export interface HarnessReport {
   cells: HarnessCell[];
   below_floor_count: number;
 }
+
+/** PRD-38 D7: a drafted recommendation. Nothing here is applied by the page. */
+export interface HarnessCardCell {
+  cell: HarnessCellKey;
+  finished: number;
+  signed_off: number;
+  rate: number | null;
+  below_floor?: boolean;
+  sampling?: HarnessSampling;
+  skew?: { reason: keyof HarnessSampling; share: number } | null;
+}
+
+export interface HarnessReplay {
+  considered: number;
+  changed: number;
+  skipped_no_resolution: number;
+  truncated: boolean;
+  moves: { from: string; to: string; count: number }[];
+  summary: string;
+}
+
+export interface HarnessCard {
+  rule: string;
+  key: string;
+  evidence_hash: string;
+  title: string;
+  detail: string;
+  cells: HarnessCardCell[];
+  siblings: HarnessCardCell[];
+  draft: Record<string, unknown>;
+  replay: HarnessReplay;
+  thresholds: Record<string, number>;
+  state: "new" | "accepted" | "dismissed";
+  previously: { state: string; at: string; evidence_changed: boolean } | null;
+}
+
+export interface HarnessRecommendations {
+  project_id: string;
+  cards: HarnessCard[];
+  rules: string[];
+  lessons_drafted: string[];
+  window_days: number;
+  floor: number;
+}

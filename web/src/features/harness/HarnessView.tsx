@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AlertTriangle, Scale } from "lucide-react";
 
+import { Recommendations } from "@/features/harness/Recommendations";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useHarness } from "@/lib/queries";
 import type { HarnessCell, HarnessPoint, HarnessSampling } from "@/lib/types";
@@ -62,6 +63,7 @@ export function HarnessView() {
           </div>
         ) : (
           <div className="mx-auto flex max-w-4xl flex-col gap-3">
+            <Recommendations projectId={activeId} />
             {data.below_floor_count > 0 && (
               <div
                 data-testid="harness-floor-note"
