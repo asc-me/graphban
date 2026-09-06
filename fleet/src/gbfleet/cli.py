@@ -18,7 +18,7 @@ from .adapters import ADAPTERS, AdapterError, Tuning, resolve
 from .client import ALLOWED_TOOLS, Graphban
 from . import doctor
 from .lock import RepoLocked
-from .seat import Seat, codes_from_text
+from .seat import Seat, codes_from_text, parse_seat_line
 from dataclasses import replace
 
 from .spawn import Launch
@@ -80,6 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--repo", default=".", help="repository to supervise (default: cwd)")
     run.add_argument("--server", required=True, help="Graphban base URL")
+    run.add_argument("--project", default="", help="the Graphban project this fleet works; named on every call so a credential spanning several projects lands where the seats were minted (GRPH-718)")
     run.add_argument(
         "--seats-file", required=True, help="one enrolment code per line; '-' reads stdin"
     )
@@ -224,10 +225,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def read_seats(source: str, server: str, api_key: str) -> list[Seat]:
+    """One seat per line: `CODE [item=GRPH-nn] [role=reviewer]` (`seat.parse_seat_line`).
+    Raises ValueError on a mistyped line, and `up` exits 2 on it before any worktree."""
     text = sys.stdin.read() if source == "-" else Path(source).read_text(encoding="utf-8")
-    return [
-        Seat(code=c, server_url=server, api_key=api_key) for c in codes_from_text(text)
-    ]
+    seats: list[Seat] = []
+    for line in codes_from_text(text):
+        code, fields = parse_seat_line(line)
+        seats.append(Seat(code=code, server_url=server, api_key=api_key,
+                          role=fields.get("role", "worker"), item=fields.get("item")))
+    return seats
 
 
 def make_adapter_factory(name: str, binary: str | None, model: str = "",
@@ -384,7 +390,11 @@ def _until(args) -> int:
 
     pool: list[Seat] = []
     if args.seats_file:
-        pool = read_seats(args.seats_file, args.server, api_key)
+        try:
+            pool = read_seats(args.seats_file, args.server, api_key)
+        except ValueError as exc:
+            print(f"gbfleet until: {exc}", file=sys.stderr)
+            return 2
 
     planner = Graphban(base_url=args.server, api_key=api_key, allowed=PLANNER_TOOLS, project_id=args.project)
     supervisor = Graphban(base_url=args.server, api_key=api_key, allowed=ALLOWED_TOOLS, project_id=args.project)
@@ -534,7 +544,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"gbfleet up: ${API_KEY_ENV} is not set", file=sys.stderr)
         return 2
 
-    seats = read_seats(args.seats_file, args.server, api_key)
+    try:
+        seats = read_seats(args.seats_file, args.server, api_key)
+    except ValueError as exc:
+        print(f"gbfleet up: {exc}", file=sys.stderr)
+        return 2
     if not seats:
         print(f"gbfleet up: no seats in {args.seats_file}", file=sys.stderr)
         return 2

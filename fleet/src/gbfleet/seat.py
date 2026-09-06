@@ -58,6 +58,38 @@ def codes_from_text(text: str) -> list[str]:
         if line.strip() and not line.lstrip().startswith("#")
     ]
 
+
+#: What a seats-file line may say after the code. `item` binds the seat (PRD-36 D7): the
+#: child gets the BOUND instruction and gbagent receives `--item`. `role` picks the
+#: instruction template. Neither overrides the server: `active_role` and `assigned` in the
+#: registration reply remain the authority, exactly as they are for a seat `until` built.
+SEAT_LINE_KEYS = frozenset({"item", "role"})
+
+
+def parse_seat_line(line: str) -> tuple[str, dict[str, str]]:
+    """`CODE [item=GRPH-nn] [role=reviewer]` — the code first, then `key=value` tokens.
+
+    `until` builds `Seat(item=..., role=...)` in-process, so a seat it mints is bound and
+    typed. A seats file could say neither, so a bound seat handed to `up` produced a child
+    holding its item AND told to `claim_cluster` on top of it, and a reviewer seat produced
+    a child told it was a worker. Refused at read, not at spawn: a wave that has already
+    cut worktrees is the wrong place to learn a seats file was mistyped.
+    """
+    tokens = line.split()
+    code, extras = tokens[0], tokens[1:]
+    fields: dict[str, str] = {}
+    for tok in extras:
+        key, sep, value = tok.partition("=")
+        if not sep or key not in SEAT_LINE_KEYS or not value:
+            raise ValueError(
+                f"seats file: {tok!r} on line {line!r} is not one of "
+                f"{', '.join(sorted(SEAT_LINE_KEYS))}=value"
+            )
+        if key == "role" and value not in ("worker", "reviewer"):
+            raise ValueError(f"seats file: role={value!r} on line {line!r}; worker or reviewer")
+        fields[key] = value
+    return code, fields
+
 _FILE_MODE = 0o600
 
 

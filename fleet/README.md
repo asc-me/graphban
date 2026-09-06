@@ -69,6 +69,13 @@ GBFLEET_API_KEY=... gbfleet up \
     --server https://cloud.agentldgr.dev --seats-file seats.txt --adapter claude
 ```
 
+A seats file is one enrolment code per line. A line may also bind the seat to an item
+(`WORKER-7F3K item=GRPH-755` — the child gets the BOUND instruction and claims that item
+at registration, PRD-36) or name its role (`REVIEWER-2Q9C role=reviewer` — the child gets
+the reviewer instruction). Both are what `until` says when it mints a seat itself; here
+you say them. A mistyped token refuses the whole file before any worktree is cut, and
+`doctor --seats-file` refuses it the same way.
+
 Or hand the local surface to a planner over stdio:
 
 ```bash

@@ -34,7 +34,7 @@ from . import __version__, hostos
 from .adapters import ADAPTERS, AdapterError, resolve
 from .client import Graphban, ServerUnreachable
 from .lock import RepoLocked, probe
-from .seat import codes_from_text
+from .seat import codes_from_text, parse_seat_line
 from .state import NotARepository, UnsupportedPlatform, repo_root, state_root
 from .worktree import SEAT_FILES, _tracked_at
 
@@ -320,8 +320,15 @@ def check_seats(report: Report, seats_file: str | None) -> None:
         # non-blank line made a file of only `#` comments PASS with N seats while
         # `up` read [] and exited 2 (GRPH-599).
         codes = codes_from_text(path.read_text(encoding="utf-8"))
+        for line in codes:
+            parse_seat_line(line)
     except OSError as exc:
         report.add("seats file", FAIL, f"{path}: {exc}")
+        return
+    except ValueError as exc:
+        # `up` refuses the same line with exit 2; a doctor that counted it would PASS a
+        # file the wave then refuses.
+        report.add("seats file", FAIL, str(exc))
         return
     if not codes:
         report.add("seats file", FAIL, f"{path} has no seats",
