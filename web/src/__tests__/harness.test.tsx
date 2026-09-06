@@ -148,6 +148,64 @@ describe("Harness page", () => {
     expect(screen.getByLabelText("Binary versions")).toBeInTheDocument();
   });
 
+  it("shows the platform average with the band it was served as, never an exact count", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        platform: { cells_with_overlay: 1, min_orgs: 3, min_n: 20, max_org_share: 0.6 },
+        platform_reason: "",
+        cells: [cell({ platform: { rate: 0.71, n: "50–199", orgs: 4 } })],
+      }),
+    );
+    show();
+    const overlay = await screen.findByTestId("harness-platform");
+    expect(overlay).toHaveTextContent("platform average 71% across 4 organisations (n 50–199)");
+  });
+
+  it("says why a cell has no platform average instead of leaving it blank", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        cells: [cell({
+          platform: { rate: null,
+                      reason: "no platform average: fewer than three organisations contribute here" },
+        })],
+      }),
+    );
+    show();
+    expect(await screen.findByTestId("harness-platform")).toHaveTextContent(
+      "fewer than three organisations contribute here",
+    );
+  });
+
+  it("says a self-hosted instance has no overlay and why", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        platform: null,
+        platform_reason:
+          "no platform average on a self-hosted instance: it is built from other organisations' rollups, and there are none here",
+      }),
+    );
+    show();
+    expect(await screen.findByTestId("harness-no-platform")).toHaveTextContent(
+      "self-hosted instance",
+    );
+  });
+
+  it("breaks an org cell down by the projects behind it", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        scope: "org", org_id: "org_1", projects: ["p_one", "p_two"],
+        cells: [cell({ by_project: [
+          { project_id: "p_one", finished: 6, signed_off: 6 },
+          { project_id: "p_two", finished: 6, signed_off: 3 },
+        ] })],
+      }),
+    );
+    show();
+    expect(await screen.findByTestId("harness-by-project")).toHaveTextContent(
+      "p_one 6/6 · p_two 3/6",
+    );
+  });
+
   it("says nothing is measured rather than rendering an empty page", async () => {
     harness.mockResolvedValueOnce(report({ cells: [], below_floor_count: 0 }));
     show();

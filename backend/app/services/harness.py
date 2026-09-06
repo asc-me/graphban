@@ -634,7 +634,7 @@ def _cost(tokens_in: int, tokens_out: int, reported: int, signed_off_reported: i
 
 
 def report(db: Session, project_id: str, *, window_days: int | None = None,
-           versions: str = "current") -> dict:
+           versions: str = "current", overlay: bool = False) -> dict:
     """The Harness page's whole read: one entry per cell, each with its weekly series.
 
     `versions="current"` keeps only the newest `binary_version` seen for each vendor+model and
@@ -647,7 +647,18 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
     cutoff = week_of(_now() - timedelta(days=window))
     rows = [r for r in db.scalars(select(HarnessRollup).where(
         HarnessRollup.project_id == project_id)).all() if r.week >= cutoff]
+    out = _shape(rows, window=window, versions=versions)
+    out["project_id"] = project_id
+    out["scope"] = "project"
+    if overlay:
+        attach_platform(db, out)
+    return out
 
+
+def _shape(rows: list, *, window: int, versions: str, per_project: bool = False) -> dict:
+    """Turn rollup rows into the page's cells. Shared by the project and org reads, because
+    an org view that aggregated differently from the project view would be a second
+    definition of the same number."""
     cells: dict[tuple, dict] = {}
     for row in rows:
         key = (row.vendor, row.model, row.binary_version, row.lane, row.tier,
@@ -655,7 +666,13 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
         cell = cells.setdefault(key, {
             "finished": 0, "signed_off": 0, "bounced": 0, "tokens_in": 0, "tokens_out": 0,
             "tokens_reported": 0, "signed_off_reported": 0,
-            "sampling": {r: 0 for r in SAMPLED}, "series": [], "medians": []})
+            "sampling": {r: 0 for r in SAMPLED}, "series": [], "medians": [],
+            "by_project": {}})
+        if per_project:
+            seen = cell["by_project"].setdefault(row.project_id,
+                                                 {"finished": 0, "signed_off": 0})
+            seen["finished"] += row.finished
+            seen["signed_off"] += row.signed_off
         cell["finished"] += row.finished
         cell["signed_off"] += row.signed_off
         cell["bounced"] += row.bounced
@@ -711,9 +728,12 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
             "versions_seen": sorted(versions_seen[(vendor, model)], key=_version_key),
             "is_current_version": version == newest[(vendor, model)],
             "series": sorted(cell["series"], key=lambda p: p["week"]),
+            # D12: which of the org's projects the number came from. Empty at project scope,
+            # where the question does not arise.
+            "by_project": [{"project_id": pid, **counts}
+                           for pid, counts in sorted(cell["by_project"].items())],
         })
     return {
-        "project_id": project_id,
         "window_days": window,
         "versions": versions,
         "floor": FLOOR,
@@ -864,3 +884,172 @@ def _runner_up_cell(report: dict, cell: dict) -> dict | None:
                                               k["size_band"])
               and _cell_label(c) != _cell_label(cell)]
     return max(rivals, key=lambda c: c["rate"]) if rivals else None
+
+
+# ---- org scope and the platform overlay (D12, D13) --------------------------------------------
+
+#: D13's floor, all three required before a platform cell is served. `k >= 3` alone is not
+#: anonymity: three orgs where one holds most of the attempts is one org with two witnesses,
+#: and a contributor who knows its own numbers exactly could subtract itself out of a small
+#: average. The share cap and the banded counts are what answer that.
+PLATFORM_MIN_ORGS = 3
+PLATFORM_MIN_N = 20
+PLATFORM_MAX_ORG_SHARE = 0.6
+#: An org counts toward `orgs_contributing` only with this many of its own in the cell, so a
+#: dominant pair cannot be laundered by a third org with one attempt.
+PLATFORM_MIN_ORG_N = 5
+
+#: `n` leaves the platform as a band, never a count. This is the part that matters: an org
+#: knows its own contribution exactly, and an exact total would let it recover the rest.
+_N_BANDS = ((20, 49, "20–49"), (50, 199, "50–199"), (200, None, "200+"))
+
+
+def _band_n(n: int) -> str:
+    for low, high, label in _N_BANDS:
+        if n >= low and (high is None or n <= high):
+            return label
+    return f"<{PLATFORM_MIN_N}"
+
+
+def org_projects(db: Session, org_id: str) -> list[str]:
+    from app.models import Project
+
+    return [p.id for p in db.scalars(select(Project).where(Project.org_id == org_id)).all()]
+
+
+def org_report(db: Session, org_id: str, *, window_days: int | None = None,
+               versions: str = "current", overlay: bool = True) -> dict:
+    """The project view over an org's projects (D12).
+
+    The same aggregation, the same floor, the same rules — an org view that summed differently
+    would be a second definition of a number the project view already has. What it adds is
+    `by_project` on every cell, because "which of our five projects is this?" is the question
+    an org admin opens the page with.
+    """
+    projects = org_projects(db, org_id)
+    for project_id in projects:
+        roll_if_stale(db, project_id)
+    window = WINDOW_DAYS if window_days is None else window_days
+    cutoff = week_of(_now() - timedelta(days=window))
+    rows = [r for r in db.scalars(select(HarnessRollup).where(
+        HarnessRollup.project_id.in_(projects))).all() if r.week >= cutoff] if projects else []
+    out = _shape(rows, window=window, versions=versions, per_project=True)
+    out["org_id"] = org_id
+    out["scope"] = "org"
+    out["projects"] = projects
+    if overlay:
+        attach_platform(db, out)
+    return out
+
+
+def _platform_key(cell_key: dict) -> tuple:
+    return (cell_key["vendor"], cell_key["model"], cell_key["binary_version"],
+            cell_key["lane"], cell_key["tier"], cell_key["task_class"], cell_key["size_band"])
+
+
+def attach_platform(db: Session, report_out: dict) -> None:
+    """Hang the platform average on each cell that has one, or say why it does not.
+
+    Self-hosted has no overlay at all and the payload says so rather than leaving a null for
+    a reader to interpret as "no data yet". On the hosted service a cell is served only when
+    all three of D13's conditions hold, and the refusal names which one failed — "fewer than
+    three orgs contribute here" is actionable; "unavailable" is not.
+    """
+    from app.config import settings
+    from app.models import PlatformRollup
+
+    if not settings.hosted_mode:
+        report_out["platform"] = None
+        report_out["platform_reason"] = (
+            "no platform average on a self-hosted instance: it is built from other "
+            "organisations' rollups, and there are none here")
+        return
+    rows = db.scalars(select(PlatformRollup)).all()
+    by_key: dict[tuple, dict] = {}
+    for row in rows:
+        key = (row.vendor, row.model, row.binary_version, row.lane, row.tier,
+               row.task_class, row.size_band)
+        seen = by_key.setdefault(key, {"orgs": 0, "finished": 0, "signed_off": 0,
+                                       "top_share": 0.0})
+        seen["orgs"] = max(seen["orgs"], row.orgs_contributing)
+        seen["finished"] += row.finished
+        seen["signed_off"] += row.signed_off
+        seen["top_share"] = max(seen["top_share"], row.top_org_share or 0.0)
+    served = 0
+    for cell in report_out["cells"]:
+        agg = by_key.get(_platform_key(cell["key"]))
+        cell["platform"] = _platform_cell(agg)
+        served += 1 if cell["platform"] and cell["platform"].get("rate") is not None else 0
+    report_out["platform"] = {"cells_with_overlay": served,
+                              "min_orgs": PLATFORM_MIN_ORGS, "min_n": PLATFORM_MIN_N,
+                              "max_org_share": PLATFORM_MAX_ORG_SHARE}
+    report_out["platform_reason"] = ""
+
+
+def _platform_cell(agg: dict | None) -> dict | None:
+    if agg is None:
+        return None
+    if agg["orgs"] < PLATFORM_MIN_ORGS:
+        return {"rate": None, "reason": "no platform average: fewer than three organisations "
+                                        "contribute here"}
+    if agg["finished"] < PLATFORM_MIN_N:
+        return {"rate": None, "reason": f"no platform average: fewer than {PLATFORM_MIN_N} "
+                                        "attempts behind it"}
+    if agg["top_share"] > PLATFORM_MAX_ORG_SHARE:
+        return {"rate": None, "reason": "no platform average: one organisation holds most of "
+                                        "the attempts, so an average would be about them"}
+    return {"rate": round(agg["signed_off"] / agg["finished"], 2),
+            "n": _band_n(agg["finished"]), "orgs": agg["orgs"]}
+
+
+def platform_roll(db: Session) -> int:
+    """Recompute `platform_rollups` from the orgs that opted in (D13). Returns rows written.
+
+    Contribution is the ROLLUP, never a raw row and never an org id: what crosses the tenancy
+    boundary is a count per cell per week, and even the count leaves as a band at read time.
+    An org that has opted out is simply not in the input, which is why turning the toggle off
+    and recomputing is the whole of the purge — there is nothing of theirs left to delete.
+    """
+    from app.models import Organization, PlatformRollup, Project
+
+    orgs = [o.id for o in db.scalars(select(Organization).where(
+        Organization.telemetry_share.is_(True))).all()]
+    projects: dict[str, str] = {}
+    if orgs:
+        for project in db.scalars(select(Project).where(Project.org_id.in_(orgs))).all():
+            projects[project.id] = project.org_id
+    buckets: dict[tuple, dict] = {}
+    if projects:
+        for row in db.scalars(select(HarnessRollup).where(
+                HarnessRollup.project_id.in_(list(projects)))).all():
+            key = (row.week, row.vendor, row.model, row.binary_version, row.lane, row.tier,
+                   row.task_class, row.size_band)
+            cell = buckets.setdefault(key, {"per_org": {}})
+            org = projects[row.project_id]
+            seen = cell["per_org"].setdefault(org, {"finished": 0, "signed_off": 0})
+            seen["finished"] += row.finished
+            seen["signed_off"] += row.signed_off
+
+    for old in db.scalars(select(PlatformRollup)).all():
+        db.delete(old)
+    db.flush()
+    written = 0
+    now = _now()
+    for key, cell in buckets.items():
+        # An org with too few of its own in this cell does not COUNT as a contributor, but its
+        # attempts still sum: it is real work, and dropping it would bias the average toward
+        # whoever runs the most. What it may not do is make a two-org cell look like three.
+        counting = {o: v for o, v in cell["per_org"].items()
+                    if v["finished"] >= PLATFORM_MIN_ORG_N}
+        finished = sum(v["finished"] for v in cell["per_org"].values())
+        signed_off = sum(v["signed_off"] for v in cell["per_org"].values())
+        top = max((v["finished"] for v in cell["per_org"].values()), default=0)
+        week, vendor, model, version, lane, tier, task_class, band = key
+        db.add(PlatformRollup(
+            week=week, vendor=vendor, model=model, binary_version=version, lane=lane,
+            tier=tier, task_class=task_class, size_band=band,
+            orgs_contributing=len(counting), finished=finished, signed_off=signed_off,
+            top_org_share=(top / finished) if finished else None, rolled_at=now))
+        written += 1
+    db.flush()
+    return written
