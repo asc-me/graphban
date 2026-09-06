@@ -33,6 +33,13 @@ role the key does not permit is the server's refusal, printed in the server's ow
 widening a ceiling means minting a different credential, and keeping those two acts apart is
 the point of having a ceiling. It lands on the agent's next poll.
 
+## `gb` may already be taken on your machine
+
+`gb` is a common shell alias for `git branch`, and an alias WINS over a binary on `PATH` —
+the deployed walk hit this on the first command and got `git branch`'s usage text. Check with
+`type gb`; if it is aliased, either `unalias gb` or call it by path. Nothing here can detect
+that from inside the process: by the time `gb` runs, the alias did not.
+
 ## Why it is in this repository
 
 **Not a second repository**, for the reason [`fleet/README.md`](../fleet/README.md) gives for
