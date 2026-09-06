@@ -207,6 +207,10 @@ class Wave:
     unused_seats: int = 0
     offline: bool = False
     partition: Partition = field(default_factory=Partition)
+    #: What reached the remote, by branch (GRPH-750). A branch that did not is named here
+    #: with its reason: the reviewer reads the BRANCH, so a push that failed silently would
+    #: leave them inferring an empty diff.
+    published: dict = field(default_factory=dict)
     #: Files each worker actually changed, by branch. MEASURED here, written back by a
     #: holder with standing (`gbfleet.record.measured`) — the supervisor still cannot
     #: call `update_item`. Empty is reported and is not a write. See `touchpoints.py`.
@@ -716,6 +720,33 @@ def _reap_exited(wave: Wave, children: list[Child]) -> None:
         if git_paths is not None:
             wave.touched[child.branch] = tp_mod.including_stream(
                 child.adapter, git_paths, child.stdout_text())
+        _publish(wave, tree)
+
+
+def _publish(wave: Wave, tree: Worktree) -> None:
+    """Put the child's branch where the reviewer can read it (GRPH-750).
+
+    A step AFTER the reap rather than part of salvage. Salvage commits, which the supervisor
+    owes the work; this reaches outside the machine, which is a different kind of act and is
+    reported separately.
+
+    Found by re-walking PRD-38 criterion 17 after #639: the child's work was committed at
+    `6df78dc7` on its branch and the reviewer still bounced it — correctly — because that
+    branch existed only in the checkout the supervisor ran against. Nothing in this package
+    had ever run `git push`. On one machine that is invisible; with a reviewer on another
+    machine reading the remote, the PRD-17 D3 handoff pointed somewhere it could not reach.
+    """
+    # Takes the `Worktree`, not the Child, because the reap has already REMOVED the
+    # directory by the time this runs — resolving the repo from a path that no longer
+    # exists is how the first version of this failed every wave.
+    try:
+        pushed = wt_mod.push_branch(tree.repo, tree.branch, tree.base)
+    except Exception as exc:  # noqa: BLE001 — a failed publish is reported, never fatal
+        wave.failures.append(f"{tree.branch}: publish failed ({exc})")
+        return
+    wave.published[tree.branch] = pushed
+    if not pushed.ok and not pushed.skipped:
+        wave.failures.append(f"{tree.branch}: {pushed.reason}")
 
 
 def _report_exits(children: list[Child], client: Graphban) -> None:
@@ -1020,6 +1051,7 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
             wave.touched[child.branch] = tp_mod.including_stream(
                 child.adapter, git_paths, child.stdout_text(),
             )
+        _publish(wave, tree)
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
 
