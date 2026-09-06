@@ -53,6 +53,16 @@ from .toolset import Toolset
 #: Where the model endpoint lives. Named, never discovered — the same argument D3 makes
 #: about the test command.
 BASE_URL_ENV = "GBAGENT_BASE_URL"
+#: A bearer for the model endpoint, when it wants one. Environment only, never argv: the
+#: fleet's rule is that nothing carrying a credential goes on a command line (`ps` shows it),
+#: and the supervisor's child inherits the operator's environment (spawn.py). Unset means an
+#: unauthenticated endpoint — a local Ollama — which is what every walk so far has used.
+API_KEY_ENV = "GBAGENT_API_KEY"
+
+
+def endpoint_key() -> str:
+    """What `GBAGENT_API_KEY` holds, or "" — the only way a model credential reaches gbagent."""
+    return os.environ.get(API_KEY_ENV, "")
 
 #: What the model is told before anything else. Two jobs: say what it cannot do, so it does
 #: not spend 30-second turns finding out, and say what to reach for FIRST (S6).
@@ -216,7 +226,7 @@ def _models(base_url: str) -> list[str]:
     """What the endpoint serves, one per line. Empty when there is nothing to ask."""
     if not base_url:
         return []
-    session = OllamaSession(base_url, "", system="", task="")
+    session = OllamaSession(base_url, "", system="", task="", api_key=endpoint_key())
     try:
         return session.list_models()
     finally:
@@ -334,6 +344,7 @@ def _run(args: argparse.Namespace) -> int:
             args.base_url, args.model,
             system=SYSTEM,
             task=f"{task}\n\n{assignment}".strip(),
+            api_key=endpoint_key(),
         )
         try:
             outcome = loop.run(session, toolset, coordinator=coordinator,
@@ -401,7 +412,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--window", type=int, required=True)
     run.add_argument("--base-url", default="")
 
-    sub.add_parser("models", help=f"list what {BASE_URL_ENV} serves")
+    sub.add_parser("models", help=f"list what {BASE_URL_ENV} serves ({API_KEY_ENV} is sent as a bearer when set)")
     return parser
 
 
