@@ -407,3 +407,58 @@ def test_pushing_twice_is_a_no_op_rather_than_a_duplicate(recorded, git_repo: Pa
 
     second = wt.push_branch(tree.repo, tree.branch, tree.base)
     assert second.ok is True, second.reason
+
+
+# ---- GRPH-772: a harness only ever named outright must still be promotable ------------------
+
+def test_an_explicit_spawn_posts_the_matrix_view_of_the_row_it_ran(recorded):
+    """An explicit spawn resolves nothing, so PRD-37 D8 produces no explanation — and sending
+    none left the server unable to learn that harness's matrix status, so PRD-38's R1 could
+    never promote a row that is only ever named outright.
+
+    Sabotage: send `resolution=None` for an explicit spawn and the server is blind again.
+    """
+    fleet, posts = recorded
+    # A harness the committed matrix KNOWS, so there is something truthful to say about it.
+    # Naming one it does not know would make this test pass with the wiring removed, which is
+    # how the first version of it passed under its own sabotage.
+    _spawn(fleet, adapter="gbagent", enrolment_code="WORKER-1")
+    body = posts[0][1]
+    assert body["source"] == "explicit"
+    res = body.get("resolution")
+    assert res is not None, "an explicit spawn sent nothing, so the server cannot learn the row"
+    assert res["source"] == "explicit"
+    assert res["winner"]["harness"] == "gbagent"
+    assert res["winner"]["status"] in ("verified", "unverified", "failed")
+
+
+def test_an_explicit_spawn_of_an_unknown_adapter_sends_no_resolution(recorded):
+    """The other half: `fake` is not in the matrix, and inventing a status for it is the
+    failure the whole module exists to avoid."""
+    fleet, posts = recorded
+    _spawn(fleet, adapter="fake", model="named", enrolment_code="WORKER-1")
+    body = posts[0][1]
+    assert body["source"] == "explicit"
+    assert "resolution" not in body, "a row the matrix does not know must not get a status"
+
+
+def test_the_matrix_view_names_one_candidate_because_there_was_one(recorded):
+    """The shortlist has a single entry, and that is the honest shape: nothing was ranked and
+    nothing was dropped, so a replay over it correctly reports that no reordering changes it."""
+    from gbfleet import matrix as m
+
+    res = m.explicit_resolution("gbagent", "qwen3.6:35b-a3b-coding-mtp-det")
+    assert res["source"] == "explicit"
+    assert len(res["shortlist"]) == 1
+    assert res["runner_up"] is None and res["dropped_rows"] == []
+    assert res["winner"]["status"] in ("verified", "unverified", "failed", "unregistered")
+    # No score: nothing was scored. A zero here would read as "scored badly".
+    assert res["winner"]["score"] is None
+
+
+def test_an_adapter_the_matrix_does_not_know_gets_no_invented_status(recorded):
+    """The refusal that keeps this honest. Sabotage: fall back to a default row and an
+    unregistered adapter acquires a status nobody committed."""
+    from gbfleet import matrix as m
+
+    assert m.explicit_resolution("nosuch-harness", "") is None
