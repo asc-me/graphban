@@ -438,7 +438,15 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             # PRD-38 D7: the whole explanation, not just its verdict. A recommendation's replay
             # re-ranks THIS resolution under a proposed change, and it can only do that if the
             # scores and statuses that produced it were written down at the time.
-            resolution=resolution,
+            #
+            # An EXPLICIT spawn resolved nothing, so there is no explanation to send — and
+            # sending nothing left the server unable to learn that harness's matrix status at
+            # all, so R1 could never promote a row that is only ever named outright (GRPH-772).
+            # What goes instead is the matrix's own view of the row that ran, marked `explicit`
+            # so it is never mistaken for a choice the resolver made.
+            resolution=(resolution if via_tier else matrix_mod.explicit_resolution(
+                adapter, model or "", role=args.get("role") or "worker",
+                lane=args.get("lane") or "any", tier=tier, matrix=fleet.matrix)),
         )
 
         def remember(child: Child) -> None:

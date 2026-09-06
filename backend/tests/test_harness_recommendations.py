@@ -195,6 +195,31 @@ def test_a_card_carries_the_sibling_cells_it_did_not_fire_on(client, key, db, pr
     assert "generalis" in card["detail"]
 
 
+def test_r1_can_fire_on_a_harness_that_is_only_ever_spawned_explicitly(
+        client, key, db, proj, auth):
+    """8 / GRPH-772. `_status_seen` learns a row's status from recorded resolutions, and an
+    explicit spawn used to record none — so a harness nobody ever resolves TO could never be
+    promoted, which is exactly the row most in need of promoting on evidence.
+
+    The supervisor now posts the matrix's own view of the row it ran, marked `explicit`.
+    Sabotage: drop `resolution` from an explicit spawn's launch post and this stops firing.
+    """
+    planner = _agent(client, key, "planner")
+    named = _resolution("qwen-code:", statuses={"qwen-code:": "unverified"})
+    named["source"] = "explicit"
+    named["runner_up"] = None
+    named["shortlist"] = named["shortlist"][:1]
+    for i in range(10):
+        _attempt(client, key, db, planner, f"named{i}", vendor="qwen-code", model="",
+                 resolution=named)
+
+    cards = _by_rule(_cards(client, auth, proj), "R1")
+    assert len(cards) == 1, cards
+    assert cards[0]["draft"]["target"] == "qwen-code:"
+    # And its replay says the honest thing: one candidate, so nothing to re-rank.
+    assert cards[0]["replay"]["changed"] == 0
+
+
 # ---- 9: R2, R3, R4 -----------------------------------------------------------------------------
 
 def test_r2_fires_on_a_verified_row_that_keeps_bouncing(client, key, db, proj, auth):

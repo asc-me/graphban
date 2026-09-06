@@ -456,6 +456,46 @@ def declaration(harness: str, model: str = "", tier: str | None = None,
     return out
 
 
+def explicit_resolution(harness: str, model: str, *, role: str = "worker", lane: str = "any",
+                        tier: str = "", matrix: "Matrix | None" = None) -> dict | None:
+    """What the matrix says about a row somebody named OUTRIGHT (GRPH-772).
+
+    An explicit `spawn(adapter=…)` resolves nothing, so PRD-37 D8 produces no explanation and
+    the ledger records none — which means the server never learns that harness's matrix status
+    and PRD-38's R1 can never fire on a harness only ever spawned by name. A row that is only
+    ever chosen deliberately is exactly the kind that most needs promoting on evidence.
+
+    So this records what IS true: the matrix's own view of the row that ran. The shortlist has
+    ONE entry because there was one — nothing was ranked, nothing was dropped, and a replay
+    over it correctly reports that no reordering could have changed it. `source` says
+    `explicit` so nobody mistakes this for a choice the resolver made.
+
+    None when the matrix has no row for that harness and model: an unregistered adapter is
+    something we know nothing about, and inventing a status for it is the failure this whole
+    module exists to avoid.
+    """
+    mat = matrix or load()
+    rows = [r for r in mat.rows if r.harness == harness and (not model or r.model == model)]
+    if not rows:
+        return None
+    row = rows[0]
+    entry = {"harness": row.harness, "model": row.model, "vendor": row.vendor,
+             "status": row.status, "score": None, "order": row.order, "local": row.local,
+             "axes": {}}
+    return {
+        "source": "explicit",
+        "tier": tier or row.tier, "role": role, "lane": lane,
+        "eligible": {"named": 1},
+        "dropped": {},
+        "shortlist": [entry],
+        "dropped_rows": [],
+        "winner": entry,
+        "runner_up": None,
+        "profile": "none",
+        "refused": None,
+    }
+
+
 def unregistered_adapter_files() -> list[str]:
     """Adapter modules present on disk but absent from the registry — codex today. A fact the
     matrix must carry as a row (criterion 2), never as a silence."""
