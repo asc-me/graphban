@@ -387,7 +387,7 @@ def check_matrix(report: Report, matrix_path: str | None = None, *, server: str 
     launch, so the doctor's answer is the answer a spawn would give. An adapter file that is
     not registered is a line here, never a silence (criterion 2)."""
     from . import matrix as matrix_mod
-    from .mcp import read_preferences
+    from .mcp import read_status
 
     try:
         mat = matrix_mod.load(Path(matrix_path) if matrix_path else None)
@@ -400,11 +400,11 @@ def check_matrix(report: Report, matrix_path: str | None = None, *, server: str 
         if not any(r.harness == name and r.status == "unregistered" for r in mat.rows):
             report.add(f"matrix {name}", FAIL, "an adapter file exists but is not registered and "
                        "has no matrix row saying so", f"add a row with status = \"unregistered\" for {name}")
-    profile, policy, measured = None, None, None
+    profile, policy, measured, bands = None, None, None, None
     if server and api_key:
         client = Graphban(base_url=server, api_key=api_key, project_id=project or None)
         try:
-            profile, policy, note, measured = read_preferences(client)
+            profile, policy, note, measured, bands = read_status(client)
         finally:
             client.close()
         report.add("matrix preferences", PASS if "unreachable" not in note else UNKNOWN, note,
@@ -413,5 +413,6 @@ def check_matrix(report: Report, matrix_path: str | None = None, *, server: str 
         report.add("matrix preferences", UNKNOWN, "no server or key: resolving with no profile, no policy, nothing measured",
                    "pass --server and set GBFLEET_API_KEY to see what a spawn would actually resolve")
     installed = matrix_mod.installed_checker()
-    for name, status, detail in matrix_mod.doctor_lines(mat, installed, profile, policy, measured):
+    for name, status, detail in matrix_mod.doctor_lines(mat, installed, profile, policy,
+                                                        measured, bands):
         report.add(name, status, detail)

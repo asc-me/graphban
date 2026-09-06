@@ -1,4 +1,4 @@
-import { Activity, BarChart3, BookMarked, Building2, Check, ChevronDown, CreditCard, GitBranch, GitFork, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
+import { Activity, BarChart3, BookMarked, Building2, Check, ChevronDown, CreditCard, GitBranch, GitFork, Gauge, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
 import * as React from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 
@@ -222,6 +222,7 @@ const OBSERVE = [
   { to: "/live", icon: <Activity size={16} />, label: "Live" },
   { to: "/memory-review", icon: <Inbox size={16} />, label: "Memory", count: "review" as const },
   { to: "/lessons", icon: <BookMarked size={16} />, label: "Lessons" },
+  { to: "/harness", icon: <Gauge size={16} />, label: "Harness" },
 ];
 
 function ownsPath(pathname: string, prefix: string): boolean {

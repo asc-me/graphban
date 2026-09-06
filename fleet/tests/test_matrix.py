@@ -465,15 +465,22 @@ def test_doctor_resolves_under_the_servers_profile_policy_and_measured_cells(git
     def fake_read(client):
         return (m.Profile(user="alex", defaults=("gbagent", "claude"), weights={"cost": 1.0}),
                 m.Policy(local_only=True), "profile alex (2 default(s)); policy on; measured cells: 1",
-                {("gbagent", "qwen3.6:35b-a3b-coding-mtp-det", "backend", "cheap"): {"quality": m.Sample(0.8, 5)}})
+                {("gbagent", "qwen3.6:35b-a3b-coding-mtp-det", "backend", "cheap"): {"quality": m.Sample(0.8, 5)}},
+                # PRD-38 D9: the same cell split by difficulty band, printed beside the pooled
+                # rate. Shown to a person; never read by the resolver.
+                {("gbagent", "qwen3.6:35b-a3b-coding-mtp-det", "backend", "cheap"):
+                    {"S": m.Sample(1.0, 2), "L": m.Sample(0.67, 3)}})
     import gbfleet.mcp as mcp_mod
-    monkeypatch.setattr(mcp_mod, "read_preferences", fake_read)
+    monkeypatch.setattr(mcp_mod, "read_status", fake_read)
     monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
     report = doctor_mod.run(repo=git_repo, out=io.StringIO(), server="http://gb.invalid", api_key="k", project="p")
     by = {f.name: f for f in report.findings}
     assert by["matrix preferences"].status == "PASS" and "profile alex" in by["matrix preferences"].detail
     assert "profile alex" in by["resolve worker/cheap"].detail, "the resolution line names whose profile decided"
-    assert "quality/backend 0.80 (n=5)" in by["matrix gbagent:qwen3.6:35b-a3b-coding-mtp-det"].detail
+    row_line = by["matrix gbagent:qwen3.6:35b-a3b-coding-mtp-det"].detail
+    assert "quality/backend 0.80 (n=5)" in row_line
+    # The pooled 0.80 could be five doc fixes. The bands are what say it was not.
+    assert "bands L 0.67 (n=3), S 1.00 (n=2)" in row_line
     assert "local_only" in by["resolve worker/frontier"].detail or by["resolve worker/frontier"].status == "UNKNOWN", (
         "a local_only policy must show on the frontier resolution: every frontier row is cloud")
 

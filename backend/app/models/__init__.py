@@ -2041,6 +2041,10 @@ class HarnessRollup(Base):
     tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_reported: Mapped[int] = mapped_column(Integer, default=0)
+    #: Signed-off attempts AMONG the ones that reported tokens — the cost proxy's
+    #: denominator. Kept here because the raw rows it comes from may be past retention
+    #: by the time anyone reads the chart.
+    signed_off_reported: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     first_choice: Mapped[int] = mapped_column(Integer, default=0)
     fallback: Mapped[int] = mapped_column(Integer, default=0)
     explicit: Mapped[int] = mapped_column(Integer, default=0)

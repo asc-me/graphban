@@ -1649,3 +1649,65 @@ export interface LiveAgent {
     pr: { state: "recorded" | "unrecorded"; url?: string };
   }[];
 }
+
+// --- PRD-38: harness telemetry ------------------------------------------------------------
+
+export interface HarnessCellKey {
+  vendor: string;
+  model: string;
+  binary_version: string;
+  lane: string;
+  tier: string;
+  task_class: string;
+  size_band: string;
+}
+
+export interface HarnessSampling {
+  first_choice: number;
+  fallback: number;
+  explicit: number;
+  unknown: number;
+}
+
+export interface HarnessPoint {
+  week: string;
+  finished: number;
+  signed_off: number;
+  rate: number | null;
+  /** Below the sample floor: drawn grey and never joined to a solid neighbour. */
+  below_floor: boolean;
+  median_seconds: number | null;
+}
+
+/** Either a comparable proxy or a stated refusal — never a silent zero. */
+export type HarnessCost =
+  | { comparable: true; reported: number; finished: number; tokens_per_signed_off: number; tokens_in: number; tokens_out: number }
+  | { comparable: false; reported: number; finished: number; reason: string };
+
+export interface HarnessCell {
+  key: HarnessCellKey;
+  finished: number;
+  signed_off: number;
+  bounced: number;
+  rate: number | null;
+  below_floor: boolean;
+  sampling: HarnessSampling;
+  /** Set when one sampling reason dominates: a badge, never a correction to the rate. */
+  skew: { reason: keyof HarnessSampling; share: number } | null;
+  median_seconds: number | null;
+  cost: HarnessCost;
+  versions_seen: string[];
+  is_current_version: boolean;
+  series: HarnessPoint[];
+}
+
+export interface HarnessReport {
+  project_id: string;
+  window_days: number;
+  versions: "current" | "all";
+  floor: number;
+  skew_share: number;
+  generated_at: string;
+  cells: HarnessCell[];
+  below_floor_count: number;
+}

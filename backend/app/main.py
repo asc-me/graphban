@@ -24,6 +24,7 @@ from app.routers import (
     assistant,
     auth,
     fleet,
+    harness,
     items,
     learning,
     live,
@@ -262,6 +263,7 @@ app.include_router(requests.router, prefix=API)
 app.include_router(memory.router, prefix=API)
 app.include_router(artifacts.router, prefix=API)
 app.include_router(fleet.router, prefix=API)
+app.include_router(harness.router, prefix=API)
 app.include_router(live.router, prefix=API)
 app.include_router(learning.router, prefix=API)
 app.include_router(apikeys.router, prefix=API)

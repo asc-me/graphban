@@ -188,17 +188,32 @@ def read_preferences(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.P
     read ONCE at launch — a profile change is read at the next launch, not mid-run (PRD-36
     D16). A server that cannot be reached leaves both empty and says so, so a resolution made
     without them is explained as `profile: none` rather than mistaken for a preference."""
+    profile, policy, note, measured, _bands = read_status(client)
+    return profile, policy, note, measured
+
+
+def read_status(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.Policy", str,
+                                 "matrix_mod.Measured", "matrix_mod.Bands"]:
+    """`read_preferences` plus the band breakdown (PRD-38 D9), on ONE `fleet_status` call.
+
+    Two entry points rather than a fifth element on the old tuple: the resolver's callers must
+    not acquire a dimension the resolver cannot supply a value for, and only the doctor — which
+    prints for a person — has any business with bands.
+    """
     try:
         status = client.fleet_status() or {}
     except Exception as exc:  # noqa: BLE001 - the note is the point
-        return None, matrix_mod.Policy(), f"fleet_status unreachable ({str(exc)[:80]}); resolving with no profile or policy", {}
+        return (None, matrix_mod.Policy(),
+                f"fleet_status unreachable ({str(exc)[:80]}); resolving with no profile or policy",
+                {}, {})
     profile = matrix_mod.Profile.of(status.get("profile"))
     policy = matrix_mod.Policy.of(status.get("policy"))
     measured = matrix_mod.measured_of(status.get("measured"))
+    bands = matrix_mod.bands_of(status.get("measured"))
     note = (f"profile {profile.user} ({len(profile.defaults)} default(s))" if profile else "profile: none") + \
            ("; policy on" if status.get("policy") else "; policy: none") + \
            f"; measured cells: {len(measured)}"
-    return profile, policy, note, measured
+    return profile, policy, note, measured, bands
 
 
 @dataclass
