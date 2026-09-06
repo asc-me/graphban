@@ -302,6 +302,11 @@ export const api = {
   revokeUnusedSeats: (projectId: string, wave?: string) =>
     request<{ revoked: number }>("/fleet/seats/revoke-unused",
       { method: "POST", body: JSON.stringify({ project_id: projectId, wave }) }),
+  setAgentRole: (agentId: string, role: string, reason = "") =>
+    request<{ agent_id: string; active_role: string; takes_effect: string }>(
+      `/fleet/agents/${encodeURIComponent(agentId)}/role`,
+      { method: "PUT", body: JSON.stringify({ role, reason }) },
+    ),
   dismissAgent: (agentId: string, undo = false) =>
     request<{ id: string; dismissed: boolean }>(`/fleet/agents/${agentId}/dismiss`,
       { method: "POST", body: JSON.stringify({ undo }) }),

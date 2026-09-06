@@ -497,6 +497,10 @@ def list_agents(db: Session, project_id: str | None = None, *,
             # Why an all-in-one credential produces an all-in-one agent, shown next to it.
             # `single` means a role hint cannot narrow this key; NULL means it can (GRPH-362).
             "credential_posture": getattr(keys.get(a.api_key_id), "posture", None),
+            # WHAT this agent was last told no for, and why (GRPH-774). Null once it makes a
+            # successful call: consecutive is the property that matters, and a refusal an
+            # agent has already recovered from is history, not a state.
+            "last_refusal": a.last_refusal,
             # Un-enrolled means the single-agent posture — legitimate, but not part of a
             # fleet, which is why the view groups them apart rather than mixing them in.
             "enrolled": a.enrolment_id is not None,
@@ -1022,11 +1026,17 @@ def _hint_for(tool: str, role: str) -> str:
 QUARANTINE_AFTER_REFUSALS = 3
 
 
-def record_refusal(db: Session, *, agent_id: str | None) -> int:
-    """Count a refusal against an agent and return the running total.
+def record_refusal(db: Session, *, agent_id: str | None, tool: str = "",
+                   reason: str = "") -> int:
+    """Count a refusal against an agent, remember what it was, and return the running total.
 
     Counted on the AGENT, not the key: a key may carry several terminals, and quarantining
     all of them because one drifted would take down the healthy ones with it.
+
+    The REASON is kept too (GRPH-774). The count alone made the roster say "idle worker" for
+    an agent being told no on every planner-only call it made, and diagnosing one took a
+    database query against the events table. `{tool, reason}` on the row is the difference
+    between a fleet a human can read and one they have to interrogate.
     """
     if not agent_id:
         return 0
@@ -1037,6 +1047,8 @@ def record_refusal(db: Session, *, agent_id: str | None) -> int:
     count = int(caps.get("refusals", 0)) + 1
     caps["refusals"] = count
     agent.capabilities = caps
+    agent.last_refusal = {"tool": tool, "reason": reason, "count": count,
+                          "at": datetime.now(timezone.utc).isoformat()}
     db.commit()
     return count
 
@@ -1048,11 +1060,14 @@ def clear_refusals(db: Session, agent_id: str | None) -> None:
     if not agent_id:
         return
     agent = db.get(Agent, agent_id)
-    if agent is None or not (agent.capabilities or {}).get("refusals"):
+    if agent is None or not ((agent.capabilities or {}).get("refusals") or agent.last_refusal):
         return
     caps = dict(agent.capabilities or {})
     caps.pop("refusals", None)
     agent.capabilities = caps
+    # Cleared with the count, because a stale reason next to a zero count reads as a live
+    # problem — which is the same defect this was added to fix, pointing the other way.
+    agent.last_refusal = None
     db.commit()
 
 

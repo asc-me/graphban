@@ -855,6 +855,10 @@ class Agent(Base):
     capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
     worktree: Mapped[str] = mapped_column(String, default="")
     branch: Mapped[str] = mapped_column(String, default="")
+    #: The last thing this agent was told no for, and why (GRPH-774): `{tool, reason, at,
+    #: count}`. A server VERDICT, so it lives here rather than in `capabilities`, which is
+    #: what the agent declares about itself and is echoed back as such.
+    last_refusal: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # An orphaned branch is DERIVED from `branch` + presence — see `fleet.has_orphaned_branch`
     # (GRPH-396). It used to be a column written in one place, inside `quarantine()`, which is
     # only reachable by an agent making refused calls: so the flag fired for the DRIFTING agent

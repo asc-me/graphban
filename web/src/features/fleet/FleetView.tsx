@@ -251,8 +251,9 @@ function heartbeatLabel(at: string | null): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-function AgentRow({ a, onDismiss, dismissed }: {
-  a: FleetAgent; onDismiss?: (id: string, undo?: boolean) => void; dismissed?: boolean;
+function AgentRow({ a, onDismiss, onRetask, dismissed }: {
+  a: FleetAgent; onDismiss?: (id: string, undo?: boolean) => void;
+  onRetask?: (id: string, role: string) => void; dismissed?: boolean;
 }) {
   const offline = a.state === "offline";
   const quarantined = a.state === "quarantined";
@@ -300,12 +301,45 @@ function AgentRow({ a, onDismiss, dismissed }: {
             <span className="ml-2 text-[color:var(--color-st-blocked)]">branch orphaned</span>
           )}
         </div>
+        {/* WHAT it was last told no for. The count alone said "idle worker" for an agent
+            being refused on every planner-only call it made, and diagnosing one took a
+            database query (GRPH-774). Cleared by its next successful call, so this is a live
+            problem rather than history. */}
+        {a.last_refusal && (
+          <div data-testid="agent-refusal"
+               className="mt-0.5 text-[11px] text-[color:var(--color-st-blocked)]">
+            refused {a.last_refusal.tool}
+            {a.last_refusal.count > 1 ? ` ×${a.last_refusal.count}` : ""} — {a.last_refusal.reason}
+          </div>
+        )}
       </div>
       <div className="flex flex-col items-end gap-1">
-        <span className={cn("rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase",
-                            ROLE_TONE[a.active_role] ?? "text-muted border-line-2")}>
-          {a.active_role}
-        </span>
+        {onRetask && a.credential_posture !== "single" ? (
+          /* The human above the fleet can re-task an agent (GRPH-774). Agents could re-task
+             each other through `assign_role` and the person who owns the credential could
+             not, so a project whose only live agent was a worker had no way forward. The
+             CREDENTIAL CEILING still decides what is reachable — the server refuses a role
+             the key does not permit, and an all-in-one posture has no selector at all
+             because narrowing it is not a role change. */
+          <select
+            aria-label={`Role for ${a.id}`}
+            data-testid="agent-role"
+            className={cn("rounded-md border bg-transparent px-1.5 py-0.5 font-mono",
+                          "text-[10px] uppercase",
+                          ROLE_TONE[a.active_role] ?? "text-muted border-line-2")}
+            value={a.active_role}
+            onChange={(e) => onRetask(a.id, e.target.value)}
+          >
+            {["planner", "worker", "reviewer"].map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        ) : (
+          <span className={cn("rounded-md border px-2 py-0.5 font-mono text-[10px] uppercase",
+                              ROLE_TONE[a.active_role] ?? "text-muted border-line-2")}>
+            {a.active_role}
+          </span>
+        )}
         <span className="font-mono text-[10px] text-faint">{a.state}</span>
         {/* WHEN it was last heard from, not just that it is offline. `offline` alone cannot
             tell a process that died thirty seconds ago from one gone for a week, and those
@@ -410,6 +444,18 @@ export function FleetView() {
       setError(errorDetail(e, "could not issue the seats"));
     } finally {
       setMinting(false);
+    }
+  }
+
+  async function retask(agentId: string, role: string) {
+    setError("");
+    try {
+      await api.setAgentRole(agentId, role, "re-tasked from the Fleet view");
+      await refetch();
+    } catch (e) {
+      // The ceiling refusing is the ordinary case, not a fault: a credential minted for one
+      // role cannot be talked past, and the server's message names what would have to change.
+      setError(errorDetail(e, "could not change that agent's role"));
     }
   }
 
@@ -728,13 +774,13 @@ export function FleetView() {
             </Empty>
           ) : (
             <div className="space-y-2">
-              {fleetAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} />)}
+              {fleetAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask} />)}
               {soloAgents.length > 0 && (
                 <>
                   <div className="pt-1 text-[11px] text-faint">
                     {soloAgents.length} un-enrolled · single-agent — API key, no seat
                   </div>
-                  {soloAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} />)}
+                  {soloAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask} />)}
                 </>
               )}
               {goneAgents.length > 0 && (
@@ -743,7 +789,7 @@ export function FleetView() {
                   {showGone ? "Hide" : "Show"} {goneAgents.length} gone
                 </button>
               )}
-              {showGone && goneAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} />)}
+              {showGone && goneAgents.map((a) => <AgentRow key={a.id} a={a} onDismiss={dismiss} onRetask={retask} />)}
               {dismissed.length > 0 && (
                 <button onClick={() => setShowDismissed((v) => !v)}
                         className="w-full text-left text-[11px] text-faint hover:text-fg-2">

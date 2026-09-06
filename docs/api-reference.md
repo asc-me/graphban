@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 126 of the 199 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 127 of the 200 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -188,6 +188,7 @@ failure the propose-only boundary exists to prevent.
 | --- | --- | --- | --- |
 | GET | `/api/fleet` | JWT | Roster + review queue + cluster board in one read |
 | POST | `/api/fleet/keys` | JWT | Mint a credential narrowed to one role and tagged to a wave |
+| PUT | `/api/fleet/agents/{agent_id}/role` | JWT | Re-task a live agent as the human who owns the credential (GRPH-774): `{role, reason}`. Takes the project's WRITE gate. The credential ceiling still decides — a role the key does not permit is 409, and an all-in-one posture refuses; widening a ceiling means minting a different credential. Lands on the agent's next poll |
 | GET | `/api/fleet/end-wave` | JWT | What ending the wave would destroy, for the confirm |
 | POST | `/api/fleet/end-wave` | JWT | Revoke the wave's keys and release everything they hold |
 | GET | `/api/fleet/profile` | JWT | The caller's harness preferences (PRD-37): default and per-project override side by side, plus which one is in force. `project_id` optional |

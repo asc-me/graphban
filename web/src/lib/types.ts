@@ -1259,6 +1259,14 @@ export interface AuditCoverage {
 
 
 /** PRD-17 D5. `state` is DERIVED server-side — an agent that died never reported it. */
+/** What an agent was last told no for (GRPH-774). Null once it makes a successful call. */
+export interface AgentRefusal {
+  tool: string;
+  reason: string;
+  count: number;
+  at: string;
+}
+
 export interface FleetAgent {
   id: string;
   key: string;
@@ -1285,6 +1293,10 @@ export interface FleetAgent {
   branch: string;
   branch_orphaned: boolean;
   last_seen_at: string | null;
+  /** What this agent was last told no for, and why (GRPH-774). Null once it makes a
+   *  successful call — consecutive is the property that matters, so a refusal it has already
+   *  recovered from is history rather than a state. */
+  last_refusal?: AgentRefusal | null;
   /** `phase` is DERIVED server-side from signals every vendor already writes — no adapter
    *  reports it (GRPH-522). `stale` and `unknown` are admissions, not activities: render
    *  them as such, never as an idle or healthy row. */
