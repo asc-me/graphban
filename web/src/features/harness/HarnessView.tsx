@@ -64,6 +64,14 @@ export function HarnessView() {
         ) : (
           <div className="mx-auto flex max-w-4xl flex-col gap-3">
             <Recommendations projectId={activeId} />
+            {data.platform === null && data.platform_reason && (
+              <div
+                data-testid="harness-no-platform"
+                className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+              >
+                {data.platform_reason}
+              </div>
+            )}
             {data.below_floor_count > 0 && (
               <div
                 data-testid="harness-floor-note"
@@ -150,6 +158,27 @@ function CellRow({ cell, floor }: { cell: HarnessCell; floor: number }) {
             : cell.cost.reason}
         </span>
       </div>
+
+      {cell.platform && (
+        <div className="mt-2 font-mono text-[10.5px]" data-testid="harness-platform">
+          {cell.platform.rate === null ? (
+            <span className="text-faint">{cell.platform.reason}</span>
+          ) : (
+            <span className="text-muted">
+              platform average {Math.round(cell.platform.rate * 100)}% across{" "}
+              {cell.platform.orgs} organisations (n {cell.platform.n})
+            </span>
+          )}
+        </div>
+      )}
+
+      {cell.by_project && cell.by_project.length > 0 && (
+        <div className="mt-1.5 font-mono text-[10.5px] text-faint" data-testid="harness-by-project">
+          {cell.by_project
+            .map((p) => `${p.project_id} ${p.signed_off}/${p.finished}`)
+            .join(" · ")}
+        </div>
+      )}
 
       <Series points={cell.series} />
     </div>

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import User
 from app.security import authz
-from app.security.deps import get_current_user
+from app.security.deps import get_agent_key, get_current_user
 from app.services import events as events_svc
 from app.services import harness as harness_svc
 from app.services import harness_rules
@@ -24,7 +24,8 @@ router = APIRouter(prefix="/harness", tags=["harness"])
 
 
 @router.get("")
-def harness_report(project_id: str, window_days: int | None = None,
+def harness_report(project_id: str | None = None, org_id: str | None = None,
+                   window_days: int | None = None,
                    versions: str = Query("current", pattern="^(current|all)$"),
                    db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
@@ -35,10 +36,18 @@ def harness_report(project_id: str, window_days: int | None = None,
     two versions of one harness are two things and pooling them would hide a regression inside
     an average.
     """
-    authz.require_readable(db, user.id, project_id)
     if window_days is not None and (window_days < 1 or window_days > 1000):
         raise HTTPException(422, "window_days must be between 1 and 1000")
-    return harness_svc.report(db, project_id, window_days=window_days, versions=versions)
+    if org_id:
+        # D12: org scope is for org ADMINS. A member sees the projects they can read, one at a
+        # time, which is what project scope already is.
+        authz.require_org_admin(db, user.id, org_id)
+        return harness_svc.org_report(db, org_id, window_days=window_days, versions=versions)
+    if not project_id:
+        raise HTTPException(422, "name a project_id or an org_id")
+    authz.require_readable(db, user.id, project_id)
+    return harness_svc.report(db, project_id, window_days=window_days, versions=versions,
+                              overlay=True)
 
 
 @router.get("/recommendations")
@@ -127,3 +136,54 @@ def mark_recommendation(body: MarkIn, db: Session = Depends(get_db),
     db.commit()
     return {"card_key": row.card_key, "state": "accepted" if row.accepted_at else "dismissed",
             "evidence_hash": row.evidence_hash, "lesson_drafted": lesson}
+
+
+class ShareIn(BaseModel):
+    org_id: str
+    telemetry_share: bool
+
+
+@router.put("/platform/share")
+def set_telemetry_share(body: ShareIn, db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """Opt an organisation into (or out of) the platform average (D13).
+
+    Off by default and hosted-only. **Opting out recomputes at once**: an org that leaves must
+    not stay inside the aggregate anyone reads next, and opt-in that keeps your numbers after
+    you leave is not opt-in. Nothing of the org's crosses the boundary either way except
+    weekly cell counts — never a raw row, never an org id.
+    """
+    from app.config import settings
+    from app.models import Organization
+
+    if not settings.hosted_mode:
+        raise HTTPException(404, "the platform average is a hosted-service feature")
+    authz.require_org_admin(db, user.id, body.org_id)
+    org = db.get(Organization, body.org_id)
+    if org is None:
+        raise HTTPException(404, "organization not found")
+    org.telemetry_share = bool(body.telemetry_share)
+    db.flush()
+    rows = harness_svc.platform_roll(db)
+    events_svc.record_user(db, user, action="set_telemetry_share", target_type="org",
+                           target_id=body.org_id,
+                           meta={"telemetry_share": org.telemetry_share, "cells": rows})
+    db.commit()
+    return {"org_id": org.id, "telemetry_share": org.telemetry_share,
+            "platform_cells": rows}
+
+
+@router.post("/platform/roll")
+def roll_platform(db: Session = Depends(get_db), key=Depends(get_agent_key)):
+    """Recompute the platform rollups. The nightly job's entry point (D13).
+
+    API-key authenticated like `POST /api/learning/run`, because the caller is a scheduler.
+    It reads only orgs that opted in and writes only aggregates.
+    """
+    from app.config import settings
+
+    if not settings.hosted_mode:
+        raise HTTPException(404, "the platform average is a hosted-service feature")
+    rows = harness_svc.platform_roll(db)
+    db.commit()
+    return {"cells": rows}

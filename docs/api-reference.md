@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 123 of the 196 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 126 of the 199 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -199,6 +199,9 @@ failure the propose-only boundary exists to prevent.
 | GET | `/api/harness` | JWT | The Harness page's whole read (PRD-38 PR 2): one entry per vendor x model x version x lane x tier x task class x size band, each with its weekly series, `n`, `below_floor`, sampling counts, skew badge, median seconds and a cost proxy that states when it will not compare. `window_days` (default 90); `versions=current` (default, newest binary per vendor+model) or `all` |
 | GET | `/api/harness/recommendations` | JWT | Cards the four PRD-38 rules produce (R1 promote, R2 demote, R3 reweight, R4 policy): each with the cells it fired on, the sibling cells it did not, its thresholds, drafted text or target, and a **replay** re-ranking the resolutions recorded at launch under the proposed change. Hides cards this caller already accepted or dismissed at the same `evidence_hash` (`include_seen=true` shows them). Reading also drafts lesson candidates for cells that just crossed the sample floor; nothing is published |
 | POST | `/api/harness/recommendations/mark` | JWT | Record that this caller accepted or dismissed a card at this evidence (`card_key`, `evidence_hash`, `action`). **Applies nothing** — R1/R2 accept by a commit somebody makes, R3/R4 by PUTting the PRD-37 profile or policy routes. An accepted card drafts a lesson candidate; when its numbers move the hash moves and the card returns |
+| PUT | `/api/harness/platform/share` | JWT (org admin) | Opt an organisation into or out of the platform average (PRD-38 D13). Hosted only; default off. Opting out recomputes the aggregate immediately, because opt-in that keeps your numbers after you leave is not opt-in |
+| POST | `/api/harness/platform/roll` | API key | Recompute `platform_rollups` from the orgs that opted in — the nightly job's entry point. Hosted only. Reads rollups, never raw rows, and writes no org id |
+| GET | `/api/admin/harness/platform` | JWT (operator) | The platform view whole, with `orgs_contributing`, `top_org_share` and whether each cell passes the serving floor. Gated twice (hosted + platform-admin), 404 otherwise |
 
 ## Live (PRD-33)
 

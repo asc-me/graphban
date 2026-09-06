@@ -1699,10 +1699,24 @@ export interface HarnessCell {
   versions_seen: string[];
   is_current_version: boolean;
   series: HarnessPoint[];
+  /** Which of an org's projects this cell came from. Empty at project scope. */
+  by_project?: { project_id: string; finished: number; signed_off: number }[];
+  platform?: HarnessPlatformCell | null;
 }
 
+/** The platform average for one cell, or a stated reason there is none (PRD-38 D13). */
+export type HarnessPlatformCell =
+  | { rate: number; n: string; orgs: number }
+  | { rate: null; reason: string };
+
 export interface HarnessReport {
-  project_id: string;
+  project_id?: string;
+  org_id?: string;
+  scope?: "project" | "org";
+  projects?: string[];
+  /** Null on a self-hosted instance; `platform_reason` says why. */
+  platform?: { cells_with_overlay: number; min_orgs: number; min_n: number; max_org_share: number } | null;
+  platform_reason?: string;
   window_days: number;
   versions: "current" | "all";
   floor: number;

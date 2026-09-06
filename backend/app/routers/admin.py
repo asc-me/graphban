@@ -144,6 +144,38 @@ def admin_whoami(admin: User = Depends(require_platform_admin)):
     )
 
 
+@router.get("/harness/platform")
+def platform_harness(db: Session = Depends(get_db)):
+    """The platform view whole, for the operator (PRD-38 D13).
+
+    The floor exists so that no ORGANISATION can read another's numbers out of an average.
+    The operator already administers the instance those numbers live on, so withholding the
+    aggregate here would be theatre — but the cells still carry `orgs_contributing` and
+    `top_org_share`, because "this average is three orgs, one of which is 80% of it" is the
+    thing an operator actually needs to know before quoting it anywhere.
+    """
+    from app.models import PlatformRollup
+    from app.services import harness as harness_svc
+
+    rows = db.scalars(select(PlatformRollup)).all()
+    cells = [{
+        "week": r.week,
+        "cell": {"vendor": r.vendor, "model": r.model, "binary_version": r.binary_version,
+                 "lane": r.lane, "tier": r.tier, "task_class": r.task_class,
+                 "size_band": r.size_band},
+        "orgs_contributing": r.orgs_contributing,
+        "finished": r.finished, "signed_off": r.signed_off,
+        "rate": round(r.signed_off / r.finished, 3) if r.finished else None,
+        "top_org_share": r.top_org_share,
+        "served": (r.orgs_contributing >= harness_svc.PLATFORM_MIN_ORGS
+                   and r.finished >= harness_svc.PLATFORM_MIN_N
+                   and (r.top_org_share or 0) <= harness_svc.PLATFORM_MAX_ORG_SHARE),
+    } for r in sorted(rows, key=lambda r: (r.week, r.vendor, r.model))]
+    return {"cells": cells, "min_orgs": harness_svc.PLATFORM_MIN_ORGS,
+            "min_n": harness_svc.PLATFORM_MIN_N,
+            "max_org_share": harness_svc.PLATFORM_MAX_ORG_SHARE}
+
+
 @router.get("/orgs", response_model=list[AdminOrgOut])
 def list_orgs(db: Session = Depends(get_db)):
     """Every tenant, with plan + usage against its limits. Metadata only — no tenant
