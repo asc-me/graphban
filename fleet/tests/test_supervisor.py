@@ -670,7 +670,7 @@ def test_main_up_prints_the_wave_report_after_a_wave(tmp_path: Path, monkeypatch
             pass
 
     monkeypatch.setattr(cli, "Graphban", _Client)
-    monkeypatch.setattr(cli, "up", lambda *a, **k: Wave())
+    monkeypatch.setattr(cli, "up", lambda *a, **k: Wave(reason="idle"))
 
     rc = cli.main(["up", "--repo", str(tmp_path), "--server", "http://gb.invalid",
                    "--seats-file", str(seats), "--adapter", "claude"])
