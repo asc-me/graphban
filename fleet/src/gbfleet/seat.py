@@ -105,6 +105,27 @@ class Seat:
         }
 
 
+#: Appended to every BUILDER instruction, and to no reviewer's (PRD-38 walk finding).
+#:
+#: Six children across two harnesses produced exactly the right text on the deployed instance
+#: and committed none of it — the branch sat at its base every time, and a reviewer bounced
+#: three of them for that before anyone looked. Nothing anywhere had ever told a child to
+#: commit: the instruction names the branch it is on and says to move the item to review, and
+#: a child that edits files and does that has followed it to the letter.
+#:
+#: The reason it matters is not tidiness. The whole review handoff is "look at the branch"
+#: (PRD-17 D3), because each worker edits in its own worktree and no reviewer can see it. An
+#: uncommitted change is therefore invisible to review AND to `touchpoints.measured`, which
+#: diffs against the recorded base — so the ledger records an attempt that did nothing, and
+#: the harness telemetry that reads those outcomes (PRD-38) ends up measuring whether a child
+#: remembered to commit rather than whether it could do the work.
+COMMIT_CLAUSE = (
+    "\nCOMMIT your work on {branch!r} before you move the item to review. The reviewer reads "
+    "the BRANCH, never your worktree (PRD-17 D3), so an uncommitted change is invisible to "
+    "review and to the touchpoint measurement, and will be bounced for it — the text being "
+    "right is not the same as the work existing."
+)
+
 #: What the child is told at startup. The negation is deliberate and is the supervisor's
 #: half of D-b — weak on its own (a prompt is the weakest guard there is), which is why
 #: GRPH-445 also narrows the tool description the child actually reads.
@@ -117,6 +138,7 @@ INSTRUCTION = (
     "Then claim work with claim_cluster (wait_seconds=0) and EXIT when there is "
     "nothing to claim. Do not call claim_next — it reserves no files. Exiting on "
     "empty is the normal end of your run, not a failure."
+    + COMMIT_CLAUSE
 )
 
 REVIEWER_INSTRUCTION = (
@@ -143,6 +165,7 @@ BOUND_INSTRUCTION = (
     "claim_cluster or claim_next; you have your work. If `assigned.state` is `taken`, "
     "somebody else holds it (the reply says who): EXIT — that is the normal end of your "
     "run, not a failure."
+    + COMMIT_CLAUSE
 )
 
 
