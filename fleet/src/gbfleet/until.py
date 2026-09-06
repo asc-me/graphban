@@ -364,7 +364,7 @@ def _loop(
             elif want and launch_for is not None and matrix is not None:
                 # PRD-37: no flag for this tier — the matrix resolves under the profile and
                 # policy read at launch, and the log says how.
-                res = matrix.resolve(tier=want, role="worker", profile=profile, policy=policy,
+                res = matrix.resolve(tier=want, profile=profile, policy=policy,
                                      measured=measured, installed=matrix_mod.installed_checker())
                 if res.winner is not None:
                     factory = launch_for(res.winner.harness, res.winner.model)
