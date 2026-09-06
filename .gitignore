@@ -54,6 +54,9 @@ dist-release/
 # Cursor MCP config — holds a real API key; copy .cursor/mcp.json.example instead
 .cursor/mcp.json
 
+# Project MCP config — holds a real API key
+.mcp.json
+
 # Cursor claim manifest — per-session runtime state (see .cursor/hooks/README.md)
 .cursor/graphban-claim.json
 .cursor/agentledger-claim.json

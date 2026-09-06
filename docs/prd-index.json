@@ -1,7 +1,7 @@
 {
   "scope": {
     "covers": "PRDs with a document in docs/ that names its ledger row",
-    "indexed": 11,
+    "indexed": 12,
     "note": "NOT the list of PRDs. A ledger-only PRD has no repo copy to compare and is absent here by construction; anything reading `prds` as complete is seeing a fraction of them."
   },
   "prds": {
@@ -234,6 +234,20 @@
         "9. Risks and open questions",
         "10. Prior art",
         "11. Amendments"
+      ]
+    },
+    "GRPH-P39": {
+      "file": "docs/prd-39-fleet-two-axes.md",
+      "status": "approved",
+      "sections": [
+        "1. Overview",
+        "2. Problem",
+        "3. Goals",
+        "4. Key decisions",
+        "5. Slices",
+        "6. Failure modes",
+        "7. Acceptance",
+        "8. Open questions"
       ]
     }
   },
