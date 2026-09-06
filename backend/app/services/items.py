@@ -9,7 +9,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Item, Prd, Project, utcnow
+from app.models import Agent, Item, Prd, Project, utcnow
 from app.services import keys
 
 logger = logging.getLogger(__name__)
@@ -1201,6 +1201,11 @@ def get_item_details(db: Session, item_id: str) -> dict | None:
         # went missing from it too (GRPH-378/379). An author reclaiming a bounced item comes
         # HERE to find out what to fix.
         "claimed_by": item.claimed_by,
+        # PRD-17 D3's handoff: WHERE the work landed. Missing from this read is the third
+        # instance of the pattern the comment above names — a field that exists, matters most
+        # to the reviewer, and is absent from the read the reviewer actually makes (GRPH-752).
+        # "" means nobody has claimed it yet, which is different from the concept not existing.
+        "branch": item.branch or "",
         "built_by": item.built_by,
         # Who signed it off. Together with `built_by` this is where a self-review is visible:
         # equal values mean one agent was the only thing that ever looked at the work.
@@ -1392,9 +1397,25 @@ def _try_claim(db: Session, cand: Item, agent_id: str) -> Item | None:
     # `onupdate` a few microseconds after `claimed_at` is computed here, which made the
     # untouched case indistinguishable from a worked one (GRPH-434).
     now = utcnow()
-    stmt = stmt.values(claimed_by=agent_id, claimed_at=now, assignee=agent_id,
-                       built_by=agent_id, status="in_progress", updated_at=now,
-                       bounce_pinned_to=None, bounce_pinned_until=None)
+    values = dict(claimed_by=agent_id, claimed_at=now, assignee=agent_id,
+                  built_by=agent_id, status="in_progress", updated_at=now,
+                  bounce_pinned_to=None, bounce_pinned_until=None)
+    # PRD-17 D3 says this column IS the handoff: "Where the work landed. Travels to the
+    # reviewer, who otherwise cannot see the diff." It existed and nothing ever filled it, so
+    # a reviewer handed an item had no pointer to the branch carrying the work and read the
+    # base branch instead — measured on the deployed instance, where a branch sitting on the
+    # remote at 8778e9dd was reported as "absent from the reviewed tree" (GRPH-752).
+    #
+    # Derived, not asked for. The child already registers with its branch, so the server knows
+    # it; an instruction to set it is one more thing a child can forget, which is how the two
+    # links before this one broke (#639, #641). It moves with the claimant for the same reason
+    # `built_by` does — the work will land on THIS agent's branch — but an agent that reports
+    # no branch never CLEARS one, because losing the pointer is the defect, not the fix.
+    claimant = db.get(Agent, agent_id)
+    branch = ((claimant.branch if claimant is not None else "") or "").strip()
+    if branch:
+        values["branch"] = branch
+    stmt = stmt.values(**values)
     if db.execute(stmt).rowcount == 1:
         db.commit()
         # Holding a lease outranks having been dismissed: the roster must never hide work.
