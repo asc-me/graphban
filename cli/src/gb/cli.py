@@ -9,10 +9,14 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
+import shutil
+import subprocess
 import sys
 
-from gb import config
-from gb.client import (EXIT_NO_SESSION, EXIT_REFUSED, EXIT_UNREACHABLE, Client, NoSession,
+from gb import config, doctor as doctor_mod
+from gb.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
+                       Client, NoSession,
                        Refused, Unreachable, authenticated, login)
 
 PROG = "gb"
@@ -41,6 +45,22 @@ def _parser() -> argparse.ArgumentParser:
     login_cmd.add_argument("--email", default=None)
 
     sub.add_parser("logout", help="end the session, here and on the server")
+    sub.add_parser(
+        "doctor", help="check both halves: the ledger, and the local fleet",
+        description=("Everything that can be checked before anything is spawned. The ledger "
+                     "half runs here; the local half is `gbfleet doctor`, run as a subprocess. "
+                     "Neither half silences the other: what could not be checked prints "
+                     "UNKNOWN with its reason, never a pass."))
+
+    fleet = sub.add_parser(
+        "fleet", help="hand off to gbfleet (the supervisor)",
+        description=("Passes everything through to `gbfleet` and returns its exit code "
+                     "unchanged — 75 is stuck, 69 an unreachable model endpoint, 55 a spent "
+                     "budget, and folding those into one code would destroy a taxonomy the "
+                     "supervisor's own tests pin."),
+        add_help=False)
+    fleet.add_argument("rest", nargs=argparse.REMAINDER,
+                       help="arguments for gbfleet; try `gb fleet --help`")
     sub.add_parser("whoami", help="who this session belongs to, and where it points")
     return parser
 
@@ -118,7 +138,40 @@ def cmd_whoami(args) -> int:
     return 0
 
 
-COMMANDS = {"login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami}
+def cmd_doctor(args) -> int:
+    url = config.resolve(args.server, config.URL_ENV, "url")
+    project = config.resolve(args.project, config.PROJECT_ENV, "project")
+    api_key = os.environ.get(config.API_KEY_ENV, "")
+    lines, code = doctor_mod.run(url, project, api_key)
+    _out({"lines": lines, "ok": code == 0}, doctor_mod.render(lines), args.as_json)
+    return code
+
+
+def cmd_fleet(args) -> int:
+    """A subprocess, never an import (D5).
+
+    Keeps `gb` free of the supervisor's dependencies, keeps the Apache-2.0 boundary intact,
+    and leaves `gbfleet --help` authoritative about its own commands.
+    """
+    binary = shutil.which("gbfleet")
+    if not binary:
+        print(f"{PROG}: gbfleet is not installed here. `uv pip install graphban-fleet`, or run "
+              f"it from the repository's fleet/ directory.", file=sys.stderr)
+        return EXIT_NO_SUPERVISOR
+    argv = [binary, *[a for a in args.rest if a != "--"]]
+    url = config.resolve(args.server, config.URL_ENV, "url")
+    if url and "--server" not in argv:
+        argv += ["--server", url]
+    project = config.resolve(args.project, config.PROJECT_ENV, "project")
+    if project and "--project" not in argv:
+        argv += ["--project", project]
+    # Its exit code, unchanged. `gb` adds nothing and explains nothing: the supervisor's
+    # message is the one its own tests pin.
+    return subprocess.run(argv).returncode
+
+
+COMMANDS = {"login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami,
+            "doctor": cmd_doctor, "fleet": cmd_fleet}
 
 
 def main(argv: list[str] | None = None) -> int:
