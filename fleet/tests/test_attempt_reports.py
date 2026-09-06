@@ -284,3 +284,126 @@ def test_a_child_is_reaped_once_however_many_ticks_run(recorded, git_repo: Path,
         watch_tick(wave, [child], Limits(), fleet.client, debug=False)
     assert len(wave.reaped) == 1
     assert wave.failures == [], wave.failures
+
+
+# ---- GRPH-750: work reaching a branch is not the same as work reaching the reviewer --------
+
+def _repo_with_remote(git_repo: Path, tmp_path: Path):
+    """A repo whose branches can actually go somewhere, which the fleet fixtures do not have."""
+    import subprocess
+
+    bare = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "-C", str(git_repo), "remote", "add", "origin", str(bare)],
+                   check=True, capture_output=True)
+    return bare
+
+
+def test_a_reaped_branch_is_pushed_so_a_reviewer_elsewhere_can_read_it(
+        recorded, git_repo: Path, tmp_path: Path):
+    """GRPH-750, the finding as a test. #639 got the work onto a branch and the reviewer still
+    bounced it — correctly — because the branch existed only in the supervisor's checkout.
+
+    Sabotage: drop `_publish` and the bare remote never hears of the branch.
+    """
+    import subprocess
+
+    fleet, _ = recorded
+    bare = _repo_with_remote(git_repo, tmp_path)
+    tree = _dirty_worktree(git_repo, tmp_path)
+
+    child = _exited()
+    child.worktree, child.branch, child.base = tree.path, tree.branch, tree.base
+    _tick(fleet.client, [child])
+
+    remote_refs = subprocess.run(["git", "-C", str(bare), "branch", "--list"],
+                                 capture_output=True, text=True).stdout
+    assert tree.branch in remote_refs, f"{tree.branch} never reached the remote"
+    files = subprocess.run(["git", "-C", str(bare), "show", "--pretty=format:", "--name-only",
+                            tree.branch], capture_output=True, text=True).stdout
+    assert "note.md" in files
+
+
+def test_a_branch_with_nothing_beyond_its_base_is_skipped_and_says_so(
+        recorded, git_repo: Path, tmp_path: Path):
+    """Skipped is not ok, and neither is a failure. A child that changed nothing has nothing
+    to publish, and calling that "pushed" would make the two cases look alike."""
+    from gbfleet import worktree as wt
+
+    fleet, _ = recorded
+    _repo_with_remote(git_repo, tmp_path)
+    tree = wt.create(git_repo, tmp_path / "empty", wave="w", agent_id="A2")
+
+    child = _exited()
+    child.worktree, child.branch, child.base = tree.path, tree.branch, tree.base
+    wave = Wave()
+    from gbfleet.supervisor import Limits, watch_tick
+    watch_tick(wave, [child], Limits(), fleet.client, debug=False)
+
+    pushed = wave.published[tree.branch]
+    assert pushed.skipped is True and pushed.ok is False
+    assert "nothing beyond its base" in pushed.reason
+    assert wave.failures == [], "a branch with nothing to say is not a failure"
+
+
+def test_a_repository_with_no_remote_says_the_branch_stays_local(
+        recorded, git_repo: Path, tmp_path: Path):
+    """The honest answer when there is nowhere to push. Silence here would recreate exactly
+    the defect this closes: a reviewer left to infer an empty diff."""
+    fleet, _ = recorded
+    tree = _dirty_worktree(git_repo, tmp_path)  # git_repo has no remote
+
+    child = _exited()
+    child.worktree, child.branch, child.base = tree.path, tree.branch, tree.base
+    wave = Wave()
+    from gbfleet.supervisor import Limits, watch_tick
+    watch_tick(wave, [child], Limits(), fleet.client, debug=False)
+
+    pushed = wave.published[tree.branch]
+    assert pushed.skipped is True
+    assert "no remote" in pushed.reason and "reviewer cannot read it" in pushed.reason
+
+
+def test_a_refused_push_is_reported_loudly(recorded, git_repo: Path, tmp_path: Path):
+    """A branch that did not reach the remote is invisible to review. Swallowing the failure
+    would leave the reviewer inferring it from an empty diff."""
+    import subprocess
+
+    fleet, _ = recorded
+    subprocess.run(["git", "-C", str(git_repo), "remote", "add", "origin",
+                    str(tmp_path / "nowhere.git")], check=True, capture_output=True)
+    tree = _dirty_worktree(git_repo, tmp_path)
+
+    child = _exited()
+    child.worktree, child.branch, child.base = tree.path, tree.branch, tree.base
+    wave = Wave()
+    from gbfleet.supervisor import Limits, watch_tick
+    watch_tick(wave, [child], Limits(), fleet.client, debug=False)
+
+    pushed = wave.published[tree.branch]
+    assert pushed.ok is False and pushed.skipped is False
+    assert "push refused" in pushed.reason
+    assert any("push refused" in f for f in wave.failures), wave.failures
+
+
+def test_pushing_twice_is_a_no_op_rather_than_a_duplicate(recorded, git_repo: Path,
+                                                          tmp_path: Path):
+    """Answering the 'vendors that can push, do' rule: if the child already pushed, ours must
+    cost nothing rather than fail or duplicate."""
+    from gbfleet import worktree as wt
+
+    import subprocess
+
+    fleet, _ = recorded
+    _repo_with_remote(git_repo, tmp_path)
+    tree = _dirty_worktree(git_repo, tmp_path)
+    # Committed here rather than left dirty: this test is about the PUSH being idempotent,
+    # and an uncommitted branch is correctly skipped before the push is ever reached.
+    wt.salvage(tree.path, "committed by the child itself")
+    assert wt.commits_beyond_base(tree.repo, tree.branch, tree.base) == 1
+
+    first = wt.push_branch(tree.repo, tree.branch, tree.base)
+    assert first.ok is True, first.reason
+
+    second = wt.push_branch(tree.repo, tree.branch, tree.base)
+    assert second.ok is True, second.reason

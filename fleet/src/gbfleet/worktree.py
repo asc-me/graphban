@@ -360,6 +360,79 @@ class Reaped:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class Pushed:
+    """What became of the attempt to put a branch where a reviewer can read it.
+
+    `skipped` is a real outcome and is not `ok`: a branch with nothing beyond its base has
+    nothing to publish, and saying "pushed" about it would make the two cases look alike.
+    """
+
+    branch: str
+    remote: str = ""
+    ok: bool = False
+    skipped: bool = False
+    reason: str = ""
+
+
+def commits_beyond_base(repo: Path | str, branch: str, base: str) -> int:
+    """How many commits the branch carries that its base does not."""
+    out = _git(repo, "rev-list", "--count", f"{base}..{branch}", check=False).strip()
+    try:
+        return int(out)
+    except ValueError:
+        return 0
+
+
+def remote_for(repo: Path | str) -> str:
+    """The remote this repository pushes to, or "" when it has none.
+
+    `origin` when it exists, else the only remote there is. Two-or-more without an `origin`
+    is not guessed at: pushing a worker's branch to the wrong place is worse than not
+    pushing, and the refusal names what it found.
+    """
+    remotes = [r for r in _git(repo, "remote", check=False).splitlines() if r.strip()]
+    if "origin" in remotes:
+        return "origin"
+    return remotes[0] if len(remotes) == 1 else ""
+
+
+def push_branch(repo: Path | str, branch: str, base: str) -> Pushed:
+    """Put a reaped branch where the reviewer can read it (GRPH-750).
+
+    **Salvage commits; this publishes.** They are separate steps because they answer to
+    different things: committing is local bookkeeping the supervisor owes the work, and
+    pushing reaches outside the machine. Keeping them apart is also what lets a vendor that
+    pushes for itself (claude, cursor and qwen-code all have shells) make this a no-op rather
+    than a duplicate.
+
+    Pushed when the branch is AHEAD of its base, whoever committed it — that, not who did the
+    committing, is the condition for "there is work a reviewer needs to see". Already-pushed
+    is a cheap no-op on git's side.
+
+    Uses whatever git credential the operator's own session already has. The supervisor holds
+    a Graphban API key and no git credential, and inventing one here would be a second
+    credential path for a thing `git push` already does correctly.
+    """
+    ahead = commits_beyond_base(repo, branch, base) if base else 0
+    if not ahead:
+        return Pushed(branch=branch, skipped=True,
+                      reason="nothing beyond its base to publish")
+    remote = remote_for(repo)
+    if not remote:
+        return Pushed(branch=branch, skipped=True,
+                      reason="this repository has no remote (or several and no `origin`), so "
+                             "the branch stays local and the reviewer cannot read it")
+    try:
+        _git(repo, "push", "-q", remote, f"{branch}:{branch}")
+    except GitError as exc:
+        # Loud, never silent. A branch that did not reach the remote is invisible to review,
+        # and a supervisor that swallowed the failure would leave the reviewer to infer it
+        # from an empty diff — which is exactly the defect this exists to close.
+        return Pushed(branch=branch, remote=remote, reason=f"push refused: {str(exc)[:200]}")
+    return Pushed(branch=branch, remote=remote, ok=True)
+
+
 def reap(wt: Worktree, message: str | None = None) -> Reaped:
     """Classify, salvage if there is anything to save, then remove the worktree.
 
