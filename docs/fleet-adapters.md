@@ -168,6 +168,12 @@ and for this row it is re-verified on every CI run rather than observed once on 
 `test_adapters.py` runs the real binary. When the package version changes, the `0.1.0` above
 changes with it, and a test says so rather than letting the matrix go quietly stale.
 
+**The endpoint, and its key.** `GBAGENT_BASE_URL` names an OpenAI-compatible `chat/completions`
+endpoint; `GBAGENT_API_KEY`, when set, is sent to it as a bearer. The key is environment only — the fleet's
+rule is that nothing carrying a credential goes on argv, and the supervisor's child inherits the operator's
+environment — so a cloud endpoint that wants a token (the Qwen and OpenAI-compatible hosts) is reachable
+without a flag, and an unset key is a local Ollama, which is what every walk in the table above used.
+
 **Two knobs, neither of them a name to check.** `--turns` is the budget from D6 (one turn is
 22–45s against a local model) and `--window` is the model's context size, of which compaction
 takes 70% (D7). Neither has a default in `loop.run` and neither gets one here: assume the
