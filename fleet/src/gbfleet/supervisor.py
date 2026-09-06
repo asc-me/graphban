@@ -30,6 +30,7 @@ from typing import Callable, Iterable, Sequence
 
 from . import adopt as adopt_mod
 from . import worktree as wt_mod
+from . import adapters
 from .adapters import explain_exit
 from .client import Graphban, NotPermitted, ServerUnreachable, ToolFailed
 from .hostos import restrict_to_owner
@@ -781,6 +782,10 @@ def _report_exits(children: list[Child], client: Graphban) -> None:
         # into a loop.
         child.reported = True
         code = child.process.poll()
+        # What the vendor's own result record says this run cost (PRD-38 D3). A vendor that
+        # prints nothing contributes nothing here and its token fields stay NULL, which the
+        # page renders as "not reported" — never as zero.
+        facts = adapters.result_facts(child.adapter, child.stdout_text())
         client.post_attempt(
             enrolment_id=child.seat_id,
             adapter=child.adapter,
@@ -788,6 +793,7 @@ def _report_exits(children: list[Child], client: Graphban) -> None:
             wall_seconds=int(time.monotonic() - child.started_at),
             turn_budget=child.turn_budget,
             exit_meaning=_exit_meaning(child, code),
+            **facts,
         )
 
 

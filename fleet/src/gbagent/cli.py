@@ -356,11 +356,39 @@ def _run(args: argparse.Namespace) -> int:
 
         print(_summary(outcome, graph_calls=orientation.calls, beats=heartbeat.beats),
               file=sys.stderr)
+        # The RESULT RECORD, on stdout, one line, machine-readable (PRD-38 D3). Every other
+        # vendor has one — qwen's `-o json`, claude's `--output-format json` — and the
+        # supervisor's exit report reads it to say what a run cost. gbagent had none, so its
+        # cells read "not comparable: 0 of N attempts reported tokens" while the endpoint was
+        # reporting the numbers on every turn and the loop was dropping them.
+        #
+        # stdout, not stderr: stderr is the human trace and it interleaves with the model's
+        # own chatter. A record a machine has to find inside that is a record that will
+        # eventually be mis-parsed.
+        print(json.dumps({"gbagent": _result_record(outcome)}), flush=True)
         return outcome.exit_code
     finally:
         heartbeat.stop()
         if session is not None:
             session.close()
+
+
+def _result_record(outcome) -> dict:
+    """What a run cost, in the terms `attempt_telemetry` records.
+
+    `tokens_in`/`tokens_out` are null when the endpoint never reported usage — not zero. A
+    zero would say "this run was free", and the ledger's whole cost story rests on telling
+    "nobody said" apart from "nothing was spent" (PRD-38 D3, D11).
+    """
+    reported = outcome.tokens_in or outcome.tokens_out
+    return {
+        "status": outcome.status,
+        "exit": outcome.exit_code,
+        "turns": outcome.turns,
+        "tokens_in": outcome.tokens_in if reported else None,
+        "tokens_out": outcome.tokens_out if reported else None,
+        "compactions": outcome.compactions,
+    }
 
 
 def _summary(outcome, *, graph_calls: int, beats: int) -> str:

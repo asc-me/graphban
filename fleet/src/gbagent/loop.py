@@ -131,11 +131,41 @@ class Outcome:
     #: is not turn zero — see `docs/orientation-metric-prd24.md`. This is the orientation
     #: number: how many 22-45 second turns went by before the work started.
     turns_to_first_write: int | None = None
+    #: The LAST turn's usage, which is what the compaction check reads. Not a total — see
+    #: `tokens_in`/`tokens_out` below, which are.
     usage: dict = field(default_factory=dict)
+    #: Every turn's prompt and completion tokens, summed (PRD-38 D3). The endpoint reports
+    #: these per turn and the loop was throwing all but the last away, so the ledger's cost
+    #: proxy read "not comparable: 0 of N attempts reported tokens" on every cell — a column
+    #: of honest nulls where the numbers were being computed and dropped.
+    tokens_in: int = 0
+    tokens_out: int = 0
 
     @property
     def meaning(self) -> str:
         return exit_meaning(self.exit_code)
+
+
+class _Spent:
+    """What this run has cost so far, in the endpoint's own numbers.
+
+    A class rather than two ints so that adding a turn is one call at each of the places a
+    turn is taken — the give-up paths take turns too, and a total that skipped them would
+    under-report exactly the runs that cost the most.
+    """
+
+    def __init__(self) -> None:
+        self.tokens_in = 0
+        self.tokens_out = 0
+
+    def add(self, turn) -> None:
+        usage = getattr(turn, "usage", None) or {}
+        # `int(... or 0)`: the endpoint may omit a field or send null, and neither means zero
+        # tokens were spent — it means it did not say. Summing a missing number as zero is the
+        # only option here, and the count of attempts that reported is what keeps the ledger
+        # honest about it (PRD-38 D11).
+        self.tokens_in += int(usage.get("input") or 0)
+        self.tokens_out += int(usage.get("output") or 0)
 
 
 def run(
@@ -186,6 +216,10 @@ def run(
     compactions = 0
     fastest = elapsed
     slowest = elapsed
+    # Summed as the turns happen, not reconstructed afterwards: `Outcome.usage` keeps only the
+    # LAST turn's, and a run that compacted twice has thrown away most of what it spent.
+    spent = _Spent()
+    spent.add(turn)
     report(Trace(turn=turns, kind="turn", text=_clip(turn.text)))
 
     first_write: int | None = None
@@ -193,7 +227,8 @@ def run(
 
     while turn.wants_tools and turn.tool_calls:
         if turns >= budget:
-            return _give_up(coordinator, toolset, turns, budget, turn, compactions, first_write)
+            return _give_up(coordinator, toolset, turns, budget, turn, compactions,
+                            first_write, spent=spent)
         if heartbeat is not None and heartbeat.gone:
             # The heartbeat thread heard the server say this agent's claim is gone
             # (GRPH-496). Checked at the TURN BOUNDARY rather than acted on from the thread:
@@ -202,7 +237,7 @@ def run(
             # is that the child stops before spending ANOTHER 22-45 second turn, and leaves
             # a note saying why instead of dying without one.
             return _give_up(coordinator, toolset, turns, budget, turn, compactions,
-                            first_write, why=heartbeat.gone)
+                            first_write, why=heartbeat.gone, spent=spent)
         results = []
         stop_because = ""
         for call in turn.tool_calls:
@@ -221,12 +256,14 @@ def run(
             # GRPH-709: the oracle ran three times on this change. Hand over with the last log.
             from .toolset import TEST_RUN_CAP
             return _give_up(coordinator, toolset, turns, budget, turn, compactions, first_write,
+                        spent=spent,
                             why=(f"the test suite ran {TEST_RUN_CAP} times on this change with "
                                  "no edit in between and the model asked for a fourth — loops "
                                  "have exits"))
         if stop_because:
             # GRPH-710: two shapes of not-learning, both exits.
             return _give_up(coordinator, toolset, turns, budget, turn, compactions, first_write,
+                        spent=spent,
                             why=stop_because)
         if first_write is None and toolset.written:
             # The turn the work started on. Recorded here rather than counted afterwards
@@ -249,6 +286,7 @@ def run(
                 report(Trace(turn=turns, kind="compact", name="compact", text=why))
         turn, elapsed = timed_turn()
         turns += 1
+        spent.add(turn)
         fastest = min(fastest, elapsed)
         slowest = max(slowest, elapsed)
         report(Trace(turn=turns, kind="turn", text=_clip(turn.text)))
@@ -267,6 +305,7 @@ def run(
         # run that achieved nothing." A turn was spent and nothing came of it, which is
         # what EXIT_STUCK means, so it gives up rather than claiming success.
         return _give_up(coordinator, toolset, turns, budget, turn, compactions, first_write,
+                        spent=spent,
                         why="the model asked for tools and carried none — a malformed turn, "
                             "not a finish")
 
@@ -276,6 +315,8 @@ def run(
         turns=turns,
         text=turn.text,
         usage=turn.usage or {},
+        tokens_in=spent.tokens_in,
+        tokens_out=spent.tokens_out,
         compactions=compactions,
         turns_to_first_write=first_write,
         slowest_turn=slowest,
@@ -372,6 +413,7 @@ def _compact_now(session) -> bool:
 def _give_up(
     coordinator: Coordinator, toolset: Toolset, turns: int, budget: int, turn: ToolTurn,
     compactions: int = 0, first_write: int | None = None, why: str = "",
+    spent: "_Spent | None" = None,
 ) -> Outcome:
     """D6, in the one order that preserves the record: write, release, exit 75.
 
@@ -391,6 +433,8 @@ def _give_up(
         return Outcome(
             status="handoff_failed",
             exit_code=EXIT_HANDOFF_FAILED,
+            tokens_in=spent.tokens_in if spent else 0,
+            tokens_out=spent.tokens_out if spent else 0,
             turns=turns,
             text=str(exc),
             handoff=note,
@@ -406,6 +450,8 @@ def _give_up(
         text=turn.text,
         handoff=note,
         usage=turn.usage or {},
+        tokens_in=spent.tokens_in if spent else 0,
+        tokens_out=spent.tokens_out if spent else 0,
         compactions=compactions,
         turns_to_first_write=first_write,
     )
