@@ -1,0 +1,102 @@
+"""Where `gb` keeps its two facts, and why they are two files (PRD-40 D3, D10).
+
+`~/.graphban/` is shared with `graphban`, the operator's database-side tool, and the sharing
+stops at the directory. `gb` reads `gb.json` (`url`, `project`) and `session.json` (a refresh
+token) and **never opens `config.json`**, which is `graphban`'s and may hold a database link.
+
+The grill made that stricter than the draft. Reading `config.json` and ignoring the keys it did
+not recognise would have been true and insufficient: the risk is not misreading a database
+password, it is that password living in a file which now has a second consumer and a second
+reason to be copied onto another machine. `graphban` runs in a container against a database;
+`gb` runs on a laptop against HTTP; the credential that must not cross that line lives in its
+own file, so copying a config never carries it.
+"""
+from __future__ import annotations
+
+import json
+import os
+import stat
+from pathlib import Path
+
+#: The directory both tools use. Shared deliberately — a person has one Graphban.
+HOME_ENV = "GRAPHBAN_HOME"
+
+#: `gb`'s own settings. NOT `config.json`, which belongs to `graphban` (D10).
+SETTINGS_FILE = "gb.json"
+
+#: The refresh token, alone in its own file so that copying settings never carries it.
+SESSION_FILE = "session.json"
+
+#: `graphban`'s file. Named here only so the test that asserts `gb` never opens it has
+#: something to name, and so a reader knows the omission is deliberate.
+NOT_OURS = "config.json"
+
+URL_ENV = "GRAPHBAN_URL"
+PROJECT_ENV = "GRAPHBAN_PROJECT"
+API_KEY_ENV = "GRAPHBAN_API_KEY"
+
+#: Owner read/write and nothing else. A credential at rest gets the same mode the seat files
+#: in `gbfleet` get, for the same reason.
+PRIVATE = stat.S_IRUSR | stat.S_IWUSR
+
+
+def home() -> Path:
+    return Path(os.environ.get(HOME_ENV) or (Path.home() / ".graphban"))
+
+
+def _read(path: Path) -> dict:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # A missing file and an unreadable one are the same to a caller that has a default,
+        # and neither is worth a traceback in front of somebody trying to log in.
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _write(path: Path, payload: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Created private BEFORE anything is written to it. Writing first and chmod-ing after
+    # leaves a window where the token is world-readable, which is the whole failure.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, PRIVATE)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    os.chmod(path, PRIVATE)
+    return path
+
+
+def settings() -> dict:
+    return _read(home() / SETTINGS_FILE)
+
+
+def save_settings(**values: str) -> Path:
+    merged = {k: v for k, v in {**settings(), **values}.items() if v}
+    return _write(home() / SETTINGS_FILE, merged)
+
+
+def session() -> dict:
+    return _read(home() / SESSION_FILE)
+
+
+def save_session(refresh_token: str, *, user: str = "") -> Path:
+    return _write(home() / SESSION_FILE,
+                  {"refresh_token": refresh_token, "user": user})
+
+
+def clear_session() -> bool:
+    path = home() / SESSION_FILE
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def resolve(flag: str | None, env: str, key: str) -> str:
+    """D10's precedence, in one place: flag, then environment, then the settings file.
+
+    One function rather than three lookups at each call site, because a precedence that is
+    re-implemented per option is one that will eventually differ per option.
+    """
+    return (flag or os.environ.get(env) or settings().get(key) or "").strip()
