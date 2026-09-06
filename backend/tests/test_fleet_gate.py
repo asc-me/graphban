@@ -5,7 +5,7 @@ whether the identified caller may attest THIS item.  Same column (`built_by`) th
 `claim_review` (fleet.py:1311) and `sign_off` (fleet.py:1420) already use — the
 self-review ban was never held up by the role, it was held up by authorship.
 
-Three tests, written against the failure modes the item names:
+Four tests, written against the failure modes the item names:
 
 1. A `gate`-scoped registered agent attests the item it built → refused, and the
    refusal text contains `built_by` (so the next person can tell an authorship
@@ -15,6 +15,8 @@ Three tests, written against the failure modes the item names:
    adapter key carries no agent identity, so the comparison has nothing to
    compare and the write proceeds exactly as today).
 
+4. An `all-in-one` agent attests its own item → accepted (D-j: outside the check, as
+   it is outside the ceiling; the human is the reviewer in that posture).
 Sabotage: delete the new comparison and confirm exactly the first test fails.
 """
 import pytest
@@ -85,8 +87,13 @@ def test_registered_agent_cannot_attest_own_work(client, plain_key, gate_key):
     Delete the authorship comparison and THIS test fails — the other two still pass.
     That is the sabotage.
     """
+    # role_hint matters: on an unnarrowed key with no hint, register_agent resolves to
+    # `all-in-one`, which D-j deliberately leaves OUTSIDE this check (see the last test).
+    # The first version of this test registered exactly that and was asserting the wrong
+    # posture; CI's test_the_capability_the_hint_used_to_cost_is_kept is what caught it.
     w = _ok(client, gate_key, "register_agent",
-            {"label": "w", "capabilities": {"vendor": "test", "instance": "w"}})
+            {"label": "w", "role_hint": "worker",
+             "capabilities": {"vendor": "test", "instance": "w"}})
     agent_id = w["agent_id"]
 
     made = _ok(client, plain_key, "create_item", {"title": "own work"})
@@ -110,9 +117,9 @@ def test_registered_agent_may_attest_another_clients_work(client, plain_key, gat
     keyed on authorship, not on the caller's identity in the abstract.
     """
     builder = _ok(client, gate_key, "register_agent",
-                  {"label": "builder", "capabilities": {"vendor": "test", "instance": "b"}})
+                  {"label": "builder", "role_hint": "worker", "capabilities": {"vendor": "test", "instance": "b"}})
     attester = _ok(client, gate_key, "register_agent",
-                   {"label": "attester", "capabilities": {"vendor": "test", "instance": "a"}})
+                   {"label": "attester", "role_hint": "worker", "capabilities": {"vendor": "test", "instance": "a"}})
 
     made = _ok(client, plain_key, "create_item", {"title": "someone else"})
     _ok(client, plain_key, "update_item",
@@ -152,3 +159,26 @@ def test_unidentified_gate_caller_may_attest_either(client, plain_key, gate_key)
     assert not out.get("isError"), (
         f"unidentified gate caller was refused: "
         f"{(out.get('structuredContent') or {}).get('error')}")
+
+
+def test_an_all_in_one_agent_may_still_attest_its_own_work(client, plain_key, gate_key):
+    """D-j: `all-in-one` is outside this check exactly as it is outside the worker
+    ceiling.  In that posture there is no reviewer agent — the human is the reviewer —
+    and refusing the attestation would park every item in `review` with nothing saying
+    why, which is the failure `test_the_capability_the_hint_used_to_cost_is_kept`
+    (test_fleet_posture.py) was written against.  No `role_hint` on an unnarrowed key is
+    how an agent becomes all-in-one, so this registration is the plain one.
+    """
+    me = _ok(client, gate_key, "register_agent",
+             {"label": "solo", "capabilities": {"vendor": "test", "instance": "solo"}})
+    assert me["active_role"] == "all-in-one", me
+    agent_id = me["agent_id"]
+    made = _ok(client, plain_key, "create_item", {"title": "solo work"})
+    _ok(client, plain_key, "update_item", {"id": made["id"], "status": "next"})
+    claimed = _ok(client, gate_key, "claim_next", {"agent_id": agent_id})
+    item_id = claimed["item"]["id"]
+    _ok(client, gate_key, "update_item",
+        {"id": item_id, "status": "review", "agent_id": agent_id})
+    out = _ok(client, gate_key, "update_item",
+              {"id": item_id, "evidence": [_attest()], "agent_id": agent_id})
+    assert any(e.get("kind") == "attestation" for e in out.get("evidence", [])), out

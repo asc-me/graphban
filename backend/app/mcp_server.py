@@ -2103,7 +2103,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 from app.services import keys as _keys
                 _resolved = _keys.resolve_item(db, _item_ref) or _item_ref
                 _item_row = db.get(Item, _resolved)
-                if _item_row is not None and _item_row.built_by == _author:
+                # `all-in-one` is outside this check exactly as it is outside the worker
+                # ceiling: in that posture there is no reviewer agent, the human is the
+                # reviewer, and refusing the attestation parks every item in `review` with
+                # nothing saying why — the failure `test_the_capability_the_hint_used_to_
+                # cost_is_kept` was written against (PRD-17; PRD-39 D-j).
+                _author_row = db.get(Agent, _author)
+                _solo = _author_row is not None and _author_row.active_role == fleet_svc.ALL_IN_ONE
+                if _item_row is not None and _item_row.built_by == _author and not _solo:
                     raise authz.Forbidden(
                         f"agent {_author!r} built {_item_row.key!r} "
                         f"(built_by) and cannot attest its own work; "
