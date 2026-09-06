@@ -238,6 +238,24 @@ def test_a_seats_file_of_only_comments_fails_the_same_way_up_does(
     assert main(["doctor", "--repo", str(git_repo), "--seats-file", str(comments)]) == 1
 
 
+def test_a_mistyped_seats_line_fails_doctor_the_same_way_up_does(
+    git_repo: Path, tmp_path: Path,
+):
+    """Same rule as `up` (`read_seats` → `parse_seat_line`): a line `up` exits 2 on must
+    not be counted as a seat here, or doctor passes a file the wave then refuses."""
+    bad = tmp_path / "seats.txt"
+    bad.write_text("CODE-1 itm=GRPH-755\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_seats(str(bad), "http://gb.invalid", "k")
+    report = _run(git_repo, seats_file=str(bad))
+    assert _status(report, "seats file") == FAIL
+    assert any(f.name == "seats file" and "itm=GRPH-755" in f.detail for f in report.findings)
+
+    bound = tmp_path / "bound.txt"
+    bound.write_text("CODE-1 item=GRPH-755\nCODE-2 role=reviewer\n", encoding="utf-8")
+    assert _status(_run(git_repo, seats_file=str(bound)), "seats file") == PASS
+
+
 def test_a_held_lock_fails_and_names_the_holder(git_repo: Path):
     """THE CALL. The held-lock FAIL path was untested, which is how the lock wipe
     shipped: doctor used `hold()`, released cleanly, and truncated a crash record

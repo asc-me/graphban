@@ -611,3 +611,37 @@ def test_seats_are_read_from_a_file_ignoring_blanks_and_comments(tmp_path: Path)
     seats = read_seats(str(path), "http://gb.invalid", KEY)
     assert [s.code for s in seats] == ["WORKER-AAA", "REVIEWER-BBB"]
     assert all(s.api_key == KEY for s in seats)
+
+
+def test_a_seats_line_can_bind_an_item_and_name_a_role(tmp_path: Path):
+    """`until` builds Seat(item=..., role=...) in-process (PRD-36 D7). A seats file could
+    say neither, so a bound seat handed to `up` produced a child that held its item AND
+    was told to claim_cluster on top of it, and a reviewer seat produced a child told it
+    was a worker. The line now carries both, and the instruction follows."""
+    from gbfleet.seat import instruction_for
+
+    path = tmp_path / "seats.txt"
+    path.write_text(
+        "WORKER-AAA item=GRPH-755\nREVIEWER-BBB role=reviewer\nWORKER-CCC\n", encoding="utf-8",
+    )
+    seats = read_seats(str(path), "http://gb.invalid", KEY)
+    assert [(s.code, s.role, s.item) for s in seats] == [
+        ("WORKER-AAA", "worker", "GRPH-755"),
+        ("REVIEWER-BBB", "reviewer", None),
+        ("WORKER-CCC", "worker", None),
+    ]
+    assert "BOUND to GRPH-755" in instruction_for(seats[0], tmp_path, "gb/x")
+    assert "You are a REVIEWER" in instruction_for(seats[1], tmp_path, "gb/x")
+    assert "claim_cluster" in instruction_for(seats[2], tmp_path, "gb/x")
+
+
+def test_a_mistyped_seats_line_is_refused_at_read(tmp_path: Path):
+    """Refused before any worktree exists, and the refusal quotes the token, so `itm=`
+    is not read as an unbound seat that then claims whatever the divvy hands it."""
+    path = tmp_path / "seats.txt"
+    path.write_text("WORKER-AAA itm=GRPH-755\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="itm=GRPH-755"):
+        read_seats(str(path), "http://gb.invalid", KEY)
+    path.write_text("WORKER-AAA role=planner\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="planner"):
+        read_seats(str(path), "http://gb.invalid", KEY)
