@@ -216,6 +216,10 @@ class Child:
     #: by the caller, because `watch_tick` is shared by `up` and the MCP supervisor and the
     #: two would keep separate sets that disagree after an adopt.
     reported: bool = False
+    #: This child's worktree has been reaped — salvaged onto its branch and removed. A flag
+    #: for the same reason `reported` is one, and checked by BOTH surfaces so the wave-end
+    #: reap and the on-exit reap cannot run over each other.
+    reaped: bool = False
 
     @property
     def pid(self) -> int:

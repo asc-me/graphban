@@ -493,3 +493,4 @@ def test_a_child_that_exited_without_registering_is_still_called_broken(
     with pytest.raises(LaunchFailed) as exc:
         await_registration(child, _roster(), window=5, poll=0.05)
     assert "codex" in str(exc.value) and "3" in str(exc.value)
+

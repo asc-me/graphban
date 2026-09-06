@@ -669,8 +669,53 @@ def watch_tick(
     if roster is not None:
         _catch_the_disowned(wave, children, roster, limits)
     _report_exits(children, client)
+    _reap_exited(wave, children)
     if persist is not None:
         persist()
+
+
+def _reap_exited(wave: Wave, children: list[Child]) -> None:
+    """Salvage a child's work onto its branch as soon as it exits (PRD-38 walk finding).
+
+    `_reap_all` has always done this — `worktree.reap` salvages whatever the worker left
+    uncommitted, and the comment there says so — but it runs at the END of a wave, which only
+    the `up` surface has. On `gbfleet mcp` a child could exit, be stopped, and leave its
+    worktree sitting there uncommitted forever: the branch stayed at its base, the reviewer
+    (who reads the BRANCH, PRD-17 D3) saw nothing, and `touchpoints.measure` diffed to empty.
+
+    Measured on the deployed instance: six children across two harnesses produced exactly the
+    right text and not one commit, and the first telemetry cell to cross the sample floor read
+    0/5 because of it. The children were doing their job. This surface was not doing its half.
+
+    Same shape as the fix P30 D6 made for `watch_tick` itself: a thing that existed only in
+    `up` and was missing from the surface a planner actually drives.
+    """
+    for child in children:
+        if child.running or child.reaped:
+            continue
+        child.reaped = True
+        try:
+            # Resolving the repo is inside the guard with the reap itself: a Child rebuilt
+            # around a pid (adopt) or assembled by hand may name a worktree that is gone, and
+            # the supervisor must report that rather than die inside its own watch loop.
+            tree = Worktree(path=child.worktree, branch=child.branch, repo=_repo_of(child),
+                            base=child.base)
+            reaped = wt_mod.reap(tree, message=wt_mod.salvage_message(
+                child.adapter, list(child.held_items)))
+        except Exception as exc:  # noqa: BLE001 — a failed reap is reported, never fatal
+            wave.failures.append(f"{child.branch}: reap failed ({exc})")
+            continue
+        wave.reaped.append(reaped)
+        # Measured AFTER the salvage, deliberately, exactly as `_reap_all` does: measuring
+        # first would miss the work that was most at risk of being lost.
+        try:
+            git_paths = tp_mod.measure(tree)
+        except (ValueError, OSError) as exc:
+            wave.failures.append(f"{child.branch}: {exc}")
+            git_paths = None
+        if git_paths is not None:
+            wave.touched[child.branch] = tp_mod.including_stream(
+                child.adapter, git_paths, child.stdout_text())
 
 
 def _report_exits(children: list[Child], client: Graphban) -> None:
@@ -942,6 +987,11 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
     credentials BEST is the one that leaves one behind.
     """
     for child in children:
+        if child.reaped:
+            # Already salvaged on exit. Reaping again would find no worktree and report a
+            # failure for work that is safely on its branch.
+            continue
+        child.reaped = True
         tree = Worktree(
             path=child.worktree, branch=child.branch, repo=_repo_of(child), base=child.base
         )
