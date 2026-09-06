@@ -17,9 +17,9 @@ from gbfleet import doctor
 from tests.test_supervisor import _factory, _server
 
 
-def _row(harness="h", model="m", *, vendor="v", lane="any", role="worker", tier="cheap",
+def _row(harness="h", model="m", *, vendor="v", lane="any", tier="cheap",
          status="unverified", order=1, cost_class="cheap", local=False, evidence=()) -> m.Row:
-    return m.Row(harness=harness, model=model, vendor=vendor, lane=lane, role=role, tier=tier,
+    return m.Row(harness=harness, model=model, vendor=vendor, lane=lane, tier=tier,
                  status=status, order=order, cost_class=cost_class, local=local,
                  evidence=tuple(evidence))
 
@@ -59,7 +59,7 @@ def test_every_adapter_file_without_a_registration_has_a_row_saying_so():
 
 def test_a_verified_row_without_evidence_is_refused_at_load(tmp_path: Path):
     p = tmp_path / "m.toml"
-    p.write_text('[[rows]]\nharness="gbagent"\nmodel="x"\nvendor="g"\nlane="any"\nrole="worker"\n'
+    p.write_text('[[rows]]\nharness="gbagent"\nmodel="x"\nvendor="g"\nlane="any"\n'
                  'tier="cheap"\nstatus="verified"\norder=1\ncost_class="local"\nlocal=true\nevidence=[]\n')
     with pytest.raises(m.MatrixError, match="evidence"):
         m.load(p)
@@ -67,7 +67,7 @@ def test_a_verified_row_without_evidence_is_refused_at_load(tmp_path: Path):
 
 def test_an_unregistered_row_for_a_registered_harness_is_refused_at_load(tmp_path: Path):
     p = tmp_path / "m.toml"
-    p.write_text('[[rows]]\nharness="gbagent"\nmodel=""\nvendor="g"\nlane="any"\nrole="worker"\n'
+    p.write_text('[[rows]]\nharness="gbagent"\nmodel=""\nvendor="g"\nlane="any"\n'
                  'tier="cheap"\nstatus="unregistered"\norder=1\ncost_class="local"\nlocal=true\nevidence=[]\n')
     with pytest.raises(m.MatrixError):
         m.load(p)
@@ -118,24 +118,13 @@ def test_installed_is_checked_last_so_the_winner_on_score_is_named_when_it_is_mi
 
 def test_an_empty_resolution_is_a_refusal_with_the_emptying_step_never_a_silent_default():
     res = _matrix(_row("claude", "opus", tier="frontier")).resolve(tier="cheap", installed=ALL_INSTALLED)
-    assert res.winner is None and "no worker row for tier 'cheap'" in res.refused
+    assert res.winner is None and "no row for tier 'cheap'" in res.refused
     res = _matrix(_row("claude", "opus")).resolve(tier="cheap", policy=m.Policy(allowed_harnesses=("gbagent",)), installed=ALL_INSTALLED)
     assert res.refused == "project policy removed every row"
     res = _matrix(_row("claude", "opus")).resolve(tier="cheap", profile=m.Profile(user="u", excludes=("claude",)), installed=ALL_INSTALLED)
     assert res.refused == "your profile's defaults or excludes removed every row"
     res = _matrix(_row("claude", "opus")).resolve(tier="cheap", installed=lambda r: (False, "no claude binary"))
     assert res.refused == "no eligible row is installed on this machine"
-
-
-def test_reviewer_cross_vendor_drops_the_builders_vendor_for_reviewers_only():
-    anth = _row("claude", "opus", vendor="anthropic", role="reviewer", tier="frontier", cost_class="frontier")
-    xai = _row("grok", "grok-4.5", vendor="xai", role="reviewer", tier="frontier", cost_class="frontier", order=2)
-    pol = m.Policy(reviewer_cross_vendor=True)
-    res = _matrix(anth, xai).resolve(tier="frontier", role="reviewer", policy=pol, installed=ALL_INSTALLED, builder_vendor="anthropic")
-    assert res.winner is xai
-    assert "reviewer_cross_vendor" in res.explain()["dropped"]["policy"][0]
-    worker = _row("claude", "opus", vendor="anthropic", tier="frontier", cost_class="frontier")
-    assert _matrix(worker).resolve(tier="frontier", policy=pol, installed=ALL_INSTALLED, builder_vendor="anthropic").winner is worker
 
 
 # ---- scoring, samples and ties (criteria 9, 10, 12) ----------------------------------------------
@@ -240,9 +229,8 @@ def test_doctor_lists_every_row_and_what_each_tier_resolves_to(git_repo: Path):
     names = {f.name for f in report.findings}
     assert "matrix" in names
     assert "matrix codex" in names and "matrix gbagent:qwen3.6:35b-a3b-coding-mtp-det" in names
-    for role in m.ROLES:
-        for tier in m.TIERS:
-            assert f"resolve {role}/{tier}" in names
+    for tier in m.TIERS:
+        assert f"resolve {tier}" in names
     by = {f.name: f for f in report.findings}
     assert by["matrix codex"].status == "UNKNOWN"
     assert "unregistered" in by["matrix codex"].detail
@@ -250,7 +238,7 @@ def test_doctor_lists_every_row_and_what_each_tier_resolves_to(git_repo: Path):
 
 def test_doctor_names_the_row_that_breaks_a_custom_matrix(git_repo: Path, tmp_path: Path):
     p = tmp_path / "m.toml"
-    p.write_text('[[rows]]\nharness="gbagent"\nmodel="x"\nvendor="g"\nlane="any"\nrole="worker"\n'
+    p.write_text('[[rows]]\nharness="gbagent"\nmodel="x"\nvendor="g"\nlane="any"\n'
                  'tier="cheap"\nstatus="verified"\norder=1\ncost_class="local"\nlocal=true\nevidence=[]\n')
     report = doctor.run(repo=git_repo, out=io.StringIO(), matrix_path=str(p))
     by = {f.name: f for f in report.findings}
@@ -308,7 +296,7 @@ def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
     profile, policy, note, measured = read_preferences(_Server({
         "agents": [],
         "profile": {"user": "u1", "defaults": ["gbagent", "claude"], "weights": {"cost": 1.0}, "excludes": ["grok"]},
-        "policy": {"local_only": True, "reviewer_cross_vendor": False, "allowed_harnesses": []},
+        "policy": {"local_only": True, "allowed_harnesses": []},
         "measured": [{"vendor": "gbagent", "model": "q", "lane": "backend", "tier": "cheap",
                       "quality": {"value": 0.8, "n": 5}, "latency": None}],
     }))
@@ -347,26 +335,6 @@ def test_spawn_under_the_launch_profile_and_policy_explains_who_and_what_decided
     assert res["profile"] == {"user": "alex", "defaults": ["fake", "ghost"], "weights": {"cost": 1.0}}
     assert res["dropped"]["policy"] == ["ghost:x (local_only; would have scored 0.60)"]
     assert res["winner"]["harness"] == "fake"
-
-
-def test_spawn_passes_the_builders_vendor_into_a_reviewer_resolution(git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch):
-    """Criterion 14 through spawn: under reviewer_cross_vendor the row sharing the builder's
-    vendor is dropped; the other vendor's row runs."""
-    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
-    seen: list[tuple[str, str]] = []
-
-    def launch_for(name, model="", tuning=None):
-        seen.append((name, model))
-        return _factory(scripts, "works_then_waits", adapter="fake")
-
-    rows = (_row("fake", "anth-review", vendor="anthropic", role="reviewer", tier="frontier", cost_class="frontier"),
-            _row("fake", "xai-review", vendor="xai", role="reviewer", tier="frontier", cost_class="frontier", order=2))
-    f = Fleet(repo=git_repo, workspace=tmp_path / "ws", client=_server(tmp_path / "ws"), launch_for=launch_for,
-              matrix=_matrix(*rows), policy=m.Policy(reviewer_cross_vendor=True))
-    out = _call(f, "spawn", tier="frontier", role="reviewer", builder_vendor="anthropic", enrolment_code="REVIEWER-1")
-    got = out["structuredContent"]
-    assert seen == [("fake", "xai-review")], got
-    assert "reviewer_cross_vendor" in got["resolution"]["dropped"]["policy"][0]
 
 
 # ---- PR 3: measured cells are per lane and per tier, joined on the vendor (D7, criterion 11) --
@@ -476,12 +444,12 @@ def test_doctor_resolves_under_the_servers_profile_policy_and_measured_cells(git
     report = doctor_mod.run(repo=git_repo, out=io.StringIO(), server="http://gb.invalid", api_key="k", project="p")
     by = {f.name: f for f in report.findings}
     assert by["matrix preferences"].status == "PASS" and "profile alex" in by["matrix preferences"].detail
-    assert "profile alex" in by["resolve worker/cheap"].detail, "the resolution line names whose profile decided"
+    assert "profile alex" in by["resolve cheap"].detail, "the resolution line names whose profile decided"
     row_line = by["matrix gbagent:qwen3.6:35b-a3b-coding-mtp-det"].detail
     assert "quality/backend 0.80 (n=5)" in row_line
     # The pooled 0.80 could be five doc fixes. The bands are what say it was not.
     assert "bands L 0.67 (n=3), S 1.00 (n=2)" in row_line
-    assert "local_only" in by["resolve worker/frontier"].detail or by["resolve worker/frontier"].status == "UNKNOWN", (
+    assert "local_only" in by["resolve frontier"].detail or by["resolve frontier"].status == "UNKNOWN", (
         "a local_only policy must show on the frontier resolution: every frontier row is cloud")
 
 
@@ -567,3 +535,56 @@ def test_until_hands_its_bound_worker_a_seat_that_declares_the_resolved_harness(
     declare, text = seats[0]
     assert declare == {"vendor": "fakeco", "model": "qwen-local", "tier": "cheap"}
     assert 'capabilities={"model": "qwen-local", "tier": "cheap", "vendor": "fakeco"}' in text
+
+
+# ---- S5: the matrix loses `role` (GRPH-758) --------------------------------------------------
+
+def test_a_matrix_toml_row_carrying_role_loads_and_the_deprecation_note_is_returned(tmp_path: Path):
+    """S5 sabotage 1: a TOML row with `role` still loads, but the load carries a deprecation note."""
+    p = tmp_path / "m.toml"
+    p.write_text('[[rows]]\nharness="gbagent"\nmodel="x"\nvendor="g"\nlane="any"\nrole="worker"\n'
+                 'tier="cheap"\nstatus="unverified"\norder=1\ncost_class="cheap"\nlocal=false\nevidence=[]\n')
+    mat, notes = m.load_with_notes(p)
+    assert len(mat.rows) == 1
+    assert any("role" in n.lower() and "deprecat" in n.lower() for n in notes), f"expected deprecation note, got {notes}"
+
+
+def test_spawn_with_role_parameter_spawns_and_the_reply_carries_the_deprecation_note(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """S5 sabotage 2: spawn(role="reviewer") spawns, the reply carries the note, and the chosen
+    row is the one `tier` picks (not the one `role` would have picked, since role is gone)."""
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
+    seen: list[tuple[str, str]] = []
+
+    def launch_for(name, model="", tuning=None):
+        seen.append((name, model))
+        return _factory(scripts, "works_then_waits", adapter="fake")
+
+    # Two rows, same tier: one would have been "worker", one "reviewer" under the old schema.
+    # After S5, both are just tier=frontier, and the resolver picks by score/order, not role.
+    rows = (_row("fake", "anth", vendor="anthropic", tier="frontier", cost_class="frontier"),
+            _row("fake", "xai", vendor="xai", tier="frontier", cost_class="frontier", order=2))
+    f = Fleet(repo=git_repo, workspace=tmp_path / "ws", client=_server(tmp_path / "ws"), launch_for=launch_for,
+              matrix=_matrix(*rows))
+    out = _call(f, "spawn", tier="frontier", role="reviewer", enrolment_code="WORKER-1")
+    got = out["structuredContent"]
+    # The spawn succeeded
+    assert seen == [("fake", "anth")], f"expected the first row by order, got {seen}"
+    # The reply carries a deprecation note
+    assert got.get("role_deprecated"), "spawn with role= must say role is deprecated"
+
+
+def test_doctor_output_contains_no_reviewer_and_no_cross_vendor(git_repo: Path, monkeypatch):
+    """S5 sabotage 3: doctor output contains no `reviewer` and no `cross_vendor`."""
+    import io
+    from gbfleet import doctor as doctor_mod
+
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
+    report = doctor_mod.run(repo=git_repo, out=io.StringIO())
+    output = io.StringIO()
+    report.render(output)
+    text = output.getvalue()
+    # No "reviewer" as a role label (the word may appear in "reviewer_cross_vendor" policy name, so check both)
+    assert "reviewer/" not in text, "doctor must not print role=reviewer resolutions"
+    assert "cross_vendor" not in text, "doctor must not print reviewer_cross_vendor policy"
