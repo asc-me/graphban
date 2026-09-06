@@ -44,6 +44,11 @@ without colliding*, then delegate.
      registers on the seat, which claims the item for it and links your delegation;
      the spawn reply's `assigned` says `claimed` or `taken` (and who). Keep working;
      read the outcome from the item, not from a reply.
+   - **More than a few items ready and non-colliding?** Say so before you start
+     spawning. `gbfleet until` runs the whole wave with no LLM in it — mint just in
+     time, spawn, watch, stop when there is no ready work, no unsigned review and no
+     live lease. Doing it yourself keeps a frontier context polling and adjudicating
+     for the length of the wave, which is the most expensive way to run a backlog.
 6. Read the Live board. `expired, nothing claimed` under your row is a spawn that
    died before it claimed; `superseded` is a claim by something that was not your
    child; `requested cheap, declared frontier` is a harness that did not honour the

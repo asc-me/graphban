@@ -168,6 +168,10 @@ but exposing a tool does not say *when* to reach for it. That gap is why items s
    the child holds it before its first tool call (PRD-36). You may not sign off your own
    delegation's work; another agent reviews it.
 
+   **One item, spawn it. A whole backlog, ask for `gbfleet until`** — it runs the wave with
+   no LLM in it, where fanning out yourself keeps a frontier context polling and
+   adjudicating bounces for the wave's whole length.
+
 Reach for the rest by question, not by habit: `get_backlog` / `search_items` for what is
 open, `search_memory` and `related_work` for what was already learned or tried,
 `get_code_map` / `code_neighbors` / `search_code` for structure, `describe_code` to write
