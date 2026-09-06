@@ -1,8 +1,8 @@
 """`gb` — the client for a human at a terminal (PRD-40).
 
-PR 1: the package, the session, and the config precedence. `doctor`, `seats` and `agents`
-arrive in PR 2 and PR 3; the parser names them now only so `gb --help` is not a lie about
-what exists.
+The v1 verb list is short on purpose (D11). Every verb here is one HTTP call to one route
+that already exists, named one-to-one, because a client that composes several calls into a
+new act becomes a second place the rules live.
 """
 from __future__ import annotations
 
@@ -62,6 +62,42 @@ def _parser() -> argparse.ArgumentParser:
     fleet.add_argument("rest", nargs=argparse.REMAINDER,
                        help="arguments for gbfleet; try `gb fleet --help`")
     sub.add_parser("whoami", help="who this session belongs to, and where it points")
+
+    seats = sub.add_parser(
+        "seats", help="the seats a wave was issued, and issuing more",
+        description=("A SEAT is an enrolment code: one agent's right to register once, for "
+                     "half an hour. It is not a credential — the credential is the API key "
+                     "the child authenticates with, and `gb keys` is where those live."))
+    seats_do = seats.add_subparsers(dest="act")
+    issue = seats_do.add_parser("issue", help="issue seats, one role per agent")
+    issue.add_argument("roles", nargs="+", metavar="ROLE",
+                       help="one entry per agent, repeats included: worker worker planner")
+    issue.add_argument("--wave", default="",
+                       help="blank means the next one, computed server-side")
+    revoke = seats_do.add_parser("revoke-unused", help="throw away seats nobody redeemed")
+    revoke.add_argument("--wave", default="")
+
+    agents = sub.add_parser(
+        "agents", help="the roster, and re-tasking one",
+        description=("Who is live, what each is doing, and — the reason this verb exists — "
+                     "what any of them was last refused and why."))
+    agents_do = agents.add_subparsers(dest="act")
+    role = agents_do.add_parser(
+        "role", help="re-task a live agent, as the human who owns its credential",
+        description=("The credential ceiling still decides. A role the agent's key does not "
+                     "permit is refused by the server, and widening a ceiling means minting "
+                     "a different credential — keeping those two acts apart is the point of "
+                     "having a ceiling. Lands on the agent's next poll."))
+    role.add_argument("agent_id")
+    role.add_argument("role", metavar="ROLE")
+    role.add_argument("--reason", default="", help="recorded on the event, and told to the agent")
+
+    keys = sub.add_parser("keys", help="the credentials this project's agents authenticate with")
+    keys_do = keys.add_subparsers(dest="act")
+    mint = keys_do.add_parser("mint", help="mint a credential narrowed to one role")
+    mint.add_argument("--role", required=True)
+    mint.add_argument("--wave", default="wave-1")
+    mint.add_argument("--label", default="")
     return parser
 
 
@@ -170,17 +206,122 @@ def cmd_fleet(args) -> int:
     return subprocess.run(argv).returncode
 
 
+def _project(args, act: str) -> str:
+    project = config.resolve(args.project, config.PROJECT_ENV, "project")
+    if not project:
+        print(f"{PROG}: `{PROG} {act}` needs a project. Pass --project, set "
+              f"${config.PROJECT_ENV}, or run `gb login --project …` once.", file=sys.stderr)
+        raise SystemExit(EXIT_REFUSED)
+    return project
+
+
+def _fleet_read(args, act: str) -> tuple[dict, str]:
+    """The one read behind `seats`, `agents` and `keys` (D11).
+
+    `GET /api/fleet` already returns the roster, the seats and the credentials together,
+    because they are read together. Three verbs over one route is not three routes.
+    """
+    url, project = _server(args), _project(args, act)
+    client = authenticated(url, act=act)
+    return client.call("GET", f"/api/fleet?project_id={project}"), project
+
+
+def cmd_seats(args) -> int:
+    if args.act == "issue":
+        url, project = _server(args), _project(args, "seats issue")
+        out = authenticated(url, act="seats issue").call(
+            "POST", "/api/fleet/seats",
+            {"project_id": project, "roles": args.roles, "wave": args.wave})
+        # The codes are returned ONCE, by the server, and nothing here stores them. A CLI
+        # that helpfully wrote them to a file would be inventing a second credential at rest
+        # that no route and no test knows about.
+        lines = [f"{PROG}: {len(out.get('seats', []))} seats on {out.get('wave')}",
+                 "     each code is shown once and is not stored anywhere:"]
+        lines += [f"     {s['code']}  {s['role']}" for s in out.get("seats", [])]
+        lines.append("     feed them to `gb fleet up --seats-file`, one per line.")
+        _out(out, "\n".join(lines), args.as_json)
+        return 0
+    if args.act == "revoke-unused":
+        url, project = _server(args), _project(args, "seats revoke-unused")
+        out = authenticated(url, act="seats revoke-unused").call(
+            "POST", "/api/fleet/seats/revoke-unused",
+            {"project_id": project, "wave": args.wave or None})
+        _out(out, f"{PROG}: {out.get('revoked', 0)} unused seats revoked"
+                  f"\n     consumed seats are untouched: they record which agent took what.",
+             args.as_json)
+        return 0
+    fleet, _ = _fleet_read(args, "seats")
+    seats = fleet.get("seats", [])
+    human = [f"{PROG}: {len(seats)} seats"] + [
+        f"     {s.get('wave', ''):<10} {s.get('role', ''):<8} {s.get('state', '')}"
+        + (f"  taken by {s['consumed_by']}" if s.get("consumed_by") else "")
+        for s in seats] or [f"{PROG}: no seats"]
+    _out({"seats": seats}, "\n".join(human), args.as_json)
+    return 0
+
+
+def cmd_agents(args) -> int:
+    if args.act == "role":
+        url = _server(args)
+        # No project in the path: the agent id already names one, and the server resolves it.
+        # Asking for a project here would let a person name one the agent is not on.
+        out = authenticated(url, act="agents role").call(
+            "PUT", f"/api/fleet/agents/{args.agent_id}/role",
+            {"role": args.role, "reason": args.reason})
+        _out(out, f"{PROG}: {out.get('agent_id')} is now {out.get('active_role')}"
+                  f"\n     {out.get("takes_effect") or "on the agent's next poll"}", args.as_json)
+        return 0
+    fleet, _ = _fleet_read(args, "agents")
+    agents = fleet.get("agents", [])
+    human = [f"{PROG}: {len(agents)} agents"]
+    for a in agents:
+        human.append(f"     {a.get('key') or a.get('id'):<12} {a.get('active_role', ''):<8} "
+                     f"{a.get('state', ''):<10} {a.get('credential') or ''}")
+        # THE LINE THIS VERB EXISTS FOR (criterion 8). A roster that says "idle worker" for an
+        # agent being refused every call it makes is the thing that cost an afternoon and a
+        # database query on Super-Arc.
+        refusal = a.get("last_refusal") or {}
+        if refusal.get("tool"):
+            human.append(f"       last refused {refusal['tool']} x{refusal.get('count', 1)}: "
+                         f"{refusal.get('reason', '')}")
+    _out({"agents": agents}, "\n".join(human) if agents else f"{PROG}: no agents", args.as_json)
+    return 0
+
+
+def cmd_keys(args) -> int:
+    if args.act == "mint":
+        url, project = _server(args), _project(args, "keys mint")
+        out = authenticated(url, act="keys mint").call(
+            "POST", "/api/fleet/keys",
+            {"project_id": project, "role": args.role, "wave": args.wave, "label": args.label})
+        _out(out, f"{PROG}: {out.get('plaintext')}"
+                  f"\n     {out.get('role')} on {out.get('wave')}, shown once, expires "
+                  f"{out.get('expires_at')}", args.as_json)
+        return 0
+    fleet, _ = _fleet_read(args, "keys")
+    creds = fleet.get("credentials", [])
+    human = [f"{PROG}: {len(creds)} credentials"] + [
+        f"     {c.get('prefix', ''):<14} {c.get('name', ''):<20} {c.get('wave') or '-':<10}"
+        + ("  REVOKED" if c.get("revoked") else "")
+        + ("  all-in-one" if c.get("posture") == "single" else "")
+        for c in creds]
+    _out({"credentials": creds}, "\n".join(human) if creds else f"{PROG}: no credentials",
+         args.as_json)
+    return 0
+
+
 COMMANDS = {"login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami,
-            "doctor": cmd_doctor, "fleet": cmd_fleet}
+            "doctor": cmd_doctor, "fleet": cmd_fleet, "seats": cmd_seats,
+            "agents": cmd_agents, "keys": cmd_keys}
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         return COMMANDS[args.command](args)
-    except NoSession:
+    except NoSession as exc:
         # Never a 401 traceback: the person needs one instruction, and this is it.
-        print(f"{PROG}: session expired, run `{PROG} login`", file=sys.stderr)
+        print(f"{PROG}: {exc.advice(PROG)}", file=sys.stderr)
         return EXIT_NO_SESSION
     except Unreachable as exc:
         print(f"{PROG}: {exc}", file=sys.stderr)

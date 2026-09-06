@@ -14,6 +14,7 @@ it every time would manufacture the race that does not otherwise exist.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -39,7 +40,25 @@ class NoSession(Exception):
 
     Expired and revoked are deliberately the SAME state here. Both come back 401, and the
     person does the same thing either way — a distinction would be precision nobody can act on.
+
+    "You have a credential, but not one that can do this" IS a different state, and the only
+    one where the next step is not simply `gb login` (criterion 5). Somebody who exported
+    `GRAPHBAN_API_KEY` and watched `gb fleet` work has every reason to read "session expired"
+    as a bug in the tool rather than as a statement about what a key is for.
     """
+
+    def __init__(self, why: str, *, act: str = "", have_key: bool = False) -> None:
+        super().__init__(why)
+        self.why = why
+        self.act = act
+        self.have_key = have_key
+
+    def advice(self, prog: str) -> str:
+        if self.have_key and self.act:
+            return (f"`{prog} {self.act}` needs a session, not an API key. It acts as YOU — "
+                    f"the ledger records which human did it — and ${config.API_KEY_ENV} names "
+                    f"an agent.\n     Run `{prog} login`.")
+        return f"session expired, run `{prog} login`"
 
 
 class Refused(Exception):
@@ -108,16 +127,20 @@ def login(url: str, email: str, password: str) -> dict:
                             {"email": email, "password": password})
 
 
-def authenticated(url: str) -> Client:
+def authenticated(url: str, *, act: str = "") -> Client:
     """A client for this invocation: one refresh exchange, access token held in memory.
 
     Raises `NoSession` when there is nothing stored or the server will not renew it. The
-    caller turns that into "session expired, run `gb login`" and exit 3 — never a traceback,
-    and never a bare 401 (criterion 4).
+    caller turns that into one instruction and exit 3 — never a traceback, and never a bare
+    401 (criterion 4). `act` is the verb the person typed; it appears only in the message for
+    somebody holding an API key and nothing else.
     """
     stored = config.session().get("refresh_token")
     if not stored:
-        raise NoSession("no stored session")
+        # `act` is what the person typed, so the message can name it rather than describe a
+        # category they would then have to work out they are in.
+        raise NoSession("no stored session", act=act,
+                        have_key=bool(os.environ.get(config.API_KEY_ENV)))
     try:
         pair = Client(url).call("POST", "/api/auth/refresh", {"refresh_token": stored})
     except Refused as exc:
