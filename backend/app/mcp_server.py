@@ -2089,6 +2089,29 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 f"api key {key.name!r} carries the 'gate' scope but its owner has write "
                 "access to no project, so it may not attest anything"
             )
+        # Authorship (S2 / D-j). The `gate` scope decides who may WRITE an attestation;
+        # this decides whether the identified caller may attest THIS item.  Keyed on the
+        # same `built_by` column `claim_review` (fleet.py:1311) and `sign_off` (fleet.py:1420)
+        # already use — the self-review ban was never held up by the role, it was held up
+        # by authorship.  An adapter key (CI, a sync bridge) carries no agent identity, so
+        # `_agent_for_call` returns None, the comparison has nothing to compare, and the
+        # write proceeds exactly as today.
+        _author = _agent_for_call(db, key, args, session_id)
+        if _author:
+            _item_ref = args.get("id") or args.get("item_id")
+            if _item_ref:
+                from app.services import keys as _keys
+                _resolved = _keys.resolve_item(db, _item_ref) or _item_ref
+                _item_row = db.get(Item, _resolved)
+                if _item_row is not None and _item_row.built_by == _author:
+                    raise authz.Forbidden(
+                        f"agent {_author!r} built {_item_row.key!r} "
+                        f"(built_by) and cannot attest its own work; "
+                        "another agent must attest it",
+                        hint="pass the attestation through a different agent, or record "
+                             "your proof as `test` or `sabotage` receipts and let an "
+                             "adapter attest the result",
+                    )
     readable = authz.key_readable_ids(db, key)
     allowed = authz.key_writable_ids(db, key) if writes else readable
     requested = args.get("project_id")
