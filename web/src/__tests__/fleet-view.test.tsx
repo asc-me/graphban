@@ -926,6 +926,28 @@ describe("harness preferences", () => {
 // ---- GRPH-774: the human above the fleet ------------------------------------------------
 
 describe("re-tasking an agent", () => {
+  it("offers only the roles the SERVER lists", async () => {
+    // PRD-39 reduced the role set to two, and a hard-coded third here offered a role every
+    // save then refused — which is what turned main red.
+    fleet.data = { ...BASE, roles: ["planner", "worker"], online: 1, total: 1,
+                   by_role: { planner: 0, worker: 1 }, agents: [AGENT] };
+    renderView();
+    const select = await screen.findByTestId("agent-role");
+    expect([...select.querySelectorAll("option")].map((o) => o.textContent))
+      .toEqual(["planner", "worker"]);
+  });
+
+  it("keeps showing an agent's current role even when the server no longer offers it", async () => {
+    // Otherwise the selector renders as though the agent held a different role than it does.
+    fleet.data = { ...BASE, roles: ["planner", "worker"], online: 1, total: 1, by_role: {},
+                   agents: [{ ...AGENT, active_role: "reviewer" }] };
+    renderView();
+    const select = await screen.findByTestId("agent-role");
+    expect(select).toHaveValue("reviewer");
+    expect([...select.querySelectorAll("option")].map((o) => o.textContent))
+      .toContain("reviewer");
+  });
+
   it("offers a role selector on a roster row", async () => {
     fleet.data = { ...BASE, online: 1, total: 1,
                    by_role: { planner: 0, worker: 1, reviewer: 0 }, agents: [AGENT] };
