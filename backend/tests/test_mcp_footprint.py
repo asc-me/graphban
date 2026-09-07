@@ -85,7 +85,11 @@ CEILING = 14200
 # suggest_next and unlink_items. Headroom 8.
 # 14192 → 14183 with S3 of PRD-39: `reviewer` left the role enums, nine tokens on every
 # manifest. Recorded in docs/prd-39-fleet-two-axes.md §7.11.
-MEASURED_TOKENS = 14183
+# 14183 → 14188. `delegate`'s `withdrew` and `enrolment_code` are declared nullable, and
+# `["string", "null"]` costs more than `"string"`. Not paid for by a trim: the previous
+# declaration made every FIRST delegation unusable by a validating client, so these five
+# tokens buy back a broken tool rather than a new one. Headroom 12.
+MEASURED_TOKENS = 14188
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
