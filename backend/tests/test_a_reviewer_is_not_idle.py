@@ -64,9 +64,9 @@ def _agent(client, key, label, role) -> str:
                     {"label": label, "role_hint": role}))["agent_id"]
 
 
-def _item_in_review(client, key, proj, builder) -> str:
+def _item_in_review(client, key, proj, builder, effort: int = 3) -> str:
     made = _ok(_mcp(client, key, "create_item",
-                    {"project_id": proj, "title": "something to review", "effort": 3}))
+                    {"project_id": proj, "title": "something to review", "effort": effort}))
     _ok(_mcp(client, key, "update_item",
              {"project_id": proj, "id": made["id"], "status": "in_progress",
               "agent_id": builder}))
@@ -159,3 +159,163 @@ def test_the_reason_names_the_clock_not_silence(client, key, proj, db):
     reason = fleet_svc.review_block_reason(db, agent_id=second, project_id=proj)
     assert "silent" not in reason, "it lapses on a clock, held or not"
     assert f"{DEFAULT_LEASE_SECONDS // 60} minutes" in reason
+
+
+# ---- the deployed verification of the above found the rest of it ------------------------------
+
+def test_re_claiming_what_you_already_hold_does_not_restart_the_clock(client, key, proj, db):
+    """MEASURED ON THE DEPLOYED INSTANCE. GRPH-A142 called `claim_review` every 50 seconds and
+    nothing else; each call reset `review_claimed_at`, so a 600-second lease never came within
+    550 seconds of lapsing. The hold was unbounded — not because the reclaim path "only fires
+    on silence", but because the holder kept restarting the clock.
+
+    Sabotage: set the timestamp unconditionally again and a polling loop owns an item forever.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Item
+
+    builder = _agent(client, key, "builder", "worker")
+    reviewer = _agent(client, key, "reviewer", "worker")
+    item_id = _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+
+    # Nine minutes in, still no verdict — and the loop asks again.
+    row = db.get(Item, item_id)
+    first = datetime.now(timezone.utc) - timedelta(seconds=540)
+    row.review_claimed_at = first
+    db.commit()
+
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+    db.expire_all()
+    assert abs((fleet_svc._aware(db.get(Item, item_id).review_claimed_at)
+                - first).total_seconds()) < 2, "the poll restarted the lease"
+
+
+def test_a_hold_lapses_on_its_own_age_and_the_item_is_offered_to_somebody_else(
+        client, key, proj, db):
+    """The consequence that matters: the item really does go back in the queue. Before, the
+    poll restarted the lease, so the moment of availability never arrived at all."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Item
+
+    builder = _agent(client, key, "builder", "worker")
+    stuck = _agent(client, key, "the loop", "worker")
+    other = _agent(client, key, "somebody else", "worker")
+    item_id = _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": stuck}))
+
+    row = db.get(Item, item_id)
+    row.review_claimed_at = datetime.now(timezone.utc) - timedelta(
+        seconds=DEFAULT_LEASE_SECONDS + 30)
+    db.commit()
+
+    taken = _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": other}))
+    assert taken.get("claimed"), "an expired hold must be offered to another reviewer"
+
+
+def test_a_loop_that_re_takes_what_it_let_lapse_is_counted(client, auth, key, proj, db):
+    """Releasing the item is not the same as NOTICING. A loop that re-takes every time its
+    hold lapses looks, on any single read, exactly like a reviewer who started a moment ago —
+    which is precisely how this went undiagnosed until somebody watched the number reset.
+
+    Sabotage: stop counting and "taken 7 times, no verdict" cannot be said."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Item
+
+    builder = _agent(client, key, "builder", "worker")
+    stuck = _agent(client, key, "the loop", "worker")
+    item_id = _item_in_review(client, key, proj, builder)
+
+    for _ in range(4):
+        _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": stuck}))
+        row = db.get(Item, item_id)
+        row.review_claimed_at = datetime.now(timezone.utc) - timedelta(
+            seconds=DEFAULT_LEASE_SECONDS + 30)
+        db.commit()
+
+    queue = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["review_queue"]
+    assert queue[0]["review_takes"] == 4
+
+
+def test_polling_a_hold_you_already_have_is_not_a_take(client, auth, key, proj, db):
+    """Otherwise the count measures the poll interval, which is the same mistake
+    `held_for_seconds` made before the clock was fixed."""
+    builder = _agent(client, key, "builder", "worker")
+    reviewer = _agent(client, key, "reviewer", "worker")
+    _item_in_review(client, key, proj, builder)
+    for _ in range(5):
+        _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+
+    queue = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["review_queue"]
+    assert queue[0]["review_takes"] == 1
+
+
+@pytest.mark.parametrize("verdict", ["bounce", "sign_off"])
+def test_a_verdict_clears_the_count(client, auth, key, proj, db, verdict):
+    """EITHER verdict. The count is the absence of a decision, and both paths are decisions —
+    a bounce that comes back for review starts at zero, and so does a signed-off item.
+
+    Parametrised because clearing it in one path and not the other is exactly the shape that
+    passes a test written against whichever path the author happened to pick."""
+    from app.models import Item
+
+    builder = _agent(client, key, "builder", "worker")
+    reviewer = _agent(client, key, "reviewer", "worker")
+    # Effort 1: above it a sign-off needs adversarial evidence (the sabotage receipts), which
+    # is a different gate and not what this test is about.
+    item_id = _item_in_review(client, key, proj, builder, effort=1)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+
+    args = {"project_id": proj, "id": item_id, "agent_id": reviewer}
+    if verdict == "bounce":
+        args["reason"] = "needs a test"
+    res = _mcp(client, key, verdict, args)
+    assert not res.get("isError"), res
+
+    db.expire_all()
+    assert db.get(Item, item_id).review_takes == 0
+
+
+def test_a_first_claim_still_starts_the_clock(client, key, proj, db):
+    """Not resetting must not become never setting: an item claimed for the first time needs
+    a timestamp, or `review_claim_holder` reads it as expired the moment it is taken."""
+    from app.models import Item
+
+    builder = _agent(client, key, "builder", "worker")
+    reviewer = _agent(client, key, "reviewer", "worker")
+    item_id = _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+
+    db.expire_all()
+    row = db.get(Item, item_id)
+    assert row.review_claimed_at is not None
+    assert fleet_svc.review_claim_holder(row) == reviewer
+
+
+def test_taking_over_a_lapsed_hold_starts_a_fresh_clock(client, key, proj, db):
+    """A new holder gets its own full lease. Inheriting the previous one's age would hand a
+    reviewer an item that expires under it seconds later."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Item
+
+    builder = _agent(client, key, "builder", "worker")
+    first = _agent(client, key, "first", "worker")
+    second = _agent(client, key, "second", "worker")
+    item_id = _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": first}))
+
+    row = db.get(Item, item_id)
+    row.review_claimed_at = datetime.now(timezone.utc) - timedelta(
+        seconds=DEFAULT_LEASE_SECONDS + 30)
+    db.commit()
+
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": second}))
+    db.expire_all()
+    row = db.get(Item, item_id)
+    assert fleet_svc.review_claim_holder(row) == second
+    assert (datetime.now(timezone.utc)
+            - fleet_svc._aware(row.review_claimed_at)).total_seconds() < 5

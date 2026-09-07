@@ -1357,6 +1357,10 @@ export interface FleetOverview {
      *  nothing holds it — "held for 0s" next to an item nobody has opened is a worse lie
      *  than saying nothing. */
     held_for_seconds: number | null; holder_state: string | null;
+    /** How many times the review has been TAKEN without a verdict. A loop that re-takes an
+     *  item every time its hold lapses looks, on any single read, exactly like a reviewer who
+     *  started a moment ago; this is what separates them. */
+    review_takes: number;
   }[];
   clusters: {
     items: string[]; areas: string[]; predicted: boolean;

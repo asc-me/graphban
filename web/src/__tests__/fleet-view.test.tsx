@@ -251,6 +251,7 @@ describe("Fleet view", () => {
     fleet.data = { ...BASE, review_queue: [{
       id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
       built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: null,
+      held_for_seconds: null, holder_state: null, review_takes: 0,
     }] };
     renderView();
     await openWork(userEvent.setup());
@@ -263,7 +264,7 @@ describe("Fleet view", () => {
     fleet.data = { ...BASE, review_queue: [{
       id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
       built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: "GB-A2",
-      held_for_seconds: 900, holder_state: "reviewing",
+      held_for_seconds: 900, holder_state: "reviewing", review_takes: 1
     }] };
     renderView();
     await openWork(userEvent.setup());
@@ -275,7 +276,7 @@ describe("Fleet view", () => {
     fleet.data = { ...BASE, review_queue: [{
       id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
       built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: "GB-A2",
-      held_for_seconds: 900, holder_state: "idle",
+      held_for_seconds: 900, holder_state: "idle", review_takes: 1
     }] };
     renderView();
     await openWork(userEvent.setup());
@@ -288,11 +289,39 @@ describe("Fleet view", () => {
     fleet.data = { ...BASE, review_queue: [{
       id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
       built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: null,
-      held_for_seconds: null, holder_state: null,
+      held_for_seconds: null, holder_state: null, review_takes: 1
     }] };
     renderView();
     await openWork(userEvent.setup());
     expect(screen.queryByTestId("review-hold")).not.toBeInTheDocument();
+  });
+
+  it("says how many times a review has been taken without a verdict", async () => {
+    // A hold that lapses and is immediately re-taken renders as a fresh review every time it
+    // is read. Measured on the deployed instance: GRPH-A142 called `claim_review` every 50
+    // seconds for fifteen minutes and the age reset each time.
+    fleet.data = { ...BASE, review_queue: [{
+      id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
+      built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: "GB-A2",
+      held_for_seconds: 12, holder_state: "reviewing", review_takes: 7,
+    }] };
+    renderView();
+    await openWork(userEvent.setup());
+    expect(await screen.findByTestId("review-takes"))
+      .toHaveTextContent("taken 7×, no verdict");
+  });
+
+  it("says nothing about takes for an ordinary first review", async () => {
+    // Otherwise every row carries a count that means nothing and the one that matters stops
+    // standing out.
+    fleet.data = { ...BASE, review_queue: [{
+      id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
+      built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: "GB-A2",
+      held_for_seconds: 12, holder_state: "reviewing", review_takes: 1,
+    }] };
+    renderView();
+    await openWork(userEvent.setup());
+    expect(screen.queryByTestId("review-takes")).not.toBeInTheDocument();
   });
 
   it("says why a held-back cluster is waiting", async () => {
