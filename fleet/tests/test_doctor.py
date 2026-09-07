@@ -336,3 +336,16 @@ def test_the_report_names_a_remedy_for_what_it_refuses(git_repo: Path):
     assert failed
     for finding in failed:
         assert finding.remedy, f"{finding.name} failed and offered nothing to do about it"
+
+
+def test_the_supervision_mode_line_puts_until_on_the_deterministic_side(git_repo: Path):
+    """PRD-39 D-e. `until` runs a wave with no LLM in it — that is its reason to exist — so
+    it is deterministic, beside `up`. `driven` is a planner holding `gbfleet mcp`. The first
+    version of this line said the opposite, and a doctor that misnames the cheap mode sends
+    an operator to the expensive one."""
+    report = _run(git_repo)
+    line = next(f.detail for f in report.findings if f.name == "supervision mode")
+    det, drv = line.split(";")
+    assert "until" in det and "up" in det and "no LLM" in det, det
+    assert "mcp" in drv and "until" not in drv, drv
+
