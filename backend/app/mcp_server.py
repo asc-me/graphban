@@ -2139,6 +2139,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         or (key.project_id if key.project_id in allowed else None)
         or (allowed[0] if allowed else None)
     )
+    # Whether something more authoritative than sort order chose the project below — the seat
+    # at registration, or the agent's own registration afterwards. Neither is a guess, and
+    # the GRPH-482 note must stay quiet for them or it teaches clients to ignore it.
+    decided = False
     if name == "register_agent" and not requested and args.get("enrolment_code"):
         # The seat names its project. A spawned child holds a code and a credential, not a
         # project id, and on a key spanning several projects the guess below would land it
@@ -2147,6 +2151,22 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         seat_pid = fleet_svc.project_of_enrolment_code(db, str(args.get("enrolment_code")))
         if seat_pid and seat_pid in allowed:
             pid = seat_pid
+            decided = True
+    elif not requested:
+        # A REGISTERED AGENT'S PROJECT WINS OVER THE KEY'S DEFAULT. The seat named the project
+        # at registration (above); every later call from that agent lands there too, or the
+        # guess below sends it to whichever project sorts first. Found on the PRD-39
+        # acceptance walk: three reviewers on a project-less credential each called
+        # `claim_review` without `project_id`, were served the key's default project's empty
+        # review queue, answered "no item awaiting a second pair of eyes", and exited — while
+        # the row they were spawned for sat in review one project over. A child never names
+        # a project; its seat did. Only within the key's scope, as with the seat.
+        _caller = _agent_for_call(db, key, args, session_id)
+        if _caller:
+            _row = db.get(Agent, _caller)
+            if _row is not None and _row.project_id in allowed:
+                pid = _row.project_id
+                decided = True
     # SAY WHEN THE PROJECT WAS GUESSED (GRPH-482). The last clause above is an ordering:
     # a key spanning several projects, called without `project_id`, lands in whichever
     # sorts first — no error, and nothing in the response naming the project it chose.
@@ -2167,7 +2187,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     # outcome; the sabotage pass found it by deleting it and breaking nothing.
     if scope_out is not None:
         scope_out["project_id"] = pid
-        scope_out["guessed"] = bool(pid is not None and not requested and len(allowed) > 1)
+        scope_out["guessed"] = bool(pid is not None and not requested and len(allowed) > 1
+                                    and not decided)
 
     # Role gate (PRD-17 D2). AFTER scope, because "this key cannot reach that project" is a
     # more fundamental refusal than "this role cannot make that call", and reporting the role
