@@ -1,0 +1,76 @@
+# Tell an open PR when what just landed on main overlaps what it changes.
+#
+# `strict` branch protection does this by forcing every PR up to date before merging, and it
+# was tried here for exactly one day: it blocks STACKED work, where PR 2 is deliberately
+# built on PR 1 and is behind main by construction. Failing correct work is a worse failure
+# than the one being prevented.
+#
+# So this warns rather than gates, and only when staleness can actually hurt. A PR behind by
+# fifty commits that touch nothing it touches is fine, and saying otherwise teaches people to
+# click through the warning — which is how the real one becomes invisible.
+#
+# Measured on the case that motivated it: #652 removed a role in `services/fleet.py` while
+# #653 added a test using it, and the two shared `mcp_server.py` and `routers/fleet.py`. An
+# overlap check catches that pair; a commit-count check fires on every PR in the repository.
+#
+# NOT a gate. `CI` stays the only required check. CI already tests the merge of the PR into
+# main — it simply does not re-run when main moves, and that gap is the whole subject here.
+name: Base freshness
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  overlap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Warn open PRs whose files main just changed under them
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # A sticky marker, so this edits one comment per PR rather than adding one per push.
+          MARK='<!-- base-freshness -->'
+
+          gh pr list --repo "$REPO" --state open --json number --jq '.[].number' \
+          | while read -r pr; do
+            git fetch -q origin "pull/$pr/head:pr-$pr" 2>/dev/null || continue
+            base=$(git merge-base "pr-$pr" origin/main)
+
+            overlap=""
+            if [ "$base" != "$(git rev-parse origin/main)" ]; then
+              git diff --name-only "$base" "pr-$pr" | sort -u > /tmp/pr.files
+              git diff --name-only "$base" origin/main | sort -u > /tmp/main.files
+              overlap=$(comm -12 /tmp/pr.files /tmp/main.files || true)
+            fi
+
+            existing=$(gh api "repos/$REPO/issues/$pr/comments" \
+              --jq "[.[] | select(.body | startswith(\"$MARK\"))] | first | .id // empty")
+
+            if [ -n "$overlap" ]; then
+              n=$(printf '%s\n' "$overlap" | wc -l | tr -d ' ')
+              body=$(printf '%s\n**main moved under this branch, in %s file(s) it also changes.**\n\nCI tested the merge with main as it stood when this branch last ran, and does not re-run when main moves — so a green tick here describes an older main. Two changes can each be green on their own base and conflict on merge.\n\n```\n%s\n```\n\nMerge `origin/main` in and let CI run again, or satisfy yourself the two do not interact.\n' "$MARK" "$n" "$overlap")
+            else
+              body=$(printf '%s\nNothing that has landed on main since this branch left it touches a file this branch changes.\n' "$MARK")
+            fi
+
+            if [ -n "$existing" ]; then
+              gh api -X PATCH "repos/$REPO/issues/comments/$existing" -f body="$body" >/dev/null
+            elif [ -n "$overlap" ]; then
+              # Only OPEN a comment for a real overlap. A "nothing to see here" note on every
+              # PR on every push is the noise that hides the one that matters. An existing
+              # comment is still updated, so a resolved warning says so instead of standing.
+              gh api -X POST "repos/$REPO/issues/$pr/comments" -f body="$body" >/dev/null
+            fi
+            echo "PR #$pr: $([ -n "$overlap" ] && echo "overlaps $n file(s)" || echo "clear")"
+          done
