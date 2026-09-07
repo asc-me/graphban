@@ -10,6 +10,23 @@
 # nothing it touches is fine, and saying otherwise teaches people to click through the
 # warning — which is how the real one becomes invisible.
 #
+# TWO KINDS OF HURT, and collapsing them was making the loud one quieter.
+#
+#   CONFLICT  — the merge will not apply. `git merge-tree` says so with certainty, and it is
+#               the same answer GitHub's merge button will give.
+#   UNTESTED  — the merge applies cleanly and CI has never run on the combination. Same file,
+#               distant regions: nothing to resolve, and nothing has proved the result works.
+#
+# A conflict-only check would MISS the case that motivated all of this. #652 and #653 merged
+# cleanly and broke semantically — the trunk went red on a role one removed and the other
+# used, in different files. So "only look for conflicts" would have been silent on the exact
+# failure, and file-overlap alone cried wolf on every same-file-different-region PR. Both
+# states are reported, labelled, and worded differently.
+#
+# NEITHER ASKS FOR A REBASE. The remedy is always to MERGE the base in: rebasing a published
+# branch rewrites history that anything stacked on it is built from, and this whole workflow
+# exists because stacking has to keep working.
+#
 # Measured on the case that motivated it: #652 removed a role in `services/fleet.py` while
 # #653 added a test using it, and the two shared `mcp_server.py` and `routers/fleet.py`. An
 # overlap check catches that pair; a commit-count check fires on every PR in the repository.
@@ -90,29 +107,43 @@ jobs:
             base=$(git merge-base "pr-$pr" "$base_tip")
 
             overlap=""
+            conflict=0
             if [ "$base" != "$base_tip" ]; then
               git diff --name-only "$base" "pr-$pr" | sort -u > /tmp/pr.files
               git diff --name-only "$base" "$base_tip" | sort -u > /tmp/base.files
               overlap=$(comm -12 /tmp/pr.files /tmp/base.files || true)
+              # A trial merge in memory: no worktree, no checkout, nothing written. Probed
+              # for support first — on a git too old for `--write-tree` the command fails as
+              # a USAGE error, and reading that as "conflict" would put a false alarm on
+              # every PR in the repository.
+              if git merge-tree --write-tree HEAD HEAD >/dev/null 2>&1; then
+                git merge-tree --write-tree "$base_tip" "pr-$pr" >/dev/null 2>&1 || conflict=1
+              fi
             fi
 
             existing=$(gh api "repos/$REPO/issues/$pr/comments" \
               --jq "[.[] | select(.body | startswith(\"$MARK\"))] | first | .id // empty")
 
-            if [ -n "$overlap" ]; then
+            if [ "$conflict" = "1" ]; then
               n=$(printf '%s\n' "$overlap" | wc -l | tr -d ' ')
-              body=$(printf '%s\n**`%s` moved under this branch, in %s file(s) it also changes.**\n\nCI tested the merge with `%s` as it stood when this branch last ran, and does not re-run when the base moves — so a green tick here describes an older base. Two changes can each be green on their own base and conflict on merge.\n\n```\n%s\n```\n\nMerge `%s` in and let CI run again, or satisfy yourself the two do not interact.\n' "$MARK" "$base_ref" "$n" "$base_ref" "$overlap" "$base_ref")
+              body=$(printf '%s\n**This branch and `%s` no longer merge.** A trial merge conflicts, in %s file(s) both changed.\n\n```\n%s\n```\n\nMerge `%s` in and resolve it here, where CI can then run on the result. Do NOT rebase: this branch is published, and anything stacked on it is built from the history a rebase would rewrite.\n' "$MARK" "$base_ref" "$n" "$overlap" "$base_ref")
+            elif [ -n "$overlap" ]; then
+              n=$(printf '%s\n' "$overlap" | wc -l | tr -d ' ')
+              body=$(printf '%s\n**`%s` moved under this branch, in %s file(s) it also changes.** They still merge cleanly — this is not a conflict.\n\nWhat is missing is a test of the combination: CI ran against `%s` as it stood when this branch last did, and does not re-run when the base moves. Two changes can each be green on their own base and break together, which is how the trunk went red here on 2026-09-06.\n\n```\n%s\n```\n\nMerge `%s` in and let CI run again, or satisfy yourself the two do not interact.\n' "$MARK" "$base_ref" "$n" "$base_ref" "$overlap" "$base_ref")
             else
               body=$(printf '%s\nNothing that has landed on `%s` since this branch left it touches a file this branch changes.\n' "$MARK" "$base_ref")
             fi
 
             if [ -n "$existing" ]; then
               gh api -X PATCH "repos/$REPO/issues/comments/$existing" -f body="$body" >/dev/null
-            elif [ -n "$overlap" ]; then
+            elif [ -n "$overlap" ] || [ "$conflict" = "1" ]; then
               # Only OPEN a comment for a real overlap. A "nothing to see here" note on every
               # PR on every run is the noise that hides the one that matters. An existing
               # comment is still updated, so a resolved warning says so instead of standing.
               gh api -X POST "repos/$REPO/issues/$pr/comments" -f body="$body" >/dev/null
             fi
-            echo "PR #$pr (base $base_ref): $([ -n "$overlap" ] && echo "overlaps $n file(s)" || echo "clear")"
+            if [ "$conflict" = "1" ]; then verdict="CONFLICTS in $n file(s)"
+            elif [ -n "$overlap" ]; then verdict="untested overlap in $n file(s)"
+            else verdict="clear"; fi
+            echo "PR #$pr (base $base_ref): $verdict"
           done
