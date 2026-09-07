@@ -73,7 +73,7 @@ directory is not on your PATH, and `uv tool upgrade graphban-fleet` to move it f
 spec tracks a branch, so an upgrade is not automatic and a fix landing here does not reach a
 machine until somebody asks for it.
 
-[`gban`](../cli/README.md), the client for a human at a terminal, is a separate package —
+[`gban`](https://github.com/asc-me/graphban/blob/main/cli/README.md), the client for a human at a terminal, is a separate package —
 `#subdirectory=cli` — because it installs on laptops that never run a wave and must stay
 dependency-free.
 

@@ -84,7 +84,7 @@ belongs to.
 
 ## Why it is in this repository
 
-**Not a second repository**, for the reason [`fleet/README.md`](../fleet/README.md) gives for
+**Not a second repository**, for the reason [`fleet/README.md`](https://github.com/asc-me/graphban/blob/main/fleet/README.md) gives for
 the supervisor, with more force: the client↔server contract has no schema anywhere, and a
 cross-repo break would present as absence reading clean — `gban` still runs, nothing errors, the
 verb quietly stops meaning what it said. The evidence is recent and specific: `ROLES` lost
