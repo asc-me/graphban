@@ -566,13 +566,17 @@ def test_the_default_relative_repo_does_not_derive_a_workspace_git_reads_as_a_sw
     assert not str(workspace / "wave-1").lstrip("/").startswith("-")
 
 
-def test_a_supervisor_inside_a_linked_worktree_derives_the_workspace_of_the_main_tree(
-        tmp_path):
-    """Why it is `repo_root` and not `.resolve()`. The lock already keys on the main working
-    tree, so a workspace that forked per worktree would put children where the next
-    supervisor does not look — while both hold the same lock.
+def test_the_workspace_is_per_repository_and_the_repo_is_where_you_launched(tmp_path):
+    """TWO QUESTIONS, and only one of them wants the main working tree (GRPH-784).
 
-    Sabotage: use `.resolve()` and the two disagree."""
+    The workspace must be per-repo, because `hold()` keys the lock on the main tree — one
+    that forked per worktree would put children where the next supervisor does not look while
+    both hold the same lock.
+
+    The repo must NOT be, because it is what children are cut from. Sweeping it to the main
+    tree moved the base commit silently.
+
+    Sabotage: return `repo_root` for both and this fails."""
     from gbfleet.supervisor import _rooted
 
     repo = _a_repo(tmp_path)
@@ -580,7 +584,43 @@ def test_a_supervisor_inside_a_linked_worktree_derives_the_workspace_of_the_main
     subprocess.run(["git", "worktree", "add", "-q", "-b", "side", str(linked)],
                    cwd=repo, check=True)
 
-    assert _rooted(repo, None) == _rooted(linked, None)
+    top_repo, top_ws = _rooted(repo, None)
+    linked_repo, linked_ws = _rooted(linked, None)
+
+    assert top_ws == linked_ws == tmp_path / "myrepo-gbfleet", "the workspace is per-repo"
+    assert top_repo == repo.resolve()
+    assert linked_repo == linked.resolve(), (
+        "children must be cut from the tree the operator launched in")
+
+
+def test_a_child_is_cut_from_the_branch_the_supervisor_was_launched_on(tmp_path):
+    """THE BOUNCE, end to end. `worktree.create` runs `rev-parse HEAD` with `cwd=repo`, so a
+    repo swept to the main tree builds every child on the main tree's HEAD — on a machine
+    whose main checkout is detached and behind, that is every child on a stale commit with no
+    error, surfacing only as reviewers reading diffs against the wrong base.
+
+    Sabotage: hand `create` the main working tree and this fails."""
+    from gbfleet.supervisor import _rooted
+    from gbfleet.worktree import create
+
+    repo = _a_repo(tmp_path)
+    linked = tmp_path / "myrepo-wt"
+    subprocess.run(["git", "worktree", "add", "-q", "-b", "feat-x", str(linked)],
+                   cwd=repo, check=True)
+    # The two trees diverge: the linked one moves on, the main one does not.
+    (linked / "g.txt").write_text("y\n")
+    subprocess.run(["git", "add", "-A"], cwd=linked, check=True)
+    subprocess.run(["git", "-c", "user.email=a@b.c", "-c", "user.name=t",
+                    "commit", "-qm", "on feat-x"], cwd=linked, check=True)
+    here = subprocess.run(["git", "rev-parse", "HEAD"], cwd=linked,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    there = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                           capture_output=True, text=True, check=True).stdout.strip()
+    assert here != there, "the fixture did not actually diverge"
+
+    launch_repo, workspace = _rooted(linked, None)
+    tree = create(launch_repo, workspace / "slot-1", "wave-1", "A1", base="HEAD")
+    assert tree.base == here, "the child was cut from a tree the operator is not standing in"
 
 
 def test_an_explicit_workspace_is_still_honoured(tmp_path):
