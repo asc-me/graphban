@@ -222,6 +222,32 @@ def held_review(db: Session, agent_id: str, *,
     return None
 
 
+def holder_presence(agent: Agent, *, lease_seconds: int = DEFAULT_LEASE_SECONDS,
+                    now: datetime | None = None) -> str:
+    """What an agent HOLDING A LIVE REVIEW CLAIM is doing, for the queue (GRPH-771).
+
+    **One question, one answer.** `presence_for_heartbeat` derives `reviewing` from the live
+    hold because the server owns the truth about that hold; the queue used to read the
+    agent's STORED state, which is only right if the agent happens to have heartbeat since
+    claiming. `claim_review` touches no agent state, so for the first heartbeat interval of
+    every review the queue said `idle` — and the board painted a healthy reviewer in the
+    blocked colour, with the exact contradiction this ticket was reported as. A review that
+    decided in under fifty seconds was red for its whole life.
+
+    Caught by an independent reviewer bouncing the change that introduced it, which is what
+    review is for; the test that "covered" it heartbeat first and so only ever exercised the
+    case that already worked.
+
+    A live holder reads `reviewing` whatever its stored state says — including `working`,
+    which a build lease alongside a review claim legitimately produces (GRPH-429): the
+    queue's question is about the review, not about everything else the agent is doing.
+    Offline and quarantined pass through, because those are the states where a hold really
+    is a problem and the only ones worth flagging.
+    """
+    state = presence_state(agent, lease_seconds=lease_seconds, now=now)
+    return "reviewing" if state in ("idle", "working", "reviewing") else state
+
+
 def presence_for_heartbeat(db: Session, agent_id: str) -> str:
     """What a presence-only heartbeat means for an agent that holds a review (GRPH-771).
 
@@ -2808,7 +2834,10 @@ def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
         # same until somebody queried the database. `null` when nothing holds it.
         "held_for_seconds": (int((datetime.now(timezone.utc) - _aware(it.review_claimed_at)).total_seconds())
                              if review_claim_holder(it) and it.review_claimed_at else None),
-        "holder_state": (presence_state(holders[it.review_claimed_by])
+        # Derived from the LIVE HOLD, never from whether the agent has heartbeat since it
+        # claimed — the queue and the heartbeat path must not answer the same question two
+        # different ways.
+        "holder_state": (holder_presence(holders[it.review_claimed_by])
                          if review_claim_holder(it) and it.review_claimed_by in holders
                          else None),
     } for it in rows]

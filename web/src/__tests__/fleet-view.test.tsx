@@ -272,16 +272,18 @@ describe("Fleet view", () => {
   });
 
   it("flags a holder that is not reviewing, because that is the contradiction", async () => {
-    // "Idle and holding a review" is what GRPH-771 was reported as. It must READ as wrong.
+    // A DEAD holder on a live claim — the case the board most needs to catch. Deliberately
+    // not `idle`: the server no longer emits that for a live holder, and a test asserting on
+    // a value that cannot occur is a test of nothing (GRPH-771, found in review).
     fleet.data = { ...BASE, review_queue: [{
       id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
       built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: "GB-A2",
-      held_for_seconds: 900, holder_state: "idle", review_takes: 1
+      held_for_seconds: 900, holder_state: "offline", review_takes: 1
     }] };
     renderView();
     await openWork(userEvent.setup());
     const hold = await screen.findByTestId("review-hold");
-    expect(hold).toHaveTextContent("idle");
+    expect(hold).toHaveTextContent("offline");
     expect(hold.className).toContain("st-blocked");
   });
 

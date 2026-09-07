@@ -319,3 +319,86 @@ def test_taking_over_a_lapsed_hold_starts_a_fresh_clock(client, key, proj, db):
     assert fleet_svc.review_claim_holder(row) == second
     assert (datetime.now(timezone.utc)
             - fleet_svc._aware(row.review_claimed_at)).total_seconds() < 5
+
+
+# ---- what an independent reviewer found by bouncing the above --------------------------------
+
+def test_a_reviewer_is_not_flagged_before_its_first_heartbeat(client, auth, key, proj, db):
+    """THE BOUNCE. `claim_review` touches no agent state, so `holder_state` read the agent's
+    STORED state and said `idle` until the next presence-only heartbeat — up to a full
+    heartbeat interval later. The board paints that in the blocked colour with `· idle`
+    appended: the exact contradiction this ticket was reported as, on a reviewer doing
+    nothing wrong. A review that decided in under fifty seconds was red for its whole life.
+
+    The test that "covered" this heartbeat FIRST, so it only ever exercised the case that
+    already worked. This one deliberately does not.
+
+    Sabotage: read the stored state again and this fails."""
+    builder = _agent(client, key, "builder", "worker")
+    reviewer = _agent(client, key, "reviewer", "worker")
+    _item_in_review(client, key, proj, builder)
+
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+    # NO heartbeat here. This is the first second of every review.
+    row = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["review_queue"][0]
+    assert row["holder_state"] == "reviewing"
+
+
+def test_a_dead_holder_is_still_flagged(client, auth, key, proj, db):
+    """The case the board most needs to catch, and the reviewer found it UNGUARDED: swapping
+    `presence_state(...)` for the raw `.state` left all 442 tests passing, so a crashed
+    reviewer would have read `reviewing` in faint text forever.
+
+    Sabotage: return the stored state and this fails."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Agent
+
+    builder = _agent(client, key, "builder", "worker")
+    reviewer = _agent(client, key, "reviewer", "worker")
+    _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+
+    # The process dies: the hold is still live, presence is not.
+    row = db.get(Agent, reviewer)
+    row.last_seen_at = datetime.now(timezone.utc) - timedelta(
+        seconds=fleet_svc.presence_ttl_seconds() + 60)
+    db.commit()
+
+    queue = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["review_queue"][0]
+    assert queue["holder_state"] == "offline", "a crashed reviewer must not read as reviewing"
+
+
+def test_a_quarantined_holder_is_flagged_too(client, auth, key, proj, db):
+    """Quarantined is the other state where a hold is a real problem, and it is checked
+    before the clock — a quarantined agent may still be heartbeating."""
+    from app.models import Agent
+
+    builder = _agent(client, key, "builder", "worker")
+    reviewer = _agent(client, key, "reviewer", "worker")
+    _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+
+    db.get(Agent, reviewer).state = "quarantined"
+    db.commit()
+
+    queue = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["review_queue"][0]
+    assert queue["holder_state"] == "quarantined"
+
+
+def test_an_agent_building_and_reviewing_at_once_reads_as_reviewing(client, auth, key, proj, db):
+    """A build lease and a review claim legitimately coexist (GRPH-429). The QUEUE's question
+    is about the review, not about everything else the agent is doing — flagging `working`
+    would fire on a healthy agent for the same reason `idle` did."""
+    from app.models import Agent
+
+    builder = _agent(client, key, "builder", "worker")
+    reviewer = _agent(client, key, "reviewer", "worker")
+    _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+
+    db.get(Agent, reviewer).state = "working"
+    db.commit()
+
+    queue = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["review_queue"][0]
+    assert queue["holder_state"] == "reviewing"
