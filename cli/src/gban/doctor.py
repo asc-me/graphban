@@ -100,13 +100,9 @@ def local(url: str, project: str, api_key: str) -> list[dict]:
         argv += ["--server", url]
     if project:
         argv += ["--project", project]
-    env = {}
-    if api_key:
-        # In the ENVIRONMENT, never argv: `ps` shows argv to every process on the machine.
-        env["GBFLEET_API_KEY"] = api_key
     try:
         done = subprocess.run(argv, capture_output=True, text=True, timeout=120,
-                              env={**_environ(), **env})
+                              env=child_environment(api_key))
     except (OSError, subprocess.SubprocessError) as exc:
         return [_line("local", UNKNOWN, "gbfleet", f"could not run: {exc}")]
     status = PASS if done.returncode == 0 else FAIL
@@ -121,10 +117,33 @@ def local(url: str, project: str, api_key: str) -> list[dict]:
                   f"`gbfleet doctor` {verdict}; its own report follows", report=body)]
 
 
-def _environ() -> dict:
+#: What `gbfleet` reads. `gban` names it once, here, and both paths that launch a supervisor
+#: go through this function (GRPH-782).
+SUPERVISOR_KEY_ENV = "GBFLEET_API_KEY"
+
+
+def child_environment(api_key: str) -> dict:
+    """The environment a `gbfleet` child is launched with, for `doctor` AND for `fleet`.
+
+    **The two used to disagree, and that made the doctor a liar.** `doctor` translated
+    `$GRAPHBAN_API_KEY` into `$GBFLEET_API_KEY` for the child; `gban fleet` was a bare
+    `subprocess.run` and did not. So on a machine set up the way this tool's own premise
+    assumes — one key exported, under `gban`'s name — `gban doctor` reported the local half
+    green using a credential it manufactured, and `gban fleet up`, which `gban seats issue`
+    sends people to by name, started the supervisor with nothing. D7's promise is
+    "everything that can be checked before anything is spawned"; a local verdict that does
+    not predict what the next command does is the failure that promise exists to prevent.
+
+    In the ENVIRONMENT, never argv: `ps` shows argv to every process on the machine. And
+    never over a value the caller set themselves — somebody who exported `$GBFLEET_API_KEY`
+    deliberately, to run the supervisor on a different credential, means it.
+    """
     import os
 
-    return dict(os.environ)
+    env = dict(os.environ)
+    if api_key and not env.get(SUPERVISOR_KEY_ENV):
+        env[SUPERVISOR_KEY_ENV] = api_key
+    return env
 
 
 def run(url: str, project: str, api_key: str = "") -> tuple[list[dict], int]:

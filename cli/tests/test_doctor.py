@@ -237,3 +237,62 @@ def test_the_childs_report_is_indented_under_its_summary(home, monkeypatch):
     summary = [i for i, r in enumerate(rendered) if r.startswith("PASS") and "local" in r][0]
     assert rendered[summary + 1].startswith("    "), "the report must not sit in column zero"
     assert not any(r.startswith("gbfleet 0.1.0") for r in rendered)
+
+
+# ---- what an independent reviewer found by bouncing this -------------------------------------
+
+def test_gban_fleet_hands_the_supervisor_the_same_credential_doctor_does(home, monkeypatch):
+    """THE BOUNCE. `doctor` translated $GRAPHBAN_API_KEY into $GBFLEET_API_KEY for its child;
+    `gban fleet` was a bare subprocess.run and did not. So on a machine set up the way this
+    tool's own premise assumes — one key exported under gban's name — `gban doctor` reported
+    the local half green using a credential it manufactured, and `gban fleet up` (which
+    `gban seats issue` sends people to BY NAME) started the supervisor with nothing.
+
+    `gbfleet` reads only $GBFLEET_API_KEY and scores its absence FAIL, so the doctor was
+    certifying a local half the next command could not reproduce.
+
+    Sabotage: drop the env from cmd_fleet and this fails."""
+    seen = {}
+    monkeypatch.setenv(config.API_KEY_ENV, "gb_sk_SECRET")
+    monkeypatch.delenv("GBFLEET_API_KEY", raising=False)
+    monkeypatch.setattr("gban.cli.shutil.which", lambda name: "/usr/bin/gbfleet")
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr("gban.cli.subprocess.run",
+                        lambda argv, **kw: (seen.update(argv=argv, env=kw.get("env") or {}),
+                                            Done())[1])
+    assert main(["fleet", "up", "--seats-file", "s.txt"]) == 0
+
+    assert seen["env"].get("GBFLEET_API_KEY") == "gb_sk_SECRET"
+    assert "gb_sk_SECRET" not in " ".join(seen["argv"]), "never argv; ps shows it to everyone"
+
+
+def test_a_credential_the_caller_set_for_the_supervisor_is_not_overwritten(home, monkeypatch):
+    """Somebody who exported $GBFLEET_API_KEY deliberately — to run the supervisor on a
+    different credential from the one `gban` uses — means it."""
+    seen = {}
+    monkeypatch.setenv(config.API_KEY_ENV, "gb_sk_GBAN")
+    monkeypatch.setenv("GBFLEET_API_KEY", "gb_sk_THEIRS")
+    monkeypatch.setattr("gban.cli.shutil.which", lambda name: "/usr/bin/gbfleet")
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr("gban.cli.subprocess.run",
+                        lambda argv, **kw: (seen.update(env=kw.get("env") or {}), Done())[1])
+    main(["fleet", "ps"])
+    assert seen["env"]["GBFLEET_API_KEY"] == "gb_sk_THEIRS"
+
+
+def test_both_launch_paths_go_through_one_function(home, monkeypatch):
+    """They disagreed once, and the disagreement is what made the doctor's verdict a lie
+    about what the next command would do. One function is what stops the next divergence."""
+    import inspect
+
+    from gban import cli as cli_mod
+
+    for fn in (cli_mod.cmd_fleet, doctor.local):
+        assert "child_environment" in inspect.getsource(fn), (
+            f"{fn.__qualname__} builds the child's environment some other way")
