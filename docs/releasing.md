@@ -46,8 +46,23 @@ project — `graphban-cli` and `graphban-fleet`:
    project name, so identical tuples are refused with the second project unable to register
    at all. Both differ here, deliberately.
 4. In this repository, Settings → Environments → New environment, twice: `pypi-cli` and
-   `pypi-fleet`. Add yourself as a required reviewer on each if you want every publish to be
-   a deliberate click.
+   `pypi-fleet`. The names are matched exactly, by the workflow AND by PyPI.
+
+   On each, set **Deployment branches and tags** → *Selected branches and tags* → *Add
+   deployment branch or tag rule* → ref type **Tag** → `cli-v*` (or `fleet-v*`).
+
+   **Choose Tag, not Branch.** Branch rules do not apply to a workflow triggered by a tag
+   push, and the patterns are configured for each ref type separately — so a rule that looks
+   right but was entered as a Branch leaves the environment unreachable and the release
+   waiting on a rule that can never match. Nothing here runs on a branch push, so no branch
+   rule is wanted at all.
+
+   Optionally add yourself as a **required reviewer** (with *Prevent self-review* off, since
+   you are the only reviewer) to make every publish a deliberate click.
+
+   **Add no secrets.** Trusted publishing is OIDC: the token is minted per run and expires in
+   minutes. A `PYPI_API_TOKEN` added out of habit is a long-lived credential this repository
+   does not need and would have to rotate.
 
 PyPI requires two-factor authentication on any account that uploads. If yours does not have
 it, that is the first blocker rather than anything here.
