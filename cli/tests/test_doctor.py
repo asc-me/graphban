@@ -164,10 +164,14 @@ def test_an_explicit_server_is_not_overridden(home, monkeypatch):
 
 
 def test_a_missing_supervisor_says_how_to_install_it(home, monkeypatch, capsys):
-    """7. Exit 4, its own code, so it cannot be confused with something gbfleet said."""
-    monkeypatch.setattr("gban.cli.shutil.which", lambda name: None)
+    """7. Exit 4, its own code, so it cannot be confused with something gbfleet said.
+
+    Patches `find_supervisor` rather than `shutil.which`: the lookup now also checks beside
+    this interpreter, and a test that stubbed only one half would pass while the other found
+    a real gbfleet on the machine running it."""
+    monkeypatch.setattr("gban.cli.doctor_mod.find_supervisor", lambda: "")
     assert main(["fleet", "ps"]) == EXIT_NO_SUPERVISOR
-    assert "graphban-fleet" in capsys.readouterr().err
+    assert "graphban.git" in capsys.readouterr().err
 
 
 def test_the_credential_reaches_gbfleet_in_the_environment_never_argv(home, monkeypatch):
@@ -296,3 +300,107 @@ def test_both_launch_paths_go_through_one_function(home, monkeypatch):
     for fn in (cli_mod.cmd_fleet, doctor.local):
         assert "child_environment" in inspect.getsource(fn), (
             f"{fn.__qualname__} builds the child's environment some other way")
+
+
+# ---- finding a supervisor that PATH cannot see -----------------------------------------------
+
+def test_a_sibling_gbfleet_is_found_when_path_cannot_see_it(home, monkeypatch, tmp_path):
+    """MEASURED. `uv tool install "graphban-cli[fleet]"` puts gbfleet in the same `bin/` as
+    gban and exposes only gban — uv deliberately exposes the requested package's executables
+    and no others. `gban fleet` then said "gbfleet is not installed here" while gbfleet sat in
+    the very environment it was running from. A plain `pip install` of both into one
+    virtualenv has the same shape.
+
+    Sabotage: go back to `shutil.which` alone and this fails."""
+    binbase = tmp_path / "bin"
+    binbase.mkdir()
+    sibling = binbase / "gbfleet"
+    sibling.write_text("#!/bin/sh\nexit 0\n")
+    sibling.chmod(0o755)
+
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
+    monkeypatch.setattr("sys.executable", str(binbase / "python"))
+    assert doctor.find_supervisor() == str(sibling)
+
+
+def test_path_still_wins_over_a_sibling(home, monkeypatch, tmp_path):
+    """A supervisor the operator put on PATH deliberately is the one they meant. The sibling
+    is a fallback for what PATH cannot see, not an override of it."""
+    binbase = tmp_path / "bin"
+    binbase.mkdir()
+    (binbase / "gbfleet").write_text("#!/bin/sh\nexit 0\n")
+    (binbase / "gbfleet").chmod(0o755)
+
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: "/usr/local/bin/gbfleet")
+    monkeypatch.setattr("sys.executable", str(binbase / "python"))
+    assert doctor.find_supervisor() == "/usr/local/bin/gbfleet"
+
+
+def test_a_sibling_that_is_not_executable_is_not_a_supervisor(home, monkeypatch, tmp_path):
+    binbase = tmp_path / "bin"
+    binbase.mkdir()
+    (binbase / "gbfleet").write_text("not a program\n")
+    (binbase / "gbfleet").chmod(0o644)
+
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
+    monkeypatch.setattr("sys.executable", str(binbase / "python"))
+    assert doctor.find_supervisor() == ""
+
+
+def test_the_install_it_names_is_one_that_exists(home, monkeypatch, capsys):
+    """It said `uv pip install graphban-fleet` until somebody ran it. Neither package is on
+    PyPI, so that 404s — a tool whose remedy does not work spends the reader's trust before
+    it spends their time.
+
+    Sabotage: name a PyPI install again and this fails."""
+    monkeypatch.setattr("gban.cli.doctor_mod.find_supervisor", lambda: "")
+    assert main(["fleet", "ps"]) == EXIT_NO_SUPERVISOR
+    err = capsys.readouterr().err
+    assert "git+https://github.com/asc-me/graphban.git#subdirectory=fleet" in err
+    assert "uv pip install graphban-fleet" not in err
+
+
+def test_the_doctor_names_the_same_install(home, monkeypatch):
+    monkeypatch.setattr("gban.doctor.find_supervisor", lambda: "")
+    monkeypatch.setattr("gban.doctor.authenticated", lambda url: _Server())
+    lines, _ = doctor.run("http://gb.invalid", "core", "")
+    local = [l for l in lines if l["side"] == "local"][0]
+    assert "subdirectory=fleet" in local["detail"]
+    assert "uv pip install graphban-fleet" not in local["detail"]
+
+
+def test_gban_fleet_runs_a_sibling_supervisor_too(home, monkeypatch, tmp_path):
+    """Not just `doctor`. The two used to disagree about the environment they hand the child
+    (GRPH-782); disagreeing about whether the child EXISTS is the same defect one step
+    earlier, and `gban fleet` is the command a person actually runs.
+
+    Sabotage: point cmd_fleet back at `shutil.which` and this fails."""
+    binbase = tmp_path / "bin"
+    binbase.mkdir()
+    sibling = binbase / "gbfleet"
+    sibling.write_text("#!/bin/sh\nexit 0\n")
+    sibling.chmod(0o755)
+
+    seen = {}
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
+    monkeypatch.setattr("gban.cli.shutil.which", lambda name: None)
+    monkeypatch.setattr("sys.executable", str(binbase / "python"))
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr("gban.cli.subprocess.run",
+                        lambda argv, **kw: (seen.update(argv=argv), Done())[1])
+    assert main(["fleet", "ps"]) == 0
+    assert seen["argv"][0] == str(sibling), "it did not reach the supervisor beside it"
+
+
+def test_both_commands_find_the_supervisor_the_same_way(home):
+    """One lookup, or they drift — which is what GRPH-782 was."""
+    import inspect
+
+    from gban import cli as cli_mod
+
+    for fn in (cli_mod.cmd_fleet, doctor.local):
+        assert "find_supervisor" in inspect.getsource(fn), (
+            f"{fn.__qualname__} looks for gbfleet some other way")
