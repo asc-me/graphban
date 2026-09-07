@@ -96,7 +96,8 @@ def assignment_for(item: str, role: str = "worker") -> str:
         "call claim_cluster with wait_seconds=0 to take the next ready non-colliding "
         "cluster. If both are empty, say DONE and stop — exiting on an empty queue "
         "is the normal end of your run, not a failure. You may sign_off work you "
-        "did not build."
+        "did not build. If the work is not ready — tests fail, the change is wrong — "
+        "bounce it with a reason naming what is wrong, then say DONE."
     )
 
 

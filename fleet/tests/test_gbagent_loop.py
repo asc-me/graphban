@@ -614,6 +614,7 @@ def test_a_reviewer_is_not_a_worker_that_also_reviews():
 
     assert "claim_review" in REVIEWER_TOOLS
     assert "sign_off" in REVIEWER_TOOLS
+    assert "bounce" in REVIEWER_TOOLS, "GRPH-778: a reviewer that cannot bounce is a rubber stamp"
     assert "claim_cluster" not in REVIEWER_TOOLS
     assert "claim_next" not in REVIEWER_TOOLS
     assert not REVIEWER_TOOLS & ALLOWED_TOOLS

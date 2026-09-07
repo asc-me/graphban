@@ -51,11 +51,12 @@ WORKER_TOOLS: frozenset[str] = frozenset(
      *ORIENTATION_TOOLS, *COORDINATION_TOOLS}
 )
 
-#: P30 D2. A reviewer is not a worker that also reviews. claim_review and sign_off
-#: belong here; claim_cluster does not. The server still refuses the author on
-#: sign_off (independent()).
+#: P30 D2. A reviewer is not a worker that also reviews. claim_review, sign_off and
+#: bounce belong here; claim_cluster does not. The server still refuses the author on
+#: sign_off (independent()). GRPH-778: a reviewer that can only approve is a rubber
+#: stamp — bounce is the other half of review.
 REVIEWER_COORDINATION: tuple[str, ...] = (
-    "claim_review", "sign_off", "update_item", "heartbeat",
+    "claim_review", "sign_off", "bounce", "update_item", "heartbeat",
 )
 REVIEWER_TOOLS: frozenset[str] = frozenset(
     {"register_agent", "update_item", "release_item", "heartbeat",
@@ -63,11 +64,11 @@ REVIEWER_TOOLS: frozenset[str] = frozenset(
 )
 
 #: S6 (PRD-39 D-h): the merged worker claims, builds, AND reviews. Union of
-#: WORKER_TOOLS with claim_review and sign_off. The server still refuses the author
-#: on sign_off (independent()) — this set only says what the child may TRY.
-# Derived, not listed, so the two cannot drift. NOTE: neither tuple carries `bounce` —
-# a gbagent reviewer has never been able to bounce, only sign off, which is the wrong half
-# of review to be missing. Pre-existing, and its own item; not widened here.
+#: WORKER_TOOLS with claim_review, sign_off and bounce. The server still refuses the
+#: author on sign_off (independent()) — this set only says what the child may TRY.
+# Derived, not listed, so the two cannot drift. GRPH-778: `bounce` rides in
+# REVIEWER_COORDINATION, so the merged set carries it too — a reviewer that could only
+# sign off was a rubber stamp.
 MERGED_TOOLS: frozenset[str] = WORKER_TOOLS | frozenset(REVIEWER_COORDINATION)
 #: The coordination tuple for the merged worker's orientation layer.
 MERGED_COORDINATION: tuple[str, ...] = COORDINATION_TOOLS + REVIEWER_COORDINATION

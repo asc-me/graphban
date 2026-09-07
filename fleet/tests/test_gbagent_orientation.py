@@ -682,6 +682,7 @@ def test_cli_run_is_what_passes_coordination_tools_into_orientation():
     )
     assert set(COORDINATION_TOOLS) <= set(MERGED_COORDINATION)
     assert "claim_cluster" in MERGED_COORDINATION and "claim_review" in MERGED_COORDINATION
+    assert "bounce" in MERGED_COORDINATION, "GRPH-778: the merged reviewer must be able to bounce"
     assert "claim_next" not in MERGED_COORDINATION
 
 
