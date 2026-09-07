@@ -90,7 +90,12 @@ def assignment_for(item: str, role: str = "worker") -> str:
     `claim_cluster` itself. With one it works the item it was handed.
     """
     if item:
-        return f"You are working on {item}. Do not claim anything else."
+        return (
+            f"You are working on {item}. Do not claim other build work. When {item} is in "
+            "review, call claim_review with wait_seconds=0 and review what you did not build "
+            "— sign_off, or bounce with a reason — until it answers nothing; then say DONE "
+            "and stop."
+        )
     return (
         "Call claim_review with wait_seconds=0. If there is nothing to review, "
         "call claim_cluster with wait_seconds=0 to take the next ready non-colliding "

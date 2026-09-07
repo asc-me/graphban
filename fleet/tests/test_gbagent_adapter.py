@@ -249,6 +249,8 @@ def test_with_an_item_the_model_is_told_not_to_claim_anything_else(tmp_path):
     assert "GRPH-1" in assignment_for("GRPH-1")
     assert "claim_next" not in assignment_for("GRPH-1")
     assert "claim_cluster" not in assignment_for("GRPH-1")
+    # PRD-39 D-h / §7.5: a bound gbagent reviews in the same process after its build.
+    assert "claim_review" in assignment_for("GRPH-1") and "bounce" in assignment_for("GRPH-1")
 
 
 def test_run_refuses_a_repository_it_cannot_verify(tmp_path):
