@@ -53,6 +53,15 @@ these come from — defines sixteen `gb*` aliases and ten `grb*`, so `gb`, `gba`
 `gbl` are all spoken for. `gban` is outside it, still short, and still says which product it
 belongs to.
 
+## Licence — Apache-2.0, deliberately not the repository's FSL-1.1
+
+The repository is [FSL-1.1-Apache-2.0](../LICENSE.md). This directory is
+[Apache-2.0](LICENSE), for the reasons PRD-22 §8 gives for `fleet/` — every one of which
+applies here identically. `gban` is inert without a Graphban server and holds no authority of
+its own, so FSL's Competing Use clause protects the server and protects nothing here. It is a
+laptop-installed developer CLI, which is exactly the kind of dependency that has to clear a
+corporate licence policy scanner.
+
 ## Why it is in this repository
 
 **Not a second repository**, for the reason [`fleet/README.md`](../fleet/README.md) gives for

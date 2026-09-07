@@ -138,3 +138,24 @@ def test_the_prd_names_the_files_the_code_actually_uses():
         assert name in text, f"the PRD never names {name}, which D10 is entirely about"
     stale = "/gb.json"
     assert stale not in text, f"the PRD names {stale}, which nothing reads"
+
+
+def test_the_package_carries_a_licence_and_a_way_back_to_the_source():
+    """PyPI metadata is permanent per version: 0.1.0 published without a licence is
+    unlicensed on PyPI forever, because a version number can never be reused.
+
+    Caught by reading the built wheel's METADATA before the first upload, which is the only
+    moment it is still free to fix. Sabotage: drop either field and this fails."""
+    spec = tomllib.loads((CLI / "pyproject.toml").read_text())["project"]
+    assert spec.get("license") == "Apache-2.0", "no licence reaches PyPI as 'unlicensed'"
+    assert (CLI / "LICENSE").is_file(), "license-files names a file that must exist"
+    urls = spec.get("urls") or {}
+    assert urls.get("Repository"), "without a URL the PyPI page is a name and a summary"
+
+
+def test_both_distributions_agree_on_their_licence():
+    """`gban` and `gbfleet` ship together and diverge from the repository's FSL for the same
+    stated reason. Two answers here would be one of them being wrong."""
+    fleet = tomllib.loads((REPO / "fleet" / "pyproject.toml").read_text())["project"]
+    cli = tomllib.loads((CLI / "pyproject.toml").read_text())["project"]
+    assert cli["license"] == fleet["license"] == "Apache-2.0"

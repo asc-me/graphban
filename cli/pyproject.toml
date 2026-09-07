@@ -4,6 +4,13 @@ version = "0.1.0"
 description = "gban — a Graphban client for the human at a terminal"
 readme = "README.md"
 requires-python = ">=3.12"
+# Apache-2.0, deliberately not the repository's FSL-1.1, for the reasons PRD-22 §8 gives for
+# `fleet/` — every one of which applies here identically. `gban` is inert without a Graphban
+# server and holds no authority of its own, so FSL's Competing Use clause protects the server
+# and protects nothing in this directory. It is also a laptop-installed developer CLI, which
+# is precisely the kind of dependency that has to clear a corporate licence policy scanner.
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 
 # PRD-40 D1/D2: HTTP-only, and that is a REQUIREMENT rather than a preference. `graphban-api`
 # pulls fastapi, sqlalchemy, pgvector, psycopg, alembic, redis and cryptography, and this
@@ -11,6 +18,12 @@ requires-python = ">=3.12"
 # own list, the way `fleet/` already does, because the only thing keeping a dependency list
 # thin is something that objects when it is not.
 dependencies = []  # stdlib only: client.py is urllib.request throughout (GRPH-782)
+
+[project.urls]
+# So the PyPI page links back. Without these it is a name, a summary and nothing to check.
+Homepage = "https://github.com/asc-me/graphban"
+Repository = "https://github.com/asc-me/graphban"
+Documentation = "https://github.com/asc-me/graphban/blob/main/cli/README.md"
 
 [project.scripts]
 # `graphban` and `agentledger` are claimed by backend/, `gbfleet` and `gbagent` by fleet/.
