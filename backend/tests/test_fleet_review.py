@@ -145,6 +145,29 @@ def test_two_agents_can_review_each_other(client, agent_key, db):
     assert out["worker_agent"] == a["agent_id"]
 
 
+def test_search_items_names_the_reviewer_s_hold_beside_the_builder_s_lease(client, agent_key, db):
+    """PRD-39 acceptance walk, run 3. `claimed_by` on a row in `review` is the BUILDER's lease
+    and stays set; the reviewer's hold is `review_claimed_by`, a different column (GRPH-429).
+    `search_items` sent only the first, so a supervisor reading "is anybody reviewing this"
+    saw the builder and never spawned a reviewer for any real review row. Both travel now;
+    the outputSchema is untouched because it is manifest."""
+    a = _register(client, agent_key, "worker", label="A")
+    item_key = _built_by(client, agent_key, a)
+
+    rows = _ok(client, agent_key, "search_items", {"status": "review", "fields": "full"})["results"]
+    row = next(r for r in rows if r["id"] == item_key)
+    assert row["claimed_by"] == a["agent_id"], "the builder's lease is still the builder's"
+    assert row["review_claimed_by"] is None, "nobody is reviewing it yet"
+
+    b = _register(client, agent_key, "worker", label="B")
+    out = _ok(client, agent_key, "claim_review", {"agent_id": b["agent_id"]})
+    assert out["claimed"] is True
+    rows = _ok(client, agent_key, "search_items", {"status": "review", "fields": "full"})["results"]
+    row = next(r for r in rows if r["id"] == item_key)
+    assert row["review_claimed_by"] == b["agent_id"]
+    assert row["claimed_by"] == a["agent_id"], "and the reviewer's hold did not overwrite it"
+
+
 def test_a_promoted_worker_still_cannot_sign_off_its_own_item(client, agent_key, db):
     """THE attack on a dynamic-role system: promote yourself to reviewer while holding your
     own work. It fails because the ban is keyed on AUTHORSHIP — an agent's id does not change

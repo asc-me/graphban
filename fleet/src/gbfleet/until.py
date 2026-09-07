@@ -286,7 +286,7 @@ def _loop(
                 rows_for_reap = _review_rows(planner)
             except (NotPermitted, ToolFailed, ServerUnreachable):
                 rows_for_reap = []
-            unheld_at_reap = [r for r in rows_for_reap if not r.get("claimed_by")]
+            unheld_at_reap = [r for r in rows_for_reap if not r.get("review_claimed_by")]
             for child in finished:
                 if unheld_at_reap and not child.held_items:
                     review_fails += 1
@@ -391,7 +391,7 @@ def _loop(
         # fact it measures — a child was spawned against unheld review rows, exited,
         # and the rows are still unheld — not off a role that no longer exists.
         # A live child blocks a second spawn (just as live_reviewers did before).
-        unheld_review = [r for r in rows if not r.get("claimed_by")]
+        unheld_review = [r for r in rows if not r.get("review_claimed_by")]
         if unheld_review and need <= 0 and not live:
             empty = 0
             if review_fails >= REVIEWER_FAILS:
@@ -423,7 +423,7 @@ def _loop(
             sleep(poll)
             continue
 
-        unheld = [r for r in rows if not r.get("claimed_by")]
+        unheld = [r for r in rows if not r.get("review_claimed_by")]
         if unheld:
             wave.reason = "review-unsigned"
             return _finish(wave, "review-unsigned", 1, minted, planner, review=reviews,
@@ -691,12 +691,17 @@ def _wait_ids(planner: Graphban) -> list[str]:
 
 
 def _any_holdings(supervisor: Graphban) -> bool:
+    """True while some LIVE agent holds something. Unknown (unreachable) is False here because
+    the caller pairs it with `live`; a stale hold is a dead agent's, not a holding."""
     try:
         roster = supervisor.call("fleet_status")
     except ServerUnreachable:
         return False
     for agent in roster.get("agents") or []:
-        if agent.get("holdings"):
+        # A `stale` hold is a lease older than the presence TTL — a builder that exited with
+        # its item in review still shows it. Counting that as "somebody is working" kept a
+        # wave waiting on a dead process forever (PRD-39 acceptance walk, run 3).
+        if any((h or {}).get("phase") != "stale" for h in (agent.get("holdings") or [])):
             return True
     return False
 
