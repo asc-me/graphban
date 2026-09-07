@@ -355,28 +355,35 @@ def _read_allocation(client: Graphban, wave: Wave) -> AllocationRead | None:
 
 
 def _rooted(repo: Path | str, workspace: Path | str | None) -> tuple[Path, Path]:
-    """The repository's MAIN working tree, and the workspace beside it.
+    """The tree children are cut from, and the workspace they are cut into.
 
-    **The repo is resolved, not taken as given** (GRPH-781). `--repo` defaults to `.`, and
-    `Path(".").name` is the EMPTY STRING — so the workspace derived to `-gbfleet`, and
-    `git worktree add` read the leading dash as a switch:
+    **Two different questions, and only one of them wants the main working tree** (GRPH-784).
 
-        git worktree add -q -b gb/wave-1 -gbfleet/wave-1 <sha> failed in . (129):
-        error: unknown switch `g'
+    The WORKSPACE is per-repository, because the lock is: `hold()` resolves through
+    `repo_root` internally, so a workspace that forked per worktree would put children where
+    the next supervisor does not look while both hold the same lock. It is also why this is
+    one function for `up` and `until` — `mcp` already resolved and those two did not, and
+    nothing compared the three.
 
-    Every child was refused before one was spawned. Measured running `gbfleet up` from a
-    repository root, which is the documented way to run it — the failure needs no unusual
-    layout, only the default `--repo`.
+    The REPO is the tree the operator launched in, resolved and nothing more. `--repo`
+    defaults to `.`, and `Path(".").name` is the EMPTY STRING, so deriving the workspace from
+    it produced `-gbfleet` and `git worktree add` read the leading dash as a switch — that is
+    the bug this function was added for, and it is fixed by resolving the workspace's root,
+    not by moving the repo.
 
-    `repo_root` rather than `.resolve()`, for the reason the lock already uses it: a
-    supervisor started inside a linked worktree must derive the same paths as one started at
-    the top, or the workspace forks per worktree while the lock — which does resolve — does
-    not. ONE function for both `up` and `until`, so the two cannot drift apart again.
+    Sweeping `repo` to the main tree as well moved the BASE COMMIT every child is cut from,
+    silently: `worktree.create` runs `rev-parse HEAD` with `cwd=repo`, so a wave launched
+    from a linked worktree would have built its children on the main tree's HEAD instead of
+    the branch the operator was standing on. On a machine whose main checkout is detached and
+    behind, that is every child built on a stale commit, with no error — it surfaces as
+    reviewers reading diffs against the wrong base. Caught in review of the fix above.
     """
     from .state import repo_root
 
-    root = repo_root(repo)
-    return root, Path(workspace) if workspace else root.parent / f"{root.name}-gbfleet"
+    launched_in = Path(repo).resolve()
+    root = repo_root(launched_in)
+    return launched_in, (Path(workspace) if workspace
+                         else root.parent / f"{root.name}-gbfleet")
 
 
 def up(
