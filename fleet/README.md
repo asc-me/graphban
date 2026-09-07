@@ -44,7 +44,7 @@ backend's own list, so that separation is checked rather than asserted.
 ## Licence — Apache-2.0, deliberately not the repository's FSL-1.1
 
 The repository is [FSL-1.1-Apache-2.0](https://github.com/asc-me/graphban/blob/main/LICENSE.md). This directory is
-[Apache-2.0](LICENSE), and the divergence is a decision (PRD-22 §8), not an oversight:
+[Apache-2.0](https://github.com/asc-me/graphban/blob/main/fleet/LICENSE), and the divergence is a decision (PRD-22 §8), not an oversight:
 
 - **The supervisor is not the moat.** It is inert without a Graphban server and holds no
   authority. FSL's Competing Use clause protects the server; it protects nothing here.
@@ -59,6 +59,23 @@ The repository is [FSL-1.1-Apache-2.0](https://github.com/asc-me/graphban/blob/m
 If this component is ever extracted to its own repository — the stated trigger is outside
 contributors who should not hold commit access to the server — extract **the adapter
 interface only**, not the supervisor.
+
+## Install
+
+Not on PyPI yet, so it installs from the repository:
+
+```bash
+uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=fleet"
+```
+
+That gives you `gbfleet` and `gbagent`. `uv tool update-shell` once if uv says its bin
+directory is not on your PATH, and `uv tool upgrade graphban-fleet` to move it forward — the
+spec tracks a branch, so an upgrade is not automatic and a fix landing here does not reach a
+machine until somebody asks for it.
+
+[`gban`](https://github.com/asc-me/graphban/blob/main/cli/README.md), the client for a human at a terminal, is a separate package —
+`#subdirectory=cli` — because it installs on laptops that never run a wave and must stay
+dependency-free.
 
 ## Running it
 

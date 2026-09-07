@@ -817,6 +817,20 @@ describe("Fleet view", () => {
     expect(screen.queryByText(/under a supervisor/)).not.toBeInTheDocument();
   });
 
+  it("tells you how to install the supervisor it just handed you a command for", async () => {
+    // The panel handed over `gbfleet up …` and never said how to GET gbfleet, which makes the
+    // handoff complete only for somebody who already had it — and the people who need a
+    // handoff most are exactly the ones who do not.
+    const user = userEvent.setup();
+    await _issueTwo(user);
+    await user.click(screen.getByText(/under a supervisor/));
+
+    expect(screen.getByText("Install the supervisor, if you have not")).toBeInTheDocument();
+    expect(screen.getByText(/subdirectory=fleet/)).toBeInTheDocument();
+    // And the terminal client, which is a separate package for a reason worth stating.
+    expect(screen.getByText(/subdirectory=cli/)).toBeInTheDocument();
+  });
+
   it("keeps the supervisor path collapsed", async () => {
     const user = userEvent.setup();
     await _issueTwo(user);

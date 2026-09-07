@@ -159,3 +159,27 @@ def test_both_distributions_agree_on_their_licence():
     fleet = tomllib.loads((REPO / "fleet" / "pyproject.toml").read_text())["project"]
     cli = tomllib.loads((CLI / "pyproject.toml").read_text())["project"]
     assert cli["license"] == fleet["license"] == "Apache-2.0"
+
+def test_the_readme_ships_and_none_of_its_links_are_repo_relative():
+    """The guard `fleet/tests/test_packaging.py` has had all along, and `cli/` did not —
+    while carrying a `](../fleet/README.md)` that would have 404'd from the PyPI page.
+
+    Two failures a successful publish hides. Without `readme`, the project page is blank: the
+    upload succeeds, nothing errors, and the only symptom is somewhere nobody on this side
+    looks. And a repo-relative link resolves on GitHub and resolves to nothing from PyPI, so
+    they are absolute even though that reads as needlessly verbose inside the repository.
+
+    Sabotage: put a `](../fleet/README.md)` back and this fails."""
+    import re
+
+    spec = tomllib.loads((CLI / "pyproject.toml").read_text())["project"]
+    assert spec.get("readme") == "README.md", "no readme means a blank PyPI page"
+
+    readme = (CLI / "README.md").read_text(encoding="utf-8")
+    # ANY link that is not absolute, not just `./` and `../`. The narrower pattern missed
+    # `](LICENSE)` — which both READMEs carried — and a bare `](docs/…)`, both of which
+    # resolve against the PyPI project page and 404 there exactly like `../` does.
+    relative = [t for t in re.findall(r"\]\(([^)\s]+)\)", readme)
+                if not t.startswith(("http://", "https://", "mailto:", "#"))]
+    assert not relative, (
+        f"cli/README.md ships to PyPI, where these resolve to nothing: {relative}")

@@ -117,3 +117,45 @@ def test_a_non_dict_result_is_returned_unharmed(client, spanning_key):
     assert _attach_resolved_project([1, 2], guessed) == [1, 2]
     assert _attach_resolved_project("text", guessed) == "text"
     assert _attach_resolved_project({"a": 1}, guessed)["resolved_project"] == "core"
+
+
+# ── a registered agent is not a guess ─────────────────────────────────────────
+
+def test_a_registered_agent_is_served_its_own_project_not_the_key_s_default(client, auth, spanning_key):
+    """PRD-39 acceptance walk, run 4. On a credential spanning projects, a child registered on
+    a seat minted in project B called `claim_review` without `project_id` — children never
+    name one; their seat did — and was answered from project A, whichever sorted first: "no
+    item awaiting a second pair of eyes", while the row it was spawned for sat in review in B.
+    Three reviewers in a row did that, and the wave ended `review-unsigned`. The seat named
+    the project at registration; every later call from that agent lands there too."""
+    # B sorts after everything the key already spans, so the fall-through guess is never B.
+    b = client.post("/api/projects", json={"name": "zzz-walk"}, headers=auth).json()["id"]
+    seats = client.post("/api/fleet/seats",
+                        json={"project_id": b, "wave": "w1", "roles": ["worker", "worker"]},
+                        headers=auth).json()["seats"]
+    builder = _call(client, spanning_key, "register_agent",
+                    {"label": "b", "enrolment_code": seats[0]["code"]})
+    reviewer = _call(client, spanning_key, "register_agent",
+                     {"label": "r", "enrolment_code": seats[1]["code"]})
+    assert builder["active_role"] == "worker" and reviewer["active_role"] == "worker"
+
+    # Setup names the project explicitly; the assertion below is about calls that do not.
+    made = _call(client, spanning_key, "create_item",
+                 {"project_id": b, "title": "in B", "status": "next"})
+    got = _call(client, spanning_key, "claim_next",
+                {"agent_id": builder["agent_id"], "project_id": b})
+    assert got["claimed"] and got["item"]["id"] == made["id"], got
+    _call(client, spanning_key, "update_item",
+          {"id": made["id"], "status": "review", "agent_id": builder["agent_id"], "project_id": b})
+
+    # THE CALL: no project_id. The agent's registration decides, not the key's sort order.
+    out = _call(client, spanning_key, "claim_review",
+                {"agent_id": reviewer["agent_id"], "wait_seconds": 0})
+    assert out["claimed"] is True, out
+    assert out["item"]["id"] == made["id"] and out["item"]["project_id"] == b
+    ctx = _call(client, spanning_key, "get_context",
+                {"agent_id": reviewer["agent_id"]})
+    assert ctx["project_id"] == b, ctx.get("project_id")
+    assert "resolved_project_note" not in ctx, "the agent's registration decided; nothing was guessed"
+    assert "resolved_project_note" not in builder, "the seat decided; nothing was guessed"
+

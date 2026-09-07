@@ -9,6 +9,35 @@ a seat, seeing why an agent is stuck, or re-tasking one meant opening a browser.
 
 Specified by [PRD-40](https://github.com/asc-me/graphban/blob/main/docs/prd-40-gb-cli.md).
 
+## Install
+
+Not on PyPI yet, so it installs from the repository. `uv tool install` puts it on your PATH
+in its own environment, which is what you want for a CLI:
+
+```bash
+uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=cli"
+```
+
+Add `gbfleet` too if you run waves — it is a separate package, and `gban fleet` hands off to it:
+
+```bash
+uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=fleet"
+```
+
+`uv tool update-shell` once, if uv says the bin directory is not on your PATH. Upgrade either
+with `uv tool upgrade graphban-cli` (or `--all`); reinstalling from the same URL also works,
+since the spec is a branch rather than a pin.
+
+With pip instead, into an environment you already have:
+
+```bash
+pip install "graphban-cli @ git+https://github.com/asc-me/graphban.git#subdirectory=cli"
+```
+
+`gban` pulls **nothing**: `client.py` is `urllib.request` throughout, and the install lands
+exactly one distribution. `gbfleet` brings httpx and its four transitive dependencies, which
+is why they are separate packages and not one.
+
 ```bash
 gban login --server https://cloud.agentldgr.dev
 gban doctor                       # both halves: the ledger, and the local fleet
@@ -55,8 +84,8 @@ belongs to.
 
 ## Licence — Apache-2.0, deliberately not the repository's FSL-1.1
 
-The repository is [FSL-1.1-Apache-2.0](../LICENSE.md). This directory is
-[Apache-2.0](LICENSE), for the reasons PRD-22 §8 gives for `fleet/` — every one of which
+The repository is [FSL-1.1-Apache-2.0](https://github.com/asc-me/graphban/blob/main/LICENSE.md). This directory is
+[Apache-2.0](https://github.com/asc-me/graphban/blob/main/cli/LICENSE), for the reasons PRD-22 §8 gives for `fleet/` — every one of which
 applies here identically. `gban` is inert without a Graphban server and holds no authority of
 its own, so FSL's Competing Use clause protects the server and protects nothing here. It is a
 laptop-installed developer CLI, which is exactly the kind of dependency that has to clear a
@@ -64,7 +93,7 @@ corporate licence policy scanner.
 
 ## Why it is in this repository
 
-**Not a second repository**, for the reason [`fleet/README.md`](../fleet/README.md) gives for
+**Not a second repository**, for the reason [`fleet/README.md`](https://github.com/asc-me/graphban/blob/main/fleet/README.md) gives for
 the supervisor, with more force: the client↔server contract has no schema anywhere, and a
 cross-repo break would present as absence reading clean — `gban` still runs, nothing errors, the
 verb quietly stops meaning what it said. The evidence is recent and specific: `ROLES` lost
