@@ -214,10 +214,11 @@ def cmd_fleet(args) -> int:
     Keeps `gban` free of the supervisor's dependencies, keeps the Apache-2.0 boundary intact,
     and leaves `gbfleet --help` authoritative about its own commands.
     """
-    binary = shutil.which("gbfleet")
+    binary = doctor_mod.find_supervisor()
     if not binary:
-        print(f"{PROG}: gbfleet is not installed here. `uv pip install graphban-fleet`, or run "
-              f"it from the repository's fleet/ directory.", file=sys.stderr)
+        print(f"{PROG}: gbfleet is not installed here. Install it with:\n"
+              f"     {doctor_mod.INSTALL_SUPERVISOR}\n"
+              f"     …or run it from the repository's fleet/ directory.", file=sys.stderr)
         return EXIT_NO_SUPERVISOR
     argv = [binary, *[a for a in args.rest if a != "--"]]
     url = config.resolve(args.server, config.URL_ENV, "url")

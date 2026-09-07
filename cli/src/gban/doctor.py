@@ -11,8 +11,10 @@ the same reason: "we could not tell" must never render as "nothing is wrong".
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+from pathlib import Path
 
 from gban import config
 from gban.client import Client, NoSession, Refused, Unreachable, authenticated
@@ -90,11 +92,10 @@ def ledger(url: str, project: str) -> list[dict]:
 def local(url: str, project: str, api_key: str) -> list[dict]:
     """`gbfleet doctor`, run as a subprocess (D5). Its output is passed through, not parsed:
     the supervisor's own report is the one under test."""
-    binary = shutil.which("gbfleet")
+    binary = find_supervisor()
     if not binary:
         return [_line("local", UNKNOWN, "gbfleet",
-                      "not installed here — `uv pip install graphban-fleet` to check the "
-                      "local half")]
+                      f"not installed here — {INSTALL_SUPERVISOR} to check the local half")]
     argv = [binary, "doctor"]
     if url:
         argv += ["--server", url]
@@ -115,6 +116,36 @@ def local(url: str, project: str, api_key: str) -> list[dict]:
     verdict = "every check passed" if status is PASS else f"exited {done.returncode}"
     return [_line("local", status, "gbfleet",
                   f"`gbfleet doctor` {verdict}; its own report follows", report=body)]
+
+
+#: The command that actually installs the supervisor. NOT `uv pip install graphban-fleet`,
+#: which is what this said until somebody ran it: neither package is on PyPI, so that line
+#: 404s. A tool whose remedy does not work is worse than one that offers none — it spends the
+#: reader's trust before spending their time.
+INSTALL_SUPERVISOR = (
+    'uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=fleet"')
+
+
+def find_supervisor() -> str:
+    """`gbfleet`, from beside this interpreter first and only then from PATH.
+
+    **A sibling install is invisible to `PATH` alone**, and that is not a corner case: a
+    `graphban-cli[fleet]` extra, or a plain `pip install` of both into one virtualenv, puts
+    `gbfleet` in the same `bin/` as `gban` — and `uv tool install` deliberately exposes only
+    the requested package's executables, so the supervisor lands there and on no path at all.
+    Measured: with the extra installed, `gban fleet` said "gbfleet is not installed here"
+    while `gbfleet` sat in the very environment it was running from.
+
+    PATH still wins for a supervisor the operator installed separately and put there on
+    purpose — a sibling is a fallback for the case PATH cannot see, not an override of it.
+    """
+    import sys
+
+    found = shutil.which("gbfleet")
+    if found:
+        return found
+    beside = Path(sys.executable).parent / "gbfleet"
+    return str(beside) if beside.exists() and os.access(beside, os.X_OK) else ""
 
 
 #: What `gbfleet` reads. `gban` names it once, here, and both paths that launch a supervisor
