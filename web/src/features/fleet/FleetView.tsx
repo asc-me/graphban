@@ -254,6 +254,9 @@ function AgentRow({ a, onDismiss, onRetask, roles = [], dismissed }: {
 }) {
   const offline = a.state === "offline";
   const quarantined = a.state === "quarantined";
+  // An EMPTY ceiling is "no key to ask", which is the unrestricted case, not the empty one.
+  const ceiling = a.credential_roles ?? [];
+  const reachable = ceiling.length ? roles.filter((r) => ceiling.includes(r)) : roles;
   return (
     <div
       className={cn(
@@ -311,7 +314,7 @@ function AgentRow({ a, onDismiss, onRetask, roles = [], dismissed }: {
         )}
       </div>
       <div className="flex flex-col items-end gap-1">
-        {onRetask && a.credential_posture !== "single" ? (
+        {onRetask && a.credential_posture !== "single" && reachable.length > 1 ? (
           /* The human above the fleet can re-task an agent (GRPH-774). Agents could re-task
              each other through `assign_role` and the person who owns the credential could
              not, so a project whose only live agent was a worker had no way forward. The
@@ -334,8 +337,11 @@ function AgentRow({ a, onDismiss, onRetask, roles = [], dismissed }: {
             )}
             {/* From the SERVER's list, never a literal. `fleet_status` carries `roles`
                 because the role set is the server's to define — PRD-39 reduced it to two and
-                a hard-coded third here would offer a role every save then refuses. */}
-            {roles.map((r) => (
+                a hard-coded third here would offer a role every save then refuses.
+                Then narrowed to THIS AGENT'S CEILING (GRPH-780): a fleet key permits the
+                roles it was minted for, and offering the others meant discovering per click
+                which ones 409. A key with no ceiling recorded permits all of them. */}
+            {reachable.map((r) => (
               <option key={r} value={r}>{r}</option>
             ))}
           </select>

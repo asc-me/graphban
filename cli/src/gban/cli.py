@@ -94,8 +94,15 @@ def _parser() -> argparse.ArgumentParser:
 
     keys = sub.add_parser("keys", help="the credentials this project's agents authenticate with")
     keys_do = keys.add_subparsers(dest="act")
-    mint = keys_do.add_parser("mint", help="mint a credential narrowed to one role")
-    mint.add_argument("--role", required=True)
+    mint = keys_do.add_parser(
+        "mint", help="mint a credential narrowed to a role, or to several",
+        description=("Repeat --role to mint a credential an agent can be RE-TASKED within. "
+                     "One role is the default and is a real bound: it is what stops a client "
+                     "config from registering a worker as a planner. But a role change cannot "
+                     "climb past the credential the agent already holds, so an agent minted "
+                     "for one role can never be promoted without being restarted."))
+    mint.add_argument("--role", required=True, action="append", metavar="ROLE",
+                      help="repeatable; the first is the role the agent registers into")
     mint.add_argument("--wave", default="wave-1")
     mint.add_argument("--label", default="")
     return parser
@@ -293,8 +300,12 @@ def cmd_agents(args) -> int:
     agents = fleet.get("agents", [])
     human = [f"{PROG}: {len(agents)} agents"]
     for a in agents:
+        # WHAT IT COULD BE MOVED TO, next to what it is. Without the ceiling on the row,
+        # `agents role` is a coin flip against a bound nothing shows (GRPH-780).
+        ceiling = a.get("credential_roles") or []
         human.append(f"     {a.get('key') or a.get('id'):<12} {a.get('active_role', ''):<8} "
-                     f"{a.get('state', ''):<10} {a.get('credential') or ''}")
+                     f"{a.get('state', ''):<10} {a.get('credential') or ''}"
+                     + (f"  [{'|'.join(ceiling)}]" if len(ceiling) > 1 else ""))
         # THE LINE THIS VERB EXISTS FOR (criterion 8). A roster that says "idle worker" for an
         # agent being refused every call it makes is the thing that cost an afternoon and a
         # database query on Super-Arc.
@@ -309,12 +320,18 @@ def cmd_agents(args) -> int:
 def cmd_keys(args) -> int:
     if args.act == "mint":
         url, project = _server(args), _project(args, "keys mint")
+        first, *also = args.role
         out = authenticated(url, act="keys mint").call(
             "POST", "/api/fleet/keys",
-            {"project_id": project, "role": args.role, "wave": args.wave, "label": args.label})
+            {"project_id": project, "role": first, "also": also, "wave": args.wave,
+             "label": args.label})
+        ceiling = out.get("roles") or [out.get("role")]
         _out(out, f"{PROG}: {out.get('plaintext')}"
                   f"\n     {out.get('role')} on {out.get('wave')}, shown once, expires "
-                  f"{out.get('expires_at')}", args.as_json)
+                  f"{out.get('expires_at')}"
+                  + (f"\n     re-taskable within {', '.join(ceiling)}" if len(ceiling) > 1
+                     else "\n     one role only: an agent on this key cannot be re-tasked"),
+             args.as_json)
         return 0
     fleet, _ = _fleet_read(args, "keys")
     creds = fleet.get("credentials", [])
