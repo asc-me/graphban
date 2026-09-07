@@ -1,4 +1,4 @@
-"""`gb doctor` — one answer to "is this set up correctly", across both halves (PRD-40 D7).
+"""`gban doctor` — one answer to "is this set up correctly", across both halves (PRD-40 D7).
 
 Two halves fail in each other's terms. `gbfleet doctor` already checks the local one — repo,
 workspace, adapter binary, seats file — and nothing checked the other: whether the credential
@@ -14,8 +14,8 @@ from __future__ import annotations
 import shutil
 import subprocess
 
-from gb import config
-from gb.client import Client, NoSession, Refused, Unreachable, authenticated
+from gban import config
+from gban.client import Client, NoSession, Refused, Unreachable, authenticated
 
 PASS, FAIL, UNKNOWN = "PASS", "FAIL", "UNKNOWN"
 
@@ -35,11 +35,11 @@ def ledger(url: str, project: str) -> list[dict]:
     where it came from sends a reader to the wrong machine."""
     if not url:
         return [_line("ledger", UNKNOWN, "server",
-                      f"no server configured; pass --server or run `gb login`")]
+                      f"no server configured; pass --server or run `gban login`")]
     try:
         client = authenticated(url)
     except NoSession as exc:
-        return [_line("ledger", FAIL, "session", f"{exc} — run `gb login`")]
+        return [_line("ledger", FAIL, "session", f"{exc} — run `gban login`")]
     except Unreachable as exc:
         # Three distinct lines for three distinct failures, because they send a reader to
         # three different places: the network, the credential, or the project.
@@ -56,7 +56,7 @@ def ledger(url: str, project: str) -> list[dict]:
 
     if not project:
         out.append(_line("ledger", UNKNOWN, "project",
-                         "no project configured; pass --project or set one with `gb login`"))
+                         "no project configured; pass --project or set one with `gban login`"))
         return out
     try:
         fleet = client.call("GET", f"/api/fleet?project_id={project}")

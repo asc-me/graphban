@@ -1,14 +1,14 @@
-"""Where `gb` keeps its two facts, and why they are two files (PRD-40 D3, D10).
+"""Where `gban` keeps its two facts, and why they are two files (PRD-40 D3, D10).
 
 `~/.graphban/` is shared with `graphban`, the operator's database-side tool, and the sharing
-stops at the directory. `gb` reads `gb.json` (`url`, `project`) and `session.json` (a refresh
+stops at the directory. `gban` reads `gban.json` (`url`, `project`) and `session.json` (a refresh
 token) and **never opens `config.json`**, which is `graphban`'s and may hold a database link.
 
 The grill made that stricter than the draft. Reading `config.json` and ignoring the keys it did
 not recognise would have been true and insufficient: the risk is not misreading a database
 password, it is that password living in a file which now has a second consumer and a second
 reason to be copied onto another machine. `graphban` runs in a container against a database;
-`gb` runs on a laptop against HTTP; the credential that must not cross that line lives in its
+`gban` runs on a laptop against HTTP; the credential that must not cross that line lives in its
 own file, so copying a config never carries it.
 """
 from __future__ import annotations
@@ -21,13 +21,13 @@ from pathlib import Path
 #: The directory both tools use. Shared deliberately — a person has one Graphban.
 HOME_ENV = "GRAPHBAN_HOME"
 
-#: `gb`'s own settings. NOT `config.json`, which belongs to `graphban` (D10).
-SETTINGS_FILE = "gb.json"
+#: `gban`'s own settings. NOT `config.json`, which belongs to `graphban` (D10).
+SETTINGS_FILE = "gban.json"
 
 #: The refresh token, alone in its own file so that copying settings never carries it.
 SESSION_FILE = "session.json"
 
-#: `graphban`'s file. Named here only so the test that asserts `gb` never opens it has
+#: `graphban`'s file. Named here only so the test that asserts `gban` never opens it has
 #: something to name, and so a reader knows the omission is deliberate.
 NOT_OURS = "config.json"
 

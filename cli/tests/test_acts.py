@@ -1,4 +1,4 @@
-"""PRD-40 PR 3 — the acts: `gb seats`, `gb agents`, `gb keys` (criteria 5, 8, 9, 12)."""
+"""PRD-40 PR 3 — the acts: `gban seats`, `gban agents`, `gban keys` (criteria 5, 8, 9, 12)."""
 from __future__ import annotations
 
 import json
@@ -7,9 +7,9 @@ import re
 
 import pytest
 
-from gb import cli as cli_mod, config
-from gb.cli import COMMANDS, main
-from gb.client import EXIT_NO_SESSION, EXIT_REFUSED, Refused
+from gban import cli as cli_mod, config
+from gban.cli import COMMANDS, main
+from gban.client import EXIT_NO_SESSION, EXIT_REFUSED, Refused
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 REFERENCE = ROOT / "docs" / "api-reference.md"
@@ -125,14 +125,14 @@ def test_re_tasking_says_when_it_takes_effect(home, monkeypatch, capsys):
 # ---- 5: a key is not a session ----------------------------------------------------------------
 
 def test_with_only_a_key_an_act_says_which_act_needs_a_session(home, monkeypatch, capsys):
-    """5. Somebody who exported GRAPHBAN_API_KEY and watched `gb fleet` work has every reason
+    """5. Somebody who exported GRAPHBAN_API_KEY and watched `gban fleet` work has every reason
     to read "session expired" as a bug in the tool. Sabotage: fall back to the generic
     message and this fails."""
     config.clear_session()
     monkeypatch.setenv(config.API_KEY_ENV, "gb_sk_ab12")
     assert main(["agents", "role", "a1", "planner"]) == EXIT_NO_SESSION
     err = capsys.readouterr().err
-    assert "gb agents role" in err, "it must name the act, not describe a category"
+    assert "gban agents role" in err, "it must name the act, not describe a category"
     assert "not an API key" in err
     assert "gb_sk_ab12" not in err, "criterion 11: never the credential itself"
 
