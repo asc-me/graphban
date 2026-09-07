@@ -29,6 +29,7 @@ from .tiers import TierTable
 from . import matrix as matrix_mod
 from .spawn import Child
 from .supervisor import (
+    _declared_into,
     DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Wave, _reap_all, _rooted,
     _start, item_status, watch_tick,
 )
@@ -480,7 +481,8 @@ def _spawn_one(
     before = len(wave.spawned)
     _start(
         wave, [seat], launch_factory, repo, workspace, wave_name, supervisor,
-        limits, debug=debug, occupied=occupied, items=item_status(planner),
+        limits, debug=debug, occupied=occupied, items=_declared_into(wave,
+                                                                     item_status(planner)),
         into=children, persist=persist,
     )
     occupied.update(c.branch for c in children)
