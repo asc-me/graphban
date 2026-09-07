@@ -138,3 +138,24 @@ def test_the_prd_names_the_files_the_code_actually_uses():
         assert name in text, f"the PRD never names {name}, which D10 is entirely about"
     stale = "/gb.json"
     assert stale not in text, f"the PRD names {stale}, which nothing reads"
+
+
+def test_the_readme_ships_and_none_of_its_links_are_repo_relative():
+    """The guard `fleet/tests/test_packaging.py` has had all along, and `cli/` did not —
+    while carrying a `](../fleet/README.md)` that would have 404'd from the PyPI page.
+
+    Two failures a successful publish hides. Without `readme`, the project page is blank: the
+    upload succeeds, nothing errors, and the only symptom is somewhere nobody on this side
+    looks. And a repo-relative link resolves on GitHub and resolves to nothing from PyPI, so
+    they are absolute even though that reads as needlessly verbose inside the repository.
+
+    Sabotage: put a `](../fleet/README.md)` back and this fails."""
+    import re
+
+    spec = tomllib.loads((CLI / "pyproject.toml").read_text())["project"]
+    assert spec.get("readme") == "README.md", "no readme means a blank PyPI page"
+
+    readme = (CLI / "README.md").read_text(encoding="utf-8")
+    relative = re.findall(r"\]\((\.\.?/[^)]+)\)", readme)
+    assert not relative, (
+        f"cli/README.md ships to PyPI, where these resolve to nothing: {relative}")
