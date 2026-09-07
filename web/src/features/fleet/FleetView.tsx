@@ -132,6 +132,14 @@ function primeSnippet(role: string, seat?: string, project?: string) {
  */
 const ADAPTERS = ["claude", "cursor-agent", "gbagent", "grok"] as const;
 
+/** Installing the two local tools. Neither is on PyPI yet, so the spec is a git URL and a
+ *  subdirectory — one package each, because `gban` installs on laptops that never run a wave
+ *  and pulls nothing, while `gbfleet` brings httpx and its transitives. */
+const INSTALL_SUPERVISOR =
+  'uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=fleet"';
+const INSTALL_CLI =
+  'uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=cli"';
+
 /**
  * Handing the seats to a supervisor (GRPH-556, PRD-22).
  *
@@ -172,6 +180,20 @@ function SupervisorHandoff({ seats, wave }: { seats: { role: string; code: strin
             git worktree, and reaps them when the wave ends. It runs on <em>your</em> machine —
             this page can only hand you the pieces.
           </p>
+          {/* HOW TO GET IT. This panel handed over a command for a binary it never said how to
+              install, which makes the handoff complete only for somebody who already had it —
+              and the people who need the handoff most are exactly the ones who do not. Not on
+              PyPI yet, so the spec is a git URL and a subdirectory. */}
+          <CopyRow label="Install the supervisor, if you have not" value={INSTALL_SUPERVISOR} />
+          {/* And the client, because everything this panel produces has a terminal
+              equivalent — issuing seats, reading why an agent is stuck, re-tasking one — and
+              a person who is already in a shell should not have to come back here for it. */}
+          <p className="px-1 text-[11px] text-faint">
+            <span className="font-mono">gban</span> is the same acts from a terminal — issue
+            seats, read why an agent is stuck, re-task one. Separate package: it installs on
+            laptops that never run a wave and pulls no dependencies at all.
+          </p>
+          <CopyRow label="Optional — the terminal client" value={INSTALL_CLI} />
           {/* THE SECOND CREDENTIAL, named because it is the first thing to get wrong. The
               supervisor authenticates with an ordinary API key; the seats are for its CHILDREN.
               Handing it a seat, or handing a child the key, both fail in confusing ways. */}

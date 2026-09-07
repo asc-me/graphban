@@ -60,6 +60,23 @@ If this component is ever extracted to its own repository — the stated trigger
 contributors who should not hold commit access to the server — extract **the adapter
 interface only**, not the supervisor.
 
+## Install
+
+Not on PyPI yet, so it installs from the repository:
+
+```bash
+uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=fleet"
+```
+
+That gives you `gbfleet` and `gbagent`. `uv tool update-shell` once if uv says its bin
+directory is not on your PATH, and `uv tool upgrade graphban-fleet` to move it forward — the
+spec tracks a branch, so an upgrade is not automatic and a fix landing here does not reach a
+machine until somebody asks for it.
+
+[`gban`](../cli/README.md), the client for a human at a terminal, is a separate package —
+`#subdirectory=cli` — because it installs on laptops that never run a wave and must stay
+dependency-free.
+
 ## Running it
 
 One wave, deterministically — you mint the seats, it spawns and reaps:
