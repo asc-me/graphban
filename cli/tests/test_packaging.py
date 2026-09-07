@@ -140,6 +140,26 @@ def test_the_prd_names_the_files_the_code_actually_uses():
     assert stale not in text, f"the PRD names {stale}, which nothing reads"
 
 
+def test_the_package_carries_a_licence_and_a_way_back_to_the_source():
+    """PyPI metadata is permanent per version: 0.1.0 published without a licence is
+    unlicensed on PyPI forever, because a version number can never be reused.
+
+    Caught by reading the built wheel's METADATA before the first upload, which is the only
+    moment it is still free to fix. Sabotage: drop either field and this fails."""
+    spec = tomllib.loads((CLI / "pyproject.toml").read_text())["project"]
+    assert spec.get("license") == "Apache-2.0", "no licence reaches PyPI as 'unlicensed'"
+    assert (CLI / "LICENSE").is_file(), "license-files names a file that must exist"
+    urls = spec.get("urls") or {}
+    assert urls.get("Repository"), "without a URL the PyPI page is a name and a summary"
+
+
+def test_both_distributions_agree_on_their_licence():
+    """`gban` and `gbfleet` ship together and diverge from the repository's FSL for the same
+    stated reason. Two answers here would be one of them being wrong."""
+    fleet = tomllib.loads((REPO / "fleet" / "pyproject.toml").read_text())["project"]
+    cli = tomllib.loads((CLI / "pyproject.toml").read_text())["project"]
+    assert cli["license"] == fleet["license"] == "Apache-2.0"
+
 def test_the_readme_ships_and_none_of_its_links_are_repo_relative():
     """The guard `fleet/tests/test_packaging.py` has had all along, and `cli/` did not —
     while carrying a `](../fleet/README.md)` that would have 404'd from the PyPI page.
@@ -156,6 +176,10 @@ def test_the_readme_ships_and_none_of_its_links_are_repo_relative():
     assert spec.get("readme") == "README.md", "no readme means a blank PyPI page"
 
     readme = (CLI / "README.md").read_text(encoding="utf-8")
-    relative = re.findall(r"\]\((\.\.?/[^)]+)\)", readme)
+    # ANY link that is not absolute, not just `./` and `../`. The narrower pattern missed
+    # `](LICENSE)` — which both READMEs carried — and a bare `](docs/…)`, both of which
+    # resolve against the PyPI project page and 404 there exactly like `../` does.
+    relative = [t for t in re.findall(r"\]\(([^)\s]+)\)", readme)
+                if not t.startswith(("http://", "https://", "mailto:", "#"))]
     assert not relative, (
         f"cli/README.md ships to PyPI, where these resolve to nothing: {relative}")

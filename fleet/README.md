@@ -44,7 +44,7 @@ backend's own list, so that separation is checked rather than asserted.
 ## Licence — Apache-2.0, deliberately not the repository's FSL-1.1
 
 The repository is [FSL-1.1-Apache-2.0](https://github.com/asc-me/graphban/blob/main/LICENSE.md). This directory is
-[Apache-2.0](LICENSE), and the divergence is a decision (PRD-22 §8), not an oversight:
+[Apache-2.0](https://github.com/asc-me/graphban/blob/main/fleet/LICENSE), and the divergence is a decision (PRD-22 §8), not an oversight:
 
 - **The supervisor is not the moat.** It is inert without a Graphban server and holds no
   authority. FSL's Competing Use clause protects the server; it protects nothing here.

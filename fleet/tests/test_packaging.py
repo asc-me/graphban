@@ -211,7 +211,11 @@ def test_the_readme_ships_and_none_of_its_links_are_repo_relative():
     assert _toml(FLEET_PYPROJECT)["project"].get("readme") == "README.md"
 
     readme = (REPO / "fleet" / "README.md").read_text(encoding="utf-8")
-    relative = re.findall(r"\]\((\.\.?/[^)]+)\)", readme)
+    # ANY link that is not absolute, not just `./` and `../`. The narrower pattern missed
+    # `](LICENSE)` — which both READMEs carried — and a bare `](docs/…)`, both of which
+    # resolve against the PyPI project page and 404 there exactly like `../` does.
+    relative = [t for t in re.findall(r"\]\(([^)\s]+)\)", readme)
+                if not t.startswith(("http://", "https://", "mailto:", "#"))]
     assert not relative, (
         f"fleet/README.md ships to PyPI, where these resolve to nothing: {relative}"
     )

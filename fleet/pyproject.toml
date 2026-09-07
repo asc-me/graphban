@@ -18,6 +18,11 @@ dependencies = [
     "httpx>=0.28",
 ]
 
+[project.urls]
+Homepage = "https://github.com/asc-me/graphban"
+Repository = "https://github.com/asc-me/graphban"
+Documentation = "https://github.com/asc-me/graphban/blob/main/fleet/README.md"
+
 [project.scripts]
 # `graphban` and `agentledger` are both already claimed by backend/pyproject.toml, so a
 # distinct entry point is required regardless of where this package lives (PRD-22 D-e).
