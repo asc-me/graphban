@@ -969,6 +969,32 @@ describe("re-tasking an agent", () => {
     await waitFor(() => expect(fleet.refetch).toHaveBeenCalled());
   });
 
+  it("offers only the roles THIS AGENT'S credential permits", async () => {
+    // GRPH-780, found by the PRD-40 walk. Every fleet key permitted exactly one role, so a
+    // selector offering both discovered the ceiling one 409 at a time.
+    fleet.data = { ...BASE, roles: ["planner", "worker"], online: 1, total: 1, by_role: {},
+                   agents: [{ ...AGENT, credential_roles: ["worker", "planner"] },
+                            { ...AGENT, id: "GB-A2", key: "GB-A2",
+                              credential_roles: ["worker"] }] };
+    renderView();
+    const selects = await screen.findAllByTestId("agent-role");
+    // The narrow agent gets NO selector at all: one reachable role is not a choice, and a
+    // control whose only other option always fails is worse than no control.
+    expect(selects).toHaveLength(1);
+    expect([...selects[0].querySelectorAll("option")].map((o) => o.textContent))
+      .toEqual(["planner", "worker"]);
+  });
+
+  it("treats an unrecorded ceiling as unrestricted, not as empty", async () => {
+    // "No key to ask" and "no roles permitted" are different facts, and reading the first as
+    // the second would silently remove the selector from every agent predating the column.
+    fleet.data = { ...BASE, roles: ["planner", "worker"], online: 1, total: 1, by_role: {},
+                   agents: [{ ...AGENT, credential_roles: [] }] };
+    renderView();
+    expect([...(await screen.findByTestId("agent-role")).querySelectorAll("option")]
+      .map((o) => o.textContent)).toEqual(["planner", "worker"]);
+  });
+
   it("shows no selector for an all-in-one credential, because narrowing it is not a role change", async () => {
     fleet.data = { ...BASE, online: 1, total: 1, by_role: {},
                    agents: [{ ...AGENT, credential_posture: "single" }] };

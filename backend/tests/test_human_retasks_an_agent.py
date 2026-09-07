@@ -169,3 +169,125 @@ def test_a_successful_call_clears_the_refusal(client, auth, key, db, proj):
     _ok(_mcp(client, key, "heartbeat", {"agent_id": who}))
     db.expire_all()
     assert db.get(Agent, who).last_refusal is None
+
+
+# ---- GRPH-780: the ceiling was a trap, found by the PRD-40 acceptance walk --------------------
+
+def _fleet_key(client, auth, proj, role, also=(), wave="wave-1") -> dict:
+    r = client.post("/api/fleet/keys", headers=auth,
+                    json={"project_id": proj, "role": role, "also": list(also), "wave": wave})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _agent_on(client, key, role) -> str:
+    return _ok(_mcp(client, key, "register_agent",
+                    {"label": f"{role} agent", "role_hint": role}))["agent_id"]
+
+
+def test_a_one_role_fleet_key_still_refuses_and_that_is_deliberate(client, auth, proj):
+    """The bound is not the bug. A key minted for one role is what stops a client config from
+    registering a worker as a planner, and it should keep refusing."""
+    minted = _fleet_key(client, auth, proj, "worker")
+    assert minted["roles"] == ["worker"]
+    agent = _agent_on(client, minted["plaintext"], "worker")
+    r = client.put(f"/api/fleet/agents/{agent}/role", headers=auth,
+                   json={"role": "planner", "reason": "no planner alive"})
+    assert r.status_code == 409, r.text
+
+
+def test_the_refusal_carries_the_remedy_over_rest_and_not_only_over_mcp(client, auth, proj):
+    """THE DEFECT the walk hit. `assign_role` has always attached a hint — MCP passes it
+    through — and the REST route serialised `str(e)` and dropped it. So the same refusal was
+    actionable for an agent and a dead end for the human, on the surface built for the human.
+
+    Sabotage: go back to `str(e)` and this fails."""
+    minted = _fleet_key(client, auth, proj, "worker")
+    agent = _agent_on(client, minted["plaintext"], "worker")
+    r = client.put(f"/api/fleet/agents/{agent}/role", headers=auth, json={"role": "planner"})
+
+    detail = r.json()["detail"]
+    assert isinstance(detail, dict), "the hint was dropped on the way out"
+    assert "planner" in detail["message"]
+    # And the remedy must be TRUE. "Mint a credential for that role" was true and useless:
+    # the ceiling belongs to the key the agent already holds, so a new key moves nothing
+    # until the agent is running on it.
+    assert "already holds" in detail["hint"]
+    assert "--role worker --role planner" in detail["hint"]
+
+
+def test_a_credential_can_be_minted_re_taskable(client, auth, proj):
+    """The half a hint cannot fix. Until now every fleet key permitted exactly one role, so
+    the route GRPH-774 added for the Super-Arc deadlock refused for every agent a fleet
+    actually runs."""
+    minted = _fleet_key(client, auth, proj, "worker", also=["planner"])
+    assert minted["roles"] == ["worker", "planner"]
+    agent = _agent_on(client, minted["plaintext"], "worker")
+
+    r = client.put(f"/api/fleet/agents/{agent}/role", headers=auth,
+                   json={"role": "planner", "reason": "the only agent left"})
+    assert r.status_code == 200, r.text
+    assert r.json()["active_role"] == "planner"
+
+
+def test_a_re_taskable_key_carries_the_tools_of_every_role_it_permits(client, auth, proj):
+    """Otherwise promotion produces a planner that cannot see `propose_allocation` — which
+    fails as those tools NOT EXISTING rather than as a missing grant, the same argument the
+    single-role case already makes."""
+    minted = _fleet_key(client, auth, proj, "worker", also=["planner"])
+    assert "prd" in minted["tool_tiers"] and "fleet" in minted["tool_tiers"]
+    # …and the gate scope the worker half needs is not lost by widening.
+    from app.db import SessionLocal
+    s = SessionLocal()
+    try:
+        row = s.get(ApiKey, minted["id"])
+        assert "gate" in (row.scopes or [])
+    finally:
+        s.close()
+
+
+def test_the_roster_says_what_each_agent_could_be_moved_to(client, auth, proj):
+    """A selector that offers a role the key refuses is a control that always fails — the
+    interface form of absence reading clean. Sabotage: drop `credential_roles` and the UI is
+    back to discovering the ceiling one click at a time."""
+    narrow = _fleet_key(client, auth, proj, "worker")
+    wide = _fleet_key(client, auth, proj, "worker", also=["planner"])
+    _agent_on(client, narrow["plaintext"], "worker")
+    _agent_on(client, wide["plaintext"], "worker")
+
+    rows = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["agents"]
+    ceilings = sorted(tuple(a["credential_roles"]) for a in rows)
+    assert ceilings == [("worker",), ("worker", "planner")]
+
+
+def test_all_in_one_cannot_be_combined_with_a_role(client, auth, proj):
+    """It is already every role. Storing the pair would leave the posture and the ceiling
+    disagreeing, and `is_single_posture` would then refuse the role the caller just added."""
+    r = client.post("/api/fleet/keys", headers=auth,
+                    json={"project_id": proj, "role": "all-in-one", "also": ["planner"],
+                          "wave": "w"})
+    assert r.status_code == 422, r.text
+    assert "posture" in r.json()["detail"]
+
+
+def test_widening_a_ceiling_makes_anonymous_calls_stricter_not_looser(client, auth, proj):
+    """The consequence worth naming rather than discovering. `role_for_call` falls back to the
+    key's ceiling only when it is ONE role — so an agent on a two-role key that does not
+    identify itself resolves as `unidentified` and is refused, where a one-role key would have
+    let it act as that role.
+
+    It fails CLOSED, which is the right direction, but it means widening a ceiling is not a
+    free act: a client that never passes `agent_id` gets stricter, not looser."""
+    wide = _fleet_key(client, auth, proj, "worker", also=["planner"])
+    agent = _agent_on(client, wide["plaintext"], "worker")
+
+    named = _mcp(client, wide["plaintext"], "mint_enrolment",
+                 {"project_id": proj, "agent_id": agent, "role": "worker"})
+    anonymous = _mcp(client, wide["plaintext"], "mint_enrolment",
+                     {"project_id": proj, "role": "worker"})
+    # The named call is refused for a REASON ABOUT ITS ROLE; the anonymous one for not saying
+    # who it is. Two different refusals, and conflating them is what sends a person hunting a
+    # permissions problem they do not have.
+    assert "worker" in str(named)
+    assert anonymous.get("isError"), anonymous
+    assert "identif" in str(anonymous).lower() or "agent_id" in str(anonymous)

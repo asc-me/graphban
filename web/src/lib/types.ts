@@ -1279,6 +1279,10 @@ export interface FleetAgent {
   credential: string | null;
   /** `single` when the credential was minted all-in-one and a role hint cannot narrow it. */
   credential_posture: string | null;
+  /** The ceiling on THIS agent's credential (GRPH-780). A selector offering a role the key
+   *  refuses is a control that always fails — the interface form of absence reading clean.
+   *  Empty means there is no key to ask, not "no roles permitted". */
+  credential_roles?: string[];
   /** The seat this agent redeemed at registration. Null means un-enrolled — the single-agent
    *  posture, which is safe but is NOT a fleet, and a forgotten code looks identical to a
    *  deliberate one unless the roster says so. */

@@ -1,4 +1,4 @@
-"""The one place `gb` talks to a Graphban server (PRD-40 D3, D11).
+"""The one place `gban` talks to a Graphban server (PRD-40 D3, D11).
 
 Every verb is one endpoint, called once. The only call that is not a verb is the token
 exchange, and it is transport rather than policy: it carries no rule, decides nothing, and
@@ -7,8 +7,8 @@ happens before any verb runs.
 **The session model, and why it needs no machinery.** `POST /api/auth/refresh` issues a new
 pair but does not consume the token presented — validity is keyed on `user.token_version`,
 which moves only on logout or a password change (AL-59). So an invocation exchanges once, holds
-the access token in memory, makes its call, and exits; two `gb` processes at once cannot
-disturb each other; and `session.json` is written only by `gb login`, never per call. Writing
+the access token in memory, makes its call, and exits; two `gban` processes at once cannot
+disturb each other; and `session.json` is written only by `gban login`, never per call. Writing
 it every time would manufacture the race that does not otherwise exist.
 """
 from __future__ import annotations
@@ -18,11 +18,11 @@ import os
 import urllib.error
 import urllib.request
 
-from gb import config
+from gban import config
 
 #: Exit codes. Chosen so they cannot collide with a passed-through `gbfleet` code, which
 #: carries meaning of its own (75 stuck, 69 unreachable endpoint, 55 budget) and is returned
-#: unchanged by `gb fleet` (D5).
+#: unchanged by `gban fleet` (D5).
 EXIT_REFUSED = 1
 EXIT_UNREACHABLE = 2
 EXIT_NO_SESSION = 3
@@ -42,8 +42,8 @@ class NoSession(Exception):
     person does the same thing either way — a distinction would be precision nobody can act on.
 
     "You have a credential, but not one that can do this" IS a different state, and the only
-    one where the next step is not simply `gb login` (criterion 5). Somebody who exported
-    `GRAPHBAN_API_KEY` and watched `gb fleet` work has every reason to read "session expired"
+    one where the next step is not simply `gban login` (criterion 5). Somebody who exported
+    `GRAPHBAN_API_KEY` and watched `gban fleet` work has every reason to read "session expired"
     as a bug in the tool rather than as a statement about what a key is for.
     """
 

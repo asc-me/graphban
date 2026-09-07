@@ -1,4 +1,4 @@
-"""`gb` — the client for a human at a terminal (PRD-40).
+"""`gban` — the client for a human at a terminal (PRD-40).
 
 The v1 verb list is short on purpose (D11). Every verb here is one HTTP call to one route
 that already exists, named one-to-one, because a client that composes several calls into a
@@ -14,12 +14,12 @@ import shutil
 import subprocess
 import sys
 
-from gb import config, doctor as doctor_mod
-from gb.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
+from gban import config, doctor as doctor_mod
+from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
                        Refused, Unreachable, authenticated, login)
 
-PROG = "gb"
+PROG = "gban"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -60,14 +60,14 @@ def _parser() -> argparse.ArgumentParser:
                      "supervisor's own tests pin."),
         add_help=False)
     fleet.add_argument("rest", nargs=argparse.REMAINDER,
-                       help="arguments for gbfleet; try `gb fleet --help`")
+                       help="arguments for gbfleet; try `gban fleet --help`")
     sub.add_parser("whoami", help="who this session belongs to, and where it points")
 
     seats = sub.add_parser(
         "seats", help="the seats a wave was issued, and issuing more",
         description=("A SEAT is an enrolment code: one agent's right to register once, for "
                      "half an hour. It is not a credential — the credential is the API key "
-                     "the child authenticates with, and `gb keys` is where those live."))
+                     "the child authenticates with, and `gban keys` is where those live."))
     seats_do = seats.add_subparsers(dest="act")
     issue = seats_do.add_parser("issue", help="issue seats, one role per agent")
     issue.add_argument("roles", nargs="+", metavar="ROLE",
@@ -94,8 +94,15 @@ def _parser() -> argparse.ArgumentParser:
 
     keys = sub.add_parser("keys", help="the credentials this project's agents authenticate with")
     keys_do = keys.add_subparsers(dest="act")
-    mint = keys_do.add_parser("mint", help="mint a credential narrowed to one role")
-    mint.add_argument("--role", required=True)
+    mint = keys_do.add_parser(
+        "mint", help="mint a credential narrowed to a role, or to several",
+        description=("Repeat --role to mint a credential an agent can be RE-TASKED within. "
+                     "One role is the default and is a real bound: it is what stops a client "
+                     "config from registering a worker as a planner. But a role change cannot "
+                     "climb past the credential the agent already holds, so an agent minted "
+                     "for one role can never be promoted without being restarted."))
+    mint.add_argument("--role", required=True, action="append", metavar="ROLE",
+                      help="repeatable; the first is the role the agent registers into")
     mint.add_argument("--wave", default="wave-1")
     mint.add_argument("--label", default="")
     return parser
@@ -108,7 +115,7 @@ def _out(payload: dict, human: str, as_json: bool) -> None:
 def _server(args) -> str:
     url = config.resolve(args.server, config.URL_ENV, "url")
     if not url:
-        print(f"{PROG}: no server. Pass --server, set ${config.URL_ENV}, or run `gb login "
+        print(f"{PROG}: no server. Pass --server, set ${config.URL_ENV}, or run `gban login "
               f"--server …` once.", file=sys.stderr)
         raise SystemExit(EXIT_REFUSED)
     return url
@@ -116,10 +123,28 @@ def _server(args) -> str:
 
 def cmd_login(args) -> int:
     url = _server(args)
-    email = args.email or input("email: ").strip()
-    # Prompted, never an argument: argv is world-readable in `ps`, and a password in shell
-    # history is a credential nobody remembers leaving there.
-    password = getpass.getpass("password: ")
+    # A TERMINAL, OR NOTHING. `getpass` falls back to a plain echoing read when it cannot
+    # turn echo off, and warns about it — which is the wrong trade for a password: the
+    # warning arrives after the person has already decided to type. Without a tty the
+    # password would land in the scrollback, in a transcript, or in whatever captured the
+    # session. Refusing is the only safe branch, and it is not a limitation somebody can
+    # work around by trying harder.
+    if not sys.stdin.isatty():
+        print(f"{PROG}: `{PROG} login` needs a terminal. Without one, the prompt cannot turn "
+              f"off echo and your password would be written to the scrollback.\n"
+              f"     Run it in a shell, not through a pipe, a heredoc or an editor's "
+              f"command runner.", file=sys.stderr)
+        return EXIT_REFUSED
+    try:
+        email = args.email or input("email: ").strip()
+        # Prompted, never an argument: argv is world-readable in `ps`, and a password in
+        # shell history is a credential nobody remembers leaving there.
+        password = getpass.getpass("password: ")
+    except (EOFError, KeyboardInterrupt):
+        # Somebody pressed ctrl-C or the input ended. One line, not a traceback — the
+        # same rule criterion 4 applies to an expired session applies to a cancelled login.
+        print(f"\n{PROG}: cancelled", file=sys.stderr)
+        return EXIT_REFUSED
     pair = login(url, email, password)
     refresh = pair.get("refresh_token") or ""
     if not refresh:
@@ -154,7 +179,7 @@ def cmd_logout(args) -> int:
                                      f"\n     WARNING: the server was not told ({why}).\n"
                                      "     The local session is gone; the server-side one "
                                      "stays valid until it expires.\n     Revoke it from the "
-                                     "web app, or run `gb logout` again when the network is "
+                                     "web app, or run `gban logout` again when the network is "
                                      "back.")
     if not removed and told_server:
         human = f"{PROG}: no local session to remove"
@@ -186,7 +211,7 @@ def cmd_doctor(args) -> int:
 def cmd_fleet(args) -> int:
     """A subprocess, never an import (D5).
 
-    Keeps `gb` free of the supervisor's dependencies, keeps the Apache-2.0 boundary intact,
+    Keeps `gban` free of the supervisor's dependencies, keeps the Apache-2.0 boundary intact,
     and leaves `gbfleet --help` authoritative about its own commands.
     """
     binary = shutil.which("gbfleet")
@@ -201,7 +226,7 @@ def cmd_fleet(args) -> int:
     project = config.resolve(args.project, config.PROJECT_ENV, "project")
     if project and "--project" not in argv:
         argv += ["--project", project]
-    # Its exit code, unchanged. `gb` adds nothing and explains nothing: the supervisor's
+    # Its exit code, unchanged. `gban` adds nothing and explains nothing: the supervisor's
     # message is the one its own tests pin.
     return subprocess.run(argv).returncode
 
@@ -210,7 +235,7 @@ def _project(args, act: str) -> str:
     project = config.resolve(args.project, config.PROJECT_ENV, "project")
     if not project:
         print(f"{PROG}: `{PROG} {act}` needs a project. Pass --project, set "
-              f"${config.PROJECT_ENV}, or run `gb login --project …` once.", file=sys.stderr)
+              f"${config.PROJECT_ENV}, or run `gban login --project …` once.", file=sys.stderr)
         raise SystemExit(EXIT_REFUSED)
     return project
 
@@ -238,7 +263,7 @@ def cmd_seats(args) -> int:
         lines = [f"{PROG}: {len(out.get('seats', []))} seats on {out.get('wave')}",
                  "     each code is shown once and is not stored anywhere:"]
         lines += [f"     {s['code']}  {s['role']}" for s in out.get("seats", [])]
-        lines.append("     feed them to `gb fleet up --seats-file`, one per line.")
+        lines.append("     feed them to `gban fleet up --seats-file`, one per line.")
         _out(out, "\n".join(lines), args.as_json)
         return 0
     if args.act == "revoke-unused":
@@ -275,8 +300,12 @@ def cmd_agents(args) -> int:
     agents = fleet.get("agents", [])
     human = [f"{PROG}: {len(agents)} agents"]
     for a in agents:
+        # WHAT IT COULD BE MOVED TO, next to what it is. Without the ceiling on the row,
+        # `agents role` is a coin flip against a bound nothing shows (GRPH-780).
+        ceiling = a.get("credential_roles") or []
         human.append(f"     {a.get('key') or a.get('id'):<12} {a.get('active_role', ''):<8} "
-                     f"{a.get('state', ''):<10} {a.get('credential') or ''}")
+                     f"{a.get('state', ''):<10} {a.get('credential') or ''}"
+                     + (f"  [{'|'.join(ceiling)}]" if len(ceiling) > 1 else ""))
         # THE LINE THIS VERB EXISTS FOR (criterion 8). A roster that says "idle worker" for an
         # agent being refused every call it makes is the thing that cost an afternoon and a
         # database query on Super-Arc.
@@ -291,12 +320,18 @@ def cmd_agents(args) -> int:
 def cmd_keys(args) -> int:
     if args.act == "mint":
         url, project = _server(args), _project(args, "keys mint")
+        first, *also = args.role
         out = authenticated(url, act="keys mint").call(
             "POST", "/api/fleet/keys",
-            {"project_id": project, "role": args.role, "wave": args.wave, "label": args.label})
+            {"project_id": project, "role": first, "also": also, "wave": args.wave,
+             "label": args.label})
+        ceiling = out.get("roles") or [out.get("role")]
         _out(out, f"{PROG}: {out.get('plaintext')}"
                   f"\n     {out.get('role')} on {out.get('wave')}, shown once, expires "
-                  f"{out.get('expires_at')}", args.as_json)
+                  f"{out.get('expires_at')}"
+                  + (f"\n     re-taskable within {', '.join(ceiling)}" if len(ceiling) > 1
+                     else "\n     one role only: an agent on this key cannot be re-tasked"),
+             args.as_json)
         return 0
     fleet, _ = _fleet_read(args, "keys")
     creds = fleet.get("credentials", [])

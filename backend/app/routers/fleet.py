@@ -57,6 +57,10 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
 class FleetKeyIn(BaseModel):
     project_id: str
     role: str
+    # EXTRA roles the credential may be re-tasked into (GRPH-780). Absent means the ceiling
+    # is the one role, which stays the default: widening is a decision made for a specific
+    # agent, not a default that quietly removes the bound for everyone.
+    also: list[str] = []
     wave: str = "wave-1"
     label: str = ""
 
@@ -82,7 +86,7 @@ def fleet_presence(project_id: str | None = None, db: Session = Depends(get_db),
 @router.post("/keys", status_code=201)
 def mint_fleet_key(body: FleetKeyIn, db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
-    """A credential narrowed to one role and tagged to this wave.
+    """A credential narrowed to a role — or, with `also`, to several — and tagged to this wave.
 
     Plaintext is returned ONCE, as everywhere else — keys are stored hashed and cannot be
     recovered, which is a property rather than an oversight.
@@ -91,13 +95,14 @@ def mint_fleet_key(body: FleetKeyIn, db: Session = Depends(get_db),
     try:
         row, plaintext = fleet_svc.mint_fleet_key(
             db, user_id=user.id, project_id=body.project_id, role=body.role,
-            wave=body.wave, label=body.label)
+            wave=body.wave, label=body.label, also=body.also)
     except ValueError as e:
         raise HTTPException(422, str(e))
     events_svc.record_user(db, user, action="mint_fleet_key", target_type="apikey",
                            target_id=row.id, project_id=body.project_id,
                            meta={"role": body.role, "wave": body.wave})
-    return {"id": row.id, "plaintext": plaintext, "role": body.role, "wave": body.wave,
+    return {"id": row.id, "plaintext": plaintext, "role": body.role, "roles": row.roles or [],
+            "wave": body.wave,
             "expires_at": row.expires_at, "prefix": row.prefix,
             "tool_tiers": row.tool_tiers or []}
 
@@ -223,7 +228,12 @@ def set_agent_role(agent_id: str, body: AgentRoleIn, db: Session = Depends(get_d
     except authz.Forbidden as e:
         # The ceiling refusing is not a server error and not the caller's mistake to guess at:
         # it names the credential and what would have to change.
-        raise HTTPException(409, str(e))
+        #
+        # THE HINT TRAVELS. `str(e)` alone dropped it, so the same refusal was actionable over
+        # MCP — which passes `e.hint` through — and a dead end over REST, which is the surface
+        # a HUMAN uses (GRPH-780). The remedy existed in the service the whole time and the
+        # API threw it away.
+        raise HTTPException(409, {"message": str(e), "hint": e.hint} if e.hint else str(e))
     events_svc.record_user(db, user, action="assign_role", target_type="agent",
                            target_id=agent_id, project_id=agent.project_id,
                            meta={"role": body.role, "reason": body.reason})

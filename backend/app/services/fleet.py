@@ -12,6 +12,7 @@ top of it.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -497,6 +498,12 @@ def list_agents(db: Session, project_id: str | None = None, *,
             # Why an all-in-one credential produces an all-in-one agent, shown next to it.
             # `single` means a role hint cannot narrow this key; NULL means it can (GRPH-362).
             "credential_posture": getattr(keys.get(a.api_key_id), "posture", None),
+            # THE CEILING, on the row (GRPH-780). Without it a role selector can only offer
+            # every role and discover per click which ones the key refuses — a control that
+            # always fails is the interface form of absence reading clean. Empty list means
+            # there is no key to ask, which is not the same as "no roles permitted".
+            "credential_roles": list(eligible_roles(keys[a.api_key_id]))
+                                if a.api_key_id in keys else [],
             # WHAT this agent was last told no for, and why (GRPH-774). Null once it makes a
             # successful call: consecutive is the property that matters, and a refusal an
             # agent has already recovered from is history, not a state.
@@ -2112,18 +2119,41 @@ FLEET_KEY_DAYS = 1
 
 
 def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
-                   wave: str, label: str = "") -> tuple:
-    """A credential narrowed to ONE role and tagged to this wave.
+                   wave: str, label: str = "", also: Sequence[str] = ()) -> tuple:
+    """A credential narrowed to a role — or to SEVERAL — and tagged to this wave.
 
-    `roles=[role]` is the ceiling from D2, so an agent on this key cannot register into a
-    different role however its client is configured. The wave tag is what lets "End wave"
-    revoke exactly the keys this view issued and never one a human minted by hand.
+    `roles` is the ceiling from D2, so an agent on this key cannot register into a role
+    outside it however its client is configured. The wave tag is what lets "End wave" revoke
+    exactly the keys this view issued and never one a human minted by hand.
+
+    **`also` is what makes an agent re-taskable, and it exists because the ceiling was
+    otherwise a trap** (GRPH-780). Every fleet key permitted exactly one role, and
+    `assign_role` refuses any role outside the ceiling — so `PUT /agents/{id}/role`, the
+    route added to break the Super-Arc deadlock where a worker could not be promoted,
+    refused for every agent a fleet actually runs. The remedy it named ("mint a credential
+    for that role") does not move a running agent either: the ceiling belongs to the key the
+    agent ALREADY holds, and a new key only helps an agent restarted on it.
+
+    Opt-in, and narrow stays the default. A key that permits one role is a real bound worth
+    keeping — it is what stops a client config from registering a worker as a planner — and
+    widening it is a decision somebody makes for a specific agent, not a default that quietly
+    removes the ceiling for everyone. The containment PRD-19 E7 cares about is untouched
+    either way: an agent still cannot promote ITSELF, because `assign_role` is planner-gated
+    and a worker calling it is refused before any ceiling is consulted.
     """
     from app.security.apikey import generate_api_key
 
-    if role not in ROLES + (ALL_IN_ONE,):
+    wanted = [role, *also]
+    unknown = [r for r in wanted if r not in ROLES + (ALL_IN_ONE,)]
+    if unknown:
         raise ValueError(
-            f"unknown role: {role!r}; valid roles are {', '.join(ROLES)}")
+            f"unknown role: {unknown[0]!r}; valid roles are {', '.join(ROLES)}")
+    if ALL_IN_ONE in wanted and len(set(wanted)) > 1:
+        # All-in-one is every role already. Accepting the pair would store a posture and a
+        # ceiling that disagree, and `is_single_posture` would then refuse the very role the
+        # caller asked to add.
+        raise ValueError(
+            f"{ALL_IN_ONE!r} is a posture, not a role to combine — it is already every role")
     # `gate` follows the worker role (GRPH-543, S3). Completion needs an `attestation`, and
     # only a gate-scoped key may write one — so a credential that can sign work off must be
     # able to attest it, or the verdict it is entitled to give cannot be recorded. S2 moved
@@ -2131,7 +2161,7 @@ def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
     #
     # A planner-only key does NOT get it. A planner cannot build, so it has no work to attest.
     scopes = ["read", "write"]
-    if role in ("worker", ALL_IN_ONE):
+    if any(r in ("worker", ALL_IN_ONE) for r in wanted):
         scopes.append("gate")
     # The `fleet` and `prd` tool tiers (GRPH-571) come with the credential rather than being
     # asked for. A planner without `propose_allocation` or `assign_role` cannot do the job it
@@ -2156,14 +2186,18 @@ def mint_fleet_key(db: Session, *, user_id: str, project_id: str, role: str,
     # heaviest tier in the product, which is exactly what every key should not be paying for —
     # so its answer is the mint dialog: select the PRDs tier on the hand-minted key the seat
     # rides.
-    tiers = ["fleet", "prd"] if role in ("planner", ALL_IN_ONE) else []
+    # The tiers follow the WIDEST role the key permits: a credential that may be re-tasked to
+    # planner and cannot see `propose_allocation` would fail by those tools being absent,
+    # which reads as them not existing rather than as a missing grant — the same argument the
+    # single-role case makes, applied to the ceiling instead of to the role.
+    tiers = ["fleet", "prd"] if any(r in ("planner", ALL_IN_ONE) for r in wanted) else []
     row, plaintext = generate_api_key(
-        db, user_id, label or f"fleet {role}", scopes, project_id, FLEET_KEY_DAYS,
-        tool_tiers=tiers)
+        db, user_id, label or f"fleet {'+'.join(dict.fromkeys(wanted))}", scopes, project_id,
+        FLEET_KEY_DAYS, tool_tiers=tiers)
     # `all-in-one` mints an UNNARROWED credential — all three roles — which is what makes an
     # agent registering on it unrestricted. It is still wave-tagged, so "End wave" sweeps it
     # like any other: the posture differs, the lifecycle does not.
-    row.roles = list(ROLES) if role == ALL_IN_ONE else [role]
+    row.roles = list(ROLES) if role == ALL_IN_ONE else list(dict.fromkeys(wanted))
     # …and records that all-in-one was CHOSEN. `roles` alone cannot say so — all three is also
     # what a key with nothing set resolves to — and without the distinction a `role_hint` from
     # a client config silently narrows the posture picked in the UI.
@@ -2858,7 +2892,14 @@ def assign_role(db: Session, *, agent_id: str, role: str, reason: str = "") -> A
         raise authz.Forbidden(
             f"{agent_id} authenticates with a key eligible for "
             f"{', '.join(eligible_roles(key))}; {role!r} is not among them",
-            hint="mint a credential for that role in the Fleet view")
+            # The old hint said "mint a credential for that role", which is true and does not
+            # finish the job: the ceiling belongs to the key this agent is ALREADY holding,
+            # so a new key changes nothing until the agent is running on it. Saying so is the
+            # difference between a next step and a wall with a sign on it (GRPH-780).
+            hint=(f"a role change cannot climb past the credential the agent already holds. "
+                  f"Mint a key permitting both roles — Fleet view, or `gban keys mint --role "
+                  f"{eligible_roles(key)[0] if eligible_roles(key) else 'worker'} --role "
+                  f"{role}` — and register the agent on it."))
     agent.active_role = role
     agent.role_assigned_at = datetime.now(timezone.utc)
     caps = dict(agent.capabilities or {})

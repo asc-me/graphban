@@ -1,6 +1,6 @@
 # graphban-cli
 
-**`gb`** — the client for a human at a terminal.
+**`gban`** — the client for a human at a terminal.
 
 Five surfaces existed before this and none of them was for a person at a shell prompt:
 `graphban` talks to the database from inside the container, `gbfleet` supervises processes,
@@ -10,13 +10,13 @@ a seat, seeing why an agent is stuck, or re-tasking one meant opening a browser.
 Specified by [PRD-40](https://github.com/asc-me/graphban/blob/main/docs/prd-40-gb-cli.md).
 
 ```bash
-gb login --server https://cloud.agentldgr.dev
-gb doctor                       # both halves: the ledger, and the local fleet
-gb agents                       # the roster, and why an agent is stuck
-gb agents role SA-A4 planner    # what used to need a browser
-gb seats issue worker worker planner                  # one entry per agent
-gb keys                                               # which key is that agent on
-gb fleet up --seats-file seats.txt --adapter claude   # hands off to gbfleet
+gban login --server https://cloud.agentldgr.dev
+gban doctor                       # both halves: the ledger, and the local fleet
+gban agents                       # the roster, and why an agent is stuck
+gban agents role SA-A4 planner    # what used to need a browser
+gban seats issue worker worker planner                  # one entry per agent
+gban keys                                               # which key is that agent on
+gban fleet up --seats-file seats.txt --adapter claude   # hands off to gbfleet
 ```
 
 `seats issue` takes **one role per agent, repeats included**, because that is the server's
@@ -33,22 +33,35 @@ role the key does not permit is the server's refusal, printed in the server's ow
 widening a ceiling means minting a different credential, and keeping those two acts apart is
 the point of having a ceiling. It lands on the agent's next poll.
 
-## `gb` may already be taken on your machine
+## `gban login` wants a real terminal
 
-`gb` is a common shell alias for `git branch`, and an alias WINS over a binary on `PATH` —
-the deployed walk hit this on the first command and got `git branch`'s usage text. Check with
-`type gb`; if it is aliased, either `unalias gb` or call it by path. Nothing here can detect
-that from inside the process: by the time `gb` runs, the alias did not.
+It refuses without one, rather than prompting. `getpass` falls back to a plain **echoing**
+read when it cannot turn echo off — it warns, but the warning arrives after the person has
+decided to type — so a login through a pipe, a heredoc or an editor's command runner would
+put the password in the scrollback. There is no non-interactive login yet (PRD-40 open
+question 2: an API key cannot reach the JWT routes, so CI would need a service session).
+
+## Why not `gb`
+
+Because `gb` is already `git branch` on a large share of developer machines, and **an alias
+beats a binary on `PATH`**. The deployed walk hit it on the very first command and got git's
+usage text; nothing inside the process can detect that, because by the time `gb` would have
+run, the alias did not.
+
+It is not one alias but a whole namespace. oh-my-zsh's git plugin — which is where most of
+these come from — defines sixteen `gb*` aliases and ten `grb*`, so `gb`, `gba`, `grb` and
+`gbl` are all spoken for. `gban` is outside it, still short, and still says which product it
+belongs to.
 
 ## Why it is in this repository
 
 **Not a second repository**, for the reason [`fleet/README.md`](../fleet/README.md) gives for
 the supervisor, with more force: the client↔server contract has no schema anywhere, and a
-cross-repo break would present as absence reading clean — `gb` still runs, nothing errors, the
+cross-repo break would present as absence reading clean — `gban` still runs, nothing errors, the
 verb quietly stops meaning what it said. The evidence is recent and specific: `ROLES` lost
 `reviewer` in one PR while another added a test naming it, and CI caught the pair inside
 seventeen minutes because both lived in one repository. Split across two, that lands as a bug
-report from somebody whose `gb agents role ... reviewer` started refusing.
+report from somebody whose `gban agents role ... reviewer` started refusing.
 
 **Not inside `backend/`**, because `graphban-api` pulls fastapi, sqlalchemy, pgvector, psycopg,
 alembic, redis and cryptography, and this installs on a laptop. `tests/test_packaging.py`

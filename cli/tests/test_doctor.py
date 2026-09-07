@@ -1,13 +1,13 @@
-"""PRD-40 PR 2 — `gb doctor` and the `gb fleet` pass-through (criteria 6, 7)."""
+"""PRD-40 PR 2 — `gban doctor` and the `gban fleet` pass-through (criteria 6, 7)."""
 from __future__ import annotations
 
 import json
 
 import pytest
 
-from gb import config, doctor
-from gb.cli import main
-from gb.client import EXIT_NO_SUPERVISOR, NoSession, Refused, Unreachable
+from gban import config, doctor
+from gban.cli import main
+from gban.client import EXIT_NO_SUPERVISOR, NoSession, Refused, Unreachable
 
 
 @pytest.fixture()
@@ -34,12 +34,12 @@ class _Server:
 
 
 def _lines(monkeypatch, server, *, gbfleet=None):
-    monkeypatch.setattr("gb.doctor.authenticated", lambda url: server)
-    monkeypatch.setattr("gb.doctor.shutil.which", lambda name: gbfleet)
+    monkeypatch.setattr("gban.doctor.authenticated", lambda url: server)
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: gbfleet)
     if gbfleet:
         class Done:
             returncode, stdout, stderr = 0, "PASS  repo  clean", ""
-        monkeypatch.setattr("gb.doctor.subprocess.run", lambda *a, **kw: Done())
+        monkeypatch.setattr("gban.doctor.subprocess.run", lambda *a, **kw: Done())
     return doctor.run("http://gb.invalid", "core", "")
 
 
@@ -68,10 +68,10 @@ def test_the_ledger_half_is_reported_even_with_no_gbfleet_installed(home, monkey
 def test_an_unreachable_server_is_unknown_not_a_pass_and_not_a_fail(home, monkeypatch):
     """6. 'We could not tell' must never render as 'nothing is wrong'."""
     server = _Server(error=Unreachable("could not reach http://gb.invalid: no route to host"))
-    monkeypatch.setattr("gb.doctor.authenticated",
+    monkeypatch.setattr("gban.doctor.authenticated",
                         lambda url: (_ for _ in ()).throw(
                             Unreachable("could not reach http://gb.invalid")))
-    monkeypatch.setattr("gb.doctor.shutil.which", lambda name: None)
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
     lines, code = doctor.run("http://gb.invalid", "core", "")
     assert [l["status"] for l in lines if l["side"] == "ledger"] == ["UNKNOWN"]
     assert code == 0
@@ -79,14 +79,14 @@ def test_an_unreachable_server_is_unknown_not_a_pass_and_not_a_fail(home, monkey
 
 def test_the_three_ledger_failures_are_three_different_lines(home, monkeypatch):
     """6 / D7. They send a reader to three different places."""
-    monkeypatch.setattr("gb.doctor.shutil.which", lambda name: None)
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
 
-    monkeypatch.setattr("gb.doctor.authenticated",
+    monkeypatch.setattr("gban.doctor.authenticated",
                         lambda url: (_ for _ in ()).throw(NoSession("no stored session")))
     expired, _ = doctor.run("http://gb.invalid", "core", "")
-    assert expired[0]["name"] == "session" and "gb login" in expired[0]["detail"]
+    assert expired[0]["name"] == "session" and "gban login" in expired[0]["detail"]
 
-    monkeypatch.setattr("gb.doctor.authenticated",
+    monkeypatch.setattr("gban.doctor.authenticated",
                         lambda url: _Server(error=Refused(404, "project not found")))
     refused, code = doctor.run("http://gb.invalid", "core", "")
     assert code == 1
@@ -128,8 +128,8 @@ def test_gb_fleet_returns_the_supervisors_exit_code_unchanged(home, monkeypatch)
     class Done:
         returncode = 75
 
-    monkeypatch.setattr("gb.cli.shutil.which", lambda name: "/usr/bin/gbfleet")
-    monkeypatch.setattr("gb.cli.subprocess.run",
+    monkeypatch.setattr("gban.cli.shutil.which", lambda name: "/usr/bin/gbfleet")
+    monkeypatch.setattr("gban.cli.subprocess.run",
                         lambda argv, **kw: (seen.update(argv=argv), Done())[1])
     assert main(["fleet", "up", "--adapter", "claude"]) == 75
     assert seen["argv"][:3] == ["/usr/bin/gbfleet", "up", "--adapter"]
@@ -141,8 +141,8 @@ def test_gb_fleet_fills_in_the_server_and_project_it_already_knows(home, monkeyp
     class Done:
         returncode = 0
 
-    monkeypatch.setattr("gb.cli.shutil.which", lambda name: "/usr/bin/gbfleet")
-    monkeypatch.setattr("gb.cli.subprocess.run",
+    monkeypatch.setattr("gban.cli.shutil.which", lambda name: "/usr/bin/gbfleet")
+    monkeypatch.setattr("gban.cli.subprocess.run",
                         lambda argv, **kw: (seen.update(argv=argv), Done())[1])
     assert main(["fleet", "ps"]) == 0
     assert "--server" in seen["argv"] and "http://gb.invalid" in seen["argv"]
@@ -155,8 +155,8 @@ def test_an_explicit_server_is_not_overridden(home, monkeypatch):
     class Done:
         returncode = 0
 
-    monkeypatch.setattr("gb.cli.shutil.which", lambda name: "/usr/bin/gbfleet")
-    monkeypatch.setattr("gb.cli.subprocess.run",
+    monkeypatch.setattr("gban.cli.shutil.which", lambda name: "/usr/bin/gbfleet")
+    monkeypatch.setattr("gban.cli.subprocess.run",
                         lambda argv, **kw: (seen.update(argv=argv), Done())[1])
     main(["fleet", "ps", "--server", "http://other.invalid"])
     assert seen["argv"].count("--server") == 1
@@ -165,7 +165,7 @@ def test_an_explicit_server_is_not_overridden(home, monkeypatch):
 
 def test_a_missing_supervisor_says_how_to_install_it(home, monkeypatch, capsys):
     """7. Exit 4, its own code, so it cannot be confused with something gbfleet said."""
-    monkeypatch.setattr("gb.cli.shutil.which", lambda name: None)
+    monkeypatch.setattr("gban.cli.shutil.which", lambda name: None)
     assert main(["fleet", "ps"]) == EXIT_NO_SUPERVISOR
     assert "graphban-fleet" in capsys.readouterr().err
 
@@ -174,7 +174,7 @@ def test_the_credential_reaches_gbfleet_in_the_environment_never_argv(home, monk
     """D5. `ps` shows argv to every process on the machine."""
     seen = {}
     monkeypatch.setenv(config.API_KEY_ENV, "gb_sk_SECRET")
-    monkeypatch.setattr("gb.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
 
     class Done:
         returncode, stdout, stderr = 0, "", ""
@@ -183,8 +183,8 @@ def test_the_credential_reaches_gbfleet_in_the_environment_never_argv(home, monk
         seen["argv"], seen["env"] = argv, kw.get("env") or {}
         return Done()
 
-    monkeypatch.setattr("gb.doctor.subprocess.run", run)
-    monkeypatch.setattr("gb.doctor.authenticated", lambda url: _Server())
+    monkeypatch.setattr("gban.doctor.subprocess.run", run)
+    monkeypatch.setattr("gban.doctor.authenticated", lambda url: _Server())
     doctor.run("http://gb.invalid", "core", "gb_sk_SECRET")
 
     assert "gb_sk_SECRET" not in " ".join(seen["argv"])
@@ -192,8 +192,8 @@ def test_the_credential_reaches_gbfleet_in_the_environment_never_argv(home, monk
 
 
 def test_doctor_json_is_parsed_and_the_human_rendering_is_absent(home, monkeypatch, capsys):
-    monkeypatch.setattr("gb.doctor.authenticated", lambda url: _Server())
-    monkeypatch.setattr("gb.doctor.shutil.which", lambda name: None)
+    monkeypatch.setattr("gban.doctor.authenticated", lambda url: _Server())
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
     main(["--json", "doctor"])
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
@@ -210,9 +210,9 @@ def test_the_local_summary_line_says_what_happened_not_the_childs_banner(home, m
     class Done:
         returncode, stdout, stderr = 1, "gbfleet 0.1.0 doctor\n\n  [FAIL] api key — unset\n", ""
 
-    monkeypatch.setattr("gb.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
-    monkeypatch.setattr("gb.doctor.subprocess.run", lambda *a, **kw: Done())
-    monkeypatch.setattr("gb.doctor.authenticated", lambda url: _Server())
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
+    monkeypatch.setattr("gban.doctor.subprocess.run", lambda *a, **kw: Done())
+    monkeypatch.setattr("gban.doctor.authenticated", lambda url: _Server())
     lines, code = doctor.run("http://gb.invalid", "core", "")
 
     local_line = [l for l in lines if l["side"] == "local"][0]
@@ -228,9 +228,9 @@ def test_the_childs_report_is_indented_under_its_summary(home, monkeypatch):
     class Done:
         returncode, stdout, stderr = 0, "gbfleet 0.1.0 doctor\n  [PASS] repository\n", ""
 
-    monkeypatch.setattr("gb.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
-    monkeypatch.setattr("gb.doctor.subprocess.run", lambda *a, **kw: Done())
-    monkeypatch.setattr("gb.doctor.authenticated", lambda url: _Server())
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
+    monkeypatch.setattr("gban.doctor.subprocess.run", lambda *a, **kw: Done())
+    monkeypatch.setattr("gban.doctor.authenticated", lambda url: _Server())
     lines, _ = doctor.run("http://gb.invalid", "core", "")
     rendered = doctor.render(lines).splitlines()
 

@@ -1,6 +1,7 @@
 """PRD-40 PR 1 — the package, the session, and the config precedence (criteria 1-5, 10, 11)."""
 from __future__ import annotations
 
+import io
 import json
 import os
 import stat
@@ -8,9 +9,17 @@ from pathlib import Path
 
 import pytest
 
-from gb import config
-from gb.cli import main
-from gb.client import EXIT_NO_SESSION, EXIT_UNREACHABLE, NoSession, Refused, Unreachable
+from gban import config
+from gban.cli import main
+from gban.client import (EXIT_NO_SESSION, EXIT_REFUSED, EXIT_UNREACHABLE, NoSession,
+                       Refused, Unreachable)
+
+
+@pytest.fixture()
+def tty(monkeypatch):
+    """A stdin that claims to be a terminal. `gban login` refuses without one, so a test about
+    anything else has to say which side of that it is on."""
+    monkeypatch.setattr("sys.stdin", _Tty(""))
 
 
 @pytest.fixture()
@@ -23,12 +32,12 @@ def home(tmp_path, monkeypatch):
 
 # ---- 2, 3: the session file ------------------------------------------------------------------
 
-def test_login_stores_only_the_refresh_token_and_stores_it_privately(home, monkeypatch, capsys):
+def test_login_stores_only_the_refresh_token_and_stores_it_privately(home, tty, monkeypatch, capsys):
     """2. Sabotage: store the access token too and this fails — a file that outlives its own
     expiry is a credential nobody remembers leaving there."""
-    monkeypatch.setattr("gb.cli.login", lambda url, email, password: {
+    monkeypatch.setattr("gban.cli.login", lambda url, email, password: {
         "access_token": "ACCESS-DO-NOT-STORE", "refresh_token": "REFRESH-1"})
-    monkeypatch.setattr("gb.cli.getpass.getpass", lambda *_: "hunter2")
+    monkeypatch.setattr("gban.cli.getpass.getpass", lambda *_: "hunter2")
 
     assert main(["--server", "http://gb.invalid", "login", "--email", "a@b.c"]) == 0
 
@@ -41,10 +50,10 @@ def test_login_stores_only_the_refresh_token_and_stores_it_privately(home, monke
     assert "REFRESH-1" not in capsys.readouterr().out
 
 
-def test_the_settings_file_is_written_and_the_second_run_needs_no_flags(home, monkeypatch):
+def test_the_settings_file_is_written_and_the_second_run_needs_no_flags(home, tty, monkeypatch):
     """2. A person types `--server` once."""
-    monkeypatch.setattr("gb.cli.login", lambda url, email, password: {"refresh_token": "R"})
-    monkeypatch.setattr("gb.cli.getpass.getpass", lambda *_: "pw")
+    monkeypatch.setattr("gban.cli.login", lambda url, email, password: {"refresh_token": "R"})
+    monkeypatch.setattr("gban.cli.getpass.getpass", lambda *_: "pw")
     main(["--server", "http://gb.invalid", "--project", "core", "login", "--email", "a@b.c"])
 
     assert json.loads((home / config.SETTINGS_FILE).read_text()) == {
@@ -67,7 +76,7 @@ def test_gb_never_opens_graphbans_config_file(home, monkeypatch):
 
     monkeypatch.setattr(Path, "read_text", watch)
     assert config.resolve(None, config.URL_ENV, "url") == ""
-    assert config.NOT_OURS not in opened, f"gb read {config.NOT_OURS}"
+    assert config.NOT_OURS not in opened, f"gban read {config.NOT_OURS}"
 
 
 def test_logout_tells_the_server_and_removes_the_file(home, monkeypatch, capsys):
@@ -81,7 +90,7 @@ def test_logout_tells_the_server_and_removes_the_file(home, monkeypatch, capsys)
             called.append((method, path))
             return {}
 
-    monkeypatch.setattr("gb.cli.authenticated", lambda url: Fake())
+    monkeypatch.setattr("gban.cli.authenticated", lambda url: Fake())
     assert main(["logout"]) == 0
     assert called == [("POST", "/api/auth/logout")]
     assert not (home / config.SESSION_FILE).exists()
@@ -97,7 +106,7 @@ def test_logout_with_no_network_still_removes_the_file_and_says_what_it_did_not_
     def boom(url):
         raise Unreachable("could not reach http://gb.invalid: no route to host")
 
-    monkeypatch.setattr("gb.cli.authenticated", boom)
+    monkeypatch.setattr("gban.cli.authenticated", boom)
     assert main(["logout"]) == 0
     assert not (home / config.SESSION_FILE).exists(), "a live token was left on disk"
     err = capsys.readouterr().out
@@ -113,7 +122,7 @@ def test_logging_out_of_an_already_dead_session_is_not_an_error(home, monkeypatc
     def dead(url):
         raise NoSession("refresh token revoked")
 
-    monkeypatch.setattr("gb.cli.authenticated", dead)
+    monkeypatch.setattr("gban.cli.authenticated", dead)
     assert main(["logout"]) == 0
     assert not (home / config.SESSION_FILE).exists()
 
@@ -128,9 +137,9 @@ def test_an_expired_session_says_what_to_do_and_exits_three(home, monkeypatch, c
     def dead(url):
         raise NoSession("refresh token revoked")
 
-    monkeypatch.setattr("gb.cli.authenticated", dead)
+    monkeypatch.setattr("gban.cli.authenticated", dead)
     assert main(["whoami"]) == EXIT_NO_SESSION
-    assert "session expired, run `gb login`" in capsys.readouterr().err
+    assert "session expired, run `gban login`" in capsys.readouterr().err
 
 
 def test_an_unreachable_server_is_a_different_exit_code_from_an_expired_session(
@@ -141,7 +150,7 @@ def test_an_unreachable_server_is_a_different_exit_code_from_an_expired_session(
     def gone(url):
         raise Unreachable("could not reach http://gb.invalid: no route to host")
 
-    monkeypatch.setattr("gb.cli.authenticated", gone)
+    monkeypatch.setattr("gban.cli.authenticated", gone)
     assert main(["whoami"]) == EXIT_UNREACHABLE
     assert "could not reach" in capsys.readouterr().err
 
@@ -155,7 +164,7 @@ def test_a_refusal_is_printed_in_the_servers_own_words_with_its_hint(home, monke
         raise Refused(409, "GB-A1's credential permits only 'worker'",
                       "mint a role-narrowed credential in the Fleet view")
 
-    monkeypatch.setattr("gb.cli.authenticated", refused)
+    monkeypatch.setattr("gban.cli.authenticated", refused)
     assert main(["whoami"]) == 1
     err = capsys.readouterr().err
     assert "credential permits only 'worker'" in err
@@ -164,11 +173,11 @@ def test_a_refusal_is_printed_in_the_servers_own_words_with_its_hint(home, monke
 
 # ---- 10: --json is the machine-readable path -------------------------------------------------
 
-def test_json_output_is_parsed_and_carries_no_human_rendering(home, monkeypatch, capsys):
+def test_json_output_is_parsed_and_carries_no_human_rendering(home, tty, monkeypatch, capsys):
     """10. No automated assertion reads the human format anywhere, which is what keeps it free
     to improve."""
-    monkeypatch.setattr("gb.cli.login", lambda url, email, password: {"refresh_token": "R"})
-    monkeypatch.setattr("gb.cli.getpass.getpass", lambda *_: "pw")
+    monkeypatch.setattr("gban.cli.login", lambda url, email, password: {"refresh_token": "R"})
+    monkeypatch.setattr("gban.cli.getpass.getpass", lambda *_: "pw")
     main(["--server", "http://gb.invalid", "--json", "login", "--email", "a@b.c"])
 
     payload = json.loads(capsys.readouterr().out)
@@ -180,9 +189,9 @@ def test_json_output_is_parsed_and_carries_no_human_rendering(home, monkeypatch,
 
 def test_no_command_prints_a_token(home, monkeypatch, capsys):
     """11. Sabotage: echo the session on login and this fails."""
-    monkeypatch.setattr("gb.cli.login", lambda url, email, password: {
+    monkeypatch.setattr("gban.cli.login", lambda url, email, password: {
         "access_token": "AAA-SECRET", "refresh_token": "RRR-SECRET"})
-    monkeypatch.setattr("gb.cli.getpass.getpass", lambda *_: "pw")
+    monkeypatch.setattr("gban.cli.getpass.getpass", lambda *_: "pw")
     main(["--server", "http://gb.invalid", "login", "--email", "a@b.c"])
     main(["--server", "http://gb.invalid", "--json", "login", "--email", "a@b.c"])
     seen = capsys.readouterr()
@@ -210,7 +219,7 @@ def test_authenticating_does_not_rewrite_the_session_file(home, monkeypatch):
 
     Sabotage: save the returned refresh token in `authenticated()` and this fails.
     """
-    from gb import client as client_mod
+    from gban import client as client_mod
 
     config.save_settings(url="http://gb.invalid")
     config.save_session("REFRESH-ORIGINAL")
@@ -230,7 +239,7 @@ def test_authenticating_does_not_rewrite_the_session_file(home, monkeypatch):
 def test_two_invocations_can_authenticate_from_the_same_stored_token(home, monkeypatch):
     """The property that makes the above safe: the presented token stays valid, so a second
     process is not locked out by the first."""
-    from gb import client as client_mod
+    from gban import client as client_mod
 
     config.save_session("REFRESH-ORIGINAL")
     seen: list[dict] = []
@@ -245,3 +254,47 @@ def test_two_invocations_can_authenticate_from_the_same_stored_token(home, monke
 
     assert first.token != second.token
     assert [b.get("refresh_token") for b in seen] == ["REFRESH-ORIGINAL", "REFRESH-ORIGINAL"]
+
+
+class _Tty(io.StringIO):
+    """Stdin that claims to be a terminal, so the refusal above is not what is under test."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+# ---- what the deployed walk found (criterion 13) ----------------------------------------------
+
+def test_login_refuses_outright_when_there_is_no_terminal(home, monkeypatch, capsys):
+    """`getpass` falls back to a plain ECHOING read when it cannot turn echo off, and warns
+    about it — a warning that arrives after the person has decided to type. The walk hit this
+    through a command runner with no tty and got `Warning: Password input may be echoed`
+    followed by a traceback. Refusing is the only safe branch.
+
+    Sabotage: let it prompt anyway and this fails."""
+    monkeypatch.setattr("sys.stdin", io.StringIO("secret\n"))
+    asked = []
+    monkeypatch.setattr("gban.cli.getpass.getpass", lambda *a: asked.append(a) or "secret")
+    monkeypatch.setattr("gban.cli.login", lambda *a: asked.append("posted") or {})
+
+    assert main(["--server", "http://gb.invalid", "login",
+                 "--email", "alex@example.com"]) == EXIT_REFUSED
+    assert asked == [], "it must not reach the prompt, let alone the server"
+    err = capsys.readouterr().err
+    assert "needs a terminal" in err and "echo" in err
+
+
+@pytest.mark.parametrize("ending", [EOFError, KeyboardInterrupt])
+def test_a_cancelled_login_is_one_line_and_not_a_traceback(home, monkeypatch, capsys, ending):
+    """Criterion 4's rule, applied to the other end of the session. Input running out is what
+    the walk actually hit — under a tty that lies, or a terminal closing mid-prompt — and
+    ctrl-C is what people do on purpose. A stack trace answers neither."""
+    monkeypatch.setattr("sys.stdin", _Tty("secret\n"))
+
+    def interrupted(*_args):
+        raise ending
+
+    monkeypatch.setattr("gban.cli.getpass.getpass", interrupted)
+    assert main(["--server", "http://gb.invalid", "login",
+                 "--email", "alex@example.com"]) == EXIT_REFUSED
+    assert "cancelled" in capsys.readouterr().err

@@ -1,4 +1,4 @@
-"""PRD-40 D1/D2 criterion 1 — `gb` installs on a laptop, so it may not pull a database.
+"""PRD-40 D1/D2 criterion 1 — `gban` installs on a laptop, so it may not pull a database.
 
 Modelled on `fleet/tests/test_packaging.py`, and derived from the BACKEND's own dependency
 list for the same reason: a hand-written forbidden set is a list somebody has to remember to
@@ -54,14 +54,44 @@ def test_no_module_imports_a_database_driver_or_a_web_framework():
             for name in forbidden:
                 if re.search(rf"\b{name}\b", line):
                     offenders.append(f"{path.relative_to(CLI)}:{lineno}: {line.strip()}")
-    assert not offenders, "gb must not be able to reach a database:\n" + "\n".join(offenders)
+    assert not offenders, "gban must not be able to reach a database:\n" + "\n".join(offenders)
 
 
-def test_the_entry_point_is_gb_and_does_not_collide():
-    """`graphban`/`agentledger` belong to backend, `gbfleet`/`gbagent` to fleet."""
+#: What oh-my-zsh's git plugin claims in this shape — the reason `gb` had to be given up.
+#: An ALIAS BEATS A BINARY on PATH, and nothing inside the process can detect that: by the
+#: time the command would have run, the alias did. The deployed walk hit it on the very
+#: first command and got `git branch`'s usage text.
+GIT_ALIASES = {
+    "gb", "gba", "gbd", "gbg", "gbgd", "gbl", "gbm", "gbnm", "gbr", "gbs", "gbsb", "gbsg",
+    "gbsn", "gbso", "gbsr", "gbss",
+    "grb", "grba", "grbc", "grbd", "grbi", "grbm", "grbo", "grbom", "grbs", "grbum",
+    "g", "ga", "gc", "gd", "gf", "gl", "gm", "gp", "gr", "gst", "gco", "gcm", "gpl", "gps",
+}
+
+
+def test_the_entry_point_is_gban_and_does_not_collide():
+    """`graphban`/`agentledger` belong to backend, `gbfleet`/`gbagent` to fleet — and the
+    whole `gb*` namespace belongs to git.
+
+    Sabotage: name the script `gb` again and this fails. That is the point: the collision is
+    invisible from inside the program, so the only place it can be caught is here."""
     scripts = tomllib.loads((CLI / "pyproject.toml").read_text())["project"]["scripts"]
-    assert set(scripts) == {"gb"}
+    assert set(scripts) == {"gban"}
+    assert not (set(scripts) & GIT_ALIASES), (
+        "the entry point is a common git alias; an alias beats a binary on PATH")
     taken = set(tomllib.loads(BACKEND.read_text())["project"]["scripts"])
     taken |= set(tomllib.loads((REPO / "fleet" / "pyproject.toml").read_text()
                                )["project"]["scripts"])
     assert not (set(scripts) & taken), "entry point collides with another package's"
+
+
+def test_every_instruction_the_tool_prints_names_the_command_that_exists():
+    """A rename that leaves "run gb login" in a message tells a person to run something that
+    is not installed. Sabotage: put one back and this fails."""
+    offenders = []
+    for path in sorted((CLI / "src").rglob("*.py")):
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            for stale in ("`gb ", "`gb`", '"gb"', "gb login", "gb doctor", "gb agents"):
+                if stale in line:
+                    offenders.append(f"{path.relative_to(CLI)}:{lineno}: {line.strip()}")
+    assert not offenders, "these name a command that is not installed:\n" + "\n".join(offenders)
