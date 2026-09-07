@@ -1412,7 +1412,13 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         "type": "object",
         "properties": {
             "delegation_id": {"type": "string"}, "state": {"type": "string"},
-            "withdrew": {"type": "string"}, "enrolment_code": {"type": "string"},
+            # Both are legitimately null: `withdrew` on any FIRST delegation of an item
+            # (there is nothing of yours to withdraw) and `enrolment_code` whenever the
+            # caller did not ask for a seat. Declared as plain strings, a conforming
+            # client refuses the reply the server is tested to send — and, because the
+            # server has already committed by then, the delegation lands while its
+            # response is discarded, orphaning any seat it minted.
+            "withdrew": _NULLABLE_STR, "enrolment_code": _NULLABLE_STR,
             "brief": {"type": "object"},
         },
     },

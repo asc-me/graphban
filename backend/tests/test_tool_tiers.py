@@ -369,7 +369,7 @@ CORE_TOKENS = 8887
 #: Per tier, so a tier cannot quietly grow back to the untiered weight — the item's
 #: acceptance, in a form that fails when it stops being true.
 # fleet 1055 → 1046: `reviewer` left the role enums (PRD-39 S3).
-TIER_TOKENS = {"prd": 1998, "codegraph": 1009, "fleet": 1046, "misc": 1238}
+TIER_TOKENS = {"prd": 1998, "codegraph": 1009, "fleet": 1051, "misc": 1238}
 # PRD-36: fleet +`seat`/`wave` on delegate and its `enrolment_code`; misc trims (learning_loop,
 # publish_memory, reject_memory); codegraph and prd moved by the shared-description trims.
 # PRD-35: fleet 799 -> 1008 (`delegate`, ~209 after its own trim). prd 2002 -> 1998,
@@ -377,6 +377,8 @@ TIER_TOKENS = {"prd": 1998, "codegraph": 1009, "fleet": 1046, "misc": 1238}
 # (update_prd, describe_code/link_code, report_graphban_issue, and the shared
 # `project_id` property description every tiered tool carries).
 # prd 2001 -> 2002 (GRPH-654). `decompose_prd` names the approved gate.
+# fleet 1046 -> 1051. `delegate` declares `withdrew` and `enrolment_code` nullable, which
+# is what they have always returned; the old declaration broke every first delegation.
 
 
 def test_the_core_manifest_is_the_size_recorded():

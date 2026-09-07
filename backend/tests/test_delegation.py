@@ -227,6 +227,77 @@ def test_the_owner_withdraws_by_redelegating(client, key, db):
     assert dsvc.state(rows[second["delegation_id"]]) == "open"
 
 
+def _violates(payload: dict, schema: dict) -> list[str]:
+    """Declared-vs-actual JSON types for the keys a schema names. Hand-rolled rather than
+    pulling in `jsonschema`: this asks one narrow question, and the first version of this
+    test used `importorskip` and silently skipped on every machine without that package —
+    a regression test that does not run is worse than none.
+    """
+    kinds = {"string": str, "boolean": bool, "integer": int, "number": (int, float),
+             "object": dict, "array": list, "null": type(None)}
+    bad = []
+    for key, spec in (schema.get("properties") or {}).items():
+        if key not in payload:
+            continue
+        declared = spec.get("type")
+        allowed = [declared] if isinstance(declared, str) else list(declared or [])
+        if not allowed:
+            continue
+        types = tuple(t for name in allowed for t in
+                      (kinds[name] if isinstance(kinds[name], tuple) else (kinds[name],)))
+        value = payload[key]
+        # bool is an int subclass; keep "boolean" and "integer" from covering for each other
+        ok = isinstance(value, types) and not (
+            isinstance(value, bool) and "boolean" not in allowed)
+        if not ok:
+            bad.append(f"{key}: declared {allowed}, got {type(value).__name__} ({value!r})")
+    return bad
+
+
+def test_the_declared_output_schema_accepts_the_reply_the_server_actually_sends(client, key):
+    """A first delegation returns `withdrew: null`, and one without a seat returns
+    `enrolment_code: null`. Both were declared `{"type": "string"}`, so a client that
+    validates structuredContent — the MCP SDKs do — refused every first delegation with
+    "data/withdrew must be string" while the delegation itself had already committed.
+    Seats minted that way are unreachable: the code is returned once, in the reply the
+    client threw away.
+
+    The schema ratchet could not catch this: `schema_probe` asks whether a declared key was
+    ever emitted, and `withdrew` IS emitted — as null. Nothing compared the value to the
+    declared type, which is what this does.
+    """
+    from app import mcp_server
+
+    schema = mcp_server._OUTPUT_SCHEMAS["delegate"]
+    item = _item(client, key)
+    me = _agent(client, key, "planner")
+
+    first = _ok(_delegate(client, key, item, me))
+
+    assert first["withdrew"] is None, "a first delegation withdraws nothing"
+    assert first["enrolment_code"] is None, "no seat was requested"
+    assert _violates(first, schema) == []
+
+    # The second fills both slots with strings, so the fix must be a widening, not a swap.
+    second = _ok(_delegate(client, key, item, me, seat=True))
+    assert isinstance(second["withdrew"], str) and isinstance(second["enrolment_code"], str)
+    assert _violates(second, schema) == []
+
+
+def test_the_type_check_itself_fails_on_a_null_in_a_string_slot():
+    """The control. Without it the assertions above are satisfied by a `_violates` that
+    always returns [] — which is precisely the shape of the bug being fixed."""
+    schema = {"properties": {"withdrew": {"type": "string"}}}
+
+    assert _violates({"withdrew": None}, schema), "a null in a string slot must be caught"
+    assert _violates({"withdrew": "dlg_1"}, schema) == []
+    assert _violates({}, schema) == [], "an absent key is the ratchet's business, not this"
+    assert _violates({"withdrew": None}, {"properties": {"withdrew": _NULLABLE_OUT}}) == []
+
+
+_NULLABLE_OUT = {"type": ["string", "null"]}
+
+
 # ---- 7–10: the link ------------------------------------------------------------------------
 
 def _child(client, key, parent, label="child", **caps) -> str:
