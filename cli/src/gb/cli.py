@@ -116,10 +116,28 @@ def _server(args) -> str:
 
 def cmd_login(args) -> int:
     url = _server(args)
-    email = args.email or input("email: ").strip()
-    # Prompted, never an argument: argv is world-readable in `ps`, and a password in shell
-    # history is a credential nobody remembers leaving there.
-    password = getpass.getpass("password: ")
+    # A TERMINAL, OR NOTHING. `getpass` falls back to a plain echoing read when it cannot
+    # turn echo off, and warns about it — which is the wrong trade for a password: the
+    # warning arrives after the person has already decided to type. Without a tty the
+    # password would land in the scrollback, in a transcript, or in whatever captured the
+    # session. Refusing is the only safe branch, and it is not a limitation somebody can
+    # work around by trying harder.
+    if not sys.stdin.isatty():
+        print(f"{PROG}: `{PROG} login` needs a terminal. Without one, the prompt cannot turn "
+              f"off echo and your password would be written to the scrollback.\n"
+              f"     Run it in a shell, not through a pipe, a heredoc or an editor's "
+              f"command runner.", file=sys.stderr)
+        return EXIT_REFUSED
+    try:
+        email = args.email or input("email: ").strip()
+        # Prompted, never an argument: argv is world-readable in `ps`, and a password in
+        # shell history is a credential nobody remembers leaving there.
+        password = getpass.getpass("password: ")
+    except (EOFError, KeyboardInterrupt):
+        # Somebody pressed ctrl-C or the input ended. One line, not a traceback — the
+        # same rule criterion 4 applies to an expired session applies to a cancelled login.
+        print(f"\n{PROG}: cancelled", file=sys.stderr)
+        return EXIT_REFUSED
     pair = login(url, email, password)
     refresh = pair.get("refresh_token") or ""
     if not refresh:

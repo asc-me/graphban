@@ -1,6 +1,7 @@
 """PRD-40 PR 1 — the package, the session, and the config precedence (criteria 1-5, 10, 11)."""
 from __future__ import annotations
 
+import io
 import json
 import os
 import stat
@@ -10,7 +11,15 @@ import pytest
 
 from gb import config
 from gb.cli import main
-from gb.client import EXIT_NO_SESSION, EXIT_UNREACHABLE, NoSession, Refused, Unreachable
+from gb.client import (EXIT_NO_SESSION, EXIT_REFUSED, EXIT_UNREACHABLE, NoSession,
+                       Refused, Unreachable)
+
+
+@pytest.fixture()
+def tty(monkeypatch):
+    """A stdin that claims to be a terminal. `gb login` refuses without one, so a test about
+    anything else has to say which side of that it is on."""
+    monkeypatch.setattr("sys.stdin", _Tty(""))
 
 
 @pytest.fixture()
@@ -23,7 +32,7 @@ def home(tmp_path, monkeypatch):
 
 # ---- 2, 3: the session file ------------------------------------------------------------------
 
-def test_login_stores_only_the_refresh_token_and_stores_it_privately(home, monkeypatch, capsys):
+def test_login_stores_only_the_refresh_token_and_stores_it_privately(home, tty, monkeypatch, capsys):
     """2. Sabotage: store the access token too and this fails — a file that outlives its own
     expiry is a credential nobody remembers leaving there."""
     monkeypatch.setattr("gb.cli.login", lambda url, email, password: {
@@ -41,7 +50,7 @@ def test_login_stores_only_the_refresh_token_and_stores_it_privately(home, monke
     assert "REFRESH-1" not in capsys.readouterr().out
 
 
-def test_the_settings_file_is_written_and_the_second_run_needs_no_flags(home, monkeypatch):
+def test_the_settings_file_is_written_and_the_second_run_needs_no_flags(home, tty, monkeypatch):
     """2. A person types `--server` once."""
     monkeypatch.setattr("gb.cli.login", lambda url, email, password: {"refresh_token": "R"})
     monkeypatch.setattr("gb.cli.getpass.getpass", lambda *_: "pw")
@@ -164,7 +173,7 @@ def test_a_refusal_is_printed_in_the_servers_own_words_with_its_hint(home, monke
 
 # ---- 10: --json is the machine-readable path -------------------------------------------------
 
-def test_json_output_is_parsed_and_carries_no_human_rendering(home, monkeypatch, capsys):
+def test_json_output_is_parsed_and_carries_no_human_rendering(home, tty, monkeypatch, capsys):
     """10. No automated assertion reads the human format anywhere, which is what keeps it free
     to improve."""
     monkeypatch.setattr("gb.cli.login", lambda url, email, password: {"refresh_token": "R"})
@@ -245,3 +254,47 @@ def test_two_invocations_can_authenticate_from_the_same_stored_token(home, monke
 
     assert first.token != second.token
     assert [b.get("refresh_token") for b in seen] == ["REFRESH-ORIGINAL", "REFRESH-ORIGINAL"]
+
+
+class _Tty(io.StringIO):
+    """Stdin that claims to be a terminal, so the refusal above is not what is under test."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+# ---- what the deployed walk found (criterion 13) ----------------------------------------------
+
+def test_login_refuses_outright_when_there_is_no_terminal(home, monkeypatch, capsys):
+    """`getpass` falls back to a plain ECHOING read when it cannot turn echo off, and warns
+    about it — a warning that arrives after the person has decided to type. The walk hit this
+    through a command runner with no tty and got `Warning: Password input may be echoed`
+    followed by a traceback. Refusing is the only safe branch.
+
+    Sabotage: let it prompt anyway and this fails."""
+    monkeypatch.setattr("sys.stdin", io.StringIO("secret\n"))
+    asked = []
+    monkeypatch.setattr("gb.cli.getpass.getpass", lambda *a: asked.append(a) or "secret")
+    monkeypatch.setattr("gb.cli.login", lambda *a: asked.append("posted") or {})
+
+    assert main(["--server", "http://gb.invalid", "login",
+                 "--email", "alex@example.com"]) == EXIT_REFUSED
+    assert asked == [], "it must not reach the prompt, let alone the server"
+    err = capsys.readouterr().err
+    assert "needs a terminal" in err and "echo" in err
+
+
+@pytest.mark.parametrize("ending", [EOFError, KeyboardInterrupt])
+def test_a_cancelled_login_is_one_line_and_not_a_traceback(home, monkeypatch, capsys, ending):
+    """Criterion 4's rule, applied to the other end of the session. Input running out is what
+    the walk actually hit — under a tty that lies, or a terminal closing mid-prompt — and
+    ctrl-C is what people do on purpose. A stack trace answers neither."""
+    monkeypatch.setattr("sys.stdin", _Tty("secret\n"))
+
+    def interrupted(*_args):
+        raise ending
+
+    monkeypatch.setattr("gb.cli.getpass.getpass", interrupted)
+    assert main(["--server", "http://gb.invalid", "login",
+                 "--email", "alex@example.com"]) == EXIT_REFUSED
+    assert "cancelled" in capsys.readouterr().err

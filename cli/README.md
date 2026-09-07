@@ -33,6 +33,14 @@ role the key does not permit is the server's refusal, printed in the server's ow
 widening a ceiling means minting a different credential, and keeping those two acts apart is
 the point of having a ceiling. It lands on the agent's next poll.
 
+## `gb login` wants a real terminal
+
+It refuses without one, rather than prompting. `getpass` falls back to a plain **echoing**
+read when it cannot turn echo off — it warns, but the warning arrives after the person has
+decided to type — so a login through a pipe, a heredoc or an editor's command runner would
+put the password in the scrollback. There is no non-interactive login yet (PRD-40 open
+question 2: an API key cannot reach the JWT routes, so CI would need a service session).
+
 ## `gb` may already be taken on your machine
 
 `gb` is a common shell alias for `git branch`, and an alias WINS over a binary on `PATH` —
