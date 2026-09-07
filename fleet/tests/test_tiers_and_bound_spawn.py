@@ -110,6 +110,10 @@ def test_a_bound_seat_instruction_names_the_item_and_forbids_claiming():
     text = instruction_for(seat, Path("/wt"), "gb/wave-1")
     assert "BOUND to GRPH-7" in text and "you HOLD GRPH-7" in text
     assert "Do NOT call claim_cluster or claim_next" in text
+    # PRD-39 D-h / §7.5: the bound child reviews in the SAME process after its build. Without
+    # this tail every review under `until` is a respawn (found on the acceptance walk).
+    assert "claim_review" in text and "sign_off, or bounce" in text
+    assert text.index("move it to review") < text.index("claim_review") < text.index("EXIT")
     assert "If `assigned.state` is `taken`" in text and "EXIT" in text
     assert "Do NOT set parent_agent_id" in text, "PRD-22 D-b survives the binding"
     unbound = instruction_for(Seat(code="WORKER-2", server_url="http://gb.invalid", api_key="k"), Path("/wt"), "b")

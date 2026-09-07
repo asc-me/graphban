@@ -157,6 +157,9 @@ INSTRUCTION = (
 )
 
 
+#: The tail matters: `until` mints a BOUND seat for every build, so a bound instruction that
+#: stops at "move it to review" makes every review a respawn — the cold start D-i accepted for
+#: the STRANDED case, paid on every item. Found on the PRD-39 acceptance walk (§7.5).
 BOUND_INSTRUCTION = (
     "Register with `register_agent` using enrolment_code={code!r}, worktree={worktree!r} "
     "and branch={branch!r}.\n"
@@ -165,8 +168,11 @@ BOUND_INSTRUCTION = (
     "and review across this fleet would stop meaning anything.\n"
     "This seat is BOUND to {item}: registering on it claims that item for you. Read the "
     "reply's `assigned`. If `assigned.state` is `claimed`, you HOLD {item} — read it with "
-    "get_item_details, build it, move it to review with evidence. Do NOT call "
-    "claim_cluster or claim_next; you have your work. If `assigned.state` is `taken`, "
+    "get_item_details, build it, move it to review with evidence. Then, still in this "
+    "process, call claim_review with wait_seconds=0 and review what you did NOT build — "
+    "sign_off, or bounce with a reason — and call it again until it answers claimed=false; "
+    "then EXIT. Do NOT call claim_cluster or claim_next; you have your build work, and "
+    "reviewing is the other half of it (PRD-39 D-h). If `assigned.state` is `taken`, "
     "somebody else holds it (the reply says who): EXIT — that is the normal end of your "
     "run, not a failure."
 )
