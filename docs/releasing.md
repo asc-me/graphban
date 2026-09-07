@@ -23,12 +23,21 @@ workflow does before uploading exists to make that impossible.
 Trusted publishing is an act on a PyPI account, so a workflow cannot arrange it. For **each**
 project — `graphban-cli` and `graphban-fleet`:
 
-1. On PyPI → *Your projects* → *Publishing*, add a **pending publisher** (the project does
-   not exist yet; that is what "pending" means).
-2. Owner `asc-me`, repository `graphban`, workflow `release.yml`, environment `pypi`.
-3. In this repository, create the `pypi` GitHub environment. Adding yourself as a required
-   reviewer makes every publish a deliberate click; PyPI matches the environment name too, so
-   a workflow that skipped it could not publish even with a publisher configured.
+1. **<https://pypi.org/manage/account/publishing/>** — the ACCOUNT-level form, not the
+   project one. A project's *Publishing* tab only exists once the project does, and neither
+   of these has been uploaded yet; the account form is where a publisher for a project that
+   does not exist is called *pending*.
+2. Fill in: PyPI project name `graphban-cli`, owner `asc-me`, repository `graphban`, workflow
+   **`release.yml`** — the FILENAME, not the workflow's `name:` (which is `Release`) — and
+   environment `pypi`.
+3. Repeat all of it for `graphban-fleet`. One publisher per project; there is no wildcard.
+4. In this repository, Settings → Environments → New environment → `pypi`. Add yourself as a
+   required reviewer if you want every publish to be a deliberate click. PyPI matches this
+   name too, so a workflow that skipped the environment could not publish even with a
+   publisher configured.
+
+PyPI requires two-factor authentication on any account that uploads. If yours does not have
+it, that is the first blocker rather than anything here.
 
 Until step 1 exists for a project, its first tag fails at the upload with an authentication
 error — and nothing has been published, which is the safe direction to fail in.
