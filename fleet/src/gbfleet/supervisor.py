@@ -212,6 +212,29 @@ class Wave:
     #: holder with standing (`gbfleet.record.measured`) — the supervisor still cannot
     #: call `update_item`. Empty is reported and is not a write. See `touchpoints.py`.
     touched: dict[str, list[str]] = field(default_factory=dict)
+    #: Measured paths that no DECLARED touchpoint covers, by branch (GRPH-785). The
+    #: partition that keeps two workers off the same file is computed from `touchpoints`;
+    #: a worker changing a file nobody declared means the partition's input was wrong, and
+    #: nothing noticed before, because the server unions measured paths into the
+    #: declaration and the two stop being distinguishable the moment they are stored.
+    #: REPORTED, never acted on: the supervisor holds two read tools and no authority to
+    #: decide what collides.
+    undeclared: dict[str, list[str]] = field(default_factory=dict)
+    #: id -> declared touchpoints, as they stood when work was handed out.
+    declared: dict[str, list[str]] = field(default_factory=dict)
+    #: branch -> (commits behind, the ref it was measured against). How much had landed on
+    #: the trunk that this worker never had in front of it (GRPH-786). A reviewer reading a
+    #: branch cut from a base the trunk has moved past is reading a diff against a world
+    #: that no longer exists, and nothing said so.
+    stale: dict[str, tuple] = field(default_factory=dict)
+    #: Set when the trunk could not be fetched. "We could not ask" is not "nothing moved",
+    #: and reporting the second for the first is the failure this whole check is about.
+    stale_unmeasured: str = ""
+    #: Files changed on more than one branch in this wave — path -> branches. The check
+    #: that needs no declaration to be right: two workers changed the same file, observed
+    #: rather than predicted. If touchpoints were wrong this still fires; if they were
+    #: right and the divvy was wrong this still fires.
+    collided: dict[str, list[str]] = field(default_factory=dict)
     #: Children the roster currently reads `offline` that have NOT been stopped, by agent
     #: id, with how long they have been quiet. Reported rather than acted on: a quiet
     #: child is usually one in a long tool call, and the previous version's mistake was
@@ -333,6 +356,11 @@ def item_status(client: Graphban) -> dict[str, dict]:
         out[str(row["id"])] = {
             "status": row.get("status") or "",
             "claimed_by": row.get("claimed_by") or "",
+            # The DECLARATION the partition was computed from (GRPH-785). Kept here rather
+            # than re-read at reap on purpose: the question is whether the input to the
+            # divvy was right, and that input is this snapshot, not whatever the item says
+            # after the worker has been editing it.
+            "touchpoints": list(row.get("touchpoints") or []),
         }
     return out
 
@@ -448,6 +476,8 @@ def up(
         persist()
         if items is None:
             items = item_status(client)
+        # The declaration snapshot the divvy used, kept for the reap-time comparison.
+        _declared_into(wave, items)
         _start(
             wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
             limits, debug=debug, occupied=occupied, items=items,
@@ -748,7 +778,77 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
         if git_paths is not None:
             wave.touched[child.branch] = tp_mod.including_stream(
                 child.adapter, git_paths, child.stdout_text())
+        _note_touchpoints(wave, child)
+        _note_staleness(wave, tree)
         _publish(wave, tree, client=client, child=child)
+
+
+def _declared_into(wave: Wave, items: dict) -> dict:
+    """Stash the declaration snapshot on the wave and hand the map straight back.
+
+    A pass-through so `until` records the same operand `up` does at the same moment —
+    two call sites reading items and only one remembering what they said is how the
+    check would quietly cover half the fleet.
+    """
+    wave.declared.update({k: list((v or {}).get("touchpoints") or [])
+                          for k, v in (items or {}).items()})
+    return items
+
+
+def _note_staleness(wave: Wave, tree: Worktree) -> None:
+    """How far the trunk moved while this child worked (GRPH-786).
+
+    The supervisor is the only party that can answer this. The server has no git; the
+    reviewer sees a branch and a diff and no indication of what the diff is against; and the
+    child was cut from HEAD at spawn and never looked again. Two agents can each be green on
+    their own base and conflict on merge — measured here three times in one afternoon, twice
+    as a red trunk and once as a branch testing a role that no longer existed.
+
+    Fetches the trunk once per wave before measuring, because a remote-tracking ref is only
+    as fresh as the last fetch and a check that never fetched would report every branch as
+    current. REPORTED, never acted on: rebasing somebody's work is not the supervisor's call.
+    """
+    if wave.stale_unmeasured or not tree.base:
+        return
+    remote = wt_mod.remote_for(tree.repo)
+    ref = wt_mod.default_ref(tree.repo, remote)
+    if not ref:
+        wave.stale_unmeasured = "no remote default branch to compare against"
+        return
+    if not wave.stale and not wt_mod.refresh_ref(tree.repo, remote, ref):
+        wave.stale_unmeasured = f"could not fetch {ref}"
+        return
+    behind = wt_mod.behind_ref(tree.repo, tree.base, ref)
+    if behind:
+        wave.stale[tree.branch] = (behind, ref)
+
+
+def _note_touchpoints(wave: Wave, child: Child) -> None:
+    """Compare what this child CHANGED against what its items DECLARED (GRPH-785).
+
+    Runs at reap, where the measurement is taken and both operands are already in hand:
+    `search_items(fields="full")` returns `touchpoints`, and it is a read the supervisor
+    already makes. No new permission, no write, and no new call.
+
+    Both findings are recorded on the wave and printed by `report`. The supervisor decides
+    nothing with them: it holds `fleet_status` and `propose_allocation` and cannot call
+    `update_item`, and what "collides" means belongs to the server.
+    """
+    measured = wave.touched.get(child.branch) or []
+    if not measured:
+        return
+    declared: list[str] = []
+    # `held_items`, not live roster holdings: `_roster` is overwritten after `release_item`,
+    # so at reap the live view is empty and the comparison would have no items to look up.
+    for item_id in (child.held_items or []):
+        declared += list(wave.declared.get(item_id) or [])
+    if declared:
+        missing = tp_mod.undeclared(measured, declared)
+        if missing:
+            wave.undeclared[child.branch] = missing
+    # Recomputed over every branch measured so far, so the last reap holds the whole wave's
+    # answer — a pairwise check at each reap would miss the pair reaped either side of it.
+    wave.collided = tp_mod.overlaps(wave.touched)
 
 
 def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
@@ -1091,6 +1191,8 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
             wave.touched[child.branch] = tp_mod.including_stream(
                 child.adapter, git_paths, child.stdout_text(),
             )
+        _note_touchpoints(wave, child)
+        _note_staleness(wave, tree)
         _publish(wave, tree)
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)

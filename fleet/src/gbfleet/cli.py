@@ -345,6 +345,23 @@ def report(wave: Wave, out=None) -> None:
     # `quiet` was populated by the supervisor and printed by nothing at all until
     # GRPH-579 — the field existed, its docstring said it was there so an operator would
     # not have to work it out afterwards, and no output surface ever mentioned it.
+    # THE PARTITION, CHECKED AGAINST WHAT HAPPENED (GRPH-785). `collided` first: it is the
+    # failure itself, observed, and needs no declaration to be right. `undeclared` is the
+    # cause the failure usually has. Both were computed at reap and printed by nothing,
+    # which is the shape GRPH-579 already caught once on `quiet`.
+    for path, branches in sorted(wave.collided.items()):
+        print(f"COLLIDED {path}: changed on {', '.join(branches)}", file=out)
+    for branch, paths in sorted(wave.undeclared.items()):
+        shown = ", ".join(paths[:5]) + (f" (+{len(paths) - 5} more)" if len(paths) > 5 else "")
+        print(f"UNDECLARED {branch}: changed {len(paths)} file(s) no touchpoint covers — "
+              f"{shown}", file=out)
+    # HOW STALE the reviewer's diff is (GRPH-786). The supervisor is the only party that
+    # can answer it: the server has no git, and the reviewer sees a branch with no
+    # indication of what it is a diff against.
+    for branch, (behind, ref) in sorted(wave.stale.items()):
+        print(f"BEHIND {branch}: cut from a base {behind} commit(s) behind {ref}", file=out)
+    if wave.stale_unmeasured:
+        print(f"BEHIND unmeasured: {wave.stale_unmeasured}", file=out)
     for key, seconds in sorted(wave.silent.items()):
         print(f"QUIET {key}: wrote nothing for {seconds:.0f}s (local)", file=out)
     for key, seconds in sorted(wave.quiet.items()):

@@ -138,6 +138,26 @@ roster the supervisor polls and reads a backlog that is not its own. `gbfleet mc
 fails a multi-project key that gives none. The child learns its project from the
 registration reply and names it afterwards (GRPH-718, GRPH-719).
 
+**What a wave reports about itself.** Beyond spawn and reap, `up` and `until` print three
+findings a reviewer otherwise has no way to see, all measured from the worktrees the
+supervisor already owns and none of them acted on:
+
+- `COLLIDED <path>: changed on <branch>, <branch>` — two workers changed the same file. The
+  failure the partition exists to prevent, observed rather than predicted: exact paths, no
+  coverage rule, and true whether the touchpoints were wrong or the divvy was.
+- `UNDECLARED <branch>: changed N file(s) no touchpoint covers` — the partition's INPUT was
+  wrong. Compared against the declaration as it stood when work was handed out, which is the
+  snapshot the divvy used. An item that declared nothing is not drift; its areas were
+  predicted, which the board already marks.
+- `BEHIND <branch>: cut from a base N commit(s) behind origin/main` — how much landed on the
+  trunk while the child worked. Two agents can each be green on their own base and conflict
+  on merge, and nothing else in the system can see it: the server has no git, the reviewer
+  gets a branch with no indication of what its diff is against, and the child was cut from
+  HEAD at spawn and never looked again. The trunk is fetched once per wave before measuring —
+  a remote-tracking ref is only as fresh as its last fetch, and a check that skipped it would
+  report every branch as current. `BEHIND unmeasured: <reason>` when it could not be asked,
+  because that is not the same as nothing having moved.
+
 Vendors and what each of them needs: [`docs/fleet-adapters.md`](https://github.com/asc-me/graphban/blob/main/docs/fleet-adapters.md).
 
 ## Development

@@ -639,3 +639,56 @@ def choose_resume(
         seen.add(newest.branch)
         picked.append(newest)
     return picked
+
+
+def default_ref(repo: Path | str, remote: str) -> str:
+    """The remote's default branch as a ref (`origin/main`), or "" when it cannot be told.
+
+    Read from the remote HEAD symref the clone already recorded, never guessed from a list
+    of likely names: a repository whose trunk is `develop` or `master` is not unusual, and a
+    guess that happened to match would make the check silently measure nothing everywhere it
+    did not.
+    """
+    if not remote:
+        return ""
+    out = _git(repo, "symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD",
+               check=False).strip()
+    return out if out.startswith(f"{remote}/") else ""
+
+
+def refresh_ref(repo: Path | str, remote: str, ref: str) -> bool:
+    """Fetch just the default branch, so "behind" is measured against something current.
+
+    **Without this the check is the defect it exists to catch.** A remote-tracking ref is
+    only as fresh as the last fetch, and a supervisor that never fetches would measure every
+    branch as zero commits behind — absence reading as clean, on a check built to stop
+    exactly that.
+
+    One ref, once per wave, best effort. Returns whether it succeeded, because "we could not
+    ask" and "nothing has moved" are different facts and the caller reports them differently.
+    """
+    if not remote or not ref.startswith(f"{remote}/"):
+        return False
+    branch = ref.split("/", 1)[1]
+    proc = subprocess.run(["git", "fetch", "--quiet", remote, branch],
+                          cwd=str(repo), capture_output=True, text=True)
+    return proc.returncode == 0
+
+
+def behind_ref(repo: Path | str, base: str, ref: str) -> int:
+    """How many commits `ref` has that `base` does not — how STALE this work is.
+
+    Counted from the base the worktree was cut from, not from the branch tip: the question
+    is what the worker did not have in front of it, and its own commits are not that.
+
+    Zero when the ref cannot be resolved, which is the honest answer for a repository with
+    no remote or an unfetched one — and the caller reports "not measured" rather than "not
+    behind", because those are different facts (GRPH-786).
+    """
+    if not base or not ref:
+        return 0
+    out = _git(repo, "rev-list", "--count", f"{base}..{ref}", check=False).strip()
+    try:
+        return int(out)
+    except ValueError:
+        return 0
