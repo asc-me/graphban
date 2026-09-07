@@ -66,6 +66,7 @@ def _clients(
     calls: list | None = None,
     bound_seats: bool = False,
     bound_refused: bool = False,
+    sticky_clusters: bool = False,
 ):
     """Planner + supervisor clients sharing one mock Graphban."""
     seen_agents = {"yes": False}
@@ -105,7 +106,7 @@ def _clients(
                 "tools_off_limits": list(off_limits or []),
             }, rid)
         if tool == "collision_clusters":
-            total = 0 if seen_agents["yes"] else clusters
+            total = clusters if sticky_clusters else (0 if seen_agents["yes"] else clusters)
             rows = [{"items": list(cluster_items[i]) if cluster_items and i < len(cluster_items) else []}
                     for i in range(total)]
             return _mcp({
@@ -281,6 +282,45 @@ def test_pre_minted_seats_are_consumed_before_minting(
     assert result.spawned == 1
     assert result.minted == 0
     assert result.reason == "idle"
+
+
+def test_a_roster_of_idle_agents_and_no_ready_work_spawns_nothing(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """THE RUNAWAY (PRD-39 acceptance walk, 2026-09-07). After the first child exited the
+    roster held one idle agent, `collision_clusters` said zero, and `propose_allocation`
+    still said "1 worker" — it describes the roster, not the backlog. Trusting it spawned
+    a child every ~14 s for 18 minutes: 63 registrations against a finished project.
+    Ready work bounds the count; with none, the loop goes idle."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, workers=1)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=2, max_children=8),
+    )
+    assert result.spawned == 1, "the proposal's phantom worker was spawned again"
+    assert result.reason == "idle"
+
+
+def test_max_children_is_the_total_for_the_wave(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """`up` applied --max-children once at its single spawn; `until` applied it nowhere, so
+    the runaway above had no ceiling. It is the wave's total now, and reaching it with work
+    still open ends the wave `cap` rather than spawning into it."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=5, workers=5, sticky_clusters=True)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1, max_children=2),
+    )
+    assert result.spawned == 2
+    assert result.reason == "cap" and result.exit == 1
+    assert "max_children 2" in result.detail
 
 
 def test_a_quota_mint_is_config_not_idle(
