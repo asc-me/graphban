@@ -29,8 +29,8 @@ from .tiers import TierTable
 from . import matrix as matrix_mod
 from .spawn import Child
 from .supervisor import (
-    DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Wave, _reap_all, _start,
-    item_status, watch_tick,
+    DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Wave, _reap_all, _rooted,
+    _start, item_status, watch_tick,
 )
 
 #: Planner-held tools. `register_agent` is how this process gets an `agent_id` to mint
@@ -144,8 +144,7 @@ def run(
     if planner.allowed == ALLOWED_TOOLS:
         raise ConfigError("until needs a planner client, not the supervisor allowlist")
 
-    repo = Path(repo)
-    workspace = Path(workspace) if workspace else repo.parent / f"{repo.name}-gbfleet"
+    repo, workspace = _rooted(repo, workspace)
     pool = list(seats or [])
     minted = 0
     wave = Wave()

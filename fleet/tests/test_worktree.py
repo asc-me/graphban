@@ -529,3 +529,76 @@ def test_a_locked_worktree_is_reported_rather_than_forced(git_repo: Path, tmp_pa
     # The salvage still happened and is still reported — a tidy-up failure must not
     # discard the fact that the work was saved.
     assert reaped.salvage and reaped.salvage.committed
+
+
+# ---- GRPH-781: `gbfleet up` from a repository root could not spawn anything ------------------
+
+def _a_repo(tmp_path, name="myrepo"):
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("x\n")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "-c", "user.email=a@b.c", "-c", "user.name=t",
+                    "commit", "-qm", "init"], cwd=repo, check=True)
+    return repo
+
+
+def test_the_default_relative_repo_does_not_derive_a_workspace_git_reads_as_a_switch(
+        tmp_path, monkeypatch):
+    """THE BUG. `--repo` defaults to `.`, `Path(".").name` is the empty string, so the
+    workspace derived to `-gbfleet` and `git worktree add` refused every child:
+
+        git worktree add -q -b gb/wave-1 -gbfleet/wave-1 <sha> failed in . (129):
+        error: unknown switch `g'
+
+    Sabotage: take `Path(repo)` as given again and this fails."""
+    from gbfleet.supervisor import _rooted
+
+    repo = _a_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    root, workspace = _rooted(Path("."), None)
+
+    assert root == repo.resolve()
+    assert workspace == tmp_path / "myrepo-gbfleet"
+    assert not workspace.name.startswith("-"), "git reads a leading dash as a switch"
+    # And the path a child is actually cut at, which is what git was handed.
+    assert not str(workspace / "wave-1").lstrip("/").startswith("-")
+
+
+def test_a_supervisor_inside_a_linked_worktree_derives_the_workspace_of_the_main_tree(
+        tmp_path):
+    """Why it is `repo_root` and not `.resolve()`. The lock already keys on the main working
+    tree, so a workspace that forked per worktree would put children where the next
+    supervisor does not look — while both hold the same lock.
+
+    Sabotage: use `.resolve()` and the two disagree."""
+    from gbfleet.supervisor import _rooted
+
+    repo = _a_repo(tmp_path)
+    linked = tmp_path / "myrepo-wt"
+    subprocess.run(["git", "worktree", "add", "-q", "-b", "side", str(linked)],
+                   cwd=repo, check=True)
+
+    assert _rooted(repo, None) == _rooted(linked, None)
+
+
+def test_an_explicit_workspace_is_still_honoured(tmp_path):
+    """Resolving the repo must not quietly override `--workspace`."""
+    from gbfleet.supervisor import _rooted
+
+    repo = _a_repo(tmp_path)
+    mine = tmp_path / "somewhere-else"
+    assert _rooted(repo, mine)[1] == mine
+
+
+def test_up_and_until_derive_through_the_same_function(tmp_path):
+    """They drifted once already — `mcp` resolved its repo and these two did not. One
+    function is what stops the next divergence being invisible."""
+    import inspect
+
+    from gbfleet import supervisor, until
+
+    for fn in (supervisor.up, until.run):
+        assert "_rooted(repo, workspace)" in inspect.getsource(fn), (
+            f"{fn.__qualname__} derives its workspace some other way")

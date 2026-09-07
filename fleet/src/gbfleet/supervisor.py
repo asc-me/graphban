@@ -354,6 +354,31 @@ def _read_allocation(client: Graphban, wave: Wave) -> AllocationRead | None:
         return None
 
 
+def _rooted(repo: Path | str, workspace: Path | str | None) -> tuple[Path, Path]:
+    """The repository's MAIN working tree, and the workspace beside it.
+
+    **The repo is resolved, not taken as given** (GRPH-781). `--repo` defaults to `.`, and
+    `Path(".").name` is the EMPTY STRING — so the workspace derived to `-gbfleet`, and
+    `git worktree add` read the leading dash as a switch:
+
+        git worktree add -q -b gb/wave-1 -gbfleet/wave-1 <sha> failed in . (129):
+        error: unknown switch `g'
+
+    Every child was refused before one was spawned. Measured running `gbfleet up` from a
+    repository root, which is the documented way to run it — the failure needs no unusual
+    layout, only the default `--repo`.
+
+    `repo_root` rather than `.resolve()`, for the reason the lock already uses it: a
+    supervisor started inside a linked worktree must derive the same paths as one started at
+    the top, or the workspace forks per worktree while the lock — which does resolve — does
+    not. ONE function for both `up` and `until`, so the two cannot drift apart again.
+    """
+    from .state import repo_root
+
+    root = repo_root(repo)
+    return root, Path(workspace) if workspace else root.parent / f"{root.name}-gbfleet"
+
+
 def up(
     repo: Path,
     seats: Sequence[Seat],
@@ -374,8 +399,7 @@ def up(
     Holds the repo lock for the whole wave (D-h), so a second supervisor on this
     repository refuses to start rather than exceeding `max_workers` between them.
     """
-    repo = Path(repo)
-    workspace = Path(workspace) if workspace else repo.parent / f"{repo.name}-gbfleet"
+    repo, workspace = _rooted(repo, workspace)
     wave = Wave()
 
     observe.configure(state)
