@@ -1,0 +1,61 @@
+# Publish graphban-cli to PyPI, from a tag that names it.
+#
+# ONE WORKFLOW FILE PER PACKAGE, and that is a PyPI constraint before it is a preference.
+# `PendingGitHubPublisher` carries a unique constraint on
+# (repository_owner, repository_name, workflow_filename, environment) — and NOT on the
+# project name. So one repository publishing two projects through one `release.yml` and one
+# environment cannot register the second publisher at all: the tuple is already taken.
+# Measured the hard way, after the first one was configured and the second was refused.
+#
+# It is also what PyPI's security model asks for: "isolate responsibility to the smallest
+# (and least-privileged) possible separate workflow". A change to the fleet release path
+# cannot publish graphban-cli, because graphban-cli's publisher trusts this file and no other.
+#
+#     git tag cli-v0.2.0 && git push origin cli-v0.2.0
+#
+# THE TAG AND THE PYPROJECT MUST AGREE, and this refuses when they do not. Tagging a version
+# the file does not carry is the ordinary release mistake and it is unrecoverable in the way
+# that matters: a version on PyPI can never be reused, so a wrong one published once is
+# published forever and the only remedy is another number.
+name: Release graphban-cli
+
+on:
+  push:
+    tags: ["cli-v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Matched by PyPI's publisher too, so a workflow that skipped it could not publish even
+    # with a publisher configured. Per package, so approving one release is not approving the
+    # other — and so the constraint above is satisfied twice over rather than by a hair.
+    environment: pypi-cli
+    permissions:
+      id-token: write   # the OIDC token trusted publishing exchanges for an upload
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Check the tag and cli/pyproject.toml agree
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          want="${TAG#cli-v}"
+          have=$(python3 - cli/pyproject.toml <<'PY'
+          import sys, tomllib
+          print(tomllib.load(open(sys.argv[1], "rb"))["project"]["version"])
+          PY
+          )
+          if [ "$want" != "$have" ]; then
+            echo "::error::tag $TAG says $want, cli/pyproject.toml says $have."\
+                 "Nothing is published: a version on PyPI can never be reused."
+            exit 1
+          fi
+          echo "publishing graphban-cli $have from cli/"
+
+      - run: uv build --out-dir dist cli
+      - name: Check the artifacts before anything leaves the machine
+        run: uvx twine check dist/*
+      - uses: pypa/gh-action-pypi-publish@release/v1
