@@ -2783,7 +2783,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         if not args.get("id"):
             # Presence only. The roster's question is "who is out there", and an agent between
             # tasks is still out there — it just has no lease to extend.
-            live = fleet_svc.touch(db, agent, state="idle")
+            #
+            # But "no lease" is not "no work": a REVIEW HOLD is a different column, so a
+            # reviewer heartbeats through here too and used to be filed as idle (GRPH-771).
+            # The server owns the truth about that hold, so it derives the state rather than
+            # taking the client's word or defaulting.
+            live = fleet_svc.touch(db, agent,
+                                   state=fleet_svc.presence_for_heartbeat(db, agent))
             if live is None:
                 raise errors.Validation(
                     f"no registered agent {agent!r}",

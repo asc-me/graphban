@@ -206,6 +206,41 @@ def presence_state(agent: Agent, *, lease_seconds: int = DEFAULT_LEASE_SECONDS,
     return agent.state if agent.state in STATES else "idle"
 
 
+def held_review(db: Session, agent_id: str, *,
+                lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
+    """The item this agent is holding a LIVE review claim on, if any.
+
+    Reads the claim through `review_claim_holder`, so an expired hold is not one — the same
+    definition `claim_review` uses to decide whether the item is available to somebody else.
+    Two different answers to "is this claim live" is how a board and a queue disagree.
+    """
+    stmt = select(Item).where(Item.status == "review",
+                              Item.review_claimed_by == agent_id)
+    for it in db.scalars(stmt).all():
+        if review_claim_holder(it, lease_seconds=lease_seconds) == agent_id:
+            return it
+    return None
+
+
+def presence_for_heartbeat(db: Session, agent_id: str) -> str:
+    """What a presence-only heartbeat means for an agent that holds a review (GRPH-771).
+
+    **`reviewing` was in `STATES` and nothing ever set it.** A review claim is not an item
+    lease — the lease is `claimed_by`, the hold is `review_claimed_by` — so a reviewer
+    heartbeats with no `id`, and that branch hardcoded `idle`. The roster then reported every
+    working reviewer as idle, which is how a review that had stalled and a review in progress
+    became the same picture.
+
+    That is what made GRPH-771's evidence read as a contradiction: an agent "alive and idle"
+    while holding a claim was not an agent misbehaving, it was the server describing a
+    reviewer with the only word it ever used.
+
+    Derived here, never asserted by the client. An agent saying "I am reviewing" would be a
+    claim about a lease the server already owns the truth of.
+    """
+    return "reviewing" if held_review(db, agent_id) is not None else "idle"
+
+
 def is_single_posture(api_key) -> bool:
     """Was all-in-one CHOSEN for this credential, as opposed to merely unspecified?
 
@@ -1325,8 +1360,13 @@ def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = 
         # Now that a review claim is a real lease (GRPH-395) it can be the reason for an empty
         # answer, and "nothing waiting" would be a lie with a queue full of work: the fleet is
         # busy, not idle, and this reviewer should wait rather than go looking for a problem.
+        # WHAT ACTUALLY RELEASES IT. "if they go silent" described a mechanism that does not
+        # exist: `review_claim_holder` expires on AGE, so the hold lapses on a clock whether
+        # the holder is alive or not (GRPH-771). A reviewer told to wait for silence waits for
+        # a signal that never arrives and concludes the queue is broken.
         return (f"every item awaiting review is already being reviewed — by "
-                f"{', '.join(sorted(set(taken)))}; their claims lapse if they go silent")
+                f"{', '.join(sorted(set(taken)))}; a claim lapses "
+                f"{DEFAULT_LEASE_SECONDS // 60} minutes after it is taken, held or not")
     return "no item awaiting a second pair of eyes"
 
 
@@ -2719,7 +2759,9 @@ def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
     if project_id:
         stmt = stmt.where(Item.project_id == project_id)
     rows = list(db.scalars(stmt.order_by(Item.sort_order, Item.number)).all())
-    labels = {a.id: (a.label or a.id) for a in db.scalars(select(Agent)).all()}
+    agents = list(db.scalars(select(Agent)).all())
+    labels = {a.id: (a.label or a.id) for a in agents}
+    holders = {a.id: a for a in agents}
     return [{
         "id": it.id, "key": it.key, "title": it.title, "branch": it.branch,
         "built_by": it.built_by,
@@ -2729,6 +2771,14 @@ def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
         # queue's question is "is somebody already looking at this", and after the split
         # (GRPH-395) that is the live claim, not the verdict.
         "reviewed_by": review_claim_holder(it),
+        # HOW LONG, and by an agent in what state (GRPH-771). A hold renders identically to
+        # progress on the board, so a review that stalled and a review under way looked the
+        # same until somebody queried the database. `null` when nothing holds it.
+        "held_for_seconds": (int((datetime.now(timezone.utc) - _aware(it.review_claimed_at)).total_seconds())
+                             if review_claim_holder(it) and it.review_claimed_at else None),
+        "holder_state": (presence_state(holders[it.review_claimed_by])
+                         if review_claim_holder(it) and it.review_claimed_by in holders
+                         else None),
     } for it in rows]
 
 
