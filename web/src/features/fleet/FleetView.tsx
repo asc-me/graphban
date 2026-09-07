@@ -1114,6 +1114,16 @@ export function FleetView() {
                       {r.holder_state !== "reviewing" && ` · ${r.holder_state}`}
                     </span>
                   )}
+                  {/* TAKEN N TIMES, NO VERDICT. A hold that lapses and is immediately
+                      re-taken by the same loop renders as a fresh review every time it is
+                      read; the count is the only thing that tells them apart, so it appears
+                      as soon as an item has been picked up more than once. */}
+                  {r.review_takes > 1 && (
+                    <span data-testid="review-takes"
+                          className="font-mono text-[11px] text-[color:var(--color-st-blocked)]">
+                      taken {r.review_takes}×, no verdict
+                    </span>
+                  )}
                 </div>
               ))}
             </div>

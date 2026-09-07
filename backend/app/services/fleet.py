@@ -1430,8 +1430,32 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
     item = candidates[0]
     # The HOLD, not the verdict. `reviewed_by` is written once, at sign-off, by whoever
     # actually decided — so an abandoned review can never look like a completed one.
+    already_mine = review_claim_holder(item, lease_seconds=lease_seconds) == agent_id
     item.review_claimed_by = agent_id
-    item.review_claimed_at = datetime.now(timezone.utc)
+    if not already_mine:
+        # **RE-CLAIMING WHAT YOU ALREADY HOLD DOES NOT RESTART THE CLOCK** (GRPH-771).
+        #
+        # It used to, and that quietly disabled the age expiry the hold depends on: a loop
+        # calling `claim_review` on a poll gets its own item back — it is still the holder, so
+        # it is still eligible — and every call reset `review_claimed_at`. Measured on the
+        # deployed instance: GRPH-A142 called `claim_review` every 50 seconds and nothing
+        # else, so a 600-second lease never came within 550 seconds of lapsing and the item
+        # sat in `review` indefinitely while no other reviewer was ever offered it.
+        #
+        # It also made `held_for_seconds` lie in the most damaging direction: the field added
+        # to make a stall visible measured time-since-last-poll, so an item stuck for an hour
+        # rendered as "held 5s" — fresher-looking the harder the loop spun.
+        #
+        # The hold now lapses 600 seconds after it was FIRST taken, whoever is holding it and
+        # however often they ask again. A review that legitimately runs longer returns to the
+        # queue and is re-taken, which is the trade a lease makes everywhere else in this
+        # codebase; a loop that never decides releases the item instead of owning it.
+        item.review_claimed_at = datetime.now(timezone.utc)
+        # And COUNT the take. Releasing the item is not the same as noticing: a loop that
+        # re-takes what it just let lapse looks, on any single read, exactly like a reviewer
+        # who started a moment ago. "Taken 7 times, no verdict" is the sentence that
+        # separates them, and it is the one nobody could say on the deployed instance.
+        item.review_takes = (item.review_takes or 0) + 1
     db.commit()
     db.refresh(item)
     return item
@@ -1624,6 +1648,9 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # something under review, which is the confusion these two columns were split to end.
     item.review_claimed_by = None
     item.review_claimed_at = None
+    # A verdict is what the count counts the absence of, so a decided item carries no arrears
+    # into whatever happens to it next — a bounce that comes back for review starts at zero.
+    item.review_takes = 0
     item.status = "done"
     from app.services import delegation as delegation_svc
     delegation_svc.on_outcome(db, item, "signed_off")
@@ -1678,6 +1705,9 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     item.reviewed_by = None
     item.review_claimed_by = None
     item.review_claimed_at = None
+    # A verdict is what the count counts the absence of, so a decided item carries no arrears
+    # into whatever happens to it next — a bounce that comes back for review starts at zero.
+    item.review_takes = 0
     item.bounce_pinned_to = author
     item.bounce_pinned_until = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
                                 if author else None)
@@ -2771,6 +2801,8 @@ def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
         # queue's question is "is somebody already looking at this", and after the split
         # (GRPH-395) that is the live claim, not the verdict.
         "reviewed_by": review_claim_holder(it),
+        # Taken this many times WITHOUT a verdict (GRPH-771).
+        "review_takes": it.review_takes or 0,
         # HOW LONG, and by an agent in what state (GRPH-771). A hold renders identically to
         # progress on the board, so a review that stalled and a review under way looked the
         # same until somebody queried the database. `null` when nothing holds it.

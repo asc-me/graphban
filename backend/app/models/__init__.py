@@ -515,6 +515,13 @@ class Item(Base):
     review_claimed_by: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     review_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
                                                                nullable=True)
+    # HOW MANY TIMES the review has been taken without a verdict (GRPH-771). A loop that
+    # re-takes an item every time its hold lapses looks, on any single read, exactly like a
+    # reviewer who started a moment ago — "taken 7 times, no verdict" is the sentence that
+    # separates them. Cleared at sign-off and at bounce: a verdict is the thing it counts the
+    # absence of.
+    review_takes: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0",
+                                              default=0)
     # A bounced item goes back to its AUTHOR first (PRD-17 D-f): the agent that wrote it has
     # the context, and letting the fleet re-divvy it immediately would hand a stranger a
     # half-finished change plus a review comment about code they have never seen.
