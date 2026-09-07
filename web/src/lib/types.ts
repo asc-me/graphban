@@ -1353,6 +1353,10 @@ export interface FleetOverview {
   review_queue: {
     id: string; key: string; title: string; branch: string;
     built_by: string | null; built_by_label: string | null; reviewed_by: string | null;
+    /** How long the live claim has run, and what its holder is doing (GRPH-771). Null when
+     *  nothing holds it — "held for 0s" next to an item nobody has opened is a worse lie
+     *  than saying nothing. */
+    held_for_seconds: number | null; holder_state: string | null;
   }[];
   clusters: {
     items: string[]; areas: string[]; predicted: boolean;

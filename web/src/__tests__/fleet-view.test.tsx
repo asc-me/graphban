@@ -257,6 +257,44 @@ describe("Fleet view", () => {
     expect(screen.getByText("opus @ macbook built it")).toBeInTheDocument();
   });
 
+  it("shows who holds a review and for how long", async () => {
+    // GRPH-771: a hold rendered exactly like progress, so a stalled review and one under way
+    // were the same row and the deployed diagnosis needed a database query.
+    fleet.data = { ...BASE, review_queue: [{
+      id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
+      built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: "GB-A2",
+      held_for_seconds: 900, holder_state: "reviewing",
+    }] };
+    renderView();
+    await openWork(userEvent.setup());
+    expect(await screen.findByTestId("review-hold")).toHaveTextContent("GB-A2 · 15m");
+  });
+
+  it("flags a holder that is not reviewing, because that is the contradiction", async () => {
+    // "Idle and holding a review" is what GRPH-771 was reported as. It must READ as wrong.
+    fleet.data = { ...BASE, review_queue: [{
+      id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
+      built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: "GB-A2",
+      held_for_seconds: 900, holder_state: "idle",
+    }] };
+    renderView();
+    await openWork(userEvent.setup());
+    const hold = await screen.findByTestId("review-hold");
+    expect(hold).toHaveTextContent("idle");
+    expect(hold.className).toContain("st-blocked");
+  });
+
+  it("says nothing at all when nothing holds the item", async () => {
+    fleet.data = { ...BASE, review_queue: [{
+      id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
+      built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: null,
+      held_for_seconds: null, holder_state: null,
+    }] };
+    renderView();
+    await openWork(userEvent.setup());
+    expect(screen.queryByTestId("review-hold")).not.toBeInTheDocument();
+  });
+
   it("says why a held-back cluster is waiting", async () => {
     // Without the reason a queued cluster looks like the fleet being stuck, and a human
     // overrides the divvy.

@@ -1099,6 +1099,21 @@ export function FleetView() {
                       {r.built_by_label} built it
                     </span>
                   )}
+                  {/* WHO IS ON IT, and for how long (GRPH-771). A hold used to render
+                      exactly like progress, so a review that had stalled and one under way
+                      were the same row — the deployed diagnosis needed a database query to
+                      tell them apart. A holder reporting anything but `reviewing` while
+                      holding a claim is the contradiction worth showing, not hiding. */}
+                  {r.reviewed_by && (
+                    <span data-testid="review-hold"
+                          className={cn("font-mono text-[11px]",
+                                        r.holder_state === "reviewing"
+                                          ? "text-faint"
+                                          : "text-[color:var(--color-st-blocked)]")}>
+                      {r.reviewed_by} · {Math.floor((r.held_for_seconds ?? 0) / 60)}m
+                      {r.holder_state !== "reviewing" && ` · ${r.holder_state}`}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>

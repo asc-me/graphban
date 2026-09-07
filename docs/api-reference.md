@@ -187,7 +187,7 @@ failure the propose-only boundary exists to prevent.
 
 | Method | Path | Auth | Notes |
 | --- | --- | --- | --- |
-| GET | `/api/fleet` | JWT | Roster + review queue + cluster board in one read |
+| GET | `/api/fleet` | JWT | Roster + review queue + cluster board in one read. A review-queue row carries `reviewed_by` (the LIVE claim, not the verdict), `held_for_seconds` and `holder_state` — a hold rendered identically to progress until GRPH-771, so a stalled review and one under way were the same row. `null` for all three when nothing holds it |
 | POST | `/api/fleet/keys` | JWT | Mint a credential narrowed to one role and tagged to a wave. `also` adds further roles to the CEILING (GRPH-780), which is what makes an agent on the key re-taskable later — a role change cannot climb past the credential the agent already holds, so a one-role key can never be promoted without restarting the agent. One role stays the default; `all-in-one` is a posture and cannot be combined (422). Scopes and tool tiers follow the widest role permitted |
 | POST | `/api/fleet/seats` | JWT | Issue a wave of seats — `roles` is ONE ENTRY PER AGENT, repeats included (`["planner", "worker", "worker"]`), because two agents sharing a seat share a session and cannot review each other. A blank `wave` means the next one, computed server-side. Each enrolment code is returned **once** and is not stored anywhere in plaintext |
 | POST | `/api/fleet/seats/{seat_id}/reissue` | JWT | Replace a spent seat. The dead row stays, as the record that something died |
