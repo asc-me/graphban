@@ -380,6 +380,7 @@ def _loop(
             # GRPH-732: the child is told what it is, because only this side knows.
             if chosen[0]:
                 seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
+            _cap_children(wave, limits)
             _spawn_one(
                 wave, children, occupied, persist, seat, factory,
                 repo, workspace, wave_name, supervisor, limits, planner, debug,
@@ -407,6 +408,7 @@ def _loop(
                 mint_left -= 1
             if adapter:
                 seat = replace(seat, declare=matrix_mod.declaration(adapter, "", None, matrix))
+            _cap_children(wave, limits)
             before = len(wave.spawned)
             _spawn_one(
                 wave, children, occupied, persist, seat, launch_factory,
@@ -558,22 +560,46 @@ def _delegate_next(
     return seed, code, want
 
 
+def _cap_children(wave, limits) -> None:
+    """`--max-children` is the TOTAL this loop may spawn, not a per-tick cap.
+
+    `up` applies it once at its single spawn; `until` spawns for the life of the wave and
+    applied it nowhere, so a loop that spawned into nothing (see `_wanted_workers`) had no
+    ceiling at all. A wave that reaches the cap with work still open ends `cap`, exit 1 —
+    the operator raised the number knowingly or the loop was spawning wrong, and both are
+    theirs to look at.
+    """
+    if len(wave.spawned) >= limits.max_children:
+        raise CapError(
+            "cap",
+            f"max_children {limits.max_children} reached: {len(wave.spawned)} spawned this wave",
+        )
+
+
 def _wanted_workers(
     planner: Graphban, supervisor: Graphban, *, live_n: int, max_workers: int,
 ) -> int:
     """How many more workers to start. Cold start reads clusters; a live roster reads the mix."""
+    # READY WORK BOUNDS EVERYTHING. `propose_allocation` describes the roster, not the
+    # backlog: with zero free clusters it still maps every idle registered agent as a worker
+    # "pulling from the review queue", and a child this loop spawned ten seconds ago is still
+    # on that roster as `idle` for the whole presence TTL after it exited. Trusting that
+    # count alone spawned a child every ~14 s for 18 minutes on the PRD-39 acceptance walk —
+    # 63 registrations against a project with nothing left to do — and `--max-children`
+    # never bound. Review work is not this function's job: the unheld-review branch in the
+    # loop spawns for that, once, and counts its own failures.
+    clusters = planner.call("collision_clusters")
+    total = int(clusters.get("total") or 0)
+    if total <= 0:
+        return 0
     roster = supervisor.call("fleet_status")
     agents = [a for a in (roster.get("agents") or []) if a.get("id")]
     if not agents:
-        clusters = planner.call("collision_clusters")
-        total = int(clusters.get("total") or 0)
         return max(0, min(max_workers, total) - live_n)
     alloc = AllocationRead.of(planner.call("propose_allocation"))
     if alloc.uninformative:
-        clusters = planner.call("collision_clusters")
-        total = int(clusters.get("total") or 0)
         return max(0, min(max_workers, total) - live_n)
-    return max(0, min(max_workers, alloc.workers) - live_n)
+    return max(0, min(max_workers, alloc.workers, total) - live_n)
 
 
 def _take_seat(
