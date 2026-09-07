@@ -10,9 +10,7 @@ requires-python = ">=3.12"
 # installs on a laptop. `tests/test_packaging.py` derives the forbidden set from the backend's
 # own list, the way `fleet/` already does, because the only thing keeping a dependency list
 # thin is something that objects when it is not.
-dependencies = [
-    "httpx>=0.28",
-]
+dependencies = []  # stdlib only: client.py is urllib.request throughout (GRPH-782)
 
 [project.scripts]
 # `graphban` and `agentledger` are claimed by backend/, `gbfleet` and `gbagent` by fleet/.

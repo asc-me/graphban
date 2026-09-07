@@ -228,7 +228,11 @@ def cmd_fleet(args) -> int:
         argv += ["--project", project]
     # Its exit code, unchanged. `gban` adds nothing and explains nothing: the supervisor's
     # message is the one its own tests pin.
-    return subprocess.run(argv).returncode
+    #
+    # The ENVIRONMENT goes through the same function `doctor` uses (GRPH-782). It used not
+    # to, so the doctor certified a local half this command could not reproduce.
+    return subprocess.run(argv, env=doctor_mod.child_environment(
+        os.environ.get(config.API_KEY_ENV, ""))).returncode
 
 
 def _project(args, act: str) -> str:
