@@ -432,7 +432,7 @@ def test_until_mints_a_worker_for_unheld_review(
     roles: list[str] = []
     planner, supervisor = _clients(
         workspace,
-        review=[{"id": "GRPH-9", "status": "review", "claimed_by": ""}],
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1", "review_claimed_by": ""}],
         minted_roles=roles,
     )
     result = run(
@@ -457,7 +457,7 @@ def test_until_does_not_spawn_for_held_review(
     roles: list[str] = []
     planner, supervisor = _clients(
         workspace,
-        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-R1"}],
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1", "review_claimed_by": "GRPH-R1"}],
         minted_roles=roles,
     )
     result = run(
@@ -480,7 +480,7 @@ def test_review_unsigned_after_exactly_three_empty_spawns(
     roles: list[str] = []
     planner, supervisor = _clients(
         workspace,
-        review=[{"id": "GRPH-9", "status": "review", "claimed_by": ""}],
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1", "review_claimed_by": ""}],
         minted_roles=roles,
     )
     result = run(
@@ -510,7 +510,7 @@ def test_a_live_child_blocks_a_second_review_spawn(
 
     planner, supervisor = _clients(
         workspace,
-        review=[{"id": "GRPH-9", "status": "review", "claimed_by": ""}],
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1", "review_claimed_by": ""}],
         on_mint=on_mint,
     )
     result = run(
@@ -695,3 +695,53 @@ def test_a_refused_bound_seat_falls_back_to_an_unbound_delegation(
     assert [d.get("seat") for d in delegations] == [None], "the retry carried no seat"
     assert "mint_enrolment" in calls
     assert "BOUND" not in captured[0]
+
+
+def test_a_stale_hold_is_not_a_holding():
+    """PRD-39 acceptance walk, run 3: the builder of the last item exited with it in review,
+    the roster still showed the item under its holdings with `phase: stale` (older than the
+    presence TTL), and `until` waited on that dead process forever. A stale hold is what a
+    dead agent leaves behind, not somebody working."""
+    from gbfleet.until import _any_holdings
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        ack = telemetry_ack(request)
+        if ack is not None:
+            return ack
+        body = json.loads(request.content)
+        return _mcp({"agents": [
+            {"id": "GRPH-A68", "state": "offline",
+             "holdings": [{"id": "GRPH-6", "phase": "stale"}]},
+        ] + ([{"id": "GRPH-A70", "state": "working",
+               "holdings": [{"id": "GRPH-7", "phase": "reported"}]}]
+             if handler.live else [])}, body["id"])
+    handler.live = False
+    sup = Graphban("http://gb.invalid", KEY, allowed=ALLOWED_TOOLS,
+                   transport=httpx.MockTransport(handler))
+    assert _any_holdings(sup) is False, "a stale hold counted as somebody working"
+    handler.live = True
+    assert _any_holdings(sup) is True
+
+
+def test_a_review_row_still_leased_to_its_builder_gets_a_reviewer(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """THE CALL for the walk's third run. `claimed_by` on a row in `review` is the BUILDER's
+    lease and stays set; `until` read it as "a reviewer holds this" and so never spawned a
+    reviewer for any real review row — reviews only ever happened because the runaway build
+    path spawned workers whose loop reviewed. The reviewer's hold is `review_claimed_by`."""
+    workspace = tmp_path / "ws"
+    roles: list = []
+    planner, supervisor = _clients(
+        workspace, minted_roles=roles,
+        review=[{"id": "GRPH-9", "status": "review", "claimed_by": "GRPH-A1"}],
+    )
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1, max_children=4),
+    )
+    assert len(roles) >= 1, "no reviewer was spawned for a row nobody is reviewing"
+    assert result.reason in ("review-unsigned", "idle"), result.reason
+

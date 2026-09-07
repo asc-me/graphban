@@ -1870,6 +1870,12 @@ def _item_dict(item) -> dict:
         "effort": item.effort,
         "assignee": item.assignee,
         "claimed_by": item.claimed_by,
+        # The reviewer's hold, distinct from the lease above (GRPH-429: a different column,
+        # deliberately). `claimed_by` stays the BUILDER's through `review`, so a supervisor
+        # that read it as "somebody is reviewing this" never spawned a reviewer for any real
+        # review row — found on the PRD-39 acceptance walk. Reply-only: the outputSchema is
+        # manifest, and the footprint has seventeen tokens of headroom.
+        "review_claimed_by": item.review_claimed_by,
         "prd_id": item.prd_key,
         "prd_section": item.prd_section,
         "fidelity": item.fidelity,
