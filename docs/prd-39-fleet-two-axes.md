@@ -783,6 +783,23 @@ A walk, on a real project, against a deployed instance:
     keys that exist now save **13.1% (worker)** and **12.7% (planner)**. `test_mcp_role_manifest`
     asserts a 10% floor for both; the fleet tool tier is 1,046 tokens (was 1,055).
 
+### Walked — 2026-09-07, scratch project `p39-walk`, five runs
+
+Every point but one is proven against the deployed instance (`1990d61a`). §7.6 — a bounce
+returning to `next` pinned to its author, offered to the author while the pin holds, claimed
+by the other worker once it lapses — was not exercised: no cheap reviewer bounced anything in
+five runs, and contriving a failing item for a model that only signs off proves less than
+running the case once gbagent's `bounce` (GRPH-778) is deployed. Deferred with that reason.
+
+The walk found four defects older than this PRD, each masking the next, and fixed them: a
+bound seat never reviewed after its build (#675); `until` spawned a child every ~14 s into a
+finished project because `propose_allocation` describes the roster, not the backlog, and
+`--max-children` never bound (#677); `until` read `claimed_by` — the builder's lease, still
+set in `review` — as the reviewer's hold, so its review branch never fired on a real row and
+a dead builder's stale hold kept a wave waiting forever (#683); and a child on a credential
+spanning projects was served the key's default project's queue, not its seat's (#684). The
+final run: one reviewer spawned for one unheld row, signed, `idle`, exit 0.
+
 ## 8. Open questions
 
 - **Bounces are not counted, and under this model they circulate further.** `bounce_reason` is a
