@@ -98,6 +98,7 @@ the point of having a ceiling. It lands on the agent's next poll.
 ```bash
 gban login          # once, at a terminal
 gban setup          # everything mechanical between that and a delegating agent
+gban setup --auto   # …or every project whose repository sits here or beside here
 ```
 
 An agent with the delegation skill runs all of this for you except `gban login`, which it
@@ -118,6 +119,11 @@ Three properties worth knowing, each of which is a bug this command exists to no
   stale entry leaves the agent on the old key — which surfaces as a JSON parse error, because
   the harness is parsing a 401 body. `--scope user` is the default for that reason, and
   because a credential outside the repository cannot be committed.
+- **`--auto` matches, and says so.** A project carries no repository link — no remote, no
+  path — so `--auto` compares your project ids and names against this directory, what is in
+  it, and its siblings. One level, never a recursive walk. Two directories answering to one
+  project, or one directory answering to two, are **refused rather than guessed**: a
+  credential minted into the wrong repository is not a mistake anybody notices quickly.
 - **It refuses to write a key into a file git tracks.** `--scope project` on a tracked
   `.mcp.json` is refused rather than warned about, because a warning attached to committing a
   credential still commits it.

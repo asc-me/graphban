@@ -24,6 +24,7 @@ return: `spawn` gives you an agent id at registration and nothing after it.
 gban login          # you, at a terminal, once. It refuses without a tty, on purpose.
 gban setup          # mints, configures both MCP servers, installs the supervisor,
                     # writes the delegation skill, and verifies all of it
+gban setup --auto   # …for every project whose repository is here or beside here
 ```
 
 Then restart the harness so it reads the new config, and an agent can `delegate(seat=true)`

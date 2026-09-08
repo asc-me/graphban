@@ -64,8 +64,14 @@ def _parser() -> argparse.ArgumentParser:
         "--scope", choices=["user", "project"], default="user",
         help="user (default) writes ~/.claude.json, which OUTRANKS a repo .mcp.json and "
              "cannot be committed; project writes .mcp.json beside the repo")
+    setup_cmd.add_argument(
+        "--auto", action="store_true",
+        help="every project with a repository here: matches this directory, what is in it and "
+             "its siblings against your projects BY NAME, and refuses any ambiguity rather "
+             "than guessing. A project carries no repository link, so this is a match, not a "
+             "lookup")
     setup_cmd.add_argument("--no-install", action="store_true",
-                           help="never offer to install the supervisor")
+                           help="do not install the supervisor")
 
     fleet = sub.add_parser(
         "fleet", help="hand off to gbfleet (the supervisor)",
@@ -263,6 +269,8 @@ def cmd_doctor(args) -> int:
 def cmd_setup(args) -> int:
     """Everything between a session and a delegating agent, in one act (GRPH-792)."""
     url = _server(args)
+    if args.auto:
+        return _setup_auto(args, url)
     project = config.resolve(args.project, config.PROJECT_ENV, "project")
     if not project:
         print(f"{PROG}: no project. Pass --project, or run `{PROG} login` again — it names the "
@@ -279,6 +287,36 @@ def cmd_setup(args) -> int:
     _out({"lines": lines, "ok": code == 0, "project": project, **made},
          "\n".join(human), args.as_json)
     return code
+
+
+def _setup_auto(args, url: str) -> int:
+    """Every project that has a repository here, each in its own.
+
+    Reports what it did NOT match as loudly as what it did. A sweep that silently skipped a
+    project would leave somebody believing delegation is enabled everywhere.
+    """
+    client = authenticated(url, act="setup")
+    projects = client.call("GET", "/api/projects")
+    projects = [p for p in (projects if isinstance(projects, list) else []) if isinstance(p, dict)]
+    found, notes = setup_mod.match(projects, Path.cwd())
+    if not found:
+        print(doctor_mod.render(notes) if notes else
+              f"{PROG}: no projects to match", file=sys.stderr)
+        print(f"{PROG}: matched no repository here. `{PROG} setup --project <id>` from inside "
+              f"one names it directly.", file=sys.stderr)
+        return EXIT_REFUSED
+    lines, worst, done = list(notes), 0, {}
+    for pid, repo in sorted(found.items()):
+        lines.append(doctor_mod._line("match", doctor_mod.PASS, pid, str(repo)))
+        got, code, made = setup_mod.run(client, url, pid, repo, scope=args.scope,
+                                        install=not args.no_install)
+        lines += [{**l, "name": f"{pid}: {l['name']}"} for l in got]
+        done[pid], worst = {"repo": str(repo), "ok": code == 0, **made}, max(worst, code)
+    human = [doctor_mod.render(lines),
+             f"\n     {sum(1 for d in done.values() if d['ok'])} of {len(done)} enabled. "
+             f"Restart the harness so it reads the new config."]
+    _out({"lines": lines, "ok": worst == 0, "projects": done}, "\n".join(human), args.as_json)
+    return worst
 
 
 def cmd_fleet(args) -> int:

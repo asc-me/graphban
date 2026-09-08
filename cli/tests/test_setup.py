@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from gban import config, doctor as doctor_mod, setup as setup_mod
+from gban.doctor import _line
 from gban.client import Refused
 
 URL = "http://gb.invalid"
@@ -77,9 +78,9 @@ def wired(monkeypatch):
     return _wire
 
 
-def _run(server, repo, home, scope="user", wired=None):
+def _run(server, repo, home, scope="user", wired=None, install=False):
     wired(server)
-    return setup_mod.run(server, URL, "core", repo, scope=scope, install=False, home=home)
+    return setup_mod.run(server, URL, "core", repo, scope=scope, install=install, home=home)
 
 
 # ---- the happy path ---------------------------------------------------------------------------
@@ -372,3 +373,223 @@ def test_the_skill_ships_in_the_wheel(tmp_path):
     wheel = next(out.glob("*.whl"))
     names = zipfile.ZipFile(wheel).namelist()
     assert any(n.endswith("skills/graphban-delegation/SKILL.md") for n in names), names[:20]
+
+
+# ---- installing the supervisor -------------------------------------------------------------------
+
+def test_setup_installs_the_supervisor_without_asking(tmp_path, wired, monkeypatch):
+    """`offer_to_install` prompts because it is reached from a READ-ONLY command. `gban setup`
+    already mints a credential and rewrites config: typing it is the consent, and an agent
+    driving this could not answer a prompt anyway."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    calls = []
+    monkeypatch.setattr(doctor_mod, "install_supervisor",
+                        lambda *a, **k: (calls.append(1), (True, ""))[1])
+    monkeypatch.setattr(doctor_mod, "find_supervisor", lambda: "" if not calls else "/bin/gbfleet")
+
+    lines, code, _ = _run(Server(), repo, home, wired=wired, install=True)
+
+    assert calls, "setup did not install the supervisor"
+    assert code == 0
+    assert any(l["name"] == "supervisor" and l["status"] == "PASS" for l in lines)
+
+
+def test_no_install_is_honoured(tmp_path, wired, monkeypatch):
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    monkeypatch.setattr(doctor_mod, "install_supervisor",
+                        lambda *a, **k: pytest.fail("installed under --no-install"))
+
+    lines, code, _ = _run(Server(), repo, home, wired=wired, install=False)
+
+    assert code == 0
+    assert any("--no-install was given" in l["detail"] for l in lines)
+
+
+def test_a_failed_install_is_unknown_and_carries_the_reason(tmp_path, wired, monkeypatch):
+    """Three different next actions hide behind "no supervisor": it is missing, uv is missing,
+    or it installed and is not on PATH. A bare failure would send somebody to the wrong one."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    monkeypatch.setattr(doctor_mod, "install_supervisor",
+                        lambda *a, **k: (False, "uv is not on PATH"))
+
+    lines, code, _ = _run(Server(), repo, home, wired=wired, install=True)
+
+    assert code == 0, "a missing supervisor is not a failed setup"
+    line = next(l for l in lines if l["name"] == "supervisor")
+    assert line["status"] == "UNKNOWN"
+    assert "uv is not on PATH" in line["detail"]
+
+
+# ---- --auto --------------------------------------------------------------------------------------
+
+def _repo(root: Path, name: str) -> Path:
+    path = root / name
+    (path / ".git").mkdir(parents=True)
+    return path
+
+
+def test_auto_matches_a_project_to_a_sibling_repository(tmp_path):
+    work = tmp_path / "work"
+    _repo(work, "super-arc")
+    here = _repo(work, "graphban")
+
+    found, notes = setup_mod.match([{"id": "super-arc", "name": "Super Arc"},
+                                    {"id": "core", "name": "GraphBan"}], here)
+
+    assert found["super-arc"].name == "super-arc"
+    assert found["core"].name == "graphban", "matched on name as well as id"
+    assert notes == []
+
+
+def test_auto_matches_the_directory_you_are_standing_in(tmp_path):
+    work = tmp_path / "work"
+    here = _repo(work, "super-arc")
+
+    found, _ = setup_mod.match([{"id": "super-arc", "name": "Super Arc"}], here)
+
+    assert found["super-arc"].resolve() == here.resolve()
+
+
+def test_auto_ignores_a_directory_that_is_not_a_repository(tmp_path):
+    work = tmp_path / "work"
+    (work / "super-arc").mkdir(parents=True)
+    here = _repo(work, "graphban")
+
+    found, notes = setup_mod.match([{"id": "super-arc", "name": "Super Arc"}], here)
+
+    assert "super-arc" not in found
+    assert any("no directory" in n["detail"] for n in notes)
+
+
+def test_auto_finds_a_worktree_whose_git_is_a_file(tmp_path):
+    """A fleet spends its life in worktrees, where `.git` is a FILE. Testing for a directory
+    would skip exactly the working copies this tool serves."""
+    work = tmp_path / "work"
+    wt = work / "super-arc"
+    wt.mkdir(parents=True)
+    (wt / ".git").write_text("gitdir: /elsewhere\n")
+    here = _repo(work, "graphban")
+
+    found, _ = setup_mod.match([{"id": "super-arc", "name": "Super Arc"}], here)
+
+    assert found["super-arc"].name == "super-arc"
+
+
+def test_auto_refuses_when_two_directories_answer_to_one_project(tmp_path):
+    """A credential minted into the wrong repository is not a mistake anybody notices
+    quickly, so ambiguity is refused rather than broken by a rule."""
+    work = tmp_path / "work"
+    _repo(work, "super-arc")
+    _repo(work / "nested", "super-arc")
+    here = _repo(work, "graphban")
+    # The nested copy is a sibling of nothing; put it where `candidates` looks.
+    found, notes = setup_mod.match([{"id": "super-arc", "name": "super arc"}], here)
+    assert found.get("super-arc") is not None  # only one is in scope
+
+    # …now make the second one visible, and it must refuse.
+    (work / "Super_Arc" / ".git").mkdir(parents=True)
+    found, notes = setup_mod.match([{"id": "super-arc", "name": "Super Arc"}], here)
+    assert "super-arc" not in found
+    assert any("several directories" in n["detail"] for n in notes)
+
+
+def test_auto_refuses_when_one_directory_answers_to_two_projects(tmp_path):
+    work = tmp_path / "work"
+    _repo(work, "atlas")
+    here = _repo(work, "graphban")
+
+    found, notes = setup_mod.match([{"id": "atlas", "name": "Atlas"},
+                                    {"id": "other", "name": "atlas"}], here)
+
+    assert found == {} or "atlas" not in found
+    assert any("several projects" in n["detail"] for n in notes)
+
+
+def test_auto_says_which_projects_it_could_not_place(tmp_path):
+    """A sweep that silently skipped a project would leave somebody believing delegation is
+    enabled everywhere."""
+    here = _repo(tmp_path / "work", "graphban")
+
+    found, notes = setup_mod.match([{"id": "core", "name": "GraphBan"},
+                                    {"id": "elsewhere", "name": "Elsewhere"}], here)
+
+    assert list(found) == ["core"]
+    assert any(n["name"] == "elsewhere" for n in notes)
+
+
+def test_auto_does_not_walk_the_whole_tree(tmp_path):
+    """Nothing deeper than one level. A recursive walk would be slow, surprising, and would
+    start matching vendored copies and worktrees."""
+    work = tmp_path / "work"
+    _repo(work / "deep" / "deeper", "super-arc")
+    here = _repo(work, "graphban")
+
+    found, _ = setup_mod.match([{"id": "super-arc", "name": "Super Arc"}], here)
+
+    assert "super-arc" not in found
+
+
+# ---- --auto through the command, not just the matcher --------------------------------------------
+
+def test_the_auto_command_sets_up_each_match_and_reports_the_rest(tmp_path, monkeypatch, capsys):
+    """`match` being right is not the same as the verb wiring it correctly, and a wiring
+    error here would present as a sweep that quietly did nothing."""
+    import json as _json
+
+    from gban import cli as cli_mod
+
+    work = tmp_path / "work"
+    _repo(work, "super-arc")
+    here = _repo(work, "graphban")
+    monkeypatch.chdir(here)
+    monkeypatch.setenv(config.HOME_ENV, str(tmp_path / "gbanhome"))
+    config.save_settings(url=URL)
+    config.save_session("r", user="a@b.c")
+
+    class Listing:
+        def call(self, method, path, body=None):
+            assert path == "/api/projects"
+            return [{"id": "super-arc", "name": "Super Arc"},
+                    {"id": "core", "name": "GraphBan"},
+                    {"id": "nowhere", "name": "Nowhere"}]
+
+    ran = []
+    monkeypatch.setattr(cli_mod, "authenticated", lambda url, act="": Listing())
+    monkeypatch.setattr(setup_mod, "run",
+                        lambda client, url, project, repo, **kw: (
+                            ran.append((project, repo.name)),
+                            ([_line("config", "PASS", "written", "x")], 0, {}))[1])
+
+    code = cli_mod.main(["--json", "setup", "--auto"])
+
+    assert code == 0
+    assert sorted(ran) == [("core", "graphban"), ("super-arc", "super-arc")]
+    payload = _json.loads(capsys.readouterr().out)
+    assert set(payload["projects"]) == {"core", "super-arc"}
+    # The one it could not place is reported, not dropped.
+    assert any(l["name"] == "nowhere" for l in payload["lines"])
+
+
+def test_the_auto_command_refuses_when_it_matches_nothing(tmp_path, monkeypatch, capsys):
+    work = tmp_path / "work"
+    here = _repo(work, "graphban")
+    monkeypatch.chdir(here)
+    monkeypatch.setenv(config.HOME_ENV, str(tmp_path / "gbanhome"))
+    config.save_settings(url=URL)
+    config.save_session("r", user="a@b.c")
+
+    from gban import cli as cli_mod
+
+    class Listing:
+        def call(self, method, path, body=None):
+            return [{"id": "elsewhere", "name": "Elsewhere"}]
+
+    monkeypatch.setattr(cli_mod, "authenticated", lambda url, act="": Listing())
+    monkeypatch.setattr(setup_mod, "run",
+                        lambda *a, **k: pytest.fail("set up a project it never matched"))
+
+    assert cli_mod.main(["setup", "--auto"]) == 1
+    assert "--project" in capsys.readouterr().err

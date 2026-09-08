@@ -247,16 +247,27 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
 
 
 def supervisor(install: bool) -> list[dict]:
-    """The local half. Absent is not broken — a laptop that only ever delegates to a hosted
-    harness needs no supervisor — so this is UNKNOWN rather than FAIL when it is missing."""
+    """The local half, installed rather than offered.
+
+    Absent is not broken — a laptop that only ever delegates to a hosted harness needs no
+    supervisor — so a failure to install is UNKNOWN, never FAIL. What it must never be is
+    silent: the reason is carried, because "no supervisor" and "uv is missing" and "installed
+    but not on PATH" are three different next actions.
+    """
     found = doctor_mod.find_supervisor()
-    if not found and install and doctor_mod.offer_to_install():
-        found = doctor_mod.find_supervisor()
     if found:
         return [_line("local", PASS, "supervisor", found)]
+    if not install:
+        return [_line("local", UNKNOWN, "supervisor",
+                      f"not installed, and --no-install was given — "
+                      f"`{doctor_mod.INSTALL_SUPERVISOR}` when you want one")]
+    ok, why = doctor_mod.install_supervisor()
+    if ok:
+        return [_line("local", PASS, "supervisor",
+                      f"{doctor_mod.find_supervisor()} (installed just now)")]
     return [_line("local", UNKNOWN, "supervisor",
-                  f"not installed — `{doctor_mod.INSTALL_SUPERVISOR}` when you want to spawn "
-                  "children on this machine. Delegation records fine without it")]
+                  f"{why}. Delegation records fine without it; the supervisor is what runs "
+                  "the child on this machine")]
 
 
 # ---- the skill --------------------------------------------------------------------------------
@@ -297,3 +308,88 @@ def skill(repo: Path) -> list[dict]:
                       f"{dest} exists and differs from the one shipped here — left alone")]
     return [_line("local", PASS, "skill",
                   f"{dest}" + ("" if status == "written" else " (already current)"))]
+
+
+# ---- finding the repositories a deployment's projects belong to (GRPH-794) ---------------------
+#
+# There is no link to follow. A `Project` carries id, tag, name and description and nothing
+# about a repository, so this matches on NAME and says so — a guess presented as a lookup would
+# be the worse failure, because it would be trusted.
+
+def slug(text: str) -> str:
+    """`Super Arc` and `super-arc` and `SUPER_ARC` are one name written three ways."""
+    out = [c.lower() if c.isalnum() else "-" for c in (text or "")]
+    return "-".join(part for part in "".join(out).split("-") if part)
+
+
+def names(project: dict) -> set[str]:
+    """Every spelling of a project that a directory could plausibly be named after.
+
+    The TAG is deliberately not one of them. It is a two-to-four letter code — `SA`, `GRPH` —
+    and matching on it would claim a directory called `sa` for a project called Super Arc on
+    the strength of a coincidence. Ids and names are what people name directories after.
+    """
+    return {slug(str(project.get(k) or "")) for k in ("id", "name")} - {""}
+
+
+def candidates(here: Path) -> list[Path]:
+    """Where to look: this directory, what is in it, and its siblings.
+
+    Both layouts people actually use. Someone inside one repository wants that repository;
+    someone in the directory that HOLDS their repositories wants the ones beside it. Nothing
+    deeper — a recursive walk of a home directory is slow, surprising, and would start matching
+    vendored copies and worktrees.
+    """
+    seen, out = set(), []
+    for path in [here, *sorted(here.iterdir()), *sorted(here.parent.iterdir())]:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not path.is_dir():
+            continue
+        seen.add(resolved)
+        out.append(path)
+    return out
+
+
+def is_repo(path: Path) -> bool:
+    """`.git` is a directory in a clone and a FILE in a worktree, and a fleet spends its life
+    in worktrees — testing for a directory would skip exactly the working copies this tool
+    exists to serve."""
+    return (path / ".git").exists()
+
+
+def match(projects: list[dict], here: Path) -> tuple[dict, list[dict]]:
+    """`({project_id: repo}, notes)` — what to set up, and everything ambiguous or missing.
+
+    AMBIGUITY IS REFUSED, never broken by a rule. Two directories named for one project, or
+    one directory that answers to two projects, both mean the guess would be a coin toss, and
+    a credential minted into the wrong repository is not a mistake anybody notices quickly.
+    """
+    repos = [p for p in candidates(here) if is_repo(p)]
+    by_project, notes = {}, []
+    claimed: dict[Path, list[str]] = {}
+    for project in projects:
+        pid = str(project.get("id") or "")
+        if not pid:
+            continue
+        hits = [r for r in repos if slug(r.name) in names(project)]
+        if not hits:
+            notes.append(_line("match", UNKNOWN, pid, "no directory here is named for it"))
+            continue
+        if len(hits) > 1:
+            notes.append(_line("match", UNKNOWN, pid,
+                               "several directories answer to that name, so none was chosen: "
+                               + ", ".join(str(h) for h in hits)))
+            continue
+        by_project[pid] = hits[0]
+        claimed.setdefault(hits[0].resolve(), []).append(pid)
+    for repo, pids in claimed.items():
+        if len(pids) > 1:
+            notes.append(_line("match", UNKNOWN, str(repo),
+                               "answers to several projects, so none was chosen: "
+                               + ", ".join(sorted(pids))))
+            for pid in pids:
+                by_project.pop(pid, None)
+    return by_project, notes

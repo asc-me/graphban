@@ -54,14 +54,23 @@ so the CLI refuses rather than write a password into the scrollback. **Do not** 
 around it — no piping a password in, no password in a command, no hunting for one in the
 environment or a file. Wait, then resume at `gban setup` yourself.
 
-**If `gban setup` reports the supervisor missing**, that is the other line a person runs — it
-installs software, and it will not prompt in your shell because there is no tty to answer:
+`gban setup` installs the supervisor itself — typing the command is the consent, so it does
+not stop to ask. If it reports `UNKNOWN supervisor`, read the reason it gives: **uv missing**
+and **installed but not on PATH** are different problems with different fixes, and only the
+first one needs a person:
 
-> Optional, only if you want to spawn children on this machine:
+> Only if setup said uv is missing:
 >
 >     ! uv tool install graphban-fleet
 
-Delegation records perfectly well without it; the supervisor is what runs the child locally.
+Delegation records perfectly well without a supervisor. It is what runs the child on this
+machine, so a missing one is not a failed setup.
+
+**Several projects at once.** If the person has more than one project and their repositories
+sit side by side, `gban setup --auto` does all of them: it matches this directory, what is in
+it, and its siblings against their project names. A project carries no repository link, so
+that is a match and not a lookup — it refuses every ambiguity rather than guessing, and names
+each project it could not place. Read those lines out; they are the ones needing a decision.
 
 **When setup passes, ask for a restart and stop.** MCP servers are read at startup, so the
 tools cannot appear in the session that configured them, however correct the config is. Say
