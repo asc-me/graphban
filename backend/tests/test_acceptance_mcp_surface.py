@@ -185,6 +185,23 @@ def test_closing_with_every_section_dispositioned_succeeds(client, mcp_headers, 
     assert out["mode"] == "mechanical" and "not assessed" in out["disclosure"]
 
 
+def test_a_judged_close_answers_with_a_string_disclosure(client, mcp_headers, approved, monkeypatch):
+    """The outputSchema declares `disclosure` a string. A judged close has nothing to
+    disclose and the service records None — correct for the record, wrong on the wire: a
+    strict MCP client validates the reply against the schema and reports an error for a
+    close that succeeded (seen closing PRD-39). The wire says "" for a judged close."""
+    from app.services import prds as prd_svc
+
+    monkeypatch.setattr(prd_svc, "close_readiness", lambda *a, **k: {
+        "can_close": True, "mode": "judged", "judge": "ready", "blocked_on": None,
+        "disclosure": None})
+    out = _ok(_call(client, mcp_headers, "close_prd", {
+        "prd_id": approved.key, "verdict": "judged and delivered",
+        "dispositions": [{"section": "Judging", "disposition": "deferred", "reason": "no"}]}))
+    assert out["mode"] == "judged"
+    assert isinstance(out["disclosure"], str) and out["disclosure"] == ""
+
+
 def test_a_closed_prd_refuses_a_rebaseline_over_mcp(client, mcp_headers, approved):
     """Terminal means terminal at every surface, not just the one with a UI in front."""
     _ok(_call(client, mcp_headers, "close_prd", {
