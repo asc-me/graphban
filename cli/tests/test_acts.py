@@ -164,7 +164,7 @@ INVOCATIONS = {
 #: Driven separately: `login` sends a password (its own test), `doctor` and `fleet` are PR 2,
 #: `setup` writes config files and so needs a repository and a target of its own
 #: (`test_setup.py`, which makes the same route-documentation assertion this file does).
-NOT_DRIVEN_HERE = {"login", "doctor", "fleet", "setup"}
+NOT_DRIVEN_HERE = {"login", "doctor", "fleet", "setup", "swamp"}
 
 
 def _documented() -> list[re.Pattern]:

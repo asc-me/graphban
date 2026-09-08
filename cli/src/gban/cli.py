@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from gban import config, doctor as doctor_mod, setup as setup_mod
+from gban import config, doctor as doctor_mod, setup as setup_mod, swamp as swamp_mod
 from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
                        Refused, Unreachable, authenticated, login)
@@ -72,6 +72,21 @@ def _parser() -> argparse.ArgumentParser:
              "lookup")
     setup_cmd.add_argument("--no-install", action="store_true",
                            help="do not install the supervisor")
+
+    swamp_cmd = sub.add_parser(
+        "swamp", help="wire this checkout to Swamp's Graphban adapter",
+        description=("Mints the GATE credential — the one that attests completion — and puts "
+                     "it in the Swamp vault and nowhere else. It is deliberately not the "
+                     "agent key `gban setup` writes into your MCP config: an agent that can "
+                     "attest its own work turns the completion gate into theatre, and nothing "
+                     "errors when it does. Does not install Swamp; a remote install script is "
+                     "for a person to read and run."))
+    swamp_do = swamp_cmd.add_subparsers(dest="act")
+    swamp_setup = swamp_do.add_parser("setup", help="init, source, vault, and the gate key")
+    swamp_setup.add_argument("--adapter", default=swamp_mod.DEFAULT_ADAPTER,
+                             help=f"the graphban-swamp checkout (default: {swamp_mod.DEFAULT_ADAPTER})")
+    swamp_setup.add_argument("--no-init", action="store_true",
+                             help="refuse rather than run `swamp repo init` here")
 
     fleet = sub.add_parser(
         "fleet", help="hand off to gbfleet (the supervisor)",
@@ -330,6 +345,37 @@ def _setup_auto(args, url: str, client) -> int:
     return worst
 
 
+def cmd_swamp(args) -> int:
+    """Wire this checkout to Swamp's Graphban adapter (GRPH-796).
+
+    Mints a SECOND credential — the gate key — and puts it in the vault and nowhere else. The
+    agent key `gban setup` writes into the MCP config must never carry `gate`: an agent that
+    can attest its own completion turns the gate into theatre, and nothing errors when it does.
+    """
+    if args.act != "setup":
+        print(f"{PROG}: usage: {PROG} swamp setup", file=sys.stderr)
+        return EXIT_REFUSED
+    url = _server(args)
+    client = authenticated(url, act="swamp setup")
+    repo = Path.cwd()
+    asked = (args.project or os.environ.get(config.PROJECT_ENV) or "").strip()
+    try:
+        project, how = setup_mod.resolve_project(
+            client, repo, asked, config.settings().get("project", ""))
+    except setup_mod.Unresolved as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    lines, code = swamp_mod.setup(client, url, project, repo,
+                                  Path(args.adapter).expanduser(), init=not args.no_init)
+    human = [f"{PROG}: {project} — {how}" if how != "named" else f"{PROG}: {project}",
+             doctor_mod.render(lines)]
+    if code == 0:
+        human.append(f"\n     The gate key is in the vault and in no MCP config. Keep it that "
+                     f"way: an agent that can attest its own work is not gated.")
+    _out({"lines": lines, "ok": code == 0, "project": project}, "\n".join(human), args.as_json)
+    return code
+
+
 def cmd_fleet(args) -> int:
     """A subprocess, never an import (D5).
 
@@ -481,7 +527,7 @@ def cmd_keys(args) -> int:
 
 COMMANDS = {"login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami,
             "doctor": cmd_doctor, "setup": cmd_setup, "fleet": cmd_fleet, "seats": cmd_seats,
-            "agents": cmd_agents, "keys": cmd_keys}
+            "agents": cmd_agents, "keys": cmd_keys, "swamp": cmd_swamp}
 
 
 def main(argv: list[str] | None = None) -> int:
