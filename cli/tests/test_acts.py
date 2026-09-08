@@ -161,8 +161,10 @@ INVOCATIONS = {
     "agents role": ["agents", "role", "a1", "planner"],
     "keys mint": ["keys", "mint", "--role", "worker"],
 }
-#: Driven separately: `login` sends a password (its own test), `doctor` and `fleet` are PR 2.
-NOT_DRIVEN_HERE = {"login", "doctor", "fleet"}
+#: Driven separately: `login` sends a password (its own test), `doctor` and `fleet` are PR 2,
+#: `setup` writes config files and so needs a repository and a target of its own
+#: (`test_setup.py`, which makes the same route-documentation assertion this file does).
+NOT_DRIVEN_HERE = {"login", "doctor", "fleet", "setup"}
 
 
 def _documented() -> list[re.Pattern]:

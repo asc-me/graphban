@@ -166,6 +166,40 @@ def offer_to_install(stream=None) -> bool:
     return bool(find_supervisor())
 
 
+def install_supervisor(timeout: float = 600.0) -> tuple[bool, str]:
+    """Install it, without asking. `(installed, why_not)`.
+
+    `offer_to_install` prompts because it is reached from `gban fleet`, where a person typed a
+    read-only command and did not consent to software being installed. `gban setup` is the
+    other case entirely: it mints a credential and rewrites the harness config, and installing
+    the supervisor is squarely inside what "enable delegation on this project" asks for. So
+    the consent argument is satisfied by the verb rather than by a second prompt — which an
+    agent driving this could not answer anyway.
+
+    Still nothing into `gban`'s own environment: `uv tool install` gives the supervisor its
+    own, which is the only correct answer when `gban` may live in a Homebrew Cellar that brew
+    will replace.
+    """
+    if not shutil.which("uv"):
+        return False, ("uv is not on PATH, so there is nothing to install with — "
+                       "`brew install uv`, or see https://docs.astral.sh/uv/")
+    try:
+        done = subprocess.run(INSTALL_SUPERVISOR.split(), capture_output=True, text=True,
+                              timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"`{INSTALL_SUPERVISOR}` could not run: {exc}"
+    if done.returncode != 0:
+        tail = (done.stderr or done.stdout or "").strip().splitlines()
+        return False, (f"`{INSTALL_SUPERVISOR}` failed ({done.returncode})"
+                       + (f": {tail[-1][:160]}" if tail else ""))
+    if not find_supervisor():
+        # It reported success and the binary is not resolvable. Almost always uv's tool bin
+        # directory missing from PATH, which is a real state and not a failed install.
+        return False, ("installed, but `gbfleet` is not on PATH — run `uv tool update-shell` "
+                       "and open a new shell")
+    return True, ""
+
+
 def find_supervisor() -> str:
     """`gbfleet`, from beside this interpreter first and only then from PATH.
 

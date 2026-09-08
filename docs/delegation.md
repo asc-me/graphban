@@ -18,6 +18,31 @@ return: `spawn` gives you an agent id at registration and nothing after it.
 
 ---
 
+## The short version
+
+```bash
+gban login          # you, at a terminal, once. It refuses without a tty, on purpose.
+gban setup          # mints, configures both MCP servers, installs the supervisor,
+                    # writes the delegation skill, and verifies all of it
+gban setup --auto   # …for every project whose repository is here or beside here
+```
+
+Then restart the harness so it reads the new config, and an agent can `delegate(seat=true)`
+and `spawn`.
+
+**An agent can drive all of this.** The `graphban-delegation` skill runs `gban whoami` and
+`gban setup` itself; the only thing it hands back is `! gban login`, because that one needs a
+terminal. It then carries the setup the rest of the way and tells you when to restart. Everything below is what those two commands do and what to read when one of
+them says no — `gban setup` is not a shortcut past understanding it, it is the same steps with
+nothing left to mistype.
+
+The split is worth stating once, because it is not arbitrary: **steps 1 and 2 are yours and
+cannot be delegated** — authenticating and deciding to mint are the authority gate PRD-17 D-e
+keeps on the human side. Everything after them is mechanical, which is why one command can do
+it.
+
+---
+
 ## 0. What has to be true first
 
 **Delegate items, never fragments** (PRD-36 D10). The item needs a title, `touchpoints` and
@@ -33,6 +58,10 @@ properly first.
 
 ## 1. The credential — planner or all-in-one
 
+> `gban setup` does this section, and mints the right kind. Read on if you are doing it by
+> hand, or if setup refused.
+
+
 Two different mechanisms sit in front of the two halves of this, and confusing them wastes
 an afternoon:
 
@@ -44,11 +73,21 @@ an afternoon:
 - **`seat: true` is planner-only**, because it mints. That gate is the real boundary, and it
   is the one this runbook needs.
 
+**Two kinds of credential, and picking the wrong one is the mistake to avoid.**
+
 ```bash
-gban keys mint --role planner --wave wave-1 --label "planner"
+gban setup                                     # a project credential. Does NOT expire.
+gban keys mint --role planner --wave wave-1    # a WAVE credential. Expires in a day.
 ```
 
-`mint_fleet_key` attaches the `fleet` and `prd` tool tiers to a planner or all-in-one
+`gban keys mint` posts to `/api/fleet/keys`, which is `mint_fleet_key`, which sets
+`FLEET_KEY_DAYS = 1`. That is right for a wave and wrong for standing delegation up: a
+credential that dies overnight makes "delegation is enabled" quietly stop being true, and the
+symptom is an agent that worked yesterday. **The seat is the object with a TTL** — thirty
+minutes, single use — and that is where expiry belongs. `gban setup` mints an ordinary
+project-scoped key with the same tool tiers and no expiry.
+
+For the wave credential, `mint_fleet_key` attaches the `fleet` and `prd` tool tiers to a planner or all-in-one
 credential without being asked — a planner that could not see `propose_allocation` would
 fail by that tool being *absent*, which reads as it not existing rather than as a missing
 grant. It attaches the `gate` scope only where a worker role is permitted, because a planner
@@ -62,7 +101,8 @@ Two properties of that key are worth knowing before you mint rather than after:
   (`--role worker --role planner`). Narrow stays the default because a one-role key is a
   real bound — it is what stops a client config from registering a worker as a planner.
 - **A fleet key lasts one day** (`FLEET_KEY_DAYS`). It is a wave credential, not an
-  installation credential, and "End wave" sweeps it.
+  installation credential, and "End wave" sweeps it. This is the single most common reason a
+  fleet that worked yesterday does not today.
 
 ---
 
