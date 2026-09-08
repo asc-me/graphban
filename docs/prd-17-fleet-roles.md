@@ -9,7 +9,7 @@ had recorded the approval for eleven days and every slice shipped against it.
 > **Role vocabulary superseded (PRD-39 S3).** The three-role model in this document
 > (`planner` / `worker` / `reviewer`) is no longer the active vocabulary. `reviewer` merged
 > into `worker`; the authority axis is now `planner | worker`. The self-review ban survives
-> — it is keyed on authorship (`claimed_by != caller`), not on role. The supervision axis
+> — it is keyed on authorship (`built_by != caller`, at `claim_review` and again at `sign_off`), not on role. The supervision axis
 > (`deterministic` default, `driven` escalation) is named in PRD-39 D-e. The decisions below
 > are history; the role table in §4 and the gate descriptions that name `reviewer` as a
 > separate role are kept as-is for the record.

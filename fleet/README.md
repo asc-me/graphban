@@ -100,6 +100,13 @@ at registration, PRD-36). Both are what `until` says when it mints a seat itself
 you say them. A mistyped token refuses the whole file before any worktree is cut, and
 `doctor --seats-file` refuses it the same way.
 
+These are the two **supervision modes** PRD-39 D-e names, and the cheap one is the default.
+`deterministic` — `gbfleet up` with the seats you minted, or `gbfleet until`, which mints just
+in time and stops when there is no ready work, no unsigned review and no live lease — runs the
+wave with **no LLM in the loop**. `driven` is the escalation: a planner holding this local
+server beside the remote one, a frontier context polling and adjudicating bounces for the
+length of the wave. `doctor` prints which one you are set up for.
+
 Or hand the local surface to a planner over stdio:
 
 ```bash
@@ -128,8 +135,7 @@ divvy no longer decides what its children claim. The outcome comes back through 
 `src/gbfleet/matrix.toml`, a committed table of harness × model × lane × tier rows
 with a status (`verified`, `unverified`, `failed`, `unregistered`) and the item that proved
 it — facts only, reviewed like code. Resolution runs in a fixed order: the rows for the
-tier → the project's policy (`local_only`, `allowed_harnesses`,
-`reviewer_cross_vendor`) → the user's profile (an ordered allowlist of harnesses, weights
+tier → the project's policy (`local_only`, `allowed_harnesses`) → the user's profile (an ordered allowlist of harnesses, weights
 over `cost`/`quality`/`latency`/`locality`, excludes) → `failed` rows out → what this
 machine has installed → score → ties (verified first, then the user's own order, then the
 row's `order`). Profile and policy come from the server: `gbfleet mcp` and `gbfleet until`
@@ -137,8 +143,8 @@ read them off `fleet_status` **once at launch** (a change is read at the next la
 D16) — the profile is the API key owner's, with a per-project override, edited in the Fleet
 view under the Wave tab; the policy is the project's. A key whose owner has no profile, or a
 server that cannot be reached at launch, resolves on matrix order and policy alone and the
-explanation says `profile: none`. A spawn for review may pass `builder_vendor` so a project's
-`reviewer_cross_vendor` rule can drop the builder's vendor. Every spawned child is told, in the same sentence
+explanation says `profile: none`. Cross-vendor review is the server's preference at `claim_review`,
+not a matrix rule: `reviewer_cross_vendor` left with the `role` axis (PRD-39 S5). Every spawned child is told, in the same sentence
 as its enrolment code, to register with `capabilities={vendor, model?, tier}` for what the
 supervisor actually launched (GRPH-732), so the ledger can attribute its outcome; only a NAMED
 model is declared, since a vendor default is unknowable from here. Measured `quality` and `latency`
