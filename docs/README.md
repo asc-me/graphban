@@ -33,6 +33,7 @@ fully offline with `docker compose up`.
 | --- | --- |
 | [MCP tools](mcp.md) | The 57 MCP tools, JSON-RPC endpoint, API-key auth, error taxonomy, call metering |
 | [Grok Build](grok-build.md) | Connect Grok Build (xAI's coding CLI) to Graphban's MCP + prime it on the loop |
+| [Delegation](delegation.md) | Standing delegation up on a project — the planner credential, the supervisor, `delegate(seat=true)` + `spawn`, and every refusal |
 | [Cursor](cursor.md) | Connect Cursor to Graphban's MCP (user + Cursor 3 Team scope) + the sub-agent fleet |
 | [Swamp](swamp.md) | Set up Graphban + Swamp: gate keys, CI on ubuntu-srv, `@graphban/item-lifecycle` `complete` / `probe` |
 | [Swamp integration](swamp-integration.md) | Design: why the pair is stronger, the attestation port, the licensing boundary, remaining P26 gates |
