@@ -269,14 +269,19 @@ def cmd_doctor(args) -> int:
 def cmd_setup(args) -> int:
     """Everything between a session and a delegating agent, in one act (GRPH-792)."""
     url = _server(args)
+    # THE SESSION FIRST, and the order is the point. Resolving the project first told somebody
+    # who had never logged in that they had "no project" — true about the wrong thing, with
+    # the wrong exit code (1 rather than 3), and it sends a reader hunting for a project id
+    # when the remedy is a person at a terminal. Found by running the built wheel rather than
+    # by a test, because every test here starts from a stored session.
+    client = authenticated(url, act="setup")
     if args.auto:
-        return _setup_auto(args, url)
+        return _setup_auto(args, url, client)
     project = config.resolve(args.project, config.PROJECT_ENV, "project")
     if not project:
         print(f"{PROG}: no project. Pass --project, or run `{PROG} login` again — it names the "
               f"one you can read, or lists them when there are several.", file=sys.stderr)
         return EXIT_REFUSED
-    client = authenticated(url, act="setup")
     lines, code, made = setup_mod.run(client, url, project, Path.cwd(), scope=args.scope,
                                       install=not args.no_install)
     human = [doctor_mod.render(lines)]
@@ -289,13 +294,12 @@ def cmd_setup(args) -> int:
     return code
 
 
-def _setup_auto(args, url: str) -> int:
+def _setup_auto(args, url: str, client) -> int:
     """Every project that has a repository here, each in its own.
 
     Reports what it did NOT match as loudly as what it did. A sweep that silently skipped a
     project would leave somebody believing delegation is enabled everywhere.
     """
-    client = authenticated(url, act="setup")
     projects = client.call("GET", "/api/projects")
     projects = [p for p in (projects if isinstance(projects, list) else []) if isinstance(p, dict)]
     found, notes = setup_mod.match(projects, Path.cwd())

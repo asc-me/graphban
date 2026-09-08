@@ -593,3 +593,23 @@ def test_the_auto_command_refuses_when_it_matches_nothing(tmp_path, monkeypatch,
 
     assert cli_mod.main(["setup", "--auto"]) == 1
     assert "--project" in capsys.readouterr().err
+
+
+def test_setup_with_no_session_says_no_session(tmp_path, monkeypatch, capsys):
+    """Found by running the built wheel, which every test here could not: they all start from
+    a stored session. Resolving the project first reported "no project" and exit 1 to somebody
+    who had simply never logged in — a true statement about the wrong thing, and the wrong
+    remedy for anyone reading the exit code rather than the prose."""
+    from gban import cli as cli_mod
+    from gban.client import EXIT_NO_SESSION, NoSession
+
+    monkeypatch.setenv(config.HOME_ENV, str(tmp_path / "empty"))
+    monkeypatch.delenv(config.PROJECT_ENV, raising=False)
+
+    def refuse(url, act=""):
+        raise NoSession("no stored session", act=act)
+
+    monkeypatch.setattr(cli_mod, "authenticated", refuse)
+
+    assert cli_mod.main(["--server", URL, "setup"]) == EXIT_NO_SESSION
+    assert "login" in capsys.readouterr().err
