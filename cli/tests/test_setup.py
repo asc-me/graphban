@@ -719,3 +719,30 @@ def test_setup_resolves_the_directory_through_the_command(tmp_path, monkeypatch,
 
     assert cli_mod.main(["--server", URL, "setup"]) == 0
     assert seen["project"] == "super-arc", "used the stored default over the directory"
+
+
+def test_a_directory_that_is_not_a_repository_is_flagged_not_refused(tmp_path, wired):
+    """`--auto` skips non-repositories; naming a project directly did not check at all, so one
+    command answered the same question two ways. Only HALF of setup needs a repository — the
+    ledger entry works anywhere, and the supervisor is what cuts worktrees — so this is a
+    finding, not a refusal."""
+    plain, home = tmp_path / "plain", tmp_path / ".claude.json"
+    plain.mkdir()
+
+    lines, code, _ = _run(Server(), plain, home, wired=wired)
+
+    assert code == 0, "a missing repository is not a failed setup"
+    line = next(l for l in lines if l["name"] == "repository")
+    assert line["status"] == "UNKNOWN"
+    assert "worktree" in line["detail"]
+
+
+def test_a_real_repository_says_nothing_about_it(tmp_path, wired):
+    """The control. A finding that fires everywhere is noise, and noise is how a real one gets
+    scrolled past."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    (repo / ".git").mkdir(parents=True)
+
+    lines, _, _ = _run(Server(), repo, home, wired=wired)
+
+    assert not any(l["name"] == "repository" for l in lines)
