@@ -277,14 +277,21 @@ def cmd_setup(args) -> int:
     client = authenticated(url, act="setup")
     if args.auto:
         return _setup_auto(args, url, client)
-    project = config.resolve(args.project, config.PROJECT_ENV, "project")
-    if not project:
-        print(f"{PROG}: no project. Pass --project, or run `{PROG} login` again — it names the "
-              f"one you can read, or lists them when there are several.", file=sys.stderr)
+    # EXPLICIT ONLY. `config.resolve` would fold in the default `gban login` stored, and this
+    # is the one verb where that default is dangerous rather than convenient — see
+    # `setup.resolve_project`.
+    asked = (args.project or os.environ.get(config.PROJECT_ENV) or "").strip()
+    try:
+        project, how = setup_mod.resolve_project(
+            client, Path.cwd(), asked, config.settings().get("project", ""))
+    except setup_mod.Unresolved as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
         return EXIT_REFUSED
     lines, code, made = setup_mod.run(client, url, project, Path.cwd(), scope=args.scope,
                                       install=not args.no_install)
     human = [doctor_mod.render(lines)]
+    if how != "named":
+        human.insert(0, f"{PROG}: {project} — {how}")
     if code == 0:
         human.append(f"\n     delegation is enabled on {project}. An agent can now "
                      f"`delegate(id=…, lane=…, tier=…, seat=true)` then `spawn`.")

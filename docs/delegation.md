@@ -22,7 +22,8 @@ return: `spawn` gives you an agent id at registration and nothing after it.
 
 ```bash
 gban login          # you, at a terminal, once. It refuses without a tty, on purpose.
-gban setup          # mints, configures both MCP servers, installs the supervisor,
+gban setup          # from inside the repo: resolves the project from the directory,
+                    # mints, configures both MCP servers, installs the supervisor,
                     # writes the delegation skill, and verifies all of it
 gban setup --auto   # …for every project whose repository is here or beside here
 ```

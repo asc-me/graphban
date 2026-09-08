@@ -30,11 +30,20 @@ the feature is absent.
 gban whoami
 ```
 
-**If it reports a session**, keep going without asking. Run:
+**If it reports a session**, keep going without asking. From inside the repository the work
+belongs to, run:
 
 ```bash
 gban setup
 ```
+
+`setup` works out the project from **the directory you are in**, matched against the projects
+the deployment says the person can read. It does not fall back to the default `gban login`
+stored — logging in once inside one project must not silently mint a credential for it while
+you stand in another repository. If it says `unable to resolve a project`, it lists what it
+could have matched: pick from that list and re-run with `--project <id>`. Do not guess, and do
+not pass the stored default just because the error mentions it — the error mentions it to
+explain why it was refused.
 
 That mints a project-scoped credential that does not expire, writes the `graphban` and
 `gbfleet` MCP entries where the harness will actually read them, installs the delegation
