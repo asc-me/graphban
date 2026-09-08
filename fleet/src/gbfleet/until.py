@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Callable
 
 from . import adopt as adopt_mod
+from . import deps
+from . import worktree as wt_mod
 from . import observe
 from . import waits as wait_mod
 from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, ToolFailed
@@ -129,6 +131,7 @@ def run(
     mint_tries: int = MINT_TRIES,
     mint_budget: float = MINT_BUDGET_S,
     request: str | None = None,
+    prd: str | None = None,
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
     matrix: "matrix_mod.Matrix | None" = None,
@@ -182,6 +185,7 @@ def run(
                 mint_budget=mint_budget,
                 minted_start=minted,
                 request=request,
+                prd=prd,
                 tiers=tiers or TierTable(),
                 launch_for=launch_for,
                 matrix=matrix,
@@ -259,6 +263,7 @@ def _loop(
     mint_budget: float,
     minted_start: int,
     request: str | None = None,
+    prd: str | None = None,
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
     matrix: "matrix_mod.Matrix | None" = None,
@@ -275,6 +280,15 @@ def _loop(
     mint_deadline = time.monotonic() + mint_budget
     mint_left = mint_tries
     review_fails = 0
+
+    # GRPH-798: the ref children are cut from, resolved once and FETCHED once. A
+    # remote-tracking ref is only as fresh as the last fetch, so skipping this would measure
+    # every dependency as already merged — the same absence-reads-as-clean failure the stale
+    # check in `supervisor` exists to avoid, on the check built to stop it.
+    remote = wt_mod.remote_for(repo)
+    base = wt_mod.default_ref(repo, remote) if remote else ""
+    if base:
+        wt_mod.refresh_ref(repo, remote, base)
 
     while True:
         watch_tick(wave, children, limits, supervisor, debug=debug, persist=persist)
@@ -321,7 +335,7 @@ def _loop(
 
         try:
             need = _wanted_workers(planner, supervisor, live_n=len(live),
-                                   max_workers=limits.max_workers)
+                                   max_workers=limits.max_workers, prd=prd)
         except ServerUnreachable:
             # D-i: no new spawns while unreachable. Live children run to their lease.
             if not live:
@@ -335,7 +349,7 @@ def _loop(
             # Re-read before minting into a cluster that just filled (allocation race).
             try:
                 need = _wanted_workers(planner, supervisor, live_n=len(live),
-                                       max_workers=limits.max_workers)
+                                       max_workers=limits.max_workers, prd=prd)
             except ServerUnreachable:
                 sleep(poll)
                 continue
@@ -346,7 +360,8 @@ def _loop(
             # the child claims the seed rather than whatever the divvy hands it. When the
             # server refused a bound seat (areas held) the delegation stands without one
             # and the seat is minted as before; when nothing was delegable, likewise.
-            seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated, request)
+            seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
+                                              request, prd, repo, base)
             if code:
                 seat = Seat(code=code, server_url=server, api_key=api_key, role="worker",
                             item=seed)
@@ -493,12 +508,27 @@ def _spawn_one(
         raise ConfigError(wave.failures[-1])
 
 
+def _scope(prd: str | None) -> dict:
+    """The wave's work filter, as `collision_clusters` arguments (GRPH-797).
+
+    One function rather than an inline dict at each call site, because the two sites decide
+    DIFFERENT things — what to delegate, and how many workers are wanted — and a filter applied
+    to one and not the other would size the fleet for work it then refuses to hand out.
+
+    Empty when unscoped, so an unfiltered run sends exactly what it sent before.
+    """
+    return {"prd_id": prd} if prd else {}
+
+
 def _delegate_next(
     planner: Graphban,
     agent_id: str,
     wave_name: str,
     delegated: set[str],
     request: str | None,
+    prd: str | None = None,
+    repo: Path | None = None,
+    base: str = "",
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -513,7 +543,7 @@ def _delegate_next(
     `expired` on Live rather than being papered over here.
     """
     try:
-        clusters = planner.call("collision_clusters")
+        clusters = planner.call("collision_clusters", **_scope(prd))
     except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
         observe.emit("delegate_skipped", detail=f"collision_clusters: {exc}")
         return None, None, None
@@ -522,9 +552,27 @@ def _delegate_next(
         if not isinstance(cluster, dict) or cluster.get("held_by"):
             continue
         items = [i for i in (cluster.get("items") or []) if isinstance(i, str) and i]
-        if items and items[0] not in delegated:
-            seed = items[0]
-            break
+        if not items or items[0] in delegated:
+            continue
+        candidate = items[0]
+        # GRPH-798. A child branches from `base`, so an item whose finished dependency is not
+        # THERE would be built without it. SKIPPED, not fatal: the rest of the wave is still
+        # buildable, and stopping would turn one unmerged branch into an idle fleet.
+        absent, unknown = deps.check(planner, candidate, repo, base) if base else ([], [])
+        if absent:
+            observe.emit("delegate_held", item=candidate,
+                         detail=deps.explain(candidate, absent, base))
+            # Marked delegated so the next tick does not re-offer it and spin. It is held for
+            # this wave, not refused forever — a merge changes the answer.
+            delegated.add(candidate)
+            continue
+        for row in unknown:
+            # Reported and NOT acted on. "I have never seen that commit" is not evidence that
+            # the work is missing, and refusing on it would stop every wave on a fresh clone.
+            observe.emit("dependency_unresolved", item=candidate,
+                         detail=f"{row['id']}'s commit is not in this clone; not checked")
+        seed = candidate
+        break
     if seed is None:
         return None, None, None
     try:
@@ -578,6 +626,7 @@ def _cap_children(wave, limits) -> None:
 
 def _wanted_workers(
     planner: Graphban, supervisor: Graphban, *, live_n: int, max_workers: int,
+    prd: str | None = None,
 ) -> int:
     """How many more workers to start. Cold start reads clusters; a live roster reads the mix."""
     # READY WORK BOUNDS EVERYTHING. `propose_allocation` describes the roster, not the
@@ -588,7 +637,7 @@ def _wanted_workers(
     # 63 registrations against a project with nothing left to do — and `--max-children`
     # never bound. Review work is not this function's job: the unheld-review branch in the
     # loop spawns for that, once, and counts its own failures.
-    clusters = planner.call("collision_clusters")
+    clusters = planner.call("collision_clusters", **_scope(prd))
     total = int(clusters.get("total") or 0)
     if total <= 0:
         return 0

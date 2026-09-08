@@ -1692,6 +1692,39 @@ _GATE_ONLY_ARGS = {"head_commit": {"type": "string",
                                   "description": "gate: commit an adapter last observed."}}
 
 
+#: `collision_clusters` gains this for FLEET keys only (GRPH-797). Scoping a wave to one PRD
+#: is a planner's need, and carrying the property on every agent's manifest put the full
+#: surface 6 tokens over the ceiling — which is the pinned footprint test doing its job and
+#: naming this exact remedy: "what you are adding should probably be gated to the keys that can
+#: use it rather than carried by every agent".
+#:
+#: Advertisement, never a boundary, the same as `_with_attestation` below: the dispatcher reads
+#: `prd_id` from any caller that sends it. A key without the fleet tier simply is not told the
+#: filter exists.
+_FLEET_ONLY_ARGS = {
+    "collision_clusters": {"prd_id": {"type": "string", "description": "Only this PRD's work."}},
+}
+
+
+def _with_fleet_args(tools: list[dict]) -> list[dict]:
+    """`tools` with the fleet-only filters added, for keys carrying the `fleet` tier.
+
+    Deep-copies what it edits, for the reason `_with_attestation` states: TOOLS is
+    module-level and shared, so mutating it would leak the property into every subsequent
+    caller's manifest — including the ordinary agents this exists to keep it away from.
+    """
+    out: list[dict] = []
+    for t in tools:
+        extra = _FLEET_ONLY_ARGS.get(t["name"])
+        if not extra:
+            out.append(t)
+            continue
+        widened = copy.deepcopy(t)
+        widened["inputSchema"].setdefault("properties", {}).update(copy.deepcopy(extra))
+        out.append(widened)
+    return out
+
+
 def _with_attestation(tools: list[dict]) -> list[dict]:
     """`tools` with the attestation-only evidence fields added, for gate-scoped keys.
 
@@ -1782,7 +1815,10 @@ def _tiered(tools: list[dict], key: ApiKey) -> list[dict]:
     """
     granted = list(key.tool_tiers or ()) + settings.default_tool_tier_list
     keep = set(tool_tiers.visible([t["name"] for t in tools], granted))
-    return [t for t in tools if t["name"] in keep]
+    kept = [t for t in tools if t["name"] in keep]
+    # A wave filter is a planner's need, so it rides the tier that already means "running a
+    # fleet" rather than every agent's manifest (GRPH-797).
+    return _with_fleet_args(kept) if "fleet" in granted else kept
 
 
 def _missing_tiers(key: ApiKey) -> list[str]:
@@ -2621,7 +2657,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "collision_clusters":
         from app.services import collision as collision_svc
 
-        clusters = collision_svc.clusters_for_project(db, pid, args.get("status"))
+        clusters = collision_svc.clusters_for_project(db, pid, args.get("status"),
+                                                      prd_id=args.get("prd_id"))
         # Rendered keys, not stored ids — an agent quotes these back and `services/keys`
         # resolves them (PRD-13). The service layer works in stored ids because that is what
         # is frozen; the boundary is where they become the tag-rendered form.
