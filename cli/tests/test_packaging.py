@@ -183,3 +183,31 @@ def test_the_readme_ships_and_none_of_its_links_are_repo_relative():
                 if not t.startswith(("http://", "https://", "mailto:", "#"))]
     assert not relative, (
         f"cli/README.md ships to PyPI, where these resolve to nothing: {relative}")
+
+
+def test_the_install_the_tool_prints_is_the_one_the_readme_gives():
+    """It has been wrong twice: first naming a PyPI package that did not exist, then a git
+    spec that worked and stopped being the right advice the moment `graphban-fleet` was
+    published. A remedy a tool prints is a promise, and the README is where the promise is
+    maintained — so they are checked against each other rather than both against memory.
+
+    Sabotage: change either and this fails."""
+    from gban.doctor import INSTALL_SUPERVISOR
+
+    readmes = ((CLI / "README.md").read_text(encoding="utf-8")
+               + (REPO / "fleet" / "README.md").read_text(encoding="utf-8"))
+    assert INSTALL_SUPERVISOR in readmes, (
+        f"gban prints {INSTALL_SUPERVISOR!r}, which neither README tells anyone to run")
+
+
+def test_the_printed_install_names_a_package_that_is_actually_published():
+    """The distribution name in the command must be one this repository builds. Checked
+    against the pyprojects rather than against PyPI, because a test that reaches the network
+    fails for reasons that have nothing to do with the code."""
+    from gban.doctor import INSTALL_SUPERVISOR
+
+    built = {tomllib.loads((REPO / d / "pyproject.toml").read_text())["project"]["name"]
+             for d in ("cli", "fleet")}
+    named = [w for w in INSTALL_SUPERVISOR.split() if w.startswith("graphban")]
+    assert named, f"{INSTALL_SUPERVISOR!r} names no package at all"
+    assert set(named) <= built, f"{named} is not built here; built are {sorted(built)}"

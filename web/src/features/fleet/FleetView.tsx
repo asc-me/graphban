@@ -132,13 +132,11 @@ function primeSnippet(role: string, seat?: string, project?: string) {
  */
 const ADAPTERS = ["claude", "cursor-agent", "gbagent", "grok"] as const;
 
-/** Installing the two local tools. Neither is on PyPI yet, so the spec is a git URL and a
- *  subdirectory — one package each, because `gban` installs on laptops that never run a wave
- *  and pulls nothing, while `gbfleet` brings httpx and its transitives. */
-const INSTALL_SUPERVISOR =
-  'uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=fleet"';
-const INSTALL_CLI =
-  'uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=cli"';
+/** Installing the two local tools. One package each: `gban` installs on laptops that never
+ *  run a wave and pulls nothing, while `gbfleet` brings httpx and its transitives — and
+ *  `gbagent` rides along with the supervisor rather than being a package of its own. */
+const INSTALL_SUPERVISOR = "uv tool install graphban-fleet";
+const INSTALL_CLI = "uv tool install graphban-cli";
 
 /**
  * Handing the seats to a supervisor (GRPH-556, PRD-22).

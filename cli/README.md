@@ -11,32 +11,50 @@ Specified by [PRD-40](https://github.com/asc-me/graphban/blob/main/docs/prd-40-g
 
 ## Install
 
-Not on PyPI yet, so it installs from the repository. `uv tool install` puts it on your PATH
-in its own environment, which is what you want for a CLI:
+```bash
+uv tool install graphban-cli
+```
+
+Add the supervisor too if you run waves — a separate package, and `gban fleet` hands off to it:
+
+```bash
+uv tool install graphban-fleet
+```
+
+That also gives you `gbagent`, the first-party coding agent: it is an entry point of
+`graphban-fleet`, not a package of its own, because the supervisor resolves it on PATH like
+any other vendor binary.
+
+`uv tool update-shell` once, if uv says the bin directory is not on your PATH.
+`uv tool upgrade --all` to move both forward.
+
+Two commands rather than one, and an extra (`graphban-cli[fleet]`) is deliberately not
+offered: `uv tool install` exposes only the REQUESTED package's executables, so an extra
+installs `gbfleet` into `gban`'s environment and puts it on no path at all. Measured — with
+the extra, `gban fleet` reported "gbfleet is not installed here" while `gbfleet` sat in the
+very environment it was running from.
+
+`gban` pulls **nothing**: `client.py` is `urllib.request` throughout, and the install lands
+exactly one distribution. `gbfleet` brings httpx and its transitives, which is why they are
+separate packages and not one.
+
+With pip instead, into an environment you already have:
+
+```bash
+pip install graphban-cli
+```
+
+`gban` looks for `gbfleet` beside its own interpreter before falling back to PATH, so that
+shape works with neither on PATH.
+
+To run an unreleased change, install from the repository instead — the same spec the release
+builds from:
 
 ```bash
 uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=cli"
 ```
 
-Add `gbfleet` too if you run waves — it is a separate package, and `gban fleet` hands off to it:
-
-```bash
-uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=fleet"
-```
-
-`uv tool update-shell` once, if uv says the bin directory is not on your PATH. Upgrade either
-with `uv tool upgrade graphban-cli` (or `--all`); reinstalling from the same URL also works,
-since the spec is a branch rather than a pin.
-
-With pip instead, into an environment you already have:
-
-```bash
-pip install "graphban-cli @ git+https://github.com/asc-me/graphban.git#subdirectory=cli"
-```
-
-`gban` pulls **nothing**: `client.py` is `urllib.request` throughout, and the install lands
-exactly one distribution. `gbfleet` brings httpx and its four transitive dependencies, which
-is why they are separate packages and not one.
+Releasing is [docs/releasing.md](https://github.com/asc-me/graphban/blob/main/docs/releasing.md).
 
 ```bash
 gban login --server https://cloud.agentldgr.dev

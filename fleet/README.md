@@ -62,20 +62,28 @@ interface only**, not the supervisor.
 
 ## Install
 
-Not on PyPI yet, so it installs from the repository:
+```bash
+uv tool install graphban-fleet
+```
+
+That gives you `gbfleet` and `gbagent` — the coding agent is an entry point of this package
+rather than one of its own, because the supervisor resolves it on PATH like any other vendor
+binary. `uv tool update-shell` once if uv says its bin directory is not on your PATH, and
+`uv tool upgrade graphban-fleet` to move it forward.
+
+[`gban`](https://github.com/asc-me/graphban/blob/main/cli/README.md), the client for a human
+at a terminal, is `uv tool install graphban-cli` — a separate package because it installs on
+laptops that never run a wave and pulls no dependencies at all.
+
+To run an unreleased change:
 
 ```bash
 uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=fleet"
 ```
 
-That gives you `gbfleet` and `gbagent`. `uv tool update-shell` once if uv says its bin
-directory is not on your PATH, and `uv tool upgrade graphban-fleet` to move it forward — the
-spec tracks a branch, so an upgrade is not automatic and a fix landing here does not reach a
-machine until somebody asks for it.
-
-[`gban`](https://github.com/asc-me/graphban/blob/main/cli/README.md), the client for a human at a terminal, is a separate package —
-`#subdirectory=cli` — because it installs on laptops that never run a wave and must stay
-dependency-free.
+Releasing is [docs/releasing.md](https://github.com/asc-me/graphban/blob/main/docs/releasing.md):
+the tag names the package, and the workflow refuses a tag whose version disagrees with the
+pyproject.
 
 ## Running it
 
