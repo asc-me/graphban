@@ -334,8 +334,9 @@ Two distinctions the payload carries:
 - **`never` is not `stale`.** A credential that has never pushed is a link somebody set up
   and did not finish; one that pushed a month ago is a box that stopped. Different actions.
 - **A revoked credential stays listed**, marked. A retired deployment is history, not
-  noise. (Gap: `DELETE /api/api-keys/{id}` hard-deletes, so a credential retired that way
-  does vanish; only the soft revoke used by the fleet sweeps keeps the row.)
+  noise — and every retirement path keeps the row as of GRPH-788, `DELETE
+  /api/api-keys/{id}` included. It sets `revoked` rather than dropping the row, which is
+  what the fleet sweeps have always done.
 
 ## Teams (hosted only, PRD-21 D5)
 
@@ -441,7 +442,7 @@ Two response fields carry a distinction the UI depends on:
 | --- | --- | --- |
 | GET | `/api/api-keys` | JWT |
 | POST | `/api/api-keys` | JWT (plaintext returned once) |
-| DELETE | `/api/api-keys/{id}` | JWT |
+| DELETE | `/api/api-keys/{id}` | JWT — **revokes**; the row stays, marked `revoked`, and authenticates no one |
 
 ## Reports (upstream feedback)
 

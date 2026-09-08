@@ -898,8 +898,16 @@ export function ApiKeysPanel() {
     }
   }
   async function revoke(id: string) {
-    await api.revokeApiKey(id);
-    qc.invalidateQueries({ queryKey: keys.apiKeys });
+    // The catch is the point, not decoration. This was a bare await, so when the request
+    // failed — which it did for every key that had ever made a call (GRPH-788) — the click
+    // produced no toast, no error and no change, and the button read as doing nothing.
+    setError("");
+    try {
+      await api.revokeApiKey(id);
+      qc.invalidateQueries({ queryKey: keys.apiKeys });
+    } catch (e) {
+      setError(errorDetail(e, "Could not revoke the key."));
+    }
   }
 
   return (
@@ -1162,9 +1170,11 @@ export function ApiKeysPanel() {
                   <Plug size={14} />
                 </button>
               )}
-              <button className="text-faint hover:text-st-blocked" onClick={() => revoke(k.id)} title="Revoke">
-                <Trash2 size={14} />
-              </button>
+              {k.revoked
+                ? <span className="font-mono text-[9.5px] uppercase tracking-wide text-faint">revoked</span>
+                : <button className="text-faint hover:text-st-blocked" onClick={() => revoke(k.id)} title="Revoke">
+                    <Trash2 size={14} />
+                  </button>}
             </div>
             {openDetails === k.id && <MintedWith k={k} projectName={projectName} />}
             {connectId === k.id && (
@@ -1235,9 +1245,11 @@ export function ApiKeysPanel() {
                   <Plug size={14} />
                 </button>
               )}
-              <button className="text-faint hover:text-st-blocked" onClick={() => revoke(k.id)} title="Revoke">
-                <Trash2 size={14} />
-              </button>
+              {k.revoked
+                ? <span className="font-mono text-[9.5px] uppercase tracking-wide text-faint">revoked</span>
+                : <button className="text-faint hover:text-st-blocked" onClick={() => revoke(k.id)} title="Revoke">
+                    <Trash2 size={14} />
+                  </button>}
             </div>
             {openDetails === k.id && <MintedWith k={k} projectName={projectName} />}
             {connectId === k.id && (
@@ -1271,12 +1283,14 @@ export function ApiKeysPanel() {
               </span>
               <span className="ml-auto text-[11px] text-faint">{projectName(k.project_id ?? null)}</span>
               <MintedWithToggle open={openDetails === k.id} onClick={() => setOpenDetails(openDetails === k.id ? null : k.id)} />
-              <button
-                onClick={() => revoke(k.id)}
-                className="rounded px-1.5 py-0.5 text-[11px] text-muted hover:text-st-blocked"
-              >
-                Revoke
-              </button>
+              {k.revoked
+                ? <span className="px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-faint">revoked</span>
+                : <button
+                    onClick={() => revoke(k.id)}
+                    className="rounded px-1.5 py-0.5 text-[11px] text-muted hover:text-st-blocked"
+                  >
+                    Revoke
+                  </button>}
             </div>
             {openDetails === k.id && <MintedWith k={k} projectName={projectName} />}
           </div>
@@ -1410,7 +1424,12 @@ function KeyGroup({
       <p className="mb-2.5 max-w-[74ch] text-[11.5px] leading-relaxed text-muted">{blurb}</p>
       <div className="space-y-2">
         {rows.map((k) => (
-          <div key={k.id} className="rounded-[11px] border border-line-2 bg-surface-2">
+          // Greyed rather than hidden, the way FleetView renders a dead credential: a key
+          // that End wave or `revoke-expired` killed is history, and dropping it would make
+          // a deliberately revoked credential look like one that never existed.
+          <div key={k.id}
+               className={cn("rounded-[11px] border border-line-2 bg-surface-2",
+                             k.revoked && "opacity-50")}>
             {children(k)}
           </div>
         ))}

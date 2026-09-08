@@ -51,6 +51,8 @@ const proj = (id: string): Project => ({
 
 let keyList: ApiKey[] = [];
 
+const revokeApiKey = vi.fn(async (_id: string) => undefined);
+
 // Declared WITH parameters so `mock.calls[0][3]` is typed — a no-arg `vi.fn` gives an empty
 // tuple, and indexing it passes the test while failing the typecheck.
 const createApiKey = vi.fn(
@@ -68,7 +70,7 @@ vi.mock("@/lib/api", () => ({
     // cache, where mutating it in place means the cache can never be stale.
     apiKeys: vi.fn(async () => [...keyList]),
     createApiKey: (...a: Parameters<typeof createApiKey>) => createApiKey(...a),
-    revokeApiKey: vi.fn(async () => undefined),
+    revokeApiKey: (...a: Parameters<typeof revokeApiKey>) => revokeApiKey(...a),
     syncLinks: vi.fn(async () => []),
   },
 }));
@@ -97,6 +99,8 @@ async function mint(kind: string, name = "github-actions") {
 beforeEach(() => {
   keyList = [];
   createApiKey.mockClear();
+  revokeApiKey.mockReset();
+  revokeApiKey.mockResolvedValue(undefined);
 });
 
 describe("minting a gate key", () => {
@@ -436,5 +440,72 @@ describe("docs overlay", () => {
     expect(docFor(settingsPath("project/providers")).title).toBe("AI providers");
     expect(docFor(settingsPath("deployment/providers")).title).toBe("AI providers");
     expect(docFor("/settings").title).toBe("Settings");
+  });
+});
+
+/**
+ * A revoked key is history, not noise (GRPH-788 / GRPH-789).
+ *
+ * `ApiKeyOut` has carried `revoked` since AL-72 and `GET /api-keys` returns every row, but
+ * this panel never read the flag — so a credential killed by End wave or by
+ * `POST /fleet/keys/revoke-expired` rendered identically to a working one. FleetView already
+ * greys its dead credentials; the two views disagreed about the same rows.
+ *
+ * Asserted rather than eyeballed because "looks the same" is precisely the failure: a
+ * screenshot of a list of keys cannot tell you which of them still authenticate.
+ */
+describe("a revoked key does not look live", () => {
+  it("greys the row and offers no revoke control", async () => {
+    keyList = [key({ id: "key_dead", name: "dead one", revoked: true })];
+    view();
+
+    // The OUTERMOST row wrapper: KeyGroup wraps every row and each group's child renders its
+    // own wrapper inside it, so `closest` finds the inner one and the styling is on the outer.
+    const label = await screen.findByText("dead one");
+    const wrappers = Array.from(document.querySelectorAll<HTMLElement>("div"))
+      .filter((d) => d.contains(label) && d.className.includes("rounded-[11px]"));
+    const row = wrappers[0];
+    expect(row.className).toContain("opacity-50");
+    expect(within(row).getByText("revoked")).toBeInTheDocument();
+    expect(within(row).queryByTitle("Revoke")).toBeNull();
+  });
+
+  it("renders a live key differently from a revoked one", async () => {
+    // The control. Both assertions above would also pass if EVERY row were greyed, which
+    // would be the same defect wearing the fix's clothes.
+    keyList = [key({ id: "key_live", name: "live one" })];
+    view();
+
+    expect(await screen.findByTitle("Revoke")).toBeInTheDocument();
+    expect(screen.queryByText("revoked")).toBeNull();
+  });
+});
+
+describe("revoking says so when it fails", () => {
+  it("surfaces the error instead of doing nothing visible", async () => {
+    // The bug: `revoke()` was a bare `await` with no catch, so a failing request produced no
+    // toast, no error and no change — and the request DID fail for every key that had ever
+    // made a call, because the route hard-deleted a row the telemetry FK points at.
+    keyList = [key({ id: "key_used", name: "used one" })];
+    // Shaped like what `request()` actually throws: the raw FastAPI body. Asserting the
+    // fallback string instead would assert the one branch the operator should never see —
+    // the server's own reason is the thing worth putting in front of them.
+    revokeApiKey.mockRejectedValue(new Error(JSON.stringify({ detail: "key not found" })));
+    view();
+
+    await userEvent.setup().click(await screen.findByTitle("Revoke"));
+
+    await waitFor(() => expect(revokeApiKey).toHaveBeenCalledWith("key_used"));
+    expect(await screen.findByText(/key not found/i)).toBeInTheDocument();
+  });
+
+  it("says nothing when it works", async () => {
+    keyList = [key({ id: "key_used", name: "used one" })];
+    view();
+
+    await userEvent.setup().click(await screen.findByTitle("Revoke"));
+
+    await waitFor(() => expect(revokeApiKey).toHaveBeenCalled());
+    expect(screen.queryByText(/key not found/i)).toBeNull();
   });
 });
