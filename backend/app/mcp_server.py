@@ -3095,9 +3095,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "close_prd":
         prd = _writable_prd(db, args["prd_id"], allowed)
         try:
-            return prd_svc.close_prd(
+            out = dict(prd_svc.close_prd(
                 db, prd, dispositions=args["dispositions"], verdict=args.get("verdict", ""),
-                closed_by=f"agent:{key.name or key.id}")
+                closed_by=f"agent:{key.name or key.id}"))
+            # The outputSchema says `disclosure` is a string, and a JUDGED close has no
+            # disclosure to make — the record keeps None so a mechanical close can never be
+            # read as judged, but the wire says "" or a strict client refuses a close that
+            # succeeded. Seen closing PRD-39: the server closed it, the client reported an
+            # error. Reply-side, not schema-side: the schema is manifest.
+            out["disclosure"] = out.get("disclosure") or ""
+            return out
         except (prd_svc.CloseRefused, prd_svc.PrdClosed) as e:
             # Conflict, not validation: the request is well-formed and permitted — the PRD
             # simply is not accounted for yet, and the message says what is outstanding.
