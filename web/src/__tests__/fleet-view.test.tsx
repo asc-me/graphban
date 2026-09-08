@@ -826,9 +826,9 @@ describe("Fleet view", () => {
     await user.click(screen.getByText(/under a supervisor/));
 
     expect(screen.getByText("Install the supervisor, if you have not")).toBeInTheDocument();
-    expect(screen.getByText(/subdirectory=fleet/)).toBeInTheDocument();
+    expect(screen.getByText("uv tool install graphban-fleet")).toBeInTheDocument();
     // And the terminal client, which is a separate package for a reason worth stating.
-    expect(screen.getByText(/subdirectory=cli/)).toBeInTheDocument();
+    expect(screen.getByText("uv tool install graphban-cli")).toBeInTheDocument();
   });
 
   it("keeps the supervisor path collapsed", async () => {

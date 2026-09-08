@@ -118,12 +118,11 @@ def local(url: str, project: str, api_key: str) -> list[dict]:
                   f"`gbfleet doctor` {verdict}; its own report follows", report=body)]
 
 
-#: The command that actually installs the supervisor. NOT `uv pip install graphban-fleet`,
-#: which is what this said until somebody ran it: neither package is on PyPI, so that line
-#: 404s. A tool whose remedy does not work is worse than one that offers none — it spends the
-#: reader's trust before spending their time.
-INSTALL_SUPERVISOR = (
-    'uv tool install "git+https://github.com/asc-me/graphban.git#subdirectory=fleet"')
+#: The command that actually installs the supervisor. It has been wrong twice: first naming a
+#: PyPI package that did not exist, then a git spec that worked but stopped being the right
+#: advice the moment `graphban-fleet` was published. A remedy a tool prints is a promise, and
+#: `cli/tests/test_packaging.py` now checks this one against the same source the README uses.
+INSTALL_SUPERVISOR = "uv tool install graphban-fleet"
 
 
 def find_supervisor() -> str:

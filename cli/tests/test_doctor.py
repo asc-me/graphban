@@ -171,7 +171,7 @@ def test_a_missing_supervisor_says_how_to_install_it(home, monkeypatch, capsys):
     a real gbfleet on the machine running it."""
     monkeypatch.setattr("gban.cli.doctor_mod.find_supervisor", lambda: "")
     assert main(["fleet", "ps"]) == EXIT_NO_SUPERVISOR
-    assert "graphban.git" in capsys.readouterr().err
+    assert doctor.INSTALL_SUPERVISOR in capsys.readouterr().err
 
 
 def test_the_credential_reaches_gbfleet_in_the_environment_never_argv(home, monkeypatch):
@@ -356,8 +356,8 @@ def test_the_install_it_names_is_one_that_exists(home, monkeypatch, capsys):
     monkeypatch.setattr("gban.cli.doctor_mod.find_supervisor", lambda: "")
     assert main(["fleet", "ps"]) == EXIT_NO_SUPERVISOR
     err = capsys.readouterr().err
-    assert "git+https://github.com/asc-me/graphban.git#subdirectory=fleet" in err
-    assert "uv pip install graphban-fleet" not in err
+    assert doctor.INSTALL_SUPERVISOR in err
+    assert "uv pip install graphban-fleet" not in err, "that package name has never existed"
 
 
 def test_the_doctor_names_the_same_install(home, monkeypatch):
@@ -365,7 +365,7 @@ def test_the_doctor_names_the_same_install(home, monkeypatch):
     monkeypatch.setattr("gban.doctor.authenticated", lambda url: _Server())
     lines, _ = doctor.run("http://gb.invalid", "core", "")
     local = [l for l in lines if l["side"] == "local"][0]
-    assert "subdirectory=fleet" in local["detail"]
+    assert doctor.INSTALL_SUPERVISOR in local["detail"]
     assert "uv pip install graphban-fleet" not in local["detail"]
 
 
