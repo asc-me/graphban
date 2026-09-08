@@ -192,6 +192,15 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
         install: bool = True, home: Path | None = None) -> tuple[list[dict], int, dict]:
     """Enable delegation, and report what is now true rather than what was attempted."""
     lines: list[dict] = []
+    if not is_repo(repo):
+        # UNKNOWN rather than a refusal, because only HALF of this needs a repository. The
+        # ledger entry works anywhere; the supervisor cuts worktrees, and `--repo` pointed at
+        # something git does not know is a spawn that fails later, on the first child, with a
+        # git error rather than a setup one. `--auto` already skips non-repositories, so
+        # without this the same command answered the same question two ways.
+        lines.append(_line("config", UNKNOWN, "repository",
+                           f"{repo} is not a git repository — the ledger half is fine, but "
+                           "gbfleet cuts a worktree per child and will refuse here"))
     scope, path, why = target(repo, scope, home)
     if why:
         lines.append(_line("config", UNKNOWN, "scope", why))
@@ -393,3 +402,42 @@ def match(projects: list[dict], here: Path) -> tuple[dict, list[dict]]:
             for pid in pids:
                 by_project.pop(pid, None)
     return by_project, notes
+
+
+class Unresolved(Exception):
+    """The directory does not name a project on this deployment (GRPH-795)."""
+
+
+def resolve_project(client, here: Path, asked: str = "", stored: str = "") -> tuple[str, str]:
+    """Which project this directory belongs to. `(project_id, how)`.
+
+    **The directory decides, and a stored default does not.** `gban login` records a default so
+    that reading verbs have one, and using it here would mean "I logged in once inside project
+    A" silently mints a credential for A while you are standing in B's repository. A key in the
+    wrong project is not a mistake anybody notices quickly, and the fix — pass `--project` —
+    costs a person nothing next to the failure it prevents.
+
+    So: an explicit `--project` or `$GRAPHBAN_PROJECT` wins, because naming one says the thing
+    this function exists to work out. Otherwise the directory is matched against the projects
+    the deployment says you can read, by name. Anything else is refused, including a stored
+    default that happens to exist — which is named in the refusal so it does not look ignored.
+    """
+    if asked:
+        return asked, "named"
+    rows = client.call("GET", "/api/projects")
+    projects = [p for p in (rows if isinstance(rows, list) else []) if isinstance(p, dict)]
+    hits = [p for p in projects if slug(here.name) in names(p)]
+    if len(hits) == 1:
+        return str(hits[0].get("id") or ""), f"matched the directory name {here.name!r}"
+    if len(hits) > 1:
+        raise Unresolved(
+            f"{here.name!r} matches several projects ({', '.join(sorted(str(p.get('id')) for p in hits))}), "
+            "so none was chosen — name one with --project")
+    known = ", ".join(sorted(str(p.get("id") or "") for p in projects)) or "none"
+    raise Unresolved(
+        f"unable to resolve a project: no project here is named {slug(here.name)!r} "
+        f"(you can read: {known})"
+        + (f". A default of {stored!r} is stored from `gban login`, and is deliberately NOT "
+           f"used here — this directory is not its repository. Pass --project {stored} if you "
+           "mean it" if stored else "")
+        + (". Name one with --project" if not stored else ""))

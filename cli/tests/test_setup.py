@@ -593,3 +593,156 @@ def test_the_auto_command_refuses_when_it_matches_nothing(tmp_path, monkeypatch,
 
     assert cli_mod.main(["setup", "--auto"]) == 1
     assert "--project" in capsys.readouterr().err
+
+
+def test_setup_with_no_session_says_no_session(tmp_path, monkeypatch, capsys):
+    """Found by running the built wheel, which every test here could not: they all start from
+    a stored session. Resolving the project first reported "no project" and exit 1 to somebody
+    who had simply never logged in — a true statement about the wrong thing, and the wrong
+    remedy for anyone reading the exit code rather than the prose."""
+    from gban import cli as cli_mod
+    from gban.client import EXIT_NO_SESSION, NoSession
+
+    monkeypatch.setenv(config.HOME_ENV, str(tmp_path / "empty"))
+    monkeypatch.delenv(config.PROJECT_ENV, raising=False)
+
+    def refuse(url, act=""):
+        raise NoSession("no stored session", act=act)
+
+    monkeypatch.setattr(cli_mod, "authenticated", refuse)
+
+    assert cli_mod.main(["--server", URL, "setup"]) == EXIT_NO_SESSION
+    assert "login" in capsys.readouterr().err
+
+
+# ---- resolving the project from the directory (GRPH-795) -----------------------------------------
+
+class Listing:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def call(self, method, path, body=None):
+        assert path == "/api/projects", path
+        return self.rows
+
+
+def test_the_directory_names_the_project(tmp_path):
+    here = tmp_path / "super-arc"
+    here.mkdir()
+
+    pid, how = setup_mod.resolve_project(
+        Listing([{"id": "super-arc", "name": "Super Arc"}, {"id": "core", "name": "GraphBan"}]),
+        here)
+
+    assert pid == "super-arc"
+    assert "super-arc" in how
+
+
+def test_the_directory_can_match_on_the_project_name_too(tmp_path):
+    here = tmp_path / "graphban"
+    here.mkdir()
+
+    pid, _ = setup_mod.resolve_project(Listing([{"id": "core", "name": "GraphBan"}]), here)
+
+    assert pid == "core"
+
+
+def test_an_explicit_project_skips_the_lookup(tmp_path):
+    """Naming one says the thing the match exists to work out."""
+    class Refusing:
+        def call(self, *a, **k):
+            pytest.fail("asked the server after being told the project")
+
+    pid, how = setup_mod.resolve_project(Refusing(), tmp_path / "anything", asked="mine")
+
+    assert (pid, how) == ("mine", "named")
+
+
+def test_no_match_is_an_error_not_a_fallback(tmp_path):
+    here = tmp_path / "somewhere-else"
+    here.mkdir()
+
+    with pytest.raises(setup_mod.Unresolved) as exc:
+        setup_mod.resolve_project(Listing([{"id": "core", "name": "GraphBan"}]), here)
+
+    assert "unable to resolve a project" in str(exc.value)
+    assert "core" in str(exc.value), "did not say what it could have matched"
+
+
+def test_a_stored_default_is_refused_and_named(tmp_path):
+    """THE HAZARD THIS REPLACES. `gban login` stores a default so reading verbs have one.
+    Using it here would mean logging in once inside project A silently mints a credential for
+    A while you are standing in B's repository — and a key in the wrong project is not a
+    mistake anybody notices quickly."""
+    here = tmp_path / "b-repo"
+    here.mkdir()
+
+    with pytest.raises(setup_mod.Unresolved) as exc:
+        setup_mod.resolve_project(Listing([{"id": "a", "name": "A"}]), here, stored="a")
+
+    said = str(exc.value)
+    assert "deliberately NOT used" in said
+    assert "--project a" in said, "refused without saying how to proceed"
+
+
+def test_a_directory_matching_two_projects_is_refused(tmp_path):
+    here = tmp_path / "atlas"
+    here.mkdir()
+
+    with pytest.raises(setup_mod.Unresolved) as exc:
+        setup_mod.resolve_project(
+            Listing([{"id": "atlas", "name": "Atlas"}, {"id": "other", "name": "atlas"}]), here)
+
+    assert "several projects" in str(exc.value)
+
+
+def test_setup_resolves_the_directory_through_the_command(tmp_path, monkeypatch, capsys):
+    """Through the verb, because `resolve_project` being right and `cmd_setup` calling it are
+    different claims."""
+    from gban import cli as cli_mod
+
+    here = tmp_path / "super-arc"
+    here.mkdir()
+    monkeypatch.chdir(here)
+    monkeypatch.setenv(config.HOME_ENV, str(tmp_path / "home"))
+    monkeypatch.delenv(config.PROJECT_ENV, raising=False)
+    config.save_settings(url=URL, project="a-different-project")
+    config.save_session("r", user="a@b.c")
+
+    seen = {}
+    monkeypatch.setattr(cli_mod, "authenticated",
+                        lambda url, act="": Listing([{"id": "super-arc", "name": "Super Arc"}]))
+    monkeypatch.setattr(setup_mod, "run",
+                        lambda client, url, project, repo, **kw: (
+                            seen.update(project=project),
+                            ([_line("config", "PASS", "written", "x")], 0, {}))[1])
+
+    assert cli_mod.main(["--server", URL, "setup"]) == 0
+    assert seen["project"] == "super-arc", "used the stored default over the directory"
+
+
+def test_a_directory_that_is_not_a_repository_is_flagged_not_refused(tmp_path, wired):
+    """`--auto` skips non-repositories; naming a project directly did not check at all, so one
+    command answered the same question two ways. Only HALF of setup needs a repository — the
+    ledger entry works anywhere, and the supervisor is what cuts worktrees — so this is a
+    finding, not a refusal."""
+    plain, home = tmp_path / "plain", tmp_path / ".claude.json"
+    plain.mkdir()
+
+    lines, code, _ = _run(Server(), plain, home, wired=wired)
+
+    assert code == 0, "a missing repository is not a failed setup"
+    line = next(l for l in lines if l["name"] == "repository")
+    assert line["status"] == "UNKNOWN"
+    assert "worktree" in line["detail"]
+
+
+def test_a_real_repository_says_nothing_about_it(tmp_path, wired):
+    """The control. A finding that fires everywhere is noise, and noise is how a real one gets
+    scrolled past."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    (repo / ".git").mkdir(parents=True)
+
+    lines, _, _ = _run(Server(), repo, home, wired=wired)
+
+    assert not any(l["name"] == "repository" for l in lines)

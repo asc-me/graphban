@@ -105,6 +105,13 @@ An agent with the delegation skill runs all of this for you except `gban login`,
 hands back as a `! gban login` line to type — it needs a terminal, and no agent has one — and
 then carries on from where you left it.
 
+**The directory names the project.** Run `setup` from inside the repository the work belongs
+to and it matches that directory against the projects you can read. An explicit `--project`
+wins; nothing else does. In particular the default `gban login` stores is *not* used here and
+is named in the refusal when it exists — logging in once inside one project must not quietly
+mint a credential for it while you are standing in another repository, and a key in the wrong
+project is not a mistake anybody notices quickly.
+
 `setup` mints a project-scoped credential, writes the `graphban` and `gbfleet` MCP entries,
 installs the supervisor if it is missing, drops the delegation skill into `.claude/skills/`,
 and then **verifies** rather than asserting: it asks the new credential what it can actually
