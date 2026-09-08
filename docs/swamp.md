@@ -45,7 +45,11 @@ Ordinary agent keys cannot write one.
 
 - **Reviewer:** mint a **Gate key** (`read`+`write`+`gate`). `sign_off` with a `commit`.
 - **CI:** this repo's `ci` job runs on the self-hosted runner `graphban-ledger` on
-  ubuntu-srv. Repository **variable** `GRAPHBAN_URL=http://127.0.0.1:8080` (origin only —
+  ubuntu-srv. It attests every item key it finds in the PR title and body, so an id cited as
+  BACKGROUND gets a receipt it did not earn. Put `Attests: GRPH-1 GRPH-2` on its own line to
+  name them exactly, or `Attests: none` for a PR that discusses ids without claiming any
+  (GRPH-799). An id from a project this key cannot write is skipped with a warning — unless
+  nothing else was written, which is also what a broken key looks like. Repository **variable** `GRAPHBAN_URL=http://127.0.0.1:8080` (origin only —
   the script appends `/api/mcp`). **Secret** `GRAPHBAN_GATE_KEY` minted **on that
   instance**. Missing settings skip loudly (exit 0); a green log is not evidence of an
   attestation.

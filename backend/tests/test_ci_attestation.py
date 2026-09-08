@@ -394,3 +394,109 @@ def test_the_attestation_step_is_not_unconditional():
     assert "if" not in attest, (
         "the attestation step is conditional; it must inherit the default, which is 'only "
         "if nothing before it failed'")
+
+
+# ---- what a PR CLAIMS, versus what it merely mentions (GRPH-799) -------------------------
+
+class _Server:
+    """A Graphban that accepts its own project's ids and refuses everyone else's, the way the
+    deployed one does — `unauthorized`, "outside this key's project scope"."""
+
+    def __init__(self, mine=("GRPH",), broken=False):
+        self.mine, self.broken, self.written = mine, broken, []
+
+    def __call__(self, url, key, arguments, *, timeout=15.0):
+        item = arguments["id"]
+        if self.broken or not item.split("-")[0] in self.mine:
+            raise attest_ci.OutOfScope(
+                f"{item}: graphban refused the write: "
+                "{'code': 'unauthorized', 'message': \"outside this key's project scope\"}")
+        self.written.append(item)
+
+
+@pytest.fixture()
+def wired(monkeypatch):
+    def _wire(server):
+        monkeypatch.setattr(attest_ci, "_call", server)
+        monkeypatch.setenv("GRAPHBAN_URL", "http://gb.invalid")
+        monkeypatch.setenv("GRAPHBAN_GATE_KEY", "gb_sk_test")
+        return server
+    return _wire
+
+
+def _run(text, mode="head"):
+    return attest_ci.main(["--commit", "a" * 40, "--branch", "b", "--mode", mode,
+                           "--text", text])
+
+
+def test_an_id_from_another_project_no_longer_fails_the_run(wired, capsys):
+    """The defect. A PR that MENTIONED super-arc items turned CI red — the step failed on ids
+    nobody asked it to write, and every other job had passed."""
+    server = wired(_Server())
+
+    code = _run("Fixes GRPH-797. Reported from a wave that touched SA-202 and SA-417.")
+
+    assert code == 0
+    assert server.written == ["GRPH-797"]
+    out = capsys.readouterr().out
+    assert "another project" in out
+    assert "SA-202" in out, "skipped it silently"
+
+
+def test_a_key_that_writes_nothing_still_fails(wired, capsys):
+    """The protection this must not remove. `post` refuses to swallow errors because a
+    misconfigured key that looked like success leaves an item uncompletable with nothing
+    saying why — and a broken key is refused on everything, so nothing succeeds."""
+    wired(_Server(broken=True))
+
+    code = _run("Fixes GRPH-797 and GRPH-798.")
+
+    assert code == 1
+    assert "CI attestation failed" in capsys.readouterr().out
+
+
+def test_the_stated_gap_is_the_stated_gap(wired):
+    """A PR whose every id is foreign still fails, because it is indistinguishable here from
+    a broken key. Asserted rather than left implicit: it is the honest half of an ambiguity,
+    and `Attests: none` is the escape."""
+    wired(_Server())
+
+    assert _run("Only mentions SA-202 and SA-417.") == 1
+
+
+# ---- Attests: names them exactly ------------------------------------------------------------
+
+def test_an_attests_line_beats_the_prose(wired):
+    server = wired(_Server())
+
+    code = _run("Implements GRPH-797. Background: GRPH-397 and GRPH-611 explain why.\n"
+                "Attests: GRPH-797\n")
+
+    assert code == 0
+    assert server.written == ["GRPH-797"], "attested items it was only told about"
+
+
+def test_attests_none_means_none(wired):
+    """A docs PR discussing ids should be able to say so. An empty list is a real answer, and
+    is why `declared` returns None for absence rather than []."""
+    server = wired(_Server())
+
+    code = _run("This explains GRPH-397 and GRPH-611 and changes neither.\nAttests: none\n")
+
+    assert code == 0
+    assert server.written == []
+
+
+def test_without_the_line_nothing_changes(wired):
+    """Opt-in. Every PR written before this landed must mean exactly what it meant."""
+    server = wired(_Server())
+
+    assert _run("Fixes GRPH-797 and GRPH-798.") == 0
+    assert server.written == ["GRPH-797", "GRPH-798"]
+
+
+def test_declared_distinguishes_absent_from_empty():
+    assert attest_ci.declared("no line here") is None
+    assert attest_ci.declared("Attests: none") == []
+    assert attest_ci.declared("Attests: GRPH-1 GRPH-2") == ["GRPH-1", "GRPH-2"]
+    assert attest_ci.declared("attests:   GRPH-1") == ["GRPH-1"], "case-sensitive"
