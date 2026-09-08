@@ -15,7 +15,20 @@ Specified by [PRD-40](https://github.com/asc-me/graphban/blob/main/docs/prd-40-g
 uv tool install graphban-cli
 ```
 
-Add the supervisor too if you run waves — a separate package, and `gban fleet` hands off to it:
+or, on macOS:
+
+```bash
+brew install asc-me/tap/gban
+```
+
+The formula carries no `resource` stanzas — `graphban-cli` has no runtime dependencies, so
+there is nothing to vendor and nothing to regenerate when a transitive moves. The supervisor
+is deliberately not in the tap; see below.
+
+Add the supervisor too if you run waves — a separate package, and `gban fleet` hands off to
+it. At a terminal, `gban fleet` will offer to run this for you when it finds no supervisor;
+it asks first and never installs on a bare return, because a person who typed a read-only
+command did not consent to software being installed:
 
 ```bash
 uv tool install graphban-fleet

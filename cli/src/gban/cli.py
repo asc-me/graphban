@@ -216,9 +216,16 @@ def cmd_fleet(args) -> int:
     """
     binary = doctor_mod.find_supervisor()
     if not binary:
+        # At a terminal, offer to fix it here rather than making the person read a command,
+        # copy it, run it and type this one again. Declined or unavailable, the message is
+        # what it always was.
+        if doctor_mod.offer_to_install():
+            binary = doctor_mod.find_supervisor()
+    if not binary:
         print(f"{PROG}: gbfleet is not installed here. Install it with:\n"
               f"     {doctor_mod.INSTALL_SUPERVISOR}\n"
-              f"     …or run it from the repository's fleet/ directory.", file=sys.stderr)
+              f"     …or `brew install asc-me/tap/gban` installs this client only — the "
+              f"supervisor is a separate package.", file=sys.stderr)
         return EXIT_NO_SUPERVISOR
     argv = [binary, *[a for a in args.rest if a != "--"]]
     url = config.resolve(args.server, config.URL_ENV, "url")

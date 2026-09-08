@@ -404,3 +404,107 @@ def test_both_commands_find_the_supervisor_the_same_way(home):
     for fn in (cli_mod.cmd_fleet, doctor.local):
         assert "find_supervisor" in inspect.getsource(fn), (
             f"{fn.__qualname__} looks for gbfleet some other way")
+
+
+# ---- offering to install the supervisor, never doing it uninvited -----------------------------
+
+class _Tty:
+    """Stdin that claims to be a terminal, so the guard below is not what is under test."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def test_it_never_installs_without_being_asked(home, monkeypatch, capsys):
+    """THE INVARIANT. Installing software is not a side effect anybody should get from
+    `gban fleet ps` — it writes outside this program and a person who typed a read-only
+    command did not consent to it.
+
+    Sabotage: install on a bare return and this fails."""
+    ran = []
+    monkeypatch.setattr("sys.stdin", _Tty())
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr("gban.doctor.subprocess.run", lambda *a, **kw: ran.append(a))
+    monkeypatch.setattr("builtins.input", lambda *_: "")   # a bare return is not a yes
+
+    assert doctor.offer_to_install() is False
+    assert ran == [], "it installed without an explicit yes"
+
+
+def test_a_yes_runs_the_install_and_reports_what_it_found(home, monkeypatch):
+    ran = []
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr("sys.stdin", _Tty())
+    monkeypatch.setattr("gban.doctor.shutil.which",
+                        lambda name: "/usr/bin/uv" if name == "uv" else None)
+    monkeypatch.setattr("gban.doctor.subprocess.run",
+                        lambda argv, **kw: (ran.append(argv), Done())[1])
+    monkeypatch.setattr("builtins.input", lambda *_: "y")
+    monkeypatch.setattr("gban.doctor.find_supervisor", lambda: "/usr/bin/gbfleet")
+
+    assert doctor.offer_to_install() is True
+    assert ran == [["uv", "tool", "install", "graphban-fleet"]]
+
+
+def test_a_failed_install_is_reported_and_not_papered_over(home, monkeypatch, capsys):
+    """Returning True after a failed install would send the caller to look for a binary that
+    is not there, and the second error would describe the wrong thing."""
+    class Died:
+        returncode = 2
+
+    monkeypatch.setattr("sys.stdin", _Tty())
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr("gban.doctor.subprocess.run", lambda *a, **kw: Died())
+    monkeypatch.setattr("builtins.input", lambda *_: "y")
+
+    assert doctor.offer_to_install() is False
+    assert "install failed" in capsys.readouterr().err
+
+
+def test_it_does_not_prompt_where_nobody_can_answer(home, monkeypatch):
+    """A prompt in a script is a hang, and a hang is worse than the error it replaced."""
+    import io
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr("builtins.input",
+                        lambda *_: pytest.fail("it prompted with no terminal"))
+    assert doctor.offer_to_install() is False
+
+
+def test_no_uv_means_no_offer(home, monkeypatch):
+    """The offer names one installer. Without it there is nothing to offer, and the caller's
+    message is the whole answer."""
+    monkeypatch.setattr("sys.stdin", _Tty())
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
+    monkeypatch.setattr("builtins.input",
+                        lambda *_: pytest.fail("it offered an installer it does not have"))
+    assert doctor.offer_to_install() is False
+
+
+def test_gban_fleet_runs_the_command_after_a_successful_install(home, monkeypatch):
+    """The point of asking at all: the person typed `gban fleet ps`, and after saying yes
+    they should get `ps` — not a second error telling them to type it again."""
+    seen = {}
+
+    class Done:
+        returncode = 0
+
+    calls = iter(["", "/usr/bin/gbfleet"])   # missing, then present after the install
+    monkeypatch.setattr("gban.cli.doctor_mod.find_supervisor", lambda: next(calls))
+    monkeypatch.setattr("gban.cli.doctor_mod.offer_to_install", lambda: True)
+    monkeypatch.setattr("gban.cli.subprocess.run",
+                        lambda argv, **kw: (seen.update(argv=argv), Done())[1])
+
+    assert main(["fleet", "ps"]) == 0
+    assert seen["argv"][0] == "/usr/bin/gbfleet"
+
+
+def test_a_declined_offer_still_prints_the_command(home, monkeypatch, capsys):
+    monkeypatch.setattr("gban.cli.doctor_mod.find_supervisor", lambda: "")
+    monkeypatch.setattr("gban.cli.doctor_mod.offer_to_install", lambda: False)
+    assert main(["fleet", "ps"]) == EXIT_NO_SUPERVISOR
+    assert doctor.INSTALL_SUPERVISOR in capsys.readouterr().err
