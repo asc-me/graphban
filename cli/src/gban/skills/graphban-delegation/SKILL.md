@@ -22,22 +22,51 @@ A missing tool tier is not a refusal. It decides what is *listed*, never what ma
 so the symptom is a tool that appears not to exist. Read `missing_tiers` rather than concluding
 the feature is absent.
 
-## 2. Enabling it — the first step is not yours
+## 2. Enabling it — you do all of it except the two lines a person must type
 
-Run `gban whoami`.
+**Run this yourself:**
 
-**If it reports a session:** run `gban setup`. It mints a project-scoped credential that does
-not expire, writes the `graphban` and `gbfleet` MCP entries where the harness will actually
-read them, and installs the supervisor. Then **stop and ask the person to restart the
-harness** — MCP servers are read at startup, so the new tools cannot appear in this session
-however correct the config is. Say that plainly rather than retrying.
+```bash
+gban whoami
+```
 
-**If it reports no session:** stop and ask the person to run `gban login` themselves.
+**If it reports a session**, keep going without asking. Run:
 
-> `gban login` needs a terminal. Without a tty the password prompt cannot turn off echo, so
-> the CLI refuses rather than write a password into the scrollback. This is not an obstacle to
-> work around — do not pipe a password to it, do not put one in a command, and do not look for
-> one in the environment or in a file.
+```bash
+gban setup
+```
+
+That mints a project-scoped credential that does not expire, writes the `graphban` and
+`gbfleet` MCP entries where the harness will actually read them, installs the delegation
+skill, and verifies the result. Read its output: every line is `PASS`, `FAIL` or `UNKNOWN`,
+and `UNKNOWN` means a check could not run, not that it passed.
+
+**If it reports no session**, that is the one thing you cannot do. Give the person the command
+to run, in exactly this form, and stop:
+
+> Run this and tell me when it is done:
+>
+>     ! gban login
+
+The `!` prefix runs it in this session, so the output comes back to you and you can carry on
+from there. `gban login` needs a real terminal: without a tty the prompt cannot turn off echo,
+so the CLI refuses rather than write a password into the scrollback. **Do not** try to work
+around it — no piping a password in, no password in a command, no hunting for one in the
+environment or a file. Wait, then resume at `gban setup` yourself.
+
+**If `gban setup` reports the supervisor missing**, that is the other line a person runs — it
+installs software, and it will not prompt in your shell because there is no tty to answer:
+
+> Optional, only if you want to spawn children on this machine:
+>
+>     ! uv tool install graphban-fleet
+
+Delegation records perfectly well without it; the supervisor is what runs the child locally.
+
+**When setup passes, ask for a restart and stop.** MCP servers are read at startup, so the
+tools cannot appear in the session that configured them, however correct the config is. Say
+that plainly — do not call `get_context` again hoping it changed, and do not retry `gban
+setup`. It succeeded.
 
 ## 3. Delegate
 

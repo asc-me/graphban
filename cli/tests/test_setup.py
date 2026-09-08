@@ -330,7 +330,23 @@ def test_the_skill_tells_the_agent_the_two_things_it_cannot_work_out(tmp_path):
     # It drives the CLI rather than restating the setup, which is what keeps it from becoming
     # a fourth copy of the procedure that drifts from the other three.
     assert "gban setup" in body
-    assert "restart the harness" in body
+
+
+def test_the_skill_hands_the_person_a_runnable_line_and_carries_the_rest(tmp_path):
+    """The division of labour, asserted because getting it wrong is silent in both
+    directions: an agent that asks a person to run everything is useless, and one that tries
+    to run `gban login` itself will hunt for a password."""
+    body = " ".join(setup_mod.skill_source().read_text(encoding="utf-8").split())
+
+    # The two lines a person types are given verbatim, in the form their harness can run.
+    assert "! gban login" in body
+    assert "! uv tool install graphban-fleet" in body
+    # …and everything either side of them is the agent's.
+    assert "Run this yourself" in body
+    assert "resume at `gban setup` yourself" in body
+    # The restart is a stopping point, not a retry loop.
+    assert "read at startup" in body
+    assert "do not retry" in body.lower()
 
 
 def test_the_skill_ships_in_the_wheel(tmp_path):

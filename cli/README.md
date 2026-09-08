@@ -100,6 +100,10 @@ gban login          # once, at a terminal
 gban setup          # everything mechanical between that and a delegating agent
 ```
 
+An agent with the delegation skill runs all of this for you except `gban login`, which it
+hands back as a `! gban login` line to type — it needs a terminal, and no agent has one — and
+then carries on from where you left it.
+
 `setup` mints a project-scoped credential, writes the `graphban` and `gbfleet` MCP entries,
 installs the supervisor if it is missing, drops the delegation skill into `.claude/skills/`,
 and then **verifies** rather than asserting: it asks the new credential what it can actually

@@ -27,7 +27,11 @@ gban setup          # mints, configures both MCP servers, installs the superviso
 ```
 
 Then restart the harness so it reads the new config, and an agent can `delegate(seat=true)`
-and `spawn`. Everything below is what those two commands do and what to read when one of
+and `spawn`.
+
+**An agent can drive all of this.** The `graphban-delegation` skill runs `gban whoami` and
+`gban setup` itself; the only thing it hands back is `! gban login`, because that one needs a
+terminal. It then carries the setup the rest of the way and tells you when to restart. Everything below is what those two commands do and what to read when one of
 them says no — `gban setup` is not a shortcut past understanding it, it is the same steps with
 nothing left to mistype.
 
