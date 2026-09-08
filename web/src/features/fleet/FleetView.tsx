@@ -189,7 +189,11 @@ function SupervisorHandoff({ seats, wave }: { seats: { role: string; code: strin
           <p className="px-1 text-[11px] text-faint">
             <span className="font-mono">gban</span> is the same acts from a terminal — issue
             seats, read why an agent is stuck, re-task one. Separate package: it installs on
-            laptops that never run a wave and pulls no dependencies at all.
+            laptops that never run a wave and pulls no dependencies at all, which is also why
+            it is the one with a Homebrew formula —{" "}
+            <span className="font-mono">brew install asc-me/tap/gban</span>. The supervisor is
+            not in the tap: it exists to be resolved on <span className="font-mono">PATH</span>
+            {" "}by whatever launched it.
           </p>
           <CopyRow label="Optional — the terminal client" value={INSTALL_CLI} />
           {/* THE SECOND CREDENTIAL, named because it is the first thing to get wrong. The

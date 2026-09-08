@@ -125,6 +125,47 @@ def local(url: str, project: str, api_key: str) -> list[dict]:
 INSTALL_SUPERVISOR = "uv tool install graphban-fleet"
 
 
+def offer_to_install(stream=None) -> bool:
+    """Ask, then install `graphban-fleet` with uv. Returns whether it is there afterwards.
+
+    **Asked, never assumed.** Installing software is not a side effect anybody should get
+    from `gban fleet ps`: it writes outside this program, it takes a minute, and a person
+    who typed a read-only command did not consent to it. So it happens only at an
+    interactive prompt, only on an explicit `y`, and only when the wall has actually been
+    hit — a missing supervisor, on the command that needs one.
+
+    Nothing is installed into `gban`'s OWN environment. `uv tool install` gives the
+    supervisor its own, which is the only correct answer when `gban` may itself live in a
+    Homebrew Cellar that brew will replace: a `pip install` next to it would be silently
+    undone by the next upgrade.
+
+    Declines, non-interactive shells and a machine without uv all return False and leave the
+    caller to print the command — a prompt nobody can answer is a hang, and a hang in a
+    script is worse than the error it replaced.
+    """
+    import sys
+
+    out = stream or sys.stderr
+    if not sys.stdin.isatty():
+        return False
+    if not shutil.which("uv"):
+        return False
+    print(f"gban: gbfleet is not installed here.", file=out)
+    try:
+        answer = input(f"       run `{INSTALL_SUPERVISOR}` now? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("", file=out)
+        return False
+    if answer not in ("y", "yes"):
+        return False
+    done = subprocess.run(INSTALL_SUPERVISOR.split())
+    if done.returncode != 0:
+        print(f"gban: that install failed ({done.returncode}); nothing changed here.",
+              file=out)
+        return False
+    return bool(find_supervisor())
+
+
 def find_supervisor() -> str:
     """`gbfleet`, from beside this interpreter first and only then from PATH.
 
