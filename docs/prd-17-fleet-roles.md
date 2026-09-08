@@ -6,6 +6,14 @@ dimensions graded `resolved`. This line said `draft` until 2026-08-20, while the
 had recorded the approval for eleven days and every slice shipped against it.
 **Depends on:** AL-192 (collision clustering) · AL-201 (worktree spike) · AL-213 (sub-agent roster) · AL-78 (scope-gated manifest)
 
+> **Role vocabulary superseded (PRD-39 S3).** The three-role model in this document
+> (`planner` / `worker` / `reviewer`) is no longer the active vocabulary. `reviewer` merged
+> into `worker`; the authority axis is now `planner | worker`. The self-review ban survives
+> — it is keyed on authorship (`claimed_by != caller`), not on role. The supervision axis
+> (`deterministic` default, `driven` escalation) is named in PRD-39 D-e. The decisions below
+> are history; the role table in §4 and the gate descriptions that name `reviewer` as a
+> separate role are kept as-is for the record.
+
 ## 1. Overview
 
 A human opens several terminals. The one they sit in is the **planner/orchestrator**. The

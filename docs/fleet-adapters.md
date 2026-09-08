@@ -310,7 +310,7 @@ vendor child on the day it first registers.
 | `stale` | the AGENT is offline or quarantined |
 | `blocked` | `blocker` set, or status `blocked` |
 | `review` | status `review` |
-| `integrating` | a `pr` is recorded — pushed, so CI and a reviewer are what is outstanding |
+| `integrating` | a `pr` is recorded — pushed, so CI and a second agent's sign-off are what is outstanding |
 | `verifying` | a `test` or `sabotage` evidence receipt exists |
 | `building` | status `in_progress` |
 | `claimed` | held, but still `next`/`backlog` |

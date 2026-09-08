@@ -96,8 +96,7 @@ GBFLEET_API_KEY=... gbfleet up \
 
 A seats file is one enrolment code per line. A line may also bind the seat to an item
 (`WORKER-7F3K item=GRPH-755` — the child gets the BOUND instruction and claims that item
-at registration, PRD-36) or name its role (`REVIEWER-2Q9C role=reviewer` — the child gets
-the reviewer instruction). Both are what `until` says when it mints a seat itself; here
+at registration, PRD-36). Both are what `until` says when it mints a seat itself; here
 you say them. A mistyped token refuses the whole file before any worktree is cut, and
 `doctor --seats-file` refuses it the same way.
 
@@ -126,10 +125,10 @@ divvy no longer decides what its children claim. The outcome comes back through 
 — the item moving on the board — never as a reply in the parent's context.
 
 **The preference matrix (PRD-37).** A tier with no `--tier` flag resolves through
-`src/gbfleet/matrix.toml`, a committed table of harness × model × lane × role × tier rows
+`src/gbfleet/matrix.toml`, a committed table of harness × model × lane × tier rows
 with a status (`verified`, `unverified`, `failed`, `unregistered`) and the item that proved
 it — facts only, reviewed like code. Resolution runs in a fixed order: the rows for the
-tier and role → the project's policy (`local_only`, `allowed_harnesses`,
+tier → the project's policy (`local_only`, `allowed_harnesses`,
 `reviewer_cross_vendor`) → the user's profile (an ordered allowlist of harnesses, weights
 over `cost`/`quality`/`latency`/`locality`, excludes) → `failed` rows out → what this
 machine has installed → score → ties (verified first, then the user's own order, then the
@@ -138,7 +137,7 @@ read them off `fleet_status` **once at launch** (a change is read at the next la
 D16) — the profile is the API key owner's, with a per-project override, edited in the Fleet
 view under the Wave tab; the policy is the project's. A key whose owner has no profile, or a
 server that cannot be reached at launch, resolves on matrix order and policy alone and the
-explanation says `profile: none`. A reviewer spawn may pass `builder_vendor` so a project's
+explanation says `profile: none`. A spawn for review may pass `builder_vendor` so a project's
 `reviewer_cross_vendor` rule can drop the builder's vendor. Every spawned child is told, in the same sentence
 as its enrolment code, to register with `capabilities={vendor, model?, tier}` for what the
 supervisor actually launched (GRPH-732), so the ledger can attribute its outcome; only a NAMED
@@ -164,7 +163,7 @@ fails a multi-project key that gives none. The child learns its project from the
 registration reply and names it afterwards (GRPH-718, GRPH-719).
 
 **What a wave reports about itself.** Beyond spawn and reap, `up` and `until` print three
-findings a reviewer otherwise has no way to see, all measured from the worktrees the
+findings the signing agent otherwise has no way to see, all measured from the worktrees the
 supervisor already owns and none of them acted on:
 
 - `COLLIDED <path>: changed on <branch>, <branch>` — two workers changed the same file. The
@@ -176,7 +175,7 @@ supervisor already owns and none of them acted on:
   predicted, which the board already marks.
 - `BEHIND <branch>: cut from a base N commit(s) behind origin/main` — how much landed on the
   trunk while the child worked. Two agents can each be green on their own base and conflict
-  on merge, and nothing else in the system can see it: the server has no git, the reviewer
+  on merge, and nothing else in the system can see it: the server has no git, the signing agent
   gets a branch with no indication of what its diff is against, and the child was cut from
   HEAD at spawn and never looked again. The trunk is fetched once per wave before measuring —
   a remote-tracking ref is only as fresh as its last fetch, and a check that skipped it would
