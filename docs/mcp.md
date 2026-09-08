@@ -119,8 +119,8 @@ operator can restore the pre-tiering manifest for a whole deployment with
 
 The manifest you receive is gated twice. **By scope** (AL-78): a key without `write` is not
 shipped the mutating tools it would only be refused on. **By role** (PRD-17 D-b): a key whose
-`roles` name a single role is not shipped the other roles' tools — a reviewer credential
-carries no `claim_next`, a worker credential no `sign_off`. A single-role fleet key sees
+`roles` name a single role is not shipped the other roles' tools — a planner credential
+carries no `claim_next`, a worker credential no `create_prd`. A single-role fleet key sees
 roughly 16–19% fewer tokens.
 
 **`grill_prd` generates questions and advances nothing** (GRPH-513). There are two grill
@@ -151,7 +151,7 @@ Every tool now appears in exactly one of `TOOL_ROLES` (gated, with the role) or 
 (open, with the reason). Adding a tool to either map is forced — the suite goes red otherwise.
 
 **Nothing new was gated.** `heartbeat` is the warning: it *was* gated, that was the bug, and it
-took reviewers and planners off the roster 150 seconds after they registered. Four more gates
+took workers and planners off the roster 150 seconds after they registered. Four more gates
 today would be four more chances to repeat that. The guard makes the next forty arrive already
 argued.
 
@@ -183,7 +183,7 @@ a compact row — `id`, `title`, `status` — and the full item only on `fields=
 projection is deliberate; these reads return many rows. What was not deliberate is that it
 looked complete: a consumer asking a row for `built_by` got nothing, and in every client
 language absent arrives as null. "Nobody built this" and "this payload does not say" were the
-same answer, on the exact field a reviewer consults to decide what it may take — misread twice
+same answer, on the exact field a worker consults to decide what it may take — misread twice
 in one day from two different tools.
 
 So a lean response carries a `fields` array naming what each row holds. **A field absent from
@@ -389,7 +389,7 @@ first: it reports `readable_projects` and `writable_projects` for the key.
 `gate` is deliberately **not** implied by `write`. An agent that could mint its own
 attestation could certify its own work, which is the whole reason the scope is separate:
 a building agent records `test` and `sabotage` receipts, and an adapter — CI, or a
-reviewer signing off — attests the result. Keys without it are refused with
+worker signing off — attests the result. Keys without it are refused with
 `unauthorized` and a hint naming what to do instead, and the attestation-only fields are
 left out of their tool manifest entirely.
 
@@ -431,15 +431,15 @@ people to route around it.
 
 The two halves are what make it hold. An agent cannot write the proof (no `gate` scope) and
 cannot complete without it — so finishing work means getting it attested by CI, or by a
-reviewer through `sign_off` with a `commit`.
+worker through `sign_off` with a `commit`.
 
-Two adapters exist. **`fleet.sign_off`** needs a reviewer but no external service, which is
+Two adapters exist. **`fleet.sign_off`** needs a second agent but no external service, which is
 what keeps completion reachable offline. **CI** (`scripts/attest_ci.py`, run as a step in
-the `ci` gate job) attests every item a green run's PR names, and needs no reviewer — set
+the `ci` gate job) attests every item a green run's PR names, and needs no second agent — set
 `GRAPHBAN_URL` as a repository variable and `GRAPHBAN_GATE_KEY` as a secret to enable it.
 Without them it skips loudly rather than failing the build, and items must be signed off
-by hand. Fleet keys minted for the **reviewer** or
-**all-in-one** role carry `gate` for that reason; a worker or planner key does not, because
+by hand. Fleet keys minted for the **worker** or
+**all-in-one** role carry `gate` for that reason; a planner key does not, because
 a worker's ceiling is `review` by design.
 
 Items that were already `done` are untouched — the gate asks about the *transition*, not

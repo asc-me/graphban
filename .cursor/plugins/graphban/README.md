@@ -56,8 +56,9 @@ silently disable review between the agents that shared it.
 
 ## Without seats
 
-An agent that registers with no code gets `all-in-one`: unrestricted, no role gate, you are the
-reviewer. That is the correct default for one developer and one agent, and it costs nothing.
+An agent that registers with no code gets `all-in-one`: unrestricted, no role gate, and the
+human is the reviewer. That is the correct default for one developer and one agent, and it
+costs nothing.
 
 For a fleet on one credential with no seats issued, each agent must declare who it is:
 
@@ -68,11 +69,11 @@ not a difference, or omitting a field would launder a self-review.
 
 ## What this does and does not guarantee
 
-**Roles are enforced.** The server issued the seat, so a worker reaching for `sign_off` is
-refused — it cannot promote itself, because it has nothing to promote itself with.
+**Roles are enforced.** The server issued the seat, so a planner reaching for `claim_next` is
+refused — it cannot quietly do the work, because it has nothing to do the work with.
 
 **Independence is decided by the server**, not declared by the agent: two agents that redeemed
-different seats are two sessions, so a reviewer signing a worker's item means something.
+different seats are two sessions, so a second worker signing another's item means something.
 
 It is **not an adversarial boundary**. An agent handed two codes can use either. Enrolment
 makes the ACCIDENT impossible — which is the failure that actually happens — and does not

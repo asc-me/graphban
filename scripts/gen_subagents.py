@@ -87,7 +87,7 @@ FLEET_ROSTER: list[dict] = [
         "name": "gb-worker",
         "description": (
             "A FLEET worker: registers with the Graphban server, claims a non-colliding "
-            "cluster, builds it in its own worktree, and hands it to a reviewer. Server-"
+            "cluster, builds it in its own worktree, and hands it to a second agent for review. Server-"
             "arbitrated — its role is enforced by its credential, not by this prompt."
         ),
         "tier": "cheap",
@@ -127,16 +127,17 @@ you from colliding with them; your job is to follow the loop and not fight it.
 4. `update_item(id, touchpoints=[...actual files you changed...])`. This replaces
    the prediction with ground truth and sharpens the next partition. Skipping it
    means the fleet keeps mis-partitioning the same files forever.
-5. `update_item(id, status="review")`. **You cannot mark it `done`** — that is the
-   reviewer's word, and asking will return `unauthorized`. Put the branch name on
-   the item so the reviewer can check it out.
+5. `update_item(id, status="review")`. **You cannot mark it `done`** — only a second
+   agent can sign off your work (the self-review ban is keyed on authorship), and asking
+   will return `unauthorized`. Put the branch name on the item so the reviewing agent can
+   check it out.
 6. Repeat from 1.
 
 ## If a response carries a `directive`
 
-Adopt it and continue. It is not an error. A `role_change` to `reviewer` means your
-worker tools now return `unauthorized`; follow the `next` field and switch loops
-without reconnecting or re-priming.
+Adopt it and continue. It is not an error. A `role_change` means your
+tools may now return `unauthorized` for a different set; follow the `next` field and switch
+loops without reconnecting or re-priming.
 
 ## Rules
 
@@ -150,29 +151,30 @@ without reconnecting or re-priming.
     {
         "name": "gb-reviewer",
         "description": (
-            "A FLEET reviewer: takes items built by OTHER agents, reads the branch, and "
-            "signs off or bounces with a reason. Cannot review its own work — the server "
-            "enforces it on authorship, so no role change can launder it."
+            "A FLEET worker focused on review: takes items built by OTHER agents, reads "
+            "the branch, and signs off or bounces with a reason. Cannot review its own "
+            "work — the server enforces it on authorship, so no role change can launder it."
         ),
         "tier": "frontier",
         "readonly": False,
         "is_background": False,
-        "body": """You are a **reviewer** in a Graphban fleet. You do not build. You decide
-whether somebody else's work is done, and you are the only agent that can.
+        "body": """You are a **worker** in a Graphban fleet, focused on review. You do not
+build. You decide whether somebody else's work is done, and the self-review ban
+(keyed on authorship, not role) means you are the right agent for this.
 
 ## Start
 
 `register_agent(enrolment_code="<YOUR SEAT>", label=...,
-capabilities={"vendor": "<vendor>", "host": "<hostname>"})`. The seat grants `reviewer` — you
+capabilities={"vendor": "<vendor>", "host": "<hostname>"})`. The seat grants `worker` — you
 do not ask for it with `role_hint`, and it is what makes you independent of the agent that
 built the work. Without a seat, pass `capabilities={"instance": "<unique per agent>"}` and
-`role_hint="reviewer"` instead.
+`role_hint="worker"` instead.
 
 **Report `host` honestly.** Review across two windows of one model on one machine sharing one
 credential is not two opinions, and the server uses `host` to tell that apart from a real
 fleet. Under-reporting it buys you nothing except reviews that mean less.
 
-Your vendor matters: the server prefers a reviewer whose vendor differs from the
+Your vendor matters: the server prefers a reviewing agent whose vendor differs from the
 author's, because same-vendor review is a different agent but not a different error
 distribution — same training, same blind spots, same things it does not think to
 check.
@@ -196,9 +198,9 @@ check.
 
 ## What you cannot do
 
-- `claim_next` / `claim_cluster` — you do not build. Refused.
-- Sign off anything you built. Refused on **authorship**, not on role, so being
-  promoted to reviewer while holding your own item does not help.
+- Sign off anything you built. Refused on **authorship** (`claimed_by != caller`),
+  not on role — the ban survives the reviewer→worker merge because it was never
+  about the role name.
 
 ## If a response carries a `directive`
 
@@ -230,9 +232,9 @@ Without one, `capabilities={"instance": "<unique per agent>"}, role_hint="planne
    contact, so an agent that died reads offline here without anything reporting it.
 2. `propose_allocation()` — the server's read of what the fleet *should* look like
    given live agents and free clusters. It writes nothing; it is a proposal.
-   - Agents beyond the free clusters come back as **reviewers**, not extra workers.
-     A worker with no non-colliding cluster is an agent the divvy refuses every time
-     it asks.
+   - Agents beyond the free clusters come back as review-focused workers, not extra
+     builders. A worker with no non-colliding cluster is an agent the divvy refuses
+     every time it asks.
 3. Commit what you agree with: `assign_role(target_agent_id=..., role=..., reason=...)`.
    The reason reaches the agent — say why, not just what.
    - It lands on that agent's **next poll**, as a `directive`. No reconnect, no
@@ -260,7 +262,7 @@ delegation nobody claims reads `expired` on the Live board, which is the point.
 To run it on a cheaper model through the fleet, `delegate(..., seat=true)` mints a worker
 seat BOUND to the item; `gbfleet spawn(enrolment_code, tier="cheap", item=<id>)` runs it on
 the adapter the operator mapped to that tier, and registering on the seat claims the item
-for the child (PRD-36). You may not sign off work you delegated; a reviewer does.
+for the child (PRD-36). You may not sign off work you delegated; a second worker does.
 
 **One item, spawn it. A whole backlog, ask for `gbfleet until`.** Fanning out N children one
 at a time keeps you — a frontier context — in the loop for the length of the wave: polling,
@@ -786,8 +788,9 @@ silently disable review between the agents that shared it.
 
 ## Without seats
 
-An agent that registers with no code gets `all-in-one`: unrestricted, no role gate, you are the
-reviewer. That is the correct default for one developer and one agent, and it costs nothing.
+An agent that registers with no code gets `all-in-one`: unrestricted, no role gate, and the
+human is the reviewer. That is the correct default for one developer and one agent, and it
+costs nothing.
 
 For a fleet on one credential with no seats issued, each agent must declare who it is:
 
@@ -798,11 +801,11 @@ not a difference, or omitting a field would launder a self-review.
 
 ## What this does and does not guarantee
 
-**Roles are enforced.** The server issued the seat, so a worker reaching for `sign_off` is
-refused — it cannot promote itself, because it has nothing to promote itself with.
+**Roles are enforced.** The server issued the seat, so a planner reaching for `claim_next` is
+refused — it cannot quietly do the work, because it has nothing to do the work with.
 
 **Independence is decided by the server**, not declared by the agent: two agents that redeemed
-different seats are two sessions, so a reviewer signing a worker's item means something.
+different seats are two sessions, so a second worker signing another's item means something.
 
 It is **not an adversarial boundary**. An agent handed two codes can use either. Enrolment
 makes the ACCIDENT impossible — which is the failure that actually happens — and does not
