@@ -135,6 +135,22 @@ Three properties worth knowing, each of which is a bug this command exists to no
   `.mcp.json` is refused rather than warned about, because a warning attached to committing a
   credential still commits it.
 
+## Wiring a checkout to Swamp
+
+```bash
+gban swamp setup
+```
+
+Steps 3 and 5 of [the Swamp runbook](https://github.com/asc-me/graphban/blob/main/docs/swamp.md):
+`repo init`, `extension source add`, `vault create`, and the **gate** credential — minted,
+piped to `swamp vault put` on stdin, then checked for the scopes it actually came back with.
+Every step is skipped when already done.
+
+Two things it will not do. It does not install Swamp, because that install pipes a remote
+script into a shell. And it never writes the gate key into an MCP config: `gban setup`'s agent
+key must not carry `gate`, or the agent doing the work attests its own completion — which
+fails silently, since a gate that always says yes looks exactly like a gate that held.
+
 ## `gban login` wants a real terminal
 
 It refuses without one, rather than prompting. `getpass` falls back to a plain **echoing**

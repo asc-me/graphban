@@ -66,6 +66,25 @@ swamp doctor install
 
 ## 5. Wire this checkout to the adapter
 
+**One command does steps 3 and 5**, from inside the checkout, once Swamp is installed:
+
+```bash
+gban swamp setup                       # --adapter ../graphban-swamp by default
+```
+
+It resolves the project from the directory, runs `repo init` / `extension source add` /
+`vault create` only where they are missing, mints the **gate** credential and pipes it to
+`swamp vault put` on **stdin**, then asks the key what scopes it actually got. Re-running
+changes nothing: an existing `graphban-api-key` is left alone rather than replaced, because
+overwriting it strands a credential that is still live on the server.
+
+It does **not** install Swamp — step 4 pipes a remote script into a shell, which is for a
+person to read and run — and it never writes the gate key into an MCP config. That last part
+is the whole point of a separate command: the agent key from `gban setup` must not carry
+`gate`, or the agent doing the work can attest its own completion and nothing errors.
+
+By hand, or to understand what it did:
+
 Once per clone. Do **not** `swamp repo init --force` on a tree that already has a vault.
 
 ```bash
