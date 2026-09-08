@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Callable
 
 from . import adopt as adopt_mod
+from . import deps
+from . import worktree as wt_mod
 from . import observe
 from . import waits as wait_mod
 from .client import ALLOWED_TOOLS, Graphban, NotPermitted, ServerUnreachable, ToolFailed
@@ -279,6 +281,15 @@ def _loop(
     mint_left = mint_tries
     review_fails = 0
 
+    # GRPH-798: the ref children are cut from, resolved once and FETCHED once. A
+    # remote-tracking ref is only as fresh as the last fetch, so skipping this would measure
+    # every dependency as already merged — the same absence-reads-as-clean failure the stale
+    # check in `supervisor` exists to avoid, on the check built to stop it.
+    remote = wt_mod.remote_for(repo)
+    base = wt_mod.default_ref(repo, remote) if remote else ""
+    if base:
+        wt_mod.refresh_ref(repo, remote, base)
+
     while True:
         watch_tick(wave, children, limits, supervisor, debug=debug, persist=persist)
         finished = [c for c in children if not c.running]
@@ -350,7 +361,7 @@ def _loop(
             # server refused a bound seat (areas held) the delegation stands without one
             # and the seat is minted as before; when nothing was delegable, likewise.
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
-                                              request, prd)
+                                              request, prd, repo, base)
             if code:
                 seat = Seat(code=code, server_url=server, api_key=api_key, role="worker",
                             item=seed)
@@ -516,6 +527,8 @@ def _delegate_next(
     delegated: set[str],
     request: str | None,
     prd: str | None = None,
+    repo: Path | None = None,
+    base: str = "",
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -539,9 +552,27 @@ def _delegate_next(
         if not isinstance(cluster, dict) or cluster.get("held_by"):
             continue
         items = [i for i in (cluster.get("items") or []) if isinstance(i, str) and i]
-        if items and items[0] not in delegated:
-            seed = items[0]
-            break
+        if not items or items[0] in delegated:
+            continue
+        candidate = items[0]
+        # GRPH-798. A child branches from `base`, so an item whose finished dependency is not
+        # THERE would be built without it. SKIPPED, not fatal: the rest of the wave is still
+        # buildable, and stopping would turn one unmerged branch into an idle fleet.
+        absent, unknown = deps.check(planner, candidate, repo, base) if base else ([], [])
+        if absent:
+            observe.emit("delegate_held", item=candidate,
+                         detail=deps.explain(candidate, absent, base))
+            # Marked delegated so the next tick does not re-offer it and spin. It is held for
+            # this wave, not refused forever — a merge changes the answer.
+            delegated.add(candidate)
+            continue
+        for row in unknown:
+            # Reported and NOT acted on. "I have never seen that commit" is not evidence that
+            # the work is missing, and refusing on it would stop every wave on a fresh clone.
+            observe.emit("dependency_unresolved", item=candidate,
+                         detail=f"{row['id']}'s commit is not in this clone; not checked")
+        seed = candidate
+        break
     if seed is None:
         return None, None, None
     try:

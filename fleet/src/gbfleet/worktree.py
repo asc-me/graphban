@@ -692,3 +692,29 @@ def behind_ref(repo: Path | str, base: str, ref: str) -> int:
         return int(out)
     except ValueError:
         return 0
+
+
+def reaches(repo: Path | str, base: str, commit: str) -> bool | None:
+    """Is `commit` already in `base`? `None` when this clone cannot tell (GRPH-798).
+
+    THREE ANSWERS, NOT TWO, and collapsing them is the whole failure this guards. A commit
+    this clone has never fetched is not an unmerged commit — it is an unknown one — and a
+    check that read "I could not find it" as "it is not merged" would refuse every wave on a
+    fresh clone, while one that read it as "merged" would wave through exactly the dependency
+    it exists to catch.
+    """
+    if not base or not commit:
+        return None
+    proc = subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+                          cwd=str(repo), capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    proc = subprocess.run(["git", "merge-base", "--is-ancestor", commit, base],
+                          cwd=str(repo), capture_output=True, text=True)
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    # Anything else is git failing to answer — a bad base ref, a corrupt object — and that is
+    # not evidence either way.
+    return None
