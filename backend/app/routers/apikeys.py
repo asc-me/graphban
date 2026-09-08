@@ -66,11 +66,28 @@ def create_key(body: ApiKeyCreate, db: Session = Depends(get_db), user: User = D
 
 @router.delete("/{key_id}", status_code=204)
 def revoke_key(key_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Revoke a credential. SOFT — the row stays and `revoked` is set (GRPH-788).
+
+    This deleted the row until a key that had ever been USED became undeletable. PRD-38 added
+    `agent_calls.api_key_id` as a NOT NULL foreign key with no `ondelete`, so `db.delete`
+    raised `IntegrityError` on commit and the route 500'd — for every key with call history,
+    which is every key worth revoking. An unused key deleted fine, so the failure arrived
+    exactly backwards, and the Settings trash button reported nothing at all.
+
+    Soft is the right answer rather than a cascade, and the codebase had already decided so
+    twice: `end_wave` and `revoke-expired` both set this flag, and `verify_api_key` refuses a
+    revoked key outright, so this is a real revocation and not a cosmetic one. Keeping the row
+    also keeps the telemetry the foreign key exists to protect — a deletion would have to
+    orphan or destroy the call history that answers "what did this credential do".
+
+    Idempotent: revoking an already-revoked key succeeds and records the event again, because
+    the caller asked for a state and that state is what it gets.
+    """
     row = db.get(ApiKey, key_id)
     if row is None or row.user_id != user.id:
         raise HTTPException(404, "key not found")
     project_id, name = row.project_id, row.name
-    db.delete(row)
+    row.revoked = True
     db.commit()
     events_svc.record_user(db, user, action="revoke_api_key", target_type="api_key",
                            target_id=key_id, project_id=project_id, meta={"name": name})

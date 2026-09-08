@@ -327,9 +327,10 @@ def test_a_revoked_credential_stays_visible(client, org):
     was deliberately unlinked indistinguishable from one that never existed.
 
     Revoked here means the SOFT kill switch — what the fleet sweeps set (`end_wave`,
-    `revoke-expired`). Note the gap: `DELETE /api/api-keys/{id}` hard-deletes the row, so a
-    credential retired that way does vanish from this list. The design asks for retired
-    deployments to stay visible; only the soft path currently delivers that.
+    `revoke-expired`). `DELETE /api/api-keys/{id}` used to hard-delete the row, so a
+    credential retired that way vanished from this list and this docstring recorded the gap.
+    It sets the same flag as of GRPH-788, so every retirement path now keeps the row and the
+    design's "retired deployments stay visible" holds however the credential was killed.
     """
     from app.db import SessionLocal
     from app.models import ApiKey
