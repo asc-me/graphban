@@ -20,8 +20,25 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       fleet: ${{ steps.filter.outputs.fleet }}
       cli: ${{ steps.filter.outputs.cli }}
+      # `true` when the diff is precisely a release stamp: one version string in each of
+      # backend/app/version.py, backend/pyproject.toml and web/package.json, agreeing,
+      # CalVer, and nothing else. Decided from the diff by scripts/stamp_only.py — never
+      # from the branch name — and strict in the safe direction: anything more answers
+      # `false` and every suite runs. A stamp used to pay for both backend suites, the
+      # frontend build and the fleet suite (~15 min wall) to test that a string changed.
+      # The wheel install is the one job a stamp can break, and it is not gated on this.
+      stamp_only: ${{ steps.stamp.outputs.stamp_only }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The stamp check diffs base..head itself; paths-filter fetches its own.
+          fetch-depth: 0
+      - name: Is this only a release stamp?
+        id: stamp
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/stamp_only.py --base "$BASE" --head "$HEAD"
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -71,7 +88,7 @@ jobs:
   backend-sqlite:
     name: Backend tests (SQLite)
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.stamp_only != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -93,7 +110,7 @@ jobs:
     # pgvector `<=>` search path (see AL-57 — ivfflat recall bug this job caught).
     name: Backend tests (Postgres + pgvector)
     needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    if: needs.changes.outputs.backend == 'true' && needs.changes.outputs.stamp_only != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -173,7 +190,7 @@ jobs:
   frontend:
     name: Frontend tests + typecheck + build
     needs: changes
-    if: needs.changes.outputs.frontend == 'true'
+    if: needs.changes.outputs.frontend == 'true' && needs.changes.outputs.stamp_only != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -200,7 +217,7 @@ jobs:
   fleet:
     name: Fleet supervisor tests
     needs: changes
-    if: needs.changes.outputs.fleet == 'true'
+    if: needs.changes.outputs.fleet == 'true' && needs.changes.outputs.stamp_only != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -220,7 +237,7 @@ jobs:
   cli-tests:
     name: CLI tests
     needs: changes
-    if: needs.changes.outputs.cli == 'true'
+    if: needs.changes.outputs.cli == 'true' && needs.changes.outputs.stamp_only != 'true'
     runs-on: ubuntu-latest
     defaults:
       run:

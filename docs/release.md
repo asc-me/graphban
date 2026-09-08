@@ -50,6 +50,14 @@ stamp commit if more work should ride on the cut — `publish` tags
 
 No `v` prefix. Tags are `2026.09.5`, not `v2026.09.5`.
 
+CI knows a stamp when it sees one. `What changed` runs `scripts/stamp_only.py` over the
+diff; when the change is precisely the three version lines, agreeing and CalVer, the suites
+are skipped and only the non-editable wheel install runs — the one job a stamp can break. A
+stamp PR clears in about a minute instead of fifteen. Anything more than the three lines —
+a dependency bump riding in `pyproject.toml`, a fourth file — runs everything, because the
+decision is made from the diff, not the branch name.
+
+
 ## Publish
 
 After the stamp is on `origin/main`:
