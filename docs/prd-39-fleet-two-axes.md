@@ -6,8 +6,9 @@ is the source of truth; this file is a review copy and must agree with it
 `docs/prd-index.json` with `scripts/gen_prd_index.py`, or
 `test_the_snapshot_accounts_for_every_repo_prd` fails.
 
-**Status:** approved — v1.0, 2026-09-06, after one grill round of eight questions, three of
-which changed decisions. v0.1 carried a worker-side fleet-wide exit test, a `bounce_count` column
+**Status:** closed — 2026-09-08, judged delivered; every slice merged and deployed, the acceptance
+walk done (§7.6 deferred to a post-close item). Approved v1.0 on 2026-09-06 after one grill round
+of eight questions, three of which changed decisions. v0.1 carried a worker-side fleet-wide exit test, a `bounce_count` column
 and an `api_keys.roles` data migration; v0.2 cut all three and §4 D-i records why the first was
 wrong. This revision adds D-j (the merge has a precondition v0.2 did not see), rewrites D-d (the
 axis it was migrating into is dead), gives D-i the dependency it leaned on without naming, and
