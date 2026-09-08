@@ -93,6 +93,31 @@ role the key does not permit is the server's refusal, printed in the server's ow
 widening a ceiling means minting a different credential, and keeping those two acts apart is
 the point of having a ceiling. It lands on the agent's next poll.
 
+## Enabling delegation on a project
+
+```bash
+gban login          # once, at a terminal
+gban setup          # everything mechanical between that and a delegating agent
+```
+
+`setup` mints a project-scoped credential, writes the `graphban` and `gbfleet` MCP entries,
+installs the supervisor if it is missing, drops the delegation skill into `.claude/skills/`,
+and then **verifies** rather than asserting: it asks the new credential what it can actually
+see. Restart the harness afterwards — MCP servers are read at startup.
+
+Three properties worth knowing, each of which is a bug this command exists to not have:
+
+- **The credential does not expire.** `gban keys mint` produces a *wave* key, which lasts a
+  day (`FLEET_KEY_DAYS`); that is right for a wave and wrong for a project. Only seats expire.
+- **It writes where the harness will actually read.** `~/.claude.json`'s per-project
+  `mcpServers` outranks a repository `.mcp.json`, so writing the repository file under a
+  stale entry leaves the agent on the old key — which surfaces as a JSON parse error, because
+  the harness is parsing a 401 body. `--scope user` is the default for that reason, and
+  because a credential outside the repository cannot be committed.
+- **It refuses to write a key into a file git tracks.** `--scope project` on a tracked
+  `.mcp.json` is refused rather than warned about, because a warning attached to committing a
+  credential still commits it.
+
 ## `gban login` wants a real terminal
 
 It refuses without one, rather than prompting. `getpass` falls back to a plain **echoing**

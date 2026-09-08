@@ -13,8 +13,9 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
-from gban import config, doctor as doctor_mod
+from gban import config, doctor as doctor_mod, setup as setup_mod
 from gban.client import (EXIT_NO_SESSION, EXIT_NO_SUPERVISOR, EXIT_REFUSED, EXIT_UNREACHABLE,
                        Client, NoSession,
                        Refused, Unreachable, authenticated, login)
@@ -51,6 +52,20 @@ def _parser() -> argparse.ArgumentParser:
                      "half runs here; the local half is `gbfleet doctor`, run as a subprocess. "
                      "Neither half silences the other: what could not be checked prints "
                      "UNKNOWN with its reason, never a pass."))
+
+    setup_cmd = sub.add_parser(
+        "setup", help="enable delegation on a project",
+        description=("Mints a project-scoped credential that does NOT expire, writes the "
+                     "graphban and gbfleet MCP entries where the harness will actually read "
+                     "them, and installs the supervisor. Only seats expire; a credential that "
+                     "died overnight would make 'delegation is set up' quietly stop being "
+                     "true. Re-running is safe: a working configuration is left alone."))
+    setup_cmd.add_argument(
+        "--scope", choices=["user", "project"], default="user",
+        help="user (default) writes ~/.claude.json, which OUTRANKS a repo .mcp.json and "
+             "cannot be committed; project writes .mcp.json beside the repo")
+    setup_cmd.add_argument("--no-install", action="store_true",
+                           help="never offer to install the supervisor")
 
     fleet = sub.add_parser(
         "fleet", help="hand off to gbfleet (the supervisor)",
@@ -150,13 +165,50 @@ def cmd_login(args) -> int:
     if not refresh:
         print(f"{PROG}: the server returned no refresh token", file=sys.stderr)
         return EXIT_REFUSED
-    config.save_settings(url=url, project=config.resolve(args.project, config.PROJECT_ENV,
-                                                         "project"))
     path = config.save_session(refresh, user=email)
-    _out({"server": url, "session": str(path), "user": email},
-         f"{PROG}: signed in to {url} as {email}\n     session stored at {path} (mode 600)",
-         args.as_json)
+    asked = config.resolve(args.project, config.PROJECT_ENV, "project")
+    chosen, projects, why = _default_project(url, asked)
+    config.save_settings(url=url, project=chosen)
+    human = [f"{PROG}: signed in to {url} as {email}",
+             f"     session stored at {path} (mode 600)"]
+    if chosen:
+        human.append(f"     project {chosen}" + (" (the only one you can read)"
+                                                 if not asked and len(projects) == 1 else ""))
+        human.append(f"     next: `{PROG} setup` enables delegation on it")
+    elif len(projects) > 1:
+        human.append(f"     {len(projects)} projects — none set as default:")
+        human += [f"       {p.get('id', ''):<20} {p.get('name', '')}" for p in projects]
+        human.append(f"     pick one: `{PROG} setup --project <id>`")
+    elif why:
+        # Discovery failed, the login did not. Reporting this as a failed login would send
+        # somebody to re-enter a password that was already accepted.
+        human.append(f"     WARNING: could not list your projects ({why}).")
+        human.append(f"     Name one when you need it: `{PROG} setup --project <id>`")
+    else:
+        human.append("     you can read no projects yet — create one in the web app first")
+    _out({"server": url, "session": str(path), "user": email, "project": chosen,
+          "projects": [p.get("id") for p in projects]}, "\n".join(human), args.as_json)
     return 0
+
+
+def _default_project(url: str, asked: str) -> tuple[str, list[dict], str]:
+    """What `login` should store as the default, the projects it saw, and why it saw none.
+
+    ONE project is chosen for you; several are listed and none is chosen. Picking the first of
+    several would be a coin toss whose result is invisible until a key lands in the wrong
+    project, and the list is short enough to read.
+
+    An explicit `--project` is never overridden — the person naming one has said the thing
+    this function exists to guess.
+    """
+    if asked:
+        return asked, [], ""
+    try:
+        rows = authenticated(url, act="login").call("GET", "/api/projects")
+    except (Unreachable, Refused, NoSession) as exc:
+        return "", [], str(exc)
+    projects = [p for p in (rows if isinstance(rows, list) else []) if isinstance(p, dict)]
+    return (projects[0].get("id", "") if len(projects) == 1 else ""), projects, ""
 
 
 def cmd_logout(args) -> int:
@@ -205,6 +257,27 @@ def cmd_doctor(args) -> int:
     api_key = os.environ.get(config.API_KEY_ENV, "")
     lines, code = doctor_mod.run(url, project, api_key)
     _out({"lines": lines, "ok": code == 0}, doctor_mod.render(lines), args.as_json)
+    return code
+
+
+def cmd_setup(args) -> int:
+    """Everything between a session and a delegating agent, in one act (GRPH-792)."""
+    url = _server(args)
+    project = config.resolve(args.project, config.PROJECT_ENV, "project")
+    if not project:
+        print(f"{PROG}: no project. Pass --project, or run `{PROG} login` again — it names the "
+              f"one you can read, or lists them when there are several.", file=sys.stderr)
+        return EXIT_REFUSED
+    client = authenticated(url, act="setup")
+    lines, code, made = setup_mod.run(client, url, project, Path.cwd(), scope=args.scope,
+                                      install=not args.no_install)
+    human = [doctor_mod.render(lines)]
+    if code == 0:
+        human.append(f"\n     delegation is enabled on {project}. An agent can now "
+                     f"`delegate(id=…, lane=…, tier=…, seat=true)` then `spawn`.")
+        human.append(f"     restart the harness so it reads the new config.")
+    _out({"lines": lines, "ok": code == 0, "project": project, **made},
+         "\n".join(human), args.as_json)
     return code
 
 
@@ -358,7 +431,7 @@ def cmd_keys(args) -> int:
 
 
 COMMANDS = {"login": cmd_login, "logout": cmd_logout, "whoami": cmd_whoami,
-            "doctor": cmd_doctor, "fleet": cmd_fleet, "seats": cmd_seats,
+            "doctor": cmd_doctor, "setup": cmd_setup, "fleet": cmd_fleet, "seats": cmd_seats,
             "agents": cmd_agents, "keys": cmd_keys}
 
 

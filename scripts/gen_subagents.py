@@ -918,7 +918,27 @@ def render_files() -> dict[str, str]:
     files[".cursor/rules/agentledger.mdc"] = render_cursor_rules(ledger_loop)
 
     files.update(render_plugin_files())
+    files.update(render_skills())
     return files
+
+
+# ---- skills (GRPH-793) ----------------------------------------------------------------------
+
+#: The delegation skill's ONE source is `graphban-cli` package data, because `gban setup` writes
+#: it into any project that enables delegation. This repository gets a copy so agents working
+#: here have it without running the command — copied, never re-authored, and covered by
+#: `--check` so the two cannot drift. The path is the product's own: `services/artifacts.py`
+#: maps the `skill` tier to `.claude/skills/{slug}/SKILL.md`.
+SKILLS_SRC = REPO / "cli" / "src" / "gban" / "skills"
+
+
+def render_skills() -> dict[str, str]:
+    out = {}
+    for skill in sorted(SKILLS_SRC.glob("*/SKILL.md")):
+        out[f".claude/skills/{skill.parent.name}/SKILL.md"] = skill.read_text(encoding="utf-8")
+    if not out:
+        raise SystemExit(f"no skills found under {SKILLS_SRC} — the source moved")
+    return out
 
 
 def main() -> int:
