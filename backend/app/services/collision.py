@@ -104,7 +104,8 @@ def collision_clusters(db: Session, items: list[Item], project_id: str | None) -
 
 
 def clusters_for_project(db: Session, project_id: str | None, status: str | None = None,
-                         lease_seconds: int = items_svc.DEFAULT_LEASE_SECONDS) -> list[dict]:
+                         lease_seconds: int = items_svc.DEFAULT_LEASE_SECONDS,
+                         prd_id: str | None = None) -> list[dict]:
     """Collision clusters over a project's work pool. Defaults to everything an agent could
     actually take right now — which is NOT the same as the unstarted pool.
 
@@ -123,4 +124,14 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
     pool = items_svc.list_items(db, project_id=project_id, status=status)
     if status is None:
         pool = [it for it in pool if items_svc.claimable(it, lease_seconds=lease_seconds)]
+    if prd_id:
+        # GRPH-797. `until` had no way to say which work a wave was for, so it drained the
+        # project: a run meant for one PRD delegated an epic and three unrelated items. Parking
+        # things in `backlog` is not a defence, because backlog is claimable BY DESIGN — that
+        # is GRPH-397, and it is right. The lever has to be here.
+        #
+        # Filtering the POOL rather than the finished clusters is the whole point: a cluster is
+        # a promise that its members do not collide, and dropping members from one afterwards
+        # would hand out a promise computed over items that are no longer in it.
+        pool = [it for it in pool if (it.prd_id or "") == prd_id]
     return collision_clusters(db, pool, project_id)

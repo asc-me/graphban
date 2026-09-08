@@ -206,6 +206,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="what a tier means on this machine (PRD-36 D6), repeatable. When the requested "
              "tier is mapped here its adapter runs the child; otherwise --adapter does",
     )
+    until.add_argument(
+        "--prd", default="",
+        help="scope the wave to ONE PRD's items. Without it the loop drains every ready item "
+             "in the project, and `backlog` is no defence — backlog is claimable by design "
+             "(GRPH-397). Needs a credential with the `fleet` tool tier to be advertised")
     until.add_argument("--max-children", type=int, default=8)
     until.add_argument("--child-wall-clock", type=float, default=3600.0)
     until.add_argument("--workspace", default=None, help="where worktrees go")
@@ -431,6 +436,7 @@ def _until(args) -> int:
             workspace=Path(args.workspace) if args.workspace else None,
             debug=args.debug,
             request=args.request,
+            prd=args.prd or None,
             tiers=tiers,
             launch_for=lambda name, model="": make_adapter_factory(name, None, model),
             matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
