@@ -244,6 +244,25 @@ class Adapter:
         """
         return None
 
+    def spawn_blocked(self, binary: Path) -> str:
+        """Why a spawn on this adapter would fail right now, or "" when nothing says it will.
+
+        A DIFFERENT QUESTION FROM `known_models`, and the difference is the bug this exists
+        for (GRPH-805). That method's None means "cannot be asked", and its docstring is right
+        that refusing every model because we could not look would break a working setup. But
+        "there is no endpoint to ask" is not "we could not ask" — it is a configuration the
+        adapter can check, and one it will certainly refuse on. Collapsing the two made the
+        cheap tier resolve, read `[PASS]` in doctor, and exit 78 on the first spawn.
+
+        A green check on the broken thing is worse than no check, because it is what an
+        operator relies on instead of trying it.
+
+        Answered from configuration only. Reaching a network is `known_models`' job, and a
+        precondition that needed the network could not distinguish "unset" from "down" — which
+        is the distinction this is for.
+        """
+        return ""
+
     def seat_path(self, worktree: Path) -> Path:
         """Where this vendor's MCP config must be written.
 

@@ -531,6 +531,13 @@ def installed_checker(binary_overrides: dict[str, str] | None = None) -> Callabl
         ok, why, resolved = cache[row.harness]
         if not ok:
             return False, why
+        if resolved is not None:
+            # GRPH-805. Asked BEFORE the model listing, because a harness that cannot spawn
+            # at all makes "does it serve this model" a question about nothing — and because
+            # the listing's `None` ("cannot be asked") is exactly what used to swallow this.
+            blocked = resolved.adapter.spawn_blocked(resolved.binary)
+            if blocked:
+                return False, blocked
         if row.model and resolved is not None:
             try:
                 served = resolved.adapter.known_models(resolved.binary)
