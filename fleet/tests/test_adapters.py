@@ -130,6 +130,70 @@ def test_a_binary_inside_the_range_resolves(tmp_path: Path):
     )
 
 
+# --- a child holds the seat's server and no other ---------------------------------
+
+
+#: How each adapter keeps the OPERATOR's own MCP servers out of its child, and the flag that
+#: proves it (GRPH-802).
+#:
+#: Reported from a real wave: children were carrying ten servers, including that operator's
+#: Gmail, Drive and Calendar. `--mcp-config` ADDS to what the harness already has; it does not
+#: replace it, and `claude` was not passing `--strict-mcp-config`.
+#:
+#: The worktree cannot help here, and the distinction is worth being exact about: PRD-22 D-k
+#: bounds the FILESYSTEM, and an inherited MCP server is a network capability that steps
+#: straight over a directory boundary.
+#:
+#: `None` means the adapter cannot inherit anything, with the reason. It is an ANSWER, not a
+#: skip — "no flag needed" and "nobody looked" must not be the same entry.
+CONFINEMENT: dict[str, str | None] = {
+    "claude": "--strict-mcp-config",
+    "qwen-code": "--allowed-mcp-server-names",
+    "cursor-agent": None,   # reads .cursor/mcp.json from inside the worktree
+    "grok": None,           # project-scoped .grok/config.toml inside the worktree
+    "gbagent": None,        # first-party: reads one server out of the file, merges no global
+}
+
+
+def test_every_adapter_has_an_answer_for_child_isolation():
+    """The completeness guard, in the same shape as the argv one below and for the same
+    reason: a new adapter is covered the day it is added rather than the day somebody
+    remembers. A child with too much reach works perfectly, so nothing else would say so."""
+    missing = sorted(set(ADAPTERS) - set(CONFINEMENT))
+
+    assert not missing, (
+        f"{missing} have no entry in CONFINEMENT. Say how each keeps the operator's own MCP "
+        "servers out of its child, or that it cannot inherit any and why")
+
+
+@pytest.mark.parametrize("name", sorted(n for n, f in CONFINEMENT.items() if f))
+def test_the_adapter_confines_the_child_to_the_seats_server(name, git_repo: Path, tmp_path: Path):
+    if name not in ADAPTERS:
+        pytest.skip(f"{name} is not registered in this build")
+    tree = create(git_repo, tmp_path / f"iso-{name}", "wave", "1")
+    instruction = tmp_path / "instr"
+    instruction.write_text("build it", encoding="utf-8")
+
+    launch = ADAPTERS[name].launch(SEAT, tree, instruction, Path("/usr/bin/true"))
+
+    assert CONFINEMENT[name] in launch.argv, (
+        f"{name} does not pass {CONFINEMENT[name]}, so its child inherits every MCP server on "
+        "the operator's machine")
+
+
+def test_confining_the_child_did_not_cut_it_off_from_the_ledger(git_repo: Path, tmp_path: Path):
+    """The control. `--strict-mcp-config` with no `--mcp-config` would confine the child to
+    NOTHING — a green isolation test on an agent that cannot reach Graphban at all."""
+    tree = create(git_repo, tmp_path / "iso-ctl", "wave", "1")
+    instruction = tmp_path / "instr"
+    instruction.write_text("build it", encoding="utf-8")
+
+    argv = ADAPTERS["claude"].launch(SEAT, tree, instruction, Path("/usr/bin/true")).argv
+
+    assert "--mcp-config" in argv
+    assert argv.index("--strict-mcp-config") < argv.index("--mcp-config")
+
+
 # --- nothing carrying a credential goes on argv ------------------------------------
 
 
