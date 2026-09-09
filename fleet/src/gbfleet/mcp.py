@@ -164,10 +164,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "ps",
         "description": (
-            "Children this supervisor started, running or not, with why each stopped — "
-            "and how much each has WRITTEN. `running` alone cannot tell a child that is "
-            "thinking from one that is wedged; `output.silent_for` and the `quiet` list "
-            "can."
+            "Children this supervisor started, running or not, with why each stopped, how "
+            "much each has WRITTEN, and what its work came to. `running` alone cannot tell a "
+            "child that is thinking from one that is wedged — `output.silent_for` and `quiet` "
+            "can — nor a child that signed off from one that did nothing, which is what "
+            "`outcome` is for: `did`, `nothing`, or `unknown` when the ledger cannot be asked."
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -298,7 +299,47 @@ def _rpc_error(id_: Any, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": id_, "error": {"code": code, "message": message}}
 
 
-def _describe(child: Child) -> dict:
+#: Item states that mean the child DID the work, as against merely holding it. `review` counts:
+#: a worker's job ends there, and the reviewer's claim is a separate agent's work.
+DID_THE_WORK = frozenset({"review", "done"})
+
+
+def _outcome(child: Child, statuses: dict[str, dict]) -> dict:
+    """What this child's work came to, as against whether its process is alive (GRPH-812).
+
+    `running: false, stopped_because: null` is what a child that signed off an item looks
+    like, and it is also what a child that did nothing looks like. That identity actively
+    misled an operator into reporting two children had done nothing when one had already
+    signed off — the most expensive kind of wrong, because it is confidently specific.
+
+    THREE ANSWERS, and collapsing them is the failure this replaces:
+
+    * `did` — it held items and at least one reached review or done.
+    * `nothing` — it held items and none moved, or it held none at all.
+    * `unknown` — the ledger could not be asked. NOT `nothing`: a supervisor whose client may
+      not read items would otherwise report every child as idle, which is the original bug
+      with a new cause.
+    """
+    held = [i for i in (child.held_items or []) if i]
+    if not held and isinstance(child.assigned, dict) and child.assigned.get("item"):
+        held = [str(child.assigned["item"])]
+    if not held:
+        return {"verdict": "nothing", "items": [], "detail": "held no item"}
+    if not statuses:
+        return {"verdict": "unknown", "items": held,
+                "detail": "this supervisor's client may not read items, so what became of "
+                          "them is not known here"}
+    rows = [{"id": i, "status": (statuses.get(i) or {}).get("status") or "unknown"}
+            for i in held]
+    moved = [r["id"] for r in rows if r["status"] in DID_THE_WORK]
+    if moved:
+        return {"verdict": "did", "items": rows,
+                "detail": f"{', '.join(moved)} reached review or done"}
+    return {"verdict": "nothing", "items": rows,
+            "detail": "held " + ", ".join(r["id"] for r in rows) + ", none of them moved"}
+
+
+def _describe(child: Child, statuses: dict[str, dict] | None = None) -> dict:
     """One child, including whether it is actually producing anything.
 
     `running` alone cannot answer the question a planner is really asking. A child
@@ -322,6 +363,8 @@ def _describe(child: Child) -> dict:
         "registration_latency": child.registration_latency,
         "stopped_because": child.stopped_because.value if child.stopped_because else None,
         "debug_log": str(child.debug_path) if child.debug_path else None,
+        # The question `running` cannot answer (GRPH-812).
+        "outcome": _outcome(child, statuses or {}),
     }
     if child.output is not None:
         reading = child.output.sample(time.monotonic())
@@ -521,7 +564,12 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 "child": _describe(child)}
 
     if name == "ps":
-        children = [_describe(c) for c in fleet.children]
+        # ONE ledger read for the whole roster, not one per child: `ps` is what a planner
+        # polls, and a call that scaled with the fleet would be paid on every poll. An
+        # unreadable ledger is `{}`, which `_outcome` reports as `unknown` rather than as
+        # a fleet that did nothing.
+        statuses = item_status(fleet.client) if fleet.client else {}
+        children = [_describe(c, statuses) for c in fleet.children]
         # Counted here rather than left to the caller. A planner that has to compare
         # `silent_for` against a threshold per child in order to notice a stuck worker
         # is a planner that will not — and the number it would need, `quiet_after`, is
