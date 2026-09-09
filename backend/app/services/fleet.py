@@ -1927,6 +1927,20 @@ def extend_reservations(db: Session, *, agent_id: str, item_id: str,
             row.expires_at = floor
 
 
+def _offline_holders(db: Session, agent_ids: set[str], *, now: datetime) -> set[str]:
+    """Which of these agents the roster calls `offline` (GRPH-808).
+
+    AN AGENT THIS FUNCTION CANNOT FIND IS NOT OFFLINE. A missing row means the reservation is
+    orphaned, and "I could not find the holder" is not "the holder is gone" — releasing on
+    ignorance is how two agents end up editing one file. Those reservations still expire on
+    their own horizon, which is the safe direction to be wrong in.
+    """
+    if not agent_ids:
+        return set()
+    rows = db.scalars(select(Agent).where(Agent.id.in_(agent_ids))).all()
+    return {a.id for a in rows if presence_state(a, now=now) == "offline"}
+
+
 def active_reservations(db: Session, project_id: str | None = None, *,
                         now: datetime | None = None) -> list[AreaReservation]:
     """Reservations that have not expired.
@@ -1938,8 +1952,24 @@ def active_reservations(db: Session, project_id: str | None = None, *,
     """
     now = now or datetime.now(timezone.utc)
     rows = db.scalars(select(AreaReservation)).all()
+    # A holder the roster already calls `offline` is not holding anything (GRPH-808). The
+    # server knew this and did nothing with it: presence lapses at `lease_seconds // 4` and a
+    # reservation runs to `lease_seconds`, so a provably dead agent kept everyone else out of
+    # its files for the remaining three quarters of the horizon — 450s each, on the default,
+    # and a wave of dead children stacks them.
+    #
+    # `offline` is already a conservative signal and was built to be: `heartbeat_interval` is
+    # a third of the TTL, so an agent misses THREE consecutive beats before it counts as gone
+    # — "one slow network round trip never releases a working agent's items". This spends that
+    # margin rather than adding a shorter one of its own.
+    #
+    # Lazily, like the expiry beside it. A sweeper would add the failure mode this function's
+    # docstring already refuses: a stopped sweeper silently freezing the divvy.
+    dead = _offline_holders(db, {r.agent_id for r in rows if r.agent_id}, now=now)
     out = []
     for r in rows:
+        if r.agent_id in dead:
+            continue
         expires = r.expires_at
         if expires is not None and expires.tzinfo is None:
             expires = expires.replace(tzinfo=timezone.utc)
