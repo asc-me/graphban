@@ -41,7 +41,8 @@ from app import errors
 from app.config import settings
 from app.version import __version__
 from app.db import get_db
-from app.models import Agent, ApiKey, ArtifactRecommendation, Item, Link, MemoryShard, Project
+from app.models import (Agent, ApiKey, ArtifactRecommendation, Item, Link, MemoryShard,
+                        Prd, Project)
 from app.security import authz
 from app.security.deps import get_agent_key
 from app.services import clustering as cluster_svc
@@ -1701,8 +1702,21 @@ _GATE_ONLY_ARGS = {"head_commit": {"type": "string",
 #: Advertisement, never a boundary, the same as `_with_attestation` below: the dispatcher reads
 #: `prd_id` from any caller that sends it. A key without the fleet tier simply is not told the
 #: filter exists.
+#: A scope, worded once. Both tools that mint a seat advertise the same property, and a
+#: divergence between the two descriptions would be a divergence in what an operator believes
+#: the flag does on each path.
+_SEAT_SCOPE_ARG = {"scope": {
+    "type": "string",
+    "description": "PRD this seat may claim within — the child cannot claim past it.",
+}}
+
 _FLEET_ONLY_ARGS = {
     "collision_clusters": {"prd_id": {"type": "string", "description": "Only this PRD's work."}},
+    # GRPH-827: advertised to the fleet tier only, for the reason every entry here is — the
+    # ceiling is measured on the base manifest, and a property only a supervisor sends should
+    # not be charged to every agent that connects.
+    "delegate": dict(_SEAT_SCOPE_ARG),
+    "mint_enrolment": dict(_SEAT_SCOPE_ARG),
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.
     "fleet_status": {"view": {
@@ -2039,6 +2053,47 @@ def _idempotent_get(db: Session, args: dict, tool: str, model) -> Any | None:
 
 def _idempotent_remember(db: Session, args: dict, tool: str, resource_id: str) -> None:
     idem_svc.remember(db, args.get("idempotency_key") or "", tool, resource_id)
+
+
+def _prd_ref(db: Session, project_id: str | None, asked: str | None) -> str | None:
+    """The stored id a caller's PRD reference means, unresolvable values passed through.
+
+    Used by the `collision_clusters` FILTER, where an unknown value is a perfectly good
+    question with the answer "no clusters". `until`'s support probe depends on exactly that:
+    it asks for a PRD that cannot exist and reads zero as "this server filters" (GRPH-800).
+    Refusing here would turn that probe into an error and the wave would run unverified —
+    found by `test_wave_scope`, which also pins that an item may carry a `prd_id` no `prds`
+    row backs.
+    """
+    if not asked:
+        return None
+    return items_svc._stored_prd_id(db, asked, project_id) or asked
+
+
+def _scope_id(db: Session, project_id: str | None, asked: str | None) -> str | None:
+    """Resolve a PRD scope the caller typed into the stored id the columns hold (GRPH-827).
+
+    An agent quotes KEYS — `SA-P11` — and `Item.prd_id` holds a frozen stored id. Those two
+    agree at issue time and diverge permanently the moment a project is retagged, which this
+    project has been (AL to GRPH). So a scope that reads correct would match nothing on a
+    retagged project, and "matches nothing" for a SEAT means a child that can claim no work at
+    all while its wave reports as scoped.
+
+    An unknown PRD is refused rather than dropped. Dropping it is the failure this whole item
+    is about: a scope the operator set that quietly stops applying one layer down.
+    """
+    resolved = _prd_ref(db, project_id, asked)
+    if resolved is None:
+        return None
+    if db.get(Prd, resolved) is None:
+        # Refused rather than stored as given, which is where this parts company with an
+        # item's `prd_id`. A dangling REFERENCE on an item is recoverable and reads as
+        # dangling; a dangling SCOPE reads as a correctly scoped wave whose children can
+        # claim nothing, and the operator finds out as an idle fleet.
+        raise errors.Validation(
+            f"unknown PRD scope: {asked!r}",
+            hint="pass a PRD key from this project, or omit it for no scope")
+    return resolved
 
 
 def _scoped_item(db: Session, item_id: str, scope_ids: list[str]) -> Item:
@@ -2593,7 +2648,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             row, withdrew, code = delegation_svc.delegate(
                 db, agent=agent, item=item, lane=args["lane"], tier=args["tier"],
                 note=args.get("note", ""), lease_seconds=items_svc.DEFAULT_LEASE_SECONDS,
-                seat=bool(args.get("seat")), api_key=key, wave=args.get("wave"))
+                seat=bool(args.get("seat")), api_key=key, wave=args.get("wave"),
+                # The ITEM's project, not the key's default: a scope has to belong to the
+                # same project as the work it bounds, and `_scoped_item` has already proved
+                # the caller may read this one.
+                scope=_scope_id(db, item.project_id, args.get("scope")))
         except delegation_svc.DelegationRefused as e:
             detail = "; ".join(f"{k}={v}" for k, v in e.detail.items())
             msg = f"{e} ({detail})" if detail else str(e)
@@ -2621,7 +2680,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         from app.services import collision as collision_svc
 
         clusters = collision_svc.clusters_for_project(db, pid, args.get("status"),
-                                                      prd_id=args.get("prd_id"))
+                                                      prd_id=_prd_ref(db, pid, args.get("prd_id")))
         # Rendered keys, not stored ids — an agent quotes these back and `services/keys`
         # resolves them (PRD-13). The service layer works in stored ids because that is what
         # is frozen; the boundary is where they become the tag-rendered form.
@@ -2789,7 +2848,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         try:
             row, code = fleet_svc.mint_enrolment_as(
                 db, minter_id=args["agent_id"], project_id=pid, role=args["role"],
-                api_key=key, wave=args.get("wave"))
+                api_key=key, wave=args.get("wave"),
+                prd_id=_scope_id(db, pid, args.get("scope")))
         except ValueError as e:
             raise errors.Validation(str(e))
         # Returned ONCE, like every other credential-shaped thing here.

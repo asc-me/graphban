@@ -799,6 +799,12 @@ class Enrolment(Base):
     # delegation that asked for it. NULL on both is today's seat — the child takes work
     # through the divvy. Worker-role only: steering a reviewer to one item is refused.
     item_id: Mapped[str | None] = mapped_column(ForeignKey("items.id"), nullable=True)
+    #: The scope this seat was minted for (GRPH-827). NULL is unscoped. Read by every
+    #: self-claim path, so a child cannot walk past the wave that provisioned it: the
+    #: supervisor's `--prd` bounds what is DELEGATED, and this bounds what the child takes
+    #: on its own. Not a ForeignKey, for the reason `Item.prd_id` is not — it holds another
+    #: entity's frozen id, and a delete there must not reach into a credential's history.
+    prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
     delegation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

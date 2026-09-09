@@ -403,7 +403,8 @@ def _open_rows(db: Session, item: Item) -> list[Delegation]:
 
 def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
              note: str = "", lease_seconds: int, seat: bool = False, api_key=None,
-             wave: str | None = None) -> tuple[Delegation, str | None, str | None]:
+             wave: str | None = None,
+             scope: str | None = None) -> tuple[Delegation, str | None, str | None]:
     """Write what the delegator asked for. Claims nothing, spawns nothing. Returns the new
     row, the id of the caller's own open delegation it withdrew (PRD-35 D14), and the bound
     seat's enrolment code when `seat` was asked for (PRD-36 D2), else None.
@@ -487,7 +488,14 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
     if seat:
         _, code = fleet_svc.mint_enrolment_as(
             db, minter_id=agent.id, project_id=item.project_id, role="worker",
-            api_key=api_key, wave=wave, item_id=item.id, delegation_id=row.id)
+            api_key=api_key, wave=wave, item_id=item.id, delegation_id=row.id,
+            # GRPH-827: the wave's scope, carried into the credential the child will hold.
+            # EXPLICIT rather than inferred from `item.prd_id`, which was the tempting version:
+            # inferring would give an unscoped wave a scope its operator never set, and the
+            # complaint being answered is precisely that the operator's flag stopped being
+            # true one process down. A scope nobody asked for is a different surprise, not
+            # a smaller one.
+            prd_id=scope or None)
     return row, withdrew, code
 
 

@@ -121,15 +121,32 @@ again. There is no lever in the item shape either: `Item` has no type column, so
 convention in a title and invisible to the claim path. Scoping the wave is the only lever
 there is (GRPH-797).
 
-Because seats are bound (PRD-36), scoping the delegation scopes the whole wave: a child claims
-its own item and cannot call `claim_cluster` to reach around it.
+**`--prd` scopes the child's credential, not only this loop's choices.** The seat each child
+registers on is minted for that PRD, and the server filters every self-claim path against it —
+`claim_cluster`, `next_cluster`, `claim_next` and `claim_review` (GRPH-827). This paragraph
+used to say that bound seats already achieved this. They did not, and a measured wave says how
+much they did not: `--prd SA-P11` delegated three items, all inside the PRD, and the children
+then self-claimed six more, none of them in it — including an ops item whose checklist mutates
+production, which sits top of the queue on score. A worker declined that one on its own
+judgment. Judgment is not a control, and a README claiming the containment does not create it.
+
+Two consequences worth knowing before you use it:
+
+- **`--prd` cannot be combined with `--seats`.** A pre-minted seat carries no scope, so the
+  wave would report as scoped while those children could claim anything. Refused up front.
+- **Work with no PRD is unreachable by a scoped wave**, for building and for review. Most bug
+  reports have no PRD. Until a second scope axis exists (GRPH-828), the choice is a scoped
+  wave or a reachable backlog, and it is yours to make knowingly.
 
 **`--prd` refuses a server that does not support it.** An older Graphban does not reject an
 unrecognised `prd_id` — it drops the property and answers the unfiltered question, so the flag
 would drain the project *while reporting the wave as scoped*. Before the first spawn, `until`
 asks for a PRD that cannot exist: a server that filters returns nothing, one that ignores the
 argument returns the project, and the second refuses the run naming what it would otherwise
-have done (GRPH-800). Needs the server-side filter; upgrade if you see that refusal.
+have done (GRPH-800). It then reads the tool manifest and refuses again if `delegate` takes no
+`scope`, because a server can filter the divvy and still mint unscoped seats — those two halves
+shipped in different releases, and passing only the first is the wave that reports as scoped
+while its workers are not. Needs both server-side halves; upgrade if you see either refusal.
 
 ### What a child can reach, and what it cannot
 
