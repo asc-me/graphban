@@ -191,6 +191,43 @@ It calls the same `collision_clusters` the loop calls and applies the same split
 modelling the wave separately: a dry run that models it can reassure you about a plan the loop
 does not have.
 
+### When a wave ends because of the vendor, not the fleet
+
+A child that exits before registering reads as a broken adapter, and that is right for almost
+every case. It was wrong for one whole class. A measured wave ended
+`{"ok": false, "reason": "cap", "spawned": 6, "minted": 0}` after three children died in under
+a second each, reported as `adapter 'claude': child exited 1 before registering. stderr tail:`
+— followed by nothing, because stderr was empty. The cause was 67 bytes in `stdout.log`:
+
+```
+You've hit your session limit · resets 12:20pm (America/New_York)
+```
+
+So the wave blamed the adapter, sent the operator to the vendor CLI, and ended on `cap`, which
+means *you hit your own `--max-children`* and invites raising it.
+
+`until` now ends with `reason: "vendor_limit"` and quotes what the vendor said, including the
+reset time, and stops rather than spending the rest of its children on a wall it has already
+hit (GRPH-829). Both streams are read, and both are printed when it really is a crash — a tail
+of the wrong stream is indistinguishable from a child that said nothing at all. Only `claude`
+carries a measured string today; the base adapter matches nothing on purpose, because a
+matcher that fired on the word "limit" would relabel real crashes as billing problems.
+
+### Work recovered from a killed wave
+
+A wave opens by adopting what the last one stranded, and a tree with real work in it is
+committed as `WIP: salvaged by gbfleet`. That commit used to stay **local**: one measured
+takeover recovered 614 insertions across exactly one item's touchpoints, and the item was
+re-delegated minutes later, branched from `main`, and rebuilt every line. The work was
+recovered and lost in the same move.
+
+Salvaged work now gets the same two steps a finished child's work gets — pushed, then a draft
+PR naming the item it belongs to, with the receipt written on the item (GRPH-830). The item id
+comes from the dead child's own record, so a record written by an older supervisor still
+publishes the branch and simply has nobody to hand the receipt to. A tree whose only
+uncommitted file was the seat is still not published: `ONLY_CREDENTIAL` is not `SALVAGED`, and
+a pushed empty branch per dead child would make every crash look like work.
+
 ### Work whose dependency has not landed
 
 `done` in the ledger means *attested*, not *merged*. An attestation binds to a commit and

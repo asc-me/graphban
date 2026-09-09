@@ -38,6 +38,25 @@ class ClaudeCode(Adapter):
         "run and is why the worktree boundary matters (PRD-22 D-k)."
     )
 
+    #: Observed verbatim on stdout, exit 1, 67 bytes, nothing on stderr:
+    #: `You've hit your session limit · resets 12:20pm (America/New_York)`.
+    #: Matched on the phrase rather than the whole line so the reset clause can be quoted back.
+    _LIMIT = "session limit"
+
+    def account_limit(self, stdout: str, stderr: str) -> str:
+        """The session-limit message, with its reset time, or "" (GRPH-829).
+
+        Searched in stdout FIRST because that is where it was measured, and in stderr too
+        because a vendor that moves it there should not silently stop being recognised — the
+        absence of a message is what made this look like a crash the first time.
+        """
+        for stream in (stdout or "", stderr or ""):
+            for line in stream.splitlines():
+                text = line.strip()
+                if self._LIMIT in text.lower():
+                    return text
+        return ""
+
     def seat_path(self, worktree: Path) -> Path:
         # Not under the worktree: nothing forces it here, and a credential that never
         # enters the project directory cannot be committed by salvage, cannot be seen

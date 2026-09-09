@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import __version__
 from . import adopt as adopt_mod
-from .adapters import ADAPTERS, AdapterError, Tuning, resolve
+from .adapters import ADAPTERS, AdapterError, Tuning, checked_tuning, resolve
 from .client import ALLOWED_TOOLS, Graphban
 from . import doctor
 from .lock import RepoLocked
@@ -288,6 +288,10 @@ def make_adapter_factory(name: str, binary: str | None, model: str = "",
     registration window and blames the wrong component.
     """
     found = resolve(name, binary=binary, model=model, tuning=tuning)
+    # GRPH-831: and the arguments this adapter refuses to guess, asked HERE — where the
+    # vendor is resolved and before any worktree exists — for the same reason the version is.
+    # Asked at spawn instead, the operator has already paid for a worktree and a seat.
+    checked_tuning(found.adapter, tuning or Tuning())
 
     def factory(seat: Seat, tree: Worktree, instruction_file: Path,
                 debug_file: Path | None = None) -> Launch:

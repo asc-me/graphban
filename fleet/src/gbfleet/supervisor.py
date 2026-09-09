@@ -43,7 +43,8 @@ from . import touchpoints as tp_mod
 from .observe import NEVER_REGISTERED, ChildRecord
 from .seat import Seat, instruction_for
 from .spawn import (
-    REGISTRATION_WINDOW, Child, Launch, LaunchFailed, Reason, await_registration,
+    REGISTRATION_WINDOW, Child, Launch, LaunchFailed, Reason, VendorLimit,
+    await_registration,
     spawn, stop,
 )
 from .worktree import Reaped, Worktree
@@ -453,11 +454,16 @@ def up(
             # A supervisor died here. Adopt live PIDs and salvage the rest (P30 D7)
             # rather than logging takeover and starting a new wave beside them.
             observe.emit("takeover", detail=acquired.takeover.describe())
-            leftover, occupied, notes = adopt_mod.recover(repo, workspace, state)
+            recovered = adopt_mod.recover(repo, workspace, state)
+            leftover, occupied, notes = recovered
             for note in notes:
                 observe.emit("adopt", detail=note)
             for child in leftover:
                 wave.spawned.append(child)
+            # GRPH-830: both takeover paths publish, not just `until`'s. A salvage that
+            # depends on which command happened to run next is a salvage the operator cannot
+            # rely on.
+            publish_salvaged(wave, repo, recovered.salvaged, client=client)
         wave.before = _read_allocation(client, wave)
         if wave.offline:
             # D-i: no new spawns while the server is unreachable. A child that cannot
@@ -682,6 +688,7 @@ def _start(
             )
         except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
+            vendor_limit = isinstance(exc, VendorLimit)
             if tree is not None and tree.path.exists() and not any(
                 c.worktree == tree.path for c in started
             ):
@@ -694,6 +701,14 @@ def _start(
             # inference this field exists to remove — and a short list reads as
             # "nothing went wrong".
             wave.unused_seats += planned - index
+            if vendor_limit:
+                # GRPH-829. Not this slot's problem: the account is out of quota, so the next
+                # child would fail identically in under a second and the one after that too.
+                # Re-raised AFTER the cleanup above so the worktree is still reaped and the
+                # failure still recorded — the caller decides what a wave does about it, and
+                # a supervisor that quietly kept spawning would burn its whole child budget
+                # on a wall it has already hit.
+                raise exc
             break
 
     return started
@@ -928,17 +943,29 @@ def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
     After the push and never instead of it. A PR for a branch that is not on the remote is a
     PR for nothing, and the push is the step that can actually fail.
     """
-    remote = wt_mod.remote_for(tree.repo)
-    base = wt_mod.default_ref(tree.repo, remote) if remote else ""
-    items = [i for i in ((child.held_items if child else []) or []) if i]
-    title, body = propose_mod.describe(tree.branch, items,
-                                       propose_mod.subject(tree.repo, tree.branch, base))
-    got = propose_mod.propose(tree.repo, tree.branch, base, title=title, body=body)
-    wave.proposed[tree.branch] = got
+    propose_branch(wave, tree.repo, tree.branch,
+                   [i for i in ((child.held_items if child else []) or []) if i],
+                   client=client)
+
+
+def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
+                   client: Graphban | None) -> None:
+    """The branch, the items it served, and a draft PR joining them.
+
+    Split out of `_propose` for the salvage path (GRPH-830), which has a repo, a branch and a
+    list of items but no `Worktree` — by the time a takeover runs, the tree is gone — and no
+    `Child`, because the process it belonged to is dead.
+    """
+    remote = wt_mod.remote_for(repo)
+    base = wt_mod.default_ref(repo, remote) if remote else ""
+    title, body = propose_mod.describe(branch, items,
+                                       propose_mod.subject(repo, branch, base))
+    got = propose_mod.propose(repo, branch, base, title=title, body=body)
+    wave.proposed[branch] = got
     if got.reason and not got.url:
         # Reported, never fatal: the work is committed and pushed by now, and a PR nobody
         # could open is a thing for a person to finish rather than a broken wave.
-        wave.failures.append(f"{tree.branch}: {got.reason}")
+        wave.failures.append(f"{branch}: {got.reason}")
     if not (got.url and client is not None and items):
         return
     # Recorded on the ITEM, because that is where a reviewer looks and where the ledger's own
@@ -948,11 +975,46 @@ def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
         try:
             client.call("update_item", id=item_id, evidence=[{
                 "kind": "url",
-                "detail": f"draft PR opened by gbfleet for {tree.branch}",
+                "detail": f"draft PR opened by gbfleet for {branch}",
                 "url": got.url,
             }])
         except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
             wave.failures.append(f"{item_id}: PR opened but not recorded ({exc})")
+
+
+def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
+                     client: Graphban | None) -> None:
+    """Push what a takeover recovered, and say on the item that it exists (GRPH-830).
+
+    Adopting a stranded worktree already worked — the commit is made and the note is printed.
+    What did not work was the step after: one measured takeover salvaged 614 insertions across
+    exactly one item's touchpoints and left them on a LOCAL branch nothing pointed at. The item
+    was re-delegated minutes later, branched from `main`, and rebuilt every line. The work was
+    recovered and lost in the same move, and only somebody reading local refs could tell.
+
+    Deliberately the SAME two steps a finished child gets — push, then a draft PR carrying the
+    item — rather than a quieter salvage-only path. A reviewer looking for the work has one
+    place to look either way, and the PR body already says the branch was salvaged because the
+    commit subject does.
+
+    Never fatal. This runs at the very start of a wave, on the crash path, and a takeover that
+    refused to proceed because a push failed would strand the next wave too.
+    """
+    for row in salvaged:
+        try:
+            pushed = wt_mod.push_branch(repo, row.branch, row.base)
+        except Exception as exc:  # noqa: BLE001
+            wave.failures.append(f"{row.branch}: salvaged but not published ({exc})")
+            continue
+        wave.published[row.branch] = pushed
+        if not pushed.ok:
+            if not pushed.skipped:
+                wave.failures.append(f"{row.branch}: salvaged but not published "
+                                     f"({pushed.reason})")
+            continue
+        observe.emit("adopt", detail=f"{row.branch}: published salvaged work"
+                                     + (f" for {', '.join(row.items)}" if row.items else ""))
+        propose_branch(wave, repo, row.branch, list(row.items or []), client=client)
 
 
 def _report_exits(children: list[Child], client: Graphban) -> None:
