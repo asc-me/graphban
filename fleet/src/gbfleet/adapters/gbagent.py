@@ -116,6 +116,18 @@ class GbAgent(Adapter):
         return {k: v for k, v in out.items() if v is not None}
 
 
+    def spawn_blocked(self, binary: Path) -> str:
+        """No endpoint, no run. `gbagent run` refuses with exit 78 and says exactly this, so
+        the supervisor can say it BEFORE a wave rather than after the first child dies.
+
+        This is knowable without asking anything: the variable is set or it is not.
+        """
+        if not os.environ.get(BASE_URL_ENV):
+            return (f"no model endpoint: {BASE_URL_ENV} is unset, so a spawn exits 78 before "
+                    "the child registers. Set it to an OpenAI-compatible chat/completions "
+                    "endpoint (a local Ollama needs no key)")
+        return ""
+
     def known_models(self, binary: Path) -> frozenset[str] | None:
         """`gbagent models`, which asks the configured endpoint what it actually serves.
 
