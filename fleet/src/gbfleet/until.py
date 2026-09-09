@@ -285,6 +285,8 @@ def _loop(
     # remote-tracking ref is only as fresh as the last fetch, so skipping this would measure
     # every dependency as already merged — the same absence-reads-as-clean failure the stale
     # check in `supervisor` exists to avoid, on the check built to stop it.
+    if prd:
+        check_scope_is_honoured(planner, prd)
     remote = wt_mod.remote_for(repo)
     base = wt_mod.default_ref(repo, remote) if remote else ""
     if base:
@@ -506,6 +508,45 @@ def _spawn_one(
     persist()
     if len(wave.spawned) == before and wave.failures:
         raise ConfigError(wave.failures[-1])
+
+
+#: A PRD id no deployment will ever hold, used to ask the server whether it filters at all.
+PROBE_PRD = "__gbfleet_probe_no_such_prd__"
+
+
+def check_scope_is_honoured(planner: Graphban, prd: str) -> None:
+    """Refuse `--prd` when the server ignores it (GRPH-800).
+
+    An MCP server that has never heard of `prd_id` does not refuse it — it drops the
+    unrecognised argument and answers the unfiltered question. Measured against the deployed
+    2026.09.16, which predates the filter: scoped and unscoped both returned the same four
+    clusters, no error. So `--prd SA-P11` against such a server would drain the whole project
+    WHILE THE OPERATOR BELIEVED IT WAS SCOPED — the bug the flag exists to fix, wearing the
+    fix's clothes, which is strictly worse than not having the flag.
+
+    The probe is a question the answer to which cannot be ambiguous: ask for a PRD that cannot
+    exist. A server that filters returns nothing; one that ignores the argument returns the
+    project. The filtering side is pinned by a backend test that asserts an unknown PRD scopes
+    to nothing rather than to everything, so the two halves cannot drift apart.
+
+    One case it cannot distinguish, stated because silence is what this is about: a project
+    with no ready clusters answers zero either way. Then the probe reads "supported" on a
+    server that is not — and it does not matter, because there is nothing to delegate.
+    """
+    try:
+        got = planner.call("collision_clusters", prd_id=PROBE_PRD)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        # Could not ask. Not evidence either way, and refusing the wave over an unreachable
+        # server here would duplicate the loop's own handling of that.
+        observe.emit("scope_unverified", detail=f"could not probe prd_id support: {exc}")
+        return
+    if int(got.get("total") or 0) > 0:
+        raise ConfigError(
+            f"--prd {prd} was given, but this server ignores prd_id: asked for a PRD that "
+            f"cannot exist and it returned {got.get('total')} clusters. It would delegate "
+            "every ready item in the project while reporting the wave as scoped. Upgrade the "
+            "server, or run without --prd and accept that it drains the project"
+        )
 
 
 def _scope(prd: str | None) -> dict:
