@@ -37,6 +37,7 @@ from .hostos import restrict_to_owner
 from .lock import Acquired, hold
 from . import observe
 from . import seat as seat_mod
+from . import propose as propose_mod
 from . import touchpoints as tp_mod
 from .observe import NEVER_REGISTERED, ChildRecord
 from .seat import Seat, instruction_for
@@ -208,6 +209,10 @@ class Wave:
     #: with its reason: the reviewer reads the BRANCH, so a push that failed silently would
     #: leave them inferring an empty diff.
     published: dict = field(default_factory=dict)
+    #: Draft PRs opened for reaped branches, by branch (GRPH-804). A branch that was
+    #: published and NOT proposed is work nobody has been asked to merge, which is the
+    #: state this exists to make visible rather than to hide.
+    proposed: dict = field(default_factory=dict)
     #: Files each worker actually changed, by branch. MEASURED here, written back by a
     #: holder with standing (`gbfleet.record.measured`) — the supervisor still cannot
     #: call `update_item`. Empty is reported and is not a write. See `touchpoints.py`.
@@ -852,7 +857,7 @@ def _note_touchpoints(wave: Wave, child: Child) -> None:
 
 
 def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
-             child: Child | None = None) -> None:
+             child: Child | None = None, propose_prs: bool = True) -> None:
     """Put the child's branch where the reviewer can read it (GRPH-750).
 
     A step AFTER the reap rather than part of salvage. Salvage commits, which the supervisor
@@ -882,6 +887,46 @@ def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
     # saying "published" about a branch that skipped would re-open the window it closes.
     if pushed.ok and client is not None and child is not None and child.seat_id:
         client.post_attempt(enrolment_id=child.seat_id, branch_published=True)
+    if pushed.ok and propose_prs:
+        _propose(wave, tree, client=client, child=child)
+
+
+def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
+             child: Child | None) -> None:
+    """Open a draft PR for the branch just published (GRPH-804).
+
+    The other half of "done does not mean merged". GRPH-798 HOLDS an item whose dependency is
+    not in the base; nothing made that hold clear, because nothing proposed the merge. On the
+    reported wave the item that reached `done` had no PR while the one that only reached
+    `review` did — the more complete item was the one that went missing.
+
+    After the push and never instead of it. A PR for a branch that is not on the remote is a
+    PR for nothing, and the push is the step that can actually fail.
+    """
+    remote = wt_mod.remote_for(tree.repo)
+    base = wt_mod.default_ref(tree.repo, remote) if remote else ""
+    items = [i for i in ((child.held_items if child else []) or []) if i]
+    title, body = propose_mod.describe(tree.branch, items)
+    got = propose_mod.propose(tree.repo, tree.branch, base, title=title, body=body)
+    wave.proposed[tree.branch] = got
+    if got.reason and not got.url:
+        # Reported, never fatal: the work is committed and pushed by now, and a PR nobody
+        # could open is a thing for a person to finish rather than a broken wave.
+        wave.failures.append(f"{tree.branch}: {got.reason}")
+    if not (got.url and client is not None and items):
+        return
+    # Recorded on the ITEM, because that is where a reviewer looks and where the ledger's own
+    # PR-cooldown reads from (`items.pr_linked_at`). Starting that clock is the intended
+    # effect: `done` should not be claimable the same minute the PR appeared.
+    for item_id in items:
+        try:
+            client.call("update_item", id=item_id, evidence=[{
+                "kind": "url",
+                "detail": f"draft PR opened by gbfleet for {tree.branch}",
+                "url": got.url,
+            }])
+        except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
+            wave.failures.append(f"{item_id}: PR opened but not recorded ({exc})")
 
 
 def _report_exits(children: list[Child], client: Graphban) -> None:
