@@ -577,7 +577,27 @@ def _waiting(blocked: list[dict]) -> str:
     return (f"{len(blocked)} cluster(s) held by {', '.join(holders) or 'another agent'}"
             + (f"; the earliest frees in {soonest}s" if soonest is not None
                else "; no expiry reported")
+            + _merged_on(blocked)
             + ". Not spawning into work that cannot be claimed")
+
+
+def _merged_on(blocked: list[dict]) -> str:
+    """Why those clusters are clusters at all (GRPH-810).
+
+    A wait is easier to judge when you know what you are waiting for. "Held by SA-A2" says an
+    agent has it; "and these items are one cluster because they are files in the same
+    directory" says whether the queue is real work or an artefact of the grouping rule.
+
+    Named only when EVERY reason is the directory rule. A mixture is a genuine overlap with
+    some directory noise in it, and reporting that as "just the directory rule" would talk an
+    operator out of a wait they should take seriously.
+    """
+    rules = {r.get("rule") for c in blocked
+             for m in (c.get("because") or []) for r in (m.get("on") or [])}
+    if rules == {"directory"}:
+        return (", and they are one cluster only because their files share a directory "
+                "(GRPH-810)")
+    return ""
 
 
 def _scope(prd: str | None) -> dict:
