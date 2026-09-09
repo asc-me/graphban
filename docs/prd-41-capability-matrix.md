@@ -299,13 +299,56 @@ What "enabled harnesses" means in this pipeline: the project's `allowed_harnesse
 
 ## 10. Phasing
 
-**PR 1 — the axis.** Derivation in `harness.py` with fixed-diff tests; `diff_shape` and `tool_errors` in the exit post; the migration re-keying rollups and backfilling `task_class`; the enum served on `GET /api/harness`; the Harness page grid with family rollups. Criteria 1–3, 15.
+Four slices, one PR each, in dependency order: S1 → S2 → S3 → S4. Each slice section below is the unit the ledger files as an item and carries its own scope, files and acceptance criteria; sections 4–9 are the framing they reference. A slice is done when its criteria pass on both database engines and the doc guards (`gen_subagents.py`, `api-reference.md` rows and count sentence, `gen_prd_index.py`) are green.
 
-**PR 2 — the resolver and the record.** `capabilities_at_delegate` on the record and the brief; `measured` re-keyed; gbfleet scoring per D5 with the layered explanation, the D16 cost axis, the D20 budget target and caps, the D21 stage record; matrix prices (D19); `doctor`'s grid. Criteria 4, 5, 14, 16, 20–24, 25, 28.
+---
 
-**PR 3 — review competence, probes and utilization.** `harness_review_checks` and the nightly pass; F1–F3 cells; probe candidates, runs, and the two-number cells; suggestion triggers; the utilization facts on the grid (§7.3). Criteria 6–9, 17, 26, 27, 30.
+## S1 — The axis: derivation, diff shape, the re-key and the grid
 
-**PR 4 — corrective and cross-user.** R5 and R6; R3 re-keyed to the family rule; org re-key; self-hosted contribution; the platform snapshot and `capability_priors`; the sync page. Criteria 10–13, 18, 19, 25–29, 31, then 32.
+**Builds:** D1–D4, D13, D15. **Depends on:** nothing in this PRD (PRD-38's record and rollups exist).
+
+- `harness.py`: `capabilities(item, diff_shape, outcome) -> list[str]` beside `size_band`, one fixture per §5 leaf plus a hybrid-file fixture and a no-match fixture landing in the family `other`; the enum and family map as module constants served on `GET /api/harness`.
+- Exit post gains `diff_shape` (`files_added/modified/deleted/renamed`, `test_files`, `net_lines`, `layers`) computed by `worktree.reap` from `git diff --name-status --stat` against the base, and `tool_errors` when the adapter can count them; merge rule and null-is-not-zero unchanged (PRD-38 D3).
+- Migration: `attempt_telemetry.capabilities`, `capabilities_at_delegate`, `diff_shape`, `tool_errors`; `harness_rollups` and `platform_rollups` gain `capability` in the unique key with `task_class` backfilled by the D3 map; `sampled` accepts `probe`.
+- Observe → Harness re-keyed: family rollups with greyed leaves under the floor, the coverage number, `other` cells with counts, version cells side by side across a version change.
+- **Criteria:** 1, 2, 3, 15. **Touches:** `backend/app/services/harness.py`, `backend/app/routers/harness.py`, `backend/alembic/versions/`, `backend/app/models/__init__.py`, `fleet/src/gbfleet/worktree.py`, `fleet/src/gbfleet/supervisor.py`, `web/src/features/harness/HarnessView.tsx`, `web/src/lib/types.ts`, `docs/api-reference.md`.
+
+---
+
+## S2 — The resolver and the record: capability-aware scoring, cost, budget and the stage record
+
+**Builds:** D5, D10, D14 (the Build page's editors read what S2 writes), D16, D19, D20, D21. **Depends on:** S1.
+
+- `delegate` derives `capabilities_at_delegate` from touchpoints; the record and `get_item_details.brief` carry it inside the existing `measured_for_lane` bound (re-asserted by test).
+- `fleet_status.measured` re-keys on capability with `bands` inside each cell and a `layer` per cell (`project | org | platform | prior`); `capability_priors` read as the last layer.
+- `gbfleet/matrix.py`: quality = mean over the item's capabilities of the first layer clearing the floor; cost = `cost_class` prior refined by tokens-to-sign-off with rank-scaling when no target, the D20 curve when `budget_tokens` is set; policy `caps` as a filter with `tokens not reported` drops; the D21 stage record in the spawn reply, the log, `until`'s report and the launch post. `matrix.toml` evidence entries accept `capability`; rows accept `price_per_mtoken_in/out`; status-for-a-capability reads the newest entry naming it.
+- `fleet_profiles.budget_tokens`, `projects.fleet_policy.caps`; REST `/fleet/profile` and `/fleet/policy` carry them; the Fleet view's preferences boxes gain the two fields.
+- `doctor` prints the grid per row with layer labels and the resolution per tier under the operator's profile.
+- **Criteria:** 4, 5, 14, 16, 20, 21, 22, 23, 24, 25, 28. **Touches:** `backend/app/services/delegation.py`, `backend/app/services/fleet_profiles.py`, `backend/app/services/fleet.py`, `backend/app/routers/fleet.py`, `backend/app/mcp_server.py` (result payloads only), `fleet/src/gbfleet/matrix.py`, `fleet/src/gbfleet/matrix.toml`, `fleet/src/gbfleet/mcp.py`, `fleet/src/gbfleet/until.py`, `fleet/src/gbfleet/doctor.py`, `web/src/features/fleet/FleetView.tsx`, `docs/fleet-adapters.md`.
+
+---
+
+## S3 — Review competence, probes and utilization
+
+**Builds:** D6, D7, D8, and §7.3. **Depends on:** S1 (cells) and S2 (the `probe` sampling label flows through the launch post).
+
+- `harness_review_checks` and a nightly pass over the 14-day window: `miss (unconfirmed)` at bug filing on overlapping touchpoints, `miss` on close-fixed, `withdrawn` on not-a-bug or `unrelated` (recomputing forward and back within 90 days), `false_bounce` on `suite_green` plus a human sign-off on the same head; F1–F3 cells keyed on the reviewed work's capabilities, shown after five checked verdicts, labelled "by touchpoint overlap".
+- Probes: `GET /api/harness/probe/candidates` (closed items with a red sabotage, grouped by leaf, family fallback), `POST /api/harness/probe/runs` creating `capability_probe_runs` and delegations with `sampled = probe` on a scratch project, one model and one leaf at a time under the project's `caps`, with the estimated token cost from the panel's history shown before a person starts it; two-number cells (probe and natural, each with `n`) never summed; suggestion triggers on a newly declared vendor/model/version, never on a schedule.
+- Utilization on every cell: tokens per sign-off or its reason, median turns against budget, budget-exhaustion share, each with its reporting count; build and review costs side by side. Rollups gain `turns_used`, `turns_reported`, `budget_hits`.
+- **Criteria:** 6, 7, 8, 9, 17, 26, 27, 30, 31. **Touches:** `backend/app/services/harness.py`, `backend/app/services/harness_rules.py`, `backend/app/routers/harness.py`, `backend/alembic/versions/`, `backend/app/models/__init__.py`, `web/src/features/harness/`, `docs/api-reference.md`.
+
+---
+
+## S4 — Corrective and cross-user: R5, R6, the org re-key, contribution and the published prior
+
+**Builds:** D9, D11, D12, D17, D18. **Depends on:** S2 and S3.
+
+- `harness_rules.py`: R5 (a cell at `n ≥ 5` differing from the row's per-capability prior by ≥ 0.3 drafts an evidence entry naming the capability; probes count with their label), R6 (≥ 6 resolutions on a capability dropped a better MEASURED row as `not installed`; and the "cap unenforceable on the rows you allow" shape when every eligible row is unreporting), R3 re-keyed to the family rule (D18), R4 per capability; same hash, replay and siblings rules as PRD-38.
+- Org scope re-keyed on capability with per-project breakdown; cards at org scope name their projects.
+- Self-hosted contribution: nightly `POST /api/platform/contributions` over the deployment-sync credential when `telemetry_share` is on, D11 field set only (key-set test), accept-time redaction of model strings seen from fewer than three instances (salted hash until the third), recompute-on-opt-out; the sync page shows the last contribution, row count and floors cleared.
+- The platform snapshot: nightly `capability_snapshot`, `GET /api/platform/snapshot`, fetched into `capability_priors` with `source = platform` and `snapshot_at`; served with `n` as a band and no identifier; `doctor` prints it beside the local grid with its date.
+- Uninstalled, excluded and policy-dropped rows on the grid greyed with their reason as the label, linking to the control that set it.
+- **Criteria:** 10, 11, 12, 13, 18, 19, 29, then the walk, 32. **Touches:** `backend/app/services/harness_rules.py`, `backend/app/services/platform.py`, `backend/app/services/harness.py`, `backend/app/routers/harness.py`, `backend/app/routers/platform.py`, `backend/alembic/versions/`, `fleet/src/gbfleet/doctor.py`, `web/src/features/harness/`, `web/src/features/settings/`, `docs/api-reference.md`, `docs/fleet-adapters.md`.
 
 ---
 
