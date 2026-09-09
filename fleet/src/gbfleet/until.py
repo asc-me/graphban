@@ -158,6 +158,19 @@ def run(
     observe.configure(state)
 
     try:
+        if prd and pool:
+            # GRPH-827. A pre-minted seat carries whatever scope it was minted with, and a
+            # `--seats` file has none. Mixing them would produce a wave that reports as scoped
+            # while the children holding those seats can claim the whole project — the finding
+            # this scope exists to close, walked back in through a flag combination.
+            #
+            # INSIDE the try, so it comes back as the same `{"ok": false, "reason": "config"}`
+            # every other refusal does. Raised two lines earlier it escaped `run` entirely and
+            # the operator got a traceback, which is a worse answer to a config mistake.
+            raise ConfigError(
+                f"--prd {prd} cannot be combined with pre-minted seats: a seat from --seats "
+                "carries no scope, so those children could claim past the wave. Drop --seats "
+                "and let the loop mint scoped seats, or drop --prd and accept an unscoped wave")
         with hold(repo, state) as acquired:
             wave.lock = acquired
             leftover: list[Child] = []
@@ -376,7 +389,7 @@ def _loop(
                 seat, minted_one = _take_seat(
                     pool, planner, agent_id, wave_name, server, api_key,
                     mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
-                    role="worker",
+                    role="worker", prd=prd,
                 )
                 if minted_one:
                     minted += 1
@@ -422,7 +435,7 @@ def _loop(
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
-                role="worker",
+                role="worker", prd=prd,
             )
             if minted_one:
                 minted += 1
@@ -551,6 +564,43 @@ def check_scope_is_honoured(planner: Graphban, prd: str) -> None:
             "every ready item in the project while reporting the wave as scoped. Upgrade the "
             "server, or run without --prd and accept that it drains the project"
         )
+    check_seat_scope_is_honoured(planner, prd)
+
+
+def check_seat_scope_is_honoured(planner: Graphban, prd: str) -> None:
+    """Refuse `--prd` when the server takes the scope but does not put it on the SEAT.
+
+    The same argument as the probe above, one layer down, and it needs its own check because
+    the two halves shipped in different releases. A server that filters `collision_clusters`
+    but drops `delegate`'s `scope` passes the first probe completely: the wave delegates
+    inside the PRD and every child then holds an unscoped credential, which is exactly the
+    measured behaviour this flag was extended to fix — three delegated items inside the scope,
+    six self-claimed outside it.
+
+    **Read from the manifest rather than probed by minting.** `tools/list` is a question with
+    no side effects; the alternative was to mint a seat with an impossible scope and see
+    whether it was refused, which leaves a real credential lying around on every server that
+    passes. A seat is the thing this is trying to bound — spraying them to find out is the
+    wrong instrument.
+    """
+    try:
+        tools = planner.list_tools()
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("scope_unverified", detail=f"could not read the tool manifest: {exc}")
+        return
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("name") != "delegate":
+            continue
+        props = ((tool.get("inputSchema") or {}).get("properties") or {})
+        if "scope" in props:
+            return
+        raise ConfigError(
+            f"--prd {prd} was given, but this server's `delegate` takes no `scope`: it would "
+            "bound what this loop hands out and mint children that can claim the whole "
+            "project anyway. Upgrade the server, or run without --prd")
+    # `delegate` absent from the manifest entirely is a different problem, and the loop's own
+    # handling of a missing tool reports it better than a guess here would.
+    observe.emit("scope_unverified", detail="delegate is not in the tool manifest")
 
 
 class _Repeats:
@@ -668,6 +718,11 @@ def plan(planner: Graphban, prd: str | None, max_workers: int) -> dict:
     would = [c for c in free[:max_workers]]
     return {
         "prd": prd or None,
+        # GRPH-827: a dry run that showed only what would be HANDED OUT answered half the
+        # question. The other half is what the children could then take on their own, and for
+        # a scoped wave that is now the same set. Said explicitly, because the previous answer
+        # to it was a README paragraph that turned out to be false.
+        "seats_scoped": bool(prd),
         "would_delegate": [(c.get("items") or [None])[0] for c in would],
         "clusters_free": len(free),
         "clusters_held": len(blocked),
@@ -691,6 +746,22 @@ def _scope(prd: str | None) -> dict:
     Empty when unscoped, so an unfiltered run sends exactly what it sent before.
     """
     return {"prd_id": prd} if prd else {}
+
+
+def _seat_scope(prd: str | None) -> dict:
+    """The wave's scope, as the arguments that put it on the CREDENTIAL (GRPH-827).
+
+    Separate from `_scope` above and deliberately so: that one filters what this loop offers,
+    this one binds what the child may take on its own. They carry the same value and answer
+    different questions, and the gap between them is the whole finding — one measured wave
+    delegated three items inside its PRD while its children self-claimed six outside it,
+    including an ops item whose checklist mutates production.
+
+    Empty when unscoped, so an unfiltered wave mints exactly the seat it minted before. A
+    server that has never heard of `scope` drops it silently, which is why `until` refuses to
+    run scoped against a server that ignores the filter (`check_scope_is_honoured`).
+    """
+    return {"scope": prd} if prd else {}
 
 
 def _delegate_next(
@@ -763,13 +834,14 @@ def _delegate_next(
         # by someone else (D13); then the delegation is written without a seat and the
         # divvy decides, exactly as before PRD-36.
         reply = planner.call("delegate", id=seed, lane=lane, tier=want, agent_id=agent_id,
-                             note=note, seat=True, wave=wave_name)
+                             note=note, seat=True, wave=wave_name, **_seat_scope(prd))
         got = reply.get("enrolment_code") if isinstance(reply, dict) else None
         code = str(got) if got else None
     except ToolFailed as exc:
         observe.emit("bound_seat_refused", item=seed, detail=str(exc))
         try:
-            planner.call("delegate", id=seed, lane=lane, tier=want, agent_id=agent_id, note=note)
+            planner.call("delegate", id=seed, lane=lane, tier=want, agent_id=agent_id, note=note,
+                         **_seat_scope(prd))
         except (ToolFailed, NotPermitted, ServerUnreachable) as exc2:
             observe.emit("delegate_refused", item=seed, detail=str(exc2))
             return None, None, None
@@ -858,12 +930,19 @@ def _take_seat(
     mint_deadline: float,
     sleep: Callable[[float], None],
     role: str = "worker",
+    prd: str | None = None,
 ) -> tuple[Seat, bool]:
-    """Pre-minted pool first (workers). S6: all seats are workers now."""
+    """Pre-minted pool first (workers). S6: all seats are workers now.
+
+    A seat from the POOL carries whatever scope it was minted with, which for a `--seats` file
+    is none. That is not silently accepted: `run` refuses `--prd` together with pre-minted
+    seats, because a wave that reports as scoped while half its children are not is the failure
+    mode this scope exists to remove.
+    """
     if pool:
         return pool.pop(0), False
     code = _mint(planner, agent_id, wave_name, mint_left=mint_left,
-                 mint_deadline=mint_deadline, sleep=sleep, role=role)
+                 mint_deadline=mint_deadline, sleep=sleep, role=role, prd=prd)
     return Seat(code=code, server_url=server, api_key=api_key, role=role), True
 
 
@@ -876,6 +955,7 @@ def _mint(
     mint_deadline: float,
     sleep: Callable[[float], None],
     role: str = "worker",
+    prd: str | None = None,
 ) -> str:
     last: Exception | None = None
     tries = max(1, mint_left)
@@ -885,6 +965,7 @@ def _mint(
         try:
             payload = planner.call(
                 "mint_enrolment", agent_id=agent_id, role=role, wave=wave_name,
+                **_seat_scope(prd),
             )
         except NotPermitted as exc:
             raise ConfigError(str(exc)) from exc

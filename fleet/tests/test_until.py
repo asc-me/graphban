@@ -189,6 +189,31 @@ def test_a_key_that_cannot_mint_is_refused_at_start(
     assert "mint_enrolment" in result.detail
 
 
+def test_a_scoped_wave_refuses_pre_minted_seats(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-827. A `--seats` file carries seats minted elsewhere, and those carry no scope. A
+    wave that accepted both flags would report as scoped while the children holding those
+    seats could claim the whole project — the finding this scope exists to close, walked back
+    in through a flag combination.
+
+    Refused as a config error, which is before the lock and before any worktree: nothing is
+    half-built and no credential has been spent."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        seats=[Seat(code="WORKER-AAAAAA", server_url="http://gb.invalid", api_key=KEY)],
+        prd="SA-P11",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.reason == "config"
+    assert result.exit == 2
+    assert "--prd SA-P11" in result.detail and "pre-minted seats" in result.detail
+    assert "Drop --seats" in result.detail, "refused without saying how to proceed"
+
+
 def test_idle_when_there_is_no_work_no_review_and_no_lease(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):

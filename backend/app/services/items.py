@@ -9,7 +9,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Agent, Item, Prd, Project, utcnow
+from app.models import Agent, Enrolment, Item, Prd, Project, utcnow
 from app.services import keys
 
 logger = logging.getLogger(__name__)
@@ -1350,6 +1350,51 @@ def _ready_candidates(db: Session, project_id: str | None, lease_seconds: int) -
     return out
 
 
+class OutOfScope(Exception):
+    """This agent's SEAT was minted for one scope and the item is outside it (GRPH-827).
+
+    An exception rather than a `None`, because `claim_item` already returns `None` for "lost
+    the race" and the two are opposite instructions: lose a race and the right move is to try
+    the next candidate, ask for work outside your scope and there is no next candidate — the
+    answer will not change however many you try. That is the flattening this codebase keeps
+    finding, so it is not repeated here.
+    """
+
+
+def seat_scope(db: Session, agent_id: str | None) -> str:
+    """The PRD this agent's seat was minted for, or "" for an unscoped seat (GRPH-827).
+
+    Resolved through the AGENT rather than passed in, because the caller that would pass it is
+    the child, and the whole point is that the child does not get a vote. `--prd` on the
+    supervisor bounds what is delegated; this bounds what the delegate can then go and take for
+    itself, and one wave measured the gap at three delegated items against six self-claimed
+    ones outside the scope.
+
+    Unscoped is the honest default and stays the default: a fleet key with no enrolment, a
+    human's credential, and every seat minted before this column existed all read "". An
+    unscoped seat behaves exactly as it did.
+    """
+    if not agent_id:
+        return ""
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return ""
+    seat = db.get(Enrolment, agent.enrolment_id)
+    return (seat.prd_id or "") if seat is not None else ""
+
+
+def in_scope(item: Item, scope: str) -> bool:
+    """Is this item inside `scope`? An empty scope admits everything, including PRD-less work.
+
+    An item with no `prd_id` is OUTSIDE every non-empty scope, and that is a real cost rather
+    than an oversight: most bug reports carry no PRD, so a scoped wave cannot reach them at
+    all. GRPH-828 adds the second axis (a tag) so a wave can be scoped to work that was never
+    part of a PRD. Until then the operator's choice is a scoped wave or a reachable backlog,
+    and it is better that this is written down than discovered.
+    """
+    return not scope or (item.prd_id or "") == scope
+
+
 class AlreadyHolding(Exception):
     """This agent already holds a live claim, so it may not take a second (GRPH-504).
 
@@ -1420,8 +1465,16 @@ def claim_next(
             "Moving it with `update_item` does NOT release it: the status changes and the "
             "claim stays."
         )
+    # The seat's scope, resolved ONCE for the whole sweep rather than per candidate: it is a
+    # property of the caller, and reading it inside the loop would be a query per item.
+    scope = seat_scope(db, agent_id)
     for cand in _ready_candidates(db, project_id, lease_seconds):
         if cand.id in declined or cand.key in declined:
+            continue
+        # Filtered, not refused. An empty result here is the ordinary "nothing ready" — the
+        # caller asked for whatever was next, and outside its scope there was nothing. The
+        # refusal belongs to `claim_item`, where the caller named the item it wanted.
+        if not in_scope(cand, scope):
             continue
         if pinned_elsewhere(cand, agent_id):
             continue
@@ -1530,11 +1583,30 @@ def pinned_elsewhere(item: Item, agent_id: str) -> bool:
 
 
 def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
-    """Claim one specific item if it's currently claimable. Used to grab a related cluster."""
+    """Claim one specific item if it's currently claimable. Used to grab a related cluster.
+
+    **The scope gate lives here and in `claim_next`, and nowhere else** (GRPH-827). These two
+    are the only writes that put an item into a holder's hands, so every path above them —
+    `claim_cluster`'s members, `next_cluster`'s neighbours, the bound seat's item at
+    registration — inherits the rule instead of restating it. A rule restated per tool is a
+    rule that one tool will be added without.
+
+    `OutOfScope` rather than `None`: see the class. A caller that treats the refusal as a lost
+    race will loop through every candidate in the project and take none of them, which is a
+    slow way to say what one sentence says.
+    """
     cutoff = utcnow() - timedelta(seconds=lease_seconds)
     it = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if it is None or not _is_claimable(it, cutoff) or pinned_elsewhere(it, agent_id):
         return None
+    scope = seat_scope(db, agent_id)
+    if not in_scope(it, scope):
+        raise OutOfScope(
+            f"{it.key} is not part of {scope}, and this seat was minted for {scope}. "
+            f"The wave that provisioned you is scoped; ask it for more work rather than "
+            f"taking work it did not choose."
+            + ("" if it.prd_id else
+               f" ({it.key} carries no PRD at all, so no scoped wave can reach it.)"))
     return _try_claim(db, it, agent_id)
 
 
