@@ -112,28 +112,33 @@ is named in the refusal when it exists — logging in once inside one project mu
 mint a credential for it while you are standing in another repository, and a key in the wrong
 project is not a mistake anybody notices quickly.
 
-`setup` mints a project-scoped credential, writes the `graphban` and `gbfleet` MCP entries,
-installs the supervisor if it is missing, drops the delegation skill into `.claude/skills/`,
-and then **verifies** rather than asserting: it asks the new credential what it can actually
-see. Restart the harness afterwards — MCP servers are read at startup.
+`setup` mints a project-scoped credential, writes the `graphban` and `gbfleet` MCP entries
+into every parent harness that would actually read them, installs the supervisor if it is
+missing, drops the delegation skill into `.claude/skills/`, and then **verifies** rather than
+asserting: it asks the new credential what it can actually see. Restart the session that will
+call `delegate`/`spawn` afterwards — MCP servers are read at startup.
 
 Three properties worth knowing, each of which is a bug this command exists to not have:
 
 - **The credential does not expire.** `gban keys mint` produces a *wave* key, which lasts a
   day (`FLEET_KEY_DAYS`); that is right for a wave and wrong for a project. Only seats expire.
-- **It writes where the harness will actually read.** `~/.claude.json`'s per-project
-  `mcpServers` outranks a repository `.mcp.json`, so writing the repository file under a
-  stale entry leaves the agent on the old key — which surfaces as a JSON parse error, because
-  the harness is parsing a 401 body. `--scope user` is the default for that reason, and
-  because a credential outside the repository cannot be committed.
+- **It writes where the harness will actually read.** There is more than one. Claude Code
+  reads `~/.claude.json`'s per-project `mcpServers` (JSON), which outranks a repository
+  `.mcp.json` — writing the repository file under a stale entry leaves the agent on the old
+  key, and surfaces as a JSON parse error because the harness is parsing a 401 body. Grok
+  reads `~/.grok/config.toml`'s `mcp_servers` (TOML, snake_case; `mcpServers` parses and
+  loads nothing). Writing only Claude's file while Grok holds a different key reports
+  success and leaves `delegate` unadvertised (GRPH-825). `--scope user` is the default
+  because a credential outside the repository cannot be committed. Re-running a working
+  setup still *repairs* a missing `gbfleet` entry; reuse skips a mint, never a write.
 - **`--auto` matches, and says so.** A project carries no repository link — no remote, no
   path — so `--auto` compares your project ids and names against this directory, what is in
   it, and its siblings. One level, never a recursive walk. Two directories answering to one
   project, or one directory answering to two, are **refused rather than guessed**: a
   credential minted into the wrong repository is not a mistake anybody notices quickly.
 - **It refuses to write a key into a file git tracks.** `--scope project` on a tracked
-  `.mcp.json` is refused rather than warned about, because a warning attached to committing a
-  credential still commits it.
+  `.mcp.json` or `.grok/config.toml` is refused rather than warned about, because a warning
+  attached to committing a credential still commits it.
 
 ## Wiring a checkout to Swamp
 

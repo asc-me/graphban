@@ -46,9 +46,12 @@ not pass the stored default just because the error mentions it — the error men
 explain why it was refused.
 
 That mints a project-scoped credential that does not expire, writes the `graphban` and
-`gbfleet` MCP entries where the harness will actually read them, installs the delegation
-skill, and verifies the result. Read its output: every line is `PASS`, `FAIL` or `UNKNOWN`,
-and `UNKNOWN` means a check could not run, not that it passed.
+`gbfleet` MCP entries into every parent harness that would actually read them — Claude Code
+(`~/.claude.json`, JSON `mcpServers`) and Grok (`~/.grok/config.toml`, TOML `mcp_servers`) —
+installs the delegation skill, and verifies the result against a key those files hold, not
+against a different harness's key. Read its output: every line is `PASS`, `FAIL` or
+`UNKNOWN`, and `UNKNOWN` means a check could not run, not that it passed. A working key
+with no `gbfleet` server is repaired, not left alone.
 
 **If it reports no session**, that is the one thing you cannot do. Give the person the command
 to run, in exactly this form, and stop:
@@ -81,7 +84,8 @@ it, and its siblings against their project names. A project carries no repositor
 that is a match and not a lookup — it refuses every ambiguity rather than guessing, and names
 each project it could not place. Read those lines out; they are the ones needing a decision.
 
-**When setup passes, ask for a restart and stop.** MCP servers are read at startup, so the
+**When setup passes, ask for a restart of the session that will call `delegate`/`spawn` and
+stop.** That is Claude Code, or Grok, or both — MCP servers are read at startup, so the
 tools cannot appear in the session that configured them, however correct the config is. Say
 that plainly — do not call `get_context` again hoping it changed, and do not retry `gban
 setup`. It succeeded.

@@ -1,4 +1,4 @@
-"""Enable delegation on a project (GRPH-792).
+"""Enable delegation on a project (GRPH-792, GRPH-825).
 
 Between "logged in" and "an agent can hand an item to a child" sit three mechanical acts: mint
 a credential, put it where the harness will read it, and install the supervisor. None of the
@@ -13,18 +13,26 @@ a wave, and a credential that dies overnight turns "delegation is set up" into a
 silently stops being true. The seat is the object with a TTL — thirty minutes, single use — and
 that is where expiry belongs.
 
-**Where the entry is written is a correctness question, not a preference.** Claude Code reads
-`~/.claude.json`'s per-project `mcpServers` in preference to a repository's `.mcp.json`, so
-writing the repository file while a stale entry shadows it leaves the agent authenticating with
-the old key. That failure does not present as a permission problem: the harness reports a JSON
-parse error, because it is parsing a 401 body. So the default target is the user file — which
-also happens to be the one a credential cannot be committed from.
+**Where the entry is written is a correctness question, not a preference.** There is more than
+one parent harness. Claude Code reads `~/.claude.json`'s per-project `mcpServers` (JSON) in
+preference to a repository's `.mcp.json`. Grok reads `~/.grok/config.toml`'s `mcp_servers`
+(TOML, snake_case — `mcpServers` parses and loads nothing, GRPH-575). Writing only Claude's
+file while a Grok session holds a different key reports success and leaves `delegate`
+unadvertised, which the agent reads as the tool not existing (GRPH-825). So setup writes
+every file that would actually be read, and verifies a key from those files — not only the
+Claude one.
+
+A working credential that is missing `gbfleet` is not left alone. Reuse skips a *mint*, never
+a write: a PASS report with no supervisor server is a lie.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from gban import config, doctor as doctor_mod
@@ -46,6 +54,24 @@ FLEET_SERVER = "gbfleet"
 
 def claude_home() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_PATH") or (Path.home() / ".claude.json"))
+
+
+def grok_home() -> Path:
+    """Grok's user MCP file. `GROK_CONFIG_PATH` is the test seam, matching `CLAUDE_CONFIG_PATH`.
+
+    Grok itself has no such env; the default path is what it actually reads.
+    """
+    return Path(os.environ.get("GROK_CONFIG_PATH") or (Path.home() / ".grok" / "config.toml"))
+
+
+@dataclass(frozen=True)
+class Dest:
+    """One file a parent harness will actually read."""
+
+    harness: str
+    scope: str
+    path: Path
+    dialect: str  # "json" | "toml"
 
 
 def shadowing_entry(repo: Path, home: Path | None = None) -> bool:
@@ -92,6 +118,42 @@ def target(repo: Path, scope: str, home: Path | None = None) -> tuple[str, Path,
     return "user", user, ""
 
 
+def destinations(repo: Path, scope: str, home: Path, grok: Path) -> tuple[list[Dest], list[dict]]:
+    """Every parent-harness file that would actually be read, plus findings about the ones
+    that will not.
+
+    Claude is always a destination (created if missing) — that is the original setup. Grok's
+    user file is a destination only when it already exists: creating `~/.grok/config.toml` for
+    a machine that has never run Grok would be inventing a harness. `--scope project` also
+    writes `repo/.grok/config.toml` unless git tracks it, the same refusal as `.mcp.json`.
+    """
+    lines: list[dict] = []
+    dests: list[Dest] = []
+
+    claude_scope, claude_path, why = target(repo, scope, home)
+    if why:
+        lines.append(_line("config", UNKNOWN, "scope", why))
+    if claude_scope == "project" and tracked_by_git(claude_path):
+        lines.append(_line("config", FAIL, "target",
+                           f"git tracks {claude_path} — writing a key there would commit it. "
+                           "Re-run with --scope user, which writes outside the repository"))
+    else:
+        dests.append(Dest("claude", claude_scope, claude_path, "json"))
+
+    if grok.exists():
+        dests.append(Dest("grok", "user", grok, "toml"))
+
+    if scope == "project":
+        grok_proj = repo / ".grok" / "config.toml"
+        if tracked_by_git(grok_proj):
+            lines.append(_line("config", FAIL, "target",
+                               f"git tracks {grok_proj} — writing a key there would commit it. "
+                               "Re-run with --scope user, which writes ~/.grok/config.toml"))
+        elif not any(d.path == grok_proj for d in dests):
+            dests.append(Dest("grok", "project", grok_proj, "toml"))
+    return dests, lines
+
+
 # ---- the entries ----------------------------------------------------------------------------
 
 def entries(url: str, project: str, key: str, repo: Path) -> dict:
@@ -125,6 +187,114 @@ def write_entries(path: Path, scope: str, repo: Path, servers: dict) -> None:
         blob.setdefault("mcpServers", {}).update(servers)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(blob, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+_TABLE_HEADER = re.compile(r"^\[([^\[\]]+)\]\s*$")
+_BARE_TOML_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_string(value: str) -> str:
+    """A TOML basic string. The api key and url arrive from the server; a `"` in either
+    would emit a file Grok fails to parse, which reads as having no tools."""
+    out = ['"']
+    for ch in value:
+        if ch == '"':
+            out.append('\\"')
+        elif ch == "\\":
+            out.append("\\\\")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch < " " or ch == "\x7f":
+            out.append(f"\\u{ord(ch):04X}")
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def _drop_grok_servers(text: str, names: set[str]) -> str:
+    """Strip `[mcp_servers.<name>]` and nested subtables, leaving every other table.
+
+    Split on lines that *start* a table. `args = ["mcp", ...]` contains `[` and is not a
+    header — walking until the next `[` would stop in the middle of the array and leave garbage.
+    """
+    out: list[str] = []
+    skipping = False
+    for line in text.splitlines(keepends=True):
+        matched = _TABLE_HEADER.match(line)
+        if matched:
+            parts = matched.group(1).split(".")
+            skipping = (len(parts) >= 2 and parts[0] == "mcp_servers" and parts[1] in names)
+        if not skipping:
+            out.append(line)
+    return "".join(out)
+
+
+def _render_grok_server(name: str, spec: dict) -> str:
+    table = f"mcp_servers.{name}"
+    if spec.get("url"):
+        lines = [f"[{table}]", f"url = {_toml_string(str(spec['url']))}", "enabled = true"]
+        headers = spec.get("headers") or {}
+        if headers:
+            lines.append("")
+            lines.append(f"[{table}.headers]")
+            for header, value in headers.items():
+                key = header if _BARE_TOML_KEY.match(header) else _toml_string(header)
+                lines.append(f"{key} = {_toml_string(str(value))}")
+        return "\n".join(lines)
+    lines = [f"[{table}]"]
+    if spec.get("command"):
+        lines.append(f"command = {_toml_string(str(spec['command']))}")
+    args = spec.get("args") or []
+    if args:
+        lines.append("args = [" + ", ".join(_toml_string(str(a)) for a in args) + "]")
+    env = spec.get("env") or {}
+    if env:
+        inner = ", ".join(f"{k} = {_toml_string(str(v))}" for k, v in env.items())
+        lines.append(f"env = {{ {inner} }}")
+    lines.append("enabled = true")
+    return "\n".join(lines)
+
+
+def write_grok_toml(path: Path, servers: dict) -> None:
+    """Merge our two servers into Grok's user/project config without rewriting the rest.
+
+    The file holds UI, hooks, sandbox, and other people's servers. `json.dumps` of a parsed
+    blob would drop comments and turn `mcp_servers` into the wrong shape. Replace only the
+    tables we own.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    text = _drop_grok_servers(text, set(servers)).rstrip()
+    blocks = [_render_grok_server(name, spec) for name, spec in servers.items()]
+    body = ("\n\n".join(blocks) + "\n") if not text else (text + "\n\n" + "\n\n".join(blocks) + "\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    os.chmod(path, 0o600)
+
+
+def write_dest(dest: Dest, repo: Path, servers: dict) -> None:
+    if dest.dialect == "toml":
+        write_grok_toml(dest.path, servers)
+        return
+    write_entries(dest.path, dest.scope, repo, servers)
+
+
+def grok_key(path: Path) -> str:
+    try:
+        blob = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return ""
+    server = ((blob.get("mcp_servers") or {}).get(LEDGER_SERVER) or {})
+    return str(((server.get("headers") or {}).get("X-API-Key")) or "")
+
+
+def dest_key(dest: Dest, repo: Path) -> str:
+    if dest.dialect == "toml":
+        return grok_key(dest.path)
+    return existing_key(dest.path, dest.scope, repo)
 
 
 # ---- the ledger side -------------------------------------------------------------------------
@@ -165,13 +335,20 @@ def verify(url: str, key: str, project: str) -> list[dict]:
                      f"{project} is writable" if project in writable else
                      f"the key cannot write {project} — you can read it but not write it, so "
                      "an agent on this key can claim nothing"))
-    missing = {t.get("name") if isinstance(t, dict) else t
-               for t in (ctx.get("missing_tiers") or [])}
+    missing = {_tier_id(t) for t in (ctx.get("missing_tiers") or [])}
     out.append(_line("ledger", PASS if "fleet" not in missing else FAIL, "fleet tools",
                      "delegate and mint_enrolment are in the manifest" if "fleet" not in missing
                      else "the fleet tier is missing, so `delegate` is not advertised — an "
                           "agent reads that as the tool not existing"))
     return out
+
+
+def _tier_id(t) -> str:
+    """Live `get_context` spells it `tier`. A mock that used `name` made verify PASS against
+    a key that could not see `delegate` — the Grok case, wearing test clothes (GRPH-825)."""
+    if isinstance(t, dict):
+        return str(t.get("tier") or t.get("name") or "")
+    return str(t)
 
 
 def existing_key(path: Path, scope: str, repo: Path) -> str:
@@ -189,7 +366,8 @@ def existing_key(path: Path, scope: str, repo: Path) -> str:
 # ---- the act ---------------------------------------------------------------------------------
 
 def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "user",
-        install: bool = True, home: Path | None = None) -> tuple[list[dict], int, dict]:
+        install: bool = True, home: Path | None = None,
+        grok: Path | None = None) -> tuple[list[dict], int, dict]:
     """Enable delegation, and report what is now true rather than what was attempted."""
     lines: list[dict] = []
     if not is_repo(repo):
@@ -201,58 +379,65 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
         lines.append(_line("config", UNKNOWN, "repository",
                            f"{repo} is not a git repository — the ledger half is fine, but "
                            "gbfleet cuts a worktree per child and will refuse here"))
-    scope, path, why = target(repo, scope, home)
-    if why:
-        lines.append(_line("config", UNKNOWN, "scope", why))
-
-    if scope == "project" and tracked_by_git(path):
-        # REFUSED, not warned. This command's whole job is to put a credential in a file; a
-        # version-controlled target turns that into "commit a key", and doing it with a
-        # warning attached still does it.
-        lines.append(_line("config", FAIL, "target",
-                           f"git tracks {path} — writing a key there would commit it. "
-                           "Re-run with --scope user, which writes outside the repository"))
+    dests, dest_lines = destinations(repo, scope, home or claude_home(), grok or grok_home())
+    lines += dest_lines
+    if not dests:
         return lines, 1, {}
 
-    key = existing_key(path, scope, repo)
-    reused = bool(key)
-    if reused:
-        checks = verify(url, key, project)
+    seen: list[str] = []
+    for dest in dests:
+        found = dest_key(dest, repo)
+        if found and found not in seen:
+            seen.append(found)
+
+    key, reused, minted_id = "", False, None
+    for candidate in seen:
+        checks = verify(url, candidate, project)
         if all(c["status"] == PASS for c in checks):
-            lines.append(_line("config", PASS, "credential",
-                               f"already configured in {path} and it works"))
-            lines += checks
-            lines += skill(repo)
-            lines += supervisor(install)
-            worst = max((doctor_mod.SEVERITY[l["status"]] for l in lines), default=0)
-            return lines, (1 if worst == doctor_mod.SEVERITY[FAIL] else 0), {"reused": True}
+            key, reused = candidate, True
+            break
+    if seen and not reused:
         # A key that cannot do the job is replaced, never patched: `tool_tiers` are fixed at
         # mint and there is no route that changes them.
         lines.append(_line("config", UNKNOWN, "credential",
                            "the configured key cannot delegate, so a new one is being minted; "
                            "the old one is still live — remove it in Settings → API keys"))
-
-    try:
-        minted = mint(client, project)
-    except Refused as exc:
-        lines.append(_line("ledger", FAIL, "mint", str(exc)))
-        return lines, 1, {}
-    key = minted.get("plaintext") or ""
     if not key:
-        lines.append(_line("ledger", FAIL, "mint", "the server returned no key"))
-        return lines, 1, {}
+        try:
+            minted = mint(client, project)
+        except Refused as exc:
+            lines.append(_line("ledger", FAIL, "mint", str(exc)))
+            return lines, 1, {}
+        key = minted.get("plaintext") or ""
+        minted_id = minted.get("id")
+        if not key:
+            lines.append(_line("ledger", FAIL, "mint", "the server returned no key"))
+            return lines, 1, {}
 
-    write_entries(path, scope, repo, entries(url, project, key, repo))
-    lines.append(_line("config", PASS, "written",
-                       f"{LEDGER_SERVER} and {FLEET_SERVER} in {path} ({scope} scope)"))
-    if scope == "project":
-        lines.append(_line("config", UNKNOWN, "secret",
-                           f"{path} now holds a credential. Make sure it is gitignored"))
+    servers = entries(url, project, key, repo)
+    for dest in dests:
+        try:
+            write_dest(dest, repo, servers)
+        except OSError as exc:
+            lines.append(_line("config", FAIL, dest.harness,
+                               f"could not write {dest.path}: {exc}"))
+            continue
+        lines.append(_line("config", PASS, "written",
+                           f"{LEDGER_SERVER} and {FLEET_SERVER} in {dest.path} "
+                           f"({dest.harness} {dest.scope})"))
+        if dest.scope == "project":
+            lines.append(_line("config", UNKNOWN, "secret",
+                               f"{dest.path} now holds a credential. Make sure it is gitignored"))
+    if reused:
+        paths = ", ".join(str(d.path) for d in dests)
+        lines.append(_line("config", PASS, "credential",
+                           f"already configured in {paths} and it works"))
     lines += verify(url, key, project)
     lines += skill(repo)
     lines += supervisor(install)
     worst = max((doctor_mod.SEVERITY[l["status"]] for l in lines), default=0)
-    return lines, (1 if worst == doctor_mod.SEVERITY[FAIL] else 0), {"minted": minted.get("id")}
+    extra = {"reused": True} if reused else {"minted": minted_id}
+    return lines, (1 if worst == doctor_mod.SEVERITY[FAIL] else 0), extra
 
 
 def supervisor(install: bool) -> list[dict]:
