@@ -1181,8 +1181,73 @@ def reserved_elsewhere(db: Session, agent_id: str, project_id: str | None = None
     return out
 
 
+def item_dict(item: Item) -> dict:
+    """The fields every item read shares — the ONE renderer (GRPH-821).
+
+    `get_backlog`, `search_items`, the claim and review replies and `get_item_details` all
+    start here, so a field added for one read is on every read. `id`/`prd_id` render from the
+    project's CURRENT tag; the stored id is frozen and internal, and an agent that quotes a
+    rendered key back is resolved by services/keys (PRD-13). Emitting the stored id would leak a
+    retired tag straight into agent memory, where it would outlive the rename by months.
+    """
+    out = {
+        "id": item.key,
+        "project_id": item.project_id,
+        "title": item.title,
+        "status": item.status,
+        "tags": item.tags,
+        "touchpoints": item.touchpoints or [],
+        "effort": item.effort,
+        "assignee": item.assignee,
+        "claimed_by": item.claimed_by,
+        # The reviewer's hold, distinct from the lease above (GRPH-429: a different column,
+        # deliberately). `claimed_by` stays the BUILDER's through `review`, so a supervisor
+        # that read it as "somebody is reviewing this" never spawned a reviewer for any real
+        # review row — found on the PRD-39 acceptance walk. Reply-only: the outputSchema is
+        # manifest, and the footprint has seventeen tokens of headroom.
+        "review_claimed_by": item.review_claimed_by,
+        "prd_id": item.prd_key,
+        "prd_section": item.prd_section,
+        "fidelity": item.fidelity,
+        "evidence": item.evidence or [],
+        # Authorship, distinct from the lease above (GRPH-379). It is the input the review
+        # independence rule is decided on, and it was readable nowhere — so an agent could not
+        # tell whose work it was about to review, nor explain a refusal it received.
+        "built_by": item.built_by,
+        "reviewed_by": item.reviewed_by,
+    }
+    out.update(bounce_fields(item))
+    # In-flight invalidation (GRPH-242/312). Present only when this item's PRD rebaselined
+    # after work on it started — so it costs nothing on the overwhelming majority of reads
+    # and is impossible to miss on the ones that matter. Delivered here rather than on the
+    # claim path because an agent can complete an item without ever claiming it, and that
+    # was the hole: its work then gets classified against intent it never saw move.
+    from sqlalchemy.orm import object_session
+
+    from app.services import prds as prd_svc  # local: prds imports this module
+
+    # Same degradation as `models._key_of`: a detached object has no session to ask, and
+    # serialization must not raise over a field that is absent on nearly every row.
+    session = object_session(item)
+    hold = prd_svc.intent_hold(session, item) if session is not None else None
+    if hold:
+        out["intent_hold"] = hold
+    return out
+
+
+def render_ref(db: Session, stored_id: str) -> str:
+    """Render a link endpoint, which may be an item OR a request (`links.a`/`b` are untyped
+    strings), under the project's current tag. Falls back to the stored id so a dangling edge
+    still serializes."""
+    for kind in ("item", "request"):
+        row = db.get(keys.MODELS[kind], stored_id)
+        if row is not None:
+            return row.key
+    return stored_id
+
+
 def get_item_details(db: Session, item_id: str) -> dict | None:
-    from app.models import MemoryShard, Request
+    from app.models import Link, MemoryShard, Request
 
     item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if item is None:
@@ -1194,47 +1259,29 @@ def get_item_details(db: Session, item_id: str) -> dict | None:
     # project was retagged and an agent looked the item up by its new key (PRD-13).
     shards = db.scalars(select(MemoryShard).where(MemoryShard.item_id == item.id)).all()
     reqs = db.scalars(select(Request).where(Request.linked_to == item.id)).all()
-    return {
-        # Rendered, not stored — every other read surface renders, and this one didn't.
-        "id": item.key,
-        "title": item.title,
+    links = db.scalars(select(Link).where(or_(Link.a == item.id, Link.b == item.id))
+                       .order_by(Link.id)).all()
+    # Built ON the shared renderer, not beside it. This read used to build its own dict, which
+    # is how the intent hold, the bounce (GRPH-378/379), the branch (GRPH-752) and then the
+    # project, touchpoints and PRD link (GRPH-821) each went missing from the read that calls
+    # itself the full record. `test_item_details_full_record` asserts the superset now, so the
+    # next field added to `item_dict` cannot skip this read again.
+    out = item_dict(item)
+    out.update({
         "description": item.description,
-        "status": item.status,
-        "tags": item.tags,
-        "effort": item.effort,
-        "fidelity": item.fidelity,
         "blocker": item.blocker,
         "pr": item.pr,
-        # This read builds its own dict rather than going through `_item_dict` — which is how
-        # the intent hold went missing from the most important read, and how the whole bounce
-        # went missing from it too (GRPH-378/379). An author reclaiming a bounced item comes
-        # HERE to find out what to fix.
-        "claimed_by": item.claimed_by,
-        # PRD-17 D3's handoff: WHERE the work landed. Missing from this read is the third
-        # instance of the pattern the comment above names — a field that exists, matters most
-        # to the reviewer, and is absent from the read the reviewer actually makes (GRPH-752).
-        # "" means nobody has claimed it yet, which is different from the concept not existing.
+        # PRD-17 D3's handoff: WHERE the work landed. "" means nobody has claimed it yet, which
+        # is different from the concept not existing.
         "branch": item.branch or "",
-        "built_by": item.built_by,
-        # Who signed it off. Together with `built_by` this is where a self-review is visible:
-        # equal values mean one agent was the only thing that ever looked at the work.
-        "reviewed_by": item.reviewed_by,
-        # The proof-on-done receipts. This read calls itself the FULL record and omitted them,
-        # so an agent could not see what a completion was justified by — including the
-        # danger-mode self-review note, whose entire purpose is to be visible. The web item
-        # panel has rendered them all along; the agent-facing read had not.
-        "evidence": item.evidence or [],
-        **bounce_fields(item),
-        "linked_shards": [{"id": s.id, "text": s.text, "source": s.source} for s in shards],
+        # Every edge touching this item, both directions, endpoints rendered. The tool promises
+        # "dependencies"; `brief.blocked_by` is one direction of one type, unfinished only.
+        "links": [{"type": link.type, "a": render_ref(db, link.a), "b": render_ref(db, link.b),
+                   "reason": link.reason or ""} for link in links],
+        "linked_shards": [{"id": sh.id, "text": sh.text, "source": sh.source} for sh in shards],
         "linked_requests": [{"id": r.key, "title": r.title, "type": r.type} for r in reqs],
-        # In-flight invalidation (GRPH-242/312). This is the read an agent makes right
-        # before starting work, so it is the one place the hold most needs to appear — and
-        # it was the one place it did not: this builds its own dict rather than going
-        # through `_item_dict`, so "the hold rides on every item an agent reads" was true
-        # of every surface except the most important one. Absent (not null) when there is
-        # no hold, so it costs nothing on the overwhelming majority of reads.
-        **({"intent_hold": hold} if (hold := _pending_hold(db, item)) else {}),
-    }
+    })
+    return out
 
 
 def suggest_next(db: Session, project_id: str | None = None) -> Item | None:
