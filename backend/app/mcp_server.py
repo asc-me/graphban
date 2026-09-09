@@ -1703,6 +1703,13 @@ _GATE_ONLY_ARGS = {"head_commit": {"type": "string",
 #: filter exists.
 _FLEET_ONLY_ARGS = {
     "collision_clusters": {"prd_id": {"type": "string", "description": "Only this PRD's work."}},
+    # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
+    # A planner polling a wave paid nearly twice the whole manifest, per poll.
+    "fleet_status": {"view": {
+        "type": "string", "enum": ["lean", "live", "full"],
+        "description": "lean (default) drops display-only fields; live drops offline agents "
+                       "too; full is every field.",
+    }},
 }
 
 
@@ -2839,7 +2846,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 minted_by = fleet_svc.minter_for(db, args["agent_id"], key)
             except fleet_svc.NotYourAgent as e:
                 raise errors.Validation(str(e))
-        return fleet_svc.fleet_status(db, pid, minted_by=minted_by, caller_user_id=key.user_id)
+        got = fleet_svc.fleet_status(db, pid, minted_by=minted_by, caller_user_id=key.user_id)
+        return fleet_svc.roster_view(got, args.get("view") or "lean")
     if name == "retire_wave":
         try:
             minter = fleet_svc.minter_for(db, args["agent_id"], key)
