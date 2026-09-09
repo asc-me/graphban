@@ -1102,9 +1102,18 @@ def search_items(
         item_tags = {t.lower() for t in (it.tags or [])}
         if want_tags and not (want_tags & item_tags):
             return False
-        if q and q not in it.title.lower() and q not in (it.description or "").lower() and not any(
-            q in t for t in item_tags
-        ):
+        # `blocker` is searched too (GRPH-806). It was the one field carrying text somebody
+        # WROTE and could not then find: a wave that cannot be scoped is bounded by parking
+        # items, parking writes a sentence into `blocker`, and querying that exact sentence
+        # returned nothing. Ten items said "PARKED by planner" and `search_items` found none
+        # of them, so only their author could tell a scoping park from a real blocker.
+        #
+        # Less acute since `--prd` (GRPH-797) made parking stop being the only lever, and
+        # still wrong: a field the product writes prose into and cannot search is a field
+        # whose contents exist only for whoever typed them.
+        if q and not any(q in hay for hay in (
+            it.title.lower(), (it.description or "").lower(), (it.blocker or "").lower(),
+        )) and not any(q in t for t in item_tags):
             return False
         return True
 
@@ -1354,9 +1363,15 @@ def claim_next(
     held = live_claim(db, agent_id, lease_seconds=lease_seconds)
     if held is not None:
         raise AlreadyHolding(
-            f"{agent_id} already holds {held.key} — release it before claiming another. "
-            "One worker, one worktree (PRD-17 D-g): a second item claimed into the same tree "
-            "is two lots of work on one branch."
+            f"{agent_id} already holds {held.key} — call `release_item` on it before "
+            "claiming another. One worker, one worktree (PRD-17 D-g): a second item claimed "
+            "into the same tree is two lots of work on one branch.\n"
+            # GRPH-809: the verb, by name. The refusal said "release it" and left the reader
+            # to find the tool, and `update_item` LOOKS like the way — it moves the status and
+            # leaves `claimed_by` exactly where it was, so an agent that moved its item on
+            # believes it let go and is refused again with the same sentence.
+            "Moving it with `update_item` does NOT release it: the status changes and the "
+            "claim stays."
         )
     for cand in _ready_candidates(db, project_id, lease_seconds):
         if cand.id in declined or cand.key in declined:
