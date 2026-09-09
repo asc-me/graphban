@@ -132,6 +132,7 @@ def run(
     mint_budget: float = MINT_BUDGET_S,
     request: str | None = None,
     prd: str | None = None,
+    shared: dict | None = None,
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
     matrix: "matrix_mod.Matrix | None" = None,
@@ -186,6 +187,7 @@ def run(
                 minted_start=minted,
                 request=request,
                 prd=prd,
+                shared=shared or {},
                 tiers=tiers or TierTable(),
                 launch_for=launch_for,
                 matrix=matrix,
@@ -264,6 +266,7 @@ def _loop(
     minted_start: int,
     request: str | None = None,
     prd: str | None = None,
+    shared: dict | None = None,
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
     matrix: "matrix_mod.Matrix | None" = None,
@@ -365,7 +368,8 @@ def _loop(
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base)
             if code:
-                seat = Seat(code=code, server_url=server, api_key=api_key, role="worker",
+                seat = Seat(shared=dict(shared or {}),
+                            code=code, server_url=server, api_key=api_key, role="worker",
                             item=seed)
                 minted += 1
             else:

@@ -104,7 +104,11 @@ class QwenCode(Adapter):
             argv=[
                 str(binary),
                 "--mcp-config", str(seat_file),
-                "--allowed-mcp-server-names", SERVER,
+                # The allowlist has to name the SHARED servers too, or the child is handed a
+                # config it is then refused (GRPH-816). The seat file is the grant; this flag
+                # is qwen's way of enforcing it, and the two must agree or the operator gets a
+                # docs server that is present and unusable.
+                "--allowed-mcp-server-names", ",".join([SERVER, *sorted(seat.shared or {})]),
                 # Headless: nobody answers a permission prompt. Same posture as claude's
                 # --dangerously-skip-permissions, answered by the worktree boundary (PRD-22 D-k).
                 "--approval-mode", "yolo",

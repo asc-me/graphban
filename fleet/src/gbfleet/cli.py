@@ -97,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="override the resolved path for --adapter (skips the PATH lookup, not the "
         "version check)",
     )
+    run.add_argument(
+        "--mcp-server", action="append", default=[], metavar="NAME",
+        help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
+             "Repeatable. Exact names only — no patterns — and an unknown name refuses the "
+             "run. Sharing a server shares its credential")
     run.add_argument("--wave", default="wave", help="wave name, used in branch names")
     run.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     run.add_argument("--max-children", type=int, default=8)
@@ -162,6 +167,11 @@ def build_parser() -> argparse.ArgumentParser:
     stdio.add_argument("--project", default="", help="the Graphban project this fleet works; named on every call so a credential spanning several projects lands where the seats were minted (GRPH-718)")
     stdio.add_argument("--matrix", default="", help="path to a preference matrix (PRD-37); default is the one shipped with gbfleet")
     stdio.add_argument("--workspace", default=None, help="where worktrees go")
+    stdio.add_argument(
+        "--mcp-server", action="append", default=[], metavar="NAME",
+        help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
+             "Repeatable. Exact names only — no patterns — and an unknown name refuses the "
+             "run. Sharing a server shares its credential")
     stdio.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     stdio.add_argument(
         "--tier", action="append", default=[], metavar="NAME=ADAPTER[:MODEL]",
@@ -211,6 +221,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="scope the wave to ONE PRD's items. Without it the loop drains every ready item "
              "in the project, and `backlog` is no defence — backlog is claimable by design "
              "(GRPH-397). Needs a credential with the `fleet` tool tier to be advertised")
+    until.add_argument(
+        "--mcp-server", action="append", default=[], metavar="NAME",
+        help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
+             "Repeatable. Exact names only — no patterns — and an unknown name refuses the "
+             "run. Sharing a server shares its credential")
     until.add_argument("--max-children", type=int, default=8)
     until.add_argument("--child-wall-clock", type=float, default=3600.0)
     until.add_argument("--workspace", default=None, help="where worktrees go")
@@ -437,6 +452,7 @@ def _until(args) -> int:
             debug=args.debug,
             request=args.request,
             prd=args.prd or None,
+            shared=_shared_servers(args),
             tiers=tiers,
             launch_for=lambda name, model="": make_adapter_factory(name, None, model),
             matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
@@ -492,6 +508,7 @@ def _serve_stdio(args) -> int:
                 limits=Limits(max_workers=args.max_workers),
                 tiers=tiers,
                 matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
+                shared=_shared_servers(args),
             )
             fleet.profile, fleet.policy, pref_note, fleet.measured = read_preferences(client)
             print(f"gbfleet mcp: {pref_note}", file=sys.stderr)
@@ -511,6 +528,21 @@ def _serve_stdio(args) -> int:
     finally:
         client.close()
     return 0
+
+
+def _shared_servers(args) -> dict:
+    """The servers named with `--mcp-server`, resolved before anything is spawned (GRPH-816).
+
+    Resolved HERE rather than per child so a typo refuses the run instead of the fourth
+    worktree, and so the refusal reaches a terminal rather than a child's stderr.
+    """
+    from . import mcpshare
+
+    try:
+        return mcpshare.select(list(getattr(args, "mcp_server", []) or []))
+    except mcpshare.ShareRefused as exc:
+        print(f"gbfleet: {exc}", file=sys.stderr)
+        raise SystemExit(2)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -567,7 +599,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     try:
-        seats = read_seats(args.seats_file, args.server, api_key)
+        shared = _shared_servers(args)
+        seats = [replace(s, shared=shared) for s in
+                 read_seats(args.seats_file, args.server, api_key)]
     except ValueError as exc:
         print(f"gbfleet up: {exc}", file=sys.stderr)
         return 2
