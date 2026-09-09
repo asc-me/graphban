@@ -38,6 +38,7 @@ from .lock import Acquired, hold
 from . import observe
 from . import seat as seat_mod
 from . import propose as propose_mod
+from . import shim as shim_mod
 from . import touchpoints as tp_mod
 from .observe import NEVER_REGISTERED, ChildRecord
 from .seat import Seat, instruction_for
@@ -523,6 +524,8 @@ def start_one(
     partition: Partition,
     *,
     workspace: Path,
+    deny: list[str] | None = None,
+    allow: list[str] | None = None,
     wave_name: str,
     slot: str,
     on_spawned: Callable[[Child], None] | None = None,
@@ -543,7 +546,10 @@ def start_one(
     """
     launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name), debug_file)
     child = spawn(
-        launch, tree.path, tree.branch, _logs(workspace, f"{wave_name}-{slot}"), base=tree.base
+        launch, tree.path, tree.branch, _logs(workspace, f"{wave_name}-{slot}"), base=tree.base,
+        # Built per wave under the workspace, not the worktree: a stub directory inside the
+        # tree would be salvaged into the child's own branch (GRPH-818).
+        shim_dir=shim_mod.build(workspace / "shim", deny=deny, allow=allow),
     )
     child.role = seat.role
     if on_spawned is not None:
@@ -906,7 +912,8 @@ def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
     remote = wt_mod.remote_for(tree.repo)
     base = wt_mod.default_ref(tree.repo, remote) if remote else ""
     items = [i for i in ((child.held_items if child else []) or []) if i]
-    title, body = propose_mod.describe(tree.branch, items)
+    title, body = propose_mod.describe(tree.branch, items,
+                                       propose_mod.subject(tree.repo, tree.branch, base))
     got = propose_mod.propose(tree.repo, tree.branch, base, title=title, body=body)
     wave.proposed[tree.branch] = got
     if got.reason and not got.url:

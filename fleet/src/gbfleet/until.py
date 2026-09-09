@@ -553,6 +553,45 @@ def check_scope_is_honoured(planner: Graphban, prd: str) -> None:
         )
 
 
+class _Repeats:
+    """Says whether a recurring line is worth printing again (GRPH-817).
+
+    NEW, or OLD ENOUGH. A holder set that has not changed says nothing new; the same holder an
+    hour later says the wave is still waiting, which is different information from silence.
+    `_HEARTBEAT` is the floor, so a long wait is visible without being a transcript.
+
+    Cleared when the condition lifts, so the next occurrence reports immediately rather than
+    inheriting the last one's timer.
+    """
+
+    def __init__(self) -> None:
+        self.last: str = ""
+        self.at: float = 0.0
+        #: How many times this same condition has been reported. Lets the caller say "still",
+        #: which is the difference between a heartbeat and a line that looks like a hang.
+        self.repeats: int = 0
+
+    def changed(self, key: str, *, now: Callable[[], float] = time.monotonic) -> bool:
+        stamp = now()
+        if key != self.last:
+            self.last, self.at, self.repeats = key, stamp, 0
+            return True
+        if (stamp - self.at) >= _HEARTBEAT:
+            self.at, self.repeats = stamp, self.repeats + 1
+            return True
+        return False
+
+    def clear(self) -> None:
+        self.last, self.at, self.repeats = "", 0.0, 0
+
+
+#: How long the same contention line waits before repeating. Long enough that a wave which
+#: waits ten minutes prints twice rather than six hundred times.
+_HEARTBEAT = 300.0
+
+_contention = _Repeats()
+
+
 def _free_and_blocked(clusters: dict) -> tuple[list[dict], list[dict]]:
     """Split the divvy into what can be claimed now and what is held (GRPH-803).
 
@@ -569,12 +608,24 @@ def _free_and_blocked(clusters: dict) -> tuple[list[dict], list[dict]]:
     return free, blocked
 
 
-def _waiting(blocked: list[dict]) -> str:
+def _holders_key(blocked: list[dict]) -> str:
+    """What makes a contention report NEW: who holds it and how much. Deliberately excludes
+    the countdown, which changes every second and would defeat the deduplication."""
+    holders = sorted({h for c in blocked for h in (c.get("held_by") or [])})
+    return f"{len(blocked)}:{','.join(holders)}"
+
+
+def _waiting(blocked: list[dict], *, repeat: int = 0) -> str:
     """What a person needs to decide whether to wait: who holds it, and for how long."""
     holders = sorted({h for c in blocked for h in (c.get("held_by") or [])})
     waits = [c.get("free_in") for c in blocked if isinstance(c.get("free_in"), int)]
     soonest = min(waits) if waits else None
-    return (f"{len(blocked)} cluster(s) held by {', '.join(holders) or 'another agent'}"
+    # A REPEAT SAYS IT IS ONE. The countdown resets whenever a holder renews its lease, which
+    # is what a working agent does — so a bare number that jumps back up reads as a hang. On
+    # a repeat the line says the wait is still live rather than leaving the reader to infer
+    # it from a figure that went the wrong way.
+    still = " — still held, the lease was renewed" if repeat else ""
+    return (f"{len(blocked)} cluster(s) held by {', '.join(holders) or 'another agent'}{still}"
             + (f"; the earliest frees in {soonest}s" if soonest is not None
                else "; no expiry reported")
             + _merged_on(blocked)
@@ -598,6 +649,36 @@ def _merged_on(blocked: list[dict]) -> str:
         return (", and they are one cluster only because their files share a directory "
                 "(GRPH-810)")
     return ""
+
+
+def plan(planner: Graphban, prd: str | None, max_workers: int) -> dict:
+    """What this wave WOULD delegate, without delegating it (GRPH-819).
+
+    Reported after a real wave: "you cannot ask what a wave would delegate before it does —
+    and the scoping bug existed for exactly as long as nobody could see the plan." `--prd`
+    bounds the damage; this is what lets you check the bound before spending anything.
+
+    READS ONLY. It calls the same `collision_clusters` the loop calls and applies the same
+    split, so what it prints is what the loop would take rather than a second implementation
+    that can disagree with it — a dry run that models the wave instead of asking it is a dry
+    run that reassures you about the wrong plan.
+    """
+    clusters = planner.call("collision_clusters", **_scope(prd))
+    free, blocked = _free_and_blocked(clusters)
+    would = [c for c in free[:max_workers]]
+    return {
+        "prd": prd or None,
+        "would_delegate": [(c.get("items") or [None])[0] for c in would],
+        "clusters_free": len(free),
+        "clusters_held": len(blocked),
+        # Named, because "10 free" and "10 free, and here they are" are different amounts of
+        # help when the question is whether the scope is right.
+        "free": [{"seed": (c.get("items") or [None])[0], "items": c.get("items") or [],
+                  "areas": c.get("areas") or []} for c in free],
+        "held": [{"items": c.get("items") or [], "held_by": c.get("held_by") or [],
+                  "free_in": c.get("free_in")} for c in blocked],
+        "capped_by_max_workers": len(free) > max_workers,
+    }
 
 
 def _scope(prd: str | None) -> dict:
@@ -740,10 +821,21 @@ def _wanted_workers(
     total = len(free)
     if total <= 0:
         if blocked:
-            # Reported, not spawned into. The wait is the server's own number, and "wait" and
-            # "give up" are different instructions.
-            observe.emit("contention", detail=_waiting(blocked))
+            # Reported ON CHANGE, not every tick (GRPH-817). This loop polls once a second, so
+            # the first version wrote 566 of a wave's 575 log lines — the same sentence, with a
+            # countdown that RESETS when a holder renews its lease, which reads as a hang
+            # during entirely normal work. A log that says the same thing 566 times is a log
+            # nobody reads, and the nine lines that mattered were in it.
+            # KEYED ON THE HOLDERS, not the sentence. `_waiting` embeds a countdown that
+            # ticks every second, so deduplicating on the message would compare two strings
+            # that always differ and print all 566 lines again — the fix reintroducing the
+            # bug through its own dedup key.
+            if _contention.changed(_holders_key(blocked)):
+                observe.emit("contention", detail=_waiting(blocked, repeat=_contention.repeats))
+        else:
+            _contention.clear()
         return 0
+    _contention.clear()
     roster = supervisor.call("fleet_status")
     agents = [a for a in (roster.get("agents") or []) if a.get("id")]
     if not agents:

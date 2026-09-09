@@ -155,3 +155,34 @@ def test_a_branch_with_no_items_still_gets_a_usable_title():
     title, _ = propose_mod.describe("gb/w-9", [])
 
     assert "gb/w-9" in title
+
+
+# ---- the worker's own subject leads (GRPH-817) ------------------------------------------------
+
+def test_the_commit_subject_leads_with_the_item_prefixed():
+    """Reported from a real wave: 2 of 5 PRs read `SA-415 (from gb/p11d-2)` while the other 3
+    used the commit subject — two openers, two styles. The worker knows what it did; the
+    supervisor does not."""
+    title, _ = propose_mod.describe("gb/p11d-2", ["SA-415"], "Add DeviceToken rotation")
+
+    assert title == "SA-415: Add DeviceToken rotation"
+
+
+def test_no_subject_falls_back_rather_than_titling_nothing():
+    title, _ = propose_mod.describe("gb/p11d-2", ["SA-415"], "")
+
+    assert "SA-415" in title and "gb/p11d-2" in title
+
+
+def test_no_items_still_uses_the_subject():
+    title, _ = propose_mod.describe("gb/p11d-2", [], "Add DeviceToken rotation")
+
+    assert title == "Add DeviceToken rotation"
+
+
+def test_the_branch_moves_to_the_body_where_it_belongs():
+    """A branch name in front of a reviewer is where a sentence about the work should be."""
+    title, body = propose_mod.describe("gb/p11d-2", ["SA-415"], "Add DeviceToken rotation")
+
+    assert "gb/p11d-2" not in title
+    assert "gb/p11d-2" in body
