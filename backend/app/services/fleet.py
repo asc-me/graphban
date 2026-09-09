@@ -603,6 +603,59 @@ def list_agents(db: Session, project_id: str | None = None, *,
     return out
 
 
+#: Fields dropped by `lean`, NAMED — a denylist, not an allowlist, and that choice cost 25
+#: percentage points of saving on purpose.
+#:
+#: The first version listed what to KEEP, chosen from what `gbfleet` reads. It was 64% smaller
+#: and it silently dropped `enrolled`, which PRD-22 §6 put on the roster deliberately — caught
+#: by the test that exists to hold that contract. An allowlist erodes a contract every time
+#: somebody adds a field and forgets this list; a denylist keeps new fields flowing and only
+#: loses the ones somebody argued for losing.
+#:
+#: Each of these is display: `capabilities` is the fattest thing on a row (64 chars), and
+#: `label`, `last_seen_at`, `credential_roles` and `last_refusal` are read by the Fleet view,
+#: which uses REST and never this tool.
+_FAT_AGENT_FIELDS = ("capabilities", "credential_roles", "last_refusal", "last_seen_at",
+                     "label")
+
+#: Display halves of a holding. `phase` stays — the supervisor reads it; `phase_basis` is the
+#: sentence explaining it to a person.
+_FAT_HOLDING_FIELDS = ("phase_basis", "bounced")
+
+
+def roster_view(payload: dict, view: str) -> dict:
+    """Narrow a roster to what the caller asked for (GRPH-807).
+
+    Measured on a live instance before choosing anything, because the reported remedy turned
+    out to be the smaller half: 177 agents, 27,391 tokens — nearly twice the whole MCP
+    manifest, paid on every poll — of which exactly ONE was live.
+
+        full   27,391 tokens
+        lean   16,861        (39% smaller; same agents, no display fields)
+        live       ~0        (the one live agent)
+
+    So the lean/full split this finding asked for is worth 39%, and the dominant term is dead
+    agents nothing prunes (GRPH-814). `live` is the lever.
+
+    `live` is OPT-IN. Fewer fields is a different act from fewer agents: a caller that quietly
+    stopped seeing offline agents would stop being able to notice one, and only one of those
+    two is safe to change by default.
+    """
+    if view == "full":
+        return payload
+    agents = payload.get("agents") or []
+    if view == "live":
+        agents = [a for a in agents if a.get("state") not in _ABSENT]
+    lean = []
+    for a in agents:
+        row = {k: v for k, v in a.items() if k not in _FAT_AGENT_FIELDS}
+        if "holdings" in a:
+            row["holdings"] = [{k: v for k, v in h.items() if k not in _FAT_HOLDING_FIELDS}
+                               for h in (a.get("holdings") or [])]
+        lean.append(row)
+    return {**payload, "agents": lean, "dropped": list(_FAT_AGENT_FIELDS), "view": view}
+
+
 def _assigned_for(db: Session, agents: list[Agent]) -> dict[str, dict]:
     """`{agent_id: {item, state, held_by}}` for every agent on a bound seat. Two queries
     whatever the roster size. `claimed` when the agent holds the seat's item; `taken` with
