@@ -64,6 +64,28 @@ def grok_home() -> Path:
     return Path(os.environ.get("GROK_CONFIG_PATH") or (Path.home() / ".grok" / "config.toml"))
 
 
+def grok_workspace(repo: Path, grok_config: Path | None = None) -> Path:
+    """Where Grok's gbfleet MCP cuts worktrees (GRPH-826).
+
+    Grok's `workspace` sandbox can write `~/.grok/` and the repository, and cannot write a
+    sibling of the repo. gbfleet's default (`<repo>-gbfleet`) is that sibling — right for
+    Claude, unusable here. This path sits next to Grok's config, outside git.
+    """
+    return (grok_config or grok_home()).resolve().parent / "gbfleet-wt" / repo.name
+
+
+def workspace_writable(path: Path) -> tuple[bool, str]:
+    """The same probe `gbfleet doctor` uses. Setup must not PASS a dest doctor would FAIL."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".gbfleet-setup"
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+        return True, ""
+    except OSError as exc:
+        return False, str(exc)
+
+
 @dataclass(frozen=True)
 class Dest:
     """One file a parent harness will actually read."""
@@ -156,16 +178,23 @@ def destinations(repo: Path, scope: str, home: Path, grok: Path) -> tuple[list[D
 
 # ---- the entries ----------------------------------------------------------------------------
 
-def entries(url: str, project: str, key: str, repo: Path) -> dict:
+def entries(url: str, project: str, key: str, repo: Path,
+            workspace: Path | None = None) -> dict:
     """The two servers a delegating planner holds: the ledger over HTTP, which arbitrates, and
     the supervisor over stdio, which does not. The supervisor takes the credential through its
-    environment rather than its arguments, because `ps` is world-readable."""
+    environment rather than its arguments, because `ps` is world-readable.
+
+    `workspace` is Grok-only (GRPH-826). Claude can write gbfleet's sibling default; Grok's
+    sandbox cannot. Passing it for Claude would move Claude's worktrees for no reason.
+    """
+    args = ["mcp", "--repo", str(repo), "--server", url.rstrip("/"), "--project", project]
+    if workspace is not None:
+        args += ["--workspace", str(workspace)]
     return {
         LEDGER_SERVER: {"type": "http", "url": url.rstrip("/") + "/api/mcp",
                         "headers": {"X-API-Key": key}},
         FLEET_SERVER: {"command": "gbfleet",
-                       "args": ["mcp", "--repo", str(repo), "--server", url.rstrip("/"),
-                                "--project", project],
+                       "args": args,
                        "env": {doctor_mod.SUPERVISOR_KEY_ENV: key}},
     }
 
@@ -414,17 +443,34 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
             lines.append(_line("ledger", FAIL, "mint", "the server returned no key"))
             return lines, 1, {}
 
-    servers = entries(url, project, key, repo)
     for dest in dests:
+        workspace = None
+        if dest.harness == "grok":
+            workspace = grok_workspace(repo, grok or grok_home())
+            if tracked_by_git(workspace):
+                lines.append(_line("config", FAIL, "target",
+                                   f"git tracks {workspace} — worktrees there would be "
+                                   "committed. Re-run with --scope user"))
+                continue
+            ok, why = workspace_writable(workspace)
+            if not ok:
+                lines.append(_line("config", FAIL, dest.harness,
+                                   f"workspace {workspace} is not writable ({why}). "
+                                   "spawn would fail as git worktree add; pass --workspace "
+                                   "at a path this harness can write (Grok's sandbox allows "
+                                   "~/.grok/ and the repository, not a sibling)"))
+                continue
+        servers = entries(url, project, key, repo, workspace=workspace)
         try:
             write_dest(dest, repo, servers)
         except OSError as exc:
             lines.append(_line("config", FAIL, dest.harness,
                                f"could not write {dest.path}: {exc}"))
             continue
+        extra = f" workspace {workspace}" if workspace else ""
         lines.append(_line("config", PASS, "written",
                            f"{LEDGER_SERVER} and {FLEET_SERVER} in {dest.path} "
-                           f"({dest.harness} {dest.scope})"))
+                           f"({dest.harness} {dest.scope}){extra}"))
         if dest.scope == "project":
             lines.append(_line("config", UNKNOWN, "secret",
                                f"{dest.path} now holds a credential. Make sure it is gitignored"))

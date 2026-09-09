@@ -53,6 +53,15 @@ class GitError(RuntimeError):
     pass
 
 
+class WorkspaceUnwritable(GitError):
+    """The worktree pool cannot be created. Not a git bug — `--workspace` is wrong.
+
+    The measured case (GRPH-826): Grok's sandbox cannot write gbfleet's sibling default,
+    and spawn reported `git worktree add` 128. The planner retried git. The flag is
+    `--workspace`.
+    """
+
+
 class SeatPathIsTracked(GitError):
     """The repository itself commits a file the supervisor must write a seat into.
 

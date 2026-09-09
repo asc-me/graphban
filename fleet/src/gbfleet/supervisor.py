@@ -511,8 +511,27 @@ def _tree_for(repo: Path, workspace: Path, wave_name: str, slot: str) -> Worktre
     stands in — deterministic, collision-free within a wave, and the roster ties agent to
     worktree once the child registers.
     """
-    workspace.mkdir(parents=True, exist_ok=True)
-    return wt_mod.create(repo, workspace / f"{wave_name}-{slot}", wave_name, slot)
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        probe = workspace / ".gbfleet-spawn"
+        probe.write_text("x", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        raise wt_mod.WorkspaceUnwritable(
+            f"workspace {workspace} is not writable ({exc}). "
+            "Pass --workspace at a path this process can write "
+            "(Grok's sandbox allows ~/.grok/ and the repository, not a sibling)."
+        ) from exc
+    try:
+        return wt_mod.create(repo, workspace / f"{wave_name}-{slot}", wave_name, slot)
+    except wt_mod.GitError as exc:
+        text = str(exc).lower()
+        if "operation not permitted" in text or "permission denied" in text:
+            raise wt_mod.WorkspaceUnwritable(
+                f"workspace {workspace} rejected a worktree ({exc}). "
+                "Pass --workspace at a path this process can write."
+            ) from exc
+        raise
 
 
 def start_one(
