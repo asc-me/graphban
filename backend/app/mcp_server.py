@@ -1899,53 +1899,9 @@ def _validate_args(name: str, args: dict[str, Any]) -> None:
 
 
 def _item_dict(item) -> dict:
-    # `key`/`prd_key` render from the project's CURRENT tag; the stored id is frozen and
-    # internal, and an agent that quotes a rendered key back is resolved by services/keys
-    # (PRD-13). Emitting the stored id here would leak a retired tag straight into agent
-    # memory, where it would outlive the rename by months.
-    out = {
-        "id": item.key,
-        "project_id": item.project_id,
-        "title": item.title,
-        "status": item.status,
-        "tags": item.tags,
-        "touchpoints": item.touchpoints or [],
-        "effort": item.effort,
-        "assignee": item.assignee,
-        "claimed_by": item.claimed_by,
-        # The reviewer's hold, distinct from the lease above (GRPH-429: a different column,
-        # deliberately). `claimed_by` stays the BUILDER's through `review`, so a supervisor
-        # that read it as "somebody is reviewing this" never spawned a reviewer for any real
-        # review row — found on the PRD-39 acceptance walk. Reply-only: the outputSchema is
-        # manifest, and the footprint has seventeen tokens of headroom.
-        "review_claimed_by": item.review_claimed_by,
-        "prd_id": item.prd_key,
-        "prd_section": item.prd_section,
-        "fidelity": item.fidelity,
-        "evidence": item.evidence or [],
-        # Authorship, distinct from the lease above (GRPH-379). It is the input the review
-        # independence rule is decided on, and it was readable nowhere — so an agent could not
-        # tell whose work it was about to review, nor explain a refusal it received.
-        "built_by": item.built_by,
-        "reviewed_by": item.reviewed_by,
-    }
-    out.update(items_svc.bounce_fields(item))
-    # In-flight invalidation (GRPH-242/312). Present only when this item's PRD rebaselined
-    # after work on it started — so it costs nothing on the overwhelming majority of reads
-    # and is impossible to miss on the ones that matter. Delivered here rather than on the
-    # claim path because an agent can complete an item without ever claiming it, and that
-    # was the hole: its work then gets classified against intent it never saw move.
-    from sqlalchemy.orm import object_session
-
-    from app.services import prds as prd_svc
-
-    # Same degradation as `models._key_of`: a detached object has no session to ask, and
-    # serialization must not raise over a field that is absent on nearly every row.
-    session = object_session(item)
-    hold = prd_svc.intent_hold(session, item) if session is not None else None
-    if hold:
-        out["intent_hold"] = hold
-    return out
+    """The shared item fields, rendered by the service (GRPH-821): one renderer, every read.
+    Kept as a name so the thirteen call sites here read the same as before."""
+    return items_svc.item_dict(item)
 
 
 def _readable_prd(db, prd_id: str, readable):
