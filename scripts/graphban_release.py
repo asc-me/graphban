@@ -129,14 +129,34 @@ def ordinal(n: int) -> str:
     return f"{n}{suf}"
 
 
-def commit_message(version: str, previous: str) -> str:
+def fleet_version(repo: pathlib.Path) -> str:
+    """What `fleet/pyproject.toml` actually says, read rather than remembered.
+
+    This was the literal `0.1.0` in the message below, and it stopped being true the day fleet
+    was cut to 0.2.0 — a generated line asserting a version nobody had looked at. The same
+    defect the adapter support matrix has a test for, in a place with no test at all, so it
+    would have gone out on every stamp from now on saying something false and plausible.
+    """
+    try:
+        text = (repo / FLEET_PYPROJECT).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    found = _PYPROJECT_VER_RE.search(text)
+    return found.group(1) if found else ""
+
+
+def commit_message(version: str, previous: str, fleet: str = "") -> str:
     parsed = parse_calver(version)
     n = parsed[2] if parsed else 1
     prev = previous if previous and previous not in PLACEHOLDERS else "the previous cut"
+    # Named when it can be read, and simply omitted when it cannot. A message that guessed
+    # would be the thing this function stopped doing.
+    fleet_note = (f" Fleet stays {fleet}." if fleet
+                  else " Fleet is versioned separately and is untouched by this stamp.")
     return (
         f"Stamp product version {version}\n\n"
         f"{ordinal(n).capitalize()} CalVer cut of the month so a box still on {prev} "
-        f"can Install from Settings. git_sha remains identity. Fleet stays 0.1.0.\n"
+        f"can Install from Settings. git_sha remains identity.{fleet_note}\n"
     )
 
 
@@ -388,7 +408,7 @@ def cmd_stamp(repo: pathlib.Path, version: str | None, *, today: dt.date,
     print("Commit, open a PR, merge to main, then:")
     print(f"  python3 scripts/graphban_release.py publish {version}")
     print()
-    print(commit_message(version, current).rstrip())
+    print(commit_message(version, current, fleet_version(repo)).rstrip())
     return 0
 
 
