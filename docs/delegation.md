@@ -267,8 +267,17 @@ backlog, use the loop:
 
 ```bash
 gbfleet until --repo . --server <url> --project <project> \
-              --adapter <vendor> --request cheap --max-children 8
+              --adapter <vendor> --request cheap --max-children 8 --prd <prd-id>
 ```
+
+**Scope it with `--prd`, or it drains the project.** Every ready item is fair game otherwise,
+and parking work in `backlog` is no defence — backlog is claimable by design, so a crashed
+agent's item gets offered again. An "epic" is not a concept the claim path can see either:
+`Item` has no type column. Against a server too old to filter, `--prd` refuses rather than
+silently ignoring you.
+
+It also **holds** an item whose finished dependency is not in the base it would be built on —
+`done` means attested, not merged, and `blocked_by` only lists *unfinished* dependencies.
 
 It mints bound seats just in time, spawns, watches and stops on **genuine idle** — no ready
 work, no unsigned review, and no live lease — rather than merely on the last child exiting.

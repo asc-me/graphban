@@ -107,6 +107,51 @@ wave with **no LLM in the loop**. `driven` is the escalation: a planner holding 
 server beside the remote one, a frontier context polling and adjudicating bounces for the
 length of the wave. `doctor` prints which one you are set up for.
 
+### Choosing what a wave works on
+
+**`until` drains the project unless you scope it.** `--prd <id>` is the lever:
+
+```bash
+gbfleet until --repo . --server <url> --project <id> --adapter <vendor> --prd GRPH-P39
+```
+
+Without it, every ready item in the project is fair game — and **parking work in `backlog` is
+not a defence**, because backlog is claimable by design so a crashed agent's item gets offered
+again. There is no lever in the item shape either: `Item` has no type column, so an "epic" is a
+convention in a title and invisible to the claim path. Scoping the wave is the only lever
+there is (GRPH-797).
+
+Because seats are bound (PRD-36), scoping the delegation scopes the whole wave: a child claims
+its own item and cannot call `claim_cluster` to reach around it.
+
+**`--prd` refuses a server that does not support it.** An older Graphban does not reject an
+unrecognised `prd_id` — it drops the property and answers the unfiltered question, so the flag
+would drain the project *while reporting the wave as scoped*. Before the first spawn, `until`
+asks for a PRD that cannot exist: a server that filters returns nothing, one that ignores the
+argument returns the project, and the second refuses the run naming what it would otherwise
+have done (GRPH-800). Needs the server-side filter; upgrade if you see that refusal.
+
+### Work whose dependency has not landed
+
+`done` in the ledger means *attested*, not *merged*. An attestation binds to a commit and
+nothing claims that commit went anywhere — so an item can be finished while its work exists
+only on a feature branch. Children branch from the remote default, so a dependent item would
+be built without it, and `blocked_by` cannot warn you: it lists *unfinished* dependencies, and
+this one is finished.
+
+`until` therefore **holds** an item whose finished dependency's commit is provably not an
+ancestor of the base, names the dependency and the commit, and moves to the next cluster
+(GRPH-798). The wave continues on work that is buildable; the remedy is a merge.
+
+A dependency whose commit this clone has never seen is reported and **not** acted on — that is
+an unknown, not an absence, and refusing on it would stop every wave on a fresh clone. The
+base is fetched once per wave first, or a stale remote-tracking ref would measure everything
+as already merged.
+
+This is a supervisor check and cannot be a server one: the server holds an item id and a
+commit and has no repository to resolve them against. A human calling `delegate` by hand is
+not protected by it.
+
 Or hand the local surface to a planner over stdio:
 
 ```bash
