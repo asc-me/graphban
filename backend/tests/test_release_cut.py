@@ -475,3 +475,46 @@ def test_compose_helper_unit_does_not_mention_the_docker_socket():
     assert "The Docker socket" not in unit
     assert "%h/graphban-src" in unit
     assert "%h/agentledger" in unit
+
+
+# ---- the stamp message quotes a version it actually read (GRPH-801) ---------------------
+
+def test_the_stamp_message_reads_the_fleet_version_rather_than_asserting_one(tmp_path):
+    """It said "Fleet stays 0.1.0" as a literal, and that stopped being true the day fleet was
+    cut to 0.2.0 — a generated line asserting a version nobody had looked at, which would have
+    gone out on every stamp from then on saying something false and plausible.
+
+    The support matrix has a test for exactly this defect. The commit message had none.
+    """
+    (tmp_path / "fleet").mkdir()
+    (tmp_path / "fleet" / "pyproject.toml").write_text('[project]\nversion = "9.9.9"\n')
+
+    assert rel.fleet_version(tmp_path) == "9.9.9"
+    assert "Fleet stays 9.9.9." in rel.commit_message("2026.09.17", "2026.09.16", "9.9.9")
+
+
+def test_it_says_the_true_thing_when_it_cannot_read_the_version(tmp_path):
+    """A message that GUESSED would be the thing this stopped doing. Without a readable
+    pyproject it states the durable fact instead — fleet is versioned separately — which
+    cannot go stale."""
+    assert rel.fleet_version(tmp_path) == ""
+
+    said = rel.commit_message("2026.09.17", "2026.09.16", "")
+    assert "versioned separately" in said
+    assert "0.1.0" not in said and "stays" not in said
+
+
+def test_the_real_repository_agrees_with_its_own_pyproject():
+    """The control. The two assertions above would both pass against a helper that read the
+    wrong file, so this one reads the repository's actual fleet version and expects the
+    message to quote it."""
+    import pathlib
+    import re
+
+    repo = pathlib.Path(__file__).resolve().parents[2]
+    declared = re.search(r'^version\s*=\s*"([^"]+)"',
+                         (repo / "fleet" / "pyproject.toml").read_text(), re.M).group(1)
+
+    assert rel.fleet_version(repo) == declared
+    assert declared in rel.commit_message("2026.09.17", "2026.09.16",
+                                              rel.fleet_version(repo))
