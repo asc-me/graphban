@@ -128,7 +128,19 @@ class RepoLocked(RuntimeError):
         super().__init__(
             f"another gbfleet supervisor already has {holder.repo if holder else 'this repo'}: "
             f"{who}. One supervisor per repository (PRD-22 D-h) — stop that one, or run "
-            f"against a different checkout. Lock: {path}"
+            f"against a different checkout. Lock: {path}\n"
+            # GRPH-811. The refusal was correct and read as a limitation, because it named
+            # neither of the two things a person hitting it is actually choosing between.
+            # `mcp` and `until` are the two SUPERVISION MODES (PRD-39 D-e), not a tool and a
+            # convenience: both spawn children into this one repository, which is the thing
+            # the lock exists to keep to one. Whoever hits this wants both, and the answer is
+            # that `mcp` already contains the other — a planner holding it drives the same
+            # wave under its own judgement instead of a loop's.
+            "\n`gbfleet mcp` and `gbfleet until` are the two supervision modes, and both "
+            "spawn into this repository — that is what is being kept to one, rather than the "
+            "command. A planner holding `mcp` runs the same wave with `spawn`/`ps`/`stop` "
+            "under its own judgement; `until` is that loop with no model in it. Pick the "
+            "mode, or give the second one its own checkout."
         )
 
 

@@ -244,6 +244,15 @@ class Adapter:
         """
         return None
 
+    def check_tuning(self, tuning: "Tuning") -> None:
+        """Refuse a spawn missing an argument this adapter will not default (GRPH-813).
+
+        Asked by the code about to start a process, never by `launch` — building a launch to
+        inspect its argv is not a spawn, and a rule that fired on both could not tell them
+        apart. Default: nothing is required.
+        """
+        return None
+
     def spawn_blocked(self, binary: Path) -> str:
         """Why a spawn on this adapter would fail right now, or "" when nothing says it will.
 

@@ -403,6 +403,20 @@ def _runner_up(resolution: dict | None, matrix=None) -> str:
     return f"{vendor}:{row.get('model') or ''}"
 
 
+def _checked_tuning(adapter: str, tuning: "Tuning") -> "Tuning":
+    """The tuning, once the adapter has agreed it can spawn with it (GRPH-813).
+
+    Here rather than inside `launch` so that building a launch to inspect it stays free, and
+    here rather than at each call site so a new spawn path cannot forget to ask.
+    """
+    from .adapters import ADAPTERS
+
+    known = ADAPTERS.get(adapter)
+    if known is not None:
+        known.check_tuning(tuning)
+    return tuning
+
+
 def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
     """Dispatch one tool. Raises nothing the caller has to translate — failures return
     a message, and `handle` wraps them in `isError`."""
@@ -504,12 +518,12 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             fleet.launch_for(
                 adapter,
                 model,
-                Tuning(
+                _checked_tuning(adapter, Tuning(
                     fallback_model=args.get("fallback_model") or "",
                     effort=args.get("effort") or "",
                     turns=str(args.get("turns") or ""),
                     window=str(args.get("window") or ""),
-                ),
+                )),
             ),
             fleet.client, fleet.limits,
             fleet.partition, workspace=fleet.workspace, wave_name=wave,
