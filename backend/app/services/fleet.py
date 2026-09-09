@@ -185,6 +185,31 @@ def heartbeat_interval_seconds(lease_seconds: int = DEFAULT_LEASE_SECONDS) -> in
     return max(1, presence_ttl_seconds(lease_seconds) // 3)
 
 
+def retired(agent: Agent, *, now: datetime | None = None) -> bool:
+    """Can this agent never come back? (GRPH-814)
+
+    DERIVED, never written, the same shape as `presence_state` — there is no sweep to forget
+    to run and no window in which a roster shows a process that stopped an hour ago.
+
+    THE SEAT TTL IS THE ANCHOR, and it is why this is a claim rather than a guess. A seat is
+    single-use and lives 30 minutes. An agent that has been silent for longer than that cannot
+    resume: its seat can no longer be redeemed, so anything that came back would have to
+    register on a NEW seat and would be a new row. "Offline" says we have not heard from it;
+    this says the thing it would have to use is gone.
+
+    A dismissed agent is retired whatever its clock says — somebody decided.
+    """
+    if agent.dismissed_at is not None:
+        return True
+    seen = _aware(agent.last_seen_at)
+    if seen is None:
+        # Never seen at all. Not retired: an agent registers before its first heartbeat, and
+        # calling that gone would retire every child in the second between the two.
+        return False
+    now = now or datetime.now(timezone.utc)
+    return (now - seen) > timedelta(minutes=ENROLMENT_TTL_MINUTES)
+
+
 def presence_state(agent: Agent, *, lease_seconds: int = DEFAULT_LEASE_SECONDS,
                    now: datetime | None = None) -> str:
     """`idle|working|reviewing` as stored, or `offline` when presence has lapsed.
@@ -583,6 +608,8 @@ def list_agents(db: Session, project_id: str | None = None, *,
             # and `list_enrolments` deliberately returns no fragment of it.
             "enrolment_id": a.enrolment_id,
             "dismissed": a.dismissed_at is not None,
+            # Derived (GRPH-814): silent for longer than a seat can live, so it cannot return.
+            "retired": retired(a),
             "worktree": a.worktree,
             "branch": a.branch,
             "branch_orphaned": has_orphaned_branch(a, state),
@@ -644,6 +671,14 @@ def roster_view(payload: dict, view: str) -> dict:
     if view == "full":
         return payload
     agents = payload.get("agents") or []
+    # RETIRED agents go from every narrowed view (GRPH-814). Measured on the live instance:
+    # 177 rows, 176 of them gone. This does not contradict `lean` keeping every OFFLINE agent
+    # — those are different claims. Offline says we have not heard from it and it may be back
+    # in a second; retired says the seat it would have to resume on has expired, so anything
+    # that returns is a new row. Nobody needs to notice a process that cannot come back, and
+    # `full` still carries them for whoever is reading history.
+    retired_n = sum(1 for a in agents if a.get("retired"))
+    agents = [a for a in agents if not a.get("retired")]
     if view == "live":
         agents = [a for a in agents if a.get("state") not in _ABSENT]
     lean = []
@@ -653,7 +688,10 @@ def roster_view(payload: dict, view: str) -> dict:
             row["holdings"] = [{k: v for k, v in h.items() if k not in _FAT_HOLDING_FIELDS}
                                for h in (a.get("holdings") or [])]
         lean.append(row)
-    return {**payload, "agents": lean, "dropped": list(_FAT_AGENT_FIELDS), "view": view}
+    # Counted, not silently absent. A roster that shrank from 177 to 1 with no explanation is
+    # the same class of surprise as one that never shrank.
+    return {**payload, "agents": lean, "dropped": list(_FAT_AGENT_FIELDS), "view": view,
+            "retired": retired_n}
 
 
 def _assigned_for(db: Session, agents: list[Agent]) -> dict[str, dict]:
