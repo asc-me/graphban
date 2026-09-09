@@ -7,6 +7,7 @@ Commands land as the slices of PRD-22 do. `up` is here (GRPH-448); `stop`, `ps` 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from collections.abc import Sequence
@@ -102,6 +103,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
              "Repeatable. Exact names only — no patterns — and an unknown name refuses the "
              "run. Sharing a server shares its credential")
+    run.add_argument(
+        "--allow", action="append", default=[], metavar="NAME",
+        help="let children run this command despite the default deny-list (e.g. psql for "
+             "local container checks). Repeatable")
+    run.add_argument(
+        "--deny", action="append", default=[], metavar="NAME",
+        help="add a command to the deny-list children get a refusing stub for. Repeatable")
     run.add_argument("--wave", default="wave", help="wave name, used in branch names")
     run.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     run.add_argument("--max-children", type=int, default=8)
@@ -172,6 +180,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
              "Repeatable. Exact names only — no patterns — and an unknown name refuses the "
              "run. Sharing a server shares its credential")
+    stdio.add_argument(
+        "--allow", action="append", default=[], metavar="NAME",
+        help="let children run this command despite the default deny-list (e.g. psql for "
+             "local container checks). Repeatable")
+    stdio.add_argument(
+        "--deny", action="append", default=[], metavar="NAME",
+        help="add a command to the deny-list children get a refusing stub for. Repeatable")
     stdio.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
     stdio.add_argument(
         "--tier", action="append", default=[], metavar="NAME=ADAPTER[:MODEL]",
@@ -226,6 +241,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="share one of YOUR MCP servers with each child, by exact name (e.g. context7). "
              "Repeatable. Exact names only — no patterns — and an unknown name refuses the "
              "run. Sharing a server shares its credential")
+    until.add_argument(
+        "--allow", action="append", default=[], metavar="NAME",
+        help="let children run this command despite the default deny-list (e.g. psql for "
+             "local container checks). Repeatable")
+    until.add_argument(
+        "--deny", action="append", default=[], metavar="NAME",
+        help="add a command to the deny-list children get a refusing stub for. Repeatable")
+    until.add_argument(
+        "--dry-run", action="store_true",
+        help="print what this wave WOULD delegate and exit, without minting a seat or cutting "
+             "a worktree. The scoping bug existed for exactly as long as nobody could see the "
+             "plan")
     until.add_argument("--max-children", type=int, default=8)
     until.add_argument("--child-wall-clock", type=float, default=3600.0)
     until.add_argument("--workspace", default=None, help="where worktrees go")
@@ -431,6 +458,28 @@ def _until(args) -> int:
 
     planner = Graphban(base_url=args.server, api_key=api_key, allowed=PLANNER_TOOLS, project_id=args.project)
     supervisor = Graphban(base_url=args.server, api_key=api_key, allowed=ALLOWED_TOOLS, project_id=args.project)
+    if args.dry_run:
+        # BEFORE the lock and before anything is minted (GRPH-819). A dry run that acquired the
+        # repository would stop being one, and a planner asking "what would this take?" while a
+        # wave runs is exactly who needs to ask.
+        from . import until as until_mod
+
+        try:
+            got = until_mod.plan(planner, args.prd or None, args.max_workers)
+        except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+            print(f"gbfleet until --dry-run: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(got, indent=1, sort_keys=True))
+        seeds = got["would_delegate"]
+        print(f"\nwould delegate {len(seeds)}: {', '.join(str(x) for x in seeds) or 'nothing'}",
+              file=sys.stderr)
+        if got["clusters_held"]:
+            print(f"{got['clusters_held']} cluster(s) held by another agent and not counted",
+                  file=sys.stderr)
+        if got["capped_by_max_workers"]:
+            print(f"capped at --max-workers {args.max_workers}; "
+                  f"{got['clusters_free']} clusters are free", file=sys.stderr)
+        return 0
     try:
         result = run_until(
             Path(args.repo),

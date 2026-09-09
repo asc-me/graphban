@@ -29,6 +29,7 @@ from . import seat as seat_mod
 from . import observe
 from .hostos import ProcessTree, is_owner_only, pid_is_alive, process_start_token, spawn_kwargs
 from .progress import Output
+from . import shim as shim_mod
 from .seat import Seat
 
 #: How long a child gets to register before it is presumed broken. Seconds, not the
@@ -243,7 +244,8 @@ class Child:
 
 
 def spawn(
-    launch: Launch, worktree: Path, branch: str, log_dir: Path, base: str = ""
+    launch: Launch, worktree: Path, branch: str, log_dir: Path, base: str = "",
+    shim_dir: Path | None = None
 ) -> Child:
     """Start one child in its own worktree, holding its own seat.
 
@@ -279,7 +281,9 @@ def spawn(
             ),
         )
 
-    env = {**os.environ, **launch.env}
+    # The shim goes on LAST so nothing downstream can put the real binary back in front
+    # (GRPH-818). One place, because a second env-building site is a second thing to forget.
+    env = shim_mod.environment({**os.environ, **launch.env}, shim_dir)
     started = time.monotonic()
     stdin = subprocess.DEVNULL
     if launch.stdin_file is not None:

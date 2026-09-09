@@ -101,15 +101,43 @@ def propose(repo: Path, branch: str, base: str, *, title: str, body: str) -> Pro
                     reason="" if url else "gh reported success without a URL")
 
 
-def describe(branch: str, items: list[str]) -> tuple[str, str]:
+def subject(repo: Path, branch: str, base: str) -> str:
+    """The last commit subject on `branch` beyond `base` — what the WORKER called its work.
+
+    Preferred over anything this module can compose, because the worker knows what it did and
+    the supervisor does not. Empty when it cannot be read, which the caller treats as "fall
+    back", never as an empty title.
+    """
+    if not base:
+        return ""
+    done = subprocess.run(["git", "log", "-1", "--format=%s", f"{base}..{branch}"],
+                          cwd=str(repo), capture_output=True, text=True)
+    return (done.stdout or "").strip().splitlines()[0].strip() if done.returncode == 0 and done.stdout.strip() else ""
+
+
+def describe(branch: str, items: list[str], commit_subject: str = "") -> tuple[str, str]:
     """Title and body for work a wave produced.
 
-    Names the items and says what the branch is, and nothing else. The supervisor did not do
-    the work and cannot summarise it; a generated paragraph claiming to would be the kind of
-    confident filler a reviewer learns to skip, and then skips on the PR that needed reading.
+    THE WORKER'S OWN SUBJECT LEADS (GRPH-817). The first version always composed
+    `<items> (from <branch>)`, which put a branch name in front of a reviewer where a
+    sentence about the work should be — and read as inconsistent beside the PRs children
+    opened for themselves with `gh`, which use the commit subject. Two openers, two styles,
+    on the same wave.
+
+    The item id stays, prefixed: it is the one thing the subject usually omits and the one a
+    reviewer needs to find the evidence. Branch goes to the body, where it belongs.
+
+    Still nothing invented. The supervisor did not do the work and cannot summarise it; a
+    generated paragraph claiming to is the kind of confident filler a reviewer learns to skip,
+    and then skips on the PR that needed reading.
     """
-    named = ", ".join(items) if items else branch
-    title = f"{named} (from {branch})"
+    named = ", ".join(items)
+    if commit_subject and named:
+        title = f"{named}: {commit_subject}"
+    elif commit_subject:
+        title = commit_subject
+    else:
+        title = f"{named or branch} (from {branch})"
     body = (
         f"Opened by `gbfleet` after reaping `{branch}`.\n\n"
         + ("Items: " + ", ".join(items) + "\n\n" if items else "")

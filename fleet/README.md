@@ -131,6 +131,49 @@ asks for a PRD that cannot exist: a server that filters returns nothing, one tha
 argument returns the project, and the second refuses the run naming what it would otherwise
 have done (GRPH-800). Needs the server-side filter; upgrade if you see that refusal.
 
+### What a child can reach, and what it cannot
+
+`--strict-mcp-config` bounds the child's **tool** surface (GRPH-802). It bounds nothing else:
+the child runs headless with `--dangerously-skip-permissions` and a full shell, and whatever
+CLIs are on the operator's `PATH` are authenticated to whatever the operator last logged into.
+
+So the supervisor prepends a directory of **refusing stubs** to each child's `PATH`
+(GRPH-818): `railway`, `vercel`, `fly`, `heroku`, `aws`, `gcloud`, `az`, `doctl`, `kubectl`,
+`helm`, `terraform`, `op`, `gh`, `psql`, `mysql`, `mongosh`, `redis-cli`. Each prints why it
+refused and exits 126.
+
+```bash
+gbfleet until … --allow psql          # keep local-container verification
+gbfleet until … --deny ssh            # add your own
+```
+
+`docker` is deliberately **not** denied — children verifying migrations against throwaway
+Postgres containers is the evidence worth having. `gh` is denied because the supervisor opens
+PRs itself now, while `gh api` is an arbitrary authenticated write to the whole forge.
+
+**This stops an agent that wandered, not one that is trying.** An absolute path walks straight
+past it, and a model that wanted to would find that in one step. The honest claim is that a
+child reaching for a deployment CLI *by name* gets a refusal, and you read it in a log instead
+of an incident. A sandbox is what bounds a determined process; this is not one.
+
+And the other half, which no flag fixes: **an item's prose is an instruction channel.** Nothing
+checks that a description matches the touchpoints it declares, so anyone who can file a ledger
+item can write instructions for a process with a shell. Scope waves to PRDs you control.
+
+### Seeing a wave before you run it
+
+```bash
+gbfleet until --repo . --server <url> --project <id> --adapter <vendor> --prd <id> --dry-run
+```
+
+Prints what would be delegated — the free clusters, the held ones with who holds them and when
+they free, and whether `--max-workers` is capping the list — then exits. It takes no lock,
+mints no seat and cuts no worktree, so it can be asked while a wave is already running.
+
+It calls the same `collision_clusters` the loop calls and applies the same split, rather than
+modelling the wave separately: a dry run that models it can reassure you about a plan the loop
+does not have.
+
 ### Work whose dependency has not landed
 
 `done` in the ledger means *attested*, not *merged*. An attestation binds to a commit and
