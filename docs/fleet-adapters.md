@@ -44,7 +44,7 @@ without stopping the other.
 | vendor | version seen | range | MCP config | prompt reaches the child by | seat inside the worktree? |
 |---|---|---|---|---|---|
 | `claude` | `2.1.233 (Claude Code)` | 2.0 – 3.0 | `--mcp-config <path>` | stdin | **no** — private temp file |
-| `gbagent` | `gbagent 0.2.0` | **exactly `0.2.0`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
+| `gbagent` | `gbagent 0.3.0` | **exactly `0.3.0`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
 | `cursor-agent` | `2026.04.17-787b533` | 2026.1 – 2027.1 | none; reads `.cursor/mcp.json` from the project dir | stdin | **yes** — forced |
 | `grok` | `grok 1.0.5 (5115b46bc909) [stable]` | 1.0 – 2.0 | project-scoped `<worktree>/.grok/config.toml` (**TOML**), needs `--trust` | `--prompt-file <path>` | yes — `.grok/config.toml`, see below |
 | `qwen-code` | `0.23.0` | 0.23 – 1.0 | `--mcp-config <path>` + `--allowed-mcp-server-names graphban`; the entry must be `httpUrl` | stdin | **no** — private temp file |
@@ -165,9 +165,11 @@ literal would refuse the next release the moment somebody bumped one file and no
 
 *Releasing bumps this table.* `verified_against` is the version the suite actually resolved,
 and for this row it is re-verified on every CI run rather than observed once on a laptop —
-`test_adapters.py` runs the real binary. When the package version changes, the `0.2.0` above
-changes with it, and a test says so rather than letting the matrix go quietly stale — as it
-did for 0.2.0, which is why this line reads 0.2.0 and not 0.1.0.
+`test_adapters.py` runs the real binary. When the package version changes, the `0.3.0` above
+changes with it, and a test says so rather than letting the matrix go quietly stale — which it
+has now done for 0.2.0 and again for 0.3.0. **Bumping `fleet/pyproject.toml` is not one edit,
+it is two**, and the second one is this table; the test is what stops the release shipping a
+matrix that quotes a version nobody ran.
 
 **The endpoint, and its key.** `GBAGENT_BASE_URL` names an OpenAI-compatible `chat/completions`
 endpoint; `GBAGENT_API_KEY`, when set, is sent to it as a bearer. The key is environment only — the fleet's
