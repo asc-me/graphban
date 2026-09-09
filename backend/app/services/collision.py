@@ -134,4 +134,47 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
         # a promise that its members do not collide, and dropping members from one afterwards
         # would hand out a promise computed over items that are no longer in it.
         pool = [it for it in pool if (it.prd_id or "") == prd_id]
-    return collision_clusters(db, pool, project_id)
+    return _with_reservations(db, collision_clusters(db, pool, project_id), project_id,
+                             lease_seconds=lease_seconds)
+
+
+def _with_reservations(db: Session, clusters: list[dict], project_id: str | None,
+                       *, lease_seconds: int) -> list[dict]:
+    """Mark each cluster whose AREAS are reserved, and say when the earliest frees (GRPH-803).
+
+    An item's lease and its areas are different holds, and the pool only knew about the first.
+    `claimable` excludes an item somebody has claimed; it says nothing about an item nobody
+    holds whose files are reserved by an agent working something else. So every cluster read
+    as free, a wave spawned a child for each, and each was refused by `claim_cluster` on
+    arrival — one real run burned all ten children and minted nothing.
+
+    `_delegate_next` has always skipped clusters with `held_by`. Nothing ever set it, so that
+    guard has never once fired: a check that reads as protection and is not.
+
+    The free-at time is here because "wait" and "give up" are different instructions, and the
+    supervisor cannot tell them apart without it.
+    """
+    from datetime import timezone
+
+    from app.services import fleet as fleet_svc
+
+    now = items_svc.utcnow()
+    taken = fleet_svc.active_reservations(db, project_id, now=now)
+    if not taken:
+        return clusters
+    for cluster in clusters:
+        areas = list(cluster.get("areas") or [])
+        holders, soonest = set(), None
+        for row in taken:
+            if not fleet_svc.areas_collide(areas, [row.area]):
+                continue
+            holders.add(row.agent_id)
+            expires = row.expires_at
+            if expires is not None:
+                expires = expires if expires.tzinfo else expires.replace(tzinfo=timezone.utc)
+                soonest = expires if soonest is None else min(soonest, expires)
+        if holders:
+            cluster["held_by"] = sorted(holders)
+            cluster["free_in"] = (max(0, int((soonest - now).total_seconds()))
+                                  if soonest is not None else None)
+    return clusters
