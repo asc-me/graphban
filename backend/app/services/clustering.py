@@ -15,20 +15,37 @@ from app.models import Item, Link
 from app.services import items as items_svc
 
 
-def _match(x: str, y: str) -> bool:
-    """Two touchpoints relate if equal, one glob-matches the other, or they share a directory."""
+def why_match(x: str, y: str) -> str:
+    """WHICH rule relates two touchpoints, or "" for none (GRPH-810).
+
+    The rule name is the whole point. "These two items were serialised" is not actionable;
+    "they were serialised because they are files in the same directory" is — a reader can
+    look at the two paths and say whether that is true of the work.
+
+    `directory` is the broad one, and it was the one nobody could see. Every pair of files in
+    one directory relates, whatever they are, so a directory of five files collapses five items
+    into one cluster. That is a defensible clustering heuristic and a costly reservation rule,
+    and until this it was impossible to tell which of the two you were looking at.
+    """
     x, y = x.strip(), y.strip()
     if not x or not y:
-        return False
+        return ""
     if x == y:
-        return True
-    if "*" in x and fnmatch.fnmatch(y, x):
-        return True
-    if "*" in y and fnmatch.fnmatch(x, y):
-        return True
+        return "exact"
+    if ("*" in x and fnmatch.fnmatch(y, x)) or ("*" in y and fnmatch.fnmatch(x, y)):
+        return "glob"
     if "/" in x and "/" in y and x.rsplit("/", 1)[0] == y.rsplit("/", 1)[0]:
-        return True
-    return False
+        return "directory"
+    return ""
+
+
+def _match(x: str, y: str) -> bool:
+    """Two touchpoints relate if equal, one glob-matches the other, or they share a directory.
+
+    One definition, expressed through `why_match`: two functions answering "do these relate?"
+    is how the reservation check and the partition came to disagree in the first place.
+    """
+    return bool(why_match(x, y))
 
 
 def shared_touchpoints(a: list[str], b: list[str]) -> list[str]:

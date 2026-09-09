@@ -83,3 +83,43 @@ def test_a_missing_expiry_says_so_rather_than_implying_forever():
 
     assert "no expiry reported" in said
     assert "SA-A2" in said
+
+
+# ---- and why those clusters are clusters (GRPH-810) --------------------------------------------
+
+def _because(rule):
+    return [{"items": ["SA-1", "SA-2"], "on": [{"a": "x/a.py", "b": "x/b.py", "rule": rule}]}]
+
+
+def test_a_wait_caused_only_by_the_directory_rule_says_so():
+    """A wait is easier to judge when you know what you are waiting for: real overlap, or an
+    artefact of the grouping rule."""
+    held = _cluster(["SA-1"], held=["SA-A2"], free_in=60)
+    held["because"] = _because("directory")
+
+    said = _waiting([held])
+
+    assert "share a directory" in said
+
+
+def test_a_real_overlap_is_not_explained_away():
+    """The control, and the direction that matters. Reporting a genuine overlap as directory
+    noise would talk an operator out of a wait they should take seriously."""
+    held = _cluster(["SA-1"], held=["SA-A2"], free_in=60)
+    held["because"] = _because("exact")
+
+    assert "share a directory" not in _waiting([held])
+
+
+def test_a_mixture_is_not_called_directory_noise():
+    held = _cluster(["SA-1"], held=["SA-A2"])
+    held["because"] = [{"items": ["SA-1", "SA-2"],
+                        "on": [{"a": "x/a.py", "b": "x/b.py", "rule": "directory"},
+                               {"a": "x/a.py", "b": "x/a.py", "rule": "exact"}]}]
+
+    assert "share a directory" not in _waiting([held])
+
+
+def test_no_reasons_at_all_says_nothing_extra():
+    """An older server sends no `because`. Silence is the honest answer, not a guess."""
+    assert "share a directory" not in _waiting([_cluster(["SA-1"], held=["SA-A2"])])

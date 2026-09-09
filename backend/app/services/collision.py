@@ -54,6 +54,25 @@ def touch_areas(db: Session, item: Item, project_id: str | None) -> tuple[list[s
     return predict_touch_areas(db, item, project_id), "predicted"
 
 
+def _reasons(a: list[str], b: list[str]) -> list[dict]:
+    """The touchpoint pairs that relate two items, and which rule related each (GRPH-810).
+
+    Every matching pair rather than the first, because "they share a directory" and "they
+    name the same file" are different situations and a cluster may rest on both. Capped: a
+    reason nobody reads is not a reason, and two items with fifty overlapping paths make the
+    point in three.
+    """
+    out: list[dict] = []
+    for x in a or []:
+        for y in b or []:
+            rule = clustering.why_match(x, y)
+            if rule:
+                out.append({"a": x, "b": y, "rule": rule})
+                if len(out) >= 3:
+                    return out
+    return out
+
+
 def collision_clusters(db: Session, items: list[Item], project_id: str | None) -> list[dict]:
     """Group `items` into non-colliding clusters by touch-area overlap.
 
@@ -81,10 +100,28 @@ def collision_clusters(db: Session, items: list[Item], project_id: str | None) -
             parent[x], x = root, parent[x]
         return root
 
+    # WHY each cluster is a cluster (GRPH-810). Recorded here because the union-find merges
+    # ARE the minimal explanation: a cluster of n members is built from at most n-1 of them,
+    # while the pairwise comparisons below are quadratic. Storing the comparisons would be a
+    # wall of text; storing the merges is the reason, and nothing else.
+    #
+    # It matters because the answer is often "these two are files in the same directory",
+    # which is a defensible clustering heuristic and a costly reservation rule — and until
+    # now there was no way to tell which of the two you were looking at.
+    merges: list[dict] = []
     for i in range(len(ids)):
         for j in range(i + 1, len(ids)):
-            if clustering.shared_touchpoints(areas[ids[i]], areas[ids[j]]):
-                parent[find(ids[i])] = find(ids[j])
+            a, b = ids[i], ids[j]
+            if find(a) == find(b):
+                # Already together, by transitivity. NOT recorded: the merge that put them
+                # there is already in the list, and adding this pair would suggest a second
+                # independent reason where there is one.
+                continue
+            reasons = _reasons(areas[a], areas[b])
+            if not reasons:
+                continue
+            merges.append({"items": sorted((a, b)), "on": reasons})
+            parent[find(a)] = find(b)
 
     groups: dict[str, list[str]] = {}
     for i in ids:
@@ -96,6 +133,8 @@ def collision_clusters(db: Session, items: list[Item], project_id: str | None) -
             "areas": sorted({a for m in members for a in areas[m]}),
             "collides": len(members) > 1,
             "predicted": any(predicted[m] for m in members),
+            # Empty for a single-item cluster, which merged with nothing.
+            "because": [m for m in merges if set(m["items"]) <= set(members)],
         }
         for members in groups.values()
     ]
