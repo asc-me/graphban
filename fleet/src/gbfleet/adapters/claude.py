@@ -31,7 +31,9 @@ class ClaudeCode(Adapter):
     binary = "claude"
     support = Support(minimum=(2, 0), maximum=(3, 0), verified_against="2.1.233")
     notes = (
-        "Takes --mcp-config, so the seat file stays out of the worktree entirely. "
+        "Takes --mcp-config, so the seat file stays out of the worktree entirely, and "
+        "--strict-mcp-config so the child holds THAT server and no other — without it "
+        "--mcp-config adds to the operator's own servers rather than replacing them. "
         "Prompt on stdin; --dangerously-skip-permissions is required for a headless "
         "run and is why the worktree boundary matters (PRD-22 D-k)."
     )
@@ -94,6 +96,20 @@ class ClaudeCode(Adapter):
                 "--print",
                 # Before POINTER, which is positional: a flag after it is prompt text.
                 *(self.debug_argv(debug_file) if debug_file else []),
+                # --mcp-config ADDS to the servers Claude Code already has; it does not
+                # replace them. Without --strict-mcp-config the child inherits every server
+                # on the operator's machine — measured on a real wave at ten, including that
+                # operator's Gmail, Drive and Calendar. A coding agent spawned to build one
+                # ledger item had reach into a person's mail.
+                #
+                # This is the one place the worktree boundary cannot help. PRD-22 D-k is
+                # explicit that a worktree is a blast radius and not a sandbox, and it bounds
+                # the FILESYSTEM; an inherited MCP server is a network capability and steps
+                # straight over it. `qwen_code` confines its child with
+                # --allowed-mcp-server-names and says so in its notes; this adapter had no
+                # equivalent and the omission was silent — the child works perfectly, with
+                # more reach than anybody granted it.
+                "--strict-mcp-config",
                 "--mcp-config", str(seat_file),
                 *self.model_argv(model),
                 *self.tuning_argv(tuning or Tuning()),
