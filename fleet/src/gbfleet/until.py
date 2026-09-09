@@ -549,6 +549,33 @@ def check_scope_is_honoured(planner: Graphban, prd: str) -> None:
         )
 
 
+def _free_and_blocked(clusters: dict) -> tuple[list[dict], list[dict]]:
+    """Split the divvy into what can be claimed now and what is held (GRPH-803).
+
+    `held_by` is set by the server when a cluster's AREAS are reserved. `_delegate_next` has
+    always skipped clusters carrying it — and nothing ever set it, so that guard never once
+    fired. It fires now, and this is the other half: a wave should not size itself off work it
+    cannot take.
+    """
+    free, blocked = [], []
+    for cluster in clusters.get("clusters") or []:
+        if not isinstance(cluster, dict):
+            continue
+        (blocked if cluster.get("held_by") else free).append(cluster)
+    return free, blocked
+
+
+def _waiting(blocked: list[dict]) -> str:
+    """What a person needs to decide whether to wait: who holds it, and for how long."""
+    holders = sorted({h for c in blocked for h in (c.get("held_by") or [])})
+    waits = [c.get("free_in") for c in blocked if isinstance(c.get("free_in"), int)]
+    soonest = min(waits) if waits else None
+    return (f"{len(blocked)} cluster(s) held by {', '.join(holders) or 'another agent'}"
+            + (f"; the earliest frees in {soonest}s" if soonest is not None
+               else "; no expiry reported")
+            + ". Not spawning into work that cannot be claimed")
+
+
 def _scope(prd: str | None) -> dict:
     """The wave's work filter, as `collision_clusters` arguments (GRPH-797).
 
@@ -679,8 +706,19 @@ def _wanted_workers(
     # never bound. Review work is not this function's job: the unheld-review branch in the
     # loop spawns for that, once, and counts its own failures.
     clusters = planner.call("collision_clusters", **_scope(prd))
-    total = int(clusters.get("total") or 0)
+    # FREE clusters, not all of them (GRPH-803). An item's lease and its areas are different
+    # holds: `claimable` excludes an item somebody claimed and says nothing about one whose
+    # files are reserved by an agent working something else. Counting every cluster spawned a
+    # child per blocked cluster, each of which registered, was refused by `claim_cluster`, and
+    # exited — one real wave burned all ten children and minted nothing, failing purely by
+    # arriving early.
+    free, blocked = _free_and_blocked(clusters)
+    total = len(free)
     if total <= 0:
+        if blocked:
+            # Reported, not spawned into. The wait is the server's own number, and "wait" and
+            # "give up" are different instructions.
+            observe.emit("contention", detail=_waiting(blocked))
         return 0
     roster = supervisor.call("fleet_status")
     agents = [a for a in (roster.get("agents") or []) if a.get("id")]
