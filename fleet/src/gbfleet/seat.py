@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .hostos import restrict_to_owner
@@ -117,6 +117,9 @@ class Seat:
     #: child has delivered correctly; without it a non-gbagent child registers with
     #: `capabilities={}` and the ledger's measured cells attribute its outcome to `undeclared`.
     declare: dict | None = None
+    #: MCP servers the operator chose to share with this child, by exact name (GRPH-816).
+    #: Empty is the default and the only safe one: a child reaches the ledger and nothing else.
+    shared: dict = field(default_factory=dict)
 
     def mcp_config(self, name: str = "graphban") -> dict:
         """The vendor-neutral core of every adapter's config file.
@@ -125,16 +128,20 @@ class Seat:
         `register_agent`, so it reaches the child as an instruction rather than as
         configuration. Both are secrets and both are bounded — the code is single-use
         with a 30-minute TTL.
+
+        `shared` is added here and nowhere else (GRPH-816). Since GRPH-802 the child is
+        launched with `--strict-mcp-config`, so this file is the complete list of what it
+        can reach — which is exactly why an extra server is a grant somebody typed rather
+        than something the machine happened to have. The seat's own entry is written LAST so
+        a shared stanza cannot displace it.
         """
-        return {
-            "mcpServers": {
-                name: {
-                    "type": "http",
-                    "url": self.server_url.rstrip("/") + "/api/mcp",
-                    "headers": {"X-API-Key": self.api_key},
-                }
-            }
+        servers = {**{k: dict(v) for k, v in (self.shared or {}).items()}}
+        servers[name] = {
+            "type": "http",
+            "url": self.server_url.rstrip("/") + "/api/mcp",
+            "headers": {"X-API-Key": self.api_key},
         }
+        return {"mcpServers": servers}
 
 
 #: What the child is told at startup. S6 (PRD-39 D-h): one loop for every worker —

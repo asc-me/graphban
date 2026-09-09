@@ -240,6 +240,10 @@ class Fleet:
     tiers: TierTable = field(default_factory=TierTable)
     #: PRD-37: the committed matrix, resolved through when a tier has no --tier flag.
     matrix: "matrix_mod.Matrix | None" = None
+    #: MCP servers the operator named at launch to share with every child (GRPH-816).
+    #: Fixed for the life of the process, like the tier table: a grant that could change
+    #: mid-wave would make "what could that child reach" unanswerable after the fact.
+    shared: dict = field(default_factory=dict)
     #: PRD-37 D14: profile and policy read from the server (PR 2); None until then.
     profile: "matrix_mod.Profile | None" = None
     policy: "matrix_mod.Policy | None" = None
@@ -422,7 +426,8 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 continue
         declare = matrix_mod.declaration(adapter, model or "", tier if via_tier else None,
                                          fleet.matrix)
-        seat = Seat(code=code, server_url=fleet.client.base_url, api_key=fleet.client.api_key,
+        seat = Seat(shared=dict(fleet.shared or {}),
+                    code=code, server_url=fleet.client.base_url, api_key=fleet.client.api_key,
                     item=(args.get("item") or None), declare=declare)
         # PRD-38 D3, the launch post: what this supervisor resolved, sent BEFORE the child
         # starts and keyed by the seat, because no delegation is linked yet. Fire-and-forget
