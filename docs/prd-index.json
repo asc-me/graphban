@@ -1,7 +1,7 @@
 {
   "scope": {
     "covers": "PRDs with a document in docs/ that names its ledger row",
-    "indexed": 13,
+    "indexed": 14,
     "note": "NOT the list of PRDs. A ledger-only PRD has no repo copy to compare and is absent here by construction; anything reading `prds` as complete is seeing a fraction of them."
   },
   "prds": {
@@ -268,6 +268,24 @@
         "6. Acceptance criteria",
         "7. Phasing",
         "8. Risks and open questions"
+      ]
+    },
+    "GRPH-P41": {
+      "file": "docs/prd-41-capability-matrix.md",
+      "status": "approved",
+      "sections": [
+        "1. Overview",
+        "2. Problem",
+        "3. Goals",
+        "4. Key decisions",
+        "5. The capability set",
+        "6. Gathering the telemetry across users",
+        "7. Fit with preferences: cost, token utilization and available harnesses",
+        "8. Data model",
+        "9. Acceptance criteria",
+        "10. Phasing",
+        "11. Risks and open questions",
+        "12. Prior art"
       ]
     }
   },
