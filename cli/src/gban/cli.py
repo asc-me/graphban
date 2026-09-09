@@ -56,14 +56,17 @@ def _parser() -> argparse.ArgumentParser:
     setup_cmd = sub.add_parser(
         "setup", help="enable delegation on a project",
         description=("Mints a project-scoped credential that does NOT expire, writes the "
-                     "graphban and gbfleet MCP entries where the harness will actually read "
-                     "them, and installs the supervisor. Only seats expire; a credential that "
-                     "died overnight would make 'delegation is set up' quietly stop being "
-                     "true. Re-running is safe: a working configuration is left alone."))
+                     "graphban and gbfleet MCP entries into Claude Code (~/.claude.json) and "
+                     "Grok (~/.grok/config.toml, TOML mcp_servers) — every file a parent "
+                     "harness will actually read — and installs the supervisor. Only seats "
+                     "expire; a credential that died overnight would make 'delegation is set "
+                     "up' quietly stop being true. Re-running is safe: a working key is "
+                     "reused, a missing gbfleet entry is still repaired."))
     setup_cmd.add_argument(
         "--scope", choices=["user", "project"], default="user",
-        help="user (default) writes ~/.claude.json, which OUTRANKS a repo .mcp.json and "
-             "cannot be committed; project writes .mcp.json beside the repo")
+        help="user (default) writes ~/.claude.json and, when it exists, ~/.grok/config.toml; "
+             "project writes .mcp.json and .grok/config.toml beside the repo. A user file "
+             "outranks the repo copy and cannot be committed")
     setup_cmd.add_argument(
         "--auto", action="store_true",
         help="every project with a repository here: matches this directory, what is in it and "
@@ -310,7 +313,8 @@ def cmd_setup(args) -> int:
     if code == 0:
         human.append(f"\n     delegation is enabled on {project}. An agent can now "
                      f"`delegate(id=…, lane=…, tier=…, seat=true)` then `spawn`.")
-        human.append(f"     restart the harness so it reads the new config.")
+        human.append("     restart Claude Code and/or Grok — whichever session will call "
+                     "`delegate`/`spawn` — so it reads the new config.")
     _out({"lines": lines, "ok": code == 0, "project": project, **made},
          "\n".join(human), args.as_json)
     return code
@@ -340,7 +344,8 @@ def _setup_auto(args, url: str, client) -> int:
         done[pid], worst = {"repo": str(repo), "ok": code == 0, **made}, max(worst, code)
     human = [doctor_mod.render(lines),
              f"\n     {sum(1 for d in done.values() if d['ok'])} of {len(done)} enabled. "
-             f"Restart the harness so it reads the new config."]
+             "Restart Claude Code and/or Grok — whichever session will call "
+             "`delegate`/`spawn` — so it reads the new config."]
     _out({"lines": lines, "ok": worst == 0, "projects": done}, "\n".join(human), args.as_json)
     return worst
 

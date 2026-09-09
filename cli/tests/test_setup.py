@@ -1,6 +1,6 @@
-"""`gban setup` — everything between a session and a delegating agent (GRPH-792).
+"""`gban setup` — everything between a session and a delegating agent (GRPH-792, GRPH-825).
 
-Three of these tests exist because the failure they describe is invisible when it happens.
+These tests exist because the failure they describe is invisible when it happens.
 
 - **The shadowed write.** Claude Code reads `~/.claude.json`'s per-project `mcpServers` in
   preference to a repository `.mcp.json`. A setup that wrote the repository file while a stale
@@ -10,11 +10,14 @@ Three of these tests exist because the failure they describe is invisible when i
   tracked file that becomes "commit a key", and a warning attached to it still does it.
 - **The tier that is not a permission.** A manifest missing `fleet` does not refuse `delegate`;
   it does not advertise it. The symptom is an agent reporting that the tool does not exist.
+- **The other harness.** Grok reads `~/.grok/config.toml` (`mcp_servers`, TOML). Writing only
+  Claude's file while Grok holds a different key reports success and leaves `delegate`
+  unadvertised (GRPH-825). Reuse that skips the write leaves `gbfleet` missing even on Claude.
 """
 from __future__ import annotations
 
 import json
-import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -34,11 +37,23 @@ def no_supervisor(monkeypatch):
     monkeypatch.setattr(doctor_mod, "offer_to_install", lambda *a, **k: False)
 
 
+@pytest.fixture(autouse=True)
+def no_grok_config(tmp_path_factory, monkeypatch):
+    """A test that does not create this file is a Claude-only setup, which is still the
+    common case. Tests that cover Grok write the file first. Pointed at the real
+    `~/.grok/config.toml`, every test here would rewrite the developer's harness."""
+    path = tmp_path_factory.mktemp("grokhome") / "config.toml"
+    monkeypatch.setattr(setup_mod, "grok_home", lambda: path)
+    return path
+
+
 class Server:
     """Mints, and answers `get_context` as the deployed one does."""
 
-    def __init__(self, *, writable=("core",), missing=(), refuse=None, issued=()):
+    def __init__(self, *, writable=("core",), missing=(), refuse=None, issued=(),
+                 missing_for=None):
         self.writable, self.missing, self.refuse = list(writable), list(missing), refuse
+        self.missing_for = dict(missing_for or {})
         self.minted = []
         #: Every key this deployment knows. Anything else 401s, as a real one does.
         self.issued = set(issued)
@@ -60,12 +75,16 @@ def _context(server):
     A mock that answered every key identically would make the stale-credential case
     untestable, which is the case this command exists for: the key in the config is not
     invalid in some abstract way, it is a credential the server does not know.
+
+    Live `missing_tiers` objects use `tier`, not `name` (`mcp_server.py`). Spelling it
+    `name` here made verify PASS against a key that could not see `delegate`.
     """
     def call(self, method, path, body=None):
         if self.api_key not in server.issued:
             raise Refused(401, "invalid api key", "")
+        missing = server.missing_for.get(self.api_key, server.missing)
         ctx = {"project_id": "core", "writable_projects": server.writable,
-               "missing_tiers": [{"name": t} for t in server.missing]}
+               "missing_tiers": [{"tier": t} for t in missing]}
         return {"result": {"content": [{"text": json.dumps(ctx)}]}}
     return call
 
@@ -224,6 +243,29 @@ def test_a_second_run_reuses_the_working_credential(tmp_path, wired):
     assert len(server.minted) == 1, "minted a second key for an already-working setup"
     assert made.get("reused") is True
     assert any("already configured" in l["detail"] for l in lines)
+    servers = json.loads(home.read_text())["projects"][str(repo.resolve())]["mcpServers"]
+    assert set(servers) == {"graphban", "gbfleet"}
+
+
+def test_reuse_still_writes_a_missing_gbfleet_entry(tmp_path, wired):
+    """THE SECOND DEFECT. Reuse skipped write_entries, so a Claude file that only had
+    `graphban` stayed that way while setup reported PASS (GRPH-825)."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {
+        "mcpServers": {"graphban": {"type": "http",
+                                    "url": URL + "/api/mcp",
+                                    "headers": {"X-API-Key": "gb_sk_ok"}}}}}}))
+
+    server = Server(issued={"gb_sk_ok"})
+    lines, code, made = _run(server, repo, home, wired=wired)
+
+    assert code == 0, lines
+    assert made.get("reused") is True
+    assert server.minted == [], "repaired by writing, which is not a reason to mint"
+    servers = json.loads(home.read_text())["projects"][str(repo.resolve())]["mcpServers"]
+    assert "gbfleet" in servers
+    assert doctor_mod.SUPERVISOR_KEY_ENV in servers["gbfleet"]["env"]
 
 
 def test_a_configured_key_that_cannot_delegate_is_replaced_and_the_old_one_named(tmp_path, wired):
@@ -259,6 +301,107 @@ def test_other_servers_in_the_file_survive(tmp_path, wired):
     assert blob["theme"] == "dark"
     servers = blob["projects"][str(repo.resolve())]["mcpServers"]
     assert "context7" in servers and "graphban" in servers
+
+
+# ---- Grok (GRPH-825) ---------------------------------------------------------------------------
+
+def test_setup_writes_grok_toml_mcp_servers_when_the_file_exists(
+        tmp_path, wired, no_grok_config):
+    """THE MEASURED ONE. Grok reads `mcp_servers` in TOML. `mcpServers` parses and loads
+    nothing; JSON in a `.toml` path is the same silence (GRPH-575, now for the parent)."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    no_grok_config.write_text("# keep me\n[ui]\nmax_thoughts_width = 120\n")
+
+    lines, code, _ = _run(Server(), repo, home, wired=wired)
+
+    assert code == 0, lines
+    text = no_grok_config.read_text()
+    assert "# keep me" in text
+    parsed = tomllib.loads(text)
+    assert "mcp_servers" in parsed
+    assert "mcpServers" not in parsed
+    gb = parsed["mcp_servers"]["graphban"]
+    assert gb["url"].endswith("/api/mcp")
+    assert gb["headers"]["X-API-Key"].startswith("gb_sk_")
+    fleet = parsed["mcp_servers"]["gbfleet"]
+    assert fleet["command"] == "gbfleet"
+    assert "--project" in fleet["args"]
+    assert doctor_mod.SUPERVISOR_KEY_ENV in fleet["env"]
+    assert parsed["ui"]["max_thoughts_width"] == 120
+    claude = json.loads(home.read_text())["projects"][str(repo.resolve())]["mcpServers"]
+    assert claude["graphban"]["headers"]["X-API-Key"] == gb["headers"]["X-API-Key"]
+
+
+def test_a_working_claude_key_is_copied_onto_a_grok_key_that_cannot_delegate(
+        tmp_path, wired, no_grok_config):
+    """Claude's key can see `fleet`. Grok's cannot. Verifying only Claude PASSed and left
+    Grok on the weak key — which is how this session opened."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {
+        "mcpServers": {"graphban": {"headers": {"X-API-Key": "gb_sk_good"}},
+                       "gbfleet": {"command": "gbfleet"}}}}}))
+    no_grok_config.write_text(
+        '[mcp_servers.graphban]\nurl = "http://gb.invalid/api/mcp"\nenabled = true\n\n'
+        '[mcp_servers.graphban.headers]\nX-API-Key = "gb_sk_weak"\n'
+    )
+    server = Server(issued={"gb_sk_good", "gb_sk_weak"},
+                    missing_for={"gb_sk_weak": ("fleet",)})
+
+    lines, code, made = _run(server, repo, home, wired=wired)
+
+    assert code == 0, lines
+    assert made.get("reused") is True
+    assert server.minted == [], "the working Claude key is the one to write, not a third"
+    grok = tomllib.loads(no_grok_config.read_text())
+    assert grok["mcp_servers"]["graphban"]["headers"]["X-API-Key"] == "gb_sk_good"
+    assert "gbfleet" in grok["mcp_servers"]
+
+
+def test_setup_does_not_invent_a_grok_config_when_grok_has_never_run(
+        tmp_path, wired, no_grok_config):
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    _run(Server(), repo, home, wired=wired)
+    assert not no_grok_config.exists()
+
+
+def test_a_git_tracked_grok_project_file_is_refused(tmp_path, wired, monkeypatch):
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    grok_proj = repo / ".grok" / "config.toml"
+    grok_proj.parent.mkdir()
+    grok_proj.write_text("[ui]\n")
+    monkeypatch.setattr(setup_mod, "tracked_by_git",
+                        lambda path: path == grok_proj)
+
+    server = Server()
+    lines, code, _ = _run(server, repo, home, scope="project", wired=wired)
+
+    assert any("git tracks" in l["detail"] and ".grok/config.toml" in l["detail"]
+               for l in lines)
+    # Claude's project file is not tracked, so it is still written. The grok FAIL is
+    # a real finding and so the exit is 1 — a PASS report would hide the refusal.
+    assert code == 1
+    assert (repo / ".mcp.json").exists()
+    assert tomllib.loads(grok_proj.read_text()) == {"ui": {}}
+
+
+def test_args_arrays_are_not_mistaken_for_table_headers(tmp_path, wired, no_grok_config):
+    """`args = ["mcp", ...]` contains `[`. Walking until the next `[` stops there and
+    leaves garbage that Grok cannot parse."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    no_grok_config.write_text(
+        '[mcp_servers.gbfleet]\ncommand = "gbfleet"\n'
+        'args = ["mcp", "--repo", "/old"]\n'
+        'env = { GBFLEET_API_KEY = "gb_sk_old" }\nenabled = true\n'
+    )
+    _run(Server(), repo, home, wired=wired)
+    parsed = tomllib.loads(no_grok_config.read_text())
+    assert parsed["mcp_servers"]["gbfleet"]["args"][0] == "mcp"
+    assert "--project" in parsed["mcp_servers"]["gbfleet"]["args"]
 
 
 def test_every_route_setup_calls_is_documented(tmp_path, wired, monkeypatch):
@@ -331,6 +474,10 @@ def test_the_skill_tells_the_agent_the_two_things_it_cannot_work_out(tmp_path):
     # It drives the CLI rather than restating the setup, which is what keeps it from becoming
     # a fourth copy of the procedure that drifts from the other three.
     assert "gban setup" in body
+    # Two parent harnesses. Naming only one is how GRPH-825 shipped.
+    assert "claude.json" in body
+    assert "config.toml" in body
+    assert "mcp_servers" in body
 
 
 def test_the_skill_hands_the_person_a_runnable_line_and_carries_the_rest(tmp_path):
