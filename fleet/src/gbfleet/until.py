@@ -30,10 +30,11 @@ from .seat import Seat
 from .tiers import TierTable
 from . import matrix as matrix_mod
 from .spawn import Child
+from .spawn import VendorLimit
 from .supervisor import (
     _declared_into,
     DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Wave, _reap_all, _rooted,
-    _start, item_status, watch_tick,
+    _start, item_status, publish_salvaged, watch_tick,
 )
 
 #: Planner-held tools. `register_agent` is how this process gets an `agent_id` to mint
@@ -163,10 +164,16 @@ def run(
             leftover: list[Child] = []
             occupied: set[str] = set()
             if acquired.takeover:
-                leftover, occupied, notes = adopt_mod.recover(repo, workspace, state)
+                recovered = adopt_mod.recover(repo, workspace, state)
+                leftover, occupied, notes = recovered
                 for note in notes:
                     observe.emit("adopt", detail=note)
                 wave.spawned.extend(leftover)
+                # GRPH-830: what was salvaged with real work in it gets the same two steps a
+                # finished child gets — pushed, and named on the item it belongs to. Before
+                # this the commit stayed local and the item was re-delegated and rebuilt from
+                # `main`, so the recovery and the loss were the same event.
+                publish_salvaged(wave, repo, recovered.salvaged, client=planner)
 
             children: list[Child] = list(leftover)
             roster_path = adopt_mod.children_path(repo, state)
@@ -200,6 +207,15 @@ def run(
     except ConfigError as exc:
         wave.reason = "config"
         return Report(ok=False, reason="config", exit=2, detail=str(exc), wave=wave,
+                      minted=minted, spawned=len(wave.spawned))
+    except VendorLimit as exc:
+        # GRPH-829. Its own reason, because "cap" is what this wave reported before and it is
+        # the wrong instruction: `cap` says the operator's own `--max-children` was reached and
+        # invites raising it, while this says the vendor account is spent and the only thing
+        # that helps is the clock. The wave ended on the wrong reason AND burned three of six
+        # child slots getting there.
+        wave.reason = "vendor_limit"
+        return Report(ok=False, reason="vendor_limit", exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
     except CapError as exc:
         wave.reason = exc.reason

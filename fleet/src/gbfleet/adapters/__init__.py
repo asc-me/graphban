@@ -253,6 +253,28 @@ class Adapter:
         """
         return None
 
+    def account_limit(self, stdout: str, stderr: str) -> str:
+        """What this vendor said about the ACCOUNT when the child died, or "" (GRPH-829).
+
+        A child that exits before registering is reported as a broken adapter, and that is the
+        right default. It is the wrong answer for one whole class: the vendor account is rate
+        limited or out of quota, which is neither the adapter's fault nor fixable by looking
+        at it. One measured wave ended `{"ok": false, "reason": "cap", "spawned": 6}` after
+        three children died in under a second each with an EMPTY stderr tail — the cause was
+        67 bytes on stdout saying the session limit was hit and when it resets. Reported as
+        `adapter 'claude': child exited 1`, which sends the operator to the vendor CLI.
+
+        **Both streams are offered**, because the observed message was on stdout and the
+        registration failure only ever read stderr. The base class matches NOTHING: a
+        heuristic that fired on the word "limit" would relabel real crashes as billing, which
+        is the same misattribution pointing the other way. Each adapter names the strings it
+        has actually been seen to print.
+
+        The return value is what to tell the operator — ideally including the reset time, so
+        the answer to "what now" is a clock rather than a shrug.
+        """
+        return ""
+
     def spawn_blocked(self, binary: Path) -> str:
         """Why a spawn on this adapter would fail right now, or "" when nothing says it will.
 
@@ -439,8 +461,29 @@ ADAPTERS: dict[str, Adapter] = {
     a.name: a for a in (ClaudeCode(), CursorAgent(), GbAgent(), Grok(), QwenCode())
 }
 
+
+def checked_tuning(adapter: "str | Adapter | None", tuning: "Tuning") -> "Tuning":
+    """The tuning, once the adapter has agreed it can spawn with it (GRPH-813, GRPH-831).
+
+    Here, next to `ADAPTERS`, rather than in `mcp.py` where it started. Its docstring there
+    said it lived outside each call site "so a new spawn path cannot forget to ask", and the
+    CLI path — which is the one `up` and `until` take — never asked: `make_adapter_factory`
+    calls `adapter.launch` directly, so a gbagent spawn missing `--turns` still died as
+    `child exited 2 before registering` followed by a raw argparse usage dump. A comment
+    claiming a property is not the property.
+
+    Takes a name or an adapter, because the two callers hold different things: the MCP tool
+    has a string from its arguments, and the CLI has the object it just resolved. An unknown
+    NAME passes through — resolving adapters is `resolve`'s job and it reports an unknown one
+    far better than a lookup miss here would.
+    """
+    known = ADAPTERS.get(adapter) if isinstance(adapter, str) else adapter
+    if known is not None:
+        known.check_tuning(tuning)
+    return tuning
+
 __all__ = [
     "ADAPTERS", "Adapter", "AdapterError", "AdapterUnavailable", "Resolved", "Support",
-    "UnknownAdapter", "VersionUnsupported", "default_exit_meaning", "explain_exit",
-    "parse_version", "resolve",
+    "UnknownAdapter", "VersionUnsupported", "checked_tuning", "default_exit_meaning",
+    "explain_exit", "parse_version", "resolve",
 ]
