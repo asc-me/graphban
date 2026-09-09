@@ -327,10 +327,19 @@ def test_setup_writes_grok_toml_mcp_servers_when_the_file_exists(
     fleet = parsed["mcp_servers"]["gbfleet"]
     assert fleet["command"] == "gbfleet"
     assert "--project" in fleet["args"]
+    assert "--workspace" in fleet["args"]
+    ws = Path(fleet["args"][fleet["args"].index("--workspace") + 1])
+    assert ws == no_grok_config.parent / "gbfleet-wt" / repo.name, (
+        "Grok worktrees must sit next to Grok's config, not as a sibling of the repo "
+        "(GRPH-826)"
+    )
     assert doctor_mod.SUPERVISOR_KEY_ENV in fleet["env"]
     assert parsed["ui"]["max_thoughts_width"] == 120
     claude = json.loads(home.read_text())["projects"][str(repo.resolve())]["mcpServers"]
     assert claude["graphban"]["headers"]["X-API-Key"] == gb["headers"]["X-API-Key"]
+    assert "--workspace" not in claude["gbfleet"]["args"], (
+        "Claude can write the sibling default; moving it would be fixing the wrong harness"
+    )
 
 
 def test_a_working_claude_key_is_copied_onto_a_grok_key_that_cannot_delegate(
@@ -386,6 +395,46 @@ def test_a_git_tracked_grok_project_file_is_refused(tmp_path, wired, monkeypatch
     assert code == 1
     assert (repo / ".mcp.json").exists()
     assert tomllib.loads(grok_proj.read_text()) == {"ui": {}}
+
+
+def test_reuse_repairs_a_gbfleet_entry_missing_workspace(tmp_path, wired, no_grok_config):
+    """THE FOLLOW-ON. A Grok gbfleet written before GRPH-826 has no --workspace. Reuse
+    that skipped the write would leave spawn dying as git 128."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    home.write_text(json.dumps({"projects": {str(repo.resolve()): {
+        "mcpServers": {"graphban": {"headers": {"X-API-Key": "gb_sk_ok"}}}}}}))
+    no_grok_config.write_text(
+        '[mcp_servers.graphban]\nurl = "http://gb.invalid/api/mcp"\nenabled = true\n\n'
+        '[mcp_servers.graphban.headers]\nX-API-Key = "gb_sk_ok"\n\n'
+        '[mcp_servers.gbfleet]\ncommand = "gbfleet"\n'
+        'args = ["mcp", "--repo", "/old", "--server", "http://gb.invalid", '
+        '"--project", "core"]\n'
+        'env = { GBFLEET_API_KEY = "gb_sk_ok" }\nenabled = true\n'
+    )
+    server = Server(issued={"gb_sk_ok"})
+    _, code, made = _run(server, repo, home, wired=wired)
+
+    assert code == 0
+    assert made.get("reused") is True
+    assert server.minted == []
+    args = tomllib.loads(no_grok_config.read_text())["mcp_servers"]["gbfleet"]["args"]
+    assert "--workspace" in args
+
+
+def test_an_unwritable_grok_workspace_is_not_a_pass(tmp_path, wired, no_grok_config, monkeypatch):
+    """gbfleet doctor already FAILs this. Setup reporting PASS is how spawn looked like git."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    no_grok_config.write_text("[ui]\n")
+    monkeypatch.setattr(setup_mod, "workspace_writable",
+                        lambda path: (False, "Operation not permitted"))
+
+    lines, code, _ = _run(Server(), repo, home, wired=wired)
+
+    assert code == 1
+    assert any("not writable" in l["detail"] for l in lines)
+    assert "mcp_servers" not in tomllib.loads(no_grok_config.read_text())
 
 
 def test_args_arrays_are_not_mistaken_for_table_headers(tmp_path, wired, no_grok_config):
@@ -478,6 +527,7 @@ def test_the_skill_tells_the_agent_the_two_things_it_cannot_work_out(tmp_path):
     assert "claude.json" in body
     assert "config.toml" in body
     assert "mcp_servers" in body
+    assert "gbfleet-wt" in body
 
 
 def test_the_skill_hands_the_person_a_runnable_line_and_carries_the_rest(tmp_path):

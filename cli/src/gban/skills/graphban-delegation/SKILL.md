@@ -47,11 +47,13 @@ explain why it was refused.
 
 That mints a project-scoped credential that does not expire, writes the `graphban` and
 `gbfleet` MCP entries into every parent harness that would actually read them — Claude Code
-(`~/.claude.json`, JSON `mcpServers`) and Grok (`~/.grok/config.toml`, TOML `mcp_servers`) —
-installs the delegation skill, and verifies the result against a key those files hold, not
-against a different harness's key. Read its output: every line is `PASS`, `FAIL` or
-`UNKNOWN`, and `UNKNOWN` means a check could not run, not that it passed. A working key
-with no `gbfleet` server is repaired, not left alone.
+(`~/.claude.json`, JSON `mcpServers`) and Grok (`~/.grok/config.toml`, TOML `mcp_servers`,
+with `--workspace` under `~/.grok/gbfleet-wt/` so spawn can write worktrees inside Grok's
+sandbox) — installs the delegation skill, and verifies the result against a key those files
+hold, not against a different harness's key. Read its output: every line is `PASS`, `FAIL`
+or `UNKNOWN`, and `UNKNOWN` means a check could not run, not that it passed. A working key
+with no `gbfleet` server, or a Grok gbfleet missing `--workspace`, is repaired, not left
+alone.
 
 **If it reports no session**, that is the one thing you cannot do. Give the person the command
 to run, in exactly this form, and stop:

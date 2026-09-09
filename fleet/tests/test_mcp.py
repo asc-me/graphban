@@ -120,6 +120,30 @@ def test_a_missing_argument_is_a_tool_error_not_a_crash(fleet: Fleet):
     assert "enrolment_code" in result["content"][0]["text"]
 
 
+def test_spawn_names_workspace_when_the_pool_cannot_be_created(
+    git_repo: Path, tmp_path: Path, scripts
+):
+    """GRPH-826. A sibling workspace Grok cannot write arrived as `git worktree add` 128.
+    The planner retried git. The flag is `--workspace`."""
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("x", encoding="utf-8")
+    fleet = Fleet(
+        repo=git_repo,
+        workspace=blocked,
+        client=_server(tmp_path / "ws"),
+        launch_for=lambda name, model="", tuning=None: _factory(
+            scripts, "works_then_waits", adapter=name
+        ),
+    )
+    result = _call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-1")
+
+    assert result["isError"] is True
+    msg = result["content"][0]["text"]
+    assert "--workspace" in msg
+    assert str(blocked) in msg
+    assert "git worktree add" not in msg
+
+
 def test_an_unknown_tool_is_a_protocol_error(fleet: Fleet):
     """The other side of the same line: the tool does not exist, so no tool failed."""
     reply = handle(fleet, {

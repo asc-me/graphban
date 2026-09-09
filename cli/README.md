@@ -128,9 +128,13 @@ Three properties worth knowing, each of which is a bug this command exists to no
   key, and surfaces as a JSON parse error because the harness is parsing a 401 body. Grok
   reads `~/.grok/config.toml`'s `mcp_servers` (TOML, snake_case; `mcpServers` parses and
   loads nothing). Writing only Claude's file while Grok holds a different key reports
-  success and leaves `delegate` unadvertised (GRPH-825). `--scope user` is the default
-  because a credential outside the repository cannot be committed. Re-running a working
-  setup still *repairs* a missing `gbfleet` entry; reuse skips a mint, never a write.
+  success and leaves `delegate` unadvertised (GRPH-825). Grok's `gbfleet` MCP also
+  gets `--workspace ~/.grok/gbfleet-wt/<repo>`: the sibling default is a path Grok's
+  sandbox cannot write, and spawn then dies as `git worktree add` 128 (GRPH-826).
+  Claude keeps the sibling default. `--scope user` is the default because a credential
+  outside the repository cannot be committed. Re-running a working setup still
+  *repairs* a missing `gbfleet` entry and a missing `--workspace`; reuse skips a mint,
+  never a write.
 - **`--auto` matches, and says so.** A project carries no repository link — no remote, no
   path — so `--auto` compares your project ids and names against this directory, what is in
   it, and its siblings. One level, never a recursive walk. Two directories answering to one
