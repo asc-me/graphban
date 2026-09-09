@@ -34,11 +34,15 @@ import gbfleet
 from ..seat import Seat
 from ..spawn import Launch
 from ..worktree import Worktree
-from . import Adapter, Support, Tuning, parse_version
+from . import Adapter, AdapterError, Support, Tuning, parse_version
 
 #: Where `gbagent` looks for the model endpoint. Read here only to decide whether the model
 #: CAN be checked; the child reads it itself.
 BASE_URL_ENV = "GBAGENT_BASE_URL"
+
+
+class MissingTuning(AdapterError):
+    """A spawn was missing an argument this adapter will not default (GRPH-813)."""
 
 
 class GbAgent(Adapter):
@@ -84,6 +88,32 @@ class GbAgent(Adapter):
         if tuning.window:
             argv += ["--window", str(tuning.window)]
         return argv
+
+    def check_tuning(self, tuning: Tuning) -> None:
+        """Refuse a spawn missing what this adapter will not default (GRPH-813).
+
+        SEPARATE FROM `tuning_argv`, and the separation is the point. The first version raised
+        from there, which broke every caller that builds a launch to LOOK at it — argv
+        inspection is not a spawn, and a rule that fires on both cannot tell the difference.
+        This is asked once, by the code that is about to start a process.
+
+        Omitting either used to emit nothing and `gbagent run` then exited 2 on an argparse
+        error: a raw usage dump in a child's stderr, before it registered. On the board that is
+        not "bad arguments" — it is a delegation reading `expired, nothing claimed`, which
+        looks like a dead model rather than a missing flag.
+
+        `AdapterError` is the type `spawn` already catches and reports, so the refusal reaches
+        the caller who can fix it rather than the log of a process that is gone.
+        """
+        missing = [flag for flag, value in (("turns", tuning.turns), ("window", tuning.window))
+                   if not value]
+        if missing:
+            raise MissingTuning(
+                f"gbagent needs {' and '.join('--' + m for m in missing)} and refuses to "
+                "guess: too large a window dies of an overflow compaction could have "
+                "prevented, too small throws away the context that made a local model worth "
+                "using. Pass them on spawn."
+            )
 
     @staticmethod
     def result_facts(stdout: str) -> dict:
