@@ -204,6 +204,8 @@ Each is a test. Sabotage the call, not the model.
 
 ---
 
-## 12. Verified on the deployed instance
+## 11. Verified on the deployed instance
 
-On 2026-09-05 a session delegated this item to a bound seat and gbfleet resolved the cheap tier through the preference matrix with no --tier flag.
+On 2026-09-05 a session delegated GRPH-728, this section's own doc item, to a bound seat, and
+gbfleet resolved the cheap tier through the preference matrix with no `--tier` flag — criterion 17,
+phase 1, on the deployed instance rather than a test double.

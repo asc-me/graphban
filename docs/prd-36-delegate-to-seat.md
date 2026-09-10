@@ -198,4 +198,6 @@ Each is a test. Sabotage the call, not the model.
 
 ## 11. Verified
 
-On 2026-09-05 a session called delegate(seat=true) on this item, gbfleet mcp spawned gbagent on the cheap tier onto the bound seat, registration claimed the item, and the child moved it to review.
+On 2026-09-05 a session called `delegate(seat=true)` on GRPH-720 and again on GRPH-722, the two
+doc items for this walk; `gbfleet mcp` spawned gbagent on the cheap tier onto the bound seat,
+registration claimed the item, and the child moved it to review — criterion 18 observed, not argued.

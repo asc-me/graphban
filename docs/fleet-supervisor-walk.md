@@ -139,4 +139,8 @@ to run this.
 
 ## Delegate to seat (PRD-36)
 
-On 2026-09-05 a session called delegate(seat=true) on this item, gbfleet mcp spawned gbagent on the cheap tier onto the bound seat, registration claimed the item, and the child moved it to review.
+On 2026-09-05 a live session called `delegate(seat=true)` on GRPH-720, this walk's own doc
+item; `gbfleet mcp` spawned gbagent on the cheap tier onto the bound seat, registration
+claimed the item, and the child moved it to review. That is criterion 18 observed rather than argued — the
+delegation read claimed on the Live board within one poll, then finished when the child
+advanced the item.

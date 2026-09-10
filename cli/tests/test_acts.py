@@ -18,7 +18,10 @@ REFERENCE = ROOT / "docs" / "api-reference.md"
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv(config.HOME_ENV, str(tmp_path))
-    for var in (config.URL_ENV, config.PROJECT_ENV, config.API_KEY_ENV):
+    # Also clear GBFLEET_API_KEY — a fleet seat exports it, and child_environment
+    # refuses to overwrite a set value (GRPH-776).
+    for var in (config.URL_ENV, config.PROJECT_ENV, config.API_KEY_ENV,
+                "GBFLEET_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     config.save_settings(url="http://gb.invalid", project="core")
     config.save_session("refresh-token", user="alex@example.com")
