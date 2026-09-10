@@ -87,6 +87,39 @@ def test_status_for_a_capability_reads_the_newest_entry_naming_it(tmp_path: Path
 
 # ---- 5: quality names the layer per capability ------------------------------------------------
 
+def test_a_local_cell_at_the_floor_outranks_a_fetched_platform_prior():
+    """13. Same vendor/model/cap: project n≥5 and a fetched platform prior.
+
+    `cap_measured_of` is how `measured()` reaches `resolve`. `_quality_for`
+    walks LAYERS project-first. Sabotage: reverse LAYERS, or drop the
+    project cell from the payload — resolve then picks platform 0.9.
+    """
+    row = _row("gbagent", "qwen3.6", vendor="gbagent")
+    payload = [
+        {"vendor": "gbagent", "model": "qwen3.6", "capability": "A4", "layer": "project",
+         "quality": {"value": 0.2, "n": 5}},
+        {"vendor": "gbagent", "model": "qwen3.6", "capability": "A4", "layer": "platform",
+         "quality": {"value": 0.9, "n": 50}, "n_band": "50–199",
+         "snapshot_at": "2026-09-10"},
+    ]
+    cap = m.cap_measured_of(payload)
+    res = _matrix(row).resolve(
+        tier="cheap", profile=m.Profile(user="u", weights={"quality": 1.0}),
+        installed=ALL_INSTALLED, capabilities=["A4"], cap_measured=cap,
+    )
+    axes = res.scored[0][2]["quality"]
+    picked = axes["by_capability"][0]
+    assert picked["layer"] == "project" and picked["value"] == 0.2 and picked["n"] == 5
+    assert axes["value"] == 0.2
+    # Control: without the project cell the same payload would pick platform.
+    # If this stayed green after dropping project from the walk, the assertion
+    # above is not load-bearing.
+    skipped = m.cap_measured_of([c for c in payload if c["layer"] != "project"])
+    _, skipped_axes = m._quality_for(row, ["A4"], skipped)
+    assert skipped_axes["by_capability"][0]["layer"] == "platform"
+    assert skipped_axes["by_capability"][0]["value"] == 0.9
+
+
 def test_quality_is_the_mean_of_the_first_layer_clearing_the_floor_and_names_it():
     gbagent = _row("gbagent", "q", vendor="gbagent", cost_class="local", local=True)
     qwen = _row("qwen-code", "", vendor="alibaba", cost_class="cheap", order=2)

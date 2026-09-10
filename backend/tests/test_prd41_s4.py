@@ -133,9 +133,21 @@ def _d11(**over):
 
 # ---- 10: R5 ---------------------------------------------------------------------------------
 
+def _proposal_id(draft: dict) -> dict:
+    """The shape that is NOT a hash of the numbers. Hashing only this still
+    passes when `evidence_line` embeds the counts, because those three keys
+    do not move. The real hash has to cover the cells."""
+    return {k: draft.get(k) for k in ("kind", "target", "capability")}
+
+
 def test_r5_drafts_an_evidence_line_when_a_cell_disagrees_with_its_prior(
         client, key, db, proj, auth):
-    """10. Verified prior 1.0 vs 0/6 signed off is ≥ 0.3. Sabotage: hash only the proposal."""
+    """10. Verified prior 1.0 vs 0/6 signed off is ≥ 0.3.
+
+    Sabotage: hash only `{kind, target, capability}`. Hashing `draft` still
+    moves because `evidence_line` embeds the counts, so that mutation stays
+    green while the numbers move.
+    """
     planner = _agent(client, key, "planner")
     res = _resolution("gbagent:qwen3.6", statuses={"gbagent:qwen3.6": "verified"})
     for i in range(6):
@@ -148,11 +160,14 @@ def test_r5_drafts_an_evidence_line_when_a_cell_disagrees_with_its_prior(
     assert "never" in card["detail"].lower() or "evidence" in card["draft"]["kind"]
     assert "replay" in card and "siblings" in card
     first_hash = card["evidence_hash"]
+    proposal = _proposal_id(card["draft"])
     for i in range(3):
         _attempt(client, key, db, planner, f"more{i}", outcome="bounced", resolution=res)
     again = _by_rule(_cards(client, auth, proj), "R5")[0]
-    assert again["draft"]["kind"] == card["draft"]["kind"]
-    assert again["evidence_hash"] != first_hash, "hash must cover the cells, not just the proposal"
+    assert _proposal_id(again["draft"]) == proposal, (
+        "kind/target/capability did not move — hashing only those would stay green")
+    assert again["evidence_hash"] != first_hash, (
+        "hash must cover the cells, not {kind, target, capability}")
 
 
 def test_r5_drafts_from_the_cell_when_the_leaf_has_no_prior(client, key, db, proj, auth):
@@ -390,19 +405,46 @@ def test_snapshot_serves_n_as_a_band_and_no_identifier(db, hosted):
     assert "path" not in blob
 
 
-def test_fetched_priors_are_outranked_by_a_local_cell_at_the_floor(db, proj):
-    """13. An instance that fetches resolves with platform-labelled priors; local n≥5 wins."""
+def test_fetched_priors_are_outranked_by_a_local_cell_at_the_floor(
+        client, key, db, proj, auth):
+    """13. An instance that fetches resolves with platform-labelled priors; local n≥5 wins.
+
+    Both layers coexist on the same vendor/model/capability. Scoring walks
+    LAYERS in order (fleet `matrix._quality_for` / `resolve`). Sabotage:
+    reverse that order, or skip the project cell — this then picks the
+    platform 0.9 and `layer == project` fails.
+    """
     hsvc.replace_priors(db, {
         "snapshot_at": "2026-09-10",
         "cells": [{"vendor": "gbagent", "model": "qwen3.6", "binary_version": "1.0.0",
                    "capability": "A4", "size_band": "M", "rate": 0.9, "n": "50–199"}],
     })
+    db.commit()
     priors = db.scalars(select(CapabilityPrior)).all()
     assert priors and priors[0].source == "platform" and priors[0].snapshot_at == "2026-09-10"
+    planner = _agent(client, key, "planner")
+    # 1 signed off of 5 finished → project 0.2 at the floor, against platform 0.9.
+    for i in range(5):
+        _attempt(client, key, db, planner, f"local{i}",
+                 outcome="signed_off" if i == 0 else "bounced")
     from app.services import delegation as del_svc
     measured = del_svc.measured(db, proj)
-    plat = [c for c in measured if c["layer"] == "platform"]
-    assert plat and plat[0].get("snapshot_at") == "2026-09-10"
+    same = [c for c in measured
+            if c.get("vendor") == "gbagent" and c.get("model") == "qwen3.6"
+            and c.get("capability") == "A4"]
+    by = {c["layer"]: c for c in same}
+    assert "project" in by and "platform" in by, by
+    assert by["platform"].get("snapshot_at") == "2026-09-10"
+    assert by["project"]["quality"]["n"] >= 5
+    picked = None
+    for layer in del_svc.LAYERS:
+        cell = by.get(layer)
+        n = ((cell.get("quality") or {}).get("n") or 0) if cell else 0
+        if cell and n >= 5:
+            picked = cell
+            break
+    assert picked is not None and picked["layer"] == "project", picked
+    assert picked["quality"]["value"] == 0.2
 
 
 def test_snapshot_http_is_the_served_payload(client, auth, db, proj):
