@@ -56,10 +56,19 @@ from the rest.
 
 This table is *support*: what each binary needs to run. Which harness and model a `spawn`
 resolves to for a tier is a different table — the **preference matrix** in
-`fleet/src/gbfleet/matrix.toml` (PRD-37), one row per harness × model × lane × role × tier
-with a status and the item that proved it. `codex` is a `status = "unregistered"` row there
-so the file's existence never reads as support; `gbfleet doctor` prints every row against
-this machine and what each role/tier would resolve to. See `fleet/README.md`.
+`fleet/src/gbfleet/matrix.toml` (PRD-37 / PRD-41), one row per harness × model × lane × tier
+with a status and the item that proved it. Evidence entries may name a `capability`; a row's
+status for that capability is the newest such entry, else the row's status. Optional
+`price_per_mtoken_in` / `_out` appear in the explanation as currency only when both sides of
+a comparison carry them. Quality is the mean over the item's capabilities of the first layer
+that clears the floor (project → org → platform → committed prior); cost is `cost_class`
+refined by tokens-to-sign-off, or the profile's `budget_tokens` curve when a target is set.
+Policy `caps` filter before any score, and a vendor that reports no tokens is dropped with
+`tokens not reported`. The spawn reply, the log, `until`'s report and the launch post carry
+the stage record (what each step dropped, and the winner's four axes with their sources).
+`codex` is a `status = "unregistered"` row so the file's existence never reads as support;
+`gbfleet doctor` prints every row against this machine, per-capability status, layer labels,
+and what each tier would resolve to under the operator's profile. See `fleet/README.md`.
 
 ## Naming a model (GRPH-483)
 

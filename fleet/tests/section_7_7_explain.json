@@ -1,0 +1,447 @@
+{
+  "source": "matrix",
+  "tier": "cheap",
+  "lane": "any",
+  "eligible": {
+    "matrix": 6,
+    "after_policy": 3,
+    "after_profile": 2,
+    "after_failed": 2,
+    "after_installed": 2
+  },
+  "dropped": {
+    "policy": [
+      "cursor-agent:composer (not in allowed_harnesses; would have scored 0.16)",
+      "codex (not in allowed_harnesses; would have scored 0.16)",
+      "claude:sonnet (per_item_tokens: 84k expected > 50k left)"
+    ],
+    "profile": [
+      "gbagent:qwen3-coder:30b (in your excludes)"
+    ]
+  },
+  "shortlist": [
+    {
+      "harness": "gbagent",
+      "model": "qwen3.6",
+      "vendor": "gbagent",
+      "status": "verified",
+      "score": 0.841,
+      "order": 1,
+      "local": true,
+      "axes": {
+        "quality": {
+          "value": 0.625,
+          "n": 2,
+          "source": "project",
+          "used": true,
+          "by_capability": [
+            {
+              "capability": "A4",
+              "value": 0.4,
+              "n": 7,
+              "layer": "project",
+              "n_band": null,
+              "used": true
+            },
+            {
+              "capability": "B1",
+              "value": 0.85,
+              "n": 11,
+              "layer": "project",
+              "n_band": null,
+              "used": true
+            }
+          ],
+          "note": "2 of 2 capabilities"
+        },
+        "cost": {
+          "value": 1.0,
+          "n": 20,
+          "source": "measured",
+          "used": true,
+          "note": "measured 31000/sign-off",
+          "tokens_to_signoff": 31000.0,
+          "budget_tokens": 50000
+        },
+        "latency": {
+          "value": 0.941,
+          "n": 8,
+          "source": "project",
+          "used": true
+        },
+        "locality": {
+          "value": 1.0,
+          "n": 1,
+          "source": "row",
+          "used": true
+        }
+      }
+    },
+    {
+      "harness": "qwen-code",
+      "model": "",
+      "vendor": "alibaba",
+      "status": "unverified",
+      "score": 0.662,
+      "order": 2,
+      "local": false,
+      "axes": {
+        "quality": {
+          "value": 0.74,
+          "n": 2,
+          "source": "mixed",
+          "used": true,
+          "by_capability": [
+            {
+              "capability": "A4",
+              "value": 0.78,
+              "n": 80,
+              "layer": "platform",
+              "n_band": "50-199",
+              "used": true
+            },
+            {
+              "capability": "B1",
+              "value": 0.7,
+              "n": 6,
+              "layer": "org",
+              "n_band": null,
+              "used": true
+            }
+          ],
+          "note": "2 of 2 capabilities"
+        },
+        "cost": {
+          "value": 1.0,
+          "n": 20,
+          "source": "measured",
+          "used": true,
+          "note": "measured 40000/sign-off",
+          "tokens_to_signoff": 40000.0,
+          "budget_tokens": 50000
+        },
+        "latency": {
+          "value": 0.983,
+          "n": 8,
+          "source": "mixed",
+          "used": true
+        },
+        "locality": {
+          "value": 0.0,
+          "n": 1,
+          "source": "row",
+          "used": true
+        }
+      }
+    }
+  ],
+  "dropped_rows": [
+    {
+      "harness": "cursor-agent",
+      "model": "composer",
+      "vendor": "cursor",
+      "status": "unverified",
+      "score": 0.162,
+      "order": 4,
+      "local": false,
+      "stage": "policy",
+      "why": "not in allowed_harnesses"
+    },
+    {
+      "harness": "codex",
+      "model": "",
+      "vendor": "openai",
+      "status": "unregistered",
+      "score": 0.162,
+      "order": 5,
+      "local": false,
+      "stage": "policy",
+      "why": "not in allowed_harnesses"
+    },
+    {
+      "harness": "claude",
+      "model": "sonnet",
+      "vendor": "anthropic",
+      "status": "unverified",
+      "score": 0.123,
+      "order": 3,
+      "local": false,
+      "stage": "policy",
+      "why": "per_item_tokens: 84k expected > 50k left"
+    },
+    {
+      "harness": "gbagent",
+      "model": "qwen3-coder:30b",
+      "vendor": "gbagent",
+      "status": "unverified",
+      "score": 0.5,
+      "order": 6,
+      "local": true,
+      "stage": "profile",
+      "why": "in your excludes"
+    }
+  ],
+  "winner": {
+    "harness": "gbagent",
+    "model": "qwen3.6",
+    "status": "verified",
+    "score": 0.841,
+    "axes": {
+      "quality": {
+        "value": 0.625,
+        "n": 2,
+        "source": "project",
+        "used": true,
+        "by_capability": [
+          {
+            "capability": "A4",
+            "value": 0.4,
+            "n": 7,
+            "layer": "project",
+            "n_band": null,
+            "used": true
+          },
+          {
+            "capability": "B1",
+            "value": 0.85,
+            "n": 11,
+            "layer": "project",
+            "n_band": null,
+            "used": true
+          }
+        ],
+        "note": "2 of 2 capabilities"
+      },
+      "cost": {
+        "value": 1.0,
+        "n": 20,
+        "source": "measured",
+        "used": true,
+        "note": "measured 31000/sign-off",
+        "tokens_to_signoff": 31000.0,
+        "budget_tokens": 50000
+      },
+      "latency": {
+        "value": 0.941,
+        "n": 8,
+        "source": "project",
+        "used": true
+      },
+      "locality": {
+        "value": 1.0,
+        "n": 1,
+        "source": "row",
+        "used": true
+      }
+    }
+  },
+  "runner_up": {
+    "harness": "qwen-code",
+    "model": "",
+    "status": "unverified",
+    "score": 0.662,
+    "axes": {
+      "quality": {
+        "value": 0.74,
+        "n": 2,
+        "source": "mixed",
+        "used": true,
+        "by_capability": [
+          {
+            "capability": "A4",
+            "value": 0.78,
+            "n": 80,
+            "layer": "platform",
+            "n_band": "50-199",
+            "used": true
+          },
+          {
+            "capability": "B1",
+            "value": 0.7,
+            "n": 6,
+            "layer": "org",
+            "n_band": null,
+            "used": true
+          }
+        ],
+        "note": "2 of 2 capabilities"
+      },
+      "cost": {
+        "value": 1.0,
+        "n": 20,
+        "source": "measured",
+        "used": true,
+        "note": "measured 40000/sign-off",
+        "tokens_to_signoff": 40000.0,
+        "budget_tokens": 50000
+      },
+      "latency": {
+        "value": 0.983,
+        "n": 8,
+        "source": "mixed",
+        "used": true
+      },
+      "locality": {
+        "value": 0.0,
+        "n": 1,
+        "source": "row",
+        "used": true
+      }
+    }
+  },
+  "profile": {
+    "user": "alex",
+    "defaults": [
+      "gbagent",
+      "qwen-code"
+    ],
+    "weights": {
+      "cost": 0.27,
+      "quality": 0.41,
+      "latency": 0.09,
+      "locality": 0.23
+    },
+    "budget_tokens": 50000
+  },
+  "refused": null,
+  "capabilities": [
+    "A4",
+    "B1"
+  ],
+  "stages": [
+    {
+      "stage": "rows",
+      "kept": 6
+    },
+    {
+      "stage": "policy.allowed_or_local",
+      "dropped": [
+        "cursor-agent:composer (not in allowed_harnesses; would have scored 0.16)",
+        "codex (not in allowed_harnesses; would have scored 0.16)"
+      ]
+    },
+    {
+      "stage": "policy.caps",
+      "dropped": [
+        "claude:sonnet (per_item_tokens: 84k expected > 50k left)"
+      ]
+    },
+    {
+      "stage": "profile",
+      "dropped": [
+        "gbagent:qwen3-coder:30b (in your excludes)"
+      ]
+    },
+    {
+      "stage": "score",
+      "winner": {
+        "harness": "gbagent",
+        "model": "qwen3.6",
+        "status": "verified",
+        "score": 0.841,
+        "axes": {
+          "quality": {
+            "value": 0.625,
+            "n": 2,
+            "source": "project",
+            "used": true,
+            "by_capability": [
+              {
+                "capability": "A4",
+                "value": 0.4,
+                "n": 7,
+                "layer": "project",
+                "n_band": null,
+                "used": true
+              },
+              {
+                "capability": "B1",
+                "value": 0.85,
+                "n": 11,
+                "layer": "project",
+                "n_band": null,
+                "used": true
+              }
+            ],
+            "note": "2 of 2 capabilities"
+          },
+          "cost": {
+            "value": 1.0,
+            "n": 20,
+            "source": "measured",
+            "used": true,
+            "note": "measured 31000/sign-off",
+            "tokens_to_signoff": 31000.0,
+            "budget_tokens": 50000
+          },
+          "latency": {
+            "value": 0.941,
+            "n": 8,
+            "source": "project",
+            "used": true
+          },
+          "locality": {
+            "value": 1.0,
+            "n": 1,
+            "source": "row",
+            "used": true
+          }
+        }
+      },
+      "runner_up": {
+        "harness": "qwen-code",
+        "model": "",
+        "status": "unverified",
+        "score": 0.662,
+        "axes": {
+          "quality": {
+            "value": 0.74,
+            "n": 2,
+            "source": "mixed",
+            "used": true,
+            "by_capability": [
+              {
+                "capability": "A4",
+                "value": 0.78,
+                "n": 80,
+                "layer": "platform",
+                "n_band": "50-199",
+                "used": true
+              },
+              {
+                "capability": "B1",
+                "value": 0.7,
+                "n": 6,
+                "layer": "org",
+                "n_band": null,
+                "used": true
+              }
+            ],
+            "note": "2 of 2 capabilities"
+          },
+          "cost": {
+            "value": 1.0,
+            "n": 20,
+            "source": "measured",
+            "used": true,
+            "note": "measured 40000/sign-off",
+            "tokens_to_signoff": 40000.0,
+            "budget_tokens": 50000
+          },
+          "latency": {
+            "value": 0.983,
+            "n": 8,
+            "source": "mixed",
+            "used": true
+          },
+          "locality": {
+            "value": 0.0,
+            "n": 1,
+            "source": "row",
+            "used": true
+          }
+        }
+      }
+    }
+  ]
+}

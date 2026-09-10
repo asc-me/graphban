@@ -183,37 +183,42 @@ TOOLS: list[dict[str, Any]] = [
 ]
 
 
-def read_preferences(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.Policy", str, "matrix_mod.Measured"]:
+def read_preferences(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.Policy", str,
+                                      "matrix_mod.Measured", "matrix_mod.CapMeasured"]:
     """PRD-37 D9/D10: the key owner's profile and the project's policy ride on `fleet_status`,
     read ONCE at launch — a profile change is read at the next launch, not mid-run (PRD-36
     D16). A server that cannot be reached leaves both empty and says so, so a resolution made
     without them is explained as `profile: none` rather than mistaken for a preference."""
-    profile, policy, note, measured, _bands = read_status(client)
-    return profile, policy, note, measured
+    profile, policy, note, measured, _bands, cap = read_status(client)
+    return profile, policy, note, measured, cap
 
 
 def read_status(client) -> tuple["matrix_mod.Profile | None", "matrix_mod.Policy", str,
-                                 "matrix_mod.Measured", "matrix_mod.Bands"]:
+                                 "matrix_mod.Measured", "matrix_mod.Bands",
+                                 "matrix_mod.CapMeasured"]:
     """`read_preferences` plus the band breakdown (PRD-38 D9), on ONE `fleet_status` call.
 
     Two entry points rather than a fifth element on the old tuple: the resolver's callers must
     not acquire a dimension the resolver cannot supply a value for, and only the doctor — which
-    prints for a person — has any business with bands.
+    prints for a person — has any business with bands. Capability cells (PRD-41) travel with
+    the same payload and feed `resolve(..., capabilities=...)`.
     """
     try:
         status = client.fleet_status() or {}
     except Exception as exc:  # noqa: BLE001 - the note is the point
         return (None, matrix_mod.Policy(),
                 f"fleet_status unreachable ({str(exc)[:80]}); resolving with no profile or policy",
-                {}, {})
+                {}, {}, {})
     profile = matrix_mod.Profile.of(status.get("profile"))
     policy = matrix_mod.Policy.of(status.get("policy"))
     measured = matrix_mod.measured_of(status.get("measured"))
     bands = matrix_mod.bands_of(status.get("measured"))
+    cap = matrix_mod.cap_measured_of(status.get("measured"))
+    n_cells = len(cap) or len(measured)
     note = (f"profile {profile.user} ({len(profile.defaults)} default(s))" if profile else "profile: none") + \
            ("; policy on" if status.get("policy") else "; policy: none") + \
-           f"; measured cells: {len(measured)}"
-    return profile, policy, note, measured, bands
+           f"; measured cells: {n_cells}"
+    return profile, policy, note, measured, bands, cap
 
 
 @dataclass
@@ -250,6 +255,8 @@ class Fleet:
     policy: "matrix_mod.Policy | None" = None
     #: PRD-37 D7: `fleet_status.measured` as the resolver reads it, taken at launch with the rest.
     measured: "matrix_mod.Measured" = field(default_factory=dict)
+    #: PRD-41 D5: the same payload re-keyed on capability, with a layer per cell.
+    cap_measured: "matrix_mod.CapMeasured" = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # One partition object. `start_one` is given `fleet.partition`; `watch_tick`
@@ -392,6 +399,21 @@ def _is_quiet(described: dict, quiet_after: float) -> bool:
         return False
 
 
+def _brief_for(fleet: "Fleet", item_id: str | None) -> dict | None:
+    """The item's brief, when spawn named it. Failures are silence: resolving without
+    capabilities is the old path, not a crash."""
+    if not item_id or fleet.client is None:
+        return None
+    try:
+        details = fleet.client.call("get_item_details", id=item_id)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(details, dict):
+        return None
+    brief = details.get("brief")
+    return brief if isinstance(brief, dict) else None
+
+
 def _runner_up(resolution: dict | None, matrix=None) -> str:
     """The vendor:model the resolver would have picked instead, in the same spelling a child
     declares. Empty when nothing was second — a flag resolution has no runner-up by
@@ -437,10 +459,14 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                 resolution = {"source": "flag", "tier": tier, "adapter": adapter, "model": model}
             else:
                 mat = fleet.matrix or matrix_mod.load()
+                brief = _brief_for(fleet, args.get("item"))
                 res = mat.resolve(tier=tier,
                                   lane=args.get("lane") or "any", profile=fleet.profile,
                                   policy=fleet.policy, installed=matrix_mod.installed_checker(),
-                                  measured=fleet.measured)
+                                  measured=fleet.measured,
+                                  capabilities=(brief or {}).get("capabilities"),
+                                  cap_measured=fleet.cap_measured,
+                                  spend=(brief or {}).get("spend"))
                 if res.winner is None:
                     raise ValueError(f"no harness resolves for tier {tier!r}: {res.refused}. "
                                      + json.dumps(res.explain()["dropped"]))

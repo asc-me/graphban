@@ -90,37 +90,53 @@ def api(client, key, auth):
     return client, key, auth
 
 
-def _cell(rows, vendor, model, lane, tier):
-    return next(r for r in rows if (r["vendor"], r["model"], r["lane"], r["tier"]) == (vendor, model, lane, tier))
+def _cell(rows, vendor, model, capability, layer="project"):
+    return next(r for r in rows if (r["vendor"], r["model"], r["capability"], r["layer"])
+                == (vendor, model, capability, layer))
 
 
 def test_quality_is_signed_off_over_finished_per_cell_with_n(db, api, proj):
     _finished(db, api, proj, vendor="gbagent", model="q", lane="backend", tier="cheap", outcome="signed_off", minutes=10, n=3)
     _finished(db, api, proj, vendor="gbagent", model="q", lane="backend", tier="cheap", outcome="bounced", minutes=10, n=1)
     rows = dsvc.measured(db, proj)
-    cell = _cell(rows, "gbagent", "q", "backend", "cheap")
+    cell = _cell(rows, "gbagent", "q", "other")
     assert cell["quality"] == {"value": 0.75, "n": 4}
+    assert cell["layer"] == "project"
+    assert "bands" in cell
 
 
-def test_lanes_and_tiers_are_never_pooled(db, api, proj):
-    """PRD-35 named the bias: frontier only sees what cheap failed. One cell per lane and
-    per tier requested — a backend success says nothing about the frontend cell."""
-    _finished(db, api, proj, vendor="gbagent", model="q", lane="backend", tier="cheap", outcome="signed_off", minutes=5, n=5)
-    _finished(db, api, proj, vendor="gbagent", model="q", lane="frontend", tier="cheap", outcome="bounced", minutes=5, n=2)
-    _finished(db, api, proj, vendor="gbagent", model="q", lane="backend", tier="frontier", outcome="bounced", minutes=5, n=1)
+def test_capabilities_are_never_pooled_across_leaves(db, api, proj, client, auth):
+    """PRD-41 D3: lane and tier left the key. Two items with different capabilities
+    are two cells; pooling them would be the old lane-key wearing new clothes."""
+    from datetime import datetime, timedelta, timezone
+    T0 = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    client, key, auth = api
+    delegator = _agent(client, key, "planner-caps")
+    child = _agent(client, key, "child-caps", capabilities={"vendor": "gbagent", "model": "q"})
+    web = client.post("/api/items", json={"title": "web", "project_id": proj,
+                                          "touchpoints": ["web/src/features/x.tsx"]},
+                      headers=auth).json()
+    mig = client.post("/api/items", json={"title": "mig", "project_id": proj,
+                                          "touchpoints": ["backend/alembic/versions/0001.py"]},
+                      headers=auth).json()
+    for item, outcome in ((web, "signed_off"), (mig, "bounced")):
+        db.add(Delegation(id=f"d-{item['id']}", project_id=proj, item_id=item["id"],
+                          delegated_by=delegator, agent_id=child, linked_by="seat",
+                          lane="backend", requested_tier="cheap", declared_model="q",
+                          declared_tier="local", outcome=outcome, created_at=T0,
+                          claimed_at=T0 + timedelta(minutes=1),
+                          finished_at=T0 + timedelta(minutes=6), lease_seconds=600))
+    db.commit()
     rows = dsvc.measured(db, proj)
-    assert _cell(rows, "gbagent", "q", "backend", "cheap")["quality"] == {"value": 1.0, "n": 5}
-    assert _cell(rows, "gbagent", "q", "frontend", "cheap")["quality"] == {"value": 0.0, "n": 2}
-    assert _cell(rows, "gbagent", "q", "backend", "frontier")["quality"] == {"value": 0.0, "n": 1}
-    assert len(rows) == 3, "a pooled row appeared"
-    assert not any(r["lane"] in ("any", "all") for r in rows)
+    assert _cell(rows, "gbagent", "q", "B5")["quality"] == {"value": 1.0, "n": 1}
+    assert _cell(rows, "gbagent", "q", "A4")["quality"] == {"value": 0.0, "n": 1}
 
 
 def test_latency_is_the_median_claim_to_finish_folded_onto_the_hour(db, api, proj):
     _finished(db, api, proj, vendor="gbagent", model="q", lane="backend", tier="cheap", outcome="signed_off", minutes=6, n=1)
     _finished(db, api, proj, vendor="gbagent", model="q", lane="backend", tier="cheap", outcome="bounced", minutes=30, n=1)
     _finished(db, api, proj, vendor="gbagent", model="q", lane="backend", tier="cheap", outcome="blocked", minutes=90, n=1)
-    cell = _cell(dsvc.measured(db, proj), "gbagent", "q", "backend", "cheap")
+    cell = _cell(dsvc.measured(db, proj), "gbagent", "q", "other")
     assert cell["latency"] == {"value": 0.5, "n": 3, "median_seconds": 1800.0}
 
 
@@ -139,7 +155,7 @@ def test_open_and_closed_delegations_do_not_count_only_finished_ones(db, api, pr
                       lane="backend", requested_tier="cheap", closed_reason="withdrawn", lease_seconds=600))
     db.commit()
     rows = dsvc.measured(db, proj)
-    assert _cell(rows, "gbagent", "q", "backend", "cheap")["quality"]["n"] == 1
+    assert _cell(rows, "gbagent", "q", "other")["quality"]["n"] == 1
     # The unfinished rows have no agent, so counting them would surface as an `undeclared`
     # cell rather than inflate this one — the sabotage this first version missed.
     assert len(rows) == 1, f"an unfinished delegation was counted: {rows}"
@@ -150,7 +166,7 @@ def test_fleet_status_carries_measured_and_an_empty_ledger_is_an_empty_list_not_
     assert status["measured"] == []
     _finished(db, api, proj, vendor="gbagent", model="q", lane="backend", tier="cheap", outcome="signed_off", minutes=5, n=2)
     status = _mcp(client, key, "fleet_status", {"project_id": proj})
-    assert _cell(status["measured"], "gbagent", "q", "backend", "cheap")["quality"] == {"value": 1.0, "n": 2}
+    assert _cell(status["measured"], "gbagent", "q", "other")["quality"] == {"value": 1.0, "n": 2}
 
 
 def test_measured_is_scoped_to_the_project(db, api, proj, client, auth):

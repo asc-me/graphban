@@ -204,6 +204,8 @@ def test_spawn_resolves_an_unflagged_tier_through_the_matrix_and_the_reply_expla
     assert res["winner"]["harness"] == "fake" and res["winner"]["status"] == "verified"
     assert res["dropped"]["installed"] == ["ghost:x (ghost is not installed)"]
     assert res["profile"] == "none", "PR 1 carries no profile; the reply says so rather than inventing one"
+    stages = [s["stage"] for s in res["stages"]]
+    assert stages[0] == "rows" and stages[-1] == "score"
 
 
 def test_a_tier_flag_beats_the_matrix_and_the_reply_says_the_source_was_the_flag(fleet: Fleet):
@@ -275,6 +277,53 @@ def test_until_resolves_an_unflagged_request_through_the_matrix_and_the_log_says
     assert result.spawned == 1, result.detail
     assert launched == [("fake", "qwen-local")], "the matrix, not the default factory, chose the launch"
     assert [d["tier"] for d in delegations] == ["cheap"]
+    payload = result.as_json()
+    assert "resolutions" in payload
+    assert payload["resolutions"]
+    assert payload["resolutions"][0]["winner"]["harness"] == "fake"
+    assert [s["stage"] for s in payload["resolutions"][0]["stages"]][0] == "rows"
+
+
+def test_until_posts_the_stage_record_on_the_launch_post(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """Criterion 24: until's matrix resolve posts the D21 stage object on the launch
+    post (PRD-38 D3), the same call spawn already makes. Sabotage: drop planner.post_attempt
+    and this is the only test that fails — the wave report still carries resolutions."""
+    from gbfleet.until import run
+    from tests.test_until import _clients, KEY
+
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (r.harness == "fake", "not here")))
+    workspace = tmp_path / "ws"
+    posts: list[dict] = []
+
+    def launch_for(name, model=""):
+        return _factory(scripts, "works_then_exits", adapter=name)
+
+    planner, supervisor = _clients(workspace, clusters=1, cluster_items=[["GRPH-7"]], delegations=[])
+    orig = planner.post_attempt
+
+    def capture(**payload):
+        posts.append(payload)
+        return orig(**payload)
+
+    planner.post_attempt = capture  # type: ignore[method-assign]
+    mat = _matrix(_row("ghost", "x", cost_class="cheap"),
+                  _row("fake", "qwen-local", cost_class="local", local=True, order=2))
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        request="cheap", tiers=TierTable(), launch_for=launch_for, matrix=mat,
+    )
+    assert result.spawned == 1, result.detail
+    launched = [p for p in posts if isinstance(p.get("resolution"), dict)]
+    assert launched, f"until resolve never called post_attempt with a resolution; posts={posts}"
+    resolution = launched[0]["resolution"]
+    assert "stages" in resolution and resolution["stages"], resolution
+    assert resolution["stages"][0]["stage"] == "rows"
+    assert launched[0].get("enrolment_code") or launched[0].get("enrolment_id")
+    assert launched[0]["source"] == "matrix"
 
 
 # ---- PR 2: profile and policy arrive on fleet_status, read once at launch (D9, D10, D14) -----
@@ -293,7 +342,7 @@ class _Server:
 def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
     from gbfleet.mcp import read_preferences
 
-    profile, policy, note, measured = read_preferences(_Server({
+    profile, policy, note, measured, cap = read_preferences(_Server({
         "agents": [],
         "profile": {"user": "u1", "defaults": ["gbagent", "claude"], "weights": {"cost": 1.0}, "excludes": ["grok"]},
         "policy": {"local_only": True, "allowed_harnesses": []},
@@ -301,6 +350,7 @@ def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
                       "quality": {"value": 0.8, "n": 5}, "latency": None}],
     }))
     assert measured == {("gbagent", "q", "backend", "cheap"): {"quality": m.Sample(0.8, 5)}}
+    assert cap == {}
     assert "measured cells: 1" in note
     assert profile is not None and profile.user == "u1" and profile.defaults == ("gbagent", "claude")
     assert profile.excludes == ("grok",) and profile.normalised() == {"cost": 1.0}
@@ -308,14 +358,33 @@ def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
     assert "u1" in note and "policy on" in note
 
 
+def test_read_preferences_parses_capability_cells_as_cap_measured():
+    from gbfleet.mcp import read_preferences
+
+    profile, policy, note, measured, cap = read_preferences(_Server({
+        "agents": [],
+        "measured": [
+            {"vendor": "gbagent", "model": "q", "capability": "A4", "layer": "project",
+             "quality": {"value": 0.4, "n": 7},
+             "cost": {"comparable": True, "reported": 7, "finished": 7,
+                      "tokens_to_signoff": 31000}},
+        ],
+    }))
+    assert measured == {}
+    cell = cap[("gbagent", "q", "A4", "project")]
+    assert cell["quality"].value == 0.4 and cell["quality"].n == 7
+    assert cell["cost"].tokens_to_signoff == 31000
+    assert "measured cells: 1" in note
+
+
 def test_read_preferences_spells_absence_and_unreachability_rather_than_inventing_a_default():
     from gbfleet.mcp import read_preferences
 
-    profile, policy, note, measured = read_preferences(_Server({"agents": [], "profile": None, "policy": None}))
+    profile, policy, note, measured, cap = read_preferences(_Server({"agents": [], "profile": None, "policy": None}))
     assert profile is None and policy == m.Policy() and "profile: none" in note and "policy: none" in note
-    assert measured == {}
-    profile, policy, note, measured = read_preferences(_Server(fail=True))
-    assert profile is None and policy == m.Policy() and measured == {}
+    assert measured == {} and cap == {}
+    profile, policy, note, measured, cap = read_preferences(_Server(fail=True))
+    assert profile is None and policy == m.Policy() and measured == {} and cap == {}
     assert "unreachable" in note and "connection refused" in note
 
 
@@ -437,7 +506,8 @@ def test_doctor_resolves_under_the_servers_profile_policy_and_measured_cells(git
                 # PRD-38 D9: the same cell split by difficulty band, printed beside the pooled
                 # rate. Shown to a person; never read by the resolver.
                 {("gbagent", "qwen3.6:35b-a3b-coding-mtp-det", "backend", "cheap"):
-                    {"S": m.Sample(1.0, 2), "L": m.Sample(0.67, 3)}})
+                    {"S": m.Sample(1.0, 2), "L": m.Sample(0.67, 3)}},
+                {})
     import gbfleet.mcp as mcp_mod
     monkeypatch.setattr(mcp_mod, "read_status", fake_read)
     monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))

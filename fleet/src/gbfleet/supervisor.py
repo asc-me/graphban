@@ -263,6 +263,9 @@ class Wave:
     #: Set when the trunk could not be fetched. "We could not ask" is not "nothing moved",
     #: and reporting the second for the first is the failure this whole check is about.
     stale_unmeasured: str = ""
+    #: PRD-41 D21: each matrix resolution this wave made, with every stage. `until`
+    #: prints the list on its report (empty = looked, none resolved — not an absence).
+    resolutions: list = field(default_factory=list)
     #: Files changed on more than one branch in this wave — path -> branches. The check
     #: that needs no declaration to be right: two workers changed the same file, observed
     #: rather than predicted. If touchpoints were wrong this still fires; if they were

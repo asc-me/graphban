@@ -17,7 +17,11 @@ from sqlalchemy.orm import Session
 from app.models import FleetProfile, Project, utcnow
 
 AXES: tuple[str, ...] = ("cost", "quality", "latency", "locality")
-POLICY_KEYS: tuple[str, ...] = ("local_only", "reviewer_cross_vendor", "allowed_harnesses")
+POLICY_KEYS: tuple[str, ...] = ("local_only", "reviewer_cross_vendor", "allowed_harnesses", "caps")
+CAP_KEYS: tuple[str, ...] = (
+    "per_attempt_tokens", "per_item_tokens", "per_period_tokens", "period",
+)
+PERIODS: tuple[str, ...] = ("day", "week", "month")
 MAX_NAMES = 32
 
 
@@ -62,6 +66,44 @@ def _weights(value: Any) -> dict[str, float]:
     return out
 
 
+def _budget_tokens(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ProfileInvalid("budget_tokens must be a positive integer or null")
+    n = int(value)
+    if n != value or n < 1:
+        raise ProfileInvalid("budget_tokens must be a positive integer or null")
+    return n
+
+
+def _caps(value: Any) -> dict | None:
+    """D20: a FILTER. Null / empty is no cap. Unknown keys are refused."""
+    if value is None or value == {}:
+        return None
+    if not isinstance(value, dict):
+        raise ProfileInvalid("caps must be an object")
+    for k in value:
+        if k not in CAP_KEYS:
+            raise ProfileInvalid(f"unknown cap key {k!r}; keys are {list(CAP_KEYS)}")
+    out: dict = {}
+    for key in ("per_attempt_tokens", "per_item_tokens", "per_period_tokens"):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)) or int(raw) != raw or int(raw) < 1:
+            raise ProfileInvalid(f"{key} must be a positive integer or null")
+        out[key] = int(raw)
+    period = value.get("period")
+    if period is not None and period != "":
+        if period not in PERIODS:
+            raise ProfileInvalid(f"period must be one of {list(PERIODS)}")
+        out["period"] = period
+    if "per_period_tokens" in out and "period" not in out:
+        raise ProfileInvalid("per_period_tokens needs a period (day, week, or month)")
+    return out or None
+
+
 def normalise_policy(raw: Any) -> dict | None:
     """The stored shape, or None when nothing constrains. Unknown keys are refused rather
     than kept: a misspelt `local_onyl` that stored silently would read as no constraint."""
@@ -77,9 +119,13 @@ def normalise_policy(raw: Any) -> dict | None:
     if not isinstance(local_only, bool) or not isinstance(cross, bool):
         raise ProfileInvalid("local_only and reviewer_cross_vendor must be booleans")
     allowed = _names(raw.get("allowed_harnesses"), "allowed_harnesses")
-    if not local_only and not cross and not allowed:
+    caps = _caps(raw.get("caps"))
+    if not local_only and not cross and not allowed and not caps:
         return None
-    return {"local_only": local_only, "reviewer_cross_vendor": cross, "allowed_harnesses": allowed}
+    out = {"local_only": local_only, "reviewer_cross_vendor": cross, "allowed_harnesses": allowed}
+    if caps:
+        out["caps"] = caps
+    return out
 
 
 # ---- profiles ----------------------------------------------------------------------------
@@ -98,6 +144,7 @@ def summary(row: FleetProfile) -> dict:
         "defaults": list(row.defaults or []),
         "weights": dict(row.weights or {}),
         "excludes": list(row.excludes or []),
+        "budget_tokens": row.budget_tokens,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
@@ -125,10 +172,11 @@ def both(db: Session, user_id: str, project_id: str | None) -> dict:
 
 
 def set_profile(db: Session, *, user_id: str, project_id: str | None, defaults: Any,
-                weights: Any, excludes: Any) -> FleetProfile:
+                weights: Any, excludes: Any, budget_tokens: Any = None) -> FleetProfile:
     names = _names(defaults, "defaults")
     w = _weights(weights)
     ex = _names(excludes, "excludes")
+    budget = _budget_tokens(budget_tokens)
     overlap = sorted(set(names) & set(ex))
     if overlap:
         raise ProfileInvalid(f"{overlap} are both in defaults and excludes")
@@ -136,7 +184,8 @@ def set_profile(db: Session, *, user_id: str, project_id: str | None, defaults: 
     if row is None:
         row = FleetProfile(id=str(uuid4()), user_id=user_id, project_id=project_id)
         db.add(row)
-    row.defaults, row.weights, row.excludes, row.updated_at = names, w, ex, utcnow()
+    row.defaults, row.weights, row.excludes = names, w, ex
+    row.budget_tokens, row.updated_at = budget, utcnow()
     db.commit()
     db.refresh(row)
     return row

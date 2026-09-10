@@ -117,6 +117,9 @@ class Report:
             # is the reading that would otherwise pass for a roomy machine.
             "gated": list(self.wave.gated) if self.wave else [],
             "headroom_bytes": self.wave.headroom_at_start if self.wave else None,
+            # PRD-41 D21 / criterion 24: every stage of every resolution. Always present;
+            # empty means this run resolved nothing, not that the record was not kept.
+            "resolutions": list(self.wave.resolutions) if self.wave else [],
         }
         if self.detail:
             payload["detail"] = self.detail
@@ -285,6 +288,21 @@ def _identify(planner: Graphban, repo: Path, adapter: str = "") -> dict:
     return payload
 
 
+def _item_brief(client, item_id: str | None) -> dict | None:
+    """Capabilities and spend for this item, when the planner can read it.
+
+    Failures are silence: resolving without capabilities is the pre-S2 path, not a crash.
+    """
+    if not item_id or client is None:
+        return None
+    try:
+        details = client.call("get_item_details", id=item_id)
+    except Exception:  # noqa: BLE001
+        return None
+    brief = details.get("brief") if isinstance(details, dict) else None
+    return brief if isinstance(brief, dict) else None
+
+
 def _loop(
     wave: Wave,
     children: list[Child],
@@ -318,8 +336,8 @@ def _loop(
     matrix: "matrix_mod.Matrix | None" = None,
     adapter: str = "",
 ) -> Report:
-    from .mcp import read_preferences
-    profile, policy, pref_note, measured = read_preferences(supervisor)
+    from .mcp import _runner_up, read_preferences
+    profile, policy, pref_note, measured, cap_measured = read_preferences(supervisor)
     observe.emit("preferences", detail=pref_note)
     agent_id = str(identity.get("agent_id") or identity.get("id"))
     empty = 0
@@ -467,12 +485,35 @@ def _loop(
             elif want and launch_for is not None and matrix is not None:
                 # PRD-37: no flag for this tier — the matrix resolves under the profile and
                 # policy read at launch, and the log says how.
+                brief = _item_brief(planner, seed)
                 res = matrix.resolve(tier=want, profile=profile, policy=policy,
-                                     measured=measured, installed=matrix_mod.installed_checker())
+                                     measured=measured, installed=matrix_mod.installed_checker(),
+                                     capabilities=(brief or {}).get("capabilities"),
+                                     cap_measured=cap_measured,
+                                     spend=(brief or {}).get("spend"))
                 if res.winner is not None:
                     factory = launch_for(res.winner.harness, res.winner.model)
                     chosen = (res.winner.harness, res.winner.model)
-                    observe.emit("resolved", item=seed, **{k: v for k, v in res.explain().items() if k in ("winner", "dropped", "eligible", "profile")})
+                    explained = res.explain()
+                    observe.emit("resolved", item=seed, **{k: v for k, v in explained.items() if k in ("winner", "dropped", "eligible", "profile", "stages", "capabilities")})
+                    wave.resolutions.append({"item": seed, **{k: explained[k] for k in
+                                                              ("winner", "dropped", "stages",
+                                                               "capabilities", "profile")
+                                                              if k in explained}})
+                    # PRD-41 D21 / criterion 24: the same object spawn already posts
+                    # (PRD-38 D3). until is the fleet's primary path; without this,
+                    # attempt_telemetry has no stages and replay/R6 cannot see what
+                    # was resolved. Fire-and-forget inside the client.
+                    declare = matrix_mod.declaration(
+                        res.winner.harness, res.winner.model, want or None, matrix)
+                    planner.post_attempt(
+                        enrolment_code=seat.code,
+                        adapter=res.winner.harness,
+                        winner=f"{declare.get('vendor', '')}:{declare.get('model', '')}",
+                        runner_up=_runner_up(explained, matrix),
+                        source=explained.get("source") or "matrix",
+                        resolution=explained,
+                    )
                 else:
                     observe.emit("resolve_refused", item=seed, detail=res.refused)
             # GRPH-732: the child is told what it is, because only this side knows.
