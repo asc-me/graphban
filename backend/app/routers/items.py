@@ -103,11 +103,18 @@ def update_item(
     if existing is None:
         raise HTTPException(404, "item not found")
     authz.require_writable(db, user.id, existing.project_id, "item")
+    changes = body.model_dump(exclude_unset=True)
+    # GRPH-832: `reach` is set HERE and never by `update_item`, because `update_item` is the
+    # verb every agent holds and this route is the one a bearer JWT reaches. Popped before the
+    # service call rather than filtered inside it, so the split is visible at the boundary
+    # that enforces it.
+    declared_reach = changes.pop("reach", None)
     try:
+        if declared_reach is not None:
+            items_svc.set_reach(db, existing, declared_reach)
         # Completion fires the judge and the lesson extractor, which are model calls
         # (GRPH-399). Scheduled here so the response does not wait on them.
-        item = items_svc.update_item(db, item_id, defer=background.add_task,
-                                     **body.model_dump(exclude_unset=True))
+        item = items_svc.update_item(db, item_id, defer=background.add_task, **changes)
     except items_svc.MissingAttestation as e:
         # 409, not 422: the request is well formed and the caller is permitted — the ITEM is
         # not in a state that may be completed (GRPH-543). A 422 would read as "you sent

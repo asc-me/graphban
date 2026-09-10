@@ -468,6 +468,15 @@ class Item(Base):
     status: Mapped[str] = mapped_column(String, default="backlog")
     tags: Mapped[list] = mapped_column(JSON, default=list)
     touchpoints: Mapped[list] = mapped_column(JSON, default=list)  # files/globs/modules the item affects
+    #: Where this item's work LANDS: `repo` (files in a worktree) or `deploy` (a running
+    #: system — a hosted platform, a live database, a secret store). GRPH-832.
+    #:
+    #: Beside `touchpoints` because it is the same declaration one level up: touchpoints say
+    #: WHICH files, this says whether files are the whole of it. A `deploy` item is refused to
+    #: every seat — no delegation, no divvy — and only a signed-in person can set or clear it,
+    #: which is enforced by which ROUTE carries the field rather than by a check: the REST
+    #: patch takes a bearer JWT and no agent credential reaches it.
+    reach: Mapped[str] = mapped_column(String, default="repo", server_default="repo")
     effort: Mapped[int] = mapped_column(Integer, default=0)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     blocker: Mapped[str] = mapped_column(String, default="")
@@ -1931,6 +1940,11 @@ class Delegation(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Copied at write so `expired` is stable when the setting later changes (D18).
     lease_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    #: The delegator said, deliberately, that this item's prose reads like deployment work and
+    #: the work is confined to the worktree anyway (GRPH-832). Recorded rather than merely
+    #: checked: an acknowledgement nobody can look up afterwards is a dialog box, not a record.
+    reach_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False,
+                                                     server_default=false())
 
     __table_args__ = (
         Index("ix_delegations_item_created", "item_id", "created_at"),
