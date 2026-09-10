@@ -201,3 +201,11 @@ Each is a test. Sabotage the call, not the model.
 - PRD-35 D5, D7–D9: the brief's suggestion with a basis, the delegation record, and the deferred outcome statistics this PRD reads with their sample counts.
 - `adapters/__init__.py` `Support`: the per-harness verified build the matrix extends to models and lanes.
 - `harness-kit/claude-code/delegation` `routing.yaml` (reviewed 2026-09-04): a task-to-model table with a per-machine execution column; its idea of a committed routing table is kept, its per-call regex enforcement is not.
+
+---
+
+## 11. Verified on the deployed instance
+
+On 2026-09-05 a session delegated GRPH-728, this section's own doc item, to a bound seat, and
+gbfleet resolved the cheap tier through the preference matrix with no `--tier` flag — criterion 17,
+phase 1, on the deployed instance rather than a test double.
