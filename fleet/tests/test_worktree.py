@@ -241,6 +241,11 @@ def test_reaping_a_dirty_worktree_salvages_then_removes(git_repo: Path, tmp_path
 
     kept = _git(git_repo, "show", f"{reaped.branch}:feature.py")
     assert kept == "print('work')\n"
+    shape = reaped.diff_shape
+    assert shape["files_added"] == 1
+    assert "feature.py" in shape["added"]
+    assert shape["net_lines"] >= 1
+    assert shape["files_deleted"] == 0
 
 
 def test_after_reap_the_seat_file_is_gone(git_repo: Path, tmp_path: Path):

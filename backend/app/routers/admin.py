@@ -161,8 +161,7 @@ def platform_harness(db: Session = Depends(get_db)):
     cells = [{
         "week": r.week,
         "cell": {"vendor": r.vendor, "model": r.model, "binary_version": r.binary_version,
-                 "lane": r.lane, "tier": r.tier, "task_class": r.task_class,
-                 "size_band": r.size_band},
+                 "capability": r.capability, "size_band": r.size_band},
         "orgs_contributing": r.orgs_contributing,
         "finished": r.finished, "signed_off": r.signed_off,
         "rate": round(r.signed_off / r.finished, 3) if r.finished else None,

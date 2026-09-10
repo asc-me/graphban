@@ -760,8 +760,11 @@ def watch_tick(
     _enforce_the_lease(wave, children)
     if roster is not None:
         _catch_the_disowned(wave, children, roster, limits)
-    _report_exits(children, client)
+    # Reap first so the exit post can carry the diff shape computed against the base
+    # after salvage. Reporting first would store a null shape that a later post can
+    # fill, but the ordinary path should not need two posts to say what the child did.
     _reap_exited(wave, children, client)
+    _report_exits(children, client)
     if persist is not None:
         persist()
 
@@ -798,6 +801,7 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
             wave.failures.append(f"{child.branch}: reap failed ({exc})")
             continue
         wave.reaped.append(reaped)
+        child.diff_shape = reaped.diff_shape
         # Measured AFTER the salvage, deliberately, exactly as `_reap_all` does: measuring
         # first would miss the work that was most at risk of being lost.
         try:
@@ -991,6 +995,7 @@ def _report_exits(children: list[Child], client: Graphban) -> None:
             wall_seconds=int(time.monotonic() - child.started_at),
             turn_budget=child.turn_budget,
             exit_meaning=_exit_meaning(child, code),
+            diff_shape=child.diff_shape,
             **facts,
         )
 
@@ -1244,6 +1249,7 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
             tree, message=wt_mod.salvage_message(child.adapter, held),
         )
         wave.reaped.append(reaped)
+        child.diff_shape = reaped.diff_shape
 
         # AFTER the reap, deliberately: salvage has just committed whatever the worker
         # left uncommitted, so the branch now holds the whole of what it did. Measuring

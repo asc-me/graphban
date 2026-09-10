@@ -1680,9 +1680,7 @@ export interface HarnessCellKey {
   vendor: string;
   model: string;
   binary_version: string;
-  lane: string;
-  tier: string;
-  task_class: string;
+  capability: string;
   size_band: string;
 }
 
@@ -1691,6 +1689,7 @@ export interface HarnessSampling {
   fallback: number;
   explicit: number;
   unknown: number;
+  probe?: number;
 }
 
 export interface HarnessPoint {
@@ -1710,6 +1709,10 @@ export type HarnessCost =
 
 export interface HarnessCell {
   key: HarnessCellKey;
+  kind?: "family" | "leaf" | "other";
+  family?: string;
+  /** `family rollup` for a family cell; the leaf id; or `other`. Criterion 3. */
+  label?: string;
   finished: number;
   signed_off: number;
   bounced: number;
@@ -1726,6 +1729,7 @@ export interface HarnessCell {
   /** Which of an org's projects this cell came from. Empty at project scope. */
   by_project?: { project_id: string; finished: number; signed_off: number }[];
   platform?: HarnessPlatformCell | null;
+  leaves?: HarnessCell[];
 }
 
 /** The platform average for one cell, or a stated reason there is none (PRD-38 D13). */
@@ -1748,6 +1752,12 @@ export interface HarnessReport {
   generated_at: string;
   cells: HarnessCell[];
   below_floor_count: number;
+  coverage?: { attempts: number; with_leaf: number; rate: number | null };
+  capability_set?: {
+    leaves: string[];
+    families: Record<string, string[]>;
+    labels: Record<string, string>;
+  };
 }
 
 /** PRD-38 D7: a drafted recommendation. Nothing here is applied by the page. */

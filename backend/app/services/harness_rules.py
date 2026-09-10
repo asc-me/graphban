@@ -219,7 +219,7 @@ def _cell_name(cell: dict) -> str:
 
 def _label(cell: dict) -> str:
     k = cell["key"]
-    return f"{k['lane']}/{k['task_class']}/{k['size_band']}"
+    return f"{k['capability']}/{k['size_band']}"
 
 
 def cards(db: Session, project_id: str, *, window_days: int | None = None) -> list[Card]:
@@ -272,12 +272,12 @@ def _promote_and_demote(report: dict, rows: list[AttemptTelemetry],
                 and rate >= PROMOTE_MIN_RATE):
             out.append(Card(
                 rule="R1",
-                title=f"promote {name} for {cell['key']['lane']}",
+                title=f"promote {name} for {cell['key']['capability']}",
                 detail=(f"{name} signed off {cell['signed_off']} of {cell['finished']} in "
                         f"{_label(cell)} and its matrix row is still unverified. The matrix "
-                        f"keys on lane and role, not on size band, so a verified row here "
-                        f"generalises to {cell['key']['lane']} — the sibling cells below are "
-                        f"what it would be generalising over."),
+                        f"keys on harness and model, not on size band, so a verified row here "
+                        f"generalises to {cell['key']['capability']} — the sibling cells below "
+                        f"are what it would be generalising over."),
                 cells=[_cell_out(cell)], siblings=_siblings(report, cell),
                 draft={"target": name, "kind": "matrix_status", "status": "verified",
                        "binary_version": cell["key"]["binary_version"],
@@ -290,7 +290,7 @@ def _promote_and_demote(report: dict, rows: list[AttemptTelemetry],
                 and rate <= DEMOTE_MAX_RATE):
             out.append(Card(
                 rule="R2",
-                title=f"demote {name} for {cell['key']['lane']}",
+                title=f"demote {name} for {cell['key']['capability']}",
                 detail=(f"{name} signed off only {cell['signed_off']} of {cell['finished']} in "
                         f"{_label(cell)} and its matrix row is verified."),
                 cells=[_cell_out(cell)], siblings=_siblings(report, cell),
@@ -327,9 +327,7 @@ def _reweight(db: Session, project_id: str, report: dict,
             if cell["rate"] is None or cell["finished"] < REWEIGHT_MIN_N:
                 continue
             rivals = [c for c in report["cells"]
-                      if c["key"]["lane"] == cell["key"]["lane"]
-                      and c["key"]["tier"] == cell["key"]["tier"]
-                      and c["key"]["task_class"] == cell["key"]["task_class"]
+                      if c["key"]["capability"] == cell["key"]["capability"]
                       and c["key"]["size_band"] == cell["key"]["size_band"]
                       and _cell_name(c) != _cell_name(cell)
                       and c["rate"] is not None and c["finished"] >= REWEIGHT_MIN_N
@@ -373,7 +371,7 @@ def _policy(db: Session, project_id: str, report: dict,
         if local_only and bounced_rate >= POLICY_BOUNCE_RATE:
             return [Card(
                 rule="R4",
-                title=f"consider lifting local_only for {cell['key']['lane']}",
+                title=f"consider lifting local_only for {cell['key']['capability']}",
                 detail=(f"{name} is the local row this policy keeps, and in {_label(cell)} it "
                         f"bounced {cell['finished'] - cell['signed_off']} of "
                         f"{cell['finished']}. The replay says what lifting the policy would "
@@ -386,7 +384,7 @@ def _policy(db: Session, project_id: str, report: dict,
         if not local_only and cell["rate"] >= POLICY_KEEP_RATE:
             return [Card(
                 rule="R4",
-                title=f"consider local_only for {cell['key']['lane']}",
+                title=f"consider local_only for {cell['key']['capability']}",
                 detail=(f"{name} runs locally and signed off {cell['signed_off']} of "
                         f"{cell['finished']} in {_label(cell)}. Turning `local_only` on would "
                         f"keep work on it; the replay says which resolutions that changes."),
@@ -422,7 +420,7 @@ def lesson_text(card: Card) -> str:
     for c in card.cells:
         cell = c["cell"]
         parts.append(f"{cell['vendor']}:{cell['model']} signed off "
-                     f"{c['signed_off']}/{c['finished']} in {cell['lane']}/"
-                     f"{cell['task_class']}/{cell['size_band']} at tier {cell['tier']}")
+                     f"{c['signed_off']}/{c['finished']} in {cell['capability']}/"
+                     f"{cell['size_band']}")
     return (f"{card.title}. " + "; ".join(parts) + ". "
             + (card.replay.get("summary") or "") + ".").replace("..", ".")

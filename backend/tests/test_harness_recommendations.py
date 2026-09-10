@@ -159,9 +159,9 @@ def test_r1_does_not_fire_at_nine_finished_or_at_a_rate_just_under(client, key, 
     planner2 = _agent(client, key, "planner2")
     # 10 attempts, 7 signed off = 0.7, under 0.8.
     _ten_good(client, key, db, planner2, n=10, wins=7, lane="frontend",
-              touchpoints=["web/src/a.tsx"])
+              touchpoints=["web/src/features/a.tsx"])
     assert [c for c in _by_rule(_cards(client, auth, proj), "R1")
-            if c["cells"][0]["cell"]["lane"] == "frontend"] == []
+            if c["cells"][0]["cell"]["capability"] == "B"] == []
 
 
 def test_r1_does_not_fire_on_bands_that_only_pass_when_pooled(client, key, db, proj, auth):

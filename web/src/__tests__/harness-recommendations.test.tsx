@@ -9,8 +9,8 @@ import type { HarnessCard, HarnessRecommendations } from "@/lib/types";
 
 function key(over = {}) {
   return {
-    vendor: "gbagent", model: "qwen3.6", binary_version: "1.0.0", lane: "backend",
-    tier: "cheap", task_class: "general", size_band: "L", ...over,
+    vendor: "gbagent", model: "qwen3.6", binary_version: "1.0.0",
+    capability: "other", size_band: "L", ...over,
   };
 }
 
@@ -81,7 +81,7 @@ describe("Harness recommendations", () => {
     fireEvent.click(await screen.findByTestId("harness-card-expand"));
     const siblings = screen.getByTestId("harness-card-siblings");
     expect(siblings).toHaveTextContent("generalises over");
-    expect(within(siblings).getByText(/backend\/general\/S · 2\/9/)).toBeInTheDocument();
+    expect(within(siblings).getByText(/other\/S · 2\/9/)).toBeInTheDocument();
   });
 
   it("says the page applies nothing and points at where the change is made", async () => {

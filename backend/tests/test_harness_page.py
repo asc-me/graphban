@@ -142,11 +142,11 @@ def test_two_cells_in_one_week_roll_to_two_rows(client, key, db, proj):
     planner = _agent(client, key, "planner")
     _attempt(client, key, db, planner, "backend-one")
     _attempt(client, key, db, planner, "frontend-one", lane="frontend",
-             touchpoints=["web/src/a.tsx"])
+             touchpoints=["web/src/features/a.tsx"])
     hsvc.roll(db, proj)
     db.commit()
-    lanes = sorted(r.lane for r in db.scalars(select(HarnessRollup)).all())
-    assert lanes == ["backend", "frontend"]
+    caps = sorted(r.capability for r in db.scalars(select(HarnessRollup)).all())
+    assert caps == ["B5", "other"]
 
 
 def test_a_thin_week_is_written_and_an_empty_week_is_absent(client, key, db, proj):
@@ -200,7 +200,7 @@ def test_a_rate_below_the_floor_is_served_as_below_floor(client, key, db, proj, 
     for i in range(4):
         _attempt(client, key, db, planner, f"thin{i}")
     report = _report(client, auth, proj)
-    cell = _cell(report, vendor="gbagent", lane="backend")
+    cell = _cell(report, vendor="gbagent")
     assert cell["finished"] == 4 and cell["below_floor"] is True
     assert report["below_floor_count"] == 1
     assert report["floor"] == hsvc.FLOOR
@@ -219,10 +219,10 @@ def test_pooling_two_cells_would_cross_the_floor_and_neither_cell_does(
     for i in range(4):
         _attempt(client, key, db, planner, f"be{i}")
         _attempt(client, key, db, planner, f"fe{i}", lane="frontend",
-                 touchpoints=["web/src/a.tsx"])
+                 touchpoints=["web/src/features/a.tsx"])
     report = _report(client, auth, proj)
-    assert _cell(report, lane="backend")["below_floor"] is True
-    assert _cell(report, lane="frontend")["below_floor"] is True
+    assert _cell(report, capability="other")["below_floor"] is True
+    assert _cell(report, capability="B")["below_floor"] is True
     assert report["below_floor_count"] == 2
 
 
@@ -235,7 +235,8 @@ def test_a_lopsided_cell_carries_the_skew_badge_and_keeps_its_denominator(
     _attempt(client, key, db, planner, "odd", sampled="explicit", outcome="bounced")
 
     cell = _cell(_report(client, auth, proj), vendor="gbagent")
-    assert cell["sampling"] == {"first_choice": 9, "fallback": 0, "explicit": 1, "unknown": 0}
+    assert cell["sampling"] == {"first_choice": 9, "fallback": 0, "explicit": 1,
+                                "unknown": 0, "probe": 0}
     assert cell["skew"] == {"reason": "first_choice", "share": 0.9}
     # Ten attempts, nine signed off. The one explicit sample is still in the denominator.
     assert cell["finished"] == 10 and cell["rate"] == 0.9
@@ -294,16 +295,22 @@ def test_the_cost_proxy_divides_by_the_signed_off_attempts_that_reported(
 
 def test_two_binary_versions_are_two_cells_and_current_wins_by_default(
         client, key, db, proj, auth):
-    """7. Sabotage: sort versions as strings and 0.100.0 loses to 0.23.0."""
+    """7 / PRD-41 D13. Two versions sit side by side; they are not one trend.
+
+    Sabotage: sort versions as strings and 0.100.0 loses to 0.23.0.
+    """
     planner = _agent(client, key, "planner")
     _attempt(client, key, db, planner, "old", version="0.23.0")
     _attempt(client, key, db, planner, "new", version="0.100.0")
 
     default = _report(client, auth, proj)
-    assert len(default["cells"]) == 1
-    assert default["cells"][0]["key"]["binary_version"] == "0.100.0"
-    assert default["cells"][0]["versions_seen"] == ["0.23.0", "0.100.0"]
-    assert default["cells"][0]["is_current_version"] is True
+    versions = sorted(c["key"]["binary_version"] for c in default["cells"])
+    assert versions == ["0.100.0", "0.23.0"]
+    current = next(c for c in default["cells"] if c["key"]["binary_version"] == "0.100.0")
+    previous = next(c for c in default["cells"] if c["key"]["binary_version"] == "0.23.0")
+    assert current["is_current_version"] is True
+    assert previous["is_current_version"] is False
+    assert current["versions_seen"] == ["0.23.0", "0.100.0"]
 
     every = _report(client, auth, proj, versions="all")
     assert sorted(c["key"]["binary_version"] for c in every["cells"]) == ["0.100.0", "0.23.0"]
@@ -342,3 +349,36 @@ def test_the_read_is_project_scoped_and_refuses_a_stranger(client, auth, key, db
     r = client.get(f"/api/harness?project_id={proj}",
                    headers={"Authorization": f"Bearer {kate}"})
     assert r.status_code == 404, r.text
+
+
+def test_the_enum_and_coverage_are_on_the_payload(client, key, db, proj, auth):
+    """2. Coverage is a number; an empty list of leaves would read as 100% of nothing."""
+    planner = _agent(client, key, "planner")
+    _attempt(client, key, db, planner, "plain")
+    report = _report(client, auth, proj)
+    assert report["capability_set"]["leaves"] == list(hsvc.CAPABILITY_LEAVES)
+    assert "other" in report["capability_set"]["families"]
+    assert report["coverage"]["attempts"] == 1
+    assert report["coverage"]["with_leaf"] == 0
+    assert report["coverage"]["rate"] == 0.0
+    other = _cell(report, capability="other")
+    assert other["kind"] == "other" and other["label"] == "other"
+    assert other["finished"] == 1
+
+
+def test_a_family_rollup_is_labelled_and_a_thin_leaf_is_grey_beside_it(
+        client, key, db, proj, auth):
+    """3. Sabotage: serve the rollup as the leaf and this fails on the label."""
+    planner = _agent(client, key, "planner")
+    for i in range(4):
+        _attempt(client, key, db, planner, f"fe{i}", lane="frontend",
+                 touchpoints=["web/src/features/x.tsx"])
+    report = _report(client, auth, proj)
+    family = _cell(report, capability="B")
+    assert family["kind"] == "family" and family["label"] == "family rollup"
+    assert family["below_floor"] is True
+    assert len(family["leaves"]) == 1
+    leaf = family["leaves"][0]
+    assert leaf["kind"] == "leaf" and leaf["key"]["capability"] == "B5"
+    assert leaf["label"] != "family rollup"
+    assert leaf["below_floor"] is True and leaf["finished"] == 4

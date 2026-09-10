@@ -140,7 +140,7 @@ class GbAgent(Adapter):
         # Only what the ledger records, and only when it was actually said. `tokens_in: None`
         # is the endpoint declining to report, and must not arrive as a zero.
         out = {"turns_used": found.get("turns")}
-        for key in ("tokens_in", "tokens_out"):
+        for key in ("tokens_in", "tokens_out", "tool_errors"):
             if found.get(key) is not None:
                 out[key] = found[key]
         return {k: v for k, v in out.items() if v is not None}

@@ -75,7 +75,7 @@ def _project(db, project_id: str, org_id: str | None, tag: str) -> str:
 def _roll(db, project_id: str, *, week="2026-W36", vendor="gbagent", model="qwen3.6",
           finished=10, signed_off=8, lane="backend", version="1.0.0"):
     db.add(HarnessRollup(project_id=project_id, week=week, vendor=vendor, model=model,
-                         binary_version=version, lane=lane, tier="cheap",
+                         binary_version=version, capability="other", lane=lane, tier="cheap",
                          task_class="general", size_band="M", finished=finished,
                          signed_off=signed_off, bounced=finished - signed_off,
                          median_seconds=100, tokens_reported=0, signed_off_reported=0,
