@@ -174,6 +174,61 @@ def set_telemetry_share(body: ShareIn, db: Session = Depends(get_db),
             "platform_cells": rows}
 
 
+@router.get("/probe/candidates")
+def probe_candidates(project_id: str, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Closed items with a red sabotage, grouped by leaf, family fallback (PRD-41 D7).
+
+    The estimated token cost from the panel's history is in the payload so a person can
+    see it before they start a run. Nothing here starts a probe.
+    """
+    authz.require_readable(db, user.id, project_id)
+    return harness_svc.probe_candidates(db, project_id)
+
+
+class ProbeRunIn(BaseModel):
+    project_id: str
+    vendor: str
+    model: str
+    capability: str
+    item_ids: list[str]
+    trigger: str = "new_row"
+    binary_version: str = ""
+
+
+@router.post("/probe/runs")
+def start_probe_run(body: ProbeRunIn, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    """Start a probe panel: scratch project, delegations with `sampled = probe`.
+
+    One model and one leaf at a time, under the project's caps. Refused if a run for
+    that model is already open.
+    """
+    authz.require_writable(db, user.id, body.project_id)
+    try:
+        out = harness_svc.start_probe_run(
+            db, project_id=body.project_id, user_id=user.id, vendor=body.vendor,
+            model=body.model, capability=body.capability, item_ids=body.item_ids,
+            trigger=body.trigger, binary_version=body.binary_version)
+    except harness_svc.AttemptRefused as e:
+        raise HTTPException(e.status, str(e))
+    db.commit()
+    return out
+
+
+@router.post("/review-checks/run")
+def run_review_checks(project_id: str | None = None, db: Session = Depends(get_db),
+                      key=Depends(get_agent_key)):
+    """Recompute review checks over the 14-day window. The nightly job's entry point (D6)."""
+    pid = project_id or getattr(key, "project_id", None)
+    if not pid:
+        raise HTTPException(422, "name a project_id")
+    authz.require_writable(db, key.user_id, pid)
+    rows = harness_svc.check_reviews(db, pid)
+    db.commit()
+    return {"checks": rows}
+
+
 @router.post("/platform/roll")
 def roll_platform(db: Session = Depends(get_db), key=Depends(get_agent_key)):
     """Recompute the platform rollups. The nightly job's entry point (D13).

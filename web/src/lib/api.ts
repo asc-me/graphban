@@ -555,6 +555,21 @@ export const api = {
       "/harness/recommendations/mark",
       { method: "POST", body: JSON.stringify(body) },
     ),
+  harnessProbeCandidates: (projectId: string) =>
+    request<{
+      project_id: string;
+      by_leaf: Record<string, { id: string; title: string; capabilities: string[] }[]>;
+      by_family: Record<string, { fallback: boolean; n: number; thin_leaves: string[] }>;
+      estimated_tokens: unknown;
+      suggestions: unknown[];
+    }>(`/harness/probe/candidates?project_id=${encodeURIComponent(projectId)}`),
+  startHarnessProbeRun: (body: {
+    project_id: string; vendor: string; model: string; capability: string;
+    item_ids: string[]; trigger?: string; binary_version?: string;
+  }) =>
+    request<Record<string, unknown>>("/harness/probe/runs", {
+      method: "POST", body: JSON.stringify(body),
+    }),
   lessons: (projectId: string, filters: LessonFilters = {}) => {
     const q = new URLSearchParams({ project_id: projectId });
     if (filters.trend) q.set("trend", filters.trend);

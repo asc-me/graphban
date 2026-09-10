@@ -18,6 +18,7 @@ export const keys = {
   harness: (projectId: string, versions: string, windowDays?: number) =>
     ["harness", projectId, versions, windowDays ?? null] as const,
   harnessCards: (projectId: string) => ["harness-cards", projectId] as const,
+  harnessProbes: (projectId: string) => ["harness-probes", projectId] as const,
   lessons: (projectId: string, filters?: LessonFilters) =>
     ["lessons", projectId, filters ?? {}] as const,
   lesson: (projectId: string, id: string) => ["lesson", projectId, id] as const,
@@ -697,6 +698,28 @@ export function useHarnessCards(projectId?: string) {
     queryKey: keys.harnessCards(projectId ?? ""),
     queryFn: () => api.harnessRecommendations(projectId!),
     enabled: !!projectId,
+  });
+}
+
+export function useHarnessProbeCandidates(projectId?: string) {
+  return useQuery({
+    queryKey: keys.harnessProbes(projectId ?? ""),
+    queryFn: () => api.harnessProbeCandidates(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+export function useStartHarnessProbeRun(projectId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      vendor: string; model: string; capability: string; item_ids: string[];
+      trigger?: string; binary_version?: string;
+    }) => api.startHarnessProbeRun({ project_id: projectId!, ...body }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: keys.harnessProbes(projectId ?? "") });
+      qc.invalidateQueries({ queryKey: ["harness", projectId] });
+    },
   });
 }
 
