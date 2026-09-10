@@ -25,7 +25,16 @@ command directly, under *Run these seats under a supervisor (advanced)*.
 
 The supervisor authenticates with an ordinary API key; the seats are what it gives its
 children. Its own reach is deliberately narrow — `fleet_status` and `propose_allocation`,
-nothing that claims work — so a supervisor cannot quietly become a worker.
+nothing that claims work — so a supervisor cannot quietly become a worker. One flag widens
+it, by name: `--merge` (GRPH-846) adds the reads and the single receipt write the supervisor
+needs to finish a signed-off item's merge, and without the flag the client is what it was.
+
+**`gh` is the one binary the supervisor runs that is not a vendor.** It opens the draft PR for
+a reaped branch (GRPH-804) and, under `--merge`, marks it ready and enables squash auto-merge —
+as the operator's own login, which is also the honest attribution. Children are refused `gh`
+by default for exactly that reason: it reaches outside the worktree with the credentials of
+whoever started the wave. Absent `gh` is a `skipped` outcome on the wave summary, never a
+failure, and the summary says what to install.
 
 Neither travels on argv. The key comes from the environment and the seats from a file,
 because argv is world-readable.

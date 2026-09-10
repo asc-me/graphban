@@ -28,11 +28,11 @@ from .state import NotARepository
 from .lock import hold
 from .mcp import Fleet, serve, read_preferences
 from .state import repo_root
-from .supervisor import DEFAULT_MAX_WORKERS, Limits, Wave, up
+from .supervisor import DEFAULT_MAX_WORKERS, Limits, Merger, Wave, up
 from .tiers import TierTable
 from . import matrix as matrix_mod
 from .until import PLANNER_TOOLS, emit as emit_until, run as run_until
-from .worktree import Worktree
+from .worktree import Worktree, default_ref, remote_for
 
 _DESCRIPTION = """\
 Spawn and retire Graphban fleet members on this machine.
@@ -55,6 +55,20 @@ API_KEY_ENV = "GBFLEET_API_KEY"
 #: is a read; this set is the CLI/MCP process, not a widening of the supervisor
 #: authority table.
 SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset({"search_items"})
+
+#: What `up --merge` needs beyond `SPAWN_READS` (GRPH-846): the item and its attestations,
+#: the dependency rows, and ONE write — the receipt naming the merge commit. Only under the
+#: flag; a plain `up` keeps the two-reads-plus-search client it has always had. `update_item`
+#: on a supervisor is the widening PRD-22 §4 warns about, and it is here because the operator
+#: asked for the merge by name and the receipt is the half that makes the merge visible to
+#: the ledger. The server still bounds what that call may write by role.
+MERGE_TOOLS: frozenset[str] = frozenset({"get_item_details", "related_work", "update_item"})
+
+_MERGE_HELP = (
+    "after an item reaches `done`, mark its PR ready and enable squash auto-merge via gh — "
+    "only when the PR head is the commit the sign-off attestation names, CI attested "
+    "suite_green on it, and the forge reports it MERGEABLE/CLEAN. Any miss is reported and "
+    "the item is left alone. Default off (GRPH-846)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -135,6 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
             "long tool call is legitimately silent"
         ),
     )
+    run.add_argument("--merge", action="store_true", default=False, help=_MERGE_HELP)
     run.add_argument(
         "argv", nargs=argparse.REMAINDER, help="-- followed by the command to run per child"
     )
@@ -316,6 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--quiet-after", type=float, default=Limits.quiet_after,
         help="seconds of no output before a child is REPORTED as quiet",
     )
+    until.add_argument("--merge", action="store_true", default=False, help=_MERGE_HELP)
     until.add_argument(
         "argv", nargs=argparse.REMAINDER, help="-- followed by the command to run per child"
     )
@@ -485,6 +501,20 @@ def report(wave: Wave, out=None) -> None:
         print(f"FAILED {failure}", file=out)
     for give_up in wave.give_ups:
         print(f"STUCK {give_up}", file=out)
+    # WHAT BECAME OF EACH MERGE (GRPH-846). Four lines for four outcomes, because a merge
+    # the forge refused, a merge that is armed and waiting, and an item left alone because
+    # its head moved are different facts a person acts on differently.
+    for item_id, got in sorted(wave.merged.items()):
+        if got.ok:
+            print(f"MERGED {item_id}: {got.commit[:12]} {got.url}".rstrip(), file=out)
+        elif got.pending:
+            print(f"MERGE PENDING {item_id}: {got.reason}", file=out)
+        elif got.skipped:
+            print(f"MERGE SKIPPED {item_id}: {got.reason}", file=out)
+        else:
+            print(f"MERGE HELD {item_id}: {got.reason}"
+                  + (f" (checked: {', '.join(got.checked)})" if got.checked else ""),
+                  file=out)
 
 
 def _until(args) -> int:
@@ -569,6 +599,7 @@ def _until(args) -> int:
             tiers=tiers,
             launch_for=lambda name, model="": make_adapter_factory(name, None, model),
             matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
+            merge=bool(args.merge),
         )
     except RepoLocked as exc:
         print(f"gbfleet until: {exc}", file=sys.stderr)
@@ -826,13 +857,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"gbfleet up: no seats in {args.seats_file}", file=sys.stderr)
         return 2
 
-    client = Graphban(base_url=args.server, api_key=api_key, allowed=SPAWN_READS, project_id=args.project)
+    merger = None
+    if args.merge:
+        # The ONE widening, under the one flag that asks for it (GRPH-846).
+        client = Graphban(base_url=args.server, api_key=api_key,
+                          allowed=SPAWN_READS | MERGE_TOOLS, project_id=args.project)
+        repo = Path(args.repo)
+        remote = remote_for(repo)
+        merger = Merger(repo, client, enabled=True, remote=remote,
+                        base=default_ref(repo, remote) if remote else "")
+    else:
+        client = Graphban(base_url=args.server, api_key=api_key, allowed=SPAWN_READS, project_id=args.project)
     try:
         wave = up(
             Path(args.repo),
             seats,
             factory,
             client,
+            merger=merger,
             wave_name=args.wave,
             limits=Limits(
                 max_workers=args.max_workers,
