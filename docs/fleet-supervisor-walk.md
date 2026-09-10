@@ -144,3 +144,38 @@ item; `gbfleet mcp` spawned gbagent on the cheap tier onto the bound seat, regis
 claimed the item, and the child moved it to review. That is criterion 18 observed rather than argued — the
 delegation read claimed on the Live board within one poll, then finished when the child
 advanced the item.
+
+## Finishing the merge (GRPH-846)
+
+`done` is a ledger state, not a git state. After step 7 the reviewed PR sat as a draft until
+a person merged it, and every item `until` held on it (GRPH-798) was idle fleet time waiting
+for that click. `--merge` is the click, opt-in, and this section says what was walked and
+what was not.
+
+**Walked, in-process, on 2026-09-10** (`fleet/tests/test_merge_after_sign_off.py`): a real
+bare `origin`, a clone the wave runs in, and a second clone standing in for the forge. SA-420
+depends on SA-417; SA-417 is `done` with its commit only on `gb/dep`. The wave holds SA-420
+and names SA-417. Under `--merge` the loop reads SA-417's attestations, asks `gh` for the PR,
+checks the head against the `fleet.sign_off` commit and CI's `suite_green` commit, marks the
+draft ready, merges — the stand-in squashes onto `origin/main` at that moment, from the second
+clone — writes the merge commit on SA-417 as a `url` receipt, re-fetches the base, and offers
+SA-420 on the next tick. The re-fetch is load-bearing: with it deleted, the merge commit is
+unknown to the clone and SA-420 stays held. That mutation was run and the walk failed; it also
+failed with the receipt's `commit` dropped, with the hold not lifted out of the delegated set,
+and with the loop's tick removed. A post-review push (same branch, different head) is left
+alone with the reason naming both commits; comparing branch names instead fails that test.
+Default-on fails the no-flag test on both commands.
+
+**Not walked: a live forge.** No run from this seat reached GitHub — `gh` is refused inside a
+fleet child by design, which is the right refusal and also why this is a stand-in. Two things
+a live walk must confirm before this is trusted on a real trunk:
+
+1. `gh pr merge --squash --auto` on a PR already `CLEAN` merges at once rather than only
+   arming auto-merge. The code handles both — an armed-but-unmerged PR is reported `MERGE
+   PENDING` and re-asked — so the live question is only which line the summary prints.
+2. `mergeStateStatus` is `UNKNOWN` for a moment after a push while the forge recomputes it.
+   The merger reports that as not-yet and re-asks after `MERGE_RECHECK_S`; the live question
+   is whether one interval is enough or the first tick after CI needs a second.
+
+Branch protection on the trunk is the backstop and is not bypassed: `BLOCKED` is `MERGE
+SKIPPED`, and a merge the forge refuses is the forge's reason on the summary line.
