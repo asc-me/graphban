@@ -412,6 +412,37 @@ this one is finished.
 ancestor of the base, names the dependency and the commit, and moves to the next cluster
 (GRPH-798). The wave continues on work that is buildable; the remedy is a merge.
 
+**`--merge` finishes that merge itself** (GRPH-846; `until --merge` and `up --merge`, default
+off). Every held item was idle fleet time waiting for a person to click — the one step in the
+loop with no model and no timer behind it — and the person was merging on the strength of a
+review they did not do. Under the flag, when the supervisor sees an item reach `done` (it left
+`review`, or the hold names it as the finished dependency), it marks the item's PR ready if it
+is a draft and enables squash auto-merge through `gh`, as the operator's own login, exactly as
+it already opens the draft. Nothing is assumed; each of these is checked and any miss is
+reported with the check that failed, and the item is left alone:
+
+- the item is `done`, and its PR is open and comes from this repository, not a fork;
+- **the PR head is the commit the `fleet.sign_off` attestation names** — a commit, never a
+  branch name, because a push after review keeps the name and changes the head, and that is
+  the case this exists to catch;
+- CI has attested `suite_green` on that same commit;
+- the forge reports it `MERGEABLE` / `CLEAN`. `BLOCKED` is branch protection asking for
+  something this process is not, and is reported as `skipped` — the backstop stays.
+
+A merge the supervisor cannot perform — no `gh`, protection, a fork, a refusal — is `skipped`,
+not `ok`, the same distinction the draft PR makes. A merge that lands is recorded on the item
+as a `url` receipt naming the **merge commit**: a squash rewrites the SHA, so the reviewed
+commit is never an ancestor of the trunk afterwards, and without that receipt the hold above
+would never clear. The base is re-fetched after a merge and any item held on it is offered
+again on the next tick, without a restart. The summary prints one line per outcome —
+`MERGED`, `MERGE PENDING` (auto-merge armed, the forge merges when its requirements are met),
+`MERGE SKIPPED`, `MERGE HELD` — because those are different facts a person acts on differently.
+
+Under `up --merge` the supervisor's client gains three tools it does not otherwise hold —
+`get_item_details`, `related_work` and one write, `update_item` for the receipt. That is the
+widening PRD-22 §4 warns about, taken only under the flag that asks for it by name; a plain
+`up` keeps the client it always had, and `ALLOWED_TOOLS` itself is unchanged.
+
 A dependency whose commit this clone has never seen is reported and **not** acted on — that is
 an unknown, not an absence, and refusing on it would stop every wave on a fresh clone. The
 base is fetched once per wave first, or a stale remote-tracking ref would measure everything
