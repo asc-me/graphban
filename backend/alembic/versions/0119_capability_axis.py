@@ -128,4 +128,61 @@ def _rebuild_platform_rollups() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("0119 does not downgrade: the re-key merged cells that cannot be split")
+    """Restore the pre-capability key, and leave the rollups for `harness.roll` to rebuild.
+
+    The re-key merged cells and no downgrade can split them — but a rollup is a CACHE, not a
+    record: `harness.roll` recomputes `harness_rollups` from `attempt_telemetry`, which this
+    downgrade does not touch, and `roll_if_stale` does it on the next read. So the honest
+    downgrade restores the old shape and writes no rows, rather than fabricating a split it
+    cannot justify.
+
+    It used to raise instead. That made this the only one of the repository's 72 migrations
+    that could not be walked back, and four tests that downgrade PAST it to exercise much
+    older backfills (`test_cross_reference_keys`, `test_project_tags`) failed on Postgres —
+    the engine CI runs and the seat that built this slice had no container for.
+    """
+    op.drop_table("harness_rollups")
+    op.create_table(
+        "harness_rollups",
+        sa.Column("project_id", sa.String(), sa.ForeignKey("projects.id"), primary_key=True),
+        sa.Column("week", sa.String(8), primary_key=True),
+        sa.Column("vendor", sa.String(32), primary_key=True),
+        sa.Column("model", sa.String(64), primary_key=True),
+        sa.Column("binary_version", sa.String(32), primary_key=True),
+        sa.Column("lane", sa.String(16), primary_key=True),
+        sa.Column("tier", sa.String(16), primary_key=True),
+        sa.Column("task_class", sa.String(16), primary_key=True),
+        sa.Column("size_band", sa.String(1), primary_key=True),
+        sa.Column("finished", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("signed_off", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("bounced", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("median_seconds", sa.Integer(), nullable=True),
+        sa.Column("tokens_in", sa.Integer(), nullable=True),
+        sa.Column("tokens_out", sa.Integer(), nullable=True),
+        sa.Column("tokens_reported", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("signed_off_reported", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("first_choice", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("fallback", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("explicit", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("unknown", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("rolled_at", sa.DateTime(timezone=True), nullable=True),
+    )
+    op.drop_table("platform_rollups")
+    op.create_table(
+        "platform_rollups",
+        sa.Column("week", sa.String(8), primary_key=True),
+        sa.Column("vendor", sa.String(32), primary_key=True),
+        sa.Column("model", sa.String(64), primary_key=True),
+        sa.Column("binary_version", sa.String(32), primary_key=True),
+        sa.Column("lane", sa.String(16), primary_key=True),
+        sa.Column("tier", sa.String(16), primary_key=True),
+        sa.Column("task_class", sa.String(16), primary_key=True),
+        sa.Column("size_band", sa.String(1), primary_key=True),
+        sa.Column("orgs_contributing", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("finished", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("signed_off", sa.Integer(), nullable=False, server_default="0"),
+        sa.Column("top_org_share", sa.Float(), nullable=True),
+        sa.Column("rolled_at", sa.DateTime(timezone=True), nullable=True),
+    )
+    for column in ("tool_errors", "diff_shape", "capabilities_at_delegate", "capabilities"):
+        op.drop_column("attempt_telemetry", column)
