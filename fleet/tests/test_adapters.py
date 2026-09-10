@@ -43,6 +43,7 @@ SEAT = Seat(code="WORKER-7F3K", server_url="https://gb.invalid", api_key="gbk_se
         ("2.1.233 (Claude Code)", (2, 1, 233)),          # claude, semver
         ("2026.04.17-787b533", (2026, 4, 17)),           # cursor-agent, CalVer + hash
         ("grok 1.0.5 (5115b46bc909) [stable]", (1, 0, 5)),  # grok, semver behind a name
+        ("grok 1.0.25 (f7e67d6988e2) [stable]", (1, 0, 25)),  # ...and 25 > 5, not "2" > "5"
     ],
 )
 def test_every_real_version_string_parses(reported: str, expected: tuple):
@@ -387,8 +388,21 @@ def test_every_adapter_says_what_it_was_verified_against(name: str):
 
 @pytest.mark.parametrize("name", sorted(ADAPTERS))
 def test_the_matrix_quotes_the_version_that_was_actually_run(name: str):
-    text = MATRIX.read_text(encoding="utf-8")
-    assert ADAPTERS[name].support.verified_against in text
+    """In the vendor's own ROW, not anywhere in the document (GRPH-840).
+
+    This searched the whole file, and it is the third test here to be caught doing that
+    — see `_rows_under`, which was written for the previous two. Bumping grok's
+    `verified_against` from 1.0.5 to 1.0.25 and then reverting only the adapter left this
+    green: the prose under the matrix still says "1.0.5" in a sentence about `--help`, so
+    the guard was satisfied by a paragraph while the row it exists to police quoted a
+    version nobody had run. Which is the whole failure this pin was added to catch.
+    """
+    row = _matrix_rows().get(name)
+    assert row, f"{name} has no row in the matrix at all"
+    assert ADAPTERS[name].support.verified_against in row, (
+        f"the matrix row for {name} does not quote "
+        f"{ADAPTERS[name].support.verified_against}, the version the suite resolved.\n{row}"
+    )
 
 
 # --- against the binaries that are actually here -----------------------------------
