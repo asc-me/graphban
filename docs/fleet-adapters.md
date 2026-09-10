@@ -668,3 +668,8 @@ not.
 
 Refusing is loud and takes ten seconds to fix. Writing the seat anyway is silent and
 changes what every worker in the fleet is allowed to do.
+
+## Verified on the deployed instance
+
+On 2026-09-05 a session delegated this item to a bound seat, and gbfleet resolved
+the cheap tier through the preference matrix with no --tier flag.

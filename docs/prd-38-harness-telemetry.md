@@ -196,3 +196,7 @@ Each is a test. Sabotage the call, not the model.
 3. **The exit post needs the seat as an address.** The supervisor holds the enrolment's row id from the roster and not the delegation id, so `enrolment_id` joins `delegation_id` and `enrolment_code` as an address. This is the same finding as the v1.0 grill's — the planner mints the seat before the resolution exists — arriving a second time, from the other end.
 
 None of these change what the record holds or what the page will show.
+
+## Walked on the deployed instance
+
+A delegation finished on the deployed instance and left an attempt record.
