@@ -1,4 +1,4 @@
-import { BadgeCheck, ExternalLink, FlaskConical, GitPullRequest, X } from "lucide-react";
+import { BadgeCheck, ExternalLink, FlaskConical, GitPullRequest, Radio, X } from "lucide-react";
 
 import { Avatar } from "@/components/ui/avatar";
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
@@ -6,7 +6,7 @@ import { LinkedCode } from "@/features/code/LinkedCode";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { CHECK_COLOR, PR_STATE_COLOR } from "@/lib/meta";
 import { useItems, useLinks, useShards, useUpdateItem } from "@/lib/queries";
-import type { Fidelity, Item, Status } from "@/lib/types";
+import type { Fidelity, Item, Reach, Status } from "@/lib/types";
 
 import { StatusMenu } from "./StatusMenu";
 
@@ -26,6 +26,7 @@ export function ItemDetailPanel({
   const updateItem = useUpdateItem();
   const linked = shards.filter((s) => s.item_id === item.id);
   const setFidelity = (f: Fidelity) => updateItem.mutate({ id: item.id, body: { fidelity: f } });
+  const setReach = (r: Reach) => updateItem.mutate({ id: item.id, body: { reach: r } });
 
   const statusOf = (id: string) => allItems.find((i) => i.id === id)?.status;
   const deps = links.filter((l) => l.type === "dependency" && l.a === item.id).map((l) => l.b);
@@ -97,6 +98,38 @@ export function ItemDetailPanel({
             </div>
             {item.fidelity === "high" && (
               <span className="text-[11px] text-[#e0b34a]">needs a prototype</span>
+            )}
+          </div>
+
+          {/*
+            Reach (GRPH-832): does this work change files, or a running system? `deploy` is
+            refused to every spawned agent — delegation and the divvy both — so this control is
+            the only way it gets set, and this page is the only place it can be. An agent's
+            `update_item` refuses the field outright rather than ignoring it.
+          */}
+          <div className="flex items-center gap-2">
+            <Radio size={13} className="text-faint" />
+            <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Reach</span>
+            <div className="flex items-center gap-1 rounded-lg border border-line-2 bg-surface-2 p-0.5">
+              {(["repo", "deploy"] as const).map((r) => (
+                <button
+                  key={r}
+                  onClick={() => setReach(r)}
+                  className={
+                    "rounded-md px-2 py-0.5 font-mono text-[10.5px] transition-colors " +
+                    (item.reach === r
+                      ? r === "deploy"
+                        ? "bg-[rgba(255,107,107,0.14)] text-st-blocked"
+                        : "bg-surface-4 text-fg"
+                      : "text-muted hover:text-fg-2")
+                  }
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+            {item.reach === "deploy" && (
+              <span className="text-[11px] text-st-blocked">no agent may take this</span>
             )}
           </div>
 

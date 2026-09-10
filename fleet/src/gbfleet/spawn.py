@@ -120,6 +120,26 @@ class LaunchFailed(RuntimeError):
     """
 
 
+class VendorLimit(LaunchFailed):
+    """The VENDOR ACCOUNT is out of quota — not a broken adapter (GRPH-829).
+
+    A subclass, so every existing `except LaunchFailed` keeps working and this can only ever
+    make a failure MORE specific. The distinction is worth a type rather than a flag because
+    the two call for opposite responses: a broken adapter is a config to fix and the wave
+    should stop and say so; an exhausted account is a clock, and spawning the next child into
+    the same account will fail identically in under a second.
+
+    `reset` is whatever the vendor said about when it comes back, quoted rather than parsed.
+    A timezone-bearing phrase like `12:20pm (America/New_York)` is more useful to the operator
+    as the vendor's own words than as this package's guess at a datetime.
+    """
+
+    def __init__(self, message: str, adapter: str = "", said: str = "") -> None:
+        super().__init__(message)
+        self.adapter = adapter
+        self.said = said
+
+
 @dataclass(frozen=True)
 class Launch:
     """Everything one adapter needs to start one child. GRPH-449 builds these."""
@@ -221,6 +241,9 @@ class Child:
     #: for the same reason `reported` is one, and checked by BOTH surfaces so the wave-end
     #: reap and the on-exit reap cannot run over each other.
     reaped: bool = False
+    #: PRD-41 S1. Set by the on-exit reap so the exit post can carry the diff; None
+    #: until then, which the server stores as null rather than as a zero-file shape.
+    diff_shape: dict | None = None
 
     @property
     def pid(self) -> int:
@@ -333,6 +356,21 @@ def _resolved(path: str) -> str:
         return path
 
 
+def _account_limit(child: Child) -> str:
+    """What the child's adapter makes of its output, or "" when the adapter is unknown here.
+
+    Unknown adapter is "" rather than an error: `make_launch_factory` builds children whose
+    `adapter` is a stand-in name for tests and probes, and a lookup that raised would turn a
+    diagnostic into a crash on exactly the path that is already failing.
+    """
+    from .adapters import ADAPTERS
+
+    adapter = ADAPTERS.get(child.adapter)
+    if adapter is None:
+        return ""
+    return adapter.account_limit(child.stdout_text(), child.tail(_STDERR, 200))
+
+
 def await_registration(
     child: Child,
     roster: Callable[[], dict],
@@ -390,9 +428,25 @@ def await_registration(
                 return agent
             code = child.process.returncode
             stop(child, Reason.NEVER_REGISTERED)
+            # GRPH-829: ask the adapter whether the VENDOR said something about the account
+            # before blaming the adapter. Both streams, because the one measured instance of
+            # this printed 67 bytes to stdout and nothing at all to stderr — so the report
+            # read `child exited 1 before registering. stderr tail:` followed by nothing, and
+            # sent the operator to debug a CLI that was working perfectly.
+            said = _account_limit(child)
+            if said:
+                raise VendorLimit(
+                    f"adapter {child.adapter!r}: the vendor account is out of quota, so no "
+                    f"child can start until it resets. It said: {said}",
+                    adapter=child.adapter, said=said,
+                )
             raise LaunchFailed(
                 f"adapter {child.adapter!r}: child exited {code} before registering.\n"
-                f"stderr tail:\n{child.tail()}"
+                # Both streams named, and both PRINTED. An empty stderr used to be rendered as
+                # an empty tail with no hint that the other stream existed, which is how a
+                # message sitting in stdout.log stayed unread through a whole wave.
+                f"stderr tail:\n{child.tail()}\n"
+                f"stdout tail:\n{child.tail(_STDOUT)}"
             )
 
         if (agent := matched()) is not None:
@@ -404,7 +458,8 @@ def await_registration(
                 f"adapter {child.adapter!r}: still not registered after {window:.0f}s "
                 f"(pid {child.pid}). Killed. A child that runs without registering is "
                 "the silent drop — it burns money and produces nothing while the roster "
-                f"just shows one agent fewer.\nstderr tail:\n{child.tail()}"
+                f"just shows one agent fewer.\nstderr tail:\n{child.tail()}\n"
+                f"stdout tail:\n{child.tail(_STDOUT)}"
             )
         sleep(poll)
 

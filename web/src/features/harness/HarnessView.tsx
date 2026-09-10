@@ -32,9 +32,10 @@ export function HarnessView() {
         <div>
           <h1 className="text-[18px] font-semibold tracking-tight">Harness</h1>
           <p className="mt-0.5 text-[12.5px] text-muted">
-            How each model and harness has turned out, per lane, task class and size band, over
-            the last {data.window_days} days. A rate under {data.floor} finished attempts is
-            shown grey because it is not yet a measurement.
+            How each model has turned out, per capability and size band, over the last{" "}
+            {data.window_days} days. A rate under {data.floor} finished attempts is shown grey
+            because it is not yet a measurement. Family rollups speak until a leaf clears the
+            floor.
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -59,11 +60,22 @@ export function HarnessView() {
         {data.cells.length === 0 ? (
           <div className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted">
             Nothing measured yet. A cell appears here once a delegation finishes — one row per
-            vendor, model, lane, tier, task class and size band.
+            vendor, model, capability and size band.
           </div>
         ) : (
           <div className="mx-auto flex max-w-4xl flex-col gap-3">
             <Recommendations projectId={activeId} />
+            {data.coverage && data.coverage.attempts > 0 && (
+              <div
+                data-testid="harness-coverage"
+                className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+              >
+                Coverage {data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}
+                {" — "}
+                {data.coverage.with_leaf}/{data.coverage.attempts} attempts tagged a leaf.
+                Attempts that match none land in <span className="font-mono">other</span>.
+              </div>
+            )}
             {data.platform === null && data.platform_reason && (
               <div
                 data-testid="harness-no-platform"
@@ -94,7 +106,7 @@ export function HarnessView() {
 
 function cellId(cell: HarnessCell): string {
   const k = cell.key;
-  return [k.vendor, k.model, k.binary_version, k.lane, k.tier, k.task_class, k.size_band].join(":");
+  return [k.vendor, k.model, k.binary_version, k.capability, k.size_band].join(":");
 }
 
 function CellRow({ cell, floor }: { cell: HarnessCell; floor: number }) {
@@ -111,9 +123,19 @@ function CellRow({ cell, floor }: { cell: HarnessCell; floor: number }) {
           {k.model ? `:${k.model}` : ""}
         </span>
         <span className="font-mono text-[10.5px] text-faint">
-          {k.lane} · {k.tier} · {k.task_class} · {k.size_band}
+          {cell.label ?? k.capability} · {k.size_band}
           {k.binary_version ? ` · ${k.binary_version}` : ""}
         </span>
+        {cell.kind === "family" && (
+          <Badge testid="harness-family-label" tone="faint">
+            family rollup
+          </Badge>
+        )}
+        {cell.kind === "other" && (
+          <Badge testid="harness-other" tone="faint">
+            other — {cell.finished}
+          </Badge>
+        )}
         <span
           className={`ml-auto text-[15px] font-semibold ${cell.below_floor ? "text-faint" : ""}`}
           data-testid="harness-rate"
@@ -180,13 +202,38 @@ function CellRow({ cell, floor }: { cell: HarnessCell; floor: number }) {
         </div>
       )}
 
+      {cell.leaves && cell.leaves.length > 0 && (
+        <div className="mt-2 flex flex-col gap-1" data-testid="harness-leaves">
+          {cell.leaves.map((leaf) => (
+            <div
+              key={cellId(leaf)}
+              data-testid="harness-leaf"
+              data-below-floor={leaf.below_floor ? "true" : "false"}
+              className={`flex items-baseline gap-2 font-mono text-[11px] ${
+                leaf.below_floor ? "text-faint" : "text-muted"
+              }`}
+            >
+              <span>{leaf.label ?? leaf.key.capability}</span>
+              <span>
+                {leaf.rate === null ? "—" : `${Math.round(leaf.rate * 100)}%`}
+              </span>
+              <span>
+                {leaf.signed_off}/{leaf.finished}
+                {leaf.below_floor ? " — below the floor" : ""}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <Series points={cell.series} />
     </div>
   );
 }
 
 function samplingLabel(s: HarnessSampling): string {
-  return `first choice ${s.first_choice} · fallback ${s.fallback} · explicit ${s.explicit} · unknown ${s.unknown}`;
+  const probe = s.probe ? ` · probe ${s.probe}` : "";
+  return `first choice ${s.first_choice} · fallback ${s.fallback} · explicit ${s.explicit} · unknown ${s.unknown}${probe}`;
 }
 
 /**

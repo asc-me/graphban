@@ -354,7 +354,11 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 8887
+CORE_TOKENS = 8897
+# 8887 -> 8897 (GRPH-839): `update_item` declares `evidence_intake`, so the reply says how
+# many receipts the server took. Core by nature — `update_item` is how every agent records
+# proof, and this is the tool that was discarding it in silence. Ten tokens is the whole
+# reason it is one opaque object and not the three properties the finding proposed.
 # 8892 -> 8887 (GRPH-719): register_agent's `project_id` output, minus two core description trims.
 # 8891 -> 8892 (PRD-36): `assigned` on register_agent's output, `code_neighbors` trimmed.
 # 9076 -> 8891 (PRD-35). `brief` on get_item_details adds ~10; the trims that paid for the

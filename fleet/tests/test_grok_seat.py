@@ -29,8 +29,12 @@ adapter still names that path, still writes that language, still passes `--trust
 that the parentage guard did not become JSON-only when TOML arrived. The version this
 was measured against is pinned in `Grok.support`.
 
-`test_a_real_grok_binary_loads_the_seat_we_write` closes the loop where a grok is
-actually installed, and skips where one is not — so it never turns absence into a pass.
+The tests below `--- the loop closed against a real binary ---` close the loop where a
+grok is actually installed, and skip where one is not — so they never turn absence into a
+pass. GRPH-840 re-measured them against 1.0.25 and widened what they cover: grok now
+merges the operator's `~/.claude.json` and `~/.cursor/mcp.json` into every child, which
+`GROK_HOME` does not relocate, so the clean room these tests used to assume is gone. See
+`_probe`.
 """
 
 from __future__ import annotations
@@ -265,15 +269,27 @@ def _probe(
     trusted: bool,
     user_scope_url: str = "",
     committed_url: str = "",
+    committed_file: str = ".cursor/mcp.json",
+    committed_name: str = "graphban",
     seat: bool = True,
 ) -> str:
     """Write the seat exactly as the adapter would and ask grok's own doctor about it.
 
-    Runs under an isolated `GROK_HOME`. Without that, `grok mcp doctor` also reports every
-    server in the operator's real config — and an assertion looking for "server started"
-    anywhere in that output passes on `serena` or `vercel` while proving nothing about
-    the file under test. That is not hypothetical; it is how the first version of this
-    test passed.
+    Runs under an isolated `GROK_HOME`, which relocates grok's own directory and nothing
+    else. **That is no longer full isolation** (GRPH-840). 1.0.25 also merges the
+    operator's `~/.claude.json` and `~/.cursor/mcp.json` into every session, `GROK_HOME`
+    does not move either, and the documented off-switches (`[compat.claude] mcps = false`,
+    `GROK_CLAUDE_MCPS_ENABLED=false`) were measured on 1.0.25 and are not honoured. Only
+    `HOME` moves those files, and only on POSIX — which is exactly the non-portable
+    isolation `GROK_HOME` was adopted to replace (GRPH-588).
+
+    So isolation alone cannot carry these assertions any more, and two things do instead:
+    `_graphban_block` keeps an unrelated server's success from reading as this one's, and
+    a test whose subject could lose a *name* collision to the operator's config gives its
+    subject a name the operator cannot plausibly hold (`committed_name`). An earlier
+    version relied on `GROK_HOME` for both and turned into a red suite on any machine
+    whose owner had configured a `graphban` server in Claude Code — which is every
+    machine this fleet runs on.
 
     Trust is pre-seeded into the isolated store rather than granted with `--trust`,
     because `--trust` only records during a real session and a real session is a model
@@ -296,13 +312,16 @@ def _probe(
             encoding="utf-8",
         )
     if committed_url:
-        # grok also reads `.mcp.json` and `.cursor/mcp.json` from the project directory
-        # (measured — `grok mcp doctor` starts servers from both while its "Config
-        # sources" block credits neither correctly). A worktree is cut from the repo, so
-        # anything the repo commits lands in every child.
-        (project / ".cursor").mkdir()
-        (project / ".cursor" / "mcp.json").write_text(
-            json.dumps({"mcpServers": {"graphban": {"type": "http", "url": committed_url}}}),
+        # grok reads `.mcp.json` and `.cursor/mcp.json` from the project directory as
+        # well as its own (measured on 1.0.25 — `grok mcp doctor` starts servers from
+        # both, while its "Config sources" block credits both to `.mcp.json`). A worktree
+        # is cut from the repo, so anything the repo commits lands in every child.
+        target = project / committed_file
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(
+                {"mcpServers": {committed_name: {"type": "http", "url": committed_url}}}
+            ),
             encoding="utf-8",
         )
     if trusted:
@@ -328,8 +347,8 @@ def _probe(
     return doctor.stdout + doctor.stderr
 
 
-def _graphban_block(out: str) -> str:
-    """Just the `graphban (...)` stanza. Asserting against the whole output is how an
+def _graphban_block(out: str, name: str = "graphban") -> str:
+    """Just the `<name> (...)` stanza. Asserting against the whole output is how an
     unrelated server's success gets read as this one's.
 
     Indentation is the only thing this keys on. The first version also required each
@@ -341,13 +360,28 @@ def _graphban_block(out: str) -> str:
     """
     lines = out.splitlines()
     for i, line in enumerate(lines):
-        if line.strip().startswith("graphban ("):
+        if line.strip().startswith(f"{name} ("):
             block = [line]
             for following in lines[i + 1:]:
                 if following.strip() and not following.startswith((" " * 4, "\t")):
                     break  # a new, unindented stanza: this one is over
                 block.append(following)
             return "\n".join(block)
+    return ""
+
+
+def _source_line(out: str, source: str) -> str:
+    """The *Config sources* line for one source, or "".
+
+    Keyed to the line, never to the whole output. `"~/.grok/config.toml" in out and "not
+    found" in out` reads like an assertion about that file and is satisfied by any other
+    source reporting `not found` — which `.mcp.json` does on every clean run. Sabotaging
+    the probe's `GROK_HOME` away left it green (GRPH-840); this is what caught it.
+    """
+    for line in out.splitlines():
+        bare = line.strip()
+        if bare.startswith(source):
+            return bare
     return ""
 
 
@@ -405,10 +439,17 @@ def test_a_childs_seat_beats_an_operators_user_level_server_of_the_same_name(tmp
         "scope now wins, a child inherits the operator's credential and role.\n" + block
     )
     assert "operator-scope.invalid" not in block
+    assert "server started" in block, (
+        "the seat won the name and then never started. grok quotes the URL it resolved "
+        f"in the stanza header whether or not it got that far.\n{block}"
+    )
 
 
 @pytest.mark.skipif(shutil.which("grok") is None, reason="no grok binary on this machine")
-def test_the_seat_beats_an_mcp_file_committed_to_the_repository(tmp_path: Path):
+@pytest.mark.parametrize("committed_file", [".cursor/mcp.json", ".mcp.json"])
+def test_the_seat_beats_an_mcp_file_committed_to_the_repository(
+    tmp_path: Path, committed_file: str
+):
     """The other way a child could be handed the wrong server, and the likelier one.
 
     grok reads `.cursor/mcp.json` and `.mcp.json` from the project directory as well as
@@ -418,41 +459,156 @@ def test_the_seat_beats_an_mcp_file_committed_to_the_repository(tmp_path: Path):
     fleet's seats would be overridden by a checked-in file and every child would share
     one credential.
 
-    Measured: the seat wins. Asserted here because it is the repo's own contents that
-    would break it, and repo contents change.
+    Measured on 1.0.5 and again on 1.0.25: the seat wins, from both filenames. Both are
+    exercised because they are separate sources in grok's merge order (Cursor above
+    `.mcp.json`) and only one of them used to be tested — a repo committing the untested
+    one would have found out in production.
     """
     block = _graphban_block(
-        _probe(tmp_path, trusted=True, committed_url="https://committed-file.invalid/api/mcp")
+        _probe(
+            tmp_path,
+            trusted=True,
+            committed_file=committed_file,
+            committed_url="https://committed-file.invalid/api/mcp",
+        )
     )
     assert "seat.invalid" in block, (
-        "a committed .cursor/mcp.json overrode the child's seat — every child would "
+        f"a committed {committed_file} overrode the child's seat — every child would "
         "share whatever credential is checked into the repository.\n" + block
     )
     assert "committed-file.invalid" not in block
+    assert "server started" in block, (
+        "the seat won the name and then never started, which is the same silence as "
+        f"losing it.\n{block}"
+    )
 
 
 @pytest.mark.skipif(shutil.which("grok") is None, reason="no grok binary on this machine")
-def test_a_committed_mcp_file_really_is_loaded_when_nothing_outranks_it(tmp_path: Path):
+@pytest.mark.parametrize("committed_file", [".cursor/mcp.json", ".mcp.json"])
+def test_a_committed_mcp_file_really_is_loaded_when_nothing_outranks_it(
+    tmp_path: Path, committed_file: str
+):
     """The control for the test above, and the reason to believe it.
 
     `test_the_seat_beats_an_mcp_file_committed_to_the_repository` would pass just as
-    green if grok ignored `.cursor/mcp.json` entirely — "the seat won" and "the rival
+    green if grok ignored the committed file entirely — "the seat won" and "the rival
     was never in the race" produce identical output. This shows the rival is real: with
     no seat present, the committed file is what the child gets.
 
     Which is also the operational warning. A repo that commits an MCP file gives every
     grok child those servers, on top of its seat. Nothing in gbfleet controls that.
+
+    The rival is named `gbfleet-probe-rival`, not `graphban` (GRPH-840). Under `graphban`
+    this test failed on 1.0.25 — not because the file had stopped loading, but because
+    the operator's own `~/.claude.json` defines a `graphban` and outranks a project JSON
+    file, so the entry was dropped on a name collision and the failure read as "grok no
+    longer loads committed files at all". It still loads them. A control has to be able
+    to lose the race it is timing, and this one could lose it to the operator's config.
     """
     block = _graphban_block(
         _probe(
             tmp_path,
             trusted=True,
             seat=False,
+            committed_file=committed_file,
+            committed_name="gbfleet-probe-rival",
             committed_url="https://committed-file.invalid/api/mcp",
-        )
+        ),
+        name="gbfleet-probe-rival",
     )
     assert "committed-file.invalid" in block, (
-        "grok did not load a committed .cursor/mcp.json at all, so the precedence test "
+        f"grok did not load a committed {committed_file} at all, so the precedence test "
         "above is proving nothing. Either grok changed, or the probe stopped writing "
         f"the file.\n{block}"
+    )
+    assert "server started" in block, (
+        "grok listed the committed file's server and did not start it, so the rival is "
+        "still not in the race and the control still proves nothing. Being named in the "
+        f"stanza header is not the same as reaching the child.\n{block}"
+    )
+
+
+# --- what else is in the child, which GROK_HOME does not bound (GRPH-840) ----------
+
+def _operator_claude_graphban() -> str:
+    """The URL of a `graphban` server in the operator's real `~/.claude.json`, or "".
+
+    Read-only, and read for the same reason grok reads it: on 1.0.25 it is one of the
+    child's config sources and there is no supported way to switch it off.
+    """
+    try:
+        data = json.loads((Path.home() / ".claude.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        return ""
+    entry = servers.get("graphban")
+    return entry.get("url", "") if isinstance(entry, dict) else ""
+
+
+@pytest.mark.skipif(shutil.which("grok") is None, reason="no grok binary on this machine")
+def test_grok_home_no_longer_bounds_the_servers_a_child_gets(tmp_path: Path):
+    """The isolation this probe is built on is now partial, and saying so is the point.
+
+    GRPH-588 adopted `GROK_HOME` as the isolation mechanism because overriding `HOME`
+    worked on POSIX by luck and not at all on Windows. On 1.0.25 `GROK_HOME` still moves
+    grok's own directory — `~/.grok/config.toml` reports `not found` under it, asserted
+    below — but grok now also merges the operator's `~/.claude.json` and
+    `~/.cursor/mcp.json`, which it does not move, and the documented off-switches
+    (`[compat.claude] mcps = false`, `GROK_CLAUDE_MCPS_ENABLED=false`) were measured and
+    are not honoured.
+
+    So a grok child's tool list is not bounded by anything gbfleet sets. That is not a
+    seat problem — `test_the_childs_seat_beats_the_operators_claude_code_config` covers
+    the part that would be — but it is why a child can report tools nobody configured
+    for it, and why a probe here must not assume a clean room. If a later grok makes
+    `GROK_HOME` total again this test goes red, which is the right way to find out.
+    """
+    out = _probe(tmp_path, trusted=True)
+
+    own = _source_line(out, "~/.grok/config.toml")
+    assert own.endswith("not found"), (
+        "GROK_HOME stopped relocating grok's own config directory, so this probe is "
+        f"reading — and `grok mcp add` would be writing — the operator's real one.\n{out}"
+    )
+    assert _source_line(out, "~/.claude.json"), (
+        "grok's doctor no longer names ~/.claude.json as a config source. If the compat "
+        "sources were dropped, GROK_HOME is total isolation again and the caveats in "
+        f"_probe, adapters/grok.py and docs/fleet-adapters.md should shrink back.\n{out}"
+    )
+
+
+@pytest.mark.skipif(shutil.which("grok") is None, reason="no grok binary on this machine")
+@pytest.mark.skipif(
+    not _operator_claude_graphban(),
+    reason="operator has no graphban server in ~/.claude.json to collide with",
+)
+def test_the_childs_seat_beats_the_operators_claude_code_config(tmp_path: Path):
+    """The same security property as the `~/.grok/config.toml` test, against the source
+    1.0.25 added — and the one that actually bites, because the operator running this
+    fleet is a Claude Code user with a `graphban` server configured by definition.
+
+    If `~/.claude.json` won this collision, every grok child would connect with the
+    OPERATOR's credential and take the operator's role while the seat sat unread on
+    disk. Measured: the seat wins (grok's merge order puts `config.toml` above Claude).
+
+    Skipped, with a reason, where there is nothing to collide with — an operator without
+    a `graphban` in `~/.claude.json` proves nothing here, and a pass would be a lie.
+    """
+    operator_url = _operator_claude_graphban()
+    block = _graphban_block(_probe(tmp_path, trusted=True))
+
+    assert "seat.invalid" in block, (
+        "the child resolved `graphban` to something other than its own seat. If "
+        "~/.claude.json now wins, every grok child connects with the operator's "
+        f"credential and takes the operator's role.\n{block}"
+    )
+    assert "server started" in block, (
+        "the seat won the name but the server never started, which from the child's "
+        "side is the same silence as losing it. The stanza header quotes the URL grok "
+        f"resolved whether or not it got that far, so resolving is not enough.\n{block}"
+    )
+    assert operator_url not in block, (
+        f"the operator's own graphban ({operator_url}) reached the child.\n{block}"
     )

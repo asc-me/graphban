@@ -129,12 +129,22 @@ def test_the_cap_is_reported_rather_than_silently_applied():
 
 def test_it_asks_the_same_question_the_loop_asks():
     """A dry run that MODELLED the wave instead of asking it would reassure you about a plan
-    the loop does not have."""
+    the loop does not have.
+
+    The FILTER is what has to match, not the whole argument set. GRPH-833 added `holds`, which
+    asks the same server for the same clusters and a diagnostic table alongside them — it
+    cannot change which clusters come back, so it cannot change the plan. Pinning byte-equality
+    here would have made that additive read look like a divergence, which is the opposite of
+    what this test is for."""
     planner = _Planner([_c(["SA-1"])])
 
     until_mod.plan(planner, "SA-P11", 4)
 
-    assert planner.calls == [("collision_clusters", {"prd_id": "SA-P11"})]
+    assert [tool for tool, _ in planner.calls] == ["collision_clusters"]
+    (_, args), = planner.calls
+    assert args["prd_id"] == "SA-P11", "the dry run scoped differently from the loop"
+    assert set(args) - {"holds"} == set(until_mod._scope("SA-P11")), (
+        "the dry run sent a filter the loop does not")
 
 
 def test_it_writes_nothing():

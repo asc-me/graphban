@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import __version__
 from . import adopt as adopt_mod
-from .adapters import ADAPTERS, AdapterError, Tuning, resolve
+from .adapters import ADAPTERS, AdapterError, Tuning, checked_tuning, resolve
 from .client import ALLOWED_TOOLS, Graphban
 from . import doctor
 from .lock import RepoLocked
@@ -249,6 +249,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--deny", action="append", default=[], metavar="NAME",
         help="add a command to the deny-list children get a refusing stub for. Repeatable")
     until.add_argument(
+        "--budget", type=int, default=None, metavar="TOKENS",
+        help="end the wave once the children that REPORT their usage have spent this many "
+             "tokens. Refused up front when the adapter reports nothing, because a cap that "
+             "can never be exceeded never fires")
+    until.add_argument(
         "--dry-run", action="store_true",
         help="print what this wave WOULD delegate and exit, without minting a seat or cutting "
              "a worktree. The scoping bug existed for exactly as long as nobody could see the "
@@ -286,14 +291,12 @@ def make_adapter_factory(name: str, binary: str | None, model: str = "",
     The version check happens here rather than after launch, because a mismatch that
     surfaces as a child which starts, misbehaves and never registers costs a full
     registration window and blames the wrong component.
-
-    `check_tuning` lives here too (GRPH-831), not only on the MCP spawn path: `up` and
-    `until` both go through this factory, and a missing required knob used to reach the
-    child as an argparse dump before it registered.
     """
     found = resolve(name, binary=binary, model=model, tuning=tuning)
-    # Asked here, never inside `launch`: building a launch to inspect argv is not a spawn.
-    found.adapter.check_tuning(tuning or Tuning())
+    # GRPH-831: and the arguments this adapter refuses to guess, asked HERE — where the
+    # vendor is resolved and before any worktree exists — for the same reason the version is.
+    # Asked at spawn instead, the operator has already paid for a worktree and a seat.
+    checked_tuning(found.adapter, tuning or Tuning())
 
     def factory(seat: Seat, tree: Worktree, instruction_file: Path,
                 debug_file: Path | None = None) -> Launch:
@@ -424,6 +427,10 @@ def report(wave: Wave, out=None) -> None:
 
     if wave.unused_seats:
         print(f"{wave.unused_seats} seat(s) never redeemed", file=out)
+    # Immediately after the count, because it is the answer to the question the count
+    # raises. "3 seats never redeemed" with no reason reads as a bug in the fleet.
+    for gate in wave.gated:
+        print(f"NO ROOM {gate}", file=out)
     for failure in wave.failures:
         print(f"FAILED {failure}", file=out)
     for give_up in wave.give_ups:
@@ -507,6 +514,7 @@ def _until(args) -> int:
             debug=args.debug,
             request=args.request,
             prd=args.prd or None,
+            budget=args.budget or None,
             shared=_shared_servers(args),
             tiers=tiers,
             launch_for=lambda name, model="": make_adapter_factory(name, None, model),

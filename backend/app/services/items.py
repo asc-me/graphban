@@ -9,7 +9,7 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Agent, Item, Prd, Project, utcnow
+from app.models import Agent, Enrolment, Item, Prd, Project, utcnow
 from app.services import keys
 
 logger = logging.getLogger(__name__)
@@ -200,6 +200,16 @@ def normalize_evidence(raw) -> list[dict]:
     `kind` is advisory (test | url | screenshot | health | note) and falls back to `note`; a
     receipt with neither detail nor url is dropped.
 
+    **A bare string is the degenerate note, not a malformed receipt (GRPH-839).** It used to
+    hit the non-dict `continue` below and vanish, while `update_item` returned the item with
+    no error and the status move it was asked for — so an agent that sent
+    `evidence=["fleet suite: 1072 passed", ...]` reached `review` with its proof discarded and
+    nothing anywhere saying so. Since `kind` already falls back to `note`, the only thing a
+    string is missing is the wrapper, and inventing it loses nothing. What could NOT be
+    repaired — a number, a list, a receipt with neither detail nor url — is still refused, and
+    `evidence_intake` is what makes that refusal visible instead of an array that quietly did
+    not grow.
+
     **`sabotage`, `attestation`, and `lesson` are not advisory.** A structured kind that
     accepts unstructured input is the free-text field with a new name, and anything gating
     on it would be checking a label rather than a fact. `sabotage` needs claim / mutation /
@@ -211,9 +221,48 @@ def normalize_evidence(raw) -> list[dict]:
     can do is make the claim falsifiable and queryable, which is the same trade PRD-12 already
     accepts for citations.
     """
+    rows, _ = normalize_evidence_report(raw)
+    return rows
+
+
+def _evidence_payload(raw) -> list:
+    """The receipts as SENT, so `sent` and the loop below always count the same things.
+
+    A bare string or a lone dict is ONE receipt sent unwrapped, never a sequence of them.
+    Iterating a string would make a note out of every character and a dict out of every key —
+    and since GRPH-839 both of those are now storable, so what used to be an obvious drop
+    would have become quiet corruption. `union_touchpoints` extends the same courtesy to a
+    bare path for the same reason.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, (str, dict)):
+        return [raw]
+    return list(raw)
+
+
+def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
+    """`normalize_evidence`, and one `{index, reason}` for each receipt it refused.
+
+    The reasons exist so a caller can be TOLD. Every writer of `evidence` runs the payload
+    through here, and until GRPH-839 a refusal showed only as an array that did not grow —
+    which is indistinguishable from having sent nothing, and reads as the reassuring one. The
+    normalising itself is unchanged; this returns what it discarded on the way.
+
+    `index` is into the payload as sent, so the caller can name the entry it has in hand
+    rather than being handed a count and asked to guess which.
+    """
     out: list[dict] = []
-    for e in raw or []:
+    dropped: list[dict] = []
+    for index, e in enumerate(_evidence_payload(raw)):
+        if isinstance(e, str):
+            e = {"kind": "note", "detail": e}
         if not isinstance(e, dict):
+            # Nothing to repair: there is no reading of `42` or `["a", "b"]` that says what
+            # the agent meant, and guessing one would store a receipt it never wrote.
+            dropped.append({"index": index,
+                            "reason": f"{type(e).__name__} is not a receipt — send an "
+                                      "object, or a string for a plain note"})
             continue
         kind = str(e.get("kind") or "note").lower()
         if kind not in _EVIDENCE_KINDS:
@@ -291,9 +340,38 @@ def normalize_evidence(raw) -> list[dict]:
                 if not row["detail"]:
                     row["detail"] = "incomplete lesson receipt (no shard_id)"
         if not row["detail"] and not row["url"]:
+            dropped.append({"index": index,
+                            "reason": "receipt has neither detail nor url"})
             continue
         out.append(row)
-    return out
+    return out, dropped
+
+
+def evidence_intake(raw) -> dict:
+    """What the server DID with an evidence payload: sent, accepted, and why the rest were not.
+
+    The receipt for the receipts (GRPH-839). `update_item` returns the item, and the item's
+    `evidence` array shows the truth — but only to a caller that counts it against what it
+    sent, and an agent that got a success back has no reason to. Stating both numbers in the
+    same reply makes the mismatch impossible to miss without asking anyone to go looking.
+
+    **`added` counts what is ON THE RECORD because of this call, not how much the array
+    grew.** `append_evidence` treats an identical resend as the retry it is, so a receipt that
+    was already there is added, not dropped — reporting a retry as a refusal would send an
+    agent to re-run work that is already recorded.
+
+    Report it only where evidence was actually SENT. `dropped: []` on a call that carried none
+    says "nothing was discarded" when the truth is that nobody looked, which is the reading
+    this whole field exists to prevent.
+
+    One block rather than three sibling fields, because it describes THIS CALL where the rest
+    of the reply describes the item — and because the manifest is measured: three declared
+    properties cost 36 tokens of a surface with 12 to spare, where one opaque object costs 8
+    and says the same thing at the moment it is read.
+    """
+    accepted, dropped = normalize_evidence_report(raw)
+    return {"evidence_intake": {"sent": len(_evidence_payload(raw)),
+                                "added": len(accepted), "dropped": dropped}}
 
 
 def _prepare_lesson_evidence(db: Session, item: Item, old_len: int) -> list[str]:
@@ -683,6 +761,33 @@ def refuse_if_pr_cooling_down(db, item, incoming_evidence=None) -> None:
         f"Try again in {remaining}s — this refusal clears itself, and nothing "
         "needs changing"
     )
+
+
+def set_reach(db: Session, item: Item, value: str) -> Item:
+    """Declare where this item's work lands (GRPH-832). A PERSON's call, by construction.
+
+    Deliberately NOT a field in `update_item`'s whitelist, and that omission is the whole
+    control. `update_item` is the verb every agent holds; this function is reached only from
+    `PATCH /api/items/{id}`, which takes a bearer JWT — so setting `deploy`, and clearing it
+    again, requires somebody signed in. A worker cannot mark its own ops item as ordinary and
+    proceed, which is the only way a declaration is worth anything.
+
+    Unknown values raise. Silently keeping `repo` would be the worst outcome available here:
+    the caller believes the item is marked, the divvy hands it to a child, and the refusal
+    that should have fired reads as an absence.
+    """
+    from app.services import reach as reach_svc
+
+    if value not in reach_svc.REACHES:
+        raise ValueError(
+            f"invalid reach: {value!r}; one of {', '.join(reach_svc.REACHES)}. "
+            "`repo` is work that changes files in a worktree; `deploy` is work on a running "
+            "system, which no agent may be handed."
+        )
+    item.reach = value
+    db.commit()
+    db.refresh(item)
+    return item
 
 
 def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
@@ -1216,6 +1321,13 @@ def item_dict(item: Item) -> dict:
         "built_by": item.built_by,
         "reviewed_by": item.reviewed_by,
     }
+    if (item.reach or "repo") != "repo":
+        # PRESENT ONLY WHEN IT IS NOT THE DEFAULT (GRPH-832), the same rule the rebaseline
+        # notice below follows: on the overwhelming majority of items this costs nothing, and
+        # on the ones where a reader's next move changes it is impossible to miss. Emitting
+        # `"reach": "repo"` on every row would spend the manifest's remaining headroom saying
+        # "ordinary" a thousand times.
+        out["reach"] = item.reach
     out.update(bounce_fields(item))
     # In-flight invalidation (GRPH-242/312). Present only when this item's PRD rebaselined
     # after work on it started — so it costs nothing on the overwhelming majority of reads
@@ -1350,6 +1462,79 @@ def _ready_candidates(db: Session, project_id: str | None, lease_seconds: int) -
     return out
 
 
+class ReachesOutsideTheRepo(Exception):
+    """A seat asked for an item declared to act on a running system (GRPH-832).
+
+    Separate from `OutOfScope` because the remedies have nothing in common: a scope refusal
+    means "ask your wave for work it chose", and this one means "no seat may take this, ever;
+    a person does it". Collapsing them would put both behind one message and send half the
+    readers to the wrong fix.
+    """
+
+
+class OutOfScope(Exception):
+    """This agent's SEAT was minted for one scope and the item is outside it (GRPH-827).
+
+    An exception rather than a `None`, because `claim_item` already returns `None` for "lost
+    the race" and the two are opposite instructions: lose a race and the right move is to try
+    the next candidate, ask for work outside your scope and there is no next candidate — the
+    answer will not change however many you try. That is the flattening this codebase keeps
+    finding, so it is not repeated here.
+    """
+
+
+def seat_scope(db: Session, agent_id: str | None) -> str:
+    """The PRD this agent's seat was minted for, or "" for an unscoped seat (GRPH-827).
+
+    Resolved through the AGENT rather than passed in, because the caller that would pass it is
+    the child, and the whole point is that the child does not get a vote. `--prd` on the
+    supervisor bounds what is delegated; this bounds what the delegate can then go and take for
+    itself, and one wave measured the gap at three delegated items against six self-claimed
+    ones outside the scope.
+
+    Unscoped is the honest default and stays the default: a fleet key with no enrolment, a
+    human's credential, and every seat minted before this column existed all read "". An
+    unscoped seat behaves exactly as it did.
+    """
+    if not agent_id:
+        return ""
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return ""
+    seat = db.get(Enrolment, agent.enrolment_id)
+    return (seat.prd_id or "") if seat is not None else ""
+
+
+def held_by_a_seat(db: Session, agent_id: str | None) -> bool:
+    """Is this agent a SPAWNED CHILD rather than somebody's own session? (GRPH-832)
+
+    Answered by whether it registered on an enrolment. A seat is minted for a child by a
+    planner; a person's own agent — the one behind a Claude Code window, registered on a
+    plain project key — has none. So this is the same lookup `seat_scope` makes, asking the
+    other question that credential answers.
+
+    NOT keyed on role. A worker role is what almost every agent holds, including the human's
+    own, and refusing on it would stop a person doing ops work through their own tools —
+    which is precisely the thing this is meant to leave possible.
+    """
+    if not agent_id:
+        return False
+    agent = db.get(Agent, agent_id)
+    return bool(agent is not None and agent.enrolment_id)
+
+
+def in_scope(item: Item, scope: str) -> bool:
+    """Is this item inside `scope`? An empty scope admits everything, including PRD-less work.
+
+    An item with no `prd_id` is OUTSIDE every non-empty scope, and that is a real cost rather
+    than an oversight: most bug reports carry no PRD, so a scoped wave cannot reach them at
+    all. GRPH-828 adds the second axis (a tag) so a wave can be scoped to work that was never
+    part of a PRD. Until then the operator's choice is a scoped wave or a reachable backlog,
+    and it is better that this is written down than discovered.
+    """
+    return not scope or (item.prd_id or "") == scope
+
+
 class AlreadyHolding(Exception):
     """This agent already holds a live claim, so it may not take a second (GRPH-504).
 
@@ -1420,8 +1605,21 @@ def claim_next(
             "Moving it with `update_item` does NOT release it: the status changes and the "
             "claim stays."
         )
+    # The seat's scope, resolved ONCE for the whole sweep rather than per candidate: it is a
+    # property of the caller, and reading it inside the loop would be a query per item.
+    scope = seat_scope(db, agent_id)
+    seated = held_by_a_seat(db, agent_id)
     for cand in _ready_candidates(db, project_id, lease_seconds):
         if cand.id in declined or cand.key in declined:
+            continue
+        # Filtered, not refused. An empty result here is the ordinary "nothing ready" — the
+        # caller asked for whatever was next, and outside its scope there was nothing. The
+        # refusal belongs to `claim_item`, where the caller named the item it wanted.
+        if not in_scope(cand, scope):
+            continue
+        # GRPH-832, same reasoning: the caller asked for "the next thing", so a `deploy` item
+        # is skipped rather than refused. The one it named is where the sentence belongs.
+        if (cand.reach or "repo") == "deploy" and seated:
             continue
         if pinned_elsewhere(cand, agent_id):
             continue
@@ -1530,11 +1728,39 @@ def pinned_elsewhere(item: Item, agent_id: str) -> bool:
 
 
 def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> Item | None:
-    """Claim one specific item if it's currently claimable. Used to grab a related cluster."""
+    """Claim one specific item if it's currently claimable. Used to grab a related cluster.
+
+    **The scope gate lives here and in `claim_next`, and nowhere else** (GRPH-827). These two
+    are the only writes that put an item into a holder's hands, so every path above them —
+    `claim_cluster`'s members, `next_cluster`'s neighbours, the bound seat's item at
+    registration — inherits the rule instead of restating it. A rule restated per tool is a
+    rule that one tool will be added without.
+
+    `OutOfScope` rather than `None`: see the class. A caller that treats the refusal as a lost
+    race will loop through every candidate in the project and take none of them, which is a
+    slow way to say what one sentence says.
+    """
     cutoff = utcnow() - timedelta(seconds=lease_seconds)
     it = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if it is None or not _is_claimable(it, cutoff) or pinned_elsewhere(it, agent_id):
         return None
+    if (it.reach or "repo") == "deploy" and held_by_a_seat(db, agent_id):
+        # GRPH-832. The reported escape was SELF-CLAIMED, not delegated: the ops item was the
+        # highest-scored row in the project, so it sat at the top of every worker's queue and
+        # a child took it on its own. A refusal that only guarded `delegate` would have missed
+        # the path the incident actually used.
+        raise ReachesOutsideTheRepo(
+            f"{it.key} is declared `reach=deploy` — it acts on a running system, and you are "
+            "a spawned child with a worktree and a shell. Leave it; a person does this one."
+        )
+    scope = seat_scope(db, agent_id)
+    if not in_scope(it, scope):
+        raise OutOfScope(
+            f"{it.key} is not part of {scope}, and this seat was minted for {scope}. "
+            f"The wave that provisioned you is scoped; ask it for more work rather than "
+            f"taking work it did not choose."
+            + ("" if it.prd_id else
+               f" ({it.key} carries no PRD at all, so no scoped wave can reach it.)"))
     return _try_claim(db, it, agent_id)
 
 

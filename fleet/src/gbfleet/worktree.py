@@ -360,6 +360,103 @@ def salvage(worktree: Path, message: str | None = None) -> Salvage:
     )
 
 
+def _empty_diff_shape() -> dict:
+    return {
+        "files_added": 0, "files_modified": 0, "files_deleted": 0, "files_renamed": 0,
+        "test_files": 0, "net_lines": 0, "layers": [],
+        "added": [], "modified": [], "deleted": [], "renamed": [], "paths": [],
+    }
+
+
+_TEST_PATH = re.compile(
+    r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_[^/]+$|_test\.(py|ts|tsx|js)$|"
+    r"\.test\.(ts|tsx|js)$|\.spec\.(ts|tsx|js)$",
+    re.I,
+)
+
+
+def _layer_of(path: str) -> str | None:
+    p = path.strip().replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    if "/routers/" in f"/{p}/" or p.endswith("docs/api-reference.md") or p == "docs/api-reference.md":
+        return "B1"
+    if p.endswith("mcp_server.py") or p.endswith("tool_tiers.py"):
+        return "B2"
+    if "/services/" in f"/{p}/" and p.endswith(".py"):
+        return "B3"
+    if "/models/" in f"/{p}/" or "models/__init__" in p or "alembic/versions" in p:
+        return "B4"
+    if p.startswith("web/src/features") or p.startswith("web/src/lib"):
+        return "B5"
+    if p.startswith("web/src/components/ui") or p.endswith(".css"):
+        return "B6"
+    if p.startswith("fleet/src/gbfleet/") or p.startswith("cli/") or p.startswith("fleet/"):
+        return "B7"
+    if p.startswith(".github/") or p.startswith("docker") or p.startswith("pyproject"):
+        return "B8"
+    return None
+
+
+def diff_shape_against(cwd: Path, base: str, head: str = "HEAD") -> dict:
+    """`git diff --name-status --stat` against the worktree's base (PRD-41 S1).
+
+    Counts are the contract; path lists travel with them so the server can derive
+    capabilities without a second git. A missing base is an empty shape, not a zero
+    invented from a failed command.
+    """
+    if not base:
+        return _empty_diff_shape()
+    status = _git(cwd, "diff", "--name-status", f"{base}...{head}", check=False)
+    stat = _git(cwd, "diff", "--stat", f"{base}...{head}", check=False)
+    added: list[str] = []
+    modified: list[str] = []
+    deleted: list[str] = []
+    renamed: list[str] = []
+    for line in status.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        code = parts[0][:1]
+        if code == "A" and len(parts) >= 2:
+            added.append(parts[1])
+        elif code == "M" and len(parts) >= 2:
+            modified.append(parts[1])
+        elif code == "D" and len(parts) >= 2:
+            deleted.append(parts[1])
+        elif code in ("R", "C") and len(parts) >= 3:
+            renamed.append(parts[2])
+        elif len(parts) >= 2:
+            modified.append(parts[-1])
+    insertions = deletions = 0
+    if stat.strip():
+        tail = stat.strip().splitlines()[-1]
+        ins = re.search(r"(\d+) insertion", tail)
+        dele = re.search(r"(\d+) deletion", tail)
+        insertions = int(ins.group(1)) if ins else 0
+        deletions = int(dele.group(1)) if dele else 0
+    paths = added + modified + deleted + renamed
+    layers: list[str] = []
+    for path in paths:
+        layer = _layer_of(path)
+        if layer and layer not in layers:
+            layers.append(layer)
+    return {
+        "files_added": len(added),
+        "files_modified": len(modified),
+        "files_deleted": len(deleted),
+        "files_renamed": len(renamed),
+        "test_files": sum(1 for p in paths if _TEST_PATH.search(p)),
+        "net_lines": insertions - deletions,
+        "layers": layers,
+        "added": added,
+        "modified": modified,
+        "deleted": deleted,
+        "renamed": renamed,
+        "paths": paths,
+    }
+
+
 @dataclass(frozen=True)
 class Reaped:
     disposition: Disposition
@@ -367,6 +464,9 @@ class Reaped:
     salvage: Salvage | None = None
     removed: bool = False
     reason: str = ""
+    #: PRD-41 S1. Always a dict; an empty one means "nothing against the base", which is
+    #: a real measurement, not a missing post.
+    diff_shape: dict = field(default_factory=_empty_diff_shape)
 
 
 @dataclass(frozen=True)
@@ -469,6 +569,9 @@ def reap(wt: Worktree, message: str | None = None) -> Reaped:
             seat.unlink()
 
     leftover = porcelain(wt.path) + seats_present(wt.path)
+    # Diff shape is taken AFTER salvage and BEFORE removal: uncommitted work is now on
+    # the branch, and the worktree still exists to be asked.
+    shape = diff_shape_against(wt.path, wt.base or "", "HEAD")
     if leftover:
         return Reaped(
             disposition=Disposition.LEFT_DIRTY,
@@ -476,6 +579,7 @@ def reap(wt: Worktree, message: str | None = None) -> Reaped:
             salvage=result,
             removed=False,
             reason=f"unexpected content after salvage, not forcing removal: {leftover[:5]}",
+            diff_shape=shape,
         )
 
     removal = subprocess.run(
@@ -495,8 +599,10 @@ def reap(wt: Worktree, message: str | None = None) -> Reaped:
             salvage=result,
             removed=False,
             reason=f"git refused to remove the worktree: {removal.stderr.strip()}",
+            diff_shape=shape,
         )
-    return Reaped(disposition=disposition, branch=wt.branch, salvage=result, removed=True)
+    return Reaped(disposition=disposition, branch=wt.branch, salvage=result, removed=True,
+                  diff_shape=shape)
 
 
 #: Salvage commits name the items they held, so the next spawn can resume the

@@ -121,15 +121,32 @@ again. There is no lever in the item shape either: `Item` has no type column, so
 convention in a title and invisible to the claim path. Scoping the wave is the only lever
 there is (GRPH-797).
 
-Because seats are bound (PRD-36), scoping the delegation scopes the whole wave: a child claims
-its own item and cannot call `claim_cluster` to reach around it.
+**`--prd` scopes the child's credential, not only this loop's choices.** The seat each child
+registers on is minted for that PRD, and the server filters every self-claim path against it —
+`claim_cluster`, `next_cluster`, `claim_next` and `claim_review` (GRPH-827). This paragraph
+used to say that bound seats already achieved this. They did not, and a measured wave says how
+much they did not: `--prd SA-P11` delegated three items, all inside the PRD, and the children
+then self-claimed six more, none of them in it — including an ops item whose checklist mutates
+production, which sits top of the queue on score. A worker declined that one on its own
+judgment. Judgment is not a control, and a README claiming the containment does not create it.
+
+Two consequences worth knowing before you use it:
+
+- **`--prd` cannot be combined with `--seats`.** A pre-minted seat carries no scope, so the
+  wave would report as scoped while those children could claim anything. Refused up front.
+- **Work with no PRD is unreachable by a scoped wave**, for building and for review. Most bug
+  reports have no PRD. Until a second scope axis exists (GRPH-828), the choice is a scoped
+  wave or a reachable backlog, and it is yours to make knowingly.
 
 **`--prd` refuses a server that does not support it.** An older Graphban does not reject an
 unrecognised `prd_id` — it drops the property and answers the unfiltered question, so the flag
 would drain the project *while reporting the wave as scoped*. Before the first spawn, `until`
 asks for a PRD that cannot exist: a server that filters returns nothing, one that ignores the
 argument returns the project, and the second refuses the run naming what it would otherwise
-have done (GRPH-800). Needs the server-side filter; upgrade if you see that refusal.
+have done (GRPH-800). It then reads the tool manifest and refuses again if `delegate` takes no
+`scope`, because a server can filter the divvy and still mint unscoped seats — those two halves
+shipped in different releases, and passing only the first is the wave that reports as scoped
+while its workers are not. Needs both server-side halves; upgrade if you see either refusal.
 
 ### What a child can reach, and what it cannot
 
@@ -156,9 +173,34 @@ past it, and a model that wanted to would find that in one step. The honest clai
 child reaching for a deployment CLI *by name* gets a refusal, and you read it in a log instead
 of an incident. A sandbox is what bounds a determined process; this is not one.
 
-And the other half, which no flag fixes: **an item's prose is an instruction channel.** Nothing
-checks that a description matches the touchpoints it declares, so anyone who can file a ledger
-item can write instructions for a process with a shell. Scope waves to PRDs you control.
+### The other half: an item's prose is an instruction channel
+
+A description is free text written by whoever filed the item, and it reaches the child as
+instructions. On 2026-09-08 one item's prose asked for production work and a cheap-tier worker
+did it — rotated a key, deleted rows, set environment variables on a hosted platform,
+redeployed — while its four declared touchpoints were ordinary repository files, none of which
+it modified. Touchpoints are a claim about FILES; there was no way to say an item reaches
+outside the repository at all, so that item was structurally identical to a docs change.
+
+Three layers now, and they are worth telling apart because only the first is a boundary:
+
+1. **An item can declare `reach = deploy`** (GRPH-832), and one that does is refused to every
+   seat, on every path — `delegate`, `claim_cluster`, `claim_next`, the bound-seat claim. Only
+   a signed-in person can set or clear it: the field rides on `PATCH /api/items/{id}`, which
+   takes a bearer JWT, and an agent's `update_item` refuses it outright rather than ignoring
+   it. **It depends on somebody setting it**, and every item that exists defaults to `repo`.
+2. **Prose that reads like deployment work costs the delegator one deliberate argument.**
+   `delegate` quotes the offending lines back and refuses until `acknowledge_reach=true`,
+   which is recorded against the delegation. This is a heuristic and deliberately not a
+   boundary — no reader of free text can tell "rotate the production key" from "a worker
+   rotated the production key", and this file contains both.
+3. **The child is told where the job ends** — its instruction says the worktree is the
+   boundary and to block the item rather than act on a running system. Not a control at all. A
+   worker on the reported wave did exactly this unprompted; asking every time beats hoping.
+
+What remains open, stated plainly: an agent planner can acknowledge its way past layer 2, a
+`repo` default is only as good as the person who reviewed the item, and layer 3 persuades
+rather than prevents. Scope waves to PRDs you control.
 
 ### Seeing a wave before you run it
 
@@ -173,6 +215,143 @@ mints no seat and cuts no worktree, so it can be asked while a wave is already r
 It calls the same `collision_clusters` the loop calls and applies the same split, rather than
 modelling the wave separately: a dry run that models it can reassure you about a plan the loop
 does not have.
+
+### When a wave ends because of the vendor, not the fleet
+
+A child that exits before registering reads as a broken adapter, and that is right for almost
+every case. It was wrong for one whole class. A measured wave ended
+`{"ok": false, "reason": "cap", "spawned": 6, "minted": 0}` after three children died in under
+a second each, reported as `adapter 'claude': child exited 1 before registering. stderr tail:`
+— followed by nothing, because stderr was empty. The cause was 67 bytes in `stdout.log`:
+
+```
+You've hit your session limit · resets 12:20pm (America/New_York)
+```
+
+So the wave blamed the adapter, sent the operator to the vendor CLI, and ended on `cap`, which
+means *you hit your own `--max-children`* and invites raising it.
+
+`until` now ends with `reason: "vendor_limit"` and quotes what the vendor said, including the
+reset time, and stops rather than spending the rest of its children on a wall it has already
+hit (GRPH-829). Both streams are read, and both are printed when it really is a crash — a tail
+of the wrong stream is indistinguishable from a child that said nothing at all. Only `claude`
+carries a measured string today; the base adapter matches nothing on purpose, because a
+matcher that fired on the word "limit" would relabel real crashes as billing problems.
+
+### Work recovered from a killed wave
+
+A wave opens by adopting what the last one stranded, and a tree with real work in it is
+committed as `WIP: salvaged by gbfleet`. That commit used to stay **local**: one measured
+takeover recovered 614 insertions across exactly one item's touchpoints, and the item was
+re-delegated minutes later, branched from `main`, and rebuilt every line. The work was
+recovered and lost in the same move.
+
+Salvaged work now gets the same two steps a finished child's work gets — pushed, then a draft
+PR naming the item it belongs to, with the receipt written on the item (GRPH-830). The item id
+comes from the dead child's own record, so a record written by an older supervisor still
+publishes the branch and simply has nobody to hand the receipt to. A tree whose only
+uncommitted file was the seat is still not published: `ONLY_CREDENTIAL` is not `SALVAGED`, and
+a pushed empty branch per dead child would make every crash look like work.
+
+### Why a wave is not spawning
+
+`--max-workers 3` yielding one running child is a symptom anyone can see. Why, used not to be
+readable anywhere — and on the reported wave that produced a confident wrong answer rather than
+a slow one: with the repository open and the touchpoints in hand, the operator concluded an
+item was being wrongly held and inferred directory-level clustering from the symptom. A later
+spawn into a genuinely disjoint cluster disproved it.
+
+`--dry-run` now carries two things it did not (GRPH-833):
+
+- **why each held cluster is held** — which of its areas the reservation covers, whose it is,
+  and under which rule (`exact`, `glob`, `directory`, `prefix`). `directory` is the broad one:
+  every pair of files in one directory relates, so a directory of five files collapses five
+  items into one cluster. That is a defensible clustering heuristic and a costly reservation
+  rule, and it was impossible to tell which you were looking at.
+- **the reservation table itself.** This is the one that was missing entirely, because a
+  cluster is only in the partition while its items are claimable — the moment an item is
+  claimed its cluster leaves the divvy, taking its still-blocking reservation off every read.
+  A wave with no free clusters and no held ones had nothing to show for itself at all.
+
+Each row says whether the hold is actually **blocking**. A reservation held by an agent the
+roster calls offline still exists and is already ignored (GRPH-808); seeing the row without
+that fact sends you looking for a collision that is not happening. `offline` and `retired` are
+kept apart on purpose: an offline holder's lease will lapse, a retired seat can never register
+again, and "wait" and "stop waiting" are different instructions.
+### When the machine is the limit
+
+A wave stopped mid-run with *"Background command was stopped because the system is running
+low on memory"*, the supervisor gone and its children with it. Nothing in the fleet had any
+idea: `up` could count seats, workers, children and wall-clock, and could not count the one
+resource that actually ran out. The wave summary said `3 seat(s) never redeemed`, which reads
+exactly like a cap, a crash or a broken adapter.
+
+So the spawn loop asks the kernel before each child (GRPH-842):
+
+```bash
+gbfleet doctor
+  [PASS   ] memory headroom — 8.8 GB available, 2.0 GB reserved, 0.7 GB per child: room for 9
+```
+
+```json
+"gated": ["3.1 GB available, 2.0 GB reserved: no room for another 0.7 GB child"],
+"headroom_bytes": 3328599654
+```
+
+**Both keys, always** — an empty `gated` means "nothing was refused" only when
+`headroom_bytes` is a number. `null` means the host could not be asked and the gate never
+bound, which is otherwise indistinguishable from a roomy machine.
+
+Three things about it are deliberate:
+
+- **It never blocks the first child.** A wave that spawns nothing produces nothing, and a bad
+  reading would then cost the operator everything rather than one slot. The gate binds from
+  the second child on, which is where the kill happened.
+- **An unmeasurable host does not bind it.** `hostos.available_memory` answers `None` where
+  the platform has no cheap way to ask, and `doctor` reports UNKNOWN. Grounding the fleet on
+  a question nobody could answer is the opposite failure and just as expensive.
+- **It divides a live reading; it does not model the machine.** The per-child figure is only
+  a divisor. Measured on the 24 GB box where this happened: eleven live Claude Code processes
+  came to 2.5 GB resident, the largest reading 671 MB peak `phys_footprint`, while Chrome, Arc
+  and Cursor held 7.3 GB between them and the box read `207M unused` with no fleet running at
+  all. Three children was about 2 GB. **The wave was the straw and not the load**, so a gate
+  that guessed at fleet usage would have been gating the wrong thing.
+
+A child spawned seconds ago has not reached its footprint yet, so each spawn is charged
+against the reading taken when the loop began and the verdict uses whichever of the two is
+worse. The live reading catches up within seconds and takes over.
+
+### What a wave spent, and stopping it
+
+The terminal JSON now carries a `spend` block, and every wave has one:
+
+```json
+"spend": {"tokens_in": 412000, "tokens_out": 38000, "tokens": 450000,
+          "reported": 2, "unreported": 4, "by_child": [...]}
+```
+
+**`reported` and `unreported` are the point**, not decoration. `450000 tokens` reads as the
+wave's cost, and it is not the wave's cost if four of six children were never counted — only
+vendors that print a result record contribute, and today that is `gbagent` alone. A child that
+said nothing contributes nothing, which is never the same as zero.
+
+```bash
+gbfleet until … --budget 2000000        # tokens, not currency
+```
+
+The wave ends `reason: "budget"` once the children that reported have spent that much. Running
+children are left to their own ends: killing one spends the tokens and throws away the work,
+which is the only outcome worse than going over.
+
+**In tokens because that is what can be counted.** PRD-41 §7 already defines cost for this
+system as tokens-to-sign-off, and a currency figure would need a per-vendor, per-model price
+table that goes stale in silence — a stale price is worse than none, because somebody acts on
+it.
+
+**`--budget` is refused when the adapter reports nothing** (GRPH-834). A cap over `claude`
+today is not a loose cap: nothing would ever be counted against it, so it could never fire, and
+the wave would look bounded while being unbounded. The refusal names the adapters that do
+report, before the lock and before any worktree.
 
 ### Work whose dependency has not landed
 

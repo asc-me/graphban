@@ -436,6 +436,10 @@ class ItemUpdate(BaseModel):
     # The service whitelist already accepted `fidelity` — MCP could write it while the
     # web PATCH silently could not, so the loop this item closes had no confirm button.
     fidelity: str | None = None
+    #: Where this item's work lands (GRPH-832). Accepted HERE and on no agent-facing route:
+    #: this patch takes a bearer JWT, so declaring an item `deploy` — or clearing it back to
+    #: `repo` — is a signed-in person's act and cannot be done by a credential a child holds.
+    reach: str | None = None
 
 
 class ReorderIn(BaseModel):
@@ -465,6 +469,10 @@ class ItemOut(ORMModel):
     bounce_reason: str = ""
     prd_id: str | None = _key("prd_key", default=None)
     prd_section: str = ""
+    #: `repo` or `deploy` (GRPH-832). Always present on the web read, unlike the agent-facing
+    #: renderer that omits the default — a board is where a person sets this, so the control
+    #: needs a value to bind to whether or not it has been touched.
+    reach: str = "repo"
     fidelity: str = "low"
     created_at: datetime
     updated_at: datetime

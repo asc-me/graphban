@@ -163,7 +163,7 @@ function Cells({
         {cells.map((c, i) => (
           <li key={i} className="font-mono text-[11px]">
             {c.cell.vendor}
-            {c.cell.model ? `:${c.cell.model}` : ""} · {c.cell.lane}/{c.cell.task_class}/
+            {c.cell.model ? `:${c.cell.model}` : ""} · {c.cell.capability}/
             {c.cell.size_band} · {c.signed_off}/{c.finished}
             {c.below_floor ? " (below the floor)" : ""}
           </li>

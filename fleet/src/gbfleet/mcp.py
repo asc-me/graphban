@@ -406,17 +406,13 @@ def _runner_up(resolution: dict | None, matrix=None) -> str:
 def _checked_tuning(adapter: str, tuning: "Tuning") -> "Tuning":
     """The tuning, once the adapter has agreed it can spawn with it (GRPH-813).
 
-    Here rather than inside `launch` so that building a launch to inspect it stays free.
-    The shared CLI factory (`cli.make_adapter_factory`) also asks — `up`/`until` never
-    reach this helper, and leaving the check only here was the gap GRPH-831 closed.
-    Kept on the MCP spawn path so a custom `launch_for` still cannot skip it.
+    Delegates to `adapters.checked_tuning`, which is where this moved when the CLI spawn path
+    turned out never to have called it (GRPH-831). Kept as a name here because the MCP tool
+    reads better for it, not as a second copy of the rule.
     """
-    from .adapters import ADAPTERS
+    from .adapters import checked_tuning
 
-    known = ADAPTERS.get(adapter)
-    if known is not None:
-        known.check_tuning(tuning)
-    return tuning
+    return checked_tuning(adapter, tuning)
 
 
 def call_tool(fleet: Fleet, name: str, args: dict) -> dict:

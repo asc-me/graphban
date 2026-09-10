@@ -43,6 +43,7 @@ SEAT = Seat(code="WORKER-7F3K", server_url="https://gb.invalid", api_key="gbk_se
         ("2.1.233 (Claude Code)", (2, 1, 233)),          # claude, semver
         ("2026.04.17-787b533", (2026, 4, 17)),           # cursor-agent, CalVer + hash
         ("grok 1.0.5 (5115b46bc909) [stable]", (1, 0, 5)),  # grok, semver behind a name
+        ("grok 1.0.25 (f7e67d6988e2) [stable]", (1, 0, 25)),  # ...and 25 > 5, not "2" > "5"
     ],
 )
 def test_every_real_version_string_parses(reported: str, expected: tuple):
@@ -387,8 +388,21 @@ def test_every_adapter_says_what_it_was_verified_against(name: str):
 
 @pytest.mark.parametrize("name", sorted(ADAPTERS))
 def test_the_matrix_quotes_the_version_that_was_actually_run(name: str):
-    text = MATRIX.read_text(encoding="utf-8")
-    assert ADAPTERS[name].support.verified_against in text
+    """In the vendor's own ROW, not anywhere in the document (GRPH-840).
+
+    This searched the whole file, and it is the third test here to be caught doing that
+    — see `_rows_under`, which was written for the previous two. Bumping grok's
+    `verified_against` from 1.0.5 to 1.0.25 and then reverting only the adapter left this
+    green: the prose under the matrix still says "1.0.5" in a sentence about `--help`, so
+    the guard was satisfied by a paragraph while the row it exists to police quoted a
+    version nobody had run. Which is the whole failure this pin was added to catch.
+    """
+    row = _matrix_rows().get(name)
+    assert row, f"{name} has no row in the matrix at all"
+    assert ADAPTERS[name].support.verified_against in row, (
+        f"the matrix row for {name} does not quote "
+        f"{ADAPTERS[name].support.verified_against}, the version the suite resolved.\n{row}"
+    )
 
 
 # --- against the binaries that are actually here -----------------------------------
@@ -572,3 +586,42 @@ def test_the_tuning_table_names_the_knob_each_vendor_actually_has():
                     f"{name}'s row offers {flag}, which it does not accept — "
                     f"it declares {sorted(adapter.tuning) or 'no knobs'}: {row}"
                 )
+
+
+# --- a sandboxed parent is every child's sandbox (GRPH-838) --------------------------
+
+def _grok_argv(git_repo: Path, tmp_path: Path, slot: str) -> list[str]:
+    tree = create(git_repo, tmp_path / f"sbx-{slot}", "wave", slot)
+    instruction = tmp_path / f"instr-{slot}"
+    instruction.write_text("build it", encoding="utf-8")
+    return ADAPTERS["grok"].launch(SEAT, tree, instruction, Path("/usr/bin/true")).argv
+
+
+def test_a_grok_child_under_a_sandboxed_parent_does_not_try_to_nest_one(
+        git_repo: Path, tmp_path: Path, monkeypatch):
+    """Measured 2026-09-10: a grok child under `grok --sandbox workspace` read the user
+    config's profile, tried to apply Seatbelt inside Seatbelt, and died at exit 1 with
+    "sandbox initialization failed" before registering. `--sandbox off` beats the config and
+    the child still runs inside the parent's kernel sandbox. Sabotage: drop the flag and the
+    nested attempt is back, with every other test green."""
+    from gbfleet import hostos
+
+    monkeypatch.setattr(hostos, "sandboxed", lambda: True)
+    argv = _grok_argv(git_repo, tmp_path, "1")
+
+    assert argv[argv.index("--sandbox") + 1] == "off"
+    assert argv.index("--sandbox") < argv.index("--prompt-file"), "before the prompt, like every flag"
+
+
+def test_an_unsandboxed_parent_leaves_the_operators_grok_sandbox_alone(
+        git_repo: Path, tmp_path: Path, monkeypatch):
+    """The control, and the reason the flag is conditional: from an unsandboxed parent
+    `--sandbox off` would strip a sandbox the operator chose for their grok children."""
+    from gbfleet import hostos
+
+    monkeypatch.setattr(hostos, "sandboxed", lambda: False)
+    assert "--sandbox" not in _grok_argv(git_repo, tmp_path, "2")
+
+    monkeypatch.setattr(hostos, "sandboxed", lambda: None)
+    assert "--sandbox" not in _grok_argv(git_repo, tmp_path, "3"), (
+        "an unanswerable question is not a yes")

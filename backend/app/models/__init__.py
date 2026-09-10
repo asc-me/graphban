@@ -468,6 +468,15 @@ class Item(Base):
     status: Mapped[str] = mapped_column(String, default="backlog")
     tags: Mapped[list] = mapped_column(JSON, default=list)
     touchpoints: Mapped[list] = mapped_column(JSON, default=list)  # files/globs/modules the item affects
+    #: Where this item's work LANDS: `repo` (files in a worktree) or `deploy` (a running
+    #: system — a hosted platform, a live database, a secret store). GRPH-832.
+    #:
+    #: Beside `touchpoints` because it is the same declaration one level up: touchpoints say
+    #: WHICH files, this says whether files are the whole of it. A `deploy` item is refused to
+    #: every seat — no delegation, no divvy — and only a signed-in person can set or clear it,
+    #: which is enforced by which ROUTE carries the field rather than by a check: the REST
+    #: patch takes a bearer JWT and no agent credential reaches it.
+    reach: Mapped[str] = mapped_column(String, default="repo", server_default="repo")
     effort: Mapped[int] = mapped_column(Integer, default=0)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     blocker: Mapped[str] = mapped_column(String, default="")
@@ -799,6 +808,12 @@ class Enrolment(Base):
     # delegation that asked for it. NULL on both is today's seat — the child takes work
     # through the divvy. Worker-role only: steering a reviewer to one item is refused.
     item_id: Mapped[str | None] = mapped_column(ForeignKey("items.id"), nullable=True)
+    #: The scope this seat was minted for (GRPH-827). NULL is unscoped. Read by every
+    #: self-claim path, so a child cannot walk past the wave that provisioned it: the
+    #: supervisor's `--prd` bounds what is DELEGATED, and this bounds what the child takes
+    #: on its own. Not a ForeignKey, for the reason `Item.prd_id` is not — it holds another
+    #: entity's frozen id, and a delete there must not reach into a credential's history.
+    prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
     delegation_id: Mapped[str | None] = mapped_column(String, nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1925,6 +1940,11 @@ class Delegation(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Copied at write so `expired` is stable when the setting later changes (D18).
     lease_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    #: The delegator said, deliberately, that this item's prose reads like deployment work and
+    #: the work is confined to the worktree anyway (GRPH-832). Recorded rather than merely
+    #: checked: an acknowledgement nobody can look up afterwards is a dialog box, not a record.
+    reach_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False,
+                                                     server_default=false())
 
     __table_args__ = (
         Index("ix_delegations_item_created", "item_id", "created_at"),
@@ -1976,6 +1996,16 @@ class AttemptTelemetry(Base):
     tier_declared: Mapped[str | None] = mapped_column(String(16), nullable=True)
     task_class: Mapped[str | None] = mapped_column(String(16), nullable=True)
     size_band: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    #: PRD-41 D1: the set of §5 ids this attempt exercised. JSON list, never a primary
+    #: label — a feature slice that touched a migration and a route contributes to both.
+    capabilities: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    #: Touchpoints only, recorded at `delegate` (S2). Null in S1; the column exists so
+    #: the exit-time set and the delegate-time set can differ without a second migration.
+    capabilities_at_delegate: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    #: Supervisor-only (PRD-41 §6.1). Null until the exit post; a missing shape is not a
+    #: zero-file diff.
+    diff_shape: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    tool_errors: Mapped[int | None] = mapped_column(Integer, nullable=True)
     attempt_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # ---- how it was sampled (D2) ----
@@ -2050,10 +2080,15 @@ class HarnessRollup(Base):
     vendor: Mapped[str] = mapped_column(String(32), primary_key=True)
     model: Mapped[str] = mapped_column(String(64), primary_key=True)
     binary_version: Mapped[str] = mapped_column(String(32), primary_key=True)
-    lane: Mapped[str] = mapped_column(String(16), primary_key=True)
-    tier: Mapped[str] = mapped_column(String(16), primary_key=True)
-    task_class: Mapped[str] = mapped_column(String(16), primary_key=True)
+    #: PRD-41 D3: the cell key is vendor × model × version × capability × size_band.
+    #: Lane and tier left the key; `task_class` was backfilled into this column.
+    capability: Mapped[str] = mapped_column(String(8), primary_key=True)
     size_band: Mapped[str] = mapped_column(String(1), primary_key=True)
+    #: Retained off the key so a dump from before the re-key is still readable. New
+    #: rows write empty strings; nothing aggregates on them.
+    lane: Mapped[str] = mapped_column(String(16), default="", server_default="")
+    tier: Mapped[str] = mapped_column(String(16), default="", server_default="")
+    task_class: Mapped[str] = mapped_column(String(16), default="", server_default="")
 
     finished: Mapped[int] = mapped_column(Integer, default=0)
     signed_off: Mapped[int] = mapped_column(Integer, default=0)
@@ -2070,6 +2105,7 @@ class HarnessRollup(Base):
     fallback: Mapped[int] = mapped_column(Integer, default=0)
     explicit: Mapped[int] = mapped_column(Integer, default=0)
     unknown: Mapped[int] = mapped_column(Integer, default=0)
+    probe: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     rolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -2088,10 +2124,11 @@ class PlatformRollup(Base):
     vendor: Mapped[str] = mapped_column(String(32), primary_key=True)
     model: Mapped[str] = mapped_column(String(64), primary_key=True)
     binary_version: Mapped[str] = mapped_column(String(32), primary_key=True)
-    lane: Mapped[str] = mapped_column(String(16), primary_key=True)
-    tier: Mapped[str] = mapped_column(String(16), primary_key=True)
-    task_class: Mapped[str] = mapped_column(String(16), primary_key=True)
+    capability: Mapped[str] = mapped_column(String(8), primary_key=True)
     size_band: Mapped[str] = mapped_column(String(1), primary_key=True)
+    lane: Mapped[str] = mapped_column(String(16), default="", server_default="")
+    tier: Mapped[str] = mapped_column(String(16), default="", server_default="")
+    task_class: Mapped[str] = mapped_column(String(16), default="", server_default="")
 
     orgs_contributing: Mapped[int] = mapped_column(Integer, default=0)
     finished: Mapped[int] = mapped_column(Integer, default=0)
@@ -2142,7 +2179,7 @@ class HarnessLessonMark(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
-    #: vendor:model:lane:tier:task_class:size_band — the cell key WITHOUT the version.
+    #: vendor:model:capability:size_band — the cell key WITHOUT the version (PRD-41 D3).
     cell_key: Mapped[str] = mapped_column(String(200))
     first_crossed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     shard_id: Mapped[str | None] = mapped_column(String, nullable=True)

@@ -1,13 +1,15 @@
 """Grok CLI (`grok`, whose `--help` header calls it "Grok Build").
 
-Verified against 1.0.5 on macOS, and re-measured against 1.0.5 on Windows 11 for
-GRPH-575 — where the per-child seat question was settled and the answer turned out to
-be the opposite of what this file used to say.
+Verified against 1.0.5 on macOS, re-measured against 1.0.5 on Windows 11 for GRPH-575 —
+where the per-child seat question was settled and the answer turned out to be the
+opposite of what this file used to say — and re-measured again on 1.0.25 for GRPH-840,
+where the *rest* of the child's MCP config turned out to have moved (fact 3 below).
 
 `--prompt-file <PATH>` is a first-class flag, so the enrolment code reaches the child
 as a file path and needs neither argv nor a stdin pipe.
 
-**Per-child seats work, via two facts that must both hold.**
+**Per-child seats work, via two facts that must both hold** — and a third that says what
+else is in the child's tool list alongside the seat.
 
 1. `--scope project` config is `./.grok/config.toml` — per-directory, so each child's
    worktree carries its own. It is TOML with `mcp_servers` (snake_case), and grok reads
@@ -27,6 +29,27 @@ docs name (`~/.grok/docs/user-guide/10-hooks.md`: trust is granted by `/hooks-tr
 governs repo-local MCP/LSP servers"). Being undocumented in `--help` is why `support`
 pins the verified version: if a future grok drops it, the seat goes quiet again.
 
+3. **The seat is not the only MCP config a child loads, and `GROK_HOME` no longer
+   bounds the set.** 1.0.25 merges five sources, measured in this order (first wins a
+   name collision, matching what grok's own `07-mcp-servers.md` now documents as
+   `config.toml > Claude > Cursor > .mcp.json`):
+
+       <worktree>/.grok/config.toml   the seat
+       ~/.grok/config.toml            operator, relocatable by GROK_HOME
+       ~/.claude.json                 operator's Claude Code config — NOT relocatable
+       ~/.cursor/mcp.json, <project>/.cursor/mcp.json
+       <project>/.mcp.json
+
+   The seat still wins outright, which is the property the fleet depends on. What
+   changed is the tail: on 1.0.25 a grok child also inherits every MCP server in the
+   operator's `~/.claude.json` and `~/.cursor/mcp.json`, and `GROK_HOME` moves neither —
+   it relocates only grok's own directory. The documented off-switches
+   (`[compat.claude] mcps = false`, `GROK_CLAUDE_MCPS_ENABLED=false`) were measured and
+   are **not honoured by 1.0.25**; only moving `HOME` moves those files, which is POSIX-
+   only. So there is no supported way to hand a grok child a bounded tool list. It does
+   not endanger the seat — a same-named `graphban` in any of them loses — but it is why
+   a child may report tools nobody in gbfleet configured.
+
 One thing the supervisor must not forget: a grok child whose MCP server fails to
 connect **still runs to completion normally**. Measured — with a deliberately invalid
 key the process answered its prompt and exited 0. A broken seat is not a crash; it is
@@ -37,6 +60,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .. import hostos
 from .. import seat as seat_mod
 from ..seat import Seat
 from ..spawn import Launch
@@ -47,12 +71,15 @@ from . import Adapter, Support, Tuning
 class Grok(Adapter):
     name = "grok"
     binary = "grok"
-    support = Support(minimum=(1, 0), maximum=(2, 0), verified_against="1.0.5")
+    support = Support(minimum=(1, 0), maximum=(2, 0), verified_against="1.0.25")
     notes = (
         "--prompt-file takes the instruction by path, so nothing sensitive touches argv "
         "or stdin. Per-child seat is project-scoped .grok/config.toml (TOML, not JSON) "
         "and needs --trust: an untrusted folder starts no repo-local server and says "
-        "nothing about it. A failed seat does not fail the run."
+        "nothing about it. It wins every name collision, but 1.0.25 also merges the "
+        "operator's ~/.claude.json and ~/.cursor/mcp.json into the child and GROK_HOME "
+        "does not bound them. A failed seat does not fail the run. Under a sandboxed parent "
+        "the child is launched --sandbox off and inherits the parent's (GRPH-838)."
     )
 
     seat_format = seat_mod.TOML
@@ -112,7 +139,7 @@ class Grok(Adapter):
         return frozenset(names) or None
 
     def debug_argv(self, path: Path) -> list[str]:
-        """`--debug` plus `--debug-file <FILE>`, both in `--help` on 1.0.5.
+        """`--debug` plus `--debug-file <FILE>`, both in `--help` on 1.0.5 and 1.0.25.
 
         Both are passed. `--debug-file` alone is not documented to imply `--debug` the
         way claude's does, and asking for a file without turning logging on is the sort
@@ -134,6 +161,14 @@ class Grok(Adapter):
                 # is never started, and the child runs to completion with no tools and
                 # no complaint. It is the difference between a worker and an expense.
                 "--trust",
+                # GRPH-838. Under a sandboxed parent the child reads the user config's
+                # `[sandbox] profile` and tries to apply Seatbelt inside Seatbelt: "sandbox
+                # initialization failed: Operation not permitted", exit 1, never registered.
+                # `--sandbox off` beats the config (Grok's own resolution order) and the child
+                # still sits inside the parent's kernel sandbox, so nothing is given up.
+                # Conditional, deliberately: from an unsandboxed parent the same flag would
+                # strip a sandbox the operator chose for grok children.
+                *(["--sandbox", "off"] if hostos.sandboxed() else []),
                 *(self.debug_argv(debug_file) if debug_file else []),
                 "--prompt-file", str(instruction_file),
                 "--cwd", str(tree.path),

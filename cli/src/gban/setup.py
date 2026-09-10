@@ -320,6 +320,22 @@ def grok_key(path: Path) -> str:
     return str(((server.get("headers") or {}).get("X-API-Key")) or "")
 
 
+def grok_sandbox_profile(path: Path) -> str:
+    """Grok's `[sandbox] profile`, or "" when unset or `off` (GRPH-838).
+
+    Read for what it does to CHILDREN: the profile is applied to the Grok process, `gbfleet
+    mcp` is its child, and every vendor spawned from there inherits it. Setup cannot fix that
+    — it is the operator's sandbox — but a setup that reports PASS and leaves the first wave
+    to die at exit 1 with four different vendor errors is the silence this line replaces.
+    """
+    try:
+        blob = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return ""
+    profile = str(((blob.get("sandbox") or {}).get("profile")) or "")
+    return "" if profile == "off" else profile
+
+
 def dest_key(dest: Dest, repo: Path) -> str:
     if dest.dialect == "toml":
         return grok_key(dest.path)
@@ -460,6 +476,19 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
                                    "at a path this harness can write (Grok's sandbox allows "
                                    "~/.grok/ and the repository, not a sibling)"))
                 continue
+            profile = grok_sandbox_profile(grok or grok_home())
+            if profile:
+                home = Path.home()
+                lines.append(_line("config", UNKNOWN, "sandbox",
+                                   f"Grok's [sandbox] profile = {profile!r} is inherited by "
+                                   "gbfleet and every child it spawns: a claude child reads "
+                                   "'Not logged in' (the Keychain is unreachable from inside), "
+                                   "qwen-code and cursor-agent die writing ~/.qwen and "
+                                   "~/.cursor unless a custom profile grants them (extends = "
+                                   f'"workspace", read_write = ["{home / ".qwen"}", '
+                                   f'"{home / ".cursor"}"]), and a grok child runs --sandbox '
+                                   "off inside this one. `gbfleet doctor --adapter <vendor>` "
+                                   "gives the verdict per vendor (GRPH-838)"))
         servers = entries(url, project, key, repo, workspace=workspace)
         try:
             write_dest(dest, repo, servers)

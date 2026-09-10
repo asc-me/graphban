@@ -23,6 +23,32 @@ def telemetry_ack(request):
         return None
     return httpx.Response(200, json={"ok": True, "path": request.url.path})
 
+#: What the memory gate reads in a test that has not said otherwise (GRPH-842). Enough
+#: for any wave the suite runs, so a gate meant to catch a full MACHINE cannot be tripped
+#: by whatever else the developer has open.
+ROOMY = 64 * 1024**3
+
+
+@pytest.fixture(autouse=True)
+def roomy_machine(request, monkeypatch):
+    """Pin `hostos.available_memory` unless a test asks for the real one.
+
+    Without this the suite's result depends on how much Chrome is open: `Limits()` defaults
+    to a 700 MB-per-child charge, the fake children this suite spawns cost nothing like
+    that, and a laptop under real pressure would fail a dozen tests that have nothing to do
+    with memory. A suite that passes on a quiet machine and fails on a busy one reports the
+    developer's desktop, not the code.
+
+    Opt out with `@pytest.mark.real_memory` — `test_hostos` does, because checking that the
+    platform branch still answers is the one thing a pinned reader cannot check.
+    """
+    if request.node.get_closest_marker("real_memory"):
+        return
+    from gbfleet import hostos
+
+    monkeypatch.setattr(hostos, "available_memory", lambda: ROOMY)
+
+
 def _git(root: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=root, capture_output=True, text=True, check=True
@@ -217,6 +243,15 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
     )
 
     write("exits_immediately", "pass\n")
+
+    # A child that prints the result record `gbagent` actually prints (PRD-38 D3), so a wave
+    # can be measured end to end rather than through a patched reader. GRPH-834.
+    write(
+        "reports_its_tokens",
+        "import json, pathlib\n"
+        "pathlib.Path('feature.py').write_text('print(1)\\n', encoding='utf-8')\n"
+        "print(json.dumps({'gbagent': {'turns': 3, 'tokens_in': 700, 'tokens_out': 400}}))\n",
+    )
 
     # P30 D6: gbagent.loop EXIT_HANDOFF_FAILED / EXIT_STUCK. Distinct from a supervisor
     # crash — 70 is a failed run (item still claimed); 75 is a completed give-up.

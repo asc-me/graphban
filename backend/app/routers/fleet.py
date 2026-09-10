@@ -413,6 +413,10 @@ class AttemptIn(BaseModel):
     #: server withholds the item from `claim_review` — an item is not reviewable until its
     #: work is reachable.
     branch_published: bool | None = None
+    #: PRD-41 S1: the supervisor's diff against the base, and malformed-tool count when
+    #: the adapter can see them. Null is not zero (PRD-38 D3).
+    diff_shape: dict | None = None
+    tool_errors: int | None = None
 
 
 @router.post("/attempts")
@@ -450,6 +454,7 @@ def post_attempt(body: AttemptIn, db: Session = Depends(get_db),
             "exit_meaning": body.exit_meaning, "adapter_launched": body.adapter,
             "branch_published_at": (harness_svc.published_now()
                                     if body.branch_published else None),
+            "diff_shape": body.diff_shape, "tool_errors": body.tool_errors,
         })
     db.commit()
     # 202 means stored but not yet counted, and it is the honest answer to every post that

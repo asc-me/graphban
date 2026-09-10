@@ -189,6 +189,118 @@ def test_a_key_that_cannot_mint_is_refused_at_start(
     assert "mint_enrolment" in result.detail
 
 
+def test_a_scoped_wave_refuses_pre_minted_seats(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-827. A `--seats` file carries seats minted elsewhere, and those carry no scope. A
+    wave that accepted both flags would report as scoped while the children holding those
+    seats could claim the whole project — the finding this scope exists to close, walked back
+    in through a flag combination.
+
+    Refused as a config error, which is before the lock and before any worktree: nothing is
+    half-built and no credential has been spent."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        seats=[Seat(code="WORKER-AAAAAA", server_url="http://gb.invalid", api_key=KEY)],
+        prd="SA-P11",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+    )
+    assert result.reason == "config"
+    assert result.exit == 2
+    assert "--prd SA-P11" in result.detail and "pre-minted seats" in result.detail
+    assert "Drop --seats" in result.detail, "refused without saying how to proceed"
+
+
+def test_a_wave_reports_what_its_children_spent(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-834. End to end, through the vendor's own result record rather than a patched
+    reader: the child prints the line `gbagent` prints, the supervisor reads it where it
+    already reads it for the ledger, and the summary carries it.
+
+    Sabotage: drop the `wave.spend[...]` write in `_report_exits` — every attempt record still
+    posts, the ledger still gets the numbers, and the summary reports zero."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        git_repo, _factory(scripts, "reports_its_tokens", adapter="gbagent"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="gbagent",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    spend = result.as_json()["spend"]
+
+    assert spend["tokens_in"] == 700 and spend["tokens_out"] == 400
+    assert spend["reported"] == 1
+    assert spend["by_child"][0]["turns_used"] == 3
+
+
+def test_a_wave_ends_when_the_budget_is_reached(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """THE ONE THAT MATTERS: the loop actually stops. A budget that only appeared in the
+    summary would be a report, not a control.
+
+    The wave FINISHES rather than aborting — a running child is left to its own end, because
+    killing it spends the tokens and throws away the work."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        git_repo, _factory(scripts, "reports_its_tokens", adapter="gbagent"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="gbagent",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=5,
+        limits=Limits(max_workers=1), budget=500,
+    )
+
+    assert result.reason == "budget"
+    assert result.exit == 1
+    assert "1100 measured" in result.detail
+    assert result.as_json()["spend"]["tokens"] == 1100
+
+
+def test_a_budget_the_adapter_cannot_enforce_refuses_the_wave(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """THE ONE THAT MAKES THE FLAG HONEST, pinned through `run` rather than by calling the
+    check directly — the unit test for `check_budget_can_be_enforced` passes whether or not
+    anything calls it, which is how a guard ends up defined and never wired.
+
+    Sabotage: remove the call in `run` and the unit test stays green while `--budget 500
+    --adapter claude` silently means nothing."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="claude",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1), budget=500,
+    )
+
+    assert result.reason == "config"
+    assert result.exit == 2
+    assert "reports no token usage" in result.detail
+    assert result.spawned == 0, "spent a child before refusing the flag"
+
+
+def test_a_generous_budget_does_not_end_the_wave(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """The control. A cap that fires on every wave is a cap nobody sets."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        git_repo, _factory(scripts, "reports_its_tokens", adapter="gbagent"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="gbagent",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1), budget=10_000_000,
+    )
+
+    assert result.reason == "idle"
+
+
 def test_idle_when_there_is_no_work_no_review_and_no_lease(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):
@@ -745,3 +857,68 @@ def test_a_review_row_still_leased_to_its_builder_gets_a_reviewer(
     assert len(roles) >= 1, "no reviewer was spawned for a row nobody is reviewing"
     assert result.reason in ("review-unsigned", "idle"), result.reason
 
+
+
+def test_the_terminal_json_says_what_the_machine_had(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """`gated: []` is only readable beside a headroom number (GRPH-842).
+
+    On its own an empty list has two meanings and they are opposites: nothing was refused,
+    or nothing could be measured and the gate never bound. An unattended `until` reporting
+    the second as the first is a machine quietly running one child a wave.
+    """
+    from gbfleet import headroom, hostos
+
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    monkeypatch.setattr(hostos, "available_memory", lambda: None)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    payload = result.as_json()
+    assert payload["gated"] == []
+    assert payload["headroom_bytes"] is None, "an unmeasured host must not read as a roomy one"
+
+    monkeypatch.setattr(hostos, "available_memory", lambda: 9 * headroom.DEFAULT_CHILD_MEMORY)
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert result.as_json()["headroom_bytes"] == 9 * headroom.DEFAULT_CHILD_MEMORY
+
+
+def test_until_waits_for_room_instead_of_spawning_into_a_full_machine(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """The command that was actually killed (GRPH-842).
+
+    `until` does not call `supervisor.run` — it drives `_start` one seat at a time from its
+    own loop, so gating the wave function alone left the one command in the incident
+    ungated. A live child plus a full machine must hold the next spawn.
+
+    Not a `CapError`: memory comes back when a child exits, and ending an unattended drain
+    on a passing spike throws away the rest of the backlog.
+    """
+    from gbfleet import headroom, hostos
+
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=4, workers=3, sticky_clusters=True)
+    monkeypatch.setattr(hostos, "available_memory", lambda: headroom.RESERVE)
+    result = run(
+        git_repo, _factory(scripts, "sleeper"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0.05, empty_ticks=3,
+        limits=Limits(max_workers=4, max_children=2, child_wall_clock=1.0),
+    )
+    payload = result.as_json()
+    assert payload["gated"], "a live child on a full machine must hold the next spawn"
+    assert "no room" in payload["gated"][0]
+    assert payload["headroom_bytes"] == headroom.RESERVE
+    assert result.reason != "config", payload
