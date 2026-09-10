@@ -1730,6 +1730,31 @@ export type HarnessCost =
   | { comparable: true; reported: number; finished: number; tokens_per_signed_off: number; tokens_in: number; tokens_out: number }
   | { comparable: false; reported: number; finished: number; reason: string };
 
+export interface HarnessSampleSide {
+  n: number;
+  finished: number;
+  signed_off: number;
+  rate: number | null;
+  below_floor: boolean;
+}
+
+export interface HarnessUtilization {
+  tokens: HarnessCost;
+  turns: {
+    median: number | null;
+    budget_median: number | null;
+    reported: number;
+    finished: number;
+    reason: string | null;
+  };
+  budget_hits: {
+    hits: number;
+    reported: number;
+    share: number | null;
+    reason: string | null;
+  };
+}
+
 export interface HarnessCell {
   key: HarnessCellKey;
   kind?: "family" | "leaf" | "other";
@@ -1753,6 +1778,39 @@ export interface HarnessCell {
   by_project?: { project_id: string; finished: number; signed_off: number }[];
   platform?: HarnessPlatformCell | null;
   leaves?: HarnessCell[];
+  /** Natural and probe sides. Never summed into `rate` (PRD-41 D7). */
+  samples?: { natural: HarnessSampleSide; probe: HarnessSampleSide };
+  utilization?: HarnessUtilization;
+  build_cost?: HarnessCost;
+  review_cost?: HarnessCost;
+}
+
+export interface HarnessReviewCell {
+  kind: "review";
+  family: "F";
+  label: string;
+  key: HarnessCellKey;
+  checked: number;
+  below_floor: boolean;
+  f1: { rate: number | null; n: number; false_bounce: number; confirmed: number };
+  f2: {
+    rate: number | null;
+    n: number;
+    miss: number;
+    miss_unconfirmed: number;
+    confirmed: number;
+    label: string;
+  };
+  f3: { unclassified: number | null; n: number; other: number };
+}
+
+export interface HarnessProbeSuggestion {
+  trigger: "new_row" | "version_change";
+  vendor: string;
+  model: string;
+  binary_version: string;
+  estimated_tokens: HarnessCost | { comparable: boolean; reported: number; finished: number; reason?: string; tokens_per_attempt?: number };
+  reason: string;
 }
 
 /** The platform average for one cell, or a stated reason there is none (PRD-38 D13). */
@@ -1781,6 +1839,8 @@ export interface HarnessReport {
     families: Record<string, string[]>;
     labels: Record<string, string>;
   };
+  review_cells?: HarnessReviewCell[];
+  probe_suggestions?: HarnessProbeSuggestion[];
 }
 
 /** PRD-38 D7: a drafted recommendation. Nothing here is applied by the page. */

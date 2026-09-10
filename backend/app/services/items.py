@@ -153,6 +153,11 @@ def create_item(
     if item.touchpoints:
         from app.services.clustering import sync_code_links
         sync_code_links(db, item)
+    if any(isinstance(t, str) and t.strip().lower() == "bug" for t in (item.tags or [])):
+        from app.services import harness as harness_svc
+        harness_svc.on_bug_filed(db, item)
+        if commit:
+            db.commit()
     return item
 
 
@@ -1076,6 +1081,10 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
         # catching a caller that quietly skips extraction is the reason they exist.
         run = defer or (lambda fn: fn())
         run(lambda: enrich_completed_item(item.id))
+    if any(isinstance(t, str) and t.strip().lower() == "bug" for t in (item.tags or [])):
+        from app.services import harness as harness_svc
+        harness_svc.on_bug_updated(db, item)
+        db.commit()
     return item
 
 

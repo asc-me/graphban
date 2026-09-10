@@ -252,4 +252,64 @@ describe("Harness page", () => {
     show();
     expect(await screen.findByTestId("harness-other")).toHaveTextContent("other — 3");
   });
+
+  it("shows natural and probe as two numbers, never a sum", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        cells: [cell({
+          finished: 4, signed_off: 4, rate: 1,
+          samples: {
+            natural: { n: 4, finished: 4, signed_off: 4, rate: 1, below_floor: true },
+            probe: { n: 2, finished: 2, signed_off: 0, rate: 0, below_floor: true },
+          },
+        })],
+      }),
+    );
+    show();
+    const samples = await screen.findByTestId("harness-samples");
+    expect(samples).toHaveTextContent("natural 4/4");
+    expect(samples).toHaveTextContent("probe 0/2");
+    expect(samples).not.toHaveTextContent("6");
+  });
+
+  it("shows utilization with reporting counts and build vs review cost", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        cells: [cell({
+          utilization: {
+            tokens: { comparable: true, reported: 5, finished: 5, tokens_per_signed_off: 1000,
+                      tokens_in: 5000, tokens_out: 0 },
+            turns: { median: 4, budget_median: 10, reported: 5, finished: 5, reason: null },
+            budget_hits: { hits: 1, reported: 5, share: 0.2, reason: null },
+          },
+          build_cost: { comparable: true, reported: 5, finished: 5, tokens_per_signed_off: 1000,
+                        tokens_in: 5000, tokens_out: 0 },
+          review_cost: { comparable: false, reported: 0, finished: 3,
+                         reason: "not comparable: 0 of 3 reviews reported tokens" },
+        })],
+      }),
+    );
+    show();
+    expect(await screen.findByTestId("harness-utilization")).toHaveTextContent("median 4 turns");
+    expect(screen.getByTestId("harness-build-review-cost")).toHaveTextContent("cost of build");
+    expect(screen.getByTestId("harness-build-review-cost")).toHaveTextContent("cost of review");
+  });
+
+  it("labels F cells by touchpoint overlap and greys them under five checks", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        review_cells: [{
+          kind: "review", family: "F", label: "by touchpoint overlap",
+          key: { vendor: "anthropic", model: "sonnet", binary_version: "", capability: "A4", size_band: "S" },
+          checked: 3, below_floor: true,
+          f1: { rate: null, n: 0, false_bounce: 0, confirmed: 0 },
+          f2: { rate: 0.3, n: 3, miss: 1, miss_unconfirmed: 1, confirmed: 1, label: "by touchpoint overlap" },
+          f3: { unclassified: null, n: 0, other: 0 },
+        }],
+      }),
+    );
+    show();
+    expect(await screen.findByTestId("harness-f2-label")).toHaveTextContent("by touchpoint overlap");
+    expect(screen.getByTestId("harness-review-below-floor")).toHaveTextContent("3 of 5");
+  });
 });

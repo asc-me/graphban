@@ -594,6 +594,37 @@ def check_supervision_mode(report: Report) -> None:
     )
 
 
+def _probe_suggestion_lines(report: Report, suggestions: list, *, looked_up: bool) -> None:
+    """Criterion 9: a probe suggestion is on the page AND in doctor.
+
+    An empty list is "none" only after a successful lookup. Not looking it up and
+    printing "none" would be the absence that reads as a clean result.
+    """
+    if not looked_up:
+        report.add(
+            "probe suggestions", UNKNOWN, "not looked up",
+            "pass --server and set GBFLEET_API_KEY; nothing runs without a person starting it",
+        )
+        return
+    if not suggestions:
+        report.add("probe suggestions", PASS, "none")
+        return
+    for sug in suggestions:
+        if not isinstance(sug, dict):
+            continue
+        vendor = sug.get("vendor") or ""
+        model = sug.get("model") or ""
+        trigger = sug.get("trigger") or "new_row"
+        version = sug.get("binary_version") or ""
+        report.add(
+            f"probe {vendor}:{model}",
+            PASS,
+            f"{trigger}"
+            + (f" binary_version={version}" if version else "")
+            + " — nothing runs without a person starting it",
+        )
+
+
 def check_matrix(report: Report, matrix_path: str | None = None, *, server: str = "",
                  api_key: str | None = None, project: str = "") -> None:
     """PRD-37 D11: every row against this machine, then what each tier resolves to UNDER THE
@@ -615,10 +646,13 @@ def check_matrix(report: Report, matrix_path: str | None = None, *, server: str 
             report.add(f"matrix {name}", FAIL, "an adapter file exists but is not registered and "
                        "has no matrix row saying so", f"add a row with status = \"unregistered\" for {name}")
     profile, policy, measured, bands, cap_measured = None, None, None, None, None
+    suggestions: list = []
+    looked_up = False
     if server and api_key:
         client = Graphban(base_url=server, api_key=api_key, project_id=project or None)
         try:
-            profile, policy, note, measured, bands, cap_measured = read_status(client)
+            profile, policy, note, measured, bands, cap_measured, suggestions = read_status(client)
+            looked_up = "unreachable" not in note
         finally:
             client.close()
         report.add("matrix preferences", PASS if "unreachable" not in note else UNKNOWN, note,
@@ -626,6 +660,7 @@ def check_matrix(report: Report, matrix_path: str | None = None, *, server: str 
     else:
         report.add("matrix preferences", UNKNOWN, "no server or key: resolving with no profile, no policy, nothing measured",
                    "pass --server and set GBFLEET_API_KEY to see what a spawn would actually resolve")
+    _probe_suggestion_lines(report, suggestions, looked_up=looked_up)
     installed = matrix_mod.installed_checker()
     for name, status, detail in matrix_mod.doctor_lines(mat, installed, profile, policy,
                                                         measured, bands, cap_measured):

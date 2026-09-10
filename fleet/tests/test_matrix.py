@@ -507,7 +507,8 @@ def test_doctor_resolves_under_the_servers_profile_policy_and_measured_cells(git
                 # rate. Shown to a person; never read by the resolver.
                 {("gbagent", "qwen3.6:35b-a3b-coding-mtp-det", "backend", "cheap"):
                     {"S": m.Sample(1.0, 2), "L": m.Sample(0.67, 3)}},
-                {})
+                {},
+                [])
     import gbfleet.mcp as mcp_mod
     monkeypatch.setattr(mcp_mod, "read_status", fake_read)
     monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
@@ -528,6 +529,46 @@ def test_doctor_without_a_server_says_the_resolutions_assume_nothing(git_repo: P
     report = doctor_mod.run(repo=git_repo, out=io.StringIO())
     by = {f.name: f for f in report.findings}
     assert by["matrix preferences"].status == "UNKNOWN" and "no profile" in by["matrix preferences"].detail
+    assert by["probe suggestions"].status == "UNKNOWN"
+    assert "not looked up" in by["probe suggestions"].detail
+
+
+def test_doctor_prints_probe_suggestions_from_fleet_status(git_repo: Path, monkeypatch):
+    """9. A suggestion on the page must also appear in doctor. Sabotage: skip
+    `_probe_suggestion_lines` and this finding is missing."""
+    from gbfleet import doctor as doctor_mod
+
+    def fake_read(client):
+        return (None, m.Policy(), "profile: none; policy: none; measured cells: 0",
+                {}, {}, {},
+                [{"vendor": "acme", "model": "nova", "binary_version": "1.0.0",
+                  "trigger": "new_row", "n": 1}])
+    import gbfleet.mcp as mcp_mod
+    monkeypatch.setattr(mcp_mod, "read_status", fake_read)
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
+    report = doctor_mod.run(repo=git_repo, out=io.StringIO(), server="http://gb.invalid",
+                            api_key="k", project="p")
+    hit = next(f for f in report.findings if f.name == "probe acme:nova")
+    assert hit.status == "PASS"
+    assert "new_row" in hit.detail
+    assert "person starting it" in hit.detail
+
+
+def test_doctor_empty_probe_suggestions_are_none_only_after_a_lookup(
+        git_repo: Path, monkeypatch):
+    from gbfleet import doctor as doctor_mod
+
+    def fake_read(client):
+        return (None, m.Policy(), "profile: none; policy: none; measured cells: 0",
+                {}, {}, {}, [])
+    import gbfleet.mcp as mcp_mod
+    monkeypatch.setattr(mcp_mod, "read_status", fake_read)
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
+    report = doctor_mod.run(repo=git_repo, out=io.StringIO(), server="http://gb.invalid",
+                            api_key="k")
+    by = {f.name: f for f in report.findings}
+    assert by["probe suggestions"].status == "PASS"
+    assert by["probe suggestions"].detail == "none"
 
 
 # ---- GRPH-732: the child is told what to declare, because only the supervisor knows ------------

@@ -2044,7 +2044,9 @@ class AttemptTelemetry(Base):
     wall_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    exit_meaning: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 256: the gbagent budget-exhaust sentence is 76 chars and the handoff
+    # refusal is longer; VARCHAR(64) truncated them on Postgres (GRPH-819).
+    exit_meaning: Mapped[str | None] = mapped_column(String(256), nullable=True)
     adapter_launched: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     derived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -2113,6 +2115,11 @@ class HarnessRollup(Base):
     explicit: Mapped[int] = mapped_column(Integer, default=0)
     unknown: Mapped[int] = mapped_column(Integer, default=0)
     probe: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    #: PRD-41 §7.3 / S3. Sums and counts, never an average: a missing turn is "not
+    #: reported", and dividing by finished would turn that into a zero.
+    turns_used: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    turns_reported: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    budget_hits: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     rolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -2143,6 +2150,9 @@ class PlatformRollup(Base):
     #: The largest share of `finished` any single contributor holds, 0-1. Stored rather than
     #: recomputed at read, because the raw per-org counts do not survive into this table.
     top_org_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    turns_used: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    turns_reported: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    budget_hits: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     rolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -2194,6 +2204,77 @@ class HarnessLessonMark(Base):
     __table_args__ = (
         Index("ix_harness_lesson_marks_cell", "project_id", "cell_key", unique=True),
     )
+
+
+class HarnessReviewCheck(Base):
+    """One later check on a review verdict (PRD-41 D6).
+
+    F1–F3 have no ground truth at verdict time. A sign-off followed by a bug on overlapping
+    touchpoints is a miss; a bounce followed by CI green on the same head and a human
+    override is a false bounce. Rows rather than counters so a withdrawal (bug closed
+    not-a-bug or `unrelated`) can recompute the reviewer's cells forward and back within
+    90 days. One row per reviewed attempt × reviewer; `kind` and `unconfirmed` move in
+    place as later events land.
+    """
+
+    __tablename__ = "harness_review_checks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    #: The BUILDER's finished attempt — the work that was reviewed.
+    delegation_id: Mapped[str] = mapped_column(String, index=True)
+    item_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    reviewer_agent_id: Mapped[str] = mapped_column(String, index=True)
+    reviewer_vendor: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    reviewer_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: signed_off | bounced
+    verdict: Mapped[str] = mapped_column(String(16))
+    #: miss | false_bounce | confirmed | withdrawn
+    kind: Mapped[str] = mapped_column(String(16))
+    #: True only for a miss written at bug filing, before the bug closes.
+    unconfirmed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                              nullable=False)
+    #: Capabilities of the WORK reviewed, not of the reviewer.
+    capabilities: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    size_band: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    bounce_category: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    head_commit: Mapped[str | None] = mapped_column(String, nullable=True)
+    contradicted_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    verdict_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_harness_review_checks_verdict", "delegation_id", "reviewer_agent_id",
+              unique=True),
+    )
+
+
+class CapabilityProbeRun(Base):
+    """One operator-started probe panel (PRD-41 D7, D8).
+
+    Drawn from the instance's own closed items that carry a red sabotage. Runs through
+    the ordinary delegate → bound seat → review path on a scratch project with
+    `sampled = probe`. One model and one leaf (or family, when the panel is too thin
+    for a leaf) at a time. Nothing here starts on a schedule.
+    """
+
+    __tablename__ = "capability_probe_runs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    #: The project the panel was chosen FROM.
+    source_project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    #: The scratch project the delegations run on.
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    trigger: Mapped[str] = mapped_column(String(16))  # new_row | version_change
+    vendor: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(64))
+    binary_version: Mapped[str] = mapped_column(String(32), default="")
+    capability: Mapped[str] = mapped_column(String(8))
+    item_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    estimated_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class AssistantThread(Base):

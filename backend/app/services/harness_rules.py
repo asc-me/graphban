@@ -236,8 +236,27 @@ def cards(db: Session, project_id: str, *, window_days: int | None = None) -> li
     out += _promote_and_demote(report, rows, statuses)
     out += _reweight(db, project_id, report, rows)
     out += _policy(db, project_id, report, rows)
-    order = {"R2": 0, "R4": 1, "R1": 2, "R3": 3}
+    out += _probe_suggestions(report)
+    order = {"R2": 0, "R4": 1, "R1": 2, "R3": 3, "probe": 4}
     return sorted(out, key=lambda c: (order.get(c.rule, 9), c.key))
+
+
+def _probe_suggestions(report: dict) -> list[Card]:
+    """D8: a newly declared vendor/model/version, never a schedule (criterion 9)."""
+    out: list[Card] = []
+    for sug in report.get("probe_suggestions") or []:
+        target = f"{sug['vendor']}:{sug['model']}"
+        out.append(Card(
+            rule="probe",
+            title=f"Probe {target}",
+            detail=sug.get("reason") or "a harness first resolved with no cell for it",
+            draft={"target": target, "trigger": sug["trigger"],
+                   "binary_version": sug.get("binary_version") or "",
+                   "estimated_tokens": sug.get("estimated_tokens"),
+                   "scheduled": False},
+            thresholds={"scheduled": False, "floor": harness_svc.FLOOR},
+        ))
+    return out
 
 
 def _siblings(report: dict, cell: dict) -> list[dict]:

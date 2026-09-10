@@ -1794,7 +1794,9 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     item.review_takes = 0
     item.status = "done"
     from app.services import delegation as delegation_svc
+    from app.services import harness as harness_svc
     delegation_svc.on_outcome(db, item, "signed_off")
+    harness_svc.record_review_verdict(db, item, agent_id, "signed_off")
     if danger:
         # A self-review that leaves no trace is indistinguishable from a reviewed one, and the
         # whole bargain of danger mode is that it is VISIBLE. Recorded as a receipt rather than
@@ -1856,7 +1858,9 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     # exactly where a reasonless bounce would — the rejection arrives, the fix does not.
     item.bounce_reason = reason.strip()
     from app.services import delegation as delegation_svc
+    from app.services import harness as harness_svc
     delegation_svc.on_outcome(db, item, "bounced")
+    harness_svc.record_review_verdict(db, item, agent_id, "bounced")
     item.blocker = ""
     db.commit()
     db.refresh(item)

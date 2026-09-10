@@ -69,7 +69,23 @@ SIZE_L_TOUCHPOINTS, SIZE_L_CHARS = 6, 2400
 #: parameter, and the explanation is the feature.
 WINDOW_DAYS = 90
 
+#: D6. A constant, not a setting: every card that cites a miss says the same window.
+#: Criterion 6's sabotage is widening this to 15 — a fixture at 14 days 12 hours must
+#: stay a non-event.
+REVIEW_WINDOW_DAYS = 14
+#: Withdrawal recomputes F cells forward and back this far; beyond it the miss stands.
+WITHDRAWAL_DAYS = 90
+
 SAMPLED = ("first_choice", "fallback", "explicit", "unknown", "probe")
+REVIEW_KINDS = ("miss", "false_bounce", "confirmed", "withdrawn")
+PROBE_TRIGGERS = ("new_row", "version_change")
+#: D11's contribution field set. Criterion 31 adds `probe` (the sampling count) and
+#: nothing else — no path, item, reviewer or repository name.
+CONTRIBUTION_KEYS = frozenset({
+    "capability", "size_band", "vendor", "model", "binary_version", "week",
+    "finished", "signed_off",
+    "first_choice", "fallback", "explicit", "unknown", "probe",
+})
 
 
 class AttemptRefused(Exception):
@@ -670,6 +686,10 @@ def record_launch(db: Session, *, target: Target, winner: str | None,
                  "project_id": seat.project_id, "item_id": seat.item_id})
     row.report_count = (row.report_count or 0) + 1
     row.reported_at = _now()
+    # A probe launch is sampled as probe from the moment it is posted, not only after
+    # derive: the panel's rows have to be labelled before any outcome arrives (D7).
+    if row.chosen_source == "probe":
+        row.sampled = "probe"
     # A launch post that arrives after the outcome must not leave `sampled` at what it was
     # derived to be with no winner to compare against.
     if row.derived_at is not None and row.delegation_id:
@@ -880,7 +900,8 @@ def roll(db: Session, project_id: str, *, weeks: set[str] | None = None) -> int:
             cell = buckets.setdefault((week, *key), {
                 "finished": 0, "signed_off": 0, "bounced": 0, "seconds": [],
                 "tokens_in": 0, "tokens_out": 0, "tokens_reported": 0, "signed_off_reported": 0,
-                "first_choice": 0, "fallback": 0, "explicit": 0, "unknown": 0, "probe": 0})
+                "first_choice": 0, "fallback": 0, "explicit": 0, "unknown": 0, "probe": 0,
+                "turns_used": 0, "turns_reported": 0, "budget_hits": 0})
             cell["finished"] += 1
             cell["signed_off"] += 1 if row.outcome == "signed_off" else 0
             cell["bounced"] += 1 if row.outcome == "bounced" else 0
@@ -894,6 +915,11 @@ def roll(db: Session, project_id: str, *, weeks: set[str] | None = None) -> int:
                 cell["tokens_out"] += row.tokens_out or 0
                 cell["tokens_reported"] += 1
                 cell["signed_off_reported"] += 1 if row.outcome == "signed_off" else 0
+            if row.turns_used is not None:
+                cell["turns_used"] += int(row.turns_used)
+                cell["turns_reported"] += 1
+            if _is_budget_hit(row.exit_meaning):
+                cell["budget_hits"] += 1
             cell[row.sampled if row.sampled in SAMPLED else "unknown"] += 1
 
     touched = weeks if weeks is not None else {k[0] for k in buckets}
@@ -916,6 +942,8 @@ def roll(db: Session, project_id: str, *, weeks: set[str] | None = None) -> int:
             signed_off_reported=cell["signed_off_reported"],
             first_choice=cell["first_choice"], fallback=cell["fallback"],
             explicit=cell["explicit"], unknown=cell["unknown"], probe=cell["probe"],
+            turns_used=cell["turns_used"], turns_reported=cell["turns_reported"],
+            budget_hits=cell["budget_hits"],
             rolled_at=now))
     db.flush()
     return len(buckets)
@@ -991,6 +1019,23 @@ def _cost(tokens_in: int, tokens_out: int, reported: int, signed_off_reported: i
             "tokens_in": tokens_in, "tokens_out": tokens_out}
 
 
+def _is_budget_hit(exit_meaning: str | None) -> bool:
+    """The share §7.3 reads. Matched on the gbagent wording, not a loose 'budget'."""
+    text = (exit_meaning or "").lower()
+    return "turn budget spent" in text or "budget exhaust" in text
+
+
+def _side(finished: int, signed_off: int) -> dict:
+    """One sampling side of a cell. Never added to the other side's rate."""
+    return {
+        "n": finished,
+        "finished": finished,
+        "signed_off": signed_off,
+        "rate": round(signed_off / finished, 3) if finished else None,
+        "below_floor": finished < FLOOR,
+    }
+
+
 def report(db: Session, project_id: str, *, window_days: int | None = None,
            versions: str = "current", overlay: bool = False) -> dict:
     """The Harness page's whole read: one entry per cell, each with its weekly series.
@@ -1006,11 +1051,14 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
     cutoff = week_of(_now() - timedelta(days=window))
     rows = [r for r in db.scalars(select(HarnessRollup).where(
         HarnessRollup.project_id == project_id)).all() if r.week >= cutoff]
-    out = _shape(rows, window=window, versions=versions)
+    facts = cell_facts(db, [project_id], cutoff)
+    out = _shape(rows, window=window, versions=versions, facts=facts)
     out["project_id"] = project_id
     out["scope"] = "project"
     out["capability_set"] = capability_catalog()
     out["coverage"] = _coverage(db, [project_id], cutoff)
+    out["review_cells"] = review_cells(db, [project_id])
+    out["probe_suggestions"] = probe_suggestions(db, project_id)
     if overlay:
         attach_platform(db, out)
     return out
@@ -1031,7 +1079,8 @@ def _coverage(db: Session, project_ids: list[str], cutoff: str) -> dict:
             "rate": round(with_leaf / attempts, 3) if attempts else None}
 
 
-def _shape(rows: list, *, window: int, versions: str, per_project: bool = False) -> dict:
+def _shape(rows: list, *, window: int, versions: str, per_project: bool = False,
+           facts: dict | None = None) -> dict:
     """Turn rollup rows into the page's cells. Shared by the project and org reads, because
     an org view that aggregated differently from the project view would be a second
     definition of the same number."""
@@ -1093,7 +1142,7 @@ def _shape(rows: list, *, window: int, versions: str, per_project: bool = False)
         if versions == "current" and version != newest[(vendor, model)] and version != previous.get(
                 (vendor, model)):
             continue
-        leaves.append({
+        leaf = {
             "key": dict(zip(CELL_KEYS, key)),
             "finished": cell["finished"],
             "signed_off": cell["signed_off"],
@@ -1110,7 +1159,11 @@ def _shape(rows: list, *, window: int, versions: str, per_project: bool = False)
             "series": sorted(cell["series"], key=lambda p: p["week"]),
             "by_project": [{"project_id": pid, **counts}
                            for pid, counts in sorted(cell["by_project"].items())],
-        })
+        }
+        fact = (facts or {}).get(key)
+        if fact is not None:
+            _apply_fact(leaf, fact)
+        leaves.append(leaf)
     out = _as_grid(leaves)
     return {
         "window_days": window,
@@ -1183,7 +1236,7 @@ def _as_grid(leaves: list[dict]) -> list[dict]:
         cost = members[0]["cost"] if len(members) == 1 else {
             "comparable": False, "reported": 0, "finished": finished,
             "reason": "family rollup: cost is on the leaves"}
-        out.append({
+        family_row = {
             "kind": "family",
             "family": family,
             "label": "family rollup",
@@ -1205,7 +1258,35 @@ def _as_grid(leaves: list[dict]) -> list[dict]:
                            for pid, counts in sorted(by_project.items())],
             "leaves": [{**m, "kind": "leaf", "family": family,
                         "label": m["key"]["capability"]} for m in members],
-        })
+        }
+        if any("samples" in m for m in members):
+            nat_f = sum((m.get("samples") or {}).get("natural", {}).get("finished", 0)
+                        for m in members)
+            nat_s = sum((m.get("samples") or {}).get("natural", {}).get("signed_off", 0)
+                        for m in members)
+            prb_f = sum((m.get("samples") or {}).get("probe", {}).get("finished", 0)
+                        for m in members)
+            prb_s = sum((m.get("samples") or {}).get("probe", {}).get("signed_off", 0)
+                        for m in members)
+            family_row["samples"] = {"natural": _side(nat_f, nat_s), "probe": _side(prb_f, prb_s)}
+            family_row["finished"] = nat_f
+            family_row["signed_off"] = nat_s
+            family_row["rate"] = family_row["samples"]["natural"]["rate"]
+            family_row["below_floor"] = nat_f < FLOOR
+            family_row["utilization"] = members[0].get("utilization") if len(members) == 1 else {
+                "tokens": cost,
+                "turns": {"median": None, "budget_median": None, "reported": 0, "finished": nat_f,
+                          "reason": "family rollup: turns are on the leaves"},
+                "budget_hits": {"hits": 0, "reported": 0, "share": None,
+                                "reason": "family rollup: budget hits are on the leaves"},
+            }
+            family_row["build_cost"] = members[0].get("build_cost", cost) if len(members) == 1 else {
+                "comparable": False, "reported": 0, "finished": nat_f,
+                "reason": "family rollup: cost is on the leaves"}
+            family_row["review_cost"] = members[0].get("review_cost") if len(members) == 1 else {
+                "comparable": False, "reported": 0, "finished": 0,
+                "reason": "family rollup: review cost is on the leaves"}
+        out.append(family_row)
     return out
 
 
@@ -1393,12 +1474,15 @@ def org_report(db: Session, org_id: str, *, window_days: int | None = None,
     cutoff = week_of(_now() - timedelta(days=window))
     rows = [r for r in db.scalars(select(HarnessRollup).where(
         HarnessRollup.project_id.in_(projects))).all() if r.week >= cutoff] if projects else []
-    out = _shape(rows, window=window, versions=versions, per_project=True)
+    facts = cell_facts(db, projects, cutoff) if projects else {}
+    out = _shape(rows, window=window, versions=versions, per_project=True, facts=facts)
     out["org_id"] = org_id
     out["scope"] = "org"
     out["projects"] = projects
     out["capability_set"] = capability_catalog()
     out["coverage"] = _coverage(db, projects, cutoff)
+    out["review_cells"] = review_cells(db, projects)
+    out["probe_suggestions"] = []
     if overlay:
         attach_platform(db, out)
     return out
@@ -1514,3 +1598,732 @@ def platform_roll(db: Session) -> int:
         written += 1
     db.flush()
     return written
+
+
+# ---- PRD-41 S3: sampling split, utilization, review checks, probes --------------------------
+
+def _is_bug_item(item) -> bool:
+    tags = [t.strip().lower() for t in (getattr(item, "tags", None) or []) if isinstance(t, str)]
+    return "bug" in tags
+
+
+def _is_not_a_bug(item) -> bool:
+    tags = [t.strip().lower().replace("_", "-") for t in (getattr(item, "tags", None) or [])
+            if isinstance(t, str)]
+    return "not-a-bug" in tags
+
+
+def _touch_overlap(a, b) -> bool:
+    left = {_norm_path(p) for p in (a or []) if isinstance(p, str) and p.strip()}
+    right = {_norm_path(p) for p in (b or []) if isinstance(p, str) and p.strip()}
+    return bool(left & right)
+
+
+def _red_sabotage(item) -> bool:
+    for ev in getattr(item, "evidence", None) or []:
+        if isinstance(ev, dict) and ev.get("kind") == "sabotage" and int(ev.get("tests_failed") or 0) >= 1:
+            return True
+    return False
+
+
+def _suite_green_on(item, head: str | None) -> bool:
+    """CI green on THIS head. No head is not a match — criterion 6 is same-head."""
+    from app.services import items as items_svc
+
+    if not head:
+        return False
+    for att in items_svc.attestation_receipts(getattr(item, "evidence", None)):
+        if att.get("commit") != head:
+            continue
+        for pred in att.get("predicates") or []:
+            if isinstance(pred, dict) and pred.get("name") == "suite_green" and pred.get("passed") is True:
+                return True
+    return False
+
+
+def _reviewer_declared(db: Session, agent_id: str | None) -> tuple[str, str]:
+    from app.models import Agent
+    from app.services.delegation import UNDECLARED
+
+    agent = db.get(Agent, agent_id) if agent_id else None
+    caps = (agent.capabilities or {}) if agent is not None else {}
+    vendor = caps.get("vendor") if isinstance(caps.get("vendor"), str) and caps.get("vendor") else UNDECLARED
+    model = caps.get("model") if isinstance(caps.get("model"), str) and caps.get("model") else (
+        "" if vendor != UNDECLARED else UNDECLARED)
+    return vendor, model
+
+
+def _apply_fact(leaf: dict, fact: dict) -> None:
+    """Overwrite the pooled totals with the natural side; keep probe beside it, never summed."""
+    natural = fact["natural"]
+    probe = fact["probe"]
+    leaf["samples"] = {"natural": _side(natural["finished"], natural["signed_off"]),
+                       "probe": _side(probe["finished"], probe["signed_off"])}
+    # The number on the cell is the natural rate. Summing the two is criterion 8's sabotage.
+    leaf["finished"] = natural["finished"]
+    leaf["signed_off"] = natural["signed_off"]
+    leaf["rate"] = leaf["samples"]["natural"]["rate"]
+    leaf["below_floor"] = natural["finished"] < FLOOR
+    leaf["utilization"] = fact["utilization"]
+    leaf["build_cost"] = fact["build_cost"]
+    leaf["review_cost"] = fact["review_cost"]
+    leaf["cost"] = fact["build_cost"]
+
+
+def cell_facts(db: Session, project_ids: list[str], cutoff: str) -> dict[tuple, dict]:
+    """Natural vs probe, utilization, build vs review cost — from raw rows, per cell.
+
+    Rollups pool sampling into one finished count. The page must not. Computing the split
+    here, from the attempts, is what keeps a probe n and a natural n from becoming one
+    rate (criterion 8).
+    """
+    if not project_ids:
+        return {}
+    rows = [r for r in db.scalars(select(AttemptTelemetry).where(
+        AttemptTelemetry.project_id.in_(project_ids),
+        AttemptTelemetry.derived_at.is_not(None))).all()
+            if week_of(r.derived_at) >= cutoff]
+    facts: dict[tuple, dict] = {}
+    for row in rows:
+        side = "probe" if row.sampled == "probe" else "natural"
+        for key in _cell_keys_of(row):
+            cell = facts.setdefault(key, {
+                "natural": {"finished": 0, "signed_off": 0, "tokens_in": 0, "tokens_out": 0,
+                            "tokens_reported": 0, "signed_off_reported": 0},
+                "probe": {"finished": 0, "signed_off": 0, "tokens_in": 0, "tokens_out": 0,
+                          "tokens_reported": 0, "signed_off_reported": 0},
+                "turns": [], "budgets": [], "turns_reported": 0,
+                "budget_hits": 0, "exit_reported": 0,
+            })
+            bucket = cell[side]
+            bucket["finished"] += 1
+            if row.outcome == "signed_off":
+                bucket["signed_off"] += 1
+            if row.tokens_in is not None or row.tokens_out is not None:
+                bucket["tokens_in"] += row.tokens_in or 0
+                bucket["tokens_out"] += row.tokens_out or 0
+                bucket["tokens_reported"] += 1
+                bucket["signed_off_reported"] += 1 if row.outcome == "signed_off" else 0
+            if side == "natural":
+                if row.turns_used is not None:
+                    cell["turns"].append(float(row.turns_used))
+                    cell["turns_reported"] += 1
+                    if row.turn_budget is not None:
+                        cell["budgets"].append(float(row.turn_budget))
+                if row.exit_meaning is not None:
+                    cell["exit_reported"] += 1
+                    if _is_budget_hit(row.exit_meaning):
+                        cell["budget_hits"] += 1
+    review_costs = _review_costs_by_work_cap(db, project_ids)
+    for key, cell in facts.items():
+        nat, probe = cell["natural"], cell["probe"]
+        turns_med = int(_median(cell["turns"])) if cell["turns"] else None
+        budget_med = int(_median(cell["budgets"])) if cell["budgets"] else None
+        hits = cell["budget_hits"]
+        exit_n = cell["exit_reported"]
+        if not cell["turns_reported"]:
+            turns = {"median": None, "budget_median": None, "reported": 0,
+                     "finished": nat["finished"],
+                     "reason": f"not comparable: 0 of {nat['finished']} attempts reported turns"}
+        else:
+            turns = {"median": turns_med, "budget_median": budget_med,
+                     "reported": cell["turns_reported"], "finished": nat["finished"],
+                     "reason": None}
+        if not exit_n:
+            budget = {"hits": 0, "reported": 0, "share": None,
+                      "reason": f"not comparable: 0 of {nat['finished']} attempts reported an exit"}
+        else:
+            budget = {"hits": hits, "reported": exit_n,
+                      "share": round(hits / exit_n, 3), "reason": None}
+        build = _cost(nat["tokens_in"], nat["tokens_out"], nat["tokens_reported"],
+                      nat["signed_off_reported"], nat["finished"])
+        cap = key[3]
+        review = review_costs.get((key[0], key[1], cap, key[4])) or {
+            "comparable": False, "reported": 0, "finished": 0,
+            "reason": "no checked reviews for this capability"}
+        cell["utilization"] = {"tokens": build, "turns": turns, "budget_hits": budget}
+        cell["build_cost"] = build
+        cell["review_cost"] = review
+    return facts
+
+
+def _review_costs_by_work_cap(db: Session, project_ids: list[str]) -> dict[tuple, dict]:
+    """Reviewer tokens keyed on the WORK's capability, never summed with build cost."""
+    from app.models import HarnessReviewCheck
+
+    if not project_ids:
+        return {}
+    checks = db.scalars(select(HarnessReviewCheck).where(
+        HarnessReviewCheck.project_id.in_(project_ids),
+        HarnessReviewCheck.kind != "withdrawn")).all()
+    if not checks:
+        return {}
+    # Reviewer attempts are not their own telemetry rows. Cost of review is therefore
+    # "not reported" until a later slice posts reviewer tokens; the two numbers still
+    # exist as two numbers, which is the load-bearing claim (criterion 17).
+    out: dict[tuple, dict] = {}
+    for check in checks:
+        for cap in (check.capabilities or []):
+            key = (check.reviewer_vendor or "", check.reviewer_model or "", cap,
+                   check.size_band or "")
+            seen = out.setdefault(key, {"finished": 0})
+            seen["finished"] += 1
+    return {k: {"comparable": False, "reported": 0, "finished": v["finished"],
+                "reason": f"not comparable: 0 of {v['finished']} reviews reported tokens"}
+            for k, v in out.items()}
+
+
+def contribution_row(rollup) -> dict:
+    """D11 field set plus the probe sampling count. Criterion 31's key-set."""
+    return {
+        "capability": rollup.capability,
+        "size_band": rollup.size_band,
+        "vendor": rollup.vendor,
+        "model": rollup.model,
+        "binary_version": rollup.binary_version,
+        "week": rollup.week,
+        "finished": rollup.finished,
+        "signed_off": rollup.signed_off,
+        "first_choice": rollup.first_choice,
+        "fallback": rollup.fallback,
+        "explicit": rollup.explicit,
+        "unknown": rollup.unknown,
+        "probe": getattr(rollup, "probe", 0) or 0,
+    }
+
+
+def contribution_rows_for(db: Session, project_id: str) -> list[dict]:
+    rows = db.scalars(select(HarnessRollup).where(
+        HarnessRollup.project_id == project_id)).all()
+    return [contribution_row(r) for r in rows]
+
+
+# ---- D6: review competence ------------------------------------------------------------------
+
+def record_review_verdict(db: Session, item, reviewer_agent_id: str, verdict: str) -> None:
+    """Write the check at the verdict. The nightly pass then confirms, misses, or withdraws it.
+
+    Swallowed at the call: a telemetry row must never fail the sign-off or bounce it describes.
+    """
+    try:
+        _record_review_verdict(db, item, reviewer_agent_id, verdict)
+    except Exception:  # noqa: BLE001
+        logger.exception("harness: record_review_verdict failed for %s", getattr(item, "id", None))
+
+
+def _record_review_verdict(db: Session, item, reviewer_agent_id: str, verdict: str) -> None:
+    from app.models import AttemptTelemetry, HarnessReviewCheck
+
+    if verdict not in ("signed_off", "bounced") or not reviewer_agent_id:
+        return
+    tel = db.scalar(select(AttemptTelemetry).where(
+        AttemptTelemetry.item_id == item.id).order_by(AttemptTelemetry.derived_at.desc()))
+    if tel is None or not tel.delegation_id:
+        return
+    existing = db.scalar(select(HarnessReviewCheck).where(
+        HarnessReviewCheck.delegation_id == tel.delegation_id,
+        HarnessReviewCheck.reviewer_agent_id == reviewer_agent_id))
+    vendor, model = _reviewer_declared(db, reviewer_agent_id)
+    caps = list(tel.capabilities or [])
+    now = _now()
+    if existing is None:
+        existing = HarnessReviewCheck(
+            id=f"hrc_{uuid.uuid4().hex[:12]}",
+            project_id=item.project_id,
+            delegation_id=tel.delegation_id,
+            item_id=item.id,
+            reviewer_agent_id=reviewer_agent_id,
+            reviewer_vendor=vendor,
+            reviewer_model=model,
+            verdict=verdict,
+            kind="confirmed",
+            unconfirmed=False,
+            capabilities=caps,
+            size_band=tel.size_band,
+            bounce_category=tel.bounce_category if verdict == "bounced" else None,
+            head_commit=getattr(item, "head_commit", None) or None,
+            checked_at=now,
+            verdict_at=tel.derived_at or now,
+        )
+        db.add(existing)
+    else:
+        existing.verdict = verdict
+        existing.reviewer_vendor = vendor
+        existing.reviewer_model = model
+        existing.capabilities = caps
+        existing.size_band = tel.size_band
+        existing.bounce_category = tel.bounce_category if verdict == "bounced" else None
+        existing.head_commit = getattr(item, "head_commit", None) or existing.head_commit
+        existing.checked_at = now
+        if existing.verdict_at is None:
+            existing.verdict_at = tel.derived_at or now
+    _recompute_check(db, existing)
+    db.flush()
+
+
+def check_reviews(db: Session, project_id: str | None = None) -> int:
+    """Nightly pass over the 14-day window. Recomputes every check; returns rows written."""
+    from app.models import HarnessReviewCheck
+
+    stmt = select(HarnessReviewCheck)
+    if project_id:
+        stmt = stmt.where(HarnessReviewCheck.project_id == project_id)
+    rows = list(db.scalars(stmt).all())
+    for row in rows:
+        _recompute_check(db, row)
+    db.flush()
+    return len(rows)
+
+
+def on_bug_filed(db: Session, bug) -> None:
+    """A filed bug on overlapping touchpoints is a miss (unconfirmed), inside 14 days."""
+    try:
+        _on_bug_event(db, bug)
+    except Exception:  # noqa: BLE001
+        logger.exception("harness: on_bug_filed failed for %s", getattr(bug, "id", None))
+
+
+def on_bug_updated(db: Session, bug) -> None:
+    try:
+        _on_bug_event(db, bug)
+    except Exception:  # noqa: BLE001
+        logger.exception("harness: on_bug_updated failed for %s", getattr(bug, "id", None))
+
+
+def _on_bug_event(db: Session, bug) -> None:
+    from app.models import HarnessReviewCheck, Item, WorkClassification
+
+    if not _is_bug_item(bug):
+        return
+    checks = db.scalars(select(HarnessReviewCheck).where(
+        HarnessReviewCheck.project_id == bug.project_id,
+        HarnessReviewCheck.verdict == "signed_off",
+        HarnessReviewCheck.kind != "false_bounce")).all()
+    classification = db.scalar(select(WorkClassification).where(
+        WorkClassification.item_id == bug.id))
+    unrelated = classification is not None and classification.outcome == "unrelated"
+    for check in checks:
+        item = db.get(Item, check.item_id) if check.item_id else None
+        if item is None or item.id == bug.id:
+            continue
+        if not _touch_overlap(item.touchpoints, bug.touchpoints):
+            continue
+        verdict_at = _aware(check.verdict_at)
+        filed_at = _aware(getattr(bug, "created_at", None))
+        if verdict_at is None or filed_at is None:
+            continue
+        delta = filed_at - verdict_at
+        if delta < timedelta(0) or delta > timedelta(days=REVIEW_WINDOW_DAYS):
+            continue
+        # Withdrawal recomputes within 90 days of the verdict (criterion 30).
+        if (_now() - verdict_at) > timedelta(days=WITHDRAWAL_DAYS) and check.kind == "miss":
+            continue
+        check.contradicted_by = bug.id
+        if _is_not_a_bug(bug) or unrelated:
+            check.kind = "withdrawn"
+            check.unconfirmed = False
+        elif bug.status == "done":
+            check.kind = "miss"
+            check.unconfirmed = False
+        else:
+            check.kind = "miss"
+            check.unconfirmed = True
+        check.checked_at = _now()
+    db.flush()
+
+
+def _recompute_check(db: Session, check) -> None:
+    """Confirm, miss, false-bounce or withdraw from later events. Idempotent."""
+    from app.models import Item, WorkClassification
+
+    item = db.get(Item, check.item_id) if check.item_id else None
+    if item is None:
+        return
+    verdict_at = _aware(check.verdict_at) or _aware(check.checked_at) or _now()
+    now = _now()
+
+    if check.verdict == "bounced":
+        # Same head the bounce stored, not the item's current head (a later green on a
+        # different revision is not this bounce being wrong). And a human sign_off
+        # (`reviewed_by`), not any path that stamps status=done.
+        head = check.head_commit or None
+        if head and _suite_green_on(item, head) and item.reviewed_by:
+            check.kind = "false_bounce"
+            check.unconfirmed = False
+            check.contradicted_by = check.contradicted_by or item.id
+        elif now - verdict_at > timedelta(days=REVIEW_WINDOW_DAYS) and check.kind != "false_bounce":
+            check.kind = "confirmed"
+            check.unconfirmed = False
+        check.checked_at = now
+        return
+
+    # signed_off: look for a later bug on overlapping touchpoints.
+    bugs = [b for b in db.scalars(select(Item).where(
+        Item.project_id == check.project_id, Item.id != item.id)).all() if _is_bug_item(b)]
+    matched = None
+    for bug in bugs:
+        if not _touch_overlap(item.touchpoints, bug.touchpoints):
+            continue
+        filed_at = _aware(bug.created_at)
+        if filed_at is None:
+            continue
+        delta = filed_at - verdict_at
+        if delta < timedelta(0) or delta > timedelta(days=REVIEW_WINDOW_DAYS):
+            continue
+        matched = bug
+        break
+    if matched is None:
+        if now - verdict_at > timedelta(days=REVIEW_WINDOW_DAYS) and check.kind not in (
+                "miss", "withdrawn"):
+            check.kind = "confirmed"
+            check.unconfirmed = False
+        check.checked_at = now
+        return
+    if (now - verdict_at) > timedelta(days=WITHDRAWAL_DAYS) and check.kind == "miss":
+        check.checked_at = now
+        return
+    classification = db.scalar(select(WorkClassification).where(
+        WorkClassification.item_id == matched.id))
+    unrelated = classification is not None and classification.outcome == "unrelated"
+    check.contradicted_by = matched.id
+    if _is_not_a_bug(matched) or unrelated:
+        check.kind = "withdrawn"
+        check.unconfirmed = False
+    elif matched.status == "done":
+        check.kind = "miss"
+        check.unconfirmed = False
+    else:
+        check.kind = "miss"
+        check.unconfirmed = True
+    check.checked_at = now
+
+
+def review_cells(db: Session, project_ids: list[str]) -> list[dict]:
+    """F1–F3 cells keyed on the reviewed work's capabilities, grey below five checks.
+
+    Separate from `cells` so a builder cell and a review cell for the same vendor cannot
+    be mistaken for one number. The F2 label is 'by touchpoint overlap' because that is
+    the whole of the attribution (criterion 30).
+    """
+    from app.models import HarnessReviewCheck
+
+    if not project_ids:
+        return []
+    checks = [c for c in db.scalars(select(HarnessReviewCheck).where(
+        HarnessReviewCheck.project_id.in_(project_ids))).all()
+              if c.kind != "withdrawn"]
+    buckets: dict[tuple, dict] = {}
+    for check in checks:
+        caps = [c for c in (check.capabilities or []) if c in CAPABILITY_LEAVES] or [FAMILY_OTHER]
+        for cap in caps:
+            key = (check.reviewer_vendor or "", check.reviewer_model or "", cap,
+                   check.size_band or "")
+            cell = buckets.setdefault(key, {
+                "checked": 0, "bounced": 0, "signed_off": 0,
+                "false_bounce": 0, "bounce_confirmed": 0, "unclassified": 0,
+                "miss": 0, "miss_unconfirmed": 0, "signoff_confirmed": 0,
+            })
+            cell["checked"] += 1
+            if check.verdict == "bounced":
+                cell["bounced"] += 1
+                if check.kind == "false_bounce":
+                    cell["false_bounce"] += 1
+                elif check.kind == "confirmed":
+                    cell["bounce_confirmed"] += 1
+                if (check.bounce_category or "other") == "other":
+                    cell["unclassified"] += 1
+            else:
+                cell["signed_off"] += 1
+                if check.kind == "miss" and check.unconfirmed:
+                    cell["miss_unconfirmed"] += 1
+                elif check.kind == "miss":
+                    cell["miss"] += 1
+                elif check.kind == "confirmed":
+                    cell["signoff_confirmed"] += 1
+
+    out = []
+    for (vendor, model, cap, band), cell in sorted(buckets.items()):
+        n = cell["checked"]
+        below = n < FLOOR
+        bounced = cell["bounced"]
+        precision_den = cell["false_bounce"] + cell["bounce_confirmed"]
+        f1 = round(cell["bounce_confirmed"] / precision_den, 3) if precision_den else None
+        recall_den = cell["miss"] + cell["miss_unconfirmed"] + cell["signoff_confirmed"]
+        miss_rate = round((cell["miss"] + cell["miss_unconfirmed"]) / recall_den, 3) if recall_den else None
+        unclassified = round(cell["unclassified"] / bounced, 3) if bounced else None
+        out.append({
+            "kind": "review",
+            "family": "F",
+            "label": "by touchpoint overlap",
+            "key": {"vendor": vendor, "model": model, "binary_version": "",
+                    "capability": cap, "size_band": band},
+            "checked": n,
+            "below_floor": below,
+            "f1": {"rate": f1, "n": precision_den, "false_bounce": cell["false_bounce"],
+                   "confirmed": cell["bounce_confirmed"]},
+            "f2": {"rate": miss_rate, "n": recall_den,
+                   "miss": cell["miss"], "miss_unconfirmed": cell["miss_unconfirmed"],
+                   "confirmed": cell["signoff_confirmed"],
+                   "label": "by touchpoint overlap"},
+            "f3": {"unclassified": unclassified, "n": bounced,
+                   "other": cell["unclassified"]},
+        })
+    return out
+
+
+# ---- D7 / D8: probes ------------------------------------------------------------------------
+
+def probe_candidates(db: Session, project_id: str) -> dict:
+    """Closed items with a red sabotage, grouped by leaf, family fallback (criterion 8)."""
+    from app.models import Item
+
+    closed = db.scalars(select(Item).where(
+        Item.project_id == project_id, Item.status == "done")).all()
+    by_leaf: dict[str, list[dict]] = {leaf: [] for leaf in CAPABILITY_LEAVES}
+    for item in closed:
+        if not _red_sabotage(item):
+            continue
+        caps = [c for c in capabilities(item, None, {
+            "outcome": "signed_off", "evidence": item.evidence or []})
+                if c in CAPABILITY_LEAVES]
+        payload = {
+            "id": item.id,
+            "key": item.key if hasattr(item, "key") else item.id,
+            "title": item.title,
+            "capabilities": caps,
+            "touchpoints": list(item.touchpoints or []),
+        }
+        if not caps:
+            continue
+        for cap in caps:
+            by_leaf[cap].append(payload)
+    # Family fallback: a leaf with too few red-sabotage items is not a panel of its
+    # own. The page groups at family instead so a small instance still gets a cell.
+    families: dict[str, dict] = {}
+    for fam, leaves in FAMILIES.items():
+        if fam == FAMILY_OTHER:
+            continue
+        items = []
+        seen: set[str] = set()
+        thin = []
+        for leaf in leaves:
+            group = by_leaf[leaf]
+            if len(group) < FLOOR:
+                thin.append(leaf)
+            for it in group:
+                if it["id"] not in seen:
+                    seen.add(it["id"])
+                    items.append(it)
+        families[fam] = {
+            "leaf_ready": [leaf for leaf in leaves if len(by_leaf[leaf]) >= 1],
+            "fallback": len(items) > 0 and all(len(by_leaf[leaf]) < FLOOR for leaf in leaves),
+            "n": len(items),
+            "items": items,
+            "thin_leaves": thin,
+        }
+    estimate = _probe_cost_estimate(db, project_id)
+    return {
+        "project_id": project_id,
+        "by_leaf": {leaf: by_leaf[leaf] for leaf in CAPABILITY_LEAVES if by_leaf[leaf]},
+        "by_family": families,
+        "floor": FLOOR,
+        "estimated_tokens": estimate,
+        "suggestions": probe_suggestions(db, project_id),
+    }
+
+
+def _probe_cost_estimate(db: Session, project_id: str, *, vendor: str | None = None,
+                         model: str | None = None, capability: str | None = None) -> dict:
+    """Tokens the panel's history would lead a person to expect, shown BEFORE start."""
+    stmt = select(AttemptTelemetry).where(
+        AttemptTelemetry.project_id == project_id,
+        AttemptTelemetry.sampled == "probe",
+        AttemptTelemetry.derived_at.is_not(None))
+    rows = list(db.scalars(stmt).all())
+    if vendor:
+        rows = [r for r in rows if r.vendor == vendor]
+    if model:
+        rows = [r for r in rows if r.model == model]
+    if capability:
+        rows = [r for r in rows if capability in (r.capabilities or [])]
+    reported = [r for r in rows if r.tokens_in is not None or r.tokens_out is not None]
+    if not reported:
+        return {"comparable": False, "reported": 0, "finished": len(rows),
+                "reason": "no probe history reported tokens"}
+    total = sum((r.tokens_in or 0) + (r.tokens_out or 0) for r in reported)
+    per = round(total / len(reported), 1)
+    return {"comparable": True, "reported": len(reported), "finished": len(rows),
+            "tokens_per_attempt": per, "tokens_in": sum(r.tokens_in or 0 for r in reported),
+            "tokens_out": sum(r.tokens_out or 0 for r in reported)}
+
+
+def probe_suggestions(db: Session, project_id: str) -> list[dict]:
+    """A newly declared vendor/model/version with no natural cell. Never on a schedule."""
+    from app.models import Agent, CapabilityProbeRun
+
+    suggestions = []
+    seen_declared: set[tuple[str, str, str]] = set()
+    for agent in db.scalars(select(Agent).where(Agent.project_id == project_id)).all():
+        caps = agent.capabilities or {}
+        vendor = caps.get("vendor") if isinstance(caps.get("vendor"), str) else None
+        model = caps.get("model") if isinstance(caps.get("model"), str) else None
+        version = caps.get("binary_version") if isinstance(caps.get("binary_version"), str) else ""
+        if not vendor or not model:
+            continue
+        seen_declared.add((vendor, model, version or ""))
+    natural: set[tuple[str, str, str]] = set()
+    for row in db.scalars(select(AttemptTelemetry).where(
+            AttemptTelemetry.project_id == project_id,
+            AttemptTelemetry.derived_at.is_not(None))).all():
+        if row.sampled == "probe":
+            continue
+        if row.vendor and row.model:
+            natural.add((row.vendor, row.model, row.binary_version or ""))
+    started = {(r.vendor, r.model, r.binary_version or "", r.capability)
+               for r in db.scalars(select(CapabilityProbeRun).where(
+                   CapabilityProbeRun.source_project_id == project_id)).all()}
+    for vendor, model, version in sorted(seen_declared):
+        has_natural = any(n[0] == vendor and n[1] == model and (not version or n[2] == version)
+                          for n in natural)
+        has_any_model = any(n[0] == vendor and n[1] == model for n in natural)
+        if has_natural:
+            continue
+        trigger = "version_change" if has_any_model else "new_row"
+        if any(s[0] == vendor and s[1] == model and s[2] == (version or "") for s in started):
+            continue
+        estimate = _probe_cost_estimate(db, project_id, vendor=vendor, model=model)
+        suggestions.append({
+            "trigger": trigger,
+            "vendor": vendor,
+            "model": model,
+            "binary_version": version,
+            "estimated_tokens": estimate,
+            "reason": ("a declared version has no natural cell yet" if trigger == "version_change"
+                       else "a harness first resolved with no cell for it"),
+        })
+    return suggestions
+
+
+def start_probe_run(db: Session, *, project_id: str, user_id: str, vendor: str, model: str,
+                    capability: str, item_ids: list[str], trigger: str = "new_row",
+                    binary_version: str = "", api_key=None) -> dict:
+    """Create the scratch project, the run row, and delegations with sampled=probe.
+
+    One model and one leaf (or family) at a time, under the source project's caps.
+    The estimate is computed before anything is written so a person can see it.
+    """
+    from datetime import datetime, timezone
+
+    from app.models import Agent, CapabilityProbeRun, Item, Project
+    from app.services import delegation as delegation_svc
+    from app.services import fleet as fleet_svc
+    from app.services import items as items_svc
+    from app.services import keys as keys_svc
+    from app.services import projects as projects_svc
+
+    if trigger not in PROBE_TRIGGERS:
+        raise AttemptRefused(f"trigger must be one of {PROBE_TRIGGERS}", status=422)
+    if not (1 <= len(item_ids) <= 3):
+        raise AttemptRefused("choose one to three items", status=422)
+    cap = capability.strip()
+    if cap not in CAPABILITY_LEAVES and cap not in FAMILIES:
+        raise AttemptRefused(f"unknown capability {capability!r}", status=422)
+    open_run = db.scalar(select(CapabilityProbeRun).where(
+        CapabilityProbeRun.source_project_id == project_id,
+        CapabilityProbeRun.finished_at.is_(None),
+        CapabilityProbeRun.vendor == vendor,
+        CapabilityProbeRun.model == model))
+    if open_run is not None:
+        raise AttemptRefused(
+            "a probe for this model is already running; one model and one leaf at a time",
+            status=409)
+    items = []
+    for iid in item_ids:
+        item = db.get(Item, iid)
+        if item is None or item.project_id != project_id:
+            raise AttemptRefused(f"item not in project: {iid}", status=404)
+        if item.status != "done" or not _red_sabotage(item):
+            raise AttemptRefused(f"{iid} is not a closed item with a red sabotage", status=422)
+        items.append(item)
+    estimate = _probe_cost_estimate(db, project_id, vendor=vendor, model=model,
+                                    capability=cap if cap in CAPABILITY_LEAVES else None)
+    project = db.get(Project, project_id)
+    caps = ((project.fleet_policy or {}) if project is not None else {}).get("caps") or {}
+    per_attempt = caps.get("per_attempt_tokens")
+    if per_attempt and estimate.get("comparable") and estimate["tokens_per_attempt"] > per_attempt:
+        raise AttemptRefused(
+            f"per_attempt_tokens {per_attempt} is below the panel's estimated "
+            f"{estimate['tokens_per_attempt']} tokens", status=422)
+
+    scratch = projects_svc.create_project(
+        db, name=f"probe {vendor}:{model} {cap}", owner_user_id=user_id,
+        description=f"scratch project for a {cap} probe of {vendor}:{model}")
+    clones = []
+    for src in items:
+        clone = items_svc.create_item(
+            db, title=src.title, description=src.description or "",
+            tags=list(src.tags or []), touchpoints=list(src.touchpoints or []),
+            project_id=scratch.id, status="next", commit=False)
+        clone.evidence = list(src.evidence or [])
+        clones.append(clone)
+    db.flush()
+
+    # A JWT operator is not an API-key agent, so we mint a planner row on the scratch
+    # project rather than calling register_agent (which needs a key) or delegate(seat=True)
+    # (which needs mint_enrolment). The seat is still a real bound Enrolment and the
+    # launch post still sets sampled=probe — that is the path the cells read.
+    stored_id, number = keys_svc.mint(db, scratch.id, "agent")
+    now = datetime.now(timezone.utc)
+    agent = Agent(
+        id=stored_id, number=number, project_id=scratch.id,
+        label=f"probe:{vendor}:{model}",
+        capabilities={"vendor": vendor, "model": model, "binary_version": binary_version},
+        active_role="planner", role_assigned_at=now, role_acked_at=now,
+        state="idle", registered_at=now, last_seen_at=now,
+    )
+    db.add(agent)
+    db.flush()
+    run = CapabilityProbeRun(
+        id=f"cpr_{uuid.uuid4().hex[:12]}",
+        source_project_id=project_id,
+        project_id=scratch.id,
+        trigger=trigger,
+        vendor=vendor, model=model, binary_version=binary_version or "",
+        capability=cap,
+        item_ids=[c.id for c in clones],
+        estimated_tokens=(int(estimate["tokens_per_attempt"] * len(clones))
+                          if estimate.get("comparable") else None),
+        started_at=_now(),
+        summary={"estimated_tokens": estimate, "source_item_ids": item_ids},
+    )
+    db.add(run)
+    db.flush()
+    launched = []
+    for clone in clones:
+        row, _withdrew, _code = delegation_svc.delegate(
+            db, agent=agent, item=clone, lane="backend", tier="cheap",
+            note=f"probe {cap}", lease_seconds=600, seat=False, api_key=api_key)
+        seat, code = fleet_svc.issue_enrolment(
+            db, project_id=scratch.id, role="worker", minted_by=agent.id,
+            item_id=clone.id, delegation_id=row.id)
+        target = Target("seat", scratch.id, seat=seat)
+        record_launch(db, target=target, winner=f"{vendor}:{model}",
+                      source="probe", adapter="probe")
+        launched.append({"item_id": clone.id, "delegation_id": row.id,
+                         "enrolment_code": code})
+    db.flush()
+    return {
+        "id": run.id,
+        "project_id": scratch.id,
+        "source_project_id": project_id,
+        "trigger": trigger,
+        "vendor": vendor,
+        "model": model,
+        "binary_version": binary_version,
+        "capability": cap,
+        "item_ids": [c.id for c in clones],
+        "estimated_tokens": estimate,
+        "delegations": launched,
+        "sampled": "probe",
+    }
+
