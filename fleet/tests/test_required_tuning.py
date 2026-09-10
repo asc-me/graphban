@@ -75,6 +75,36 @@ def test_it_is_an_adapter_error_so_spawn_reports_it():
         _argv()
 
 
+# ---- the CLI path asks too (GRPH-831) ------------------------------------------------------------
+#
+# Sabotage the CALL, not only the callee. Six tests on `check_tuning` stayed green while
+# `make_adapter_factory` — what `up` and `until` actually invoke — never asked. Dropping the
+# call from the factory must fail something; testing the adapter alone never could.
+
+
+def test_cli_factory_refuses_missing_tuning_before_any_child():
+    """`up`/`until` resolve through `make_adapter_factory`, not `mcp._checked_tuning`."""
+    from gbfleet.cli import make_adapter_factory
+    from conftest import console_script
+
+    with pytest.raises(MissingTuning) as exc:
+        make_adapter_factory("gbagent", console_script("gbagent"))
+
+    said = str(exc.value)
+    assert "--turns" in said and "--window" in said
+
+
+def test_cli_factory_accepts_complete_tuning():
+    from gbfleet.cli import make_adapter_factory
+    from conftest import console_script
+
+    factory = make_adapter_factory(
+        "gbagent", console_script("gbagent"),
+        tuning=Tuning(turns="40", window="262144"),
+    )
+    assert callable(factory)
+
+
 # ---- the lock explains the choice it is forcing (GRPH-811) --------------------------------------
 
 def test_the_lock_refusal_names_both_modes(tmp_path):

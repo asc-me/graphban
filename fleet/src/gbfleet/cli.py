@@ -286,8 +286,14 @@ def make_adapter_factory(name: str, binary: str | None, model: str = "",
     The version check happens here rather than after launch, because a mismatch that
     surfaces as a child which starts, misbehaves and never registers costs a full
     registration window and blames the wrong component.
+
+    `check_tuning` lives here too (GRPH-831), not only on the MCP spawn path: `up` and
+    `until` both go through this factory, and a missing required knob used to reach the
+    child as an argparse dump before it registered.
     """
     found = resolve(name, binary=binary, model=model, tuning=tuning)
+    # Asked here, never inside `launch`: building a launch to inspect argv is not a spawn.
+    found.adapter.check_tuning(tuning or Tuning())
 
     def factory(seat: Seat, tree: Worktree, instruction_file: Path,
                 debug_file: Path | None = None) -> Launch:

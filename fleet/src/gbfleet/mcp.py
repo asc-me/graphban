@@ -406,8 +406,10 @@ def _runner_up(resolution: dict | None, matrix=None) -> str:
 def _checked_tuning(adapter: str, tuning: "Tuning") -> "Tuning":
     """The tuning, once the adapter has agreed it can spawn with it (GRPH-813).
 
-    Here rather than inside `launch` so that building a launch to inspect it stays free, and
-    here rather than at each call site so a new spawn path cannot forget to ask.
+    Here rather than inside `launch` so that building a launch to inspect it stays free.
+    The shared CLI factory (`cli.make_adapter_factory`) also asks — `up`/`until` never
+    reach this helper, and leaving the check only here was the gap GRPH-831 closed.
+    Kept on the MCP spawn path so a custom `launch_for` still cannot skip it.
     """
     from .adapters import ADAPTERS
 
