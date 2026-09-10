@@ -136,3 +136,11 @@ GRPH-461. The walk needs a signed-in operator to mint its first seat, and could 
 one: `init` accepts any string as `--email` and reports `provisioned: true`, while
 `/api/auth/login` validates with `EmailStr` and refuses it. Found on the first attempt
 to run this.
+
+## Delegate to seat (PRD-36)
+
+On 2026-09-05 a live session called `delegate(seat=true)` on a real item, `gbfleet stdio`
+spawned gbagent on the cheap tier onto the bound seat, registration claimed the item, and
+the child moved it to review. That is criterion 18 observed rather than argued — the
+delegation read claimed on the Live board within one poll, then finished when the child
+advanced the item.
