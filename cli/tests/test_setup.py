@@ -943,3 +943,40 @@ def test_a_real_repository_says_nothing_about_it(tmp_path, wired):
     lines, _, _ = _run(Server(), repo, home, wired=wired)
 
     assert not any(l["name"] == "repository" for l in lines)
+
+
+# ---- a sandboxed Grok is a sandboxed fleet (GRPH-838) --------------------------------------------
+
+def test_setup_names_a_grok_sandbox_that_every_child_will_inherit(tmp_path, wired, no_grok_config):
+    """Measured 2026-09-10: `[sandbox] profile = "workspace"` reached gbfleet and every vendor
+    it spawned, and four children died at exit 1 before registering, each with its own
+    vendor's error. Setup cannot change the operator's sandbox, but a PASS report that leaves
+    the first wave to find this out is the silence this line replaces."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    no_grok_config.write_text('[sandbox]\nprofile = "workspace"\n')
+
+    lines, code, _ = _run(Server(), repo, home, wired=wired)
+
+    assert code == 0, "a finding, not a refusal — grok children still spawn"
+    line = next(l for l in lines if l["name"] == "sandbox")
+    assert line["status"] == "UNKNOWN"
+    assert "Not logged in" in line["detail"], "the claude symptom, so it is recognised later"
+    assert ".qwen" in line["detail"] and ".cursor" in line["detail"]
+    assert "--sandbox off" in line["detail"]
+    grok = tomllib.loads(no_grok_config.read_text())
+    assert "gbfleet" in grok["mcp_servers"], "the entry is still written"
+
+
+@pytest.mark.parametrize("body", ["[ui]\n", '[sandbox]\nprofile = "off"\n'])
+def test_a_grok_config_without_a_live_sandbox_says_nothing_about_one(
+        tmp_path, wired, no_grok_config, body):
+    """The control. Off and unset are the same fact, and a line that fires for both would be
+    noise on every machine — which is how the real one gets scrolled past."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    no_grok_config.write_text(body)
+
+    lines, _, _ = _run(Server(), repo, home, wired=wired)
+
+    assert not any(l["name"] == "sandbox" for l in lines)

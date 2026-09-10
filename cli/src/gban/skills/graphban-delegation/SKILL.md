@@ -128,6 +128,12 @@ and a spawn without them exits before registering. That presents as a delegation
 with nothing claimed, not as an error on the spawn, so check these first when a child never
 appears.
 
+If a child exits 1 before registering and the spawn's stderr tail shows `EPERM` on a path under
+the home directory (`~/.qwen`, `~/.cursor`), `sandbox initialization failed`, or `Not logged in`
+from a machine that is logged in, the parent harness is sandboxed and the child inherited it
+(Grok's `[sandbox] profile`). `gbfleet doctor --adapter <vendor>` names it and the remedy;
+`docs/fleet-adapters.md` "A sandboxed parent is every child's sandbox" has the measurements.
+
 ## 5. Read the outcome from the ledger
 
 Nothing is pushed back to you. Read the item, or `fleet_status`. `spawn` returns an agent id at

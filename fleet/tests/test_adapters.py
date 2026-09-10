@@ -572,3 +572,42 @@ def test_the_tuning_table_names_the_knob_each_vendor_actually_has():
                     f"{name}'s row offers {flag}, which it does not accept — "
                     f"it declares {sorted(adapter.tuning) or 'no knobs'}: {row}"
                 )
+
+
+# --- a sandboxed parent is every child's sandbox (GRPH-838) --------------------------
+
+def _grok_argv(git_repo: Path, tmp_path: Path, slot: str) -> list[str]:
+    tree = create(git_repo, tmp_path / f"sbx-{slot}", "wave", slot)
+    instruction = tmp_path / f"instr-{slot}"
+    instruction.write_text("build it", encoding="utf-8")
+    return ADAPTERS["grok"].launch(SEAT, tree, instruction, Path("/usr/bin/true")).argv
+
+
+def test_a_grok_child_under_a_sandboxed_parent_does_not_try_to_nest_one(
+        git_repo: Path, tmp_path: Path, monkeypatch):
+    """Measured 2026-09-10: a grok child under `grok --sandbox workspace` read the user
+    config's profile, tried to apply Seatbelt inside Seatbelt, and died at exit 1 with
+    "sandbox initialization failed" before registering. `--sandbox off` beats the config and
+    the child still runs inside the parent's kernel sandbox. Sabotage: drop the flag and the
+    nested attempt is back, with every other test green."""
+    from gbfleet import hostos
+
+    monkeypatch.setattr(hostos, "sandboxed", lambda: True)
+    argv = _grok_argv(git_repo, tmp_path, "1")
+
+    assert argv[argv.index("--sandbox") + 1] == "off"
+    assert argv.index("--sandbox") < argv.index("--prompt-file"), "before the prompt, like every flag"
+
+
+def test_an_unsandboxed_parent_leaves_the_operators_grok_sandbox_alone(
+        git_repo: Path, tmp_path: Path, monkeypatch):
+    """The control, and the reason the flag is conditional: from an unsandboxed parent
+    `--sandbox off` would strip a sandbox the operator chose for their grok children."""
+    from gbfleet import hostos
+
+    monkeypatch.setattr(hostos, "sandboxed", lambda: False)
+    assert "--sandbox" not in _grok_argv(git_repo, tmp_path, "2")
+
+    monkeypatch.setattr(hostos, "sandboxed", lambda: None)
+    assert "--sandbox" not in _grok_argv(git_repo, tmp_path, "3"), (
+        "an unanswerable question is not a yes")
