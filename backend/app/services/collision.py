@@ -204,10 +204,23 @@ def _with_reservations(db: Session, clusters: list[dict], project_id: str | None
     for cluster in clusters:
         areas = list(cluster.get("areas") or [])
         holders, soonest = set(), None
+        blocking: list[dict] = []
         for row in taken:
-            if not fleet_svc.areas_collide(areas, [row.area]):
+            overlap = fleet_svc.areas_collide(areas, [row.area])
+            if not overlap:
                 continue
             holders.add(row.agent_id)
+            if len(blocking) < 3:
+                # WHICH of this cluster's areas the hold covers, and by which rule (GRPH-833).
+                # `because` above explains why the cluster's own members merged; this explains
+                # why the whole cluster is unavailable, which is the question an operator
+                # staring at an idle fleet is actually asking. Capped for the reason `because`
+                # is: a reason nobody reads is not a reason.
+                mine = overlap[0]
+                blocking.append({
+                    "area": mine, "reserved": row.area, "by": row.agent_id,
+                    "rule": clustering.why_match(mine, row.area) or "prefix",
+                })
             expires = row.expires_at
             if expires is not None:
                 expires = expires if expires.tzinfo else expires.replace(tzinfo=timezone.utc)
@@ -216,4 +229,118 @@ def _with_reservations(db: Session, clusters: list[dict], project_id: str | None
             cluster["held_by"] = sorted(holders)
             cluster["free_in"] = (max(0, int((soonest - now).total_seconds()))
                                   if soonest is not None else None)
+            cluster["held_because"] = blocking
     return clusters
+
+
+def _unexpired(db: Session, project_id: str | None, *, now):
+    """Reservations whose clock has not run out, offline holders included.
+
+    Deliberately NOT `active_reservations`, which is the one the divvy asks and which drops a
+    dead holder's rows so they stop blocking. This is the diagnostic view: a row that exists
+    and is being ignored is exactly what an operator staring at an idle fleet needs to see,
+    and the two functions disagreeing is the answer rather than a bug.
+    """
+    from datetime import timezone
+
+    from app.models import AreaReservation
+    from sqlalchemy import select as _select
+
+    rows = db.scalars(_select(AreaReservation)).all()
+    out = []
+    for r in rows:
+        expires = r.expires_at
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires is None or expires > now:
+            out.append(r)
+    if project_id:
+        from app.models import Item as _Item
+
+        item_ids = {i.id for i in db.scalars(
+            _select(_Item).where(_Item.project_id == project_id)).all()}
+        out = [r for r in out if r.item_id in item_ids]
+    return out
+
+
+def _holder_state(fleet_svc, agent, now) -> str:
+    """`working`/`idle`/`reviewing`, `offline`, or `retired` — one definition, two readers.
+
+    `retired` is a seat that can never register again, so its hold will never be released by
+    the holder coming back; `offline` will lapse on its lease, and waiting is reasonable. The
+    two look identical from a cluster and call for different moves.
+
+    `unknown` is defensive and, today, UNREACHABLE: `AreaReservation.agent_id` is a
+    non-nullable foreign key, so every reservation has an agent row. It is left in so that
+    making that column nullable later cannot make a holderless reservation read as live —
+    which is the direction that matters. Said here rather than tested, because a test for a
+    state the schema forbids would assert against a fixture rather than against the system.
+    """
+    if agent is None:
+        return "unknown"
+    if fleet_svc.retired(agent, now=now):
+        return "retired"
+    return fleet_svc.presence_state(agent, now=now)
+
+
+def holds(db: Session, project_id: str | None) -> list[dict]:
+    """Every live area reservation: what is held, by whom, and until when (GRPH-833).
+
+    **The missing surface, and the cost of not having it was a wrong conclusion rather than a
+    slow one.** Mid-wave, with full repository access, the item touchpoints in hand and time to
+    think, the operator decided an item was being wrongly held and inferred directory-level
+    clustering from the symptom. A later spawn into a genuinely disjoint cluster disproved it.
+    `--max-workers 3` yielding one running child is a symptom anybody can see; why, was not
+    readable anywhere.
+
+    Clusters already carry `held_by` and `free_in` (GRPH-803) and that was not enough, because
+    a cluster is only in the pool while its items are CLAIMABLE. The moment an item is claimed
+    its cluster leaves the partition, and its reservation — which is still blocking everybody
+    else — is visible on no read at all. This one is keyed on the reservation, so a hold is
+    listed whether or not the work it belongs to is still on offer.
+
+    `holder_state` is the field that answers the actual question. "Held by SA-A39" invites the
+    reader to go and find SA-A39; "held by SA-A39, which is offline, frees in 412s" IS the
+    diagnosis, and it is the sentence the operator spent a wave not having.
+    """
+    from datetime import timezone
+
+    from app.models import Agent, Item
+    from app.services import fleet as fleet_svc
+
+    now = items_svc.utcnow()
+    # EVERY unexpired reservation, not `active_reservations` — and that difference is the
+    # point rather than an oversight. `active_reservations` already drops a holder the roster
+    # calls offline (GRPH-808), so a row this function fetched through it could only ever
+    # report a live holder, and `holder_state` would have had a branch that can never fire:
+    # a field that reads as protection and is not, which is the shape this repository keeps
+    # finding. Listing the ignored rows AND saying they are ignored is what turns "there is a
+    # reservation on this path" from a puzzle into a sentence.
+    rows = _unexpired(db, project_id, now=now)
+    _blocking_rows = fleet_svc.active_reservations(db, project_id, now=now)
+    out: list[dict] = []
+    for row in sorted(rows, key=lambda r: (r.agent_id or "", r.area or "")):
+        agent = db.get(Agent, row.agent_id) if row.agent_id else None
+        item = db.get(Item, row.item_id) if row.item_id else None
+        expires = row.expires_at
+        if expires is not None and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        out.append({
+            "area": row.area,
+            "agent_id": row.agent_id,
+            # Three states, not two. `retired` is a seat that can never register again, so its
+            # hold will never be released by the holder returning — which is a different
+            # instruction from `offline`, where waiting is the right move (GRPH-814).
+            "holder_state": _holder_state(fleet_svc, agent, now),
+            # Whether this row is actually keeping anybody out. A reservation held by an
+            # offline agent still EXISTS — it is simply ignored — and an operator who can see
+            # the row but not that fact goes looking for a collision that is not happening.
+            "blocking": any(r.id == row.id for r in _blocking_rows),
+            "item": item.key if item is not None else row.item_id,
+            # Declared or inferred. A predicted area is a guess about files nobody listed, and
+            # an operator deciding whether a hold is legitimate needs to know which it is.
+            "predicted": bool(row.predicted),
+            "free_in": (max(0, int((expires - now).total_seconds()))
+                        if expires is not None else None),
+        })
+    return out
