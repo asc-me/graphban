@@ -394,9 +394,12 @@ worker signing off — attests the result. Keys without it are refused with
 left out of their tool manifest entirely.
 
 **Evidence kinds.** `test`, `url`, `screenshot`, `health`, `note` are advisory and fall
-back to `note`. Two are structured, and a receipt that claims one without the required
-fields is **demoted to `note`, never dropped** — the claim stays readable even when it
-doesn't validate:
+back to `note`. A `url` may also carry the `commit` it names — the fleet supervisor records
+a squash-merge that way, because the merge commit is the only one the trunk has and the
+dependency check reads commits off the item (GRPH-846); it is kept on `url` alone, and it
+satisfies no gate, since gates read attestations by kind. Two kinds are structured, and a
+receipt that claims one without the required fields is **demoted to `note`, never
+dropped** — the claim stays readable even when it doesn't validate:
 
 | Kind | Requires | Notes |
 | --- | --- | --- |

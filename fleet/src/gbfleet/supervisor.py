@@ -232,6 +232,10 @@ class Wave:
     #: published and NOT proposed is work nobody has been asked to merge, which is the
     #: state this exists to make visible rather than to hide.
     proposed: dict = field(default_factory=dict)
+    #: What became of finishing each signed-off item's merge, by item id (GRPH-846). Only
+    #: populated under `--merge`; empty otherwise means "not asked", never "nothing to
+    #: merge". `Merged.final` says whether the row is settled or still being re-asked.
+    merged: dict = field(default_factory=dict)
     #: Files each worker actually changed, by branch. MEASURED here, written back by a
     #: holder with standing (`gbfleet.record.measured`) — the supervisor still cannot
     #: call `update_item`. Empty is reported and is not a write. See `touchpoints.py`.
@@ -464,6 +468,7 @@ def up(
     sleep: Callable[[float], None] = time.sleep,
     debug: bool = False,
     items: dict | None = None,
+    merger: "Merger | None" = None,
 ) -> Wave:
     """Run one wave to completion and return what happened.
 
@@ -532,9 +537,14 @@ def up(
         )
         persist()
         _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
-                  persist=persist)
+                  persist=persist, merger=merger)
         _reap_all(wave, children)
         persist()
+        if merger is not None:
+            # Once more after the reap: the last child's sign-off may have landed between
+            # the final tick and its exit, and a wave that ends there would leave the one
+            # merge it was asked for to the next run.
+            merger.tick(wave)
 
         wave.after = _read_allocation(client, wave)
         if not wave.failures and not wave.offline:
@@ -1086,6 +1096,190 @@ def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
         propose_branch(wave, repo, row.branch, list(row.items or []), client=client)
 
 
+#: How long a watched item waits before its merge is re-asked. Each ask is a ledger read and
+#: a `gh` call against the forge; once a second, for the length of a wave, is a rate limit
+#: spent on a question whose answer changes on the scale of a CI run.
+MERGE_RECHECK_S = 60.0
+
+
+@dataclass
+class Merger:
+    """Finishes the merge for items that reach `done` (GRPH-846). Off unless asked.
+
+    WHAT IT WATCHES. An item is a candidate the moment it LEAVES `review` — the loop reads
+    the review rows every tick anyway, and an id that was there and is not has either been
+    signed off or bounced; `get_item_details` says which. And an item the GRPH-798 hold
+    names as an absent dependency is a candidate too: it is `done` by definition, its PR is
+    the click the held item is waiting on, and clearing that hold is the whole point.
+
+    WHAT IT DOES. `propose.merge`, with the commit the sign-off attestation names and the
+    commits CI attested, both read from the item — never derived from a branch. A merge
+    is recorded on the item as a `url` receipt carrying the MERGE COMMIT, because a squash
+    rewrites the SHA: the reviewed commit is never an ancestor of the trunk afterwards, and
+    without the receipt the dependency check would hold every dependant forever on a
+    merge that happened.
+
+    WHAT IT NEVER DOES. Decide. Every precondition miss leaves the item alone and says
+    which check failed; a merge the forge refuses is `skipped`. Branch protection is the
+    backstop and this does not go around it.
+    """
+
+    repo: Path
+    client: Graphban
+    enabled: bool = False
+    #: Item ids seen in `review` at the last read, so a departure is visible.
+    in_review: set[str] = field(default_factory=set)
+    #: id -> branch as last seen in review, kept so a departed item still has its hint.
+    branches: dict[str, str] = field(default_factory=dict)
+    #: Candidates: item id -> the branch it was last seen on (a selector hint; the item's
+    #: own PR and receipts are preferred once it is read).
+    watching: dict[str, str] = field(default_factory=dict)
+    #: When each candidate was last asked, for `MERGE_RECHECK_S`.
+    asked_at: dict[str, float] = field(default_factory=dict)
+    #: The last reason reported per item, so a wave's log says a thing once, not per tick.
+    said: dict[str, str] = field(default_factory=dict)
+    #: The ref children are cut from, and the remote it lives on — re-fetched after a
+    #: merge so the GRPH-798 hold clears on the next tick without a restart.
+    remote: str = ""
+    base: str = ""
+    #: Set once the client turned out not to hold a tool this needs. Reported once and the
+    #: merger stops asking, rather than a refusal per tick for the length of the wave.
+    disabled_because: str = ""
+
+    def note_review(self, rows: list[dict]) -> None:
+        """Rows currently in `review`. Whatever was there last time and is not now is a
+        candidate — signed off or bounced, and `tick` reads the item to tell which."""
+        if not self.enabled:
+            return
+        now = {str(r.get("id")): str(r.get("branch") or "") for r in rows
+               if isinstance(r, dict) and r.get("id")}
+        for item_id in self.in_review - set(now):
+            self.watching.setdefault(item_id, self.branches.get(item_id, ""))
+        self.branches = now
+        self.in_review = set(now)
+
+    def note_hold(self, absent: list[dict]) -> None:
+        """Dependencies the GRPH-798 check found finished-but-not-on-the-base. Each is a
+        merge that would clear a hold, which is the merge most worth finishing."""
+        if not self.enabled:
+            return
+        for row in absent:
+            item_id = str(row.get("id") or "")
+            if item_id:
+                self.watching.setdefault(item_id, "")
+
+    def tick(self, wave: Wave, *, rows: list[dict] | None = None,
+             now: Callable[[], float] = time.monotonic) -> bool:
+        """Ask once per candidate that is due. Returns True when something MERGED this tick,
+        so the caller knows the base moved and any hold keyed on it should be re-asked."""
+        if not self.enabled or self.disabled_because:
+            return False
+        if rows is None:
+            rows = self._review_rows()
+            if rows is None:
+                return False
+        self.note_review(rows)
+        merged_any = False
+        for item_id in list(self.watching):
+            stamp = now()
+            if stamp - self.asked_at.get(item_id, -1e9) < MERGE_RECHECK_S:
+                continue
+            self.asked_at[item_id] = stamp
+            got = self._attempt(wave, item_id)
+            if got is None:
+                continue
+            wave.merged[item_id] = got
+            self._say(item_id, got)
+            if got.ok:
+                merged_any = True
+            if got.final:
+                self.watching.pop(item_id, None)
+        if merged_any and self.remote and self.base:
+            # The trunk moved. A remote-tracking ref is only as fresh as the last fetch, so
+            # without this the dependency check would go on measuring the merge as absent
+            # — the same absence-reads-as-clean failure the check itself exists to avoid.
+            wt_mod.refresh_ref(self.repo, self.remote, self.base)
+        return merged_any
+
+    def _review_rows(self) -> list[dict] | None:
+        try:
+            payload = self.client.call("search_items", status="review", fields="full",
+                                       limit=10_000)
+        except NotPermitted as exc:
+            self._disable(f"cannot read review rows: {exc}")
+            return None
+        except (ToolFailed, ServerUnreachable):
+            return None
+        rows = payload.get("results") if isinstance(payload, dict) else None
+        return [r for r in rows if isinstance(r, dict) and r.get("id")] \
+            if isinstance(rows, list) else None
+
+    def _attempt(self, wave: Wave, item_id: str) -> "propose_mod.Merged | None":
+        try:
+            item = self.client.call("get_item_details", id=item_id) or {}
+        except NotPermitted as exc:
+            self._disable(f"cannot read {item_id}: {exc}")
+            return None
+        except (ToolFailed, ServerUnreachable) as exc:
+            observe.emit("merge_unread", item=item_id, detail=str(exc))
+            return None
+        status = str(item.get("status") or "")
+        if status != "done":
+            # Bounced, or still moving. Not a candidate until it is done — and a bounced
+            # item that later returns to review is picked up again by `note_review`.
+            self.watching.pop(item_id, None)
+            return None
+        selector = propose_mod.pr_selector(item) or self.watching.get(item_id, "")
+        got = propose_mod.merge(
+            self.repo, item_id, selector,
+            reviewed=propose_mod.reviewed_commit(item),
+            green=propose_mod.green_commits(item),
+        )
+        if got.ok and got.commit:
+            got = self._record(wave, got)
+        return got
+
+    def _record(self, wave: Wave, got: "propose_mod.Merged") -> "propose_mod.Merged":
+        """The receipt. `commit` is on the row so `deps._commits` reads the merge commit as
+        one of the item's attested commits — the squash SHA is the only one the trunk has.
+
+        A `url` row, not an attestation: this credential holds no `gate` scope, so an
+        attestation is refused to it, and nobody ran anything at the squash SHA anyway — it
+        was observed to land. The server keeps `commit` on a `url` for exactly this row
+        (items.normalize_evidence, pinned in backend/tests/test_merge_receipt.py); it was
+        bounced once for writing a field the server stripped while the fake ledger here kept
+        it, so the fakes in the tests now drop what the server drops."""
+        try:
+            self.client.call("update_item", id=got.item, evidence=[{
+                "kind": "url",
+                "detail": f"merged by gbfleet: squash of {got.selector or 'the PR'} landed as "
+                          f"{got.commit[:12]}",
+                "url": got.url,
+                "commit": got.commit,
+            }])
+        except NotPermitted as exc:
+            self._disable(f"merged {got.item} but cannot record it: {exc}")
+            wave.failures.append(f"{got.item}: merged as {got.commit[:12]} but not recorded "
+                                 f"({exc})")
+        except (ToolFailed, ServerUnreachable) as exc:
+            wave.failures.append(f"{got.item}: merged as {got.commit[:12]} but not recorded "
+                                 f"({exc})")
+        return got
+
+    def _say(self, item_id: str, got: "propose_mod.Merged") -> None:
+        key = f"{got.ok}|{got.pending}|{got.skipped}|{got.reason}"
+        if self.said.get(item_id) == key:
+            return
+        self.said[item_id] = key
+        observe.emit("merge", item=item_id, ok=got.ok, pending=got.pending,
+                     skipped=got.skipped, commit=got.commit, url=got.url,
+                     checked=list(got.checked), detail=got.reason)
+
+    def _disable(self, why: str) -> None:
+        self.disabled_because = why
+        observe.emit("merge_disabled", detail=why)
+
+
 def _report_exits(children: list[Child], client: Graphban, wave: "Wave | None" = None) -> None:
     """PRD-38 D3, the exit report: what only this process saw about a child that has ended.
 
@@ -1165,6 +1359,7 @@ def _wait_out(
     sleep: Callable[[float], None],
     debug: bool = False,
     persist: Callable[[], None] | None = None,
+    merger: "Merger | None" = None,
 ) -> None:
     """Wait for children to exit on their own, stopping any that overrun or outlive their claim.
 
@@ -1180,6 +1375,8 @@ def _wait_out(
     """
     while any(child.running for child in children):
         watch_tick(wave, children, limits, client, debug=debug, persist=persist)
+        if merger is not None:
+            merger.tick(wave)
         if any(child.running for child in children):
             sleep(poll)
 

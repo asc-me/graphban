@@ -35,8 +35,8 @@ from .spawn import VendorLimit
 from .headroom import Headroom
 from .supervisor import (
     _declared_into,
-    DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Wave, _reap_all, _rooted,
-    _report_exits, _start, item_status, publish_salvaged, watch_tick,
+    DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Merger, Wave, _reap_all,
+    _rooted, _report_exits, _start, item_status, publish_salvaged, watch_tick,
 )
 
 #: Planner-held tools. `register_agent` is how this process gets an `agent_id` to mint
@@ -55,6 +55,16 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     # next free cluster; `get_item_details` is where the brief (lane/tier suggestion) lives.
     "get_item_details",
     "delegate",
+    # GRPH-846, and a repair on the way in. `related_work` is what the GRPH-798 dependency
+    # check reads — and it was never in this set, so the check raised `NotPermitted` before
+    # any request left the process, `deps.check` swallowed it, and the hold this loop
+    # documents had never once fired. `update_item` is the receipt: the PR the supervisor
+    # proposes (GRPH-804) and the merge it finishes are recorded on the item, and both
+    # writes failed the same way. The planner has the standing (`record.py`: "`until`
+    # (planner) after a reap"); the server bounds what an `update_item` may write by role,
+    # not this set. The supervisor's own `ALLOWED_TOOLS` stays two.
+    "related_work",
+    "update_item",
 })
 
 EMPTY_TICKS = 3
@@ -153,8 +163,12 @@ def run(
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
     matrix: "matrix_mod.Matrix | None" = None,
+    merge: bool = False,
 ) -> Report:
     """Hold the repo lock and run until idle, a cap, or a config refusal.
+
+    `merge` (GRPH-846, default OFF) makes the loop finish the merge of each item it sees
+    reach `done` — see `supervisor.Merger` for the preconditions, every one of them checked.
 
     `request` is what every delegation this loop writes will REQUEST (PRD-35 D5). None means
     follow the brief's suggestion — a stated policy of this program, not a server default.
@@ -231,6 +245,7 @@ def run(
                 launch_for=launch_for,
                 matrix=matrix,
                 adapter=adapter,
+                merge=merge,
             )
             result.wave = wave
             minted = result.minted
@@ -335,6 +350,7 @@ def _loop(
     launch_for: Callable[..., LaunchFactory] | None = None,
     matrix: "matrix_mod.Matrix | None" = None,
     adapter: str = "",
+    merge: bool = False,
 ) -> Report:
     from .mcp import _runner_up, read_preferences
     profile, policy, pref_note, measured, cap_measured = read_preferences(supervisor)
@@ -363,6 +379,13 @@ def _loop(
     base = wt_mod.default_ref(repo, remote) if remote else ""
     if base:
         wt_mod.refresh_ref(repo, remote, base)
+    # GRPH-846. Built whether or not `merge` was asked for, and inert when it was not:
+    # `enabled` is the flag, read once here, so the loop below has one call site and no
+    # branch on it — the branch is inside, where a test can see it stay closed.
+    merger = Merger(repo, planner, enabled=bool(merge), remote=remote, base=base)
+    # Items the GRPH-798 check HELD, with the finished dependencies they wait on. A merge
+    # changes the answer, so these are lifted out of `delegated` when one lands.
+    held: dict[str, list[str]] = {}
 
     while True:
         watch_tick(wave, children, limits, supervisor, debug=debug, persist=persist)
@@ -428,6 +451,18 @@ def _loop(
                 f"search_items unreachable; leftover review is unknown, not empty ({exc})",
             ) from exc
 
+        # GRPH-846. The rows just read are handed over rather than read twice; an id that
+        # was in review last tick and is not now is what the merger looks at.
+        if merger.tick(wave, rows=rows):
+            # The base moved. Whatever was held on a finished-but-unmerged dependency is
+            # offered again — the check re-runs against the freshly fetched ref and either
+            # lets it through or holds it on whatever is still missing.
+            for item_id in list(held):
+                delegated.discard(item_id)
+                observe.emit("hold_lifted", item=item_id,
+                             detail=f"{item_id}: a merge landed; re-checking its dependencies")
+            held.clear()
+
         try:
             need = _wanted_workers(planner, supervisor, live_n=len(live),
                                    max_workers=limits.max_workers, prd=prd)
@@ -461,7 +496,8 @@ def _loop(
             # server refused a bound seat (areas held) the delegation stands without one
             # and the seat is minted as before; when nothing was delegable, likewise.
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
-                                              request, prd, repo, base)
+                                              request, prd, repo, base, held=held,
+                                              merger=merger)
             if code:
                 seat = Seat(shared=dict(shared or {}),
                             code=code, server_url=server, api_key=api_key, role="worker",
@@ -923,6 +959,8 @@ def _delegate_next(
     prd: str | None = None,
     repo: Path | None = None,
     base: str = "",
+    held: dict[str, list[str]] | None = None,
+    merger: Merger | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Write the delegation for the seed of the next free cluster, before its seat is minted.
 
@@ -957,8 +995,13 @@ def _delegate_next(
             observe.emit("delegate_held", item=candidate,
                          detail=deps.explain(candidate, absent, base))
             # Marked delegated so the next tick does not re-offer it and spin. It is held for
-            # this wave, not refused forever — a merge changes the answer.
+            # this wave, not refused forever — a merge changes the answer, and under
+            # `--merge` (GRPH-846) the dependency it names is the next merge to finish.
             delegated.add(candidate)
+            if held is not None:
+                held[candidate] = [str(d.get("id") or "") for d in absent]
+            if merger is not None:
+                merger.note_hold(absent)
             continue
         for row in unknown:
             # Reported and NOT acted on. "I have never seen that commit" is not evidence that
