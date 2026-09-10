@@ -1,5 +1,11 @@
 export type Status = "backlog" | "next" | "in_progress" | "review" | "done" | "blocked";
 export type Fidelity = "low" | "high";
+/**
+ * Where an item's work lands (GRPH-832). `repo` changes files in a worktree; `deploy` acts on
+ * a running system and is refused to every spawned agent, on every path. Only a signed-in
+ * person can set it — this PATCH is the one route that carries the field.
+ */
+export type Reach = "repo" | "deploy";
 export type RequestType = "bug" | "feature" | "enhancement" | "feedback";
 
 export interface User {
@@ -307,6 +313,8 @@ export interface Item {
   prd_id: string | null;
   prd_section: string;
   fidelity: Fidelity;
+  /** Where this item's work lands (GRPH-832). `deploy` is refused to every spawned agent. */
+  reach: Reach;
   created_at: string;
   updated_at: string;
 }

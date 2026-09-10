@@ -689,3 +689,172 @@ def test_a_mistyped_seats_line_is_refused_at_read(tmp_path: Path):
     path.write_text("WORKER-AAA role=planner\n", encoding="utf-8")
     with pytest.raises(ValueError, match="planner"):
         read_seats(str(path), "http://gb.invalid", KEY)
+
+
+# --- the machine is a limit too (GRPH-842) ----------------------------------------
+
+
+def test_a_full_machine_stops_the_wave_and_says_which_limit_it_was(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """The gate at the launch loop, not the unit under it.
+
+    A wave killed by the harness for memory pressure left `unused_seats` looking exactly
+    like a cap, a crash or an adapter fault. Here the seats and the worker cap are both
+    generous and the MACHINE is what runs out — one child fits, the rest are refused, and
+    the wave says so in a field of its own.
+    """
+    workspace = tmp_path / "ws"
+    from gbfleet import hostos, headroom
+
+    monkeypatch.setattr(hostos, "available_memory", lambda: headroom.RESERVE)
+    wave = up(
+        git_repo,
+        _seats(4),
+        _factory(scripts, "works_then_exits"),
+        _server(workspace),
+        limits=Limits(max_workers=4),
+        state=state,
+        workspace=workspace,
+    )
+
+    assert len(wave.spawned) == 1, "the first child is never gated; the rest had no room"
+    assert wave.unused_seats == 3
+    assert wave.gated and "no room" in wave.gated[0]
+    assert not wave.failures, "a full machine is not an adapter fault and must not read as one"
+    assert wave.headroom_at_start == headroom.RESERVE
+
+
+def test_an_unmeasurable_machine_spawns_exactly_as_before(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """None must not read as full. This is the whole wave the old behaviour ran."""
+    workspace = tmp_path / "ws"
+    from gbfleet import hostos
+
+    monkeypatch.setattr(hostos, "available_memory", lambda: None)
+    wave = up(
+        git_repo,
+        _seats(2),
+        _factory(scripts, "works_then_exits"),
+        _server(workspace),
+        limits=Limits(max_workers=4),
+        state=state,
+        workspace=workspace,
+    )
+    assert len(wave.spawned) == 2
+    assert wave.gated == []
+    assert wave.headroom_at_start is None, (
+        "and the report has to be able to tell this apart from a roomy machine"
+    )
+
+
+def test_a_roomy_machine_does_not_gate_anything(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    workspace = tmp_path / "ws"
+    from gbfleet import hostos, headroom
+
+    monkeypatch.setattr(
+        hostos, "available_memory",
+        lambda: headroom.RESERVE + 20 * headroom.DEFAULT_CHILD_MEMORY,
+    )
+    wave = up(
+        git_repo,
+        _seats(3),
+        _factory(scripts, "works_then_exits"),
+        _server(workspace),
+        limits=Limits(max_workers=4),
+        state=state,
+        workspace=workspace,
+    )
+    assert len(wave.spawned) == 3
+    assert wave.gated == []
+
+
+def test_the_gate_reports_the_refusal_on_the_wave_summary(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """`3 seat(s) never redeemed` with no reason is what sent an operator hunting a bug."""
+    workspace = tmp_path / "ws"
+    from gbfleet import hostos, headroom
+
+    monkeypatch.setattr(hostos, "available_memory", lambda: headroom.RESERVE)
+    wave = up(
+        git_repo,
+        _seats(3),
+        _factory(scripts, "works_then_exits"),
+        _server(workspace),
+        limits=Limits(max_workers=4),
+        state=state,
+        workspace=workspace,
+    )
+    out = io.StringIO()
+    report(wave, out=out)
+    printed = out.getvalue()
+    assert "never redeemed" in printed
+    assert "NO ROOM" in printed
+    assert "FAILED" not in printed
+
+
+def test_children_are_charged_before_the_kernel_can_see_them(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """The reading never moves. Only the charge stops the loop.
+
+    A machine reporting room for exactly two more children, forever — which is what a real
+    one does for the first seconds after a spawn, because a process that has just started
+    has not allocated anything yet. Without charging each spawn against the baseline, the
+    loop starts every seat it has on the strength of one stale reading, which is precisely
+    how three children ended up on a box with room for one.
+    """
+    workspace = tmp_path / "ws"
+    from gbfleet import hostos, headroom
+
+    monkeypatch.setattr(
+        hostos, "available_memory",
+        lambda: headroom.RESERVE + 2 * headroom.DEFAULT_CHILD_MEMORY,
+    )
+    wave = up(
+        git_repo,
+        _seats(4),
+        _factory(scripts, "works_then_exits"),
+        _server(workspace),
+        limits=Limits(max_workers=4),
+        state=state,
+        workspace=workspace,
+    )
+    assert len(wave.spawned) == 2
+    assert wave.unused_seats == 2
+    assert wave.gated
+
+
+@pytest.mark.real_memory
+def test_the_gate_binds_on_a_real_kernel_reading(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """The whole chain against the actual kernel, not a lambda.
+
+    Every other test here pins the reader, which proves the wiring and not the reading.
+    This one lets `hostos.available_memory` run for real and makes the machine look full by
+    charging an absurd amount per child — so a broken platform branch, a parser that
+    returns None on this host, or a limit that never reaches the gate all show up as a
+    wave that spawned four children instead of one.
+    """
+    from gbfleet import hostos
+
+    if hostos.available_memory() is None:
+        pytest.skip("this host cannot be asked; the gate does not bind and says so")
+    workspace = tmp_path / "ws"
+    wave = up(
+        git_repo,
+        _seats(4),
+        _factory(scripts, "works_then_exits"),
+        _server(workspace),
+        limits=Limits(max_workers=4, child_memory=1024**5),  # a petabyte per child
+        state=state,
+        workspace=workspace,
+    )
+    assert len(wave.spawned) == 1
+    assert wave.gated and "no room" in wave.gated[0]
+    assert wave.headroom_at_start and wave.headroom_at_start > 0

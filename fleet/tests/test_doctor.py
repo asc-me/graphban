@@ -349,3 +349,125 @@ def test_the_supervision_mode_line_puts_until_on_the_deterministic_side(git_repo
     assert "until" in det and "up" in det and "no LLM" in det, det
     assert "mcp" in drv and "until" not in drv, drv
 
+
+
+# --- a sandboxed parent is every child's sandbox (GRPH-838) --------------------------
+
+@pytest.fixture
+def no_claude_token(monkeypatch):
+    for name in doctor.CLAUDE_TOKEN_ENVS:
+        monkeypatch.delenv(name, raising=False)
+
+
+def _sandboxed(monkeypatch, answer):
+    monkeypatch.setattr(doctor.hostos, "sandboxed", lambda: answer)
+
+
+def test_no_sandbox_is_a_pass(git_repo: Path, monkeypatch):
+    _sandboxed(monkeypatch, False)
+    assert _status(_run(git_repo, adapter="claude"), "kernel sandbox") == PASS
+
+
+def test_a_platform_that_cannot_be_asked_is_unknown_not_clean(git_repo: Path, monkeypatch):
+    """The rule again. Linux has no query for Landlock; reporting PASS there would be the
+    skip-that-reads-as-verified this module exists to refuse."""
+    _sandboxed(monkeypatch, None)
+    assert _status(_run(git_repo, adapter="claude"), "kernel sandbox") == UNKNOWN
+
+
+def test_a_sandboxed_parent_fails_the_vendors_measured_to_die_in_one(
+        git_repo: Path, monkeypatch, no_claude_token):
+    """Measured 2026-09-10 under `grok --sandbox workspace`: claude read 'Not logged in' on a
+    logged-in machine (the Keychain is unreachable from inside, and no path grant restores
+    it); qwen-code and cursor-agent died writing their own home directories. Each is a FAIL
+    that names the vendor's own symptom, so an operator reading a child's stderr later
+    recognises it. Sabotage: report PASS here and the first wave dies four different ways."""
+    _sandboxed(monkeypatch, True)
+
+    claude = next(f for f in _run(git_repo, adapter="claude").findings
+                  if f.name == "kernel sandbox")
+    assert claude.status == FAIL
+    assert "Not logged in" in claude.detail
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in claude.remedy
+
+    for vendor, symptom in (("qwen-code", ".qwen"), ("cursor-agent", ".cursor/projects")):
+        found = next(f for f in _run(git_repo, adapter=vendor).findings
+                     if f.name == "kernel sandbox")
+        assert found.status == FAIL, vendor
+        assert symptom in found.detail, vendor
+        assert 'extends = "workspace"' in found.remedy, "the remedy is the measured recipe"
+        assert ".qwen" in found.remedy and ".cursor" in found.remedy
+
+
+def test_a_claude_child_with_a_token_in_its_environment_passes(git_repo: Path, monkeypatch):
+    """The one login a sandbox cannot hide. Presence only — the value is never read into
+    the report."""
+    _sandboxed(monkeypatch, True)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-not-a-real-token")
+
+    found = next(f for f in _run(git_repo, adapter="claude").findings
+                 if f.name == "kernel sandbox")
+    assert found.status == PASS
+    assert "not-a-real-token" not in found.detail + found.remedy
+
+
+def test_a_grok_child_passes_because_the_adapter_launches_it_sandbox_off(
+        git_repo: Path, monkeypatch):
+    _sandboxed(monkeypatch, True)
+    found = next(f for f in _run(git_repo, adapter="grok").findings
+                 if f.name == "kernel sandbox")
+    assert found.status == PASS
+    assert "--sandbox off" in found.detail
+
+
+def test_an_unmeasured_vendor_and_no_vendor_are_unknown(git_repo: Path, monkeypatch):
+    """gbagent has not been run under a sandbox; saying PASS or FAIL for it would be a
+    guess wearing a verdict. And with no adapter named there is nothing to judge."""
+    _sandboxed(monkeypatch, True)
+    assert _status(_run(git_repo, adapter="gbagent"), "kernel sandbox") == UNKNOWN
+    assert _status(_run(git_repo), "kernel sandbox") == UNKNOWN
+
+
+# --- how much room the machine has (GRPH-842) --------------------------------------
+
+
+def _memory_finding(report: Report):
+    return next(f for f in report.findings if f.name == "memory headroom")
+
+
+def test_a_roomy_machine_passes_and_says_how_many_fit(monkeypatch):
+    from gbfleet import headroom, hostos
+
+    monkeypatch.setattr(
+        hostos, "available_memory",
+        lambda: headroom.RESERVE + 4 * headroom.DEFAULT_CHILD_MEMORY,
+    )
+    report = Report()
+    doctor.check_memory(report)
+    finding = _memory_finding(report)
+    assert finding.status == PASS
+    assert "room for 4" in finding.detail
+
+
+def test_an_unmeasurable_host_is_unknown_not_pass(monkeypatch):
+    """The reading that would otherwise pass for a roomy machine."""
+    from gbfleet import hostos
+
+    monkeypatch.setattr(hostos, "available_memory", lambda: None)
+    report = Report()
+    doctor.check_memory(report)
+    assert _memory_finding(report).status == UNKNOWN
+    assert not report.failed, "an unaskable host must not ground the fleet"
+
+
+def test_a_full_machine_is_unknown_and_never_fail(monkeypatch):
+    """FAIL would stop a run the gate itself would have allowed — one child always runs."""
+    from gbfleet import headroom, hostos
+
+    monkeypatch.setattr(hostos, "available_memory", lambda: headroom.RESERVE)
+    report = Report()
+    doctor.check_memory(report)
+    finding = _memory_finding(report)
+    assert finding.status == UNKNOWN
+    assert "room for 0" in finding.detail
+    assert report.ok

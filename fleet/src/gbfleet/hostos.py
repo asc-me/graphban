@@ -46,6 +46,7 @@ import errno
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 
 WINDOWS = os.name == "nt"
@@ -285,6 +286,176 @@ def terminated_by_signal(code: int | None) -> bool:
     if code is None:
         return False
     return code == CONTROL_C_EXIT if WINDOWS else code < 0
+
+
+# --- is this process inside a kernel sandbox? ----------------------------------------
+
+def sandboxed() -> bool | None:
+    """Whether THIS process runs under a kernel sandbox its children will inherit.
+
+    GRPH-838. A Grok session with `[sandbox] profile = "workspace"` applies Seatbelt to
+    itself; `gbfleet mcp` is its child, and every vendor spawned from there inherits the
+    profile — Grok's own sandbox guide says children do, and the wave that found this lost
+    four children at exit 1 before any of them registered: qwen-code on `chmod ~/.qwen/...`,
+    cursor-agent on `mkdir ~/.cursor/projects/...`, grok on re-applying the profile inside
+    itself, and claude reading "Not logged in" on a machine that is logged in, because the
+    Keychain is unreachable from inside. None of it is visible from the exit code, and the
+    spawn reply's stderr tail names the vendor's symptom rather than the cause.
+
+    Three answers, not two. `True` and `False` are measured; `None` means this platform has
+    no cheap way to ask — Linux Landlock has no query call and Windows has nothing of the
+    kind — and the doctor reports that as UNKNOWN rather than as clean.
+
+    macOS: `sandbox_check(pid, NULL, 0)` from libsystem_sandbox is non-zero for a sandboxed
+    process. Measured 2026-09-10: 0 from a plain shell, 1 under `sandbox-exec`, and 1 under
+    `grok --sandbox workspace` — the case that matters.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        import ctypes
+
+        lib = ctypes.CDLL("/usr/lib/system/libsystem_sandbox.dylib")
+        lib.sandbox_check.restype = ctypes.c_int
+        lib.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        return lib.sandbox_check(os.getpid(), None, 0) != 0
+    except (OSError, AttributeError):  # the library or the symbol is not where it was
+        return None
+
+
+# --- how much room this machine has left -------------------------------------------
+
+#: `vm_stat` counters that make up "could be handed to a new process" on macOS. There is
+#: no `MemAvailable` here, so the figure is assembled: free pages, plus the two kinds the
+#: kernel reclaims without asking anyone — inactive (Activity Monitor's "Cached Files")
+#: and speculative read-ahead.
+#:
+#: `Pages purgeable` is deliberately NOT in this list. Measured 2026-09-10 on a 24 GB box:
+#: free+active+inactive+speculative+wired+compressor came to 1505773 of 1572864 pages, and
+#: adding purgeable (9392) does not close the 67091-page gap — so purgeable is a subset of
+#: the partitions above, not a partition of its own, and counting it would double-count.
+_DARWIN_AVAILABLE = ("Pages free", "Pages inactive", "Pages speculative")
+
+
+def available_memory() -> int | None:
+    """Bytes that could be given to a new process right now. None if we cannot tell.
+
+    GRPH-842. Three answers, not two, for the same reason as `sandboxed()`: a host that
+    cannot be asked must not read as a roomy one. The supervisor's gate treats `None` as
+    "not measured" and does not bind, which is the behaviour the fleet has always had —
+    but it says so, rather than spawning into an unknown and calling it fine.
+
+    Stdlib only, and hand-rolled per platform rather than `psutil`, because PRD-22 D-e holds
+    this package's install surface to its single dependency and `tests/test_packaging.py`
+    fails if anything heavier appears. That is a requirement, not a preference, so the three
+    branches below are the cost of it. (Named obliquely on purpose: `test_client.py`'s egress
+    guard is a line grep and cannot tell a docstring from an import.)
+
+    An estimate, and the reclaimable part is why: on both Linux and macOS the figure counts
+    pages the kernel would have to reclaim before handing them over, and reclaiming is work
+    rather than magic. `headroom.RESERVE` exists partly to pay for that.
+
+    macOS: `vm_stat` and the page size from its own header — not a hardcoded 4096, which is
+    wrong on every Apple Silicon machine (measured: 16384). Cross-checked at one instant
+    against `top`, which printed "4344M unused" while `free + speculative` was 4342 MB.
+    Linux: `MemAvailable` from `/proc/meminfo`, the kernel's own answer to this question.
+    Windows: `GlobalMemoryStatusEx().ullAvailPhys`.
+    """
+    if WINDOWS:
+        return _available_windows()
+    if sys.platform == "darwin":
+        return _available_darwin()
+    return _available_proc()
+
+
+def _available_proc() -> int | None:
+    """`MemAvailable` in bytes. None on a kernel too old to publish it (pre-3.14)."""
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _available_darwin() -> int | None:
+    try:
+        listed = subprocess.run(
+            ["vm_stat"], capture_output=True, text=True, check=False,
+        )
+    except OSError:  # a sandbox that will not let us run it, same as process_start_token
+        return None
+    if listed.returncode != 0:
+        return None
+    return _parse_vm_stat(listed.stdout)
+
+
+def _parse_vm_stat(text: str) -> int | None:
+    """Sum `_DARWIN_AVAILABLE` from `vm_stat` output. None if the shape is not what we know.
+
+    Split out so the parser can be tested against captured output on any platform — the
+    branch above cannot run off macOS, and a parser nobody can exercise is a parser nobody
+    has checked.
+    """
+    lines = text.splitlines()
+    if not lines:
+        return None
+    head = lines[0]
+    marker = "page size of "
+    if marker not in head:
+        return None
+    try:
+        page = int(head.split(marker, 1)[1].split()[0])
+    except (IndexError, ValueError):
+        return None
+    if page <= 0:
+        return None
+    pages = 0
+    seen = 0
+    for line in lines[1:]:
+        name, _, value = line.partition(":")
+        if name.strip() not in _DARWIN_AVAILABLE:
+            continue
+        try:
+            pages += int(value.strip().rstrip("."))
+        except ValueError:
+            return None
+        seen += 1
+    # A partial reading is refused rather than returned small. `vm_stat` losing a counter
+    # would otherwise show up as a machine that is suddenly out of room, and the gate would
+    # stop spawning for a reason nobody could see.
+    if seen != len(_DARWIN_AVAILABLE):
+        return None
+    return pages * page
+
+
+def _available_windows() -> int | None:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _Status(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", wintypes.DWORD),
+                ("dwMemoryLoad", wintypes.DWORD),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _Status()
+        status.dwLength = ctypes.sizeof(_Status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return None
+        return int(status.ullAvailPhys)
+    except (OSError, AttributeError, ValueError):  # pragma: no cover - Windows only
+        return None
 
 
 # --- who "this user" is ------------------------------------------------------------

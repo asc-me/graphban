@@ -8,16 +8,16 @@ value rather than a new column.
 `task_class` is backfilled by the D3 map (migration→A4, mcp_tool→B2, frontend→B5,
 docs→E3, else `other`) and leaves the key with lane and tier.
 
-Revision ID: 0117
-Revises: 0116
+Revision ID: 0119
+Revises: 0118
 """
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0117"
-down_revision: Union[str, None] = "0116"
+revision: str = "0119"
+down_revision: Union[str, None] = "0118"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -128,4 +128,4 @@ def _rebuild_platform_rollups() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("0117 does not downgrade: the re-key merged cells that cannot be split")
+    raise RuntimeError("0119 does not downgrade: the re-key merged cells that cannot be split")

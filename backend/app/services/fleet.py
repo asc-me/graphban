@@ -448,7 +448,21 @@ def _claim_bound_seat(db: Session, agent: Agent, seat: "Enrolment | None", *,
         out["reason"] = "pinned"
         out["held_by"] = pin
         return out
-    claimed = items_svc.claim_item(db, item.id, agent.id, lease_seconds=lease_seconds)
+    try:
+        claimed = items_svc.claim_item(db, item.id, agent.id, lease_seconds=lease_seconds)
+    except items_svc.OutOfScope:
+        # GRPH-827. A seat scoped to one PRD, bound to an item in another: the planner asked
+        # for a contradiction and the child is the one that finds out. Reported as a reason
+        # here rather than raised, because registration has already committed — an exception
+        # would leave a registered agent holding a 500 instead of a sentence.
+        out["reason"] = "out-of-scope"
+        return out
+    except items_svc.ReachesOutsideTheRepo:
+        # GRPH-832, and its own reason rather than out-of-scope's: `delegate` refuses a
+        # `deploy` item, so a bound seat can only reach here if the item was declared AFTER
+        # the delegation was written. The child says so and stops.
+        out["reason"] = "reaches-outside-the-repo"
+        return out
     if claimed is None:
         db.refresh(item)
         out["reason"] = "held"
@@ -1506,6 +1520,7 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
     Preference, not requirement: a same-vendor review is far better than none.
     """
     me = db.get(Agent, agent_id)
+    scope = items_svc.seat_scope(db, agent_id)
     stmt = select(Item).where(Item.status == "review")
     if project_id:
         stmt = stmt.where(Item.project_id == project_id)
@@ -1533,6 +1548,11 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         # while a supervisor is known to be coming and only for a grace period; an unsupervised
         # item is never withheld, because nothing would ever arrive to release it.
         and not harness_svc.publish_pending(db, it)
+        # GRPH-827: and inside the scope this seat was minted for. Review is scoped for the
+        # same reason building is — a wave provisioned for one PRD reviewing another PRD's
+        # work is the same escape wearing the reviewer's hat, and the reviewer is the half
+        # that can also SIGN OFF. Unscoped seats are unaffected.
+        and items_svc.in_scope(it, scope)
     ]
     if not candidates:
         return None
@@ -2241,9 +2261,16 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     # Somebody else's areas. An agent's own reservations do not block it: a worker asking for
     # more work should not be refused because of the cluster it is already holding.
     blocked = [r.area for r in taken if r.agent_id != agent_id]
+    # GRPH-827: the seat's scope filters the POOL, before clustering, for the reason
+    # `clusters_for_project` gives — a cluster is a promise that its members do not collide,
+    # and dropping members afterwards hands out a promise computed over items no longer in it.
+    # Scoping here rather than skipping out-of-scope members below is also what keeps
+    # `claim_item`'s refusal unreachable from this path: the two agree by construction.
+    scope = items_svc.seat_scope(db, agent_id)
 
     for cluster in collision_svc.clusters_for_project(db, project_id,
-                                                       lease_seconds=lease_seconds):
+                                                       lease_seconds=lease_seconds,
+                                                       prd_id=scope or None):
         overlap = areas_collide(cluster.get("areas") or [], blocked)
         if overlap:
             continue
@@ -2264,7 +2291,7 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                 "items": [{"id": it.key, "stored_id": it.id, "title": it.title} for it in claimed],
                 "areas": cluster.get("areas") or [],
                 "predicted": bool(cluster.get("predicted")),
-                "reason": ""}
+                "reason": "", "scope": scope}
 
     # WHO is holding what, and until when. "All ready clusters collide with in-flight work" is
     # unactionable to the one caller most likely to see it: a solo human whose previous agent
@@ -2279,9 +2306,14 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                   + ", ".join(held)
                   + (f" — the earliest frees in {free_in}s" if free_in is not None else ""))
     else:
-        reason = "nothing ready to claim"
+        # Two states, and the difference decides what the caller does next: an unscoped agent
+        # with nothing to claim is done, a scoped one may be done only INSIDE its wave. Saying
+        # "nothing ready to claim" to both is the flattening this repo keeps paying for.
+        reason = ("nothing ready to claim" if not scope else
+                  f"nothing ready to claim inside {scope}, which is the scope this seat was "
+                  f"minted for — the project may have other work, and this seat may not take it")
     return {"claimed": False, "items": [], "areas": [], "predicted": False,
-            "held_by": held, "reason": reason}
+            "held_by": held, "reason": reason, "scope": scope}
 
 
 def holds_reservation(db: Session, *, agent_id: str, item_id: str) -> bool:
@@ -2438,7 +2470,8 @@ def _hash_code(code: str) -> str:
 def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None = None,
                     issued_by: str | None = None, minted_by: str | None = None,
                     reissued_from: str | None = None, item_id: str | None = None,
-                    delegation_id: str | None = None) -> tuple[Enrolment, str]:
+                    delegation_id: str | None = None,
+                    prd_id: str | None = None) -> tuple[Enrolment, str]:
     """Mint one SEAT and return (row, plaintext). The code is shown once.
 
     One seat per agent, never one per role: two agents redeeming the same code would share an
@@ -2462,6 +2495,10 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
         code_prefix=code.split("-")[-1][:2], role=role, wave=wave,
         issued_by=issued_by, minted_by=minted_by, reissued_from=reissued_from,
         item_id=item_id or None, delegation_id=delegation_id or None,
+        # GRPH-827. Resolved to a stored id by the caller if it was given a key: the seat
+        # outlives whatever typed it, and a key that gets retagged would silently widen the
+        # scope to everything.
+        prd_id=prd_id or None,
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=ENROLMENT_TTL_MINUTES),
     )
     db.add(row)
@@ -2472,7 +2509,8 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
 
 def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str,
                       api_key, wave: str | None = None, item_id: str | None = None,
-                      delegation_id: str | None = None) -> tuple[Enrolment, str]:
+                      delegation_id: str | None = None,
+                      prd_id: str | None = None) -> tuple[Enrolment, str]:
     """A planner mints a seat for an agent it is about to spawn (PRD-19 E7 / D-g).
 
     An orchestrator cannot paste a code out of a UI, so the capability has to exist for an
@@ -2500,7 +2538,7 @@ def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str
             f"this credential is eligible for {', '.join(allowed)}; cannot mint a {role!r} seat",
             hint="mint a credential for that role in the Fleet view first")
     return issue_enrolment(db, project_id=project_id, role=role, wave=wave, minted_by=minter_id,
-                           item_id=item_id, delegation_id=delegation_id)
+                           item_id=item_id, delegation_id=delegation_id, prd_id=prd_id)
 
 
 def reissue_enrolment(db: Session, *, enrolment_id: str) -> tuple[Enrolment, str]:

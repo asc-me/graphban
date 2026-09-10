@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .hostos import pid_is_alive, process_start_token, restrict_to_owner
@@ -22,7 +22,7 @@ from .observe import emit
 from .progress import Output
 from .spawn import Child
 from .state import repo_key, repo_root, state_root
-from .worktree import Worktree, reap as reap_tree
+from .worktree import Disposition, Worktree, reap as reap_tree
 
 GENERATION = 1
 
@@ -47,6 +47,11 @@ class Snapshot:
     seat_path: str = ""
     log_dir: str = ""
     started_wall: float = 0.0
+    #: What this child held when the record was written (GRPH-830). Persisted so a salvage
+    #: can say WHICH item the recovered branch belongs to. A record from an older supervisor
+    #: has none, and an empty list means "not recorded" — the salvage still publishes the
+    #: branch, it just cannot write the receipt on an item.
+    held_items: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -122,6 +127,7 @@ def snapshot_of(child: Child, slot: str = "") -> Snapshot:
         seat_path=str(child.seat_path),
         log_dir=str(child.log_dir),
         started_wall=time.time() - max(0.0, time.monotonic() - child.started_at),
+        held_items=list(child.held_items or []),
     )
 
 
@@ -146,13 +152,46 @@ def classify(snap: Snapshot) -> Verdict:
     return Verdict(snap, "attached")
 
 
+@dataclass
+class Salvaged:
+    """One tree whose real work was recovered, and where it belongs (GRPH-830).
+
+    `items` is what the dead child held when its record was last written, which is what makes
+    a salvage attributable. Empty means the record predates that field — the branch is still
+    worth publishing, there is just nobody to hand the receipt to.
+    """
+
+    branch: str
+    base: str
+    items: list[str]
+
+
+@dataclass
+class Recovered:
+    """What a takeover found. Unpacks as the historical three; `salvaged` is by name.
+
+    The fourth answer is deliberately NOT part of the tuple. Every caller in this package and
+    two in tests unpack exactly three, and widening the arity is the kind of edit that reads
+    fine and breaks a supervisor's crash path — the one path that only runs when something
+    has already gone wrong.
+    """
+
+    children: list[Child]
+    occupied: set[str]
+    notes: list[str]
+    salvaged: list[Salvaged]
+
+    def __iter__(self):
+        return iter((self.children, self.occupied, self.notes))
+
+
 def recover(
     repo: Path,
     workspace: Path,
     state: Path | None = None,
-) -> tuple[list[Child], set[str], list[str]]:
+) -> Recovered:
     """Adopt live PIDs, salvage the rest. Returns attached children, occupied
-    branches, and notes (unadoptable / salvage).
+    branches, notes (unadoptable / salvage), and what was salvaged with real content in it.
 
     Occupied branches must not be spawned onto. A corrupt file occupies every `gb/`
     branch already in the repo rather than reading as empty.
@@ -163,11 +202,15 @@ def recover(
     occupied: set[str] = set()
     attached: list[Child] = []
 
+    salvaged: list[Salvaged] = []
+
     if isinstance(loaded, UnadoptableFile):
         notes.append(str(loaded))
         occupied.update(_existing_gb_branches(repo))
+        # No records, so no branch and no item: a workspace salvage commits what it finds and
+        # cannot say what it belongs to. Reported, never published.
         _salvage_workspace(repo, workspace, notes)
-        return attached, occupied, notes
+        return Recovered(attached, occupied, notes, salvaged)
 
     for snap in loaded:
         occupied.add(snap.branch)
@@ -177,15 +220,15 @@ def recover(
                 attached.append(attach(snap))
             except OSError as exc:
                 notes.append(f"{snap.branch}: attach failed ({exc}); treating as unadoptable")
-                _salvage_snapshot(repo, snap, notes)
+                _salvage_snapshot(repo, snap, notes, salvaged)
         elif verdict.fate == "gone":
-            _salvage_snapshot(repo, snap, notes)
+            _salvage_snapshot(repo, snap, notes, salvaged)
         else:
             notes.append(f"{snap.branch}: unadoptable ({verdict.why})")
-            _salvage_snapshot(repo, snap, notes)
+            _salvage_snapshot(repo, snap, notes, salvaged)
 
     persist(path, attached)
-    return attached, occupied, notes
+    return Recovered(attached, occupied, notes, salvaged)
 
 
 def attach(snap: Snapshot) -> Child:
@@ -229,6 +272,7 @@ def _as_dict(s: Snapshot) -> dict:
         "seat_path": s.seat_path,
         "log_dir": s.log_dir,
         "started_wall": s.started_wall,
+        "held_items": list(s.held_items or []),
     }
 
 
@@ -254,6 +298,9 @@ def _parse_row(row: object) -> Snapshot | None:
         seat_path=str(row.get("seat_path") or ""),
         log_dir=str(row.get("log_dir") or ""),
         started_wall=float(row["started_wall"]) if row.get("started_wall") else 0.0,
+        # Tolerant, because a file written by an older supervisor has no such key and a
+        # takeover that refused to read it would strand the very trees this exists to save.
+        held_items=[str(i) for i in (row.get("held_items") or []) if i],
     )
 
 
@@ -282,7 +329,20 @@ def _existing_gb_branches(repo: Path) -> set[str]:
     return {line.strip() for line in out.splitlines() if line.strip()}
 
 
-def _salvage_snapshot(repo: Path, snap: Snapshot, notes: list[str]) -> None:
+def _salvage_snapshot(repo: Path, snap: Snapshot, notes: list[str],
+                      salvaged: list[Salvaged] | None = None) -> None:
+    """Commit what a dead child left, and REMEMBER that it was real work (GRPH-830).
+
+    The commit is local. That was the whole of the previous behaviour and it recovered and
+    lost the same work in one step: one measured takeover salvaged 614 insertions across
+    exactly one item's touchpoints, said so in a note, and left the commit on a local branch
+    nothing pointed at. The item was re-delegated minutes later, branched from `main`, and
+    rebuilt every line.
+
+    Only `SALVAGED` is collected. `ONLY_CREDENTIAL` means the sole uncommitted file was the
+    seat — genuinely nothing to publish, and pushing an empty branch per dead child would
+    make every crash look like work.
+    """
     tree_path = Path(snap.worktree)
     if not tree_path.exists():
         return
@@ -291,6 +351,9 @@ def _salvage_snapshot(repo: Path, snap: Snapshot, notes: list[str]) -> None:
             path=tree_path, branch=snap.branch, repo=Path(repo), base=snap.base,
         ))
         notes.append(f"{snap.branch}: salvaged ({reaped.disposition.value})")
+        if salvaged is not None and reaped.disposition is Disposition.SALVAGED:
+            salvaged.append(Salvaged(branch=snap.branch, base=snap.base,
+                                     items=list(snap.held_items or [])))
     except Exception as exc:  # noqa: BLE001 — salvage is best-effort on a crash path
         notes.append(f"{snap.branch}: salvage failed ({exc})")
 

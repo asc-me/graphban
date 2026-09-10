@@ -30,10 +30,13 @@ from .seat import Seat
 from .tiers import TierTable
 from . import matrix as matrix_mod
 from .spawn import Child
+from . import spend as spend_mod
+from .spawn import VendorLimit
+from .headroom import Headroom
 from .supervisor import (
     _declared_into,
     DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Wave, _reap_all, _rooted,
-    _start, item_status, watch_tick,
+    _report_exits, _start, item_status, publish_salvaged, watch_tick,
 )
 
 #: Planner-held tools. `register_agent` is how this process gets an `agent_id` to mint
@@ -104,6 +107,16 @@ class Report:
             "minted": self.minted,
             "waits": list(self.waits),
             "review": list(self.review),
+            # GRPH-834. Always present, including when nothing was measured: an absent key
+            # reads as "this build has no spend reporting", and a zeroed block with
+            # `reported: 0` reads as "nobody told us", which is the true statement.
+            "spend": spend_mod.totals(self.wave.spend if self.wave else {}, self.spawned),
+            # GRPH-842. Both keys, always, and the second is what makes the first readable:
+            # an empty `gated` means "nothing was refused" only when `headroom_bytes` is a
+            # number. Null means the host could not be asked and the gate never bound, which
+            # is the reading that would otherwise pass for a roomy machine.
+            "gated": list(self.wave.gated) if self.wave else [],
+            "headroom_bytes": self.wave.headroom_at_start if self.wave else None,
         }
         if self.detail:
             payload["detail"] = self.detail
@@ -132,6 +145,7 @@ def run(
     mint_budget: float = MINT_BUDGET_S,
     request: str | None = None,
     prd: str | None = None,
+    budget: int | None = None,
     shared: dict | None = None,
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
@@ -158,15 +172,36 @@ def run(
     observe.configure(state)
 
     try:
+        if budget:
+            check_budget_can_be_enforced(adapter, budget)
+        if prd and pool:
+            # GRPH-827. A pre-minted seat carries whatever scope it was minted with, and a
+            # `--seats` file has none. Mixing them would produce a wave that reports as scoped
+            # while the children holding those seats can claim the whole project — the finding
+            # this scope exists to close, walked back in through a flag combination.
+            #
+            # INSIDE the try, so it comes back as the same `{"ok": false, "reason": "config"}`
+            # every other refusal does. Raised two lines earlier it escaped `run` entirely and
+            # the operator got a traceback, which is a worse answer to a config mistake.
+            raise ConfigError(
+                f"--prd {prd} cannot be combined with pre-minted seats: a seat from --seats "
+                "carries no scope, so those children could claim past the wave. Drop --seats "
+                "and let the loop mint scoped seats, or drop --prd and accept an unscoped wave")
         with hold(repo, state) as acquired:
             wave.lock = acquired
             leftover: list[Child] = []
             occupied: set[str] = set()
             if acquired.takeover:
-                leftover, occupied, notes = adopt_mod.recover(repo, workspace, state)
+                recovered = adopt_mod.recover(repo, workspace, state)
+                leftover, occupied, notes = recovered
                 for note in notes:
                     observe.emit("adopt", detail=note)
                 wave.spawned.extend(leftover)
+                # GRPH-830: what was salvaged with real work in it gets the same two steps a
+                # finished child gets — pushed, and named on the item it belongs to. Before
+                # this the commit stayed local and the item was re-delegated and rebuilt from
+                # `main`, so the recovery and the loss were the same event.
+                publish_salvaged(wave, repo, recovered.salvaged, client=planner)
 
             children: list[Child] = list(leftover)
             roster_path = adopt_mod.children_path(repo, state)
@@ -187,6 +222,7 @@ def run(
                 minted_start=minted,
                 request=request,
                 prd=prd,
+                budget=budget,
                 shared=shared or {},
                 tiers=tiers or TierTable(),
                 launch_for=launch_for,
@@ -200,6 +236,15 @@ def run(
     except ConfigError as exc:
         wave.reason = "config"
         return Report(ok=False, reason="config", exit=2, detail=str(exc), wave=wave,
+                      minted=minted, spawned=len(wave.spawned))
+    except VendorLimit as exc:
+        # GRPH-829. Its own reason, because "cap" is what this wave reported before and it is
+        # the wrong instruction: `cap` says the operator's own `--max-children` was reached and
+        # invites raising it, while this says the vendor account is spent and the only thing
+        # that helps is the clock. The wave ended on the wrong reason AND burned three of six
+        # child slots getting there.
+        wave.reason = "vendor_limit"
+        return Report(ok=False, reason="vendor_limit", exit=1, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
     except CapError as exc:
         wave.reason = exc.reason
@@ -266,6 +311,7 @@ def _loop(
     minted_start: int,
     request: str | None = None,
     prd: str | None = None,
+    budget: int | None = None,
     shared: dict | None = None,
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
@@ -283,6 +329,11 @@ def _loop(
     mint_deadline = time.monotonic() + mint_budget
     mint_left = mint_tries
     review_fails = 0
+    # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
+    # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
+    # charges expire, so an hour-long loop does not slowly refuse everything.
+    room = Headroom(limits.child_memory)
+    wave.headroom_at_start = room.baseline
 
     # GRPH-798: the ref children are cut from, resolved once and FETCHED once. A
     # remote-tracking ref is only as fresh as the last fetch, so skipping this would measure
@@ -297,6 +348,17 @@ def _loop(
 
     while True:
         watch_tick(wave, children, limits, supervisor, debug=debug, persist=persist)
+        # GRPH-834: checked HERE, right after the tick that reads the exit records, and before
+        # anything else this pass can spawn. `_cap_children` guards `--max-children` at the
+        # spawn site, and that is the wrong shape for a budget: a wave whose last child has
+        # already blown the cap should stop even if this pass was never going to spawn.
+        #
+        # The wave FINISHES rather than aborting — running children are left to their own
+        # ends. Killing them would spend the tokens and throw away the work, which is the one
+        # outcome worse than going over.
+        if (crossed := spend_mod.over(wave.spend, budget)):
+            observe.emit("budget", detail=crossed)
+            raise CapError("budget", crossed)
         finished = [c for c in children if not c.running]
         if finished:
             # S6 (PRD-39 D-i): re-keyed off the fact it measures — a child exited
@@ -311,6 +373,16 @@ def _loop(
                     review_fails += 1
                 elif child.held_items:
                     review_fails = 0
+            # READ THE EXIT RECORD BEFORE DROPPING THE CHILD (GRPH-834). `watch_tick` reports
+            # exits, but it ran a few lines up — a child that exited in between is in
+            # `finished` and was never reported, and the line below removes it from `children`
+            # so no later pass can ever see it. Found by the spend summary coming back empty on
+            # a wave that plainly spent something; the same window was silently losing the
+            # PRD-38 attempt row for that child, which is the more expensive half.
+            #
+            # Idempotent: `child.reported` makes a second pass a no-op, so the common case
+            # where `watch_tick` already reported the child costs nothing.
+            _report_exits(finished, supervisor, wave)
             _reap_all(wave, finished)
             children[:] = [c for c in children if c.running]
             persist()
@@ -361,6 +433,11 @@ def _loop(
             if need <= 0:
                 sleep(poll)
                 continue
+            # Before the mint, not after it. A seat minted into a machine with no room is a
+            # consumed enrolment nothing registers on, and `--mint-tries` is finite.
+            if _no_room(wave, room, len(live)):
+                sleep(poll)
+                continue
             # PRD-36 D9: the delegation mints the BOUND seat the child will register on, so
             # the child claims the seed rather than whatever the divvy hands it. When the
             # server refused a bound seat (areas held) the delegation stands without one
@@ -376,7 +453,7 @@ def _loop(
                 seat, minted_one = _take_seat(
                     pool, planner, agent_id, wave_name, server, api_key,
                     mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
-                    role="worker",
+                    role="worker", prd=prd,
                 )
                 if minted_one:
                     minted += 1
@@ -413,6 +490,10 @@ def _loop(
         # and the rows are still unheld — not off a role that no longer exists.
         # A live child blocks a second spawn (just as live_reviewers did before).
         unheld_review = [r for r in rows if not r.get("review_claimed_by")]
+        # No memory gate on this branch, deliberately (GRPH-842): `not live` means nothing
+        # is running, and the gate never refuses the first child — so a check here could
+        # only ever cost a `vm_stat` per poll and answer yes. **If that guard goes, this
+        # needs `_no_room` like the worker branch above.**
         if unheld_review and need <= 0 and not live:
             empty = 0
             if review_fails >= REVIEWER_FAILS:
@@ -422,7 +503,7 @@ def _loop(
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
-                role="worker",
+                role="worker", prd=prd,
             )
             if minted_one:
                 minted += 1
@@ -502,6 +583,10 @@ def _spawn_one(
     debug: bool,
 ) -> None:
     before = len(wave.spawned)
+    # No `room=` on purpose (GRPH-842). `_start`'s own gate is for `up`, which decides how
+    # many seats to run in one go; this loop asks `_no_room` BEFORE minting, because a seat
+    # minted into a full machine is a consumed enrolment nothing registers on. Passing one
+    # here would gate the same spawn twice and count the refusal as a reviewer failure.
     _start(
         wave, [seat], launch_factory, repo, workspace, wave_name, supervisor,
         limits, debug=debug, occupied=occupied, items=_declared_into(wave,
@@ -551,6 +636,71 @@ def check_scope_is_honoured(planner: Graphban, prd: str) -> None:
             "every ready item in the project while reporting the wave as scoped. Upgrade the "
             "server, or run without --prd and accept that it drains the project"
         )
+    check_seat_scope_is_honoured(planner, prd)
+
+
+def check_budget_can_be_enforced(adapter: str, budget: int) -> None:
+    """Refuse `--budget` when the adapter reports no token usage (GRPH-834).
+
+    The same argument as `check_scope_is_honoured` one flag over, and it is the argument that
+    matters most for a budget: a cap over a vendor that prints no result record is not a loose
+    cap, it is one that can never be exceeded and therefore never fires. The operator would
+    watch a wave run to completion believing it was bounded.
+
+    Refused before the lock and before any worktree, naming the adapter, because the remedy is
+    a different adapter or no flag — neither of which is discovered usefully an hour in.
+
+    Only `gbagent` reports today. That is a fact about the vendors rather than a limitation
+    chosen here: a vendor joins `result_facts` after its record has been measured, never on
+    the strength of its documentation.
+    """
+    from .adapters import ADAPTERS, reports_tokens
+
+    if reports_tokens(adapter):
+        return
+    able = sorted(name for name in ADAPTERS if reports_tokens(name))
+    raise ConfigError(
+        f"--budget {budget} was given, and the {adapter!r} adapter reports no token usage: "
+        "nothing would ever be counted against it, so the cap could not end a wave and this "
+        "run would look bounded while being unbounded. "
+        + (f"Adapters that report: {', '.join(able)}. " if able else "")
+        + "Run without --budget, or use an adapter that reports")
+
+
+def check_seat_scope_is_honoured(planner: Graphban, prd: str) -> None:
+    """Refuse `--prd` when the server takes the scope but does not put it on the SEAT.
+
+    The same argument as the probe above, one layer down, and it needs its own check because
+    the two halves shipped in different releases. A server that filters `collision_clusters`
+    but drops `delegate`'s `scope` passes the first probe completely: the wave delegates
+    inside the PRD and every child then holds an unscoped credential, which is exactly the
+    measured behaviour this flag was extended to fix — three delegated items inside the scope,
+    six self-claimed outside it.
+
+    **Read from the manifest rather than probed by minting.** `tools/list` is a question with
+    no side effects; the alternative was to mint a seat with an impossible scope and see
+    whether it was refused, which leaves a real credential lying around on every server that
+    passes. A seat is the thing this is trying to bound — spraying them to find out is the
+    wrong instrument.
+    """
+    try:
+        tools = planner.list_tools()
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("scope_unverified", detail=f"could not read the tool manifest: {exc}")
+        return
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("name") != "delegate":
+            continue
+        props = ((tool.get("inputSchema") or {}).get("properties") or {})
+        if "scope" in props:
+            return
+        raise ConfigError(
+            f"--prd {prd} was given, but this server's `delegate` takes no `scope`: it would "
+            "bound what this loop hands out and mint children that can claim the whole "
+            "project anyway. Upgrade the server, or run without --prd")
+    # `delegate` absent from the manifest entirely is a different problem, and the loop's own
+    # handling of a missing tool reports it better than a guess here would.
+    observe.emit("scope_unverified", detail="delegate is not in the tool manifest")
 
 
 class _Repeats:
@@ -663,11 +813,16 @@ def plan(planner: Graphban, prd: str | None, max_workers: int) -> dict:
     that can disagree with it — a dry run that models the wave instead of asking it is a dry
     run that reassures you about the wrong plan.
     """
-    clusters = planner.call("collision_clusters", **_scope(prd))
+    clusters = planner.call("collision_clusters", holds=True, **_scope(prd))
     free, blocked = _free_and_blocked(clusters)
     would = [c for c in free[:max_workers]]
     return {
         "prd": prd or None,
+        # GRPH-827: a dry run that showed only what would be HANDED OUT answered half the
+        # question. The other half is what the children could then take on their own, and for
+        # a scoped wave that is now the same set. Said explicitly, because the previous answer
+        # to it was a README paragraph that turned out to be false.
+        "seats_scoped": bool(prd),
         "would_delegate": [(c.get("items") or [None])[0] for c in would],
         "clusters_free": len(free),
         "clusters_held": len(blocked),
@@ -676,7 +831,16 @@ def plan(planner: Graphban, prd: str | None, max_workers: int) -> dict:
         "free": [{"seed": (c.get("items") or [None])[0], "items": c.get("items") or [],
                   "areas": c.get("areas") or []} for c in free],
         "held": [{"items": c.get("items") or [], "held_by": c.get("held_by") or [],
-                  "free_in": c.get("free_in")} for c in blocked],
+                  "free_in": c.get("free_in"),
+                  # WHICH area the hold covers and by which rule (GRPH-833). "Held by SA-A39"
+                  # sends the reader looking for SA-A39; this says what the collision actually
+                  # is, which is the half an operator was left to infer — and inferred wrong.
+                  "because": c.get("held_because") or []} for c in blocked],
+        # The reservation table itself, keyed on the HOLD rather than on the cluster. A
+        # cluster leaves the partition the moment its item is claimed, taking its reservation
+        # off every read while that reservation goes on blocking everyone — so a wave with no
+        # free clusters and no `held` rows had nothing to show for itself at all.
+        "holds": clusters.get("holds") or [],
         "capped_by_max_workers": len(free) > max_workers,
     }
 
@@ -691,6 +855,22 @@ def _scope(prd: str | None) -> dict:
     Empty when unscoped, so an unfiltered run sends exactly what it sent before.
     """
     return {"prd_id": prd} if prd else {}
+
+
+def _seat_scope(prd: str | None) -> dict:
+    """The wave's scope, as the arguments that put it on the CREDENTIAL (GRPH-827).
+
+    Separate from `_scope` above and deliberately so: that one filters what this loop offers,
+    this one binds what the child may take on its own. They carry the same value and answer
+    different questions, and the gap between them is the whole finding — one measured wave
+    delegated three items inside its PRD while its children self-claimed six outside it,
+    including an ops item whose checklist mutates production.
+
+    Empty when unscoped, so an unfiltered wave mints exactly the seat it minted before. A
+    server that has never heard of `scope` drops it silently, which is why `until` refuses to
+    run scoped against a server that ignores the filter (`check_scope_is_honoured`).
+    """
+    return {"scope": prd} if prd else {}
 
 
 def _delegate_next(
@@ -763,13 +943,14 @@ def _delegate_next(
         # by someone else (D13); then the delegation is written without a seat and the
         # divvy decides, exactly as before PRD-36.
         reply = planner.call("delegate", id=seed, lane=lane, tier=want, agent_id=agent_id,
-                             note=note, seat=True, wave=wave_name)
+                             note=note, seat=True, wave=wave_name, **_seat_scope(prd))
         got = reply.get("enrolment_code") if isinstance(reply, dict) else None
         code = str(got) if got else None
     except ToolFailed as exc:
         observe.emit("bound_seat_refused", item=seed, detail=str(exc))
         try:
-            planner.call("delegate", id=seed, lane=lane, tier=want, agent_id=agent_id, note=note)
+            planner.call("delegate", id=seed, lane=lane, tier=want, agent_id=agent_id, note=note,
+                         **_seat_scope(prd))
         except (ToolFailed, NotPermitted, ServerUnreachable) as exc2:
             observe.emit("delegate_refused", item=seed, detail=str(exc2))
             return None, None, None
@@ -779,6 +960,41 @@ def _delegate_next(
     delegated.add(seed)
     observe.emit("delegated", item=seed, lane=lane, tier=want, bound=bool(code))
     return seed, code, want
+
+
+#: How many distinct gate refusals a wave records. `until` re-reads the condition every
+#: poll for as long as it lasts, and the JSON summary is not a log — the observe stream has
+#: every one of them.
+GATED_MAX = 20
+
+
+def _no_room(wave: Wave, room: Headroom, live_n: int) -> bool:
+    """Whether the machine says wait (GRPH-842). True means skip this spawn, not stop.
+
+    **Not a `CapError`**, and the difference is the whole point. `cap` and `budget` are
+    ceilings the operator set and a wave that hits one is finished. A full machine is
+    transient: the loop is already holding live children, one of them will exit, and the
+    memory comes back. Ending an unattended drain on a passing spike would throw away the
+    remaining backlog for a condition that fixes itself.
+
+    It cannot deadlock, and that is a property of the gate rather than luck: it never
+    refuses when nothing is running, so the only state it can hold is one where a child is
+    live — and a live child either finishes or is stopped by `watch_tick`.
+
+    Reported once per change, not once per poll. The condition is re-read every second for
+    as long as it lasts, and a line a second would bury the wave's own record in it.
+    """
+    verdict = room.allow(live_n)
+    if verdict.allowed:
+        return False
+    if not wave.gated or wave.gated[-1] != verdict.reason:
+        if len(wave.gated) < GATED_MAX:
+            wave.gated.append(verdict.reason)
+        observe.emit(
+            "memory_gated", running=live_n, available=verdict.available,
+            fits=verdict.fits, detail=verdict.reason,
+        )
+    return True
 
 
 def _cap_children(wave, limits) -> None:
@@ -858,12 +1074,19 @@ def _take_seat(
     mint_deadline: float,
     sleep: Callable[[float], None],
     role: str = "worker",
+    prd: str | None = None,
 ) -> tuple[Seat, bool]:
-    """Pre-minted pool first (workers). S6: all seats are workers now."""
+    """Pre-minted pool first (workers). S6: all seats are workers now.
+
+    A seat from the POOL carries whatever scope it was minted with, which for a `--seats` file
+    is none. That is not silently accepted: `run` refuses `--prd` together with pre-minted
+    seats, because a wave that reports as scoped while half its children are not is the failure
+    mode this scope exists to remove.
+    """
     if pool:
         return pool.pop(0), False
     code = _mint(planner, agent_id, wave_name, mint_left=mint_left,
-                 mint_deadline=mint_deadline, sleep=sleep, role=role)
+                 mint_deadline=mint_deadline, sleep=sleep, role=role, prd=prd)
     return Seat(code=code, server_url=server, api_key=api_key, role=role), True
 
 
@@ -876,6 +1099,7 @@ def _mint(
     mint_deadline: float,
     sleep: Callable[[float], None],
     role: str = "worker",
+    prd: str | None = None,
 ) -> str:
     last: Exception | None = None
     tries = max(1, mint_left)
@@ -885,6 +1109,7 @@ def _mint(
         try:
             payload = planner.call(
                 "mint_enrolment", agent_id=agent_id, role=role, wave=wave_name,
+                **_seat_scope(prd),
             )
         except NotPermitted as exc:
             raise ConfigError(str(exc)) from exc

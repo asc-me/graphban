@@ -40,13 +40,13 @@ def test_no_match_lands_in_other_not_an_empty_list():
 
 def test_criterion_1_migration_plus_added_route_is_the_set():
     """1. Sabotage: derive a primary label only and the A2 cell empties."""
-    item = _item(touchpoints=["backend/alembic/versions/0117_capability_axis.py"])
+    item = _item(touchpoints=["backend/alembic/versions/0119_capability_axis.py"])
     shape = _shape(
         files_added=2, net_lines=40, layers=["B1", "B4"],
         added=["backend/app/routers/harness.py",
-               "backend/alembic/versions/0117_capability_axis.py"],
+               "backend/alembic/versions/0119_capability_axis.py"],
         paths=["backend/app/routers/harness.py",
-               "backend/alembic/versions/0117_capability_axis.py"],
+               "backend/alembic/versions/0119_capability_axis.py"],
     )
     got = hsvc.capabilities(item, shape, {"outcome": "signed_off"})
     assert set(got) >= {"A2", "A4", "B1"}

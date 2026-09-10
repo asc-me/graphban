@@ -33,6 +33,8 @@ from . import worktree as wt_mod
 from . import adapters
 from .adapters import explain_exit
 from .client import Graphban, NotPermitted, ServerUnreachable, ToolFailed
+from . import headroom as headroom_mod
+from .headroom import Headroom
 from .hostos import restrict_to_owner
 from .lock import Acquired, hold
 from . import observe
@@ -43,7 +45,8 @@ from . import touchpoints as tp_mod
 from .observe import NEVER_REGISTERED, ChildRecord
 from .seat import Seat, instruction_for
 from .spawn import (
-    REGISTRATION_WINDOW, Child, Launch, LaunchFailed, Reason, await_registration,
+    REGISTRATION_WINDOW, Child, Launch, LaunchFailed, Reason, VendorLimit,
+    await_registration,
     spawn, stop,
 )
 from .worktree import Reaped, Worktree
@@ -65,6 +68,11 @@ class Limits:
 
     max_workers: int = DEFAULT_MAX_WORKERS
     max_children: int = 8
+    #: Bytes charged per child by the memory gate (GRPH-842). The one limit here that is
+    #: about the MACHINE rather than the wave, and it belongs beside the others for the
+    #: reason the docstring gives: unlike spend, memory is something this process can
+    #: actually measure. See `headroom.py` for where the number comes from.
+    child_memory: int = headroom_mod.DEFAULT_CHILD_MEMORY
     child_wall_clock: float = 3600.0
     #: How long a child gets to register before it is presumed broken (S2). A limit the
     #: supervisor enforces because it can measure it, same as the two above — and the
@@ -204,6 +212,16 @@ class Wave:
     #: caller does not have to infer it from len(spawned) < len(seats) — an inference
     #: that reads as "nothing went wrong" when the list is short for a bad reason.
     unused_seats: int = 0
+    #: What `hostos.available_memory` read when the launch loop began (GRPH-842), or
+    #: None where the host cannot be asked. Reported beside `gated` because an empty
+    #: `gated` has two meanings and they are opposites: nothing was refused, or nothing
+    #: could be measured and the gate never bound. Same shape as `stale_unmeasured`.
+    headroom_at_start: int | None = None
+    #: Slots the memory gate refused, with the reading that refused them (GRPH-842).
+    #: Separate from `failures` on purpose: nothing went wrong, the machine was full, and
+    #: filing it as a failure would send an operator looking for a broken adapter. Also
+    #: separate from `unused_seats`, which counts them but cannot say why.
+    gated: list[str] = field(default_factory=list)
     offline: bool = False
     partition: Partition = field(default_factory=Partition)
     #: What reached the remote, by branch (GRPH-750). A branch that did not is named here
@@ -228,6 +246,15 @@ class Wave:
     undeclared: dict[str, list[str]] = field(default_factory=dict)
     #: id -> declared touchpoints, as they stood when work was handed out.
     declared: dict[str, list[str]] = field(default_factory=dict)
+    #: What each finished child's own result record said the run cost (GRPH-834), by branch:
+    #: `{tokens_in, tokens_out, turns_used, adapter}`. Read from the same vendor record
+    #: `_report_exits` already posts to the ledger — the numbers existed and reached the
+    #: server, and the wave summary was the one place that never saw them.
+    #:
+    #: A child ABSENT from this dict said nothing, which is not the same as saying zero. The
+    #: summary reports the two separately for that reason: "412k tokens" reads as the wave's
+    #: total, and it is not the total if four of six children were never counted.
+    spend: dict[str, dict] = field(default_factory=dict)
     #: branch -> (commits behind, the ref it was measured against). How much had landed on
     #: the trunk that this worker never had in front of it (GRPH-786). A reviewer reading a
     #: branch cut from a base the trunk has moved past is reading a diff against a world
@@ -453,11 +480,16 @@ def up(
             # A supervisor died here. Adopt live PIDs and salvage the rest (P30 D7)
             # rather than logging takeover and starting a new wave beside them.
             observe.emit("takeover", detail=acquired.takeover.describe())
-            leftover, occupied, notes = adopt_mod.recover(repo, workspace, state)
+            recovered = adopt_mod.recover(repo, workspace, state)
+            leftover, occupied, notes = recovered
             for note in notes:
                 observe.emit("adopt", detail=note)
             for child in leftover:
                 wave.spawned.append(child)
+            # GRPH-830: both takeover paths publish, not just `until`'s. A salvage that
+            # depends on which command happened to run next is a salvage the operator cannot
+            # rely on.
+            publish_salvaged(wave, repo, recovered.salvaged, client=client)
         wave.before = _read_allocation(client, wave)
         if wave.offline:
             # D-i: no new spawns while the server is unreachable. A child that cannot
@@ -480,6 +512,11 @@ def up(
         # the whole start loop returns means a crash in `await_registration` leaves
         # a live pid with no JSON record.
         persist()
+        # Built HERE rather than inside `_start`, so its baseline reading is taken with the
+        # adopted children already resident: a takeover that inherited three workers must
+        # not read the machine as though it were empty.
+        room = Headroom(limits.child_memory)
+        wave.headroom_at_start = room.baseline
         if items is None:
             items = item_status(client)
         # The declaration snapshot the divvy used, kept for the reap-time comparison.
@@ -488,6 +525,7 @@ def up(
             wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
             limits, debug=debug, occupied=occupied, items=items,
             into=children, persist=persist,
+            room=room,
         )
         persist()
         _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
@@ -603,6 +641,7 @@ def _start(
     items: dict | None = None,
     into: list[Child] | None = None,
     persist: Callable[[], None] | None = None,
+    room: Headroom | None = None,
 ) -> Iterable[Child]:
     """Create a worktree per seat, spawn into it, and wait for it to register.
 
@@ -611,6 +650,12 @@ def _start(
     child that never registers — and they are identical for every seat. Spawning three
     more children into three more worktrees to watch them fail the same way costs three
     more salvage branches and tells nobody anything new.
+
+    **The memory gate stops the loop the same way** (GRPH-842), and for the same reason:
+    if the machine has no room for this child it has none for the next one either. It is
+    checked HERE, once per seat, rather than as a cap computed before the loop — a single
+    reading taken up front is stale by the third child, and the sequential launch is the
+    boundary where the question is actually asked.
     """
     workspace.mkdir(parents=True, exist_ok=True)
     started: list[Child] = into if into is not None else []
@@ -620,6 +665,21 @@ def _start(
     resumes = list(wt_mod.choose_resume(wt_mod.orphans(repo), items or {}))
 
     for index, seat in enumerate(seats):
+        if room is not None:
+            verdict = room.allow(len(started))
+            if not verdict.allowed:
+                wave.gated.append(verdict.reason)
+                wave.unused_seats += planned - index
+                observe.emit(
+                    "memory_gated",
+                    running=len(started),
+                    seats_unused=planned - index,
+                    available=verdict.available,
+                    fits=verdict.fits,
+                    per_child=limits.child_memory,
+                    detail=verdict.reason,
+                )
+                break
         tree: Worktree | None = None
         slot = "1"
         agent_slot = f"{wave_name}-{slot}"
@@ -659,6 +719,8 @@ def _start(
             def remember(child: Child) -> None:
                 started.append(child)
                 wave.spawned.append(child)
+                if room is not None:
+                    room.spawned()
                 if persist is not None:
                     persist()
                 # Asked for, and the adapter had no flag for it. Said here, once, per
@@ -682,6 +744,7 @@ def _start(
             )
         except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
+            vendor_limit = isinstance(exc, VendorLimit)
             if tree is not None and tree.path.exists() and not any(
                 c.worktree == tree.path for c in started
             ):
@@ -694,6 +757,14 @@ def _start(
             # inference this field exists to remove — and a short list reads as
             # "nothing went wrong".
             wave.unused_seats += planned - index
+            if vendor_limit:
+                # GRPH-829. Not this slot's problem: the account is out of quota, so the next
+                # child would fail identically in under a second and the one after that too.
+                # Re-raised AFTER the cleanup above so the worktree is still reaped and the
+                # failure still recorded — the caller decides what a wave does about it, and
+                # a supervisor that quietly kept spawning would burn its whole child budget
+                # on a wall it has already hit.
+                raise exc
             break
 
     return started
@@ -763,8 +834,14 @@ def watch_tick(
     # Reap first so the exit post can carry the diff shape computed against the base
     # after salvage. Reporting first would store a null shape that a later post can
     # fill, but the ordinary path should not need two posts to say what the child did.
+    #
+    # Safe for the spend reading below (GRPH-834), whose own comment used to claim the
+    # opposite: `stdout_text` reads `<workspace>/logs/<slot>/stdout.log`, and `reap`
+    # removes `<workspace>/<slot>` — the worktree, a SIBLING of the log directory rather
+    # than its parent. Measured on a real wave: both children's logs were still readable
+    # after their worktrees were gone.
     _reap_exited(wave, children, client)
-    _report_exits(children, client)
+    _report_exits(children, client, wave)
     if persist is not None:
         persist()
 
@@ -932,17 +1009,29 @@ def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
     After the push and never instead of it. A PR for a branch that is not on the remote is a
     PR for nothing, and the push is the step that can actually fail.
     """
-    remote = wt_mod.remote_for(tree.repo)
-    base = wt_mod.default_ref(tree.repo, remote) if remote else ""
-    items = [i for i in ((child.held_items if child else []) or []) if i]
-    title, body = propose_mod.describe(tree.branch, items,
-                                       propose_mod.subject(tree.repo, tree.branch, base))
-    got = propose_mod.propose(tree.repo, tree.branch, base, title=title, body=body)
-    wave.proposed[tree.branch] = got
+    propose_branch(wave, tree.repo, tree.branch,
+                   [i for i in ((child.held_items if child else []) or []) if i],
+                   client=client)
+
+
+def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
+                   client: Graphban | None) -> None:
+    """The branch, the items it served, and a draft PR joining them.
+
+    Split out of `_propose` for the salvage path (GRPH-830), which has a repo, a branch and a
+    list of items but no `Worktree` — by the time a takeover runs, the tree is gone — and no
+    `Child`, because the process it belonged to is dead.
+    """
+    remote = wt_mod.remote_for(repo)
+    base = wt_mod.default_ref(repo, remote) if remote else ""
+    title, body = propose_mod.describe(branch, items,
+                                       propose_mod.subject(repo, branch, base))
+    got = propose_mod.propose(repo, branch, base, title=title, body=body)
+    wave.proposed[branch] = got
     if got.reason and not got.url:
         # Reported, never fatal: the work is committed and pushed by now, and a PR nobody
         # could open is a thing for a person to finish rather than a broken wave.
-        wave.failures.append(f"{tree.branch}: {got.reason}")
+        wave.failures.append(f"{branch}: {got.reason}")
     if not (got.url and client is not None and items):
         return
     # Recorded on the ITEM, because that is where a reviewer looks and where the ledger's own
@@ -952,14 +1041,49 @@ def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
         try:
             client.call("update_item", id=item_id, evidence=[{
                 "kind": "url",
-                "detail": f"draft PR opened by gbfleet for {tree.branch}",
+                "detail": f"draft PR opened by gbfleet for {branch}",
                 "url": got.url,
             }])
         except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
             wave.failures.append(f"{item_id}: PR opened but not recorded ({exc})")
 
 
-def _report_exits(children: list[Child], client: Graphban) -> None:
+def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
+                     client: Graphban | None) -> None:
+    """Push what a takeover recovered, and say on the item that it exists (GRPH-830).
+
+    Adopting a stranded worktree already worked — the commit is made and the note is printed.
+    What did not work was the step after: one measured takeover salvaged 614 insertions across
+    exactly one item's touchpoints and left them on a LOCAL branch nothing pointed at. The item
+    was re-delegated minutes later, branched from `main`, and rebuilt every line. The work was
+    recovered and lost in the same move, and only somebody reading local refs could tell.
+
+    Deliberately the SAME two steps a finished child gets — push, then a draft PR carrying the
+    item — rather than a quieter salvage-only path. A reviewer looking for the work has one
+    place to look either way, and the PR body already says the branch was salvaged because the
+    commit subject does.
+
+    Never fatal. This runs at the very start of a wave, on the crash path, and a takeover that
+    refused to proceed because a push failed would strand the next wave too.
+    """
+    for row in salvaged:
+        try:
+            pushed = wt_mod.push_branch(repo, row.branch, row.base)
+        except Exception as exc:  # noqa: BLE001
+            wave.failures.append(f"{row.branch}: salvaged but not published ({exc})")
+            continue
+        wave.published[row.branch] = pushed
+        if not pushed.ok:
+            if not pushed.skipped:
+                wave.failures.append(f"{row.branch}: salvaged but not published "
+                                     f"({pushed.reason})")
+            continue
+        observe.emit("adopt", detail=f"{row.branch}: published salvaged work"
+                                     + (f" for {', '.join(row.items)}" if row.items else ""))
+        propose_branch(wave, repo, row.branch, list(row.items or []), client=client)
+
+
+def _report_exits(children: list[Child], client: Graphban, wave: "Wave | None" = None) -> None:
     """PRD-38 D3, the exit report: what only this process saw about a child that has ended.
 
     Here rather than in `_reap_all` because reaping is the END of a wave and a child that
@@ -977,7 +1101,7 @@ def _report_exits(children: list[Child], client: Graphban) -> None:
     checkable. The columns exist and stay null, which the page renders as "not reported".
     """
     for child in children:
-        if child.running or child.reported or not child.seat_id:
+        if child.running or child.reported:
             continue
         # Marked before the post, not after: a post that fails returns None by design, and
         # retrying it every tick for the life of the wave would turn one lost measurement
@@ -988,6 +1112,20 @@ def _report_exits(children: list[Child], client: Graphban) -> None:
         # prints nothing contributes nothing here and its token fields stay NULL, which the
         # page renders as "not reported" — never as zero.
         facts = adapters.result_facts(child.adapter, child.stdout_text())
+        if wave is not None and facts:
+            # Kept HERE rather than recomputed at the end of the wave: the vendor's record
+            # lives only in this child's stdout and the wave summary has no other route to
+            # it. It does NOT depend on running before the reap — the log sits in the
+            # workspace's `logs/` directory and the reap removes the worktree beside it, so
+            # the two are ordered by what the POST needs, not by what this reading needs.
+            wave.spend[child.branch] = {"adapter": child.adapter, **facts}
+        if not child.seat_id:
+            # No seat, so there is no attempt row to address — but the run still COST
+            # something, and the wave summary is entitled to it (GRPH-834). The seat guard
+            # used to sit at the top of this loop and skipped the reading as well as the
+            # posting, so a child whose registration never landed spent tokens that nothing
+            # counted.
+            continue
         client.post_attempt(
             enrolment_id=child.seat_id,
             adapter=child.adapter,

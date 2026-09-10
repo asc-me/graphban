@@ -18,6 +18,7 @@ What IS checked here, and is worth checking:
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -500,3 +501,137 @@ def test_exit_meaning_says_stopped_rather_than_printing_the_raw_status():
         f"a child the supervisor stopped reports {imposed} and the fleet calls it an "
         "ordinary non-zero exit"
     )
+
+
+# --- is this process sandboxed? (GRPH-838) --------------------------------------------
+
+def test_sandboxed_answers_in_three_ways_and_this_platform_in_one_of_them():
+    """`None` is an answer — "this platform cannot be asked" — and it must never collapse
+    into `False`, which the doctor would print as PASS. macOS can be asked; nothing else
+    can, yet."""
+    answer = hostos.sandboxed()
+    if sys.platform == "darwin":
+        assert answer in (True, False)
+    else:
+        assert answer is None
+
+
+def _sandboxed_in(argv_prefix: list[str]) -> str:
+    src = Path(__file__).resolve().parents[1] / "src"
+    code = (f"import sys; sys.path.insert(0, {str(src)!r}); "
+            "from gbfleet import hostos; print(hostos.sandboxed())")
+    return subprocess.run([*argv_prefix, sys.executable, "-c", code],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or shutil.which("sandbox-exec") is None,
+                    reason="a real Seatbelt needs macOS and sandbox-exec")
+def test_sandboxed_is_true_inside_a_real_seatbelt_and_false_outside(tmp_path: Path):
+    """Against the kernel, not a mock. The profile allows everything — being inside ANY
+    Seatbelt is what `sandbox_check` reports, which is exactly the question: the Grok
+    profile that killed four children allowed reads everywhere too."""
+    profile = tmp_path / "allow-all.sb"
+    profile.write_text("(version 1)\n(allow default)\n", encoding="utf-8")
+
+    assert _sandboxed_in(["sandbox-exec", "-f", str(profile)]) == "True"
+    assert _sandboxed_in([]) == "False", "the control: the same code from a plain shell"
+
+
+# --- how much room this machine has left (GRPH-842) --------------------------------
+#
+# The parser is tested separately from the call that feeds it, on purpose: the macOS
+# branch cannot run on Linux and the Linux branch cannot run on macOS, so a suite that
+# only ever calls `available_memory()` checks one of the three and reports green.
+#
+# The Linux branch was ALSO run on a real Linux box rather than left to CI, the same way
+# GRPH-576 verified the Windows paths on the box. Measured 2026-09-10 on a 30 GB Ubuntu
+# server: `available_memory()` returned 24527056896 (22.8 GB) against a `/proc/meminfo`
+# reading of `MemAvailable: 23952204 kB`, `fits` said 30 children, and a Headroom over a
+# reader pinned at RESERVE allowed the first child and refused the second. The Windows
+# branch has NOT been run on a Windows host and is the one path here nobody has watched.
+
+#: Real `vm_stat` output, captured 2026-09-10 on the 24 GB Apple Silicon box where the
+#: memory kill happened. Kept verbatim, including the 16384-byte page size that a
+#: hardcoded 4096 would have got wrong by a factor of four.
+VM_STAT = """Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   140100.
+Pages active:                                 397822.
+Pages inactive:                               347624.
+Pages speculative:                             48267.
+Pages throttled:                                   0.
+Pages wired down:                             316170.
+Pages purgeable:                                9392.
+"Translation faults":                    40089326139.
+Pages copy-on-write:                      1366069412.
+Pages occupied by compressor:                 255790.
+"""
+
+
+def test_parse_vm_stat_sums_the_reclaimable_pages():
+    got = hostos._parse_vm_stat(VM_STAT)
+    assert got == (140100 + 347624 + 48267) * 16384
+
+
+def test_parse_vm_stat_excludes_purgeable_and_active():
+    """Purgeable is a subset of the partitions above it, not one of its own.
+
+    Measured on that box: free+active+inactive+speculative+wired+compressor came to
+    1505773 of 1572864 pages, and adding purgeable (9392) does not close the gap. Counting
+    it would double-count; counting `active` would report a busy machine as empty.
+    """
+    got = hostos._parse_vm_stat(VM_STAT)
+    assert got < (140100 + 347624 + 48267 + 9392) * 16384
+    assert got < 397822 * 16384 + got  # active is nowhere in the figure
+
+
+def test_parse_vm_stat_reads_the_page_size_from_the_output():
+    small = VM_STAT.replace("page size of 16384 bytes", "page size of 4096 bytes")
+    assert hostos._parse_vm_stat(small) == hostos._parse_vm_stat(VM_STAT) // 4
+
+
+@pytest.mark.parametrize("text", [
+    "",
+    "Mach Virtual Memory Statistics:\nPages free: 1.\n",          # no page size
+    "Mach Virtual Memory Statistics: (page size of 0 bytes)\n",   # nonsense page size
+    "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free: lots.\n",
+])
+def test_parse_vm_stat_refuses_what_it_does_not_recognise(text):
+    assert hostos._parse_vm_stat(text) is None
+
+
+def test_a_partial_vm_stat_is_unmeasured_rather_than_small():
+    """One missing counter must not read as a machine that is suddenly out of room.
+
+    Returning the sum of what was found would make the gate stop spawning for a reason
+    nobody could see — the exact failure this whole change exists to remove.
+    """
+    without_inactive = "\n".join(
+        line for line in VM_STAT.splitlines() if not line.startswith("Pages inactive")
+    )
+    assert hostos._parse_vm_stat(without_inactive + "\n") is None
+
+
+@pytest.mark.real_memory
+def test_available_memory_answers_on_this_host():
+    """Whatever platform runs the suite, the answer is a plausible number or None."""
+    got = hostos.available_memory()
+    if got is None:
+        assert sys.platform not in ("darwin",) and os.name != "nt", (
+            "this platform has a branch; None means it stopped working"
+        )
+        return
+    assert 0 < got < 2**50
+
+
+@pytest.mark.real_memory
+@pytest.mark.skipif(sys.platform != "linux", reason="reads /proc/meminfo")
+def test_proc_branch_agrees_with_meminfo():
+    stated = None
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            stated = int(line.split()[1]) * 1024
+    if stated is None:  # pragma: no cover - kernel older than 3.14
+        pytest.skip("no MemAvailable on this kernel")
+    got = hostos._available_proc()
+    # Not equality: the two readings are taken microseconds apart on a live machine.
+    assert got is not None and abs(got - stated) < stated * 0.25
