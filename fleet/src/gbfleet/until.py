@@ -32,6 +32,7 @@ from . import matrix as matrix_mod
 from .spawn import Child
 from . import spend as spend_mod
 from .spawn import VendorLimit
+from .headroom import Headroom
 from .supervisor import (
     _declared_into,
     DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Wave, _reap_all, _rooted,
@@ -110,6 +111,12 @@ class Report:
             # reads as "this build has no spend reporting", and a zeroed block with
             # `reported: 0` reads as "nobody told us", which is the true statement.
             "spend": spend_mod.totals(self.wave.spend if self.wave else {}, self.spawned),
+            # GRPH-842. Both keys, always, and the second is what makes the first readable:
+            # an empty `gated` means "nothing was refused" only when `headroom_bytes` is a
+            # number. Null means the host could not be asked and the gate never bound, which
+            # is the reading that would otherwise pass for a roomy machine.
+            "gated": list(self.wave.gated) if self.wave else [],
+            "headroom_bytes": self.wave.headroom_at_start if self.wave else None,
         }
         if self.detail:
             payload["detail"] = self.detail
@@ -322,6 +329,11 @@ def _loop(
     mint_deadline = time.monotonic() + mint_budget
     mint_left = mint_tries
     review_fails = 0
+    # GRPH-842. One gate for the whole run, not one per spawn: a child spawned seconds ago
+    # is not in the kernel's numbers yet, and a fresh reading per seat cannot know that. Its
+    # charges expire, so an hour-long loop does not slowly refuse everything.
+    room = Headroom(limits.child_memory)
+    wave.headroom_at_start = room.baseline
 
     # GRPH-798: the ref children are cut from, resolved once and FETCHED once. A
     # remote-tracking ref is only as fresh as the last fetch, so skipping this would measure
@@ -421,6 +433,11 @@ def _loop(
             if need <= 0:
                 sleep(poll)
                 continue
+            # Before the mint, not after it. A seat minted into a machine with no room is a
+            # consumed enrolment nothing registers on, and `--mint-tries` is finite.
+            if _no_room(wave, room, len(live)):
+                sleep(poll)
+                continue
             # PRD-36 D9: the delegation mints the BOUND seat the child will register on, so
             # the child claims the seed rather than whatever the divvy hands it. When the
             # server refused a bound seat (areas held) the delegation stands without one
@@ -473,6 +490,10 @@ def _loop(
         # and the rows are still unheld — not off a role that no longer exists.
         # A live child blocks a second spawn (just as live_reviewers did before).
         unheld_review = [r for r in rows if not r.get("review_claimed_by")]
+        # No memory gate on this branch, deliberately (GRPH-842): `not live` means nothing
+        # is running, and the gate never refuses the first child — so a check here could
+        # only ever cost a `vm_stat` per poll and answer yes. **If that guard goes, this
+        # needs `_no_room` like the worker branch above.**
         if unheld_review and need <= 0 and not live:
             empty = 0
             if review_fails >= REVIEWER_FAILS:
@@ -562,6 +583,10 @@ def _spawn_one(
     debug: bool,
 ) -> None:
     before = len(wave.spawned)
+    # No `room=` on purpose (GRPH-842). `_start`'s own gate is for `up`, which decides how
+    # many seats to run in one go; this loop asks `_no_room` BEFORE minting, because a seat
+    # minted into a full machine is a consumed enrolment nothing registers on. Passing one
+    # here would gate the same spawn twice and count the refusal as a reviewer failure.
     _start(
         wave, [seat], launch_factory, repo, workspace, wave_name, supervisor,
         limits, debug=debug, occupied=occupied, items=_declared_into(wave,
@@ -935,6 +960,41 @@ def _delegate_next(
     delegated.add(seed)
     observe.emit("delegated", item=seed, lane=lane, tier=want, bound=bool(code))
     return seed, code, want
+
+
+#: How many distinct gate refusals a wave records. `until` re-reads the condition every
+#: poll for as long as it lasts, and the JSON summary is not a log — the observe stream has
+#: every one of them.
+GATED_MAX = 20
+
+
+def _no_room(wave: Wave, room: Headroom, live_n: int) -> bool:
+    """Whether the machine says wait (GRPH-842). True means skip this spawn, not stop.
+
+    **Not a `CapError`**, and the difference is the whole point. `cap` and `budget` are
+    ceilings the operator set and a wave that hits one is finished. A full machine is
+    transient: the loop is already holding live children, one of them will exit, and the
+    memory comes back. Ending an unattended drain on a passing spike would throw away the
+    remaining backlog for a condition that fixes itself.
+
+    It cannot deadlock, and that is a property of the gate rather than luck: it never
+    refuses when nothing is running, so the only state it can hold is one where a child is
+    live — and a live child either finishes or is stopped by `watch_tick`.
+
+    Reported once per change, not once per poll. The condition is re-read every second for
+    as long as it lasts, and a line a second would bury the wave's own record in it.
+    """
+    verdict = room.allow(live_n)
+    if verdict.allowed:
+        return False
+    if not wave.gated or wave.gated[-1] != verdict.reason:
+        if len(wave.gated) < GATED_MAX:
+            wave.gated.append(verdict.reason)
+        observe.emit(
+            "memory_gated", running=live_n, available=verdict.available,
+            fits=verdict.fits, detail=verdict.reason,
+        )
+    return True
 
 
 def _cap_children(wave, limits) -> None:

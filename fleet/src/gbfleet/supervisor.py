@@ -33,6 +33,8 @@ from . import worktree as wt_mod
 from . import adapters
 from .adapters import explain_exit
 from .client import Graphban, NotPermitted, ServerUnreachable, ToolFailed
+from . import headroom as headroom_mod
+from .headroom import Headroom
 from .hostos import restrict_to_owner
 from .lock import Acquired, hold
 from . import observe
@@ -66,6 +68,11 @@ class Limits:
 
     max_workers: int = DEFAULT_MAX_WORKERS
     max_children: int = 8
+    #: Bytes charged per child by the memory gate (GRPH-842). The one limit here that is
+    #: about the MACHINE rather than the wave, and it belongs beside the others for the
+    #: reason the docstring gives: unlike spend, memory is something this process can
+    #: actually measure. See `headroom.py` for where the number comes from.
+    child_memory: int = headroom_mod.DEFAULT_CHILD_MEMORY
     child_wall_clock: float = 3600.0
     #: How long a child gets to register before it is presumed broken (S2). A limit the
     #: supervisor enforces because it can measure it, same as the two above — and the
@@ -205,6 +212,16 @@ class Wave:
     #: caller does not have to infer it from len(spawned) < len(seats) — an inference
     #: that reads as "nothing went wrong" when the list is short for a bad reason.
     unused_seats: int = 0
+    #: What `hostos.available_memory` read when the launch loop began (GRPH-842), or
+    #: None where the host cannot be asked. Reported beside `gated` because an empty
+    #: `gated` has two meanings and they are opposites: nothing was refused, or nothing
+    #: could be measured and the gate never bound. Same shape as `stale_unmeasured`.
+    headroom_at_start: int | None = None
+    #: Slots the memory gate refused, with the reading that refused them (GRPH-842).
+    #: Separate from `failures` on purpose: nothing went wrong, the machine was full, and
+    #: filing it as a failure would send an operator looking for a broken adapter. Also
+    #: separate from `unused_seats`, which counts them but cannot say why.
+    gated: list[str] = field(default_factory=list)
     offline: bool = False
     partition: Partition = field(default_factory=Partition)
     #: What reached the remote, by branch (GRPH-750). A branch that did not is named here
@@ -495,6 +512,11 @@ def up(
         # the whole start loop returns means a crash in `await_registration` leaves
         # a live pid with no JSON record.
         persist()
+        # Built HERE rather than inside `_start`, so its baseline reading is taken with the
+        # adopted children already resident: a takeover that inherited three workers must
+        # not read the machine as though it were empty.
+        room = Headroom(limits.child_memory)
+        wave.headroom_at_start = room.baseline
         if items is None:
             items = item_status(client)
         # The declaration snapshot the divvy used, kept for the reap-time comparison.
@@ -503,6 +525,7 @@ def up(
             wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
             limits, debug=debug, occupied=occupied, items=items,
             into=children, persist=persist,
+            room=room,
         )
         persist()
         _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
@@ -618,6 +641,7 @@ def _start(
     items: dict | None = None,
     into: list[Child] | None = None,
     persist: Callable[[], None] | None = None,
+    room: Headroom | None = None,
 ) -> Iterable[Child]:
     """Create a worktree per seat, spawn into it, and wait for it to register.
 
@@ -626,6 +650,12 @@ def _start(
     child that never registers — and they are identical for every seat. Spawning three
     more children into three more worktrees to watch them fail the same way costs three
     more salvage branches and tells nobody anything new.
+
+    **The memory gate stops the loop the same way** (GRPH-842), and for the same reason:
+    if the machine has no room for this child it has none for the next one either. It is
+    checked HERE, once per seat, rather than as a cap computed before the loop — a single
+    reading taken up front is stale by the third child, and the sequential launch is the
+    boundary where the question is actually asked.
     """
     workspace.mkdir(parents=True, exist_ok=True)
     started: list[Child] = into if into is not None else []
@@ -635,6 +665,21 @@ def _start(
     resumes = list(wt_mod.choose_resume(wt_mod.orphans(repo), items or {}))
 
     for index, seat in enumerate(seats):
+        if room is not None:
+            verdict = room.allow(len(started))
+            if not verdict.allowed:
+                wave.gated.append(verdict.reason)
+                wave.unused_seats += planned - index
+                observe.emit(
+                    "memory_gated",
+                    running=len(started),
+                    seats_unused=planned - index,
+                    available=verdict.available,
+                    fits=verdict.fits,
+                    per_child=limits.child_memory,
+                    detail=verdict.reason,
+                )
+                break
         tree: Worktree | None = None
         slot = "1"
         agent_slot = f"{wave_name}-{slot}"
@@ -674,6 +719,8 @@ def _start(
             def remember(child: Child) -> None:
                 started.append(child)
                 wave.spawned.append(child)
+                if room is not None:
+                    room.spawned()
                 if persist is not None:
                     persist()
                 # Asked for, and the adapter had no flag for it. Said here, once, per

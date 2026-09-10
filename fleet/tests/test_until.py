@@ -857,3 +857,68 @@ def test_a_review_row_still_leased_to_its_builder_gets_a_reviewer(
     assert len(roles) >= 1, "no reviewer was spawned for a row nobody is reviewing"
     assert result.reason in ("review-unsigned", "idle"), result.reason
 
+
+
+def test_the_terminal_json_says_what_the_machine_had(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """`gated: []` is only readable beside a headroom number (GRPH-842).
+
+    On its own an empty list has two meanings and they are opposites: nothing was refused,
+    or nothing could be measured and the gate never bound. An unattended `until` reporting
+    the second as the first is a machine quietly running one child a wave.
+    """
+    from gbfleet import headroom, hostos
+
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    monkeypatch.setattr(hostos, "available_memory", lambda: None)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    payload = result.as_json()
+    assert payload["gated"] == []
+    assert payload["headroom_bytes"] is None, "an unmeasured host must not read as a roomy one"
+
+    monkeypatch.setattr(hostos, "available_memory", lambda: 9 * headroom.DEFAULT_CHILD_MEMORY)
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    assert result.as_json()["headroom_bytes"] == 9 * headroom.DEFAULT_CHILD_MEMORY
+
+
+def test_until_waits_for_room_instead_of_spawning_into_a_full_machine(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch
+):
+    """The command that was actually killed (GRPH-842).
+
+    `until` does not call `supervisor.run` — it drives `_start` one seat at a time from its
+    own loop, so gating the wave function alone left the one command in the incident
+    ungated. A live child plus a full machine must hold the next spawn.
+
+    Not a `CapError`: memory comes back when a child exits, and ending an unattended drain
+    on a passing spike throws away the rest of the backlog.
+    """
+    from gbfleet import headroom, hostos
+
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=4, workers=3, sticky_clusters=True)
+    monkeypatch.setattr(hostos, "available_memory", lambda: headroom.RESERVE)
+    result = run(
+        git_repo, _factory(scripts, "sleeper"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0.05, empty_ticks=3,
+        limits=Limits(max_workers=4, max_children=2, child_wall_clock=1.0),
+    )
+    payload = result.as_json()
+    assert payload["gated"], "a live child on a full machine must hold the next spawn"
+    assert "no room" in payload["gated"][0]
+    assert payload["headroom_bytes"] == headroom.RESERVE
+    assert result.reason != "config", payload

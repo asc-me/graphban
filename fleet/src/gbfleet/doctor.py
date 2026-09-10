@@ -30,7 +30,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import __version__, hostos
+from . import __version__, headroom, hostos
 from .adapters import ADAPTERS, AdapterError, resolve
 from .client import Graphban, ServerUnreachable
 from .lock import RepoLocked, probe
@@ -193,6 +193,45 @@ def check_sandbox(report: Report, adapter: str = "") -> None:
         report.add(name, UNKNOWN,
                    "inherited from the parent; what that does to a child depends on the vendor",
                    "pass --adapter for the verdict on the one you intend to run")
+
+
+def check_memory(report: Report, per_child: int = headroom.DEFAULT_CHILD_MEMORY) -> None:
+    """How many children this machine has room for right now (GRPH-842).
+
+    Here because it is the limit an operator is least able to see and most likely to hit.
+    The failure it explains looked like a fleet bug: a wave stopped mid-run with
+    "the system is running low on memory", the supervisor gone and its children with it,
+    and nothing anywhere saying the box was full.
+
+    UNKNOWN when the host cannot be asked, and `Report.ok` deliberately does not fail on
+    it — the gate does not bind on an unmeasured host either, so grounding the fleet here
+    would be a stricter rule than the one actually enforced.
+
+    Never FAIL. A full machine is a state the operator can fix in ten seconds and the
+    fleet still runs one child on it; refusing to start would turn a slow wave into no
+    wave. The gate handles it at spawn time and this says so in advance.
+    """
+    available = hostos.available_memory()
+    name = "memory headroom"
+    if available is None:
+        report.add(name, UNKNOWN, f"no way to ask on {platform.system()}",
+                   "the spawn-time gate does not bind on this host; watch max-workers "
+                   "yourself, or the OS will pick which process dies")
+        return
+    fits = headroom.fits(available, per_child)
+    detail = (
+        f"{headroom.gigabytes(available)} available, "
+        f"{headroom.gigabytes(headroom.RESERVE)} reserved, "
+        f"{headroom.gigabytes(per_child)} per child: room for {fits}"
+    )
+    if fits:
+        report.add(name, PASS, detail)
+    else:
+        # PASS is wrong and FAIL is wrong. The wave will run, with one child, and the
+        # operator should know that before it does rather than from the summary after.
+        report.add(name, UNKNOWN, detail + " beyond the first",
+                   "close what else is running, or expect a one-child wave — the gate "
+                   "never blocks the first child")
 
 
 def check_credential_protection(report: Report) -> None:
@@ -432,6 +471,7 @@ def run(
     print(f"gbfleet {__version__} doctor\n", file=out)
 
     check_host(report)
+    check_memory(report)
     check_sandbox(report, adapter)
     check_credential_protection(report)
     root = check_repository(report, repo)
