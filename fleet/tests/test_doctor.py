@@ -426,3 +426,48 @@ def test_an_unmeasured_vendor_and_no_vendor_are_unknown(git_repo: Path, monkeypa
     _sandboxed(monkeypatch, True)
     assert _status(_run(git_repo, adapter="gbagent"), "kernel sandbox") == UNKNOWN
     assert _status(_run(git_repo), "kernel sandbox") == UNKNOWN
+
+
+# --- how much room the machine has (GRPH-842) --------------------------------------
+
+
+def _memory_finding(report: Report):
+    return next(f for f in report.findings if f.name == "memory headroom")
+
+
+def test_a_roomy_machine_passes_and_says_how_many_fit(monkeypatch):
+    from gbfleet import headroom, hostos
+
+    monkeypatch.setattr(
+        hostos, "available_memory",
+        lambda: headroom.RESERVE + 4 * headroom.DEFAULT_CHILD_MEMORY,
+    )
+    report = Report()
+    doctor.check_memory(report)
+    finding = _memory_finding(report)
+    assert finding.status == PASS
+    assert "room for 4" in finding.detail
+
+
+def test_an_unmeasurable_host_is_unknown_not_pass(monkeypatch):
+    """The reading that would otherwise pass for a roomy machine."""
+    from gbfleet import hostos
+
+    monkeypatch.setattr(hostos, "available_memory", lambda: None)
+    report = Report()
+    doctor.check_memory(report)
+    assert _memory_finding(report).status == UNKNOWN
+    assert not report.failed, "an unaskable host must not ground the fleet"
+
+
+def test_a_full_machine_is_unknown_and_never_fail(monkeypatch):
+    """FAIL would stop a run the gate itself would have allowed — one child always runs."""
+    from gbfleet import headroom, hostos
+
+    monkeypatch.setattr(hostos, "available_memory", lambda: headroom.RESERVE)
+    report = Report()
+    doctor.check_memory(report)
+    finding = _memory_finding(report)
+    assert finding.status == UNKNOWN
+    assert "room for 0" in finding.detail
+    assert report.ok

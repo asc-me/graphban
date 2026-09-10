@@ -427,6 +427,10 @@ def report(wave: Wave, out=None) -> None:
 
     if wave.unused_seats:
         print(f"{wave.unused_seats} seat(s) never redeemed", file=out)
+    # Immediately after the count, because it is the answer to the question the count
+    # raises. "3 seats never redeemed" with no reason reads as a bug in the fleet.
+    for gate in wave.gated:
+        print(f"NO ROOM {gate}", file=out)
     for failure in wave.failures:
         print(f"FAILED {failure}", file=out)
     for give_up in wave.give_ups:

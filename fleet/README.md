@@ -278,6 +278,49 @@ roster calls offline still exists and is already ignored (GRPH-808); seeing the 
 that fact sends you looking for a collision that is not happening. `offline` and `retired` are
 kept apart on purpose: an offline holder's lease will lapse, a retired seat can never register
 again, and "wait" and "stop waiting" are different instructions.
+### When the machine is the limit
+
+A wave stopped mid-run with *"Background command was stopped because the system is running
+low on memory"*, the supervisor gone and its children with it. Nothing in the fleet had any
+idea: `up` could count seats, workers, children and wall-clock, and could not count the one
+resource that actually ran out. The wave summary said `3 seat(s) never redeemed`, which reads
+exactly like a cap, a crash or a broken adapter.
+
+So the spawn loop asks the kernel before each child (GRPH-842):
+
+```bash
+gbfleet doctor
+  [PASS   ] memory headroom — 8.8 GB available, 2.0 GB reserved, 0.7 GB per child: room for 9
+```
+
+```json
+"gated": ["3.1 GB available, 2.0 GB reserved: no room for another 0.7 GB child"],
+"headroom_bytes": 3328599654
+```
+
+**Both keys, always** — an empty `gated` means "nothing was refused" only when
+`headroom_bytes` is a number. `null` means the host could not be asked and the gate never
+bound, which is otherwise indistinguishable from a roomy machine.
+
+Three things about it are deliberate:
+
+- **It never blocks the first child.** A wave that spawns nothing produces nothing, and a bad
+  reading would then cost the operator everything rather than one slot. The gate binds from
+  the second child on, which is where the kill happened.
+- **An unmeasurable host does not bind it.** `hostos.available_memory` answers `None` where
+  the platform has no cheap way to ask, and `doctor` reports UNKNOWN. Grounding the fleet on
+  a question nobody could answer is the opposite failure and just as expensive.
+- **It divides a live reading; it does not model the machine.** The per-child figure is only
+  a divisor. Measured on the 24 GB box where this happened: eleven live Claude Code processes
+  came to 2.5 GB resident, the largest reading 671 MB peak `phys_footprint`, while Chrome, Arc
+  and Cursor held 7.3 GB between them and the box read `207M unused` with no fleet running at
+  all. Three children was about 2 GB. **The wave was the straw and not the load**, so a gate
+  that guessed at fleet usage would have been gating the wrong thing.
+
+A child spawned seconds ago has not reached its footprint yet, so each spawn is charged
+against the reading taken when the loop began and the verdict uses whichever of the two is
+worse. The live reading catches up within seconds and takes over.
+
 ### What a wave spent, and stopping it
 
 The terminal JSON now carries a `spend` block, and every wave has one:
