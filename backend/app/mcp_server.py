@@ -1711,7 +1711,16 @@ _SEAT_SCOPE_ARG = {"scope": {
 }}
 
 _FLEET_ONLY_ARGS = {
-    "collision_clusters": {"prd_id": {"type": "string", "description": "Only this PRD's work."}},
+    "collision_clusters": {
+        "prd_id": {"type": "string", "description": "Only this PRD's work."},
+        # GRPH-833. A fleet-only ARGUMENT rather than a new tool, and not for tidiness: the
+        # footprint ceiling has twelve tokens of headroom, so a new name is not available at
+        # any price. Riding on this tool is also the right home — the operator asking why a
+        # wave will not spawn is already reading the divvy.
+        "holds": {"type": "boolean",
+                  "description": "Also list live area reservations: what is held, by whom "
+                                 "(and whether they are still alive), and when it frees."},
+    },
     # GRPH-827: advertised to the fleet tier only, for the reason every entry here is — the
     # ceiling is measured on the base manifest, and a property only a supervisor sends should
     # not be charged to every agent that connects.
@@ -2708,7 +2717,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         for c in clusters:
             rows = [db.get(Item, i) for i in c.get("items") or []]
             out.append({**c, "items": [r.key for r in rows if r is not None]})
-        return {"clusters": out, "total": len(out)}
+        reply = {"clusters": out, "total": len(out)}
+        if args.get("holds"):
+            # Only when asked. Every wave polls this tool once a second, and a reservation
+            # table on every reply would be paid for by every caller to answer a question
+            # almost none of them are asking.
+            reply["holds"] = collision_svc.holds(db, pid)
+        return reply
     if name == "claim_cluster":
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
         # The last refusal, kept so it can be RETURNED. The park needs a falsy answer to keep

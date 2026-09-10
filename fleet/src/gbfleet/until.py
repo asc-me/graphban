@@ -729,7 +729,7 @@ def plan(planner: Graphban, prd: str | None, max_workers: int) -> dict:
     that can disagree with it — a dry run that models the wave instead of asking it is a dry
     run that reassures you about the wrong plan.
     """
-    clusters = planner.call("collision_clusters", **_scope(prd))
+    clusters = planner.call("collision_clusters", holds=True, **_scope(prd))
     free, blocked = _free_and_blocked(clusters)
     would = [c for c in free[:max_workers]]
     return {
@@ -747,7 +747,16 @@ def plan(planner: Graphban, prd: str | None, max_workers: int) -> dict:
         "free": [{"seed": (c.get("items") or [None])[0], "items": c.get("items") or [],
                   "areas": c.get("areas") or []} for c in free],
         "held": [{"items": c.get("items") or [], "held_by": c.get("held_by") or [],
-                  "free_in": c.get("free_in")} for c in blocked],
+                  "free_in": c.get("free_in"),
+                  # WHICH area the hold covers and by which rule (GRPH-833). "Held by SA-A39"
+                  # sends the reader looking for SA-A39; this says what the collision actually
+                  # is, which is the half an operator was left to infer — and inferred wrong.
+                  "because": c.get("held_because") or []} for c in blocked],
+        # The reservation table itself, keyed on the HOLD rather than on the cluster. A
+        # cluster leaves the partition the moment its item is claimed, taking its reservation
+        # off every read while that reservation goes on blocking everyone — so a wave with no
+        # free clusters and no `held` rows had nothing to show for itself at all.
+        "holds": clusters.get("holds") or [],
         "capped_by_max_workers": len(free) > max_workers,
     }
 

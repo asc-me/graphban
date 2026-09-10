@@ -253,6 +253,32 @@ publishes the branch and simply has nobody to hand the receipt to. A tree whose 
 uncommitted file was the seat is still not published: `ONLY_CREDENTIAL` is not `SALVAGED`, and
 a pushed empty branch per dead child would make every crash look like work.
 
+### Why a wave is not spawning
+
+`--max-workers 3` yielding one running child is a symptom anyone can see. Why, used not to be
+readable anywhere — and on the reported wave that produced a confident wrong answer rather than
+a slow one: with the repository open and the touchpoints in hand, the operator concluded an
+item was being wrongly held and inferred directory-level clustering from the symptom. A later
+spawn into a genuinely disjoint cluster disproved it.
+
+`--dry-run` now carries two things it did not (GRPH-833):
+
+- **why each held cluster is held** — which of its areas the reservation covers, whose it is,
+  and under which rule (`exact`, `glob`, `directory`, `prefix`). `directory` is the broad one:
+  every pair of files in one directory relates, so a directory of five files collapses five
+  items into one cluster. That is a defensible clustering heuristic and a costly reservation
+  rule, and it was impossible to tell which you were looking at.
+- **the reservation table itself.** This is the one that was missing entirely, because a
+  cluster is only in the partition while its items are claimable — the moment an item is
+  claimed its cluster leaves the divvy, taking its still-blocking reservation off every read.
+  A wave with no free clusters and no held ones had nothing to show for itself at all.
+
+Each row says whether the hold is actually **blocking**. A reservation held by an agent the
+roster calls offline still exists and is already ignored (GRPH-808); seeing the row without
+that fact sends you looking for a collision that is not happening. `offline` and `retired` are
+kept apart on purpose: an offline holder's lease will lapse, a retired seat can never register
+again, and "wait" and "stop waiting" are different instructions.
+
 ### Work whose dependency has not landed
 
 `done` in the ledger means *attested*, not *merged*. An attestation binds to a commit and
