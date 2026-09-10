@@ -18,6 +18,7 @@ from . import adopt as adopt_mod
 from .adapters import ADAPTERS, AdapterError, Tuning, checked_tuning, resolve
 from .client import ALLOWED_TOOLS, Graphban
 from . import doctor
+from . import service as service_mod
 from .lock import RepoLocked
 from .seat import Seat, codes_from_text, parse_seat_line
 from dataclasses import replace
@@ -194,6 +195,55 @@ def build_parser() -> argparse.ArgumentParser:
              "or frontier=claude:opus; repeatable. spawn(tier=...) resolves through it (PRD-36). "
              "Fixed for the life of the process",
     )
+
+    svc = sub.add_parser(
+        "service",
+        help="run a drain under launchd / systemd --user, so it outlives your terminal",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Installs `gbfleet until` as a user-domain service. Everything after the "
+            "subcommand is passed to `until` unchanged, so `gbfleet until --help` stays the "
+            "authority on its own flags.\n\n"
+            "The API key is read from $" + API_KEY_ENV + " at install time and written to an "
+            "owner-only file the unit references. It is NEVER put in the unit itself: a unit "
+            "file is world-readable.\n\n"
+            "User domain only. A root installer is a different program with different "
+            "failure modes, and even the server's has never been walked privileged."),
+        epilog=(
+            "Example:\n"
+            "  gbfleet service install -- --repo /srv/graphban --server http://box:8080 \\\n"
+            "      --project graphban --adapter claude --max-workers 2\n"
+            "  gbfleet service status\n"
+            "  gbfleet service uninstall\n"),
+    )
+    svc_do = svc.add_subparsers(dest="act", metavar="ACT")
+    svc_install = svc_do.add_parser(
+        "install", help="write the unit, load it, and check it is actually running",
+        add_help=False)
+    svc_install.add_argument(
+        "--name", default=service_mod.DEFAULT_NAME,
+        help=f"one service per name (default {service_mod.DEFAULT_NAME}), so two clones of a "
+             "repository can each have a drain")
+    svc_install.add_argument(
+        "--dry-run", action="store_true",
+        help="print the unit that WOULD be written and change nothing. Read it before you "
+             "trust it; that is the whole point of a file on disk")
+    svc_install.add_argument(
+        "--every", type=int, default=service_mod.RESTART_SEC, metavar="SECONDS",
+        help=f"how often the drain looks for work (default {service_mod.RESTART_SEC}s). "
+             "`until` exits when the backlog is empty, so this is the polling interval — and "
+             "every cycle registers one planner agent, which is why the default is minutes "
+             "rather than seconds")
+    svc_install.add_argument("rest", nargs=argparse.REMAINDER,
+                             help="arguments for `gbfleet until`")
+    svc_status = svc_do.add_parser("status", help="installed? running? and with which PATH?")
+    svc_status.add_argument(
+        "--name", default=None,
+        help="one drain. Without it, EVERY drain installed here — an operator who ran "
+             "`--name nightly` and forgot has a service this program wrote and cannot see")
+    svc_remove = svc_do.add_parser("uninstall",
+                                   help="stop it and remove the unit AND its key file")
+    svc_remove.add_argument("--name", default=service_mod.DEFAULT_NAME)
 
     until = sub.add_parser(
         "until",
@@ -608,6 +658,107 @@ def _shared_servers(args) -> dict:
         raise SystemExit(2)
 
 
+def _service(args) -> int:
+    """`gbfleet service …`. Every refusal is printed and returns 2; nothing half-writes."""
+    act = getattr(args, "act", None)
+    if not act:
+        print("gbfleet service: no action given. Try `gbfleet service --help`.",
+              file=sys.stderr)
+        return 2
+
+    if act == "status":
+        found = service_mod.host()
+        if not found.kind:
+            print(f"gbfleet service: {found.why}", file=sys.stderr)
+            return 1
+        names = [args.name] if args.name else service_mod.installed_names(found.kind)
+        if not names:
+            print(f"no drain installed ({found.kind})")
+            return 0
+        for one in names:
+            _service_status(service_mod.status(one, kind=found.kind))
+        return 0
+
+    if act == "uninstall":
+        try:
+            removed = service_mod.uninstall(args.name)
+        except service_mod.Refused as exc:
+            print(f"gbfleet service: {exc}", file=sys.stderr)
+            return 2
+        for path in removed:
+            print(f"removed {path}")
+        if not removed:
+            print(f"nothing to remove for {args.name!r}")
+        return 0
+
+    rest = [a for a in (args.rest or []) if a != "--"]
+    try:
+        plan = service_mod.make_plan(rest, name=args.name, every=args.every)
+    except service_mod.Refused as exc:
+        print(f"gbfleet service: {exc}", file=sys.stderr)
+        return 2
+
+    if args.dry_run:
+        print(f"# would write {plan.unit_path}")
+        print(f"# and {plan.env_path} (owner-only, ${service_mod.API_KEY_ENV})")
+        print(service_mod.render(plan).decode("utf-8", "replace"))
+        return 0
+
+    try:
+        done = service_mod.install(plan, os.environ.get(API_KEY_ENV, ""))
+    except service_mod.Refused as exc:
+        print(f"gbfleet service: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"runs  {plan.binary} until {' '.join(plan.until_args)}")
+    print(f"every {plan.every}s (one planner registration per cycle)")
+    print(f"wrote {plan.unit_path}")
+    print(f"wrote {plan.env_path} (owner-only)")
+    print(f"logs  {plan.log_path}")
+    # Named because it is a consequence nobody expects: the lock is per git COMMON DIR, so a
+    # running drain refuses every interactive `gbfleet up` on this clone for as long as it
+    # runs. Two drains want two clones, not two worktrees.
+    print(f"holds the repo lock for {plan.common_dir} while it runs")
+    for warning in done.warnings:
+        print(f"WARNING {warning}", file=sys.stderr)
+    if done.running:
+        print(f"{plan.name}: running")
+        return 0
+    # Accepted is not running — but for THIS service, not running is usually correct. `until`
+    # exits when there is no ready work, so a healthy drain is idle for most of every cycle,
+    # and reporting that as a failed install would train an operator to ignore the one case
+    # that matters. The last exit code is what separates them.
+    if done.state is not None and done.state.idle:
+        print(f"{plan.name}: ran and exited 0 — that is what `until` does when there is no "
+              f"ready work. Next run in {plan.every}s")
+        return 0
+    code = "unknown" if done.state is None or done.state.last_exit is None \
+        else done.state.last_exit
+    print(f"{plan.name}: NOT running, last exit {code} — "
+          f"{done.detail or 'the supervisor gave no reason'}", file=sys.stderr)
+    print(f"        {plan.err_path} is where it said why", file=sys.stderr)
+    return 1
+
+
+def _service_status(state) -> None:
+    """One drain, and the two facts that are invisible from anywhere else."""
+    print(state.line())
+    if state.kind == "systemd":
+        # Printed whatever the answer, because "no" here is the difference between a service
+        # that survives your logout and one that does not, and it is invisible from every
+        # other reading.
+        answer = {True: "yes", False: "NO — services stop at your last logout "
+                                      "(`loginctl enable-linger`)",
+                  None: "could not ask"}[state.linger]
+        print(f"  linger: {answer}")
+    if not state.installed:
+        return
+    if state.path_env:
+        print(f"  PATH:   {state.path_env}")
+    else:
+        print("  PATH:   EMPTY — this service cannot find any vendor CLI")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -638,6 +789,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # FAIL only. An UNKNOWN is loud in the report and does not stop a run — refusing
         # on a check that could not be made would ground the fleet on a slow network.
         return 0 if findings.ok else 1
+
+    if args.command == "service":
+        return _service(args)
 
     if args.command == "until":
         return _until(args)

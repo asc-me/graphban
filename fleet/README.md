@@ -278,6 +278,53 @@ roster calls offline still exists and is already ignored (GRPH-808); seeing the 
 that fact sends you looking for a collision that is not happening. `offline` and `retired` are
 kept apart on purpose: an offline holder's lease will lapse, a retired seat can never register
 again, and "wait" and "stop waiting" are different instructions.
+### A drain that outlives your terminal
+
+`gbfleet until` runs for as long as the process that started it, and no longer. That is not a
+detail — it is the root of the memory kill above: the wave was a background task a harness
+owned, so the harness stopped it. `gbfleet service` hands it to the machine's own supervisor
+instead (GRPH-844):
+
+```bash
+gbfleet service install -- --repo /srv/graphban --server http://box:8080 \
+    --project graphban --adapter claude --max-workers 2
+gbfleet service status
+gbfleet service uninstall
+```
+
+A LaunchAgent on macOS, a `systemd --user` unit on Linux. **User domain only** — a root
+installer is a different program with different failure modes, and even the server's has never
+been walked privileged. Everything after the subcommand goes to `until` unchanged, so
+`gbfleet until --help` stays the authority on its own flags, and `--dry-run` prints the unit
+without writing it.
+
+Five things about it are worth knowing before you run it:
+
+- **The PATH is the thing most likely to be wrong.** A supervisor's job gets a minimal PATH,
+  and every vendor CLI the fleet exists to run lives somewhere that PATH does not contain. So
+  the installing shell's PATH is captured into the unit, `status` prints it back, and `doctor`
+  FAILs a service whose PATH is empty. A drain that starts, is reported running, and resolves
+  no adapter is the failure this design most easily produces.
+- **The key is never in the unit.** A unit file is world-readable. `until` takes its
+  credential only from `$GBFLEET_API_KEY`, so `install` reads it from your shell and writes it
+  to an owner-only file the unit references — `EnvironmentFile=` on systemd, a sourced `sh -c`
+  on launchd, which has no equivalent. Two guards refuse a unit that would carry one anyway,
+  and `uninstall` removes the key file with the unit.
+- **`--every` is a real cost, not a formality.** `until` EXITS when there is no ready work,
+  which is success — so the restart delay *is* the polling interval. Each cycle registers one
+  planner agent (`register_agent` always creates a row; it never reuses one by label), so the
+  default is 300s rather than seconds.
+- **Not running is usually correct.** For most of every cycle a healthy drain is stopped, and
+  the last exit code is what separates that from a dead one. `status` says `idle between runs,
+  last exit 0`; `doctor` calls it PASS. Only a non-zero exit is a fault.
+- **It holds the repo lock for the whole clone.** The lock is per git *common dir*, so while a
+  drain runs, interactive `gbfleet up` on that checkout is refused — and a worktree is the same
+  clone. Two drains want two clones. The install prints which path it will hold.
+
+On a headless Linux box, `systemd --user` services stop when your last session ends, so a drain
+installed over ssh dies at logout. `install` warns and `status` prints `linger:` every time;
+`loginctl enable-linger <user>` is the whole fix.
+
 ### When the machine is the limit
 
 A wave stopped mid-run with *"Background command was stopped because the system is running
