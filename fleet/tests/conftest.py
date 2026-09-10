@@ -218,6 +218,15 @@ def scripts(tmp_path: Path) -> dict[str, Path]:
 
     write("exits_immediately", "pass\n")
 
+    # A child that prints the result record `gbagent` actually prints (PRD-38 D3), so a wave
+    # can be measured end to end rather than through a patched reader. GRPH-834.
+    write(
+        "reports_its_tokens",
+        "import json, pathlib\n"
+        "pathlib.Path('feature.py').write_text('print(1)\\n', encoding='utf-8')\n"
+        "print(json.dumps({'gbagent': {'turns': 3, 'tokens_in': 700, 'tokens_out': 400}}))\n",
+    )
+
     # P30 D6: gbagent.loop EXIT_HANDOFF_FAILED / EXIT_STUCK. Distinct from a supervisor
     # crash — 70 is a failed run (item still claimed); 75 is a completed give-up.
     write(

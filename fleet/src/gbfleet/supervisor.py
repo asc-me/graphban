@@ -229,6 +229,15 @@ class Wave:
     undeclared: dict[str, list[str]] = field(default_factory=dict)
     #: id -> declared touchpoints, as they stood when work was handed out.
     declared: dict[str, list[str]] = field(default_factory=dict)
+    #: What each finished child's own result record said the run cost (GRPH-834), by branch:
+    #: `{tokens_in, tokens_out, turns_used, adapter}`. Read from the same vendor record
+    #: `_report_exits` already posts to the ledger — the numbers existed and reached the
+    #: server, and the wave summary was the one place that never saw them.
+    #:
+    #: A child ABSENT from this dict said nothing, which is not the same as saying zero. The
+    #: summary reports the two separately for that reason: "412k tokens" reads as the wave's
+    #: total, and it is not the total if four of six children were never counted.
+    spend: dict[str, dict] = field(default_factory=dict)
     #: branch -> (commits behind, the ref it was measured against). How much had landed on
     #: the trunk that this worker never had in front of it (GRPH-786). A reviewer reading a
     #: branch cut from a base the trunk has moved past is reading a diff against a world
@@ -775,7 +784,7 @@ def watch_tick(
     _enforce_the_lease(wave, children)
     if roster is not None:
         _catch_the_disowned(wave, children, roster, limits)
-    _report_exits(children, client)
+    _report_exits(children, client, wave)
     _reap_exited(wave, children, client)
     if persist is not None:
         persist()
@@ -1017,7 +1026,7 @@ def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
         propose_branch(wave, repo, row.branch, list(row.items or []), client=client)
 
 
-def _report_exits(children: list[Child], client: Graphban) -> None:
+def _report_exits(children: list[Child], client: Graphban, wave: "Wave | None" = None) -> None:
     """PRD-38 D3, the exit report: what only this process saw about a child that has ended.
 
     Here rather than in `_reap_all` because reaping is the END of a wave and a child that
@@ -1035,7 +1044,7 @@ def _report_exits(children: list[Child], client: Graphban) -> None:
     checkable. The columns exist and stay null, which the page renders as "not reported".
     """
     for child in children:
-        if child.running or child.reported or not child.seat_id:
+        if child.running or child.reported:
             continue
         # Marked before the post, not after: a post that fails returns None by design, and
         # retrying it every tick for the life of the wave would turn one lost measurement
@@ -1046,6 +1055,18 @@ def _report_exits(children: list[Child], client: Graphban) -> None:
         # prints nothing contributes nothing here and its token fields stay NULL, which the
         # page renders as "not reported" — never as zero.
         facts = adapters.result_facts(child.adapter, child.stdout_text())
+        if wave is not None and facts:
+            # Kept HERE rather than recomputed at the end of the wave, because `stdout_text`
+            # reads a log file that reaping removes with the worktree. The one moment this is
+            # knowable is the moment the child is already being asked about.
+            wave.spend[child.branch] = {"adapter": child.adapter, **facts}
+        if not child.seat_id:
+            # No seat, so there is no attempt row to address — but the run still COST
+            # something, and the wave summary is entitled to it (GRPH-834). The seat guard
+            # used to sit at the top of this loop and skipped the reading as well as the
+            # posting, so a child whose registration never landed spent tokens that nothing
+            # counted.
+            continue
         client.post_attempt(
             enrolment_id=child.seat_id,
             adapter=child.adapter,

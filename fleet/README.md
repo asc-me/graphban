@@ -278,6 +278,37 @@ roster calls offline still exists and is already ignored (GRPH-808); seeing the 
 that fact sends you looking for a collision that is not happening. `offline` and `retired` are
 kept apart on purpose: an offline holder's lease will lapse, a retired seat can never register
 again, and "wait" and "stop waiting" are different instructions.
+### What a wave spent, and stopping it
+
+The terminal JSON now carries a `spend` block, and every wave has one:
+
+```json
+"spend": {"tokens_in": 412000, "tokens_out": 38000, "tokens": 450000,
+          "reported": 2, "unreported": 4, "by_child": [...]}
+```
+
+**`reported` and `unreported` are the point**, not decoration. `450000 tokens` reads as the
+wave's cost, and it is not the wave's cost if four of six children were never counted — only
+vendors that print a result record contribute, and today that is `gbagent` alone. A child that
+said nothing contributes nothing, which is never the same as zero.
+
+```bash
+gbfleet until … --budget 2000000        # tokens, not currency
+```
+
+The wave ends `reason: "budget"` once the children that reported have spent that much. Running
+children are left to their own ends: killing one spends the tokens and throws away the work,
+which is the only outcome worse than going over.
+
+**In tokens because that is what can be counted.** PRD-41 §7 already defines cost for this
+system as tokens-to-sign-off, and a currency figure would need a per-vendor, per-model price
+table that goes stale in silence — a stale price is worse than none, because somebody acts on
+it.
+
+**`--budget` is refused when the adapter reports nothing** (GRPH-834). A cap over `claude`
+today is not a loose cap: nothing would ever be counted against it, so it could never fire, and
+the wave would look bounded while being unbounded. The refusal names the adapters that do
+report, before the lock and before any worktree.
 
 ### Work whose dependency has not landed
 

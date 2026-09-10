@@ -30,11 +30,12 @@ from .seat import Seat
 from .tiers import TierTable
 from . import matrix as matrix_mod
 from .spawn import Child
+from . import spend as spend_mod
 from .spawn import VendorLimit
 from .supervisor import (
     _declared_into,
     DEFAULT_MAX_WORKERS, AllocationRead, LaunchFactory, Limits, Wave, _reap_all, _rooted,
-    _start, item_status, publish_salvaged, watch_tick,
+    _report_exits, _start, item_status, publish_salvaged, watch_tick,
 )
 
 #: Planner-held tools. `register_agent` is how this process gets an `agent_id` to mint
@@ -105,6 +106,10 @@ class Report:
             "minted": self.minted,
             "waits": list(self.waits),
             "review": list(self.review),
+            # GRPH-834. Always present, including when nothing was measured: an absent key
+            # reads as "this build has no spend reporting", and a zeroed block with
+            # `reported: 0` reads as "nobody told us", which is the true statement.
+            "spend": spend_mod.totals(self.wave.spend if self.wave else {}, self.spawned),
         }
         if self.detail:
             payload["detail"] = self.detail
@@ -133,6 +138,7 @@ def run(
     mint_budget: float = MINT_BUDGET_S,
     request: str | None = None,
     prd: str | None = None,
+    budget: int | None = None,
     shared: dict | None = None,
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
@@ -159,6 +165,8 @@ def run(
     observe.configure(state)
 
     try:
+        if budget:
+            check_budget_can_be_enforced(adapter, budget)
         if prd and pool:
             # GRPH-827. A pre-minted seat carries whatever scope it was minted with, and a
             # `--seats` file has none. Mixing them would produce a wave that reports as scoped
@@ -207,6 +215,7 @@ def run(
                 minted_start=minted,
                 request=request,
                 prd=prd,
+                budget=budget,
                 shared=shared or {},
                 tiers=tiers or TierTable(),
                 launch_for=launch_for,
@@ -295,6 +304,7 @@ def _loop(
     minted_start: int,
     request: str | None = None,
     prd: str | None = None,
+    budget: int | None = None,
     shared: dict | None = None,
     tiers: TierTable | None = None,
     launch_for: Callable[..., LaunchFactory] | None = None,
@@ -326,6 +336,17 @@ def _loop(
 
     while True:
         watch_tick(wave, children, limits, supervisor, debug=debug, persist=persist)
+        # GRPH-834: checked HERE, right after the tick that reads the exit records, and before
+        # anything else this pass can spawn. `_cap_children` guards `--max-children` at the
+        # spawn site, and that is the wrong shape for a budget: a wave whose last child has
+        # already blown the cap should stop even if this pass was never going to spawn.
+        #
+        # The wave FINISHES rather than aborting — running children are left to their own
+        # ends. Killing them would spend the tokens and throw away the work, which is the one
+        # outcome worse than going over.
+        if (crossed := spend_mod.over(wave.spend, budget)):
+            observe.emit("budget", detail=crossed)
+            raise CapError("budget", crossed)
         finished = [c for c in children if not c.running]
         if finished:
             # S6 (PRD-39 D-i): re-keyed off the fact it measures — a child exited
@@ -340,6 +361,16 @@ def _loop(
                     review_fails += 1
                 elif child.held_items:
                     review_fails = 0
+            # READ THE EXIT RECORD BEFORE DROPPING THE CHILD (GRPH-834). `watch_tick` reports
+            # exits, but it ran a few lines up — a child that exited in between is in
+            # `finished` and was never reported, and the line below removes it from `children`
+            # so no later pass can ever see it. Found by the spend summary coming back empty on
+            # a wave that plainly spent something; the same window was silently losing the
+            # PRD-38 attempt row for that child, which is the more expensive half.
+            #
+            # Idempotent: `child.reported` makes a second pass a no-op, so the common case
+            # where `watch_tick` already reported the child costs nothing.
+            _report_exits(finished, supervisor, wave)
             _reap_all(wave, finished)
             children[:] = [c for c in children if c.running]
             persist()
@@ -581,6 +612,34 @@ def check_scope_is_honoured(planner: Graphban, prd: str) -> None:
             "server, or run without --prd and accept that it drains the project"
         )
     check_seat_scope_is_honoured(planner, prd)
+
+
+def check_budget_can_be_enforced(adapter: str, budget: int) -> None:
+    """Refuse `--budget` when the adapter reports no token usage (GRPH-834).
+
+    The same argument as `check_scope_is_honoured` one flag over, and it is the argument that
+    matters most for a budget: a cap over a vendor that prints no result record is not a loose
+    cap, it is one that can never be exceeded and therefore never fires. The operator would
+    watch a wave run to completion believing it was bounded.
+
+    Refused before the lock and before any worktree, naming the adapter, because the remedy is
+    a different adapter or no flag — neither of which is discovered usefully an hour in.
+
+    Only `gbagent` reports today. That is a fact about the vendors rather than a limitation
+    chosen here: a vendor joins `result_facts` after its record has been measured, never on
+    the strength of its documentation.
+    """
+    from .adapters import ADAPTERS, reports_tokens
+
+    if reports_tokens(adapter):
+        return
+    able = sorted(name for name in ADAPTERS if reports_tokens(name))
+    raise ConfigError(
+        f"--budget {budget} was given, and the {adapter!r} adapter reports no token usage: "
+        "nothing would ever be counted against it, so the cap could not end a wave and this "
+        "run would look bounded while being unbounded. "
+        + (f"Adapters that report: {', '.join(able)}. " if able else "")
+        + "Run without --budget, or use an adapter that reports")
 
 
 def check_seat_scope_is_honoured(planner: Graphban, prd: str) -> None:

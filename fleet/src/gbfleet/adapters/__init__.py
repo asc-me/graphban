@@ -333,6 +333,28 @@ def default_exit_meaning(code: int) -> str:
     return f"exited {code}"
 
 
+def reports_tokens(adapter: str) -> bool:
+    """Does this vendor tell us what a run cost? (GRPH-834)
+
+    ASKED BEFORE A BUDGET IS ACCEPTED, and that is the whole reason it exists as its own
+    question. A token budget over an adapter that reports nothing is not a loose budget, it is
+    a budget that can never be exceeded and therefore never fires — a control that reads as
+    protection and is not, which is the shape this repository keeps finding. Refusing the flag
+    up front costs the operator one sentence; accepting it costs them the belief that a wave
+    was bounded when it was not.
+
+    Derived from the adapter having a `result_facts` reader rather than from a separate
+    declaration, so the two cannot drift: adding the reader is what makes a vendor reportable,
+    and a flag saying otherwise would be a second source for one fact.
+
+    Today only `gbagent` answers true, and that is a statement about the vendors rather than
+    about this package — a vendor is added to `result_facts` after its record has been
+    measured, never on the strength of documentation.
+    """
+    impl = ADAPTERS.get(adapter)
+    return impl is not None and getattr(impl, "result_facts", None) is not None
+
+
 def result_facts(adapter: str, stdout: str) -> dict:
     """What a vendor's own result record says a run cost (PRD-38 D3).
 
@@ -485,5 +507,5 @@ def checked_tuning(adapter: "str | Adapter | None", tuning: "Tuning") -> "Tuning
 __all__ = [
     "ADAPTERS", "Adapter", "AdapterError", "AdapterUnavailable", "Resolved", "Support",
     "UnknownAdapter", "VersionUnsupported", "checked_tuning", "default_exit_meaning",
-    "explain_exit", "parse_version", "resolve",
+    "explain_exit", "parse_version", "reports_tokens", "resolve",
 ]
