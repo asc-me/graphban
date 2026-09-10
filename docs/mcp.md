@@ -321,7 +321,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `heartbeat` | `id`, `agent_id`, `status`, `files` | Extend the lease on an item you hold **and** your agent presence (so neither is reclaimed while you work). `status` (one line) and `files` (paths you are editing) are what the Live page shows as *reported*; written to the feed only when they change (PRD-34) |
 | `release_item` | `id`, `agent_id`, `to_status` | Return a claimed item to the queue |
 | `create_item` | `title`, `description`, `tags`, `touchpoints`, `effort`, `status`, `fidelity`, `project_id` | Create a tracker item (returns its `project_id`) |
-| `update_item` | `id`, `status`, `title`, `description`, `tags`, `touchpoints`, `effort`, `blocker`, `fidelity`, `prd_id`, `prd_section`, `evidence` | Patch / advance an item. `touchpoints` **unions** (like evidence appends); an empty list is not a write. A call that sends `evidence` gets **`evidence_intake`** back — `{sent, added, dropped: [{index, reason}]}` — so a receipt the server would not take is named rather than showing as an array that quietly did not grow (GRPH-839). A receipt sent as a bare string is stored as a `note` rather than discarded |
+| `update_item` | `id`, `status`, `title`, `description`, `tags`, `touchpoints`, `effort`, `blocker`, `fidelity`, `prd_id`, `prd_section`, `evidence` | Patch / advance an item. `touchpoints` **unions** (like evidence appends); an empty list is not a write. A call that sends `evidence` gets **`evidence_intake`** back — `{sent, added, dropped: [{index, reason}]}` — so a receipt the server would not take is named rather than showing as an array that quietly did not grow (GRPH-839). A receipt sent as a bare string is stored as a `note` rather than discarded. Moving an item into `review` with no `built_by` stamps the caller as its author — `agent_id` if the call carries one, else `key:<credential name>` — and never overwrites an existing one (GRPH-848) |
 | `search_items` | `query`, `tags`, `status`, `fields`, `project_id` | Query the stream (query matches title, description, **and** tags); lean rows by default, `fields="full"` for all. Typed human waits are `status=blocked` plus a `wait:merge` / `decision` / `secret` / `access` / `deploy` tag — free-text `blocker` is not a wait |
 | `add_memory` | `text`, `scope`, `item_id`, `project_id` | Record a memory shard. Resolved `status` follows the project's memory write mode: `review` → **`candidate`** pending human publish (AL-49, the default), `auto` → published only when strongly corroborated, `trusted` → published on write so an agent can read its own writes back (AL-280) |
 | `publish_memory` | `shard_id` | **Submit** a candidate for independent adjudication — the judge decides, not the caller. Returns `{shard, verdict}`; `kept: false` is a normal outcome. Needs `agent_adjudication` on the project **and** a real chat model, else `unavailable` and the shard is untouched (AL-282) |
@@ -604,6 +604,13 @@ Another agent takes it with `claim_review` and calls `sign_off` (which auto-extr
 memory) or `bounce(id, reason)`. **No agent can sign off work it built** — the server checks
 authorship, not the caller's current role, so no re-tasking launders it. A bounced item returns
 to `next` reserved for its author for one lease period, then opens to the fleet.
+
+Authorship is recorded at the claim, and — for work built inline and never claimed — when the
+item enters `review`: a bare credential is stamped `key:<name>`, and that reads as an author
+on that credential, so an agent registered on the same key without a seat is not independent
+of it and cannot review it (GRPH-848). A seat, or a second credential, is. An item that
+reached `review` before this with no author at all is still signable, but its `fleet.sign_off`
+receipt says `author unrecorded` rather than claiming independence from nobody.
 
 A bounce reason is required, and it travels with the item: the author reads it on
 `get_item_details` after reclaiming.

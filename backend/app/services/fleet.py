@@ -1384,6 +1384,56 @@ NOT_INDEPENDENT = ("the only work in review was built by an agent you are not di
                    "so review means something")
 
 
+def credential_key_ids(db: Session, identity: str) -> set[str]:
+    """The API key ids a `key:<name>` identity could be.
+
+    `caller_identity` stamps the key's NAME (its id only when nameless), and names are not
+    unique — two keys on one project can both be called "fleet". Every match is returned, so
+    a reviewer on any of them counts as the same credential. That polarity is deliberate:
+    a collision refuses a review that might have been fine, where the alternative would pass
+    one that is not, and absence is restrictive everywhere else in this gate.
+    """
+    from app.models import ApiKey
+
+    if not is_credential(identity):
+        return set()
+    name = identity[len(CREDENTIAL_PREFIX):]
+    return set(db.scalars(select(ApiKey.id).where((ApiKey.name == name) | (ApiKey.id == name))).all())
+
+
+def independent_of_built_by(db: Session, reviewer: Agent, built_by: str | None) -> bool:
+    """`independent`, for a `built_by` that may name a credential rather than an agent.
+
+    THE DOOR GRPH-435 LEFT OPEN (GRPH-848). `built_by` was written only by the claim, so an
+    item built inline and sent to review through `update_item` had no author, and
+    `independent(reviewer, None)` answered True with the comment "human-authored". Measured
+    2026-09-10: 17 of the 20 most recently signed-off items had an empty `built_by`, every
+    one with a receipt reading "independent of the author". The gate had nobody to compare
+    against and reported that as a pass. `update_item` now stamps `key:<name>` on the way in,
+    and this is where that stamp is read.
+
+    A `key:` author is treated like an agent on that credential:
+
+    - A registered reviewer whose `api_key_id` is that key, un-enrolled, is NOT independent.
+      It is at best the same operator and at worst the same process that sent the item.
+    - A reviewer on a SEAT is. The server issued the seat and the agent redeemed it single-use,
+      which is the one identity in this gate an agent cannot assert for itself (PRD-19). This
+      is weaker than `independent`'s both-must-be-enrolled rule, on purpose: that rule asks
+      whether two REGISTERED agents are two sessions, and here the author never registered —
+      a bare credential holds no seat to compare, so the reviewer's seat is the whole answer.
+    - A reviewer on any other credential is, exactly as before.
+
+    Empty `built_by` still answers True. Those are rows written before the stamp existed, and
+    the sign-off receipt now says "author unrecorded" for them rather than claiming a
+    comparison; backfilling them is out of scope.
+    """
+    if is_credential(built_by):
+        if reviewer.enrolment_id:
+            return True
+        return reviewer.api_key_id not in credential_key_ids(db, built_by)
+    return independent(reviewer, db.get(Agent, built_by) if built_by else None)
+
+
 def delegated_by(db: Session, item: Item, agent_id: str) -> bool:
     """Did `agent_id` delegate the item to its current builder? Read from the delegation
     record (PRD-36 D19): the delegation linked to `item.built_by`, if any."""
@@ -1420,13 +1470,20 @@ def _independent_of_author(db: Session, item: Item, agent_id: str, *,
     if item.built_by == agent_id:
         return False
     me = db.get(Agent, agent_id)
-    author = db.get(Agent, item.built_by) if item.built_by else None
     if me is None:
         key_id = getattr(api_key, "id", None)
-        if author is not None and key_id and author.api_key_id == key_id:
+        if not key_id:
+            return True
+        # A `key:` author (GRPH-848): the bare caller usually IS that string and was caught
+        # above, but a renamed key stamps a different name for the same credential, so the
+        # id is compared too.
+        if is_credential(item.built_by):
+            return key_id not in credential_key_ids(db, item.built_by)
+        author = db.get(Agent, item.built_by) if item.built_by else None
+        if author is not None and author.api_key_id == key_id:
             return False
         return True
-    return independent(me, author)
+    return independent_of_built_by(db, me, item.built_by)
 
 
 def could_review(db: Session, *, item: Item, exclude_agent_id: str,
@@ -1443,7 +1500,6 @@ def could_review(db: Session, *, item: Item, exclude_agent_id: str,
     Anything offline, quarantined, dismissed or on an expired seat cannot act at all, so
     counting it would let a dead agent hold a gate open.
     """
-    author = db.get(Agent, item.built_by) if item.built_by else None
     for row in list_agents(db, item.project_id, lease_seconds=lease_seconds):
         if row["id"] == exclude_agent_id or row["state"] in ("offline", "quarantined"):
             continue
@@ -1452,7 +1508,7 @@ def could_review(db: Session, *, item: Item, exclude_agent_id: str,
             continue
         if cand.active_role not in ("worker", ALL_IN_ONE):
             continue
-        if independent(cand, author):
+        if independent_of_built_by(db, cand, item.built_by):
             return cand.id
     return None
 
@@ -1539,8 +1595,10 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         # Already being reviewed by somebody else — while their claim is still LIVE. A
         # reviewer that went silent releases it, the same way a worker's lease releases.
         and (review_claim_holder(it, lease_seconds=lease_seconds) or agent_id) == agent_id
-        # And separate enough for the review to mean anything (GRPH-361).
-        and (me is None or independent(me, db.get(Agent, it.built_by) if it.built_by else None))
+        # And separate enough for the review to mean anything (GRPH-361) — including from a
+        # credential that sent the item without claiming it (GRPH-848). Same rule `sign_off`
+        # applies, so a reviewer is never leased an item it will then be refused.
+        and (me is None or independent_of_built_by(db, me, it.built_by))
         # GRPH-754: and its branch is actually READABLE. An item goes to `review` when the
         # child says so, but the branch is published when its supervisor reaps it a few
         # seconds later — and a reviewer handed the item inside that window fetches a 404 and
@@ -1763,7 +1821,13 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                  "passed": True,
                  "detail": f"signed off by {agent_id}"
                            + (" under danger mode — no independent agent was available"
-                              if danger else f", independent of {item.built_by or 'the author'}")},
+                              if danger
+                              else f", independent of {item.built_by}" if item.built_by
+                              # A receipt must not claim a comparison that was not made
+                              # (GRPH-848): with no author there was nobody to be
+                              # independent of, and "the author" read as if there were.
+                              else "; author unrecorded — the item reached review with no "
+                                   "built_by, so independence was not compared")},
                 {"name": "adversarial_evidence",
                  "passed": True,
                  "detail": (f"effort {item.effort} needs adversarial evidence and the item "
