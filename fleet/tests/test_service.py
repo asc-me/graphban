@@ -29,9 +29,21 @@ from gbfleet.service import Refused  # noqa: E402
 KEY = "gbk_live_secret_value"
 
 
+#: Named in every plan below rather than discovered. CI has no `gbfleet` on PATH and runs
+#: pytest from a venv, so a suite that let `make_plan` resolve one passed on the machine it
+#: was written on and refused seventeen tests on the runner. `_this_gbfleet` has tests of its
+#: own; nothing else here should care what is installed.
+BINARY = "/opt/fake/bin/gbfleet"
+
+
 def _args(repo: Path) -> list[str]:
     return ["--repo", str(repo), "--server", "http://gb.invalid", "--project", "p",
             "--adapter", "claude"]
+
+
+def _plan(repo: Path, **kw):
+    kw.setdefault("binary", BINARY)
+    return service.make_plan(_args(repo), **kw)
 
 
 # --- what must never reach a unit file ---------------------------------------------
@@ -40,7 +52,7 @@ def _args(repo: Path) -> list[str]:
 @pytest.mark.parametrize("kind", ["systemd", "launchd"])
 def test_no_rendering_carries_the_api_key(git_repo: Path, kind, monkeypatch):
     monkeypatch.setenv(service.API_KEY_ENV, KEY)
-    plan = service.make_plan(_args(git_repo), kind=kind)
+    plan = _plan(git_repo, kind=kind)
     rendered = service.render(plan)
     assert KEY.encode() not in rendered
     assert service.secrets_in(rendered) == []
@@ -69,7 +81,7 @@ def test_the_guard_would_catch_a_key_that_did_reach_one(kind):
 
 def test_install_refuses_a_unit_that_would_leak(git_repo: Path, monkeypatch):
     """Sabotage the CALL: a rendering that leaks must be refused, not merely detected."""
-    plan = service.make_plan(_args(git_repo), kind="systemd")
+    plan = _plan(git_repo, kind="systemd")
     monkeypatch.setattr(service, "render", lambda _p: b"Environment=GBFLEET_API_KEY=abc\n")
     with pytest.raises(Refused, match="credential"):
         service.install(plan, KEY)
@@ -84,7 +96,7 @@ def test_install_refuses_a_unit_carrying_the_key_under_an_innocent_name(git_repo
     the same. So `install` also looks for the literal value it is about to write — the one
     check here that cannot be fooled by naming.
     """
-    plan = service.make_plan(_args(git_repo), kind="systemd")
+    plan = _plan(git_repo, kind="systemd")
     smuggled = f"ExecStart=/bin/gbfleet until --header auth={KEY}\n".encode()
     assert service.secrets_in(smuggled) == [], (
         "if a marker catches this, the test is checking the wrong guard"
@@ -100,13 +112,13 @@ def test_install_refuses_a_unit_carrying_the_key_under_an_innocent_name(git_repo
 
 def test_the_systemd_unit_names_no_user(git_repo: Path):
     """`User=` in a --user unit is `216/GROUP` on every start. Paid for on a real install."""
-    text = service.render(service.make_plan(_args(git_repo), kind="systemd")).decode()
+    text = service.render(_plan(git_repo, kind="systemd")).decode()
     assert "\nUser=" not in text
 
 
 def test_the_launchd_job_names_no_username(git_repo: Path):
     """`UserName` is a LaunchDaemon key; on an agent it asks for a privilege launchd refuses."""
-    job = plistlib.loads(service.render(service.make_plan(_args(git_repo), kind="launchd")))
+    job = plistlib.loads(service.render(_plan(git_repo, kind="launchd")))
     assert "UserName" not in job
     # Both, or the service looks installed and is not running.
     assert job["RunAtLoad"] is True and job["KeepAlive"] is True
@@ -118,7 +130,7 @@ def test_the_launchd_job_names_no_username(git_repo: Path):
 @pytest.mark.parametrize("kind", ["systemd", "launchd"])
 def test_the_installing_shell_path_is_carried_into_the_unit(git_repo: Path, kind):
     """No vendor CLI is on a supervisor's default PATH, and the vendors are the point."""
-    plan = service.make_plan(_args(git_repo), kind=kind, path_env="/opt/vendors:/usr/bin")
+    plan = _plan(git_repo, kind=kind, path_env="/opt/vendors:/usr/bin")
     rendered = service.render(plan).decode("utf-8", "replace")
     assert "/opt/vendors" in rendered
 
@@ -129,7 +141,7 @@ def test_the_path_is_read_back_from_what_was_written(tmp_path: Path, git_repo: P
     """`status` prints the unit's PATH, so it has to parse the file rather than guess."""
     monkeypatch.setattr(service, "unit_path_for",
                         lambda name, k: tmp_path / f"{name}.{k}")
-    plan = service.make_plan(_args(git_repo), kind=kind, path_env="/opt/vendors:/usr/bin")
+    plan = _plan(git_repo, kind=kind, path_env="/opt/vendors:/usr/bin")
     plan.unit_path.write_bytes(service.render(plan))
     assert service._path_in(plan.unit_path, kind) == "/opt/vendors:/usr/bin"
 
@@ -139,39 +151,39 @@ def test_the_path_is_read_back_from_what_was_written(tmp_path: Path, git_repo: P
 
 def test_an_empty_install_is_refused(git_repo: Path):
     with pytest.raises(Refused, match="nothing to run"):
-        service.make_plan([], kind="systemd")
+        service.make_plan([], kind="systemd", binary=BINARY)
 
 
 def test_a_missing_repo_flag_is_refused(git_repo: Path):
     with pytest.raises(Refused, match="--repo"):
-        service.make_plan(["--server", "http://gb.invalid"], kind="systemd")
+        service.make_plan(["--server", "http://gb.invalid"], kind="systemd", binary=BINARY)
 
 
 def test_a_relative_repo_is_refused(git_repo: Path):
     """A unit has no working directory worth inheriting; the service would drain elsewhere."""
     with pytest.raises(Refused, match="absolute"):
-        service.make_plan(["--repo", "."], kind="systemd")
+        service.make_plan(["--repo", "."], kind="systemd", binary=BINARY)
 
 
 def test_a_repo_that_is_not_a_git_repository_is_refused(tmp_path: Path):
     plain = tmp_path / "plain"
     plain.mkdir()
     with pytest.raises(Refused, match="git repository"):
-        service.make_plan(["--repo", str(plain)], kind="systemd")
+        service.make_plan(["--repo", str(plain)], kind="systemd", binary=BINARY)
 
 
 def test_a_repo_that_does_not_exist_is_refused(tmp_path: Path):
     with pytest.raises(Refused, match="does not exist"):
-        service.make_plan(["--repo", str(tmp_path / "nope")], kind="systemd")
+        service.make_plan(["--repo", str(tmp_path / "nope")], kind="systemd", binary=BINARY)
 
 
 def test_a_zero_interval_is_refused(git_repo: Path):
     with pytest.raises(Refused, match="at least 1 second"):
-        service.make_plan(_args(git_repo), kind="systemd", every=0)
+        _plan(git_repo, kind="systemd", every=0)
 
 
 def test_install_without_a_key_is_refused_before_anything_is_written(git_repo: Path):
-    plan = service.make_plan(_args(git_repo), kind="systemd")
+    plan = _plan(git_repo, kind="systemd")
     with pytest.raises(Refused, match=service.API_KEY_ENV):
         service.install(plan, "")
     assert not plan.unit_path.exists()
@@ -182,14 +194,14 @@ def test_install_without_a_key_is_refused_before_anything_is_written(git_repo: P
 
 def test_the_repo_is_resolved_into_the_unit(git_repo: Path):
     """`/srv/repo/fleet/..` is absolute, passes every check, and reads as another directory."""
-    plan = service.make_plan(["--repo", f"{git_repo}/./"], kind="systemd")
+    plan = service.make_plan(["--repo", f"{git_repo}/./"], kind="systemd", binary=BINARY)
     assert plan.repo == git_repo.resolve()
     assert str(plan.repo) in plan.until_args, "the resolved path must reach `until` too"
 
 
 def test_the_plan_names_the_lock_the_service_will_hold(git_repo: Path):
     """Per git COMMON DIR: a running drain refuses interactive `up` on the whole clone."""
-    plan = service.make_plan(_args(git_repo), kind="systemd")
+    plan = _plan(git_repo, kind="systemd")
     assert plan.common_dir == git_repo.resolve()
 
 
@@ -200,7 +212,7 @@ def test_the_key_file_holds_the_key_and_only_this_user_may_read_it(git_repo: Pat
                                                                    monkeypatch):
     monkeypatch.setattr(service, "CONFIG_DIR", tmp_path / "cfg")
     monkeypatch.setattr(service, "env_path_for", lambda name: tmp_path / "cfg" / f"{name}.env")
-    plan = service.make_plan(_args(git_repo), kind="systemd")
+    plan = _plan(git_repo, kind="systemd")
     warnings = service.write_env(plan, KEY)
     assert warnings == []
     assert plan.env_path.read_text().strip() == f"{service.API_KEY_ENV}={KEY}"
@@ -348,7 +360,7 @@ def test_a_nonsense_short_key_does_not_trip_the_literal_guard(git_repo: Path, mo
     to occur by accident, and "x" is in every path in it. A key too short to be real is let
     through here and fails at the server, which is the right place for it to fail.
     """
-    plan = service.make_plan(_args(git_repo), kind="systemd")
+    plan = _plan(git_repo, kind="systemd")
     # No exception: the guard does not fire, and the install proceeds to write.
     service.install(plan, "x")
     assert plan.unit_path.exists()
@@ -356,7 +368,77 @@ def test_a_nonsense_short_key_does_not_trip_the_literal_guard(git_repo: Path, mo
 
 
 def test_a_real_length_key_still_trips_it(git_repo: Path, monkeypatch):
-    plan = service.make_plan(_args(git_repo), kind="systemd")
+    plan = _plan(git_repo, kind="systemd")
     monkeypatch.setattr(service, "render", lambda _p: f"ExecStart=/x --auth={KEY}\n".encode())
     with pytest.raises(Refused, match="contains the API key"):
         service.install(plan, KEY)
+
+
+# --- which gbfleet a unit is told to run --------------------------------------------
+
+
+def test_the_running_gbfleet_wins(tmp_path: Path, monkeypatch):
+    """The operator typed a program. Installing a different one is not done quietly."""
+    typed = tmp_path / "gbfleet"
+    typed.write_text("#!/bin/sh\n")
+    typed.chmod(0o755)
+    monkeypatch.setattr(service.sys, "argv", [str(typed)])
+    monkeypatch.setattr(service.shutil, "which", lambda _n: "/somewhere/else/gbfleet")
+    assert service._this_gbfleet() == str(typed.resolve())
+
+
+def test_the_console_script_beside_this_interpreter_comes_before_path(tmp_path: Path,
+                                                                     monkeypatch):
+    """`python -m gbfleet.cli`, and every venv that is not on PATH.
+
+    Without this the checkout's own gbfleet is invisible and a `uv tool` copy elsewhere gets
+    installed instead — and on CI, where nothing is on PATH at all, `make_plan` refused.
+    """
+    binroot = tmp_path / "venv" / "bin"
+    binroot.mkdir(parents=True)
+    (binroot / "gbfleet").write_text("#!/bin/sh\n")
+    (binroot / "gbfleet").chmod(0o755)
+    monkeypatch.setattr(service.sys, "argv", ["/usr/lib/python3/site-packages/gbfleet/cli.py"])
+    monkeypatch.setattr(service.sys, "executable", str(binroot / "python"))
+    monkeypatch.setattr(service.shutil, "which", lambda _n: "/somewhere/else/gbfleet")
+    assert service._this_gbfleet() == str(binroot / "gbfleet")
+
+
+def test_the_interpreter_path_is_not_resolved_through_the_venv_symlink(tmp_path: Path,
+                                                                      monkeypatch):
+    """Measured: `.resolve()` on a venv's python lands in the INTERPRETER's bin.
+
+    A venv `bin/python` is a symlink to the interpreter it was made from, so resolving it
+    walks out of the venv entirely and the console script beside it disappears.
+    """
+    real = tmp_path / "toolchain" / "bin"
+    real.mkdir(parents=True)
+    (real / "python3").write_text("#!/bin/sh\n")
+    (real / "python3").chmod(0o755)
+    venv = tmp_path / "venv" / "bin"
+    venv.mkdir(parents=True)
+    (venv / "python").symlink_to(real / "python3")
+    (venv / "gbfleet").write_text("#!/bin/sh\n")
+    (venv / "gbfleet").chmod(0o755)
+    monkeypatch.setattr(service.sys, "argv", ["pytest"])
+    monkeypatch.setattr(service.sys, "executable", str(venv / "python"))
+    monkeypatch.setattr(service.shutil, "which", lambda _n: None)
+    assert service._this_gbfleet() == str(venv / "gbfleet")
+
+
+def test_path_is_the_last_resort(tmp_path: Path, monkeypatch):
+    found = tmp_path / "onpath" / "gbfleet"
+    found.parent.mkdir()
+    found.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(service.sys, "argv", ["pytest"])
+    monkeypatch.setattr(service.sys, "executable", str(tmp_path / "nothing" / "python"))
+    monkeypatch.setattr(service.shutil, "which", lambda _n: str(found))
+    assert service._this_gbfleet() == str(found.resolve())
+
+
+def test_no_gbfleet_anywhere_is_refused(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(service.sys, "argv", ["pytest"])
+    monkeypatch.setattr(service.sys, "executable", str(tmp_path / "nothing" / "python"))
+    monkeypatch.setattr(service.shutil, "which", lambda _n: None)
+    with pytest.raises(Refused, match="absolute path to gbfleet"):
+        service._this_gbfleet()

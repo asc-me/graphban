@@ -237,6 +237,7 @@ that migrations 0001/0013 pin 384 in the column type — see AL-46.
 | Fleet supervisor (`fleet/`) | [`fleet/README.md`](fleet/README.md), [`docs/prd-22-fleet-supervisor.md`](docs/prd-22-fleet-supervisor.md) |
 | Hand an item to a child on another model | [`docs/delegation.md`](docs/delegation.md) |
 | Vendor CLIs the fleet can run | [`docs/fleet-adapters.md`](docs/fleet-adapters.md) |
+| Run a drain on another machine | [`docs/fleet-remote.md`](docs/fleet-remote.md) |
 | Does the fleet actually work? | [`docs/fleet-supervisor-walk.md`](docs/fleet-supervisor-walk.md) |
 | Where an agent's tokens go | [`docs/token-census.md`](docs/token-census.md), `scripts/token_census.py` |
 

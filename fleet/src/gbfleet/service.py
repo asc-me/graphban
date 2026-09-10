@@ -373,19 +373,33 @@ def make_plan(
 
 
 def _this_gbfleet() -> str:
-    """The gbfleet that will run in the unit, preferring the one running NOW.
+    """The gbfleet that will run in the unit. THIS one, wherever possible.
 
-    `shutil.which` first would silently install a DIFFERENT gbfleet than the one the operator
-    typed — a `uv tool` copy on PATH while they are standing in a checkout's venv, which is
-    exactly the situation this gets developed in. So the running program wins when it is a
-    real executable, and PATH is the fallback for `python -m gbfleet.cli`, where argv[0] is a
-    source file no supervisor can exec.
+    Three sources, in this order, and the order is the point:
+
+    1. `sys.argv[0]`, when it is an executable called `gbfleet`. The operator typed a program;
+       installing a different one is not a thing to do quietly.
+    2. The console script beside `sys.executable` — the same environment's `bin/gbfleet`. This
+       is the `python -m gbfleet.cli` case, where argv[0] is a source file no supervisor can
+       exec, and it is also every venv that is not on PATH. Without it, a checkout's own
+       gbfleet is invisible while a `uv tool` copy elsewhere gets installed instead.
+    3. `shutil.which`, the ambient answer, last.
+
+    Reaching PATH first would install a DIFFERENT gbfleet than the one that is running — a
+    `uv tool` copy while you stand in a checkout's venv, which is exactly the situation this
+    gets developed in.
     """
     running = Path(sys.argv[0])
     if running.name.startswith("gbfleet") and running.is_file():
         resolved = running.resolve()
         if os.access(resolved, os.X_OK):
             return str(resolved)
+    # NOT `.resolve()` — a venv's `bin/python` is a symlink to the interpreter it was made
+    # from, so resolving lands in that interpreter's bin and the venv's own console script
+    # becomes invisible. Measured: it fell through to PATH and picked the `uv tool` copy.
+    sibling = Path(sys.executable).parent / "gbfleet"
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
     found = shutil.which("gbfleet")
     if not found:
         raise Refused(
