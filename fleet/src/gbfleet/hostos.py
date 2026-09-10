@@ -46,6 +46,7 @@ import errno
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 
 WINDOWS = os.name == "nt"
@@ -285,6 +286,41 @@ def terminated_by_signal(code: int | None) -> bool:
     if code is None:
         return False
     return code == CONTROL_C_EXIT if WINDOWS else code < 0
+
+
+# --- is this process inside a kernel sandbox? ----------------------------------------
+
+def sandboxed() -> bool | None:
+    """Whether THIS process runs under a kernel sandbox its children will inherit.
+
+    GRPH-838. A Grok session with `[sandbox] profile = "workspace"` applies Seatbelt to
+    itself; `gbfleet mcp` is its child, and every vendor spawned from there inherits the
+    profile — Grok's own sandbox guide says children do, and the wave that found this lost
+    four children at exit 1 before any of them registered: qwen-code on `chmod ~/.qwen/...`,
+    cursor-agent on `mkdir ~/.cursor/projects/...`, grok on re-applying the profile inside
+    itself, and claude reading "Not logged in" on a machine that is logged in, because the
+    Keychain is unreachable from inside. None of it is visible from the exit code, and the
+    spawn reply's stderr tail names the vendor's symptom rather than the cause.
+
+    Three answers, not two. `True` and `False` are measured; `None` means this platform has
+    no cheap way to ask — Linux Landlock has no query call and Windows has nothing of the
+    kind — and the doctor reports that as UNKNOWN rather than as clean.
+
+    macOS: `sandbox_check(pid, NULL, 0)` from libsystem_sandbox is non-zero for a sandboxed
+    process. Measured 2026-09-10: 0 from a plain shell, 1 under `sandbox-exec`, and 1 under
+    `grok --sandbox workspace` — the case that matters.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        import ctypes
+
+        lib = ctypes.CDLL("/usr/lib/system/libsystem_sandbox.dylib")
+        lib.sandbox_check.restype = ctypes.c_int
+        lib.sandbox_check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        return lib.sandbox_check(os.getpid(), None, 0) != 0
+    except (OSError, AttributeError):  # the library or the symbol is not where it was
+        return None
 
 
 # --- who "this user" is ------------------------------------------------------------

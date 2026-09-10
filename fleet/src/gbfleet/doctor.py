@@ -124,6 +124,77 @@ def check_host(report: Report) -> None:
         report.add("python version", PASS, version)
 
 
+#: Environment names under which a claude child can authenticate without the Keychain.
+#: Presence is all that is read; the values are never printed.
+CLAUDE_TOKEN_ENVS = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
+
+#: What each vendor does at startup OUTSIDE the worktree, measured under
+#: `grok --sandbox workspace` on 2026-09-10 (GRPH-838). Absent here means not measured.
+SANDBOX_STARTUP_WRITES = {
+    "qwen-code": "chmod ~/.qwen/extension-store/staging",
+    "cursor-agent": "mkdir ~/.cursor/projects/<worktree slug>",
+}
+
+
+def check_sandbox(report: Report, adapter: str = "") -> None:
+    """GRPH-838: the parent's kernel sandbox is every child's sandbox.
+
+    A Grok session running `[sandbox] profile = "workspace"` hands that Seatbelt profile to
+    `gbfleet mcp` and on to every vendor it spawns. Four children died at exit 1 before
+    registering, each with a different vendor's symptom in stderr, and the common cause was
+    in none of them. This asks the kernel directly, and says per vendor what the answer means
+    — because "sandboxed" is a PASS for one vendor, a FAIL for three, and a question for the
+    rest. Vendors measured under a sandbox get a verdict; the others get UNKNOWN, which is
+    not the same as clean.
+    """
+    answer = hostos.sandboxed()
+    name = "kernel sandbox"
+    if answer is None:
+        report.add(name, UNKNOWN, f"no way to ask on {platform.system()}",
+                   "a child inherits any sandbox this process runs under; a child that exits 1 "
+                   "before registering with EPERM outside the worktree is the symptom")
+        return
+    if not answer:
+        report.add(name, PASS, "none")
+        return
+    home = Path.home()
+    recipe = (
+        "keep the sandbox and grant the vendor's home — a Grok custom profile with "
+        f'extends = "workspace" and read_write = ["{home / ".qwen"}", "{home / ".cursor"}"] '
+        "(absolute paths) — or run the parent with its sandbox off"
+    )
+    if adapter == "grok":
+        report.add(name, PASS,
+                   "inherited from the parent; the grok child is launched --sandbox off so it "
+                   "does not re-apply the profile inside this one, and runs inside it")
+    elif adapter == "claude":
+        if any(os.environ.get(k) for k in CLAUDE_TOKEN_ENVS):
+            report.add(name, PASS,
+                       "inherited from the parent; the claude child has a token in its "
+                       "environment, which is the one login a sandbox cannot hide")
+        else:
+            report.add(name, FAIL,
+                       "inherited from the parent; a claude child cannot reach the Keychain "
+                       "and reads 'Not logged in' even on a machine that is logged in, and no "
+                       "path grant restores it",
+                       "run the parent with its sandbox off, or give the child "
+                       f"{' or '.join(CLAUDE_TOKEN_ENVS)} in its environment")
+    elif adapter in SANDBOX_STARTUP_WRITES:
+        report.add(name, FAIL,
+                   f"inherited from the parent; a {adapter} child dies at startup on "
+                   f"`{SANDBOX_STARTUP_WRITES[adapter]}` (EPERM) unless that directory is "
+                   "writable from inside", recipe)
+    elif adapter:
+        report.add(name, UNKNOWN,
+                   f"inherited from the parent, and {adapter} has not been measured under one",
+                   "if the child exits 1 before registering, its stderr tail names the path "
+                   "it could not write; grant it or run the parent with its sandbox off")
+    else:
+        report.add(name, UNKNOWN,
+                   "inherited from the parent; what that does to a child depends on the vendor",
+                   "pass --adapter for the verdict on the one you intend to run")
+
+
 def check_credential_protection(report: Report) -> None:
     """Whether a seat file can actually be kept to its owner HERE.
 
@@ -361,6 +432,7 @@ def run(
     print(f"gbfleet {__version__} doctor\n", file=out)
 
     check_host(report)
+    check_sandbox(report, adapter)
     check_credential_protection(report)
     root = check_repository(report, repo)
     check_state_and_lock(report, root)

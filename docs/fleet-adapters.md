@@ -421,6 +421,46 @@ a position to stop it. What it *cannot* do is override the seat: on a name colli
 control proving the committed file is genuinely loaded when nothing outranks it, because
 "the seat won" and "the rival never entered" look identical from the outside.
 
+## A sandboxed parent is every child's sandbox (GRPH-838)
+
+A Grok session with `[sandbox] profile = "workspace"` applies Seatbelt to itself, and
+Grok's own sandbox guide says child processes inherit it. `gbfleet mcp` is a child of that
+session, so **every vendor it spawns runs inside the operator's sandbox** — writes only to
+the working directory, `~/.grok/` and temp. Measured 2026-09-10 on grok 1.0.25 / macOS,
+after one wave lost four children at exit 1 before any of them called `register_agent`:
+
+| child | what stderr said | the cause | fixable with the sandbox kept on? |
+|---|---|---|---|
+| `qwen-code` | `EPERM ... chmod ~/.qwen/extension-store/staging` | writes its own home at startup | yes — grant `~/.qwen` |
+| `cursor-agent` | `EPERM ... mkdir ~/.cursor/projects/<slug>` | keys project state under its own home | yes — grant `~/.cursor` |
+| `grok` | `sandbox initialization failed: Operation not permitted` | the child read the user config's profile and applied Seatbelt inside Seatbelt | yes — the adapter now launches the child `--sandbox off` when the supervisor is itself sandboxed; the flag beats the config and the child still runs inside the parent's |
+| `claude` | `Not logged in · Please run /login` | the claude.ai login lives in the Keychain, which is unreachable from inside | **no** — `security find-generic-password -s "Claude Code-credentials"` exits 44 inside and 0 outside, and a custom profile granting `~/Library/Keychains` changes nothing |
+
+The Grok session's own diagnosis called the claude death "not sandbox, would fail with
+sandbox off too". The machine was logged in; only the sandbox hid it. Read a child's
+"not logged in" as a sandbox symptom first.
+
+**Keeping the sandbox on.** Grok custom profiles take literal absolute paths (no `~`).
+This one measured green for qwen-code and cursor-agent startup, in `~/.grok/sandbox.toml`
+or the project's `.grok/sandbox.toml`, then `grok --sandbox fleet`:
+
+```toml
+[profiles.fleet]
+extends = "workspace"
+read_write = ["/Users/<you>/.qwen", "/Users/<you>/.cursor"]
+```
+
+A claude child under any Grok sandbox needs a token in its environment
+(`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`) or a parent with its sandbox off.
+
+**How the fleet tells you.** `hostos.sandboxed()` asks the kernel (`sandbox_check` from
+libsystem_sandbox: 1 under `grok --sandbox workspace`, 0 from a plain shell; `None` on
+platforms with no query, which the doctor prints as UNKNOWN, not PASS). `gbfleet doctor
+--adapter <vendor>` reports `kernel sandbox` with the verdict for that vendor, and `gban
+setup` names a non-`off` Grok profile when it writes Grok's config. What the fleet still
+does not do: a child that never registers posts no attempt record (PRD-38 D3, by design),
+so the ledger shows one agent fewer — the spawn reply's stderr tail is where the cause is.
+
 ## Before the first run: `gbfleet doctor`
 
 Every trap in this document is one an operator meets on their first run, and several are

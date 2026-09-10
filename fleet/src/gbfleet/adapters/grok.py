@@ -37,6 +37,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .. import hostos
 from .. import seat as seat_mod
 from ..seat import Seat
 from ..spawn import Launch
@@ -52,7 +53,8 @@ class Grok(Adapter):
         "--prompt-file takes the instruction by path, so nothing sensitive touches argv "
         "or stdin. Per-child seat is project-scoped .grok/config.toml (TOML, not JSON) "
         "and needs --trust: an untrusted folder starts no repo-local server and says "
-        "nothing about it. A failed seat does not fail the run."
+        "nothing about it. A failed seat does not fail the run. Under a sandboxed parent "
+        "the child is launched --sandbox off and inherits the parent's (GRPH-838)."
     )
 
     seat_format = seat_mod.TOML
@@ -134,6 +136,14 @@ class Grok(Adapter):
                 # is never started, and the child runs to completion with no tools and
                 # no complaint. It is the difference between a worker and an expense.
                 "--trust",
+                # GRPH-838. Under a sandboxed parent the child reads the user config's
+                # `[sandbox] profile` and tries to apply Seatbelt inside Seatbelt: "sandbox
+                # initialization failed: Operation not permitted", exit 1, never registered.
+                # `--sandbox off` beats the config (Grok's own resolution order) and the child
+                # still sits inside the parent's kernel sandbox, so nothing is given up.
+                # Conditional, deliberately: from an unsandboxed parent the same flag would
+                # strip a sandbox the operator chose for grok children.
+                *(["--sandbox", "off"] if hostos.sandboxed() else []),
                 *(self.debug_argv(debug_file) if debug_file else []),
                 "--prompt-file", str(instruction_file),
                 "--cwd", str(tree.path),

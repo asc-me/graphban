@@ -18,6 +18,7 @@ What IS checked here, and is worth checking:
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -500,3 +501,37 @@ def test_exit_meaning_says_stopped_rather_than_printing_the_raw_status():
         f"a child the supervisor stopped reports {imposed} and the fleet calls it an "
         "ordinary non-zero exit"
     )
+
+
+# --- is this process sandboxed? (GRPH-838) --------------------------------------------
+
+def test_sandboxed_answers_in_three_ways_and_this_platform_in_one_of_them():
+    """`None` is an answer — "this platform cannot be asked" — and it must never collapse
+    into `False`, which the doctor would print as PASS. macOS can be asked; nothing else
+    can, yet."""
+    answer = hostos.sandboxed()
+    if sys.platform == "darwin":
+        assert answer in (True, False)
+    else:
+        assert answer is None
+
+
+def _sandboxed_in(argv_prefix: list[str]) -> str:
+    src = Path(__file__).resolve().parents[1] / "src"
+    code = (f"import sys; sys.path.insert(0, {str(src)!r}); "
+            "from gbfleet import hostos; print(hostos.sandboxed())")
+    return subprocess.run([*argv_prefix, sys.executable, "-c", code],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or shutil.which("sandbox-exec") is None,
+                    reason="a real Seatbelt needs macOS and sandbox-exec")
+def test_sandboxed_is_true_inside_a_real_seatbelt_and_false_outside(tmp_path: Path):
+    """Against the kernel, not a mock. The profile allows everything — being inside ANY
+    Seatbelt is what `sandbox_check` reports, which is exactly the question: the Grok
+    profile that killed four children allowed reads everywhere too."""
+    profile = tmp_path / "allow-all.sb"
+    profile.write_text("(version 1)\n(allow default)\n", encoding="utf-8")
+
+    assert _sandboxed_in(["sandbox-exec", "-f", str(profile)]) == "True"
+    assert _sandboxed_in([]) == "False", "the control: the same code from a plain shell"
