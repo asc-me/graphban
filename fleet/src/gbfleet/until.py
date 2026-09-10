@@ -500,6 +500,26 @@ def _loop(
                                                               ("winner", "dropped", "stages",
                                                                "capabilities", "profile")
                                                               if k in explained}})
+                    # PRD-41 D21 / criterion 24: the same object spawn already posts
+                    # (PRD-38 D3). until is the fleet's primary path; without this,
+                    # attempt_telemetry has no stages and replay/R6 cannot see what
+                    # was resolved. Fire-and-forget inside the client.
+                    declare = matrix_mod.declaration(
+                        res.winner.harness, res.winner.model, want or None, matrix)
+                    runner = explained.get("runner_up") if isinstance(
+                        explained.get("runner_up"), dict) else None
+                    runner_up = ""
+                    if runner:
+                        vendor = matrix_mod.vendor_of(runner.get("harness") or "", matrix)
+                        runner_up = f"{vendor}:{runner.get('model') or ''}"
+                    planner.post_attempt(
+                        enrolment_code=seat.code,
+                        adapter=res.winner.harness,
+                        winner=f"{declare.get('vendor', '')}:{declare.get('model', '')}",
+                        runner_up=runner_up,
+                        source=explained.get("source") or "matrix",
+                        resolution=explained,
+                    )
                 else:
                     observe.emit("resolve_refused", item=seed, detail=res.refused)
             # GRPH-732: the child is told what it is, because only this side knows.

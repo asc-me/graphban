@@ -50,6 +50,13 @@ COST_COVERAGE = 0.8
 BUDGET_FLOOR = 0.2
 
 
+def _axis(*, value, n: int, source: str | None, used: bool, **extra) -> dict:
+    """One scored axis: value plus where it came from and the count behind it (AC24)."""
+    out = {"value": value, "n": n, "source": source, "used": used}
+    out.update(extra)
+    return out
+
+
 @dataclass(frozen=True)
 class Evidence:
     item: str
@@ -622,7 +629,9 @@ class Matrix:
             "quality": quality_axes,
             "cost": cost_axis,
             "latency": latency_axis,
-            "locality": 1.0 if row.local else 0.0,
+            # AC24: all four axes carry source and n. Locality is the row's declared
+            # local flag, not a sample — n=1 names that it came from one row.
+            "locality": _axis(value=1.0 if row.local else 0.0, n=1, source="row", used=True),
         }
         if row.price_per_mtoken_in is not None or row.price_per_mtoken_out is not None:
             expected, comparable, _ = _expected_tokens(row, capabilities, cap_measured)
