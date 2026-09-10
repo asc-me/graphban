@@ -457,6 +457,12 @@ def _claim_bound_seat(db: Session, agent: Agent, seat: "Enrolment | None", *,
         # would leave a registered agent holding a 500 instead of a sentence.
         out["reason"] = "out-of-scope"
         return out
+    except items_svc.ReachesOutsideTheRepo:
+        # GRPH-832, and its own reason rather than out-of-scope's: `delegate` refuses a
+        # `deploy` item, so a bound seat can only reach here if the item was declared AFTER
+        # the delegation was written. The child says so and stops.
+        out["reason"] = "reaches-outside-the-repo"
+        return out
     if claimed is None:
         db.refresh(item)
         out["reason"] = "held"

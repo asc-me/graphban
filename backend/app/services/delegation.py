@@ -270,6 +270,7 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     from app.services import fleet_profiles
     from app.services import items as items_svc
     from app.services import prioritization
+    from app.services import reach as reach_svc
 
     touchpoints = [t for t in (item.touchpoints or []) if isinstance(t, str) and t.strip()]
     ctx = prioritization.context(db, item.project_id)
@@ -296,6 +297,11 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         "checklist": checklist,
         "lessons": lessons,
         "lane": lane_for(touchpoints),
+        # GRPH-832. Beside `lane` and `checklist` because it is the same kind of answer — a
+        # reading of the item with the evidence that produced it — and a planner choosing what
+        # to hand out reads all three in one place.
+        "reach": reach_svc.describe(item.reach or reach_svc.REPO,
+                                    reach_svc.signals(item.description)),
         "tier": tier_for(prev_row),
         "previous": previous,
         "attempts": attempts,
@@ -401,10 +407,47 @@ def _open_rows(db: Session, item: Item) -> list[Delegation]:
     return [r for r in rows if _unlinked(r)]
 
 
+def _refuse_by_reach(item: Item, acknowledged: bool) -> None:
+    """Two refusals, and they are not the same kind of thing (GRPH-832).
+
+    **A `deploy` item is refused outright, and no argument gets past it.** That is a
+    DECLARATION a signed-in person made — the field is unreachable from any agent credential —
+    so overriding it here would be this code second-guessing the one input it can trust.
+
+    **Prose that reads like deployment asks, once.** That is a heuristic, and a heuristic must
+    never be a boundary: it fires on descriptions of past incidents as readily as on
+    instructions, because no reader of free text can tell "rotate the production key" from "a
+    worker rotated the production key". So it costs a caller one deliberate argument, which is
+    then on the record. Having to type it is the point, exactly as it is for `--allow psql` in
+    the supervisor's PATH shim.
+
+    A planner that is an agent CAN acknowledge its way through. What it cannot do is act
+    without an acknowledgement existing, attributed, and readable afterwards. That is the
+    honest extent of it.
+    """
+    from app.services import reach as reach_svc
+
+    if (item.reach or reach_svc.REPO) == reach_svc.DEPLOY:
+        raise DelegationRefused(
+            f"{item.key} is declared `reach=deploy`: it acts on a running system, and a "
+            "delegated child gets a worktree and a shell. Do this one yourself.",
+            code="validation",
+            hint="a person set this field and only a person can clear it; if the item is "
+                 "really repository work, change its reach in the UI")
+    if acknowledged:
+        return
+    found = reach_svc.signals(item.description)
+    if found:
+        raise DelegationRefused(reach_svc.refusal(item.key, found), code="validation",
+                                hint="pass acknowledge_reach=true, or set the item's reach "
+                                     "to deploy in the UI")
+
+
 def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
              note: str = "", lease_seconds: int, seat: bool = False, api_key=None,
              wave: str | None = None,
-             scope: str | None = None) -> tuple[Delegation, str | None, str | None]:
+             scope: str | None = None,
+             acknowledge_reach: bool = False) -> tuple[Delegation, str | None, str | None]:
     """Write what the delegator asked for. Claims nothing, spawns nothing. Returns the new
     row, the id of the caller's own open delegation it withdrew (PRD-35 D14), and the bound
     seat's enrolment code when `seat` was asked for (PRD-36 D2), else None.
@@ -423,6 +466,7 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
     if item.blocker:
         raise DelegationRefused(f"{item.key} is blocked: {item.blocker}",
                                 hint="clear the blocker before delegating")
+    _refuse_by_reach(item, acknowledge_reach)
     if item.claimed_by == agent.id:
         raise DelegationRefused(f"you hold {item.key}; release it or build it yourself",
                                 hint="a delegation is for work you are not holding")
@@ -480,6 +524,9 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
         project_id=item.project_id, item_id=item.id, delegated_by=agent.id,
         lane=lane, requested_tier=tier, note=(note or "")[:NOTE_MAX],
         created_at=now, lease_seconds=int(lease_seconds),
+        # Recorded, not merely checked (GRPH-832): an acknowledgement nobody can look up
+        # afterwards is a dialog box. This one has an author and a timestamp already.
+        reach_acknowledged=bool(acknowledge_reach),
     )
     db.add(row)
     db.commit()

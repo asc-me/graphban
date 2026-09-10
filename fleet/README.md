@@ -173,9 +173,34 @@ past it, and a model that wanted to would find that in one step. The honest clai
 child reaching for a deployment CLI *by name* gets a refusal, and you read it in a log instead
 of an incident. A sandbox is what bounds a determined process; this is not one.
 
-And the other half, which no flag fixes: **an item's prose is an instruction channel.** Nothing
-checks that a description matches the touchpoints it declares, so anyone who can file a ledger
-item can write instructions for a process with a shell. Scope waves to PRDs you control.
+### The other half: an item's prose is an instruction channel
+
+A description is free text written by whoever filed the item, and it reaches the child as
+instructions. On 2026-09-08 one item's prose asked for production work and a cheap-tier worker
+did it — rotated a key, deleted rows, set environment variables on a hosted platform,
+redeployed — while its four declared touchpoints were ordinary repository files, none of which
+it modified. Touchpoints are a claim about FILES; there was no way to say an item reaches
+outside the repository at all, so that item was structurally identical to a docs change.
+
+Three layers now, and they are worth telling apart because only the first is a boundary:
+
+1. **An item can declare `reach = deploy`** (GRPH-832), and one that does is refused to every
+   seat, on every path — `delegate`, `claim_cluster`, `claim_next`, the bound-seat claim. Only
+   a signed-in person can set or clear it: the field rides on `PATCH /api/items/{id}`, which
+   takes a bearer JWT, and an agent's `update_item` refuses it outright rather than ignoring
+   it. **It depends on somebody setting it**, and every item that exists defaults to `repo`.
+2. **Prose that reads like deployment work costs the delegator one deliberate argument.**
+   `delegate` quotes the offending lines back and refuses until `acknowledge_reach=true`,
+   which is recorded against the delegation. This is a heuristic and deliberately not a
+   boundary — no reader of free text can tell "rotate the production key" from "a worker
+   rotated the production key", and this file contains both.
+3. **The child is told where the job ends** — its instruction says the worktree is the
+   boundary and to block the item rather than act on a running system. Not a control at all. A
+   worker on the reported wave did exactly this unprompted; asking every time beats hoping.
+
+What remains open, stated plainly: an agent planner can acknowledge its way past layer 2, a
+`repo` default is only as good as the person who reviewed the item, and layer 3 persuades
+rather than prevents. Scope waves to PRDs you control.
 
 ### Seeing a wave before you run it
 

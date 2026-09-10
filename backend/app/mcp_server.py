@@ -1715,7 +1715,16 @@ _FLEET_ONLY_ARGS = {
     # GRPH-827: advertised to the fleet tier only, for the reason every entry here is — the
     # ceiling is measured on the base manifest, and a property only a supervisor sends should
     # not be charged to every agent that connects.
-    "delegate": dict(_SEAT_SCOPE_ARG),
+    "delegate": {
+        **_SEAT_SCOPE_ARG,
+        # GRPH-832: advertised to the fleet tier, which is who delegates. A planner that never
+        # reads the manifest still has it accepted — the dispatcher reads what it is sent.
+        "acknowledge_reach": {
+            "type": "boolean",
+            "description": "This item's text reads like deployment work and you have checked "
+                           "it is not. Recorded against the delegation.",
+        },
+    },
     "mint_enrolment": dict(_SEAT_SCOPE_ARG),
     # GRPH-807. Measured on a live instance: 177 agents, 27,391 tokens, of which ONE was live.
     # A planner polling a wave paid nearly twice the whole manifest, per poll.
@@ -2404,6 +2413,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         return _item_dict(item)
     if name == "update_item":
         _scoped_item(db, args["id"], allowed)
+        if "reach" in args:
+            # GRPH-832. Refused rather than ignored. `reach` is not in `update_item`'s field
+            # whitelist, so passing it here would have written nothing and returned 200 — and
+            # a caller that believes it marked an item as ops, when it did not, is worse off
+            # than one that was told no. That is the absence-reads-as-clean failure this
+            # repository keeps paying for, in the tool that would produce it most quietly.
+            raise errors.Validation(
+                "reach is not an agent's to set: it says whether this item's work acts on a "
+                "running system, and only a signed-in person can declare or clear it.",
+                hint="a human sets it on the item in the UI")
         item = items_svc.update_item(
             db,
             args["id"],
@@ -2649,6 +2668,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 db, agent=agent, item=item, lane=args["lane"], tier=args["tier"],
                 note=args.get("note", ""), lease_seconds=items_svc.DEFAULT_LEASE_SECONDS,
                 seat=bool(args.get("seat")), api_key=key, wave=args.get("wave"),
+                acknowledge_reach=bool(args.get("acknowledge_reach")),
                 # The ITEM's project, not the key's default: a scope has to belong to the
                 # same project as the work it bounds, and `_scoped_item` has already proved
                 # the caller may read this one.
