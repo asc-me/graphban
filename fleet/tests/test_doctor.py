@@ -471,3 +471,121 @@ def test_a_full_machine_is_unknown_and_never_fail(monkeypatch):
     assert finding.status == UNKNOWN
     assert "room for 0" in finding.detail
     assert report.ok
+
+
+# --- whether anything supervises the supervisor (GRPH-844) --------------------------
+
+
+def _service_finding(report: Report):
+    return next(f for f in report.findings if f.name.startswith("fleet service"))
+
+
+def _state(**kw):
+    from gbfleet import service as service_mod
+
+    base = dict(name="drain", kind="systemd", installed=True, running=True,
+                unit_path=Path("/tmp/gbfleet-drain.service"), path_env="/usr/bin", linger=True)
+    base.update(kw)
+    return service_mod.Status(**base)
+
+
+def _pretend(monkeypatch, state, *, kind="systemd", names=("drain",)):
+    """A host with a supervisor and these drains on it."""
+    from gbfleet import service as service_mod
+
+    monkeypatch.setattr(service_mod, "host", lambda: service_mod.Host(kind))
+    monkeypatch.setattr(service_mod, "installed_names", lambda k="": list(names))
+    monkeypatch.setattr(service_mod, "status", lambda name, kind="": state)
+
+
+def test_no_service_installed_is_a_pass(monkeypatch):
+    """Running `until` in a terminal is a legitimate way to work; failing it is noise."""
+    from gbfleet import service as service_mod
+
+    _pretend(monkeypatch, _state(installed=False, running=None), names=())
+    report = Report()
+    doctor.check_service(report)
+    assert _service_finding(report).status == PASS
+
+
+def test_a_host_with_no_supervisor_is_unknown(monkeypatch):
+    from gbfleet import service as service_mod
+
+    monkeypatch.setattr(service_mod, "host",
+                        lambda: service_mod.Host("", "no systemctl on PATH"))
+    report = Report()
+    doctor.check_service(report)
+    assert _service_finding(report).status == UNKNOWN
+    assert report.ok, "an unaskable host must not ground the fleet"
+
+
+def test_a_service_installed_and_not_running_fails(monkeypatch):
+    from gbfleet import service as service_mod
+
+    _pretend(monkeypatch, _state(running=False, last_exit=1, detail="failed"))
+    report = Report()
+    doctor.check_service(report)
+    assert _service_finding(report).status == FAIL
+
+
+def test_a_running_service_with_no_path_fails(monkeypatch):
+    """Up is not working. A service with an empty PATH resolves no adapter, ever."""
+    from gbfleet import service as service_mod
+
+    _pretend(monkeypatch, _state(path_env=""))
+    report = Report()
+    doctor.check_service(report)
+    finding = _service_finding(report)
+    assert finding.status == FAIL and "PATH" in finding.detail
+
+
+def test_a_running_service_without_linger_is_unknown_not_pass(monkeypatch):
+    """It is running now and gone at logout; 'does this survive me' was never established."""
+    from gbfleet import service as service_mod
+
+    _pretend(monkeypatch, _state(linger=False))
+    report = Report()
+    doctor.check_service(report)
+    assert _service_finding(report).status == UNKNOWN
+    assert report.ok
+
+
+def test_a_running_service_with_linger_passes(monkeypatch):
+    from gbfleet import service as service_mod
+
+    _pretend(monkeypatch, _state())
+    report = Report()
+    doctor.check_service(report)
+    assert _service_finding(report).status == PASS
+
+
+def test_every_installed_drain_is_reported_not_just_the_default_name(monkeypatch):
+    """The hole this closes: `--name nightly` and forget, and `doctor` says none installed."""
+    from gbfleet import service as service_mod
+
+    monkeypatch.setattr(service_mod, "host", lambda: service_mod.Host("systemd"))
+    monkeypatch.setattr(service_mod, "installed_names", lambda k="": ["nightly"])
+    # Keyed on the NAME it is asked about, or a check that fell back to the default name
+    # would still be handed the broken drain and still look right.
+    monkeypatch.setattr(
+        service_mod, "status",
+        lambda name, kind="": _state(name="nightly", running=False, last_exit=2,
+                                     detail="failed")
+        if name == "nightly" else _state(name=name, installed=False, running=None))
+    report = Report()
+    doctor.check_service(report)
+    finding = _service_finding(report)
+    assert finding.name == "fleet service (nightly)", (
+        "asking about the default name reports a clean box beside a broken drain"
+    )
+    assert finding.status == FAIL
+
+
+def test_an_idle_drain_passes_the_doctor(monkeypatch):
+    """Most of every cycle. A FAIL here is a check an operator learns to ignore."""
+    _pretend(monkeypatch, _state(running=False, last_exit=0))
+    report = Report()
+    doctor.check_service(report)
+    finding = _service_finding(report)
+    assert finding.status == PASS
+    assert "idle between runs" in finding.detail

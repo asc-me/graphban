@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__, headroom, hostos
+from . import service as service_mod
 from .adapters import ADAPTERS, AdapterError, resolve
 from .client import Graphban, ServerUnreachable
 from .lock import RepoLocked, probe
@@ -494,10 +495,84 @@ def run(
         report.add("server reachable", UNKNOWN, "no --server given")
     check_seats(report, seats_file)
     check_supervision_mode(report)
+    check_service(report)
     check_matrix(report, matrix_path, server=server, api_key=api_key, project=project)
 
     report.render(out)
     return report
+
+
+def check_service(report: Report, name: str = "") -> None:
+    """Whether a drain on this box outlives the terminal that started it (GRPH-844).
+
+    The other half of "why is nothing spawning". `check_supervision_mode` says which KIND of
+    supervision a wave runs under; this says whether anything supervises the supervisor. A
+    fleet whose `until` died with an ssh session looks, from the ledger, exactly like a fleet
+    with no ready work.
+
+    Three answers. `not installed` is a PASS, not a failure — running `until` in a terminal is
+    a legitimate and common way to work, and failing everyone who does it would make the check
+    noise. What is NOT a pass is a service that exists and is not running, or a host nobody
+    can ask.
+    """
+    found = service_mod.host()
+    if not found.kind:
+        report.add("fleet service", UNKNOWN, found.why,
+                   "nothing here can supervise a drain; `gbfleet until` lives and dies with "
+                   "the process that starts it, including a harness that may stop it")
+        return
+    # EVERY drain on this box, not the one whose name we happened to guess. A check that asks
+    # about the default name only reports "none installed" beside a broken `nightly`.
+    names = [name] if name else service_mod.installed_names(found.kind)
+    if not names:
+        report.add("fleet service", PASS,
+                   f"none installed ({found.kind}); drains run in the foreground",
+                   "`gbfleet service install -- <until args>` if you want one that outlives "
+                   "this terminal")
+        return
+    for one in names:
+        _one_service(report, service_mod.status(one, kind=found.kind))
+
+
+def _one_service(report: Report, state) -> None:
+    label = f"fleet service ({state.name})"
+    if not state.installed:
+        report.add(label, PASS, f"not installed ({state.kind})")
+        return
+    if state.running is None:
+        report.add(label, UNKNOWN, f"installed at {state.unit_path}, {state.detail}")
+        return
+    if not state.path_env:
+        # Checked BEFORE the run state, because it is a property of the unit rather than of
+        # the last run: a drain with no PATH resolves no adapter whether it happens to be
+        # running, idle or dead at the moment somebody looks.
+        report.add(label, FAIL, f"installed ({state.kind}) with an EMPTY PATH",
+                   "reinstall it from a shell that can see your vendor CLIs; every adapter "
+                   "resolution in that service fails")
+        return
+    if state.idle:
+        # NOT a fault, and getting this wrong would have been worse than having no check.
+        # `until` exits when there is no ready work, so a healthy drain is not running for
+        # most of every cycle; a FAIL here cries wolf exactly when the fleet is correct.
+        report.add(label, PASS,
+                   f"idle between runs, last exit 0 ({state.kind}, {state.unit_path})")
+        return
+    if not state.running:
+        # `state.detail` already carries the exit code on both platforms; naming it twice
+        # read as "last exit 3 — last exit 3".
+        report.add(label, FAIL, f"installed and NOT running ({state.detail})",
+                   f"read {service_mod.CONFIG_DIR / 'logs'}; a unit that loads and dies is "
+                   "usually a PATH with no vendor CLI on it, a key file that went away, or "
+                   "another supervisor already holding this repository's lock")
+        return
+    if state.linger is False:
+        # Running now, gone at logout. Reported as UNKNOWN rather than PASS because the thing
+        # being asked about — does this survive without me — has not been established.
+        report.add(label, UNKNOWN, f"running, but this user has no linger",
+                   f"`loginctl enable-linger {hostos.user_tag()}`, or systemd stops it when "
+                   "your last session ends — which on a headless box means at logout")
+        return
+    report.add(label, PASS, f"running ({state.kind}, {state.unit_path})")
 
 
 def check_supervision_mode(report: Report) -> None:

@@ -49,6 +49,27 @@ def roomy_machine(request, monkeypatch):
     monkeypatch.setattr(hostos, "available_memory", lambda: ROOMY)
 
 
+@pytest.fixture(autouse=True)
+def nowhere_near_your_home(tmp_path_factory, monkeypatch):
+    """No test may write a unit or a credential into the real `$HOME` (GRPH-844).
+
+    Not hypothetical, and not caught by review: a sabotage run that disabled one guard in
+    `service.install` left `~/.config/systemd/user/gbfleet-drain.service` and a key file on the
+    developer's machine, and three later tests then failed because the world had changed under
+    them. On a Linux box the same run would have installed a real service.
+
+    So `CONFIG_DIR` and `unit_dir` point at a per-session temp tree for the whole suite. A test
+    that wants to check a path's SHAPE asserts on the name, not on where its parent lives.
+    """
+    from gbfleet import service
+
+    home = tmp_path_factory.mktemp("fake-home")
+    monkeypatch.setattr(service, "CONFIG_DIR", home / "config")
+    monkeypatch.setattr(service, "unit_dir", lambda kind: home / "units" / kind)
+    monkeypatch.setattr(
+        service, "env_path_for", lambda name: home / "config" / f"{name}.env")
+
+
 def _git(root: Path, *args: str) -> str:
     return subprocess.run(
         ["git", *args], cwd=root, capture_output=True, text=True, check=True
