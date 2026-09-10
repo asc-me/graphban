@@ -1206,10 +1206,13 @@ function Preferences({ projectId, scope, profile, policy, onSaved }: {
   const [defaults, setDefaults] = React.useState("");
   const [excludes, setExcludes] = React.useState("");
   const [weights, setWeights] = React.useState<Record<string, number>>({});
+  const [budgetTokens, setBudgetTokens] = React.useState("");
   const [overrideHere, setOverrideHere] = React.useState(false);
   const [localOnly, setLocalOnly] = React.useState(false);
   const [crossVendor, setCrossVendor] = React.useState(false);
   const [allowed, setAllowed] = React.useState("");
+  const [perItemTokens, setPerItemTokens] = React.useState("");
+  const [perAttemptTokens, setPerAttemptTokens] = React.useState("");
   const [note, setNote] = React.useState("");
   const [error, setError] = React.useState("");
 
@@ -1220,12 +1223,15 @@ function Preferences({ projectId, scope, profile, policy, onSaved }: {
     setDefaults((profile?.defaults ?? []).join(", "));
     setExcludes((profile?.excludes ?? []).join(", "));
     setWeights({ ...(profile?.weights ?? {}) });
+    setBudgetTokens(profile?.budget_tokens != null ? String(profile.budget_tokens) : "");
     setOverrideHere(profile?.scope === "project");
   }, [profile]);
   React.useEffect(() => {
     setLocalOnly(policy?.local_only ?? false);
     setCrossVendor(policy?.reviewer_cross_vendor ?? false);
     setAllowed((policy?.allowed_harnesses ?? []).join(", "));
+    setPerItemTokens(policy?.caps?.per_item_tokens != null ? String(policy.caps.per_item_tokens) : "");
+    setPerAttemptTokens(policy?.caps?.per_attempt_tokens != null ? String(policy.caps.per_attempt_tokens) : "");
   }, [policy]);
 
   const names = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
@@ -1236,6 +1242,7 @@ function Preferences({ projectId, scope, profile, policy, onSaved }: {
       const saved = await api.saveFleetProfile({
         project_id: overrideHere ? projectId : null,
         defaults: names(defaults), excludes: names(excludes), weights,
+        budget_tokens: budgetTokens === "" ? null : Number(budgetTokens),
       });
       setNote(saved.scope === "project"
         ? `Saved for ${scope} only. Your default profile still applies elsewhere.`
@@ -1261,9 +1268,13 @@ function Preferences({ projectId, scope, profile, policy, onSaved }: {
   async function savePolicy() {
     setError(""); setNote("");
     try {
+      const caps: { per_item_tokens?: number; per_attempt_tokens?: number } = {};
+      if (perItemTokens !== "") caps.per_item_tokens = Number(perItemTokens);
+      if (perAttemptTokens !== "") caps.per_attempt_tokens = Number(perAttemptTokens);
       const out = await api.saveFleetPolicy({
         project_id: projectId, local_only: localOnly, reviewer_cross_vendor: crossVendor,
         allowed_harnesses: names(allowed),
+        ...(Object.keys(caps).length ? { caps } : {}),
       });
       setNote(out.policy ? `Policy saved for ${scope}.` : `Policy cleared for ${scope}: no constraint.`);
       onSaved();
@@ -1321,9 +1332,18 @@ function Preferences({ projectId, scope, profile, policy, onSaved }: {
               </label>
             ))}
           </div>
+          <label className="mt-2 block text-[11.5px] text-muted">
+            Budget tokens per sign-off (soft target; empty = rank-scale cost)
+            <input className={field} type="number" min={1} step={1000}
+                   aria-label="Budget tokens"
+                   value={budgetTokens}
+                   onChange={(e) => setBudgetTokens(e.target.value)}
+                   placeholder="50000" />
+          </label>
           <p className="mt-1 text-[11px] text-muted">
             Weights are 0–1 and normalised; blank or 0 means indifferent, not excluded. Measured
-            axes (quality, latency) count only once five attempts exist.
+            axes (quality, latency) count only once five attempts exist. A budget target scores
+            rows at or under it 1.0 on cost and does not remove them.
           </p>
           <label className="mt-2 flex items-center gap-2 text-[12px]">
             <input type="checkbox" checked={overrideHere} onChange={(e) => setOverrideHere(e.target.checked)} />
@@ -1357,9 +1377,25 @@ function Preferences({ projectId, scope, profile, policy, onSaved }: {
             <input className={field} aria-label="Allowed harnesses" value={allowed}
                    onChange={(e) => setAllowed(e.target.value)} placeholder="gbagent, claude" />
           </label>
+          <label className="mt-2 block text-[11.5px] text-muted">
+            Cap tokens per item (hard filter; empty = none)
+            <input className={field} type="number" min={1} step={1000}
+                   aria-label="Per-item token cap"
+                   value={perItemTokens}
+                   onChange={(e) => setPerItemTokens(e.target.value)}
+                   placeholder="120000" />
+          </label>
+          <label className="mt-2 block text-[11.5px] text-muted">
+            Cap tokens per attempt (hard filter; empty = none)
+            <input className={field} type="number" min={1} step={1000}
+                   aria-label="Per-attempt token cap"
+                   value={perAttemptTokens}
+                   onChange={(e) => setPerAttemptTokens(e.target.value)}
+                   placeholder="80000" />
+          </label>
           <p className="mt-1 text-[11px] text-muted">
             A constraint removes rows before anything is scored. Saving with everything off
-            stores no policy at all.
+            stores no policy at all. A cap drops a row that does not report tokens.
           </p>
           <div className="mt-2">
             <Button size="sm" onClick={() => { void savePolicy(); }}>Save policy</Button>

@@ -293,7 +293,7 @@ class _Server:
 def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
     from gbfleet.mcp import read_preferences
 
-    profile, policy, note, measured = read_preferences(_Server({
+    profile, policy, note, measured, cap = read_preferences(_Server({
         "agents": [],
         "profile": {"user": "u1", "defaults": ["gbagent", "claude"], "weights": {"cost": 1.0}, "excludes": ["grok"]},
         "policy": {"local_only": True, "allowed_harnesses": []},
@@ -301,6 +301,7 @@ def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
                       "quality": {"value": 0.8, "n": 5}, "latency": None}],
     }))
     assert measured == {("gbagent", "q", "backend", "cheap"): {"quality": m.Sample(0.8, 5)}}
+    assert cap == {}
     assert "measured cells: 1" in note
     assert profile is not None and profile.user == "u1" and profile.defaults == ("gbagent", "claude")
     assert profile.excludes == ("grok",) and profile.normalised() == {"cost": 1.0}
@@ -311,11 +312,11 @@ def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
 def test_read_preferences_spells_absence_and_unreachability_rather_than_inventing_a_default():
     from gbfleet.mcp import read_preferences
 
-    profile, policy, note, measured = read_preferences(_Server({"agents": [], "profile": None, "policy": None}))
+    profile, policy, note, measured, cap = read_preferences(_Server({"agents": [], "profile": None, "policy": None}))
     assert profile is None and policy == m.Policy() and "profile: none" in note and "policy: none" in note
-    assert measured == {}
-    profile, policy, note, measured = read_preferences(_Server(fail=True))
-    assert profile is None and policy == m.Policy() and measured == {}
+    assert measured == {} and cap == {}
+    profile, policy, note, measured, cap = read_preferences(_Server(fail=True))
+    assert profile is None and policy == m.Policy() and measured == {} and cap == {}
     assert "unreachable" in note and "connection refused" in note
 
 
@@ -437,7 +438,8 @@ def test_doctor_resolves_under_the_servers_profile_policy_and_measured_cells(git
                 # PRD-38 D9: the same cell split by difficulty band, printed beside the pooled
                 # rate. Shown to a person; never read by the resolver.
                 {("gbagent", "qwen3.6:35b-a3b-coding-mtp-det", "backend", "cheap"):
-                    {"S": m.Sample(1.0, 2), "L": m.Sample(0.67, 3)}})
+                    {"S": m.Sample(1.0, 2), "L": m.Sample(0.67, 3)}},
+                {})
     import gbfleet.mcp as mcp_mod
     monkeypatch.setattr(mcp_mod, "read_status", fake_read)
     monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))

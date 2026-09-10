@@ -614,11 +614,11 @@ def check_matrix(report: Report, matrix_path: str | None = None, *, server: str 
         if not any(r.harness == name and r.status == "unregistered" for r in mat.rows):
             report.add(f"matrix {name}", FAIL, "an adapter file exists but is not registered and "
                        "has no matrix row saying so", f"add a row with status = \"unregistered\" for {name}")
-    profile, policy, measured, bands = None, None, None, None
+    profile, policy, measured, bands, cap_measured = None, None, None, None, None
     if server and api_key:
         client = Graphban(base_url=server, api_key=api_key, project_id=project or None)
         try:
-            profile, policy, note, measured, bands = read_status(client)
+            profile, policy, note, measured, bands, cap_measured = read_status(client)
         finally:
             client.close()
         report.add("matrix preferences", PASS if "unreachable" not in note else UNKNOWN, note,
@@ -628,5 +628,5 @@ def check_matrix(report: Report, matrix_path: str | None = None, *, server: str 
                    "pass --server and set GBFLEET_API_KEY to see what a spawn would actually resolve")
     installed = matrix_mod.installed_checker()
     for name, status, detail in matrix_mod.doctor_lines(mat, installed, profile, policy,
-                                                        measured, bands):
+                                                        measured, bands, cap_measured):
         report.add(name, status, detail)

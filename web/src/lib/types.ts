@@ -1396,10 +1396,14 @@ export interface FleetOverview {
 export interface FleetMeasured {
   vendor: string;
   model: string;
-  lane: string;
-  tier: string;
+  capability?: string;
+  layer?: "project" | "org" | "platform" | "prior";
+  lane?: string;
+  tier?: string;
   quality: { value: number; n: number };
   latency: { value: number; n: number; median_seconds: number } | null;
+  bands?: Record<string, { value: number; n: number }>;
+  cost?: { comparable: boolean; reported: number; finished: number; tokens_to_signoff?: number };
 }
 
 /** A user's harness taste (PRD-37 D3). `defaults` is an ordered ALLOWLIST — empty means
@@ -1412,6 +1416,8 @@ export interface FleetProfile {
   defaults: string[];
   weights: Partial<Record<FleetAxis, number>>;
   excludes: string[];
+  /** PRD-41 D20: soft per-sign-off token target. Null / absent means rank-scaling. */
+  budget_tokens?: number | null;
   updated_at: string | null;
 }
 
@@ -1419,10 +1425,19 @@ export type FleetAxis = "cost" | "quality" | "latency" | "locality";
 export const FLEET_AXES: FleetAxis[] = ["cost", "quality", "latency", "locality"];
 
 /** Applied as a FILTER before any preference is scored: a rule a strong taste cannot outvote. */
+export interface FleetPolicyCaps {
+  per_attempt_tokens?: number | null;
+  per_item_tokens?: number | null;
+  per_period_tokens?: number | null;
+  period?: "day" | "week" | "month" | null;
+}
+
 export interface FleetPolicy {
   local_only: boolean;
   reviewer_cross_vendor: boolean;
   allowed_harnesses: string[];
+  /** PRD-41 D20: a FILTER. Absent / empty is no cap. */
+  caps?: FleetPolicyCaps | null;
 }
 
 export interface FleetProfileRead {

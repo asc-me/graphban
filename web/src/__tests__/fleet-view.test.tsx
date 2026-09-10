@@ -968,6 +968,7 @@ describe("harness preferences", () => {
     await waitFor(() => expect(api.saveFleetProfile).toHaveBeenCalledTimes(1));
     expect(api.saveFleetProfile.mock.calls[0][0]).toEqual({
       project_id: null, defaults: ["gbagent", "claude"], excludes: [], weights: { cost: 1 },
+      budget_tokens: null,
     });
     expect(fleet.refetch).toHaveBeenCalled();
     expect(screen.getByRole("status").textContent).toMatch(/Saved as your default/);
@@ -991,6 +992,28 @@ describe("harness preferences", () => {
     expect(api.saveFleetPolicy.mock.calls[0][0]).toEqual({
       project_id: "core", local_only: true, reviewer_cross_vendor: false, allowed_harnesses: [],
     });
+  });
+
+  it("saves budget_tokens and policy caps from the preferences boxes", async () => {
+    fleet.data = { ...BASE };
+    api.saveFleetProfile.mockResolvedValue({ scope: "default" });
+    api.saveFleetPolicy.mockResolvedValue({
+      project_id: "core",
+      policy: { local_only: false, reviewer_cross_vendor: false, allowed_harnesses: [],
+                caps: { per_item_tokens: 120000 } },
+    });
+    const user = userEvent.setup();
+    renderView();
+    await openWave(user);
+    await user.type(screen.getByLabelText("Budget tokens"), "50000");
+    await user.click(screen.getByRole("button", { name: /Save profile/ }));
+    await waitFor(() => expect(api.saveFleetProfile).toHaveBeenCalledTimes(1));
+    expect(api.saveFleetProfile.mock.calls[0][0].budget_tokens).toBe(50000);
+
+    await user.type(screen.getByLabelText("Per-item token cap"), "120000");
+    await user.click(screen.getByRole("button", { name: /Save policy/ }));
+    await waitFor(() => expect(api.saveFleetPolicy).toHaveBeenCalledTimes(1));
+    expect(api.saveFleetPolicy.mock.calls[0][0].caps).toEqual({ per_item_tokens: 120000 });
   });
 
   it("shows the server's refusal instead of pretending the save happened", async () => {

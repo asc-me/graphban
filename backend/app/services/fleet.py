@@ -831,9 +831,13 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         "presence_ttl_seconds": presence_ttl_seconds(lease_seconds),
         "heartbeat_interval_seconds": heartbeat_interval_seconds(lease_seconds),
         **fleet_profiles.attach(db, {}, user_id=caller_user_id, project_id=project_id),
-        # PRD-37 D7: per vendor x model x lane x tier, with `n`. The supervisor's matrix
-        # scores measured axes only past its own sample floor; this side states counts.
+        # PRD-41 D5: per vendor × model × capability, with `n`, `bands` and a `layer`.
+        # The supervisor's matrix scores measured axes only past its own sample floor;
+        # this side states counts. `probe_suggestions` is a list, empty when nothing is
+        # new — an absence is not a clean "no probes needed" if we never looked, so the
+        # key is always present.
         "measured": delegation_svc.measured(db, project_id),
+        "probe_suggestions": delegation_svc.probe_suggestions(db, project_id),
     }
 
 

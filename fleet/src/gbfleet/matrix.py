@@ -44,12 +44,21 @@ class MatrixError(ValueError):
     status, a lane nobody defined. Refused at load so a bad row never reaches a spawn."""
 
 
+LAYERS = ("project", "org", "platform", "prior")
+COST_COVERAGE = 0.8
+#: D20: linear from 1.0 at the target to 0.2 at twice the target, floored at 0.2.
+BUDGET_FLOOR = 0.2
+
+
 @dataclass(frozen=True)
 class Evidence:
     item: str
     date: str
     outcome: str
     note: str = ""
+    #: PRD-41 D10: optional. Newest entry naming a capability is that capability's status.
+    capability: str = ""
+    status: str = ""
 
 
 @dataclass(frozen=True)
@@ -64,6 +73,8 @@ class Row:
     cost_class: str
     local: bool
     evidence: tuple[Evidence, ...] = ()
+    price_per_mtoken_in: float | None = None
+    price_per_mtoken_out: float | None = None
 
     @property
     def key(self) -> str:
@@ -76,19 +87,48 @@ class Row:
     def matches(self, tier: str, lane: str) -> bool:
         return self.tier == tier and self.lane in (lane, "any")
 
+    def status_for(self, capability: str | None = None) -> str:
+        """D10: newest evidence entry naming `capability`, else the row's status."""
+        if not capability:
+            return self.status
+        for ev in reversed(self.evidence):
+            if ev.capability == capability:
+                if ev.status in STATUSES:
+                    return ev.status
+                if ev.outcome == "failed":
+                    return "failed"
+                if ev.outcome in ("signed_off", "verified", "review"):
+                    return "verified"
+                return self.status
+        return self.status
+
+    def prior_quality(self, capability: str) -> "Sample | None":
+        st = self.status_for(capability)
+        if st == "verified":
+            return Sample(value=1.0, n=0, layer="prior", note="committed")
+        if st == "failed":
+            return Sample(value=0.0, n=0, layer="prior", note="committed")
+        return None
+
 
 @dataclass(frozen=True)
 class Policy:
     """A project's hard constraints (D4). All off is no constraint."""
     local_only: bool = False
     allowed_harnesses: tuple[str, ...] = ()
+    #: PRD-41 D20. A FILTER: expected tokens-to-sign-off over the remaining cap drops the row.
+    caps: dict = field(default_factory=dict)
 
     @classmethod
     def of(cls, raw: dict | None) -> "Policy":
         raw = raw or {}
+        caps = raw.get("caps") if isinstance(raw.get("caps"), dict) else {}
+        kept = {k: caps[k] for k in ("per_attempt_tokens", "per_item_tokens",
+                                     "per_period_tokens", "period") if k in caps}
         return cls(
             local_only=bool(raw.get("local_only")),
             allowed_harnesses=tuple(str(h) for h in (raw.get("allowed_harnesses") or [])),
+            caps=kept,
         )
 
 
@@ -100,16 +140,24 @@ class Profile:
     defaults: tuple[str, ...] = ()
     weights: dict = field(default_factory=dict)
     excludes: tuple[str, ...] = ()
+    #: PRD-41 D20: soft per-sign-off target. None means rank-scaling (D16). Never a filter.
+    budget_tokens: int | None = None
 
     @classmethod
     def of(cls, raw: dict | None) -> "Profile | None":
         if not raw:
             return None
+        budget = raw.get("budget_tokens")
+        try:
+            budget_n = int(budget) if budget is not None else None
+        except (TypeError, ValueError):
+            budget_n = None
         return cls(
             user=str(raw.get("user") or raw.get("user_id") or "?"),
             defaults=tuple(str(h) for h in (raw.get("defaults") or [])),
             weights={k: float(v) for k, v in (raw.get("weights") or {}).items() if k in AXES},
             excludes=tuple(str(x) for x in (raw.get("excludes") or [])),
+            budget_tokens=budget_n if budget_n and budget_n > 0 else None,
         )
 
     def normalised(self) -> dict:
@@ -124,6 +172,32 @@ class Sample:
     """A measured axis value with the count behind it (D7)."""
     value: float
     n: int
+    layer: str = "project"
+    n_band: str | None = None
+    note: str = ""
+
+    def clears_floor(self) -> bool:
+        if self.n_band:
+            return True
+        if self.layer == "prior":
+            return True
+        return self.n >= MIN_SAMPLE
+
+
+@dataclass(frozen=True)
+class CostSample:
+    """Tokens to a signed-off outcome (D16). Bounced attempts stay in the numerator."""
+    tokens_to_signoff: float
+    reported: int
+    finished: int
+    comparable: bool
+    tokens_in: float = 0.0
+    tokens_out: float = 0.0
+    layer: str = "project"
+
+    @property
+    def reporting_share(self) -> float:
+        return (self.reported / self.finished) if self.finished else 0.0
 
 
 #: `{(vendor, model, lane, tier): {"quality": Sample, "latency": Sample}}` — read off
@@ -131,6 +205,9 @@ class Sample:
 #: (`capabilities.vendor`) and what the ledger can therefore attribute; the matrix row carries
 #: its vendor, so the join is exact. Absent means unmeasured, never zero.
 Measured = dict[tuple[str, str, str, str], dict[str, Sample]]
+
+#: PRD-41 D5: `{(vendor, model, capability, layer): {quality, latency, cost}}`.
+CapMeasured = dict[tuple[str, str, str, str], dict[str, object]]
 
 #: `{(vendor, model, lane, tier): {"S": Sample, "M": Sample, "L": Sample}}` — the same cells
 #: split by difficulty band (PRD-38 D9). NOT part of the resolution: the supervisor picks a
@@ -142,9 +219,16 @@ Bands = dict[tuple[str, str, str, str], dict[str, Sample]]
 
 def measured_of(rows: list[dict] | None) -> Measured:
     """The server's `measured` list as the lookup `resolve` reads. Cells with no latency
-    carry quality alone; a `None` axis is simply absent."""
+    carry quality alone; a `None` axis is simply absent.
+
+    PRD-41 re-keyed the payload on capability. Old cells (lane × tier) still parse so a
+    supervisor that has not yet passed `capabilities` into `resolve` keeps working; new
+    cells are ignored here and read by `cap_measured_of`.
+    """
     out: Measured = {}
     for r in rows or []:
+        if r.get("capability") is not None:
+            continue
         try:
             key = (str(r["vendor"]), str(r.get("model") or ""), str(r["lane"]), str(r["tier"]))
         except (KeyError, TypeError):
@@ -154,6 +238,45 @@ def measured_of(rows: list[dict] | None) -> Measured:
             s = r.get(axis)
             if isinstance(s, dict) and s.get("value") is not None:
                 cell[axis] = Sample(value=float(s["value"]), n=int(s.get("n") or 0))
+        if cell:
+            out[key] = cell
+    return out
+
+
+def cap_measured_of(rows: list[dict] | None) -> CapMeasured:
+    """Capability-keyed cells with a layer per cell (D5)."""
+    out: CapMeasured = {}
+    for r in rows or []:
+        cap = r.get("capability")
+        if not cap:
+            continue
+        try:
+            layer = str(r.get("layer") or "project")
+            if layer not in LAYERS:
+                layer = "project"
+            key = (str(r["vendor"]), str(r.get("model") or ""), str(cap), layer)
+        except (KeyError, TypeError):
+            continue
+        cell: dict[str, object] = {}
+        for axis in ("quality", "latency"):
+            s = r.get(axis)
+            if isinstance(s, dict) and s.get("value") is not None:
+                cell[axis] = Sample(
+                    value=float(s["value"]), n=int(s.get("n") or 0), layer=layer,
+                    n_band=str(r["n_band"]) if r.get("n_band") else None,
+                    note=str(r.get("inherited_from") or ""),
+                )
+        cost = r.get("cost")
+        if isinstance(cost, dict):
+            cell["cost"] = CostSample(
+                tokens_to_signoff=float(cost.get("tokens_to_signoff") or 0),
+                reported=int(cost.get("reported") or 0),
+                finished=int(cost.get("finished") or 0),
+                comparable=bool(cost.get("comparable")),
+                tokens_in=float(cost.get("tokens_in") or 0),
+                tokens_out=float(cost.get("tokens_out") or 0),
+                layer=layer,
+            )
         if cell:
             out[key] = cell
     return out
@@ -185,7 +308,7 @@ def bands_of(rows: list[dict] | None) -> Bands:
 
 @dataclass
 class Resolution:
-    """What happened at each step, so the reply and the log can say it (D8)."""
+    """What happened at each step, so the reply and the log can say it (D8, D21)."""
     source: str
     tier: str
     lane: str
@@ -200,6 +323,9 @@ class Resolution:
     winner: Row | None = None
     runner_up: Row | None = None
     refused: str = ""
+    capabilities: list = field(default_factory=list)
+    stages: list = field(default_factory=list)
+    unenforceable_cap: dict | None = None
 
     def explain(self) -> dict:
         def row_out(entry) -> dict | None:
@@ -213,7 +339,13 @@ class Resolution:
             return {"harness": row.harness, "model": row.model, "vendor": row.vendor,
                     "status": row.status, "score": round(score, 3), "order": row.order,
                     "local": row.local, "axes": axes}
-        return {
+        profile = "none"
+        if self.profile:
+            profile = {"user": self.profile.user, "defaults": list(self.profile.defaults),
+                       "weights": self.profile.normalised()}
+            if self.profile.budget_tokens:
+                profile["budget_tokens"] = self.profile.budget_tokens
+        out = {
             "source": self.source,
             "tier": self.tier, "lane": self.lane,
             "eligible": dict(self.eligible),
@@ -226,10 +358,16 @@ class Resolution:
             "dropped_rows": list(self.dropped_rows),
             "winner": row_out(next((s for s in self.scored if s[0] is self.winner), None)),
             "runner_up": row_out(next((s for s in self.scored if s[0] is self.runner_up), None)),
-            "profile": ({"user": self.profile.user, "defaults": list(self.profile.defaults),
-                         "weights": self.profile.normalised()} if self.profile else "none"),
+            "profile": profile,
             "refused": self.refused or None,
         }
+        if self.capabilities:
+            out["capabilities"] = list(self.capabilities)
+        if self.stages:
+            out["stages"] = list(self.stages)
+        if self.unenforceable_cap:
+            out["unenforceable_cap"] = dict(self.unenforceable_cap)
+        return out
 
 
 def _dropped_row(row: Row, stage: str, why: str, score: float) -> dict:
@@ -252,15 +390,29 @@ class Matrix:
         profile: Profile | None = None, policy: Policy | None = None,
         installed: Callable[[Row], tuple[bool, str]] | None = None,
         measured: Measured | None = None,
+        capabilities: list[str] | None = None,
+        cap_measured: CapMeasured | None = None,
+        spend: dict | None = None,
     ) -> Resolution:
-        """D5, in order. Every step records what it dropped and why."""
+        """D5, in order. Every step records what it dropped and why.
+
+        PRD-41 D21 adds capabilities, caps and the budget target without changing the
+        shape: policy still filters, profile still scores, installed is still last.
+        """
         policy = policy or Policy()
-        res = Resolution(source="matrix", tier=tier, lane=lane, profile=profile)
+        res = Resolution(source="matrix", tier=tier, lane=lane, profile=profile,
+                         capabilities=list(capabilities or []))
         rows = self.for_(tier, lane)
         res.eligible["matrix"] = len(rows)
+        res.stages.append({"stage": "rows", "kept": len(rows)})
         if not rows:
             res.refused = f"the matrix has no row for tier {tier!r}, lane {lane!r}"
             return res
+
+        def would_score(row: Row) -> float:
+            if capabilities:
+                return self._score_cap(row, profile, cap_measured, capabilities, spend, rows_for_cost=None)[0]
+            return self._score(row, profile, measured, lane)[0]
 
         # 1. policy — a constraint removes; it is explained WITH the score it would have had
         #    (D15), so a user sees taste lose to a rule rather than see an absence.
@@ -268,7 +420,7 @@ class Matrix:
         for r in rows:
             why = _policy_reason(r, policy)
             if why:
-                score = self._score(r, profile, measured, lane)[0]
+                score = would_score(r)
                 dropped.append(f"{r.key} ({why}; would have scored {score:.2f})")
                 res.dropped_rows.append(_dropped_row(r, "policy", why, score))
             else:
@@ -276,9 +428,24 @@ class Matrix:
         rows = kept
         res.dropped["policy"] = dropped
         res.eligible["after_policy"] = len(rows)
+        if dropped:
+            res.stages.append({"stage": "policy.allowed_or_local", "dropped": list(dropped)})
         if not rows:
             res.refused = "project policy removed every row"
             return res
+
+        # 1b. D20 caps — a FILTER, after the other policy keys, before any score. An
+        #     unreporting row is dropped with `tokens not reported`; if that empties the
+        #     set the resolution is refused naming the cap (criterion 28).
+        if policy.caps and capabilities:
+            rows, cap_refused = self._apply_caps(
+                rows, res, policy, profile, capabilities, cap_measured, spend, would_score)
+            if cap_refused:
+                return res
+            res.eligible["after_policy"] = len(rows)
+            if not rows:
+                res.refused = "project policy removed every row"
+                return res
 
         # 2. profile — the allowlist and excludes. No profile is NO filter (D14).
         if profile is not None:
@@ -287,17 +454,17 @@ class Matrix:
                 if profile.defaults and r.harness not in profile.defaults:
                     dropped.append(f"{r.key} (not in your defaults)")
                     res.dropped_rows.append(_dropped_row(
-                        r, "profile", "not in your defaults",
-                        self._score(r, profile, measured, lane)[0]))
+                        r, "profile", "not in your defaults", would_score(r)))
                 elif r.harness in profile.excludes or r.key in profile.excludes:
                     dropped.append(f"{r.key} (in your excludes)")
                     res.dropped_rows.append(_dropped_row(
-                        r, "profile", "in your excludes",
-                        self._score(r, profile, measured, lane)[0]))
+                        r, "profile", "in your excludes", would_score(r)))
                 else:
                     kept.append(r)
             rows = kept
             res.dropped["profile"] = dropped
+            if dropped:
+                res.stages.append({"stage": "profile", "dropped": list(dropped)})
         res.eligible["after_profile"] = len(rows)
         if not rows:
             res.refused = "your profile's defaults or excludes removed every row"
@@ -307,7 +474,7 @@ class Matrix:
         for r in rows:
             if r.status == "failed":
                 res.dropped_rows.append(_dropped_row(
-                    r, "failed", "marked failed", self._score(r, profile, measured, lane)[0]))
+                    r, "failed", "marked failed", would_score(r)))
         rows = [r for r in rows if r.status != "failed"]
         res.eligible["after_failed"] = len(rows)
         if not rows:
@@ -323,16 +490,22 @@ class Matrix:
                 (kept if ok else dropped).append(r if ok else f"{r.key} ({why})")
                 if not ok:
                     res.dropped_rows.append(_dropped_row(
-                        r, "installed", why, self._score(r, profile, measured, lane)[0]))
+                        r, "installed", why, would_score(r)))
             rows = kept
             res.dropped["installed"] = dropped
+            if dropped:
+                res.stages.append({"stage": "installed", "dropped": list(dropped)})
         res.eligible["after_installed"] = len(rows)
         if not rows:
             res.refused = "no eligible row is installed on this machine"
             return res
 
         # 5. score, then ties: verified > unverified, the user's defaults order, matrix order.
-        scored = [(r, *self._score(r, profile, measured, lane)) for r in rows]
+        if capabilities:
+            scored = [(r, *self._score_cap(r, profile, cap_measured, capabilities, spend,
+                                           rows_for_cost=rows)) for r in rows]
+        else:
+            scored = [(r, *self._score(r, profile, measured, lane)) for r in rows]
 
         def rank(entry):
             r, score, _ = entry
@@ -343,6 +516,9 @@ class Matrix:
         res.scored = scored
         res.winner = scored[0][0]
         res.runner_up = scored[1][0] if len(scored) > 1 else None
+        res.stages.append({"stage": "score",
+                           "winner": res.explain()["winner"],
+                           "runner_up": res.explain()["runner_up"]})
         return res
 
     @staticmethod
@@ -377,6 +553,254 @@ class Matrix:
             else:
                 score += w * float(v)
         return score, axes
+
+    def _apply_caps(self, rows: list[Row], res: Resolution, policy: Policy,
+                    profile: Profile | None, capabilities: list[str],
+                    cap_measured: CapMeasured | None, spend: dict | None,
+                    would_score) -> tuple[list[Row], bool]:
+        """Filter by token caps (D20). Returns (kept, refused?)."""
+        remaining = dict(policy.caps)
+        item_left = None
+        if remaining.get("per_item_tokens") is not None:
+            spent = int((spend or {}).get("item_tokens") or 0)
+            item_left = int(remaining["per_item_tokens"]) - spent
+        attempt_cap = remaining.get("per_attempt_tokens")
+        period_left = None
+        if remaining.get("per_period_tokens") is not None:
+            period_spent = int((spend or {}).get("period_tokens") or 0)
+            period_left = int(remaining["per_period_tokens"]) - period_spent
+
+        kept, dropped, unreporting = [], [], []
+        for r in rows:
+            expected, comparable, share = _expected_tokens(r, capabilities, cap_measured)
+            if not comparable:
+                why = "tokens not reported"
+                dropped.append(f"{r.key} ({why})")
+                res.dropped_rows.append(_dropped_row(r, "policy", why, would_score(r)))
+                unreporting.append({"harness": r.harness, "model": r.model, "key": r.key,
+                                    "reporting_share": share})
+                continue
+            why = None
+            if item_left is not None and expected > item_left:
+                why = f"per_item_tokens: {_tok(expected)} expected > {_tok(max(item_left, 0))} left"
+            elif attempt_cap is not None and expected > attempt_cap:
+                why = f"per_attempt_tokens: {_tok(expected)} expected > {_tok(attempt_cap)}"
+            elif period_left is not None and expected > period_left:
+                why = f"per_period_tokens: {_tok(expected)} expected > {_tok(max(period_left, 0))} left"
+            if why:
+                dropped.append(f"{r.key} ({why})")
+                res.dropped_rows.append(_dropped_row(r, "policy", why, would_score(r)))
+            else:
+                kept.append(r)
+        if dropped:
+            res.dropped.setdefault("policy", []).extend(dropped)
+            res.stages.append({"stage": "policy.caps", "dropped": list(dropped)})
+        if not kept and unreporting and (item_left is not None or attempt_cap is not None
+                                         or period_left is not None):
+            cap_name = ("per_item_tokens" if item_left is not None
+                        else "per_attempt_tokens" if attempt_cap is not None
+                        else "per_period_tokens")
+            res.refused = f"{cap_name}: no eligible row reports tokens"
+            res.unenforceable_cap = {"cap": cap_name, "rows": unreporting}
+            return [], True
+        return kept, False
+
+    def _score_cap(self, row: Row, profile: Profile | None, cap_measured: CapMeasured | None,
+                   capabilities: list[str], spend: dict | None,
+                   rows_for_cost: list[Row] | None) -> tuple[float, dict]:
+        """Quality is the mean over the item's capabilities of the first layer that
+        clears the floor (D5). Cost is cost_class refined by tokens-to-sign-off (D16),
+        replaced by the D20 curve when budget_tokens is set."""
+        weights = profile.normalised() if profile else {}
+        if not weights:
+            weights = {a: 1.0 / len(AXES) for a in AXES}
+        quality, quality_axes = _quality_for(row, capabilities, cap_measured)
+        cost_value, cost_axis = _cost_axis_for(
+            row, capabilities, cap_measured, profile, rows_for_cost)
+        latency_s, latency_axis = _latency_for(row, capabilities, cap_measured)
+        axes = {
+            "quality": quality_axes,
+            "cost": cost_axis,
+            "latency": latency_axis,
+            "locality": 1.0 if row.local else 0.0,
+        }
+        if row.price_per_mtoken_in is not None or row.price_per_mtoken_out is not None:
+            expected, comparable, _ = _expected_tokens(row, capabilities, cap_measured)
+            if comparable and expected is not None:
+                spend_ccy = _currency_spend(row, expected, cap_measured, capabilities)
+                if spend_ccy is not None:
+                    axes["spend"] = spend_ccy
+        score = 0.0
+        for axis, w in weights.items():
+            v = axes.get(axis)
+            if isinstance(v, dict):
+                if v.get("used"):
+                    score += w * float(v["value"])
+            elif v is not None:
+                score += w * float(v)
+        return score, axes
+
+
+def _quality_for(row: Row, capabilities: list[str],
+                 cap_measured: CapMeasured | None) -> tuple[float | None, dict]:
+    per = []
+    used = []
+    for cap in capabilities:
+        picked = None
+        for layer in LAYERS:
+            if layer == "prior":
+                continue
+            cell = (cap_measured or {}).get((row.vendor, row.model, cap, layer)) or {}
+            s = cell.get("quality")
+            if isinstance(s, Sample) and s.clears_floor():
+                picked = {"capability": cap, "value": round(s.value, 3), "n": s.n,
+                          "layer": layer, "n_band": s.n_band, "used": True}
+                break
+        if picked is None:
+            prior = row.prior_quality(cap)
+            inherited = (cap_measured or {}).get((row.vendor, row.model, cap, "prior"))
+            if inherited and isinstance(inherited.get("quality"), Sample):
+                s = inherited["quality"]
+                picked = {"capability": cap, "value": round(s.value, 3), "n": s.n,
+                          "layer": "prior", "used": True,
+                          "note": s.note or inherited.get("note") or ""}
+            elif prior is not None:
+                picked = {"capability": cap, "value": prior.value, "n": prior.n,
+                          "layer": "prior", "used": True, "note": prior.note}
+            else:
+                picked = {"capability": cap, "value": None, "n": 0, "layer": None,
+                          "used": False, "note": "unmeasured"}
+        per.append(picked)
+        if picked.get("used"):
+            used.append(float(picked["value"]))
+    if used:
+        mean = sum(used) / len(used)
+        return mean, {"value": round(mean, 3), "n": len(used), "used": True,
+                      "by_capability": per,
+                      "note": f"{len(used)} of {len(capabilities)} capabilities"}
+    return None, {"value": None, "n": 0, "used": False, "note": "unmeasured",
+                  "by_capability": per}
+
+
+def _cost_sample_for(row: Row, capabilities: list[str],
+                     cap_measured: CapMeasured | None) -> CostSample | None:
+    samples = []
+    for cap in capabilities:
+        for layer in LAYERS:
+            if layer == "prior":
+                continue
+            cell = (cap_measured or {}).get((row.vendor, row.model, cap, layer)) or {}
+            c = cell.get("cost")
+            if isinstance(c, CostSample):
+                samples.append(c)
+                break
+    if not samples:
+        return None
+    # A row is comparable only when every capability that produced a cost cell is
+    # comparable — mixing a silent vendor into a mean would hide the gap.
+    if not all(s.comparable and s.reporting_share >= COST_COVERAGE for s in samples):
+        reported = sum(s.reported for s in samples)
+        finished = sum(s.finished for s in samples)
+        return CostSample(tokens_to_signoff=0, reported=reported, finished=finished,
+                          comparable=False)
+    mean = sum(s.tokens_to_signoff for s in samples) / len(samples)
+    tin = sum(s.tokens_in for s in samples) / len(samples)
+    tout = sum(s.tokens_out for s in samples) / len(samples)
+    return CostSample(tokens_to_signoff=mean, reported=sum(s.reported for s in samples),
+                      finished=sum(s.finished for s in samples), comparable=True,
+                      tokens_in=tin, tokens_out=tout)
+
+
+def _expected_tokens(row: Row, capabilities: list[str],
+                     cap_measured: CapMeasured | None) -> tuple[float | None, bool, float]:
+    s = _cost_sample_for(row, capabilities, cap_measured)
+    if s is None:
+        return None, False, 0.0
+    return (s.tokens_to_signoff if s.comparable else None), s.comparable, s.reporting_share
+
+
+def _cost_axis_for(row: Row, capabilities: list[str], cap_measured: CapMeasured | None,
+                   profile: Profile | None, rows_for_cost: list[Row] | None) -> tuple[float, dict]:
+    class_value = COST_AXIS.get(row.cost_class, 0.0)
+    sample = _cost_sample_for(row, capabilities, cap_measured)
+    target = profile.budget_tokens if profile else None
+    if sample is None or not sample.comparable:
+        return class_value, {"value": class_value, "used": True, "note": "class",
+                             "cost_class": row.cost_class}
+    tokens = sample.tokens_to_signoff
+    if target:
+        # D20 curve: 1.0 at the target, 0.2 at twice the target, floored at 0.2.
+        if tokens <= target:
+            value = 1.0
+        else:
+            value = max(BUDGET_FLOOR, 1.0 - (1.0 - BUDGET_FLOOR) * (tokens - target) / target)
+        return value, {"value": round(value, 3), "used": True,
+                       "note": f"measured {int(round(tokens))}/sign-off",
+                       "tokens_to_signoff": round(tokens, 1), "budget_tokens": target}
+    # Rank-scaling among comparable eligible rows (D16). Without the set, class.
+    if not rows_for_cost:
+        return class_value, {"value": class_value, "used": True, "note": "class",
+                             "cost_class": row.cost_class,
+                             "tokens_to_signoff": round(tokens, 1)}
+    comparable = []
+    for other in rows_for_cost:
+        exp, ok, _ = _expected_tokens(other, capabilities, cap_measured)
+        if ok and exp is not None:
+            comparable.append(exp)
+    if len(comparable) < 2:
+        value = 1.0
+    else:
+        lo, hi = min(comparable), max(comparable)
+        if hi == lo:
+            value = 1.0
+        else:
+            # cheapest 1.0, dearest 0.2
+            value = 1.0 - 0.8 * (tokens - lo) / (hi - lo)
+    return value, {"value": round(value, 3), "used": True,
+                   "note": f"measured {int(round(tokens))}/sign-off",
+                   "tokens_to_signoff": round(tokens, 1)}
+
+
+def _latency_for(row: Row, capabilities: list[str],
+                 cap_measured: CapMeasured | None) -> tuple[float | None, dict]:
+    samples = []
+    for cap in capabilities:
+        for layer in LAYERS:
+            if layer == "prior":
+                continue
+            cell = (cap_measured or {}).get((row.vendor, row.model, cap, layer)) or {}
+            s = cell.get("latency")
+            if isinstance(s, Sample) and s.clears_floor():
+                samples.append(s)
+                break
+    if not samples:
+        return None, {"value": None, "n": 0, "used": False, "note": "unmeasured"}
+    mean = sum(s.value for s in samples) / len(samples)
+    n = min(s.n for s in samples)
+    return mean, {"value": round(mean, 3), "n": n, "used": True}
+
+
+def _currency_spend(row: Row, tokens: float, cap_measured: CapMeasured | None,
+                    capabilities: list[str]) -> dict | None:
+    pin, pout = row.price_per_mtoken_in, row.price_per_mtoken_out
+    if pin is None and pout is None:
+        return None
+    sample = _cost_sample_for(row, capabilities, cap_measured)
+    tin = sample.tokens_in if sample and sample.tokens_in else tokens / 2
+    tout = sample.tokens_out if sample and sample.tokens_out else tokens / 2
+    total = 0.0
+    if pin is not None:
+        total += (tin / 1_000_000.0) * pin
+    if pout is not None:
+        total += (tout / 1_000_000.0) * pout
+    return {"currency_per_signoff": round(total, 4),
+            "price_per_mtoken_in": pin, "price_per_mtoken_out": pout}
+
+
+def _tok(n: float) -> str:
+    if abs(n) >= 1000:
+        return f"{int(round(n / 1000))}k"
+    return str(int(round(n)))
 
 
 def _policy_reason(row: Row, policy: Policy) -> str:
@@ -413,8 +837,12 @@ def load_with_notes(path: Path | None = None) -> tuple[Matrix, list[str]]:
             if "role" in r:
                 notes.append(f"row {i}: `role` is deprecated and ignored (S5/GRPH-758); "
                              "the key is now harness × model × lane × tier")
-            ev = tuple(Evidence(item=str(e["item"]), date=str(e["date"]), outcome=str(e["outcome"]),
-                                note=str(e.get("note", ""))) for e in (r.get("evidence") or []))
+            ev = tuple(Evidence(
+                item=str(e["item"]), date=str(e["date"]), outcome=str(e["outcome"]),
+                note=str(e.get("note", "")),
+                capability=str(e.get("capability") or ""),
+                status=str(e.get("status") or ""),
+            ) for e in (r.get("evidence") or []))
             if status in ("verified", "failed") and not ev:
                 raise MatrixError(f"row {i} ({r['harness']}:{r.get('model', '')}): status {status!r} "
                                   "needs at least one evidence entry naming the item")
@@ -423,11 +851,15 @@ def load_with_notes(path: Path | None = None) -> tuple[Matrix, list[str]]:
             if status != "unregistered" and r["harness"] not in adapters_mod.ADAPTERS:
                 raise MatrixError(f"row {i}: {r['harness']!r} has no adapter in ADAPTERS; the row must say "
                                   "`status = \"unregistered\"` rather than read as usable")
+            pin = r.get("price_per_mtoken_in")
+            pout = r.get("price_per_mtoken_out")
             rows.append(Row(
                 harness=str(r["harness"]), model=str(r.get("model", "")), vendor=str(r.get("vendor", "")),
                 lane=str(r.get("lane", "any")), tier=str(r["tier"]), status=status,
                 order=int(r.get("order", 99)), cost_class=str(r.get("cost_class", "frontier")),
                 local=bool(r.get("local", False)), evidence=ev,
+                price_per_mtoken_in=float(pin) if pin is not None else None,
+                price_per_mtoken_out=float(pout) if pout is not None else None,
             ))
         except KeyError as exc:
             raise MatrixError(f"row {i}: missing {exc}") from None
@@ -586,10 +1018,25 @@ def _cells_for(measured: Measured | None, row: Row) -> dict[str, Sample]:
     return out
 
 
+def _cap_status_text(row: Row) -> str:
+    named = [ev.capability for ev in row.evidence if ev.capability]
+    if not named:
+        return ""
+    parts = []
+    seen = []
+    for cap in named:
+        if cap in seen:
+            continue
+        seen.append(cap)
+        parts.append(f"{cap}={row.status_for(cap)}")
+    return " · caps " + ", ".join(parts) if parts else ""
+
+
 def doctor_lines(matrix: Matrix, installed: Callable[[Row], tuple[bool, str]],
                  profile: Profile | None, policy: Policy | None,
                  measured: Measured | None = None,
-                 bands: Bands | None = None) -> list[tuple[str, str, str]]:
+                 bands: Bands | None = None,
+                 cap_measured: CapMeasured | None = None) -> list[tuple[str, str, str]]:
     """(name, status, detail) per row, then per tier: what this machine resolves to (D11).
     A row whose harness is not installed on this machine is UNKNOWN with the reason, never a
     silent drop; a verified row with no adapter at all fails in load() (D17)."""
@@ -605,8 +1052,17 @@ def doctor_lines(matrix: Matrix, installed: Callable[[Row], tuple[bool, str]],
         b = _bands_for(bands, r)
         band_text = " · bands " + ", ".join(
             f"{name} {v.value:.2f} (n={v.n})" for name, v in sorted(b.items())) if b else ""
-        detail = (f"{r.tier}/{r.lane} · {r.status} · {ev_text} · "
-                  f"installed: {'yes' if ok else 'no — ' + why} · {meas}{band_text}")
+        layer_bits = []
+        for (vendor, model, cap, layer), cell in sorted((cap_measured or {}).items()):
+            if (vendor, model) != (r.vendor, r.model):
+                continue
+            q = cell.get("quality")
+            if isinstance(q, Sample):
+                layer_bits.append(f"{cap}/{layer} {q.value:.2f} (n={q.n})")
+        layer_text = " · layers " + ", ".join(layer_bits) if layer_bits else ""
+        cap_text = _cap_status_text(r)
+        detail = (f"{r.tier}/{r.lane} · {r.status}{cap_text} · {ev_text} · "
+                  f"installed: {'yes' if ok else 'no — ' + why} · {meas}{band_text}{layer_text}")
         if not ok:
             # Not installed HERE is a fact about this machine, not about the row: UNKNOWN. A
             # verified row whose harness has no adapter at all is caught by load() (D17).
@@ -617,7 +1073,8 @@ def doctor_lines(matrix: Matrix, installed: Callable[[Row], tuple[bool, str]],
             out.append((f"matrix {r.key}", "PASS", detail))
     for tier in TIERS:
         res = matrix.resolve(tier=tier, profile=profile, policy=policy,
-                             installed=installed, measured=measured)
+                             installed=installed, measured=measured,
+                             cap_measured=cap_measured)
         if res.winner is None:
             out.append((f"resolve {tier}", "UNKNOWN", f"nothing: {res.refused}"))
         else:

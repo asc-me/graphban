@@ -60,6 +60,11 @@ UNDECLARED = "undeclared"
 SUMMARY_MAX = 600
 LESSONS_MAX = 5
 NOTE_MAX = 200
+#: PRD-38 D10 / PRD-41 D15: `measured_for_lane` plus `capabilities` stay inside this
+#: serialised bound. A result payload that grows quietly costs every spawn's context.
+MEASURED_FOR_LANE_MAX = 4
+BRIEF_MEASURED_BOUND = 400
+LAYERS = ("project", "org", "platform", "prior")
 #: D19: the board carries everything open plus this many closed/finished/expired per
 #: delegator, inside the feed's retention window. Older history is on the item.
 BOARD_CLOSED_MAX = 10
@@ -193,6 +198,7 @@ def row_dict(row: Delegation, *, item_key: str | None = None,
         "closed_reason": row.closed_reason,
         "closed_by": row.closed_by,
         "note": row.note or "",
+        "capabilities_at_delegate": list(row.capabilities_at_delegate or []) or None,
         "created_at": created.isoformat() if created else None,
         "claimed_at": _aware(row.claimed_at).isoformat() if row.claimed_at else None,
         "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
@@ -287,6 +293,9 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     attempts = [_attempt(r) for r in history]
     summary = _summary(item.description)
     checklist = checklist_for(touchpoints)
+    caps = capabilities_of(item)
+    spend = item_spend(db, item.id)
+    measured_lane = measured_for_lane(db, item, caps)
     return {
         "item": item.key,
         "title": item.title,
@@ -309,94 +318,310 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         "text": _text(item, summary=summary, touchpoints=touchpoints, blocked_by=blocked_by,
                       checklist=checklist, lessons=lessons, previous=previous,
                       attempts=attempts),
+        # PRD-41 D5 / D15: the set the resolver will score, inside the measured_for_lane cap.
+        "capabilities": caps,
+        "measured_for_lane": measured_lane,
+        "spend": spend,
         # PRD-37 D9: the caller's profile and the project's policy, for the supervisor that
         # resolves the tier. NOT in `text` — the spawn text carries no suggestion (PRD-35 D5).
         **fleet_profiles.attach(db, {}, user_id=user_id, project_id=item.project_id),
     }
 
 
-# ---- PRD-37 D7: the measured axes, with their sample sizes ------------------------------------
+def capabilities_of(item: Item | None) -> list[str]:
+    """Touchpoints only — what `delegate` can know before there is a diff (D5)."""
+    return list(harness_svc.capabilities(item))
+
+
+# ---- PRD-37 D7 / PRD-41 D5: the measured axes, re-keyed on capability ----------------------
 
 #: Seconds from claim to finish at which the latency axis reads 0. An hour is the PRD-36
 #: child wall-clock default; a child that takes that long scored nothing on speed.
 LATENCY_FLOOR_S = 3600
 
 
+def item_spend(db: Session, item_id: str | None) -> dict:
+    """Reported tokens on this item, for `caps.per_item_tokens`. Unreported is a count,
+    never a zero spend."""
+    from app.models import AttemptTelemetry
+
+    if not item_id:
+        return {"item_tokens": 0, "item_reported": 0, "item_finished": 0}
+    rows = db.scalars(select(AttemptTelemetry).where(AttemptTelemetry.item_id == item_id)).all()
+    tokens = reported = finished = 0
+    for row in rows:
+        if row.outcome is None and row.derived_at is None:
+            continue
+        finished += 1
+        if row.tokens_in is not None or row.tokens_out is not None:
+            reported += 1
+            tokens += int(row.tokens_in or 0) + int(row.tokens_out or 0)
+    return {"item_tokens": tokens, "item_reported": reported, "item_finished": finished}
+
+
+def _cell_out(vendor: str, model: str, capability: str, layer: str, cell: dict) -> dict:
+    durations = sorted(cell.get("durations") or [])
+    latency = None
+    if durations:
+        mid = len(durations) // 2
+        median = durations[mid] if len(durations) % 2 else (durations[mid - 1] + durations[mid]) / 2
+        latency = {"value": round(max(0.0, min(1.0, 1.0 - median / LATENCY_FLOOR_S)), 3),
+                   "n": len(durations), "median_seconds": round(median, 1)}
+    finished = cell["finished"]
+    reported = cell.get("tokens_reported") or 0
+    signed_off_reported = cell.get("signed_off_reported") or 0
+    tokens_in = cell.get("tokens_in") or 0
+    tokens_out = cell.get("tokens_out") or 0
+    coverage = (reported / finished) if finished else 0.0
+    if reported and coverage >= harness_svc.COST_COVERAGE and signed_off_reported:
+        cost = {"comparable": True, "reported": reported, "finished": finished,
+                "tokens_to_signoff": round((tokens_in + tokens_out) / signed_off_reported, 1),
+                "tokens_in": tokens_in, "tokens_out": tokens_out}
+    else:
+        cost = {"comparable": False, "reported": reported, "finished": finished,
+                "reason": f"not comparable: {reported} of {finished} attempts reported tokens"}
+    out = {
+        "vendor": vendor, "model": model, "capability": capability, "layer": layer,
+        "quality": {"value": round(cell["signed_off"] / finished, 3) if finished else 0.0,
+                    "n": finished},
+        "latency": latency,
+        "bands": {name: {"value": round(v["signed_off"] / v["n"], 3), "n": v["n"]}
+                  for name, v in sorted((cell.get("bands") or {}).items())},
+        "cost": cost,
+    }
+    if cell.get("binary_version"):
+        out["binary_version"] = cell["binary_version"]
+    if cell.get("inherited_from"):
+        out["inherited_from"] = cell["inherited_from"]
+    if cell.get("n_band"):
+        out["n_band"] = cell["n_band"]
+    return out
+
+
+def _add_attempt(cell: dict, *, signed_off: bool, band: str, duration: float | None,
+                 tokens_in: int | None, tokens_out: int | None) -> None:
+    cell["finished"] += 1
+    cell["signed_off"] += 1 if signed_off else 0
+    b = cell["bands"].setdefault(band, {"n": 0, "signed_off": 0})
+    b["n"] += 1
+    b["signed_off"] += 1 if signed_off else 0
+    if duration is not None:
+        cell["durations"].append(duration)
+    if tokens_in is not None or tokens_out is not None:
+        cell["tokens_reported"] += 1
+        cell["tokens_in"] += int(tokens_in or 0)
+        cell["tokens_out"] += int(tokens_out or 0)
+        if signed_off:
+            cell["signed_off_reported"] += 1
+
+
+def _empty_cell() -> dict:
+    return {"finished": 0, "signed_off": 0, "durations": [], "bands": {},
+            "tokens_in": 0, "tokens_out": 0, "tokens_reported": 0, "signed_off_reported": 0}
+
+
 def measured(db: Session, project_id: str | None, *, window_days: int | None = None) -> list[dict]:
-    """What finished delegations say about each vendor x model x lane x requested tier.
+    """What finished attempts say, keyed on vendor × model × capability, with a layer.
 
-    `quality` is signed-off over finished attempts; `latency` is the median claim-to-finish
-    time folded onto 0-1 (instant 1.0, `LATENCY_FLOOR_S` or slower 0.0). Both carry `n`, and
-    the READER decides whether `n` is enough (gbfleet's MIN_SAMPLE) - this side states counts,
-    never verdicts. Grouped per lane and per tier requested, NEVER pooled (PRD-35 named the
-    bias: frontier only sees what cheap failed), so a row here is one cell, and an absent cell
-    is unmeasured rather than zero.
+    PRD-41 D3/D5: lane and tier left the key. Each cell names which layer produced it
+    (`project | org | platform | prior`) so a score assembled from four sources cannot
+    hide which one decided. `bands` stay inside the cell (PRD-38 D9). Cost is tokens to
+    a signed-off outcome, bounced included, suppressed below 80% reporting (D16).
 
-    The vendor is the child's declared `capabilities.vendor` (what drives review diversity),
-    the model its declared `capabilities.model` - the same fields the delegation record copies
-    at link time (D8). A child that declared neither is counted under `undeclared`, which the
-    matrix will not match and the doctor will show.
-
-    **PRD-38 D9 amends this.** Only the trailing `window_days` (default 90) count, so a stale
-    cell ages out rather than anchoring a choice forever, and each cell carries a `bands`
-    breakdown - S/M/L, from what the delegator wrote down - because a harness handed doc items
-    outscores one handed migrations and the pooled rate says who got the easy work. The cell
-    KEY is unchanged: the supervisor resolves a tier before it knows an item's band, and a
-    fifth key would leave PRD-37's reader joining on something it cannot supply.
+    The project layer is aggregated live from finished delegations so a test that writes
+    a row sees it without waiting on a roll. Org and platform layers read rollup tables
+    when they exist; an instance with neither emits project cells only.
     """
+    from app.models import AttemptTelemetry, HarnessRollup, PlatformRollup, Project
+
     cutoff = _now() - timedelta(days=WINDOW_DAYS if window_days is None else window_days)
     stmt = select(Delegation).where(Delegation.outcome.is_not(None))
     if project_id:
         stmt = stmt.where(Delegation.project_id == project_id)
-    # Filtered in Python, not SQL: `finished_at` is nullable and a row that somehow lacks one
-    # must not be silently dropped from a count it belongs in.
     rows = [r for r in db.scalars(stmt).all() if (_aware(r.finished_at) or cutoff) >= cutoff]
-    cells: dict[tuple[str, str, str, str], dict] = {}
+    cells: dict[tuple[str, str, str], dict] = {}
     agents: dict[str | None, Agent | None] = {}
     items: dict[str | None, Item | None] = {}
+    telemetry: dict[str, Any] = {}
+    tel_rows = []
+    if rows:
+        tel_rows = db.scalars(select(AttemptTelemetry).where(
+            AttemptTelemetry.delegation_id.in_([r.id for r in rows]))).all()
+    for t in tel_rows:
+        if t.delegation_id:
+            telemetry[t.delegation_id] = t
+    versions: dict[tuple[str, str], list[str]] = {}
     for row in rows:
         if row.agent_id not in agents:
             agents[row.agent_id] = db.get(Agent, row.agent_id) if row.agent_id else None
         agent = agents[row.agent_id]
-        caps = (agent.capabilities or {}) if agent is not None else {}
-        vendor = caps.get("vendor") if isinstance(caps.get("vendor"), str) and caps.get("vendor") else UNDECLARED
-        # A declared vendor with no model ran that vendor's DEFAULT — the matrix row that names
-        # no model (qwen-code) — so the cell says "" and joins it. Nothing declared at all is
-        # `undeclared` on both, which no row matches (GRPH-732).
+        declared = (agent.capabilities or {}) if agent is not None else {}
+        vendor = declared.get("vendor") if isinstance(declared.get("vendor"), str) and declared.get("vendor") else UNDECLARED
         model = row.declared_model or ("" if vendor != UNDECLARED else UNDECLARED)
-        key = (vendor, model, row.lane, row.requested_tier)
-        cell = cells.setdefault(key, {"finished": 0, "signed_off": 0, "durations": [],
-                                      "bands": {}})
-        cell["finished"] += 1
-        cell["signed_off"] += 1 if row.outcome == "signed_off" else 0
         if row.item_id not in items:
             items[row.item_id] = db.get(Item, row.item_id) if row.item_id else None
-        band_item = items[row.item_id]
-        band = cell["bands"].setdefault(harness_svc.size_band(band_item),
-                                        {"n": 0, "signed_off": 0})
-        band["n"] += 1
-        band["signed_off"] += 1 if row.outcome == "signed_off" else 0
-        claimed, finished = _aware(row.claimed_at), _aware(row.finished_at)
-        if claimed and finished and finished >= claimed:
-            cell["durations"].append((finished - claimed).total_seconds())
-    out = []
-    for (vendor, model, lane, tier), cell in sorted(cells.items()):
-        durations = sorted(cell["durations"])
-        latency = None
-        if durations:
-            mid = len(durations) // 2
-            median = durations[mid] if len(durations) % 2 else (durations[mid - 1] + durations[mid]) / 2
-            latency = {"value": round(max(0.0, min(1.0, 1.0 - median / LATENCY_FLOOR_S)), 3),
-                       "n": len(durations), "median_seconds": round(median, 1)}
-        out.append({
-            "vendor": vendor, "model": model, "lane": lane, "tier": tier,
-            "quality": {"value": round(cell["signed_off"] / cell["finished"], 3), "n": cell["finished"]},
-            "latency": latency,
-            # Counts, never a verdict: the reader decides whether a band has enough behind it,
-            # exactly as it already does for `quality.n`.
-            "bands": {name: {"value": round(v["signed_off"] / v["n"], 3), "n": v["n"]}
-                      for name, v in sorted(cell["bands"].items())},
+        item = items[row.item_id]
+        tel = telemetry.get(row.id)
+        cap_list = list(tel.capabilities or []) if tel is not None else capabilities_of(item)
+        if not cap_list:
+            cap_list = [harness_svc.FAMILY_OTHER]
+        band = harness_svc.size_band(item)
+        claimed, finished_at = _aware(row.claimed_at), _aware(row.finished_at)
+        duration = ((finished_at - claimed).total_seconds()
+                    if claimed and finished_at and finished_at >= claimed else None)
+        tin = tel.tokens_in if tel is not None else None
+        tout = tel.tokens_out if tel is not None else None
+        version = (tel.binary_version if tel is not None else None) or ""
+        if version:
+            versions.setdefault((vendor, model), [])
+            if version not in versions[(vendor, model)]:
+                versions[(vendor, model)].append(version)
+        signed = row.outcome == "signed_off"
+        for cap in cap_list:
+            key = (vendor, model, cap)
+            cell = cells.setdefault(key, _empty_cell())
+            _add_attempt(cell, signed_off=signed, band=band, duration=duration,
+                         tokens_in=tin, tokens_out=tout)
+            if version:
+                cell["binary_version"] = version
+    out = [_cell_out(v, m, c, "project", cell) for (v, m, c), cell in sorted(cells.items())]
+
+    # Org layer: other projects in the same org, from rollups. Absent when there is no org
+    # or no sibling traffic — not a zero.
+    if project_id:
+        project = db.get(Project, project_id)
+        org_id = getattr(project, "org_id", None) if project is not None else None
+        if org_id:
+            siblings = [p.id for p in db.scalars(select(Project).where(
+                Project.org_id == org_id, Project.id != project_id)).all()]
+            if siblings:
+                week_cut = harness_svc.week_of(cutoff)
+                org_cells: dict[tuple[str, str, str], dict] = {}
+                for roll in db.scalars(select(HarnessRollup).where(
+                        HarnessRollup.project_id.in_(siblings))).all():
+                    if roll.week < week_cut:
+                        continue
+                    key = (roll.vendor, roll.model, roll.capability)
+                    cell = org_cells.setdefault(key, _empty_cell())
+                    cell["finished"] += roll.finished
+                    cell["signed_off"] += roll.signed_off
+                    cell["tokens_in"] += roll.tokens_in or 0
+                    cell["tokens_out"] += roll.tokens_out or 0
+                    cell["tokens_reported"] += roll.tokens_reported
+                    cell["signed_off_reported"] += roll.signed_off_reported or 0
+                    b = cell["bands"].setdefault(roll.size_band, {"n": 0, "signed_off": 0})
+                    b["n"] += roll.finished
+                    b["signed_off"] += roll.signed_off
+                    if roll.median_seconds is not None:
+                        cell["durations"].extend([float(roll.median_seconds)] * max(roll.finished, 1))
+                out.extend(_cell_out(v, m, c, "org", cell)
+                           for (v, m, c), cell in sorted(org_cells.items()) if cell["finished"])
+
+    week_cut = harness_svc.week_of(cutoff)
+    plat_cells: dict[tuple[str, str, str], dict] = {}
+    for roll in db.scalars(select(PlatformRollup).where(PlatformRollup.week >= week_cut)).all():
+        key = (roll.vendor, roll.model, roll.capability)
+        cell = plat_cells.setdefault(key, _empty_cell())
+        cell["finished"] += roll.finished
+        cell["signed_off"] += roll.signed_off
+        b = cell["bands"].setdefault(roll.size_band, {"n": 0, "signed_off": 0})
+        b["n"] += roll.finished
+        b["signed_off"] += roll.signed_off
+    out.extend(_cell_out(v, m, c, "platform", cell)
+               for (v, m, c), cell in sorted(plat_cells.items()) if cell["finished"])
+
+    # Inherited prior: a newer binary_version with no cell of its own yet still has the
+    # previous version's rate, labelled so it cannot be mistaken for a measurement of the
+    # new binary (criterion 25).
+    for (vendor, model), seen in versions.items():
+        if len(seen) < 2:
+            continue
+        # The last-seen version on a live row is "current"; anything else is previous.
+        current = seen[-1]
+        previous = seen[-2]
+        for cell in list(out):
+            if (cell["vendor"], cell["model"], cell["layer"]) != (vendor, model, "project"):
+                continue
+            if cell.get("binary_version") == previous:
+                inherited = dict(cell)
+                inherited["layer"] = "prior"
+                inherited["inherited_from"] = previous
+                inherited["binary_version"] = current
+                out.append(inherited)
+
+    return out
+
+
+def measured_for_lane(db: Session, item: Item, caps: list[str]) -> list[dict]:
+    """At most four compact cells for the item's capabilities, inside BRIEF_MEASURED_BOUND.
+
+    Re-keyed on capability (D15). A below-floor cell appears only when no above-floor cell
+    exists for that capability. Dropped from the end if the serialised payload would
+    overflow the bound — the bound is the feature, not a hint.
+    """
+    import json
+
+    wanted = [c for c in caps if c][:MEASURED_FOR_LANE_MAX]
+    if not wanted:
+        return []
+    cells = [c for c in measured(db, item.project_id) if c.get("layer") == "project"
+             and c.get("capability") in wanted]
+    by_cap: dict[str, dict] = {}
+    for cell in cells:
+        cap = cell["capability"]
+        prev = by_cap.get(cap)
+        if prev is None or cell["quality"]["n"] > prev["quality"]["n"]:
+            by_cap[cap] = cell
+    compact = []
+    for cap in wanted:
+        cell = by_cap.get(cap)
+        if cell is None:
+            continue
+        n = cell["quality"]["n"]
+        compact.append({
+            "vendor": cell["vendor"], "model": cell["model"], "capability": cap,
+            "signed_off": round(cell["quality"]["value"] * n), "n": n,
+            "below_floor": n < harness_svc.FLOOR,
         })
+        if len(compact) >= MEASURED_FOR_LANE_MAX:
+            break
+    while compact and len(json.dumps({"capabilities": wanted, "measured_for_lane": compact},
+                                     separators=(",", ":")) ) > BRIEF_MEASURED_BOUND:
+        compact.pop()
+    return compact
+
+
+def probe_suggestions(db: Session, project_id: str | None) -> list[dict]:
+    """A declared vendor/model/binary_version that is new, or newly versioned, is a probe
+    suggestion. A supervisor-side release that leaves those three unchanged is not
+    (criterion 25). Nothing here starts a probe — S3 does that."""
+    from app.models import AttemptTelemetry
+
+    stmt = select(AttemptTelemetry).where(AttemptTelemetry.derived_at.is_not(None))
+    if project_id:
+        stmt = stmt.where(AttemptTelemetry.project_id == project_id)
+    rows = db.scalars(stmt).all()
+    by_pair: dict[tuple[str, str], dict[str, int]] = {}
+    for row in rows:
+        vendor, model = row.vendor or UNDECLARED, row.model or ""
+        version = row.binary_version or ""
+        pair = (vendor, model)
+        by_pair.setdefault(pair, {})
+        by_pair[pair][version] = by_pair[pair].get(version, 0) + 1
+    out = []
+    for (vendor, model), versions in sorted(by_pair.items()):
+        if len(versions) == 1:
+            version, n = next(iter(versions.items()))
+            if n < harness_svc.FLOOR:
+                out.append({"vendor": vendor, "model": model, "binary_version": version,
+                            "trigger": "new_row", "n": n})
+            continue
+        ordered = sorted(versions.items(), key=lambda kv: kv[0])
+        previous, current = ordered[-2], ordered[-1]
+        if current[1] < harness_svc.FLOOR:
+            out.append({"vendor": vendor, "model": model, "binary_version": current[0],
+                        "trigger": "version_change", "n": current[1],
+                        "inherited_from": previous[0]})
     return out
 
 
@@ -527,6 +752,7 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
         # Recorded, not merely checked (GRPH-832): an acknowledgement nobody can look up
         # afterwards is a dialog box. This one has an author and a timestamp already.
         reach_acknowledged=bool(acknowledge_reach),
+        capabilities_at_delegate=capabilities_of(item),
     )
     db.add(row)
     db.commit()

@@ -1890,6 +1890,9 @@ class FleetProfile(Base):
     defaults: Mapped[list] = mapped_column(JSON, default=list)
     weights: Mapped[dict] = mapped_column(JSON, default=dict)
     excludes: Mapped[list] = mapped_column(JSON, default=list)
+    #: PRD-41 D20: soft per-sign-off token target. Null means no target and rank-scaling
+    #: applies (D16). A number here never removes a row — that is `fleet_policy.caps`.
+    budget_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (
@@ -1945,6 +1948,10 @@ class Delegation(Base):
     #: checked: an acknowledgement nobody can look up afterwards is a dialog box, not a record.
     reach_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False,
                                                      server_default=false())
+    #: PRD-41 D5 / S2: the item's capabilities from touchpoints at `delegate` time. Copied
+    #: onto `AttemptTelemetry.capabilities_at_delegate` at derive so the exit-time set can
+    #: grow without losing what the resolver read.
+    capabilities_at_delegate: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     __table_args__ = (
         Index("ix_delegations_item_created", "item_id", "created_at"),

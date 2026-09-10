@@ -10,6 +10,10 @@
 #         which is a fact worth a row rather than a silence — codex today, qwen-code until its
 #         adapter lands).
 # evidence: newest LAST. `status` is read against the newest entry; history stays here.
+#           An entry may name `capability` (PRD-41 D10); the newest entry naming a capability
+#           is that capability's status, else the row's status.
+# price_per_mtoken_in / price_per_mtoken_out: optional (D19). Currency appears in the
+#           explanation only where a row carries them.
 # order: preference within a tier when scores tie (after verified-over-unverified and the
 #        user's own defaults order — PRD-37 D6).
 # cost_class: local | cheap | frontier  →  cost axis 1.0 | 0.6 | 0.2.

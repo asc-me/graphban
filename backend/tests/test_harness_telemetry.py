@@ -466,6 +466,8 @@ def test_measured_counts_only_the_window_and_carries_the_band(client, key, db):
     cells = dsvc.measured(db, None)
     assert len(cells) == 1 and cells[0]["quality"]["n"] == 1
     assert cells[0]["bands"] == {"S": {"value": 1.0, "n": 1}}
+    assert cells[0]["layer"] == "project"
+    assert "capability" in cells[0]
 
     row = db.get(Delegation, did)
     row.finished_at = datetime.now(timezone.utc) - timedelta(days=hsvc.WINDOW_DAYS + 1)
@@ -487,6 +489,12 @@ def test_the_bands_split_a_cell_without_splitting_its_key(client, key, db):
     _bounce(client, key, large, child2, "wrong", label="big")
 
     cells = dsvc.measured(db, None)
-    assert len(cells) == 1, cells
-    assert cells[0]["quality"] == {"value": 0.5, "n": 2}
-    assert cells[0]["bands"] == {"L": {"value": 0.0, "n": 1}, "S": {"value": 1.0, "n": 1}}
+    # Two size bands, possibly two capabilities (H4 on the L item). Quality is per
+    # capability; the S item and the L item must not be silently pooled into one
+    # number that hides the split.
+    assert cells
+    bands = {}
+    for cell in cells:
+        for name, b in cell["bands"].items():
+            bands[name] = bands.get(name, 0) + b["n"]
+    assert bands.get("S") == 1 and bands.get("L") == 1

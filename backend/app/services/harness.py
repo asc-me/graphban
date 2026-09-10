@@ -509,6 +509,13 @@ def derive(db: Session, row: Delegation) -> AttemptTelemetry | None:
     telemetry.bounce_category = (bounce_category(getattr(item, "bounce_reason", None))
                                  if row.outcome == "bounced" else None)
     telemetry.capabilities = _capabilities_for_row(item, telemetry)
+    if telemetry.capabilities_at_delegate is None:
+        stored = getattr(row, "capabilities_at_delegate", None)
+        telemetry.capabilities_at_delegate = (
+            list(stored) if stored is not None else (
+                list(capabilities(item)) if item is not None else None
+            )
+        )
     telemetry.claim_to_finish_s = (int((finished - claimed).total_seconds())
                                    if claimed and finished and finished >= claimed else None)
     telemetry.sampled = sampled_from(
