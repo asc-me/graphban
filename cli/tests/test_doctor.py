@@ -13,7 +13,12 @@ from gban.client import EXIT_NO_SUPERVISOR, NoSession, Refused, Unreachable
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv(config.HOME_ENV, str(tmp_path))
-    for var in (config.URL_ENV, config.PROJECT_ENV, config.API_KEY_ENV):
+    # Clear gban's knobs AND the supervisor's key. A fleet seat exports
+    # GBFLEET_API_KEY into the parent; leaving it would make child_environment
+    # keep the host value and silently skip the GRAPHBAN→GBFLEET translation
+    # the credential-forwarding tests assert (GRPH-776).
+    for var in (config.URL_ENV, config.PROJECT_ENV, config.API_KEY_ENV,
+                doctor.SUPERVISOR_KEY_ENV):
         monkeypatch.delenv(var, raising=False)
     config.save_settings(url="http://gb.invalid", project="core")
     return tmp_path
