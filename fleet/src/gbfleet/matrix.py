@@ -273,6 +273,8 @@ def cap_measured_of(rows: list[dict] | None) -> CapMeasured:
                     n_band=str(r["n_band"]) if r.get("n_band") else None,
                     note=str(r.get("inherited_from") or ""),
                 )
+        if r.get("snapshot_at"):
+            cell["snapshot_at"] = r["snapshot_at"]
         cost = r.get("cost")
         if isinstance(cost, dict):
             cell["cost"] = CostSample(

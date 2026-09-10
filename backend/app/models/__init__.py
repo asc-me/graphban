@@ -1793,6 +1793,18 @@ class SyncLink(Base):
     api_key_enc: Mapped[str] = mapped_column(String, default="")  # Fernet token; never returned raw
     org: Mapped[str] = mapped_column(String, default="")  # optional label shown in the UI
     linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    #: PRD-41 D11: the same toggle as org `telemetry_share`, worded for a self-hosted
+    #: operator. Off by default. The hosted path stays on Organization; this is the
+    #: instance that posts rollups over the sync credential.
+    telemetry_share: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
+    last_contribution_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    last_contribution_rows: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_floors: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_redacted_models: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_snapshot_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
@@ -2275,6 +2287,101 @@ class CapabilityProbeRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class CapabilityPrior(Base):
+    """The platform snapshot this instance last fetched (PRD-41 D12).
+
+    Replaced whole on each fetch. `source` is `platform`; `n_band` is a band, never a
+    count, and there is no instance identifier. The resolver reads these as D5's
+    platform layer on a self-hosted box that has no in-process overlay.
+    """
+
+    __tablename__ = "capability_priors"
+
+    vendor: Mapped[str] = mapped_column(String(32), primary_key=True)
+    model: Mapped[str] = mapped_column(String(64), primary_key=True)
+    binary_version: Mapped[str] = mapped_column(String(32), primary_key=True)
+    capability: Mapped[str] = mapped_column(String(8), primary_key=True)
+    size_band: Mapped[str] = mapped_column(String(1), primary_key=True)
+    rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    n_band: Mapped[str] = mapped_column(String(16), default="")
+    source: Mapped[str] = mapped_column(String(16), default="platform")
+    snapshot_at: Mapped[str] = mapped_column(String(32), default="")
+
+
+class CapabilitySnapshot(Base):
+    """The hosted service's published prior for one date (PRD-41 D12).
+
+    The served aggregate, so it can carry nothing the overlay does not already show:
+    `n` as a band, no org, project, instance or path. Versioned by date.
+    """
+
+    __tablename__ = "capability_snapshots"
+
+    snapshot_at: Mapped[str] = mapped_column(String(32), primary_key=True)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    cell_count: Mapped[int] = mapped_column(Integer, default=0)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PlatformContribution(Base):
+    """One accept of a self-hosted instance's rollups (PRD-41 D11). Hosted only.
+
+    The instance is one contributing org for every floor. Opting out writes a row with
+    `opted_out` and drops the cells; the next `platform_roll` no longer sees them.
+    """
+
+    __tablename__ = "platform_contributions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    instance_id: Mapped[str] = mapped_column(String, index=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    row_count: Mapped[int] = mapped_column(Integer, default=0)
+    snapshot_version_seen: Mapped[str] = mapped_column(String(32), default="")
+    opted_out: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                            nullable=False)
+    floors: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    redacted_models: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class PlatformContributionCell(Base):
+    """One contributed cell, already redacted (PRD-41 D11 / criterion 29)."""
+
+    __tablename__ = "platform_contribution_cells"
+
+    instance_id: Mapped[str] = mapped_column(String, primary_key=True)
+    week: Mapped[str] = mapped_column(String(8), primary_key=True)
+    vendor: Mapped[str] = mapped_column(String(32), primary_key=True)
+    model: Mapped[str] = mapped_column(String(64), primary_key=True)
+    binary_version: Mapped[str] = mapped_column(String(32), primary_key=True)
+    capability: Mapped[str] = mapped_column(String(8), primary_key=True)
+    size_band: Mapped[str] = mapped_column(String(1), primary_key=True)
+    model_hash: Mapped[str] = mapped_column(String(32), default="")
+    finished: Mapped[int] = mapped_column(Integer, default=0)
+    signed_off: Mapped[int] = mapped_column(Integer, default=0)
+    first_choice: Mapped[int] = mapped_column(Integer, default=0)
+    fallback: Mapped[int] = mapped_column(Integer, default=0)
+    explicit: Mapped[int] = mapped_column(Integer, default=0)
+    unknown: Mapped[int] = mapped_column(Integer, default=0)
+    probe: Mapped[int] = mapped_column(Integer, default=0)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PlatformModelSighting(Base):
+    """Which instances have reported a model string (criterion 29).
+
+    The plain string is kept so the third sighting can un-redact *forward*. History
+    written as `other` stays `other`.
+    """
+
+    __tablename__ = "platform_model_sightings"
+
+    vendor: Mapped[str] = mapped_column(String(32), primary_key=True)
+    model_hash: Mapped[str] = mapped_column(String(32), primary_key=True)
+    instance_id: Mapped[str] = mapped_column(String, primary_key=True)
+    model_plain: Mapped[str] = mapped_column(String(64), default="")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AssistantThread(Base):

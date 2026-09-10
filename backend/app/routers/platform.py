@@ -17,7 +17,7 @@ from app.schemas import (
 )
 from app.providers import registry as provider_registry
 from app.security import authz
-from app.security.deps import get_current_user
+from app.security.deps import get_agent_key, get_current_user
 from app.services import drive_sync
 from app.services import events as events_svc
 from app.services import items as items_svc
@@ -25,9 +25,46 @@ from app.services import credential_retry
 from app.services import reindex
 from app.services import instance_update
 from app.services import platform as platform_svc
+from app.services import harness as harness_svc
 from app.services.embedder import EmbedderRefused
 
 router = APIRouter(prefix="/platform", tags=["platform"])
+
+
+class ContributionIn(BaseModel):
+    rows: list[dict] = []
+    opted_out: bool = False
+    snapshot_version_seen: str = ""
+
+
+@router.post("/contributions")
+def accept_contributions(body: ContributionIn, db: Session = Depends(get_db),
+                         key=Depends(get_agent_key)):
+    """Hosted accept of a self-hosted instance's capability rollups (PRD-41 D11).
+
+    Authenticated by the deployment-sync credential. The payload is the D11 field set
+    and nothing else; a unique model string is stored as `other` until three instances
+    report it.
+    """
+    if "sync" not in (key.scopes or []):
+        raise HTTPException(403, "a sync credential is required")
+    try:
+        out = harness_svc.accept_contributions(
+            db, instance_id=key.id, rows=list(body.rows or []),
+            snapshot_version_seen=body.snapshot_version_seen,
+            opted_out=body.opted_out)
+    except harness_svc.AttemptRefused as e:
+        raise HTTPException(e.status, str(e))
+    db.commit()
+    return out
+
+
+@router.get("/snapshot")
+def platform_snapshot(db: Session = Depends(get_db), key=Depends(get_agent_key)):
+    """The published capability prior. `n` as a band, no identifier (D12)."""
+    if "sync" not in (key.scopes or []) and "read" not in (key.scopes or []):
+        raise HTTPException(403, "a sync or read credential is required")
+    return harness_svc.served_snapshot(db)
 
 
 def _sync_root(project_id: str, folder: str) -> str:

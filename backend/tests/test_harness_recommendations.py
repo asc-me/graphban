@@ -235,9 +235,9 @@ def test_r2_fires_on_a_verified_row_that_keeps_bouncing(client, key, db, proj, a
     assert cards[0]["replay"]["considered"] == 8
 
 
-def test_r3_fires_when_a_profiles_top_default_is_beaten_in_the_same_cell(
+def test_r3_does_not_fire_on_a_single_capability_beat(
         client, key, db, proj, auth, user_id):
-    """9. The rival must beat it by the margin, at `n`, in the SAME lane/class/band."""
+    """PRD-41 D18 / criterion 19. A single-capability beat is on the grid and drafts nothing."""
     planner = _agent(client, key, "planner")
     db.add(FleetProfile(id="fp_test", user_id=user_id, project_id=proj,
                         defaults=["claude", "gbagent"], weights={}, excludes=[]))
@@ -249,10 +249,7 @@ def test_r3_fires_when_a_profiles_top_default_is_beaten_in_the_same_cell(
     for i in range(8):
         _attempt(client, key, db, planner, f"gb{i}", vendor="gbagent", model="qwen3.6",
                  resolution=res)
-    cards = _by_rule(_cards(client, auth, proj), "R3")
-    assert len(cards) == 1, cards
-    assert cards[0]["draft"]["defaults"][0] == "gbagent"
-    assert cards[0]["draft"]["where"] == "PUT /api/fleet/profile"
+    assert _by_rule(_cards(client, auth, proj), "R3") == []
 
 
 def test_r4_fires_when_a_local_only_project_keeps_bouncing_locally(

@@ -696,6 +696,12 @@ export interface SyncStatus {
   org: string;
   credential_set: boolean;
   linked_at: string | null;
+  telemetry_share?: boolean;
+  last_contribution_at?: string | null;
+  last_contribution_rows?: number | null;
+  last_floors?: { cleared?: boolean; reason?: string; orgs?: number; n_band?: string } | null;
+  last_redacted_models?: number | null;
+  last_snapshot_at?: string | null;
   projects: SyncProjectState[];
 }
 
@@ -1841,6 +1847,20 @@ export interface HarnessReport {
   };
   review_cells?: HarnessReviewCell[];
   probe_suggestions?: HarnessProbeSuggestion[];
+  snapshot_at?: string | null;
+  unavailable?: HarnessUnavailable[];
+}
+
+export interface HarnessUnavailable {
+  vendor: string;
+  model: string;
+  capability: string;
+  reason: "not installed" | "excluded" | "policy" | string;
+  label: string;
+  control: string;
+  drops: number;
+  score?: number | null;
+  layer?: string;
 }
 
 /** PRD-38 D7: a drafted recommendation. Nothing here is applied by the page. */

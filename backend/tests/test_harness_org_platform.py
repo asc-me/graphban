@@ -248,12 +248,20 @@ def test_a_self_hosted_instance_says_why_there_is_no_overlay(client, auth, db):
 
 
 def test_the_share_toggle_and_the_roll_are_hosted_only(client, auth, db):
-    """15. Self-hosted has no overlay and no way to turn one on."""
+    """15 / PRD-41 D11. Self-hosted has no overlay. The share toggle is now the
+    instance contribution switch; the hosted *roll* stays 404."""
     alex = _user(db, "alex@ascme-labs.com")
     _org(db, "org_z", admin=alex)
     r = client.put("/api/harness/platform/share", headers=auth,
                    json={"org_id": "org_z", "telemetry_share": True})
-    assert r.status_code == 404, r.text
+    assert r.status_code == 200, r.text
+    assert r.json()["telemetry_share"] is True
+    pid = _owned_project(client, auth, "Roll")
+    key = client.post("/api/api-keys",
+                      json={"name": "roll", "scopes": ["write"], "project_id": pid},
+                      headers=auth).json()["plaintext"]
+    r2 = client.post("/api/harness/platform/roll", headers={"X-API-Key": key})
+    assert r2.status_code == 404, r2.text
 
 
 def test_the_operator_sees_the_platform_view_whole_with_its_skew(client, auth, db, operator):

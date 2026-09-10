@@ -24,7 +24,7 @@ export function Recommendations({ projectId }: { projectId?: string }) {
         data-testid="harness-no-cards"
         className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
       >
-        No recommended changes. The four rules fire on cells above the {data.floor}-attempt
+        No recommended changes. R1–R6 fire on cells above the {data.floor}-attempt
         floor; nothing in the last {data.window_days} days met one.
       </div>
     );
@@ -66,6 +66,16 @@ function CardRow({
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-medium">{card.title}</div>
           <p className="mt-0.5 text-[12.5px] text-muted">{card.detail}</p>
+          {Array.isArray(card.draft?.projects) && (card.draft.projects as string[]).length > 0 && (
+            <p data-testid="harness-card-projects" className="mt-1 font-mono text-[11px] text-faint">
+              projects: {(card.draft.projects as string[]).join(", ")}
+            </p>
+          )}
+          {card.draft?.probe === true && (
+            <p data-testid="harness-card-probe" className="mt-1 font-mono text-[11px] text-faint">
+              probe samples contributed
+            </p>
+          )}
           {card.previously?.evidence_changed && (
             <p data-testid="harness-card-returned" className="mt-1 text-[12px] text-[#f0b450]">
               You {card.previously.state} this on{" "}

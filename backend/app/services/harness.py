@@ -1059,6 +1059,8 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
     out["coverage"] = _coverage(db, [project_id], cutoff)
     out["review_cells"] = review_cells(db, [project_id])
     out["probe_suggestions"] = probe_suggestions(db, project_id)
+    out["unavailable"] = unavailable_rows(db, [project_id], cutoff)
+    out["snapshot_at"] = latest_snapshot_at(db)
     if overlay:
         attach_platform(db, out)
     return out
@@ -1483,6 +1485,8 @@ def org_report(db: Session, org_id: str, *, window_days: int | None = None,
     out["coverage"] = _coverage(db, projects, cutoff)
     out["review_cells"] = review_cells(db, projects)
     out["probe_suggestions"] = []
+    out["unavailable"] = unavailable_rows(db, projects, cutoff)
+    out["snapshot_at"] = latest_snapshot_at(db)
     if overlay:
         attach_platform(db, out)
     return out
@@ -1521,7 +1525,11 @@ def attach_platform(db: Session, report_out: dict) -> None:
         seen["signed_off"] += row.signed_off
         seen["top_share"] = max(seen["top_share"], row.top_org_share or 0.0)
     served = 0
+    cells = []
     for cell in report_out["cells"]:
+        cells.append(cell)
+        cells.extend(cell.get("leaves") or [])
+    for cell in cells:
         agg = by_key.get(_platform_key(cell["key"]))
         cell["platform"] = _platform_cell(agg)
         served += 1 if cell["platform"] and cell["platform"].get("rate") is not None else 0
@@ -1555,7 +1563,7 @@ def platform_roll(db: Session) -> int:
     An org that has opted out is simply not in the input, which is why turning the toggle off
     and recomputing is the whole of the purge — there is nothing of theirs left to delete.
     """
-    from app.models import Organization, PlatformRollup, Project
+    from app.models import Organization, PlatformContributionCell, PlatformRollup, Project
 
     orgs = [o.id for o in db.scalars(select(Organization).where(
         Organization.telemetry_share.is_(True))).all()]
@@ -1572,8 +1580,19 @@ def platform_roll(db: Session) -> int:
             cell = buckets.setdefault(key, {"per_org": {}})
             org = projects[row.project_id]
             seen = cell["per_org"].setdefault(org, {"finished": 0, "signed_off": 0})
-            seen["finished"] += row.finished
-            seen["signed_off"] += row.signed_off
+            # Natural only: probe traffic is a labelled sample, not an org's production
+            # mix (S3 residual / S4 org re-key).
+            natural = row.finished - (getattr(row, "probe", 0) or 0)
+            seen["finished"] += max(natural, 0)
+            seen["signed_off"] += min(row.signed_off, max(natural, 0))
+    for row in db.scalars(select(PlatformContributionCell)).all():
+        key = (row.week, row.vendor, row.model, row.binary_version, row.capability,
+               row.size_band)
+        cell = buckets.setdefault(key, {"per_org": {}})
+        org = f"instance:{row.instance_id}"
+        seen = cell["per_org"].setdefault(org, {"finished": 0, "signed_off": 0})
+        seen["finished"] += row.finished
+        seen["signed_off"] += row.signed_off
 
     for old in db.scalars(select(PlatformRollup)).all():
         db.delete(old)
@@ -1796,6 +1815,361 @@ def contribution_rows_for(db: Session, project_id: str) -> list[dict]:
     rows = db.scalars(select(HarnessRollup).where(
         HarnessRollup.project_id == project_id)).all()
     return [contribution_row(r) for r in rows]
+
+
+def contribution_rows_for_instance(db: Session) -> list[dict]:
+    """Every project's rollups, D11 field set only. The self-hosted POST body."""
+    rows = db.scalars(select(HarnessRollup)).all()
+    return [contribution_row(r) for r in rows]
+
+
+def _model_hash(vendor: str, model: str) -> str:
+    import hashlib
+    import hmac
+
+    from app.config import settings
+
+    secret = (settings.jwt_secret or "graphban").encode()
+    return hmac.new(secret, f"{vendor}\0{model}".encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _sighting_count(db: Session, vendor: str, model_hash: str) -> int:
+    from app.models import PlatformModelSighting
+
+    return len(db.scalars(select(PlatformModelSighting).where(
+        PlatformModelSighting.vendor == vendor,
+        PlatformModelSighting.model_hash == model_hash)).all())
+
+
+def _record_sighting(db: Session, instance_id: str, vendor: str, model: str,
+                     model_hash: str) -> None:
+    from app.models import PlatformModelSighting
+
+    existing = db.get(PlatformModelSighting, (vendor, model_hash, instance_id))
+    if existing is None:
+        db.add(PlatformModelSighting(
+            vendor=vendor, model_hash=model_hash, instance_id=instance_id,
+            model_plain=model, first_seen_at=_now()))
+        db.flush()
+
+
+def accept_contributions(db: Session, instance_id: str, rows: list[dict], *,
+                         snapshot_version_seen: str = "",
+                         opted_out: bool = False) -> dict:
+    """Hosted accept of a self-hosted instance's rollups (D11, criterion 12, 29).
+
+    The payload is the D11 key set and nothing else. A model string seen from fewer
+    than three instances is stored as `other` under its vendor; the third un-redacts
+    forward only. Opting out drops this instance's cells and recomputes.
+    """
+    from app.models import PlatformContribution, PlatformContributionCell
+
+    if opted_out or not rows:
+        for old in db.scalars(select(PlatformContributionCell).where(
+                PlatformContributionCell.instance_id == instance_id)).all():
+            db.delete(old)
+        db.add(PlatformContribution(
+            id=f"pc_{uuid.uuid4().hex[:12]}", instance_id=instance_id,
+            received_at=_now(), row_count=0, snapshot_version_seen=snapshot_version_seen,
+            opted_out=True, floors={"cleared": False, "reason": "opted out"},
+            redacted_models=0))
+        db.flush()
+        written = platform_roll(db)
+        snap = publish_snapshot(db)
+        return {"accepted": 0, "redacted_models": 0, "opted_out": True,
+                "platform_cells": written, "snapshot_at": snap.get("snapshot_at"),
+                "floors": {"cleared": False, "reason": "opted out"}}
+
+    redacted = 0
+    stored = 0
+    for old in db.scalars(select(PlatformContributionCell).where(
+            PlatformContributionCell.instance_id == instance_id)).all():
+        db.delete(old)
+    db.flush()
+    now = _now()
+    for raw in rows:
+        if not isinstance(raw, dict) or set(raw) != CONTRIBUTION_KEYS:
+            raise AttemptRefused(
+                "contribution rows must be exactly the D11 field set", status=422)
+        vendor = str(raw["vendor"] or "")
+        model = str(raw["model"] or "")
+        model_hash = _model_hash(vendor, model)
+        _record_sighting(db, instance_id, vendor, model, model_hash)
+        count = _sighting_count(db, vendor, model_hash)
+        stored_model = model if count >= PLATFORM_MIN_ORGS else "other"
+        if stored_model == "other":
+            redacted += 1
+        db.merge(PlatformContributionCell(
+            instance_id=instance_id, week=str(raw["week"]), vendor=vendor,
+            model=stored_model, binary_version=str(raw["binary_version"] or ""),
+            capability=str(raw["capability"]), size_band=str(raw["size_band"]),
+            model_hash=model_hash, finished=int(raw["finished"] or 0),
+            signed_off=int(raw["signed_off"] or 0),
+            first_choice=int(raw.get("first_choice") or 0),
+            fallback=int(raw.get("fallback") or 0),
+            explicit=int(raw.get("explicit") or 0),
+            unknown=int(raw.get("unknown") or 0),
+            probe=int(raw.get("probe") or 0), received_at=now))
+        stored += 1
+    db.flush()
+    written = platform_roll(db)
+    snap = publish_snapshot(db)
+    floors = snapshot_floors(db)
+    db.add(PlatformContribution(
+        id=f"pc_{uuid.uuid4().hex[:12]}", instance_id=instance_id,
+        received_at=now, row_count=stored, snapshot_version_seen=snapshot_version_seen,
+        opted_out=False, floors=floors, redacted_models=redacted))
+    db.flush()
+    return {"accepted": stored, "redacted_models": redacted, "opted_out": False,
+            "platform_cells": written, "snapshot_at": snap.get("snapshot_at"),
+            "floors": floors}
+
+
+def snapshot_floors(db: Session) -> dict:
+    """Whether the served overlay currently clears D13's three floors, as a page fact."""
+    from app.models import PlatformRollup
+
+    rows = db.scalars(select(PlatformRollup)).all()
+    if not rows:
+        return {"cleared": False, "orgs": 0, "n": 0, "top_org_share": None,
+                "reason": "no platform cells"}
+    orgs = max((r.orgs_contributing or 0) for r in rows)
+    n = sum(r.finished for r in rows)
+    top = max((r.top_org_share or 0.0) for r in rows)
+    cleared = (orgs >= PLATFORM_MIN_ORGS and n >= PLATFORM_MIN_N
+               and top <= PLATFORM_MAX_ORG_SHARE)
+    reason = ""
+    if orgs < PLATFORM_MIN_ORGS:
+        reason = "fewer than three organisations contribute"
+    elif n < PLATFORM_MIN_N:
+        reason = f"fewer than {PLATFORM_MIN_N} attempts"
+    elif top > PLATFORM_MAX_ORG_SHARE:
+        reason = "one organisation holds most of the attempts"
+    return {"cleared": cleared, "orgs": orgs, "n_band": _band_n(n),
+            "top_org_share": round(top, 3), "reason": reason}
+
+
+def publish_snapshot(db: Session) -> dict:
+    """Nightly capability_snapshot: the served aggregate, n as a band, no identifier."""
+    from app.models import CapabilitySnapshot, PlatformRollup
+
+    rows = db.scalars(select(PlatformRollup)).all()
+    cells = []
+    for row in rows:
+        agg = {"orgs": row.orgs_contributing, "finished": row.finished,
+               "signed_off": row.signed_off, "top_share": row.top_org_share or 0.0}
+        served = _platform_cell(agg)
+        if not served or served.get("rate") is None:
+            continue
+        cells.append({
+            "vendor": row.vendor, "model": row.model,
+            "binary_version": row.binary_version, "capability": row.capability,
+            "size_band": row.size_band, "week": row.week,
+            "rate": served["rate"], "n": served["n"],
+        })
+    stamp = _now().date().isoformat()
+    existing = db.get(CapabilitySnapshot, stamp)
+    if existing is None:
+        existing = CapabilitySnapshot(snapshot_at=stamp)
+        db.add(existing)
+    existing.payload = {"snapshot_at": stamp, "cells": cells}
+    existing.cell_count = len(cells)
+    existing.published_at = _now()
+    db.flush()
+    return {"snapshot_at": stamp, "cells": cells, "cell_count": len(cells)}
+
+
+def latest_snapshot_at(db: Session) -> str | None:
+    from app.models import CapabilityPrior, CapabilitySnapshot
+
+    snap = db.scalars(select(CapabilitySnapshot).order_by(
+        CapabilitySnapshot.snapshot_at.desc())).first()
+    if snap is not None:
+        return snap.snapshot_at
+    prior = db.scalars(select(CapabilityPrior)).first()
+    return prior.snapshot_at if prior is not None else None
+
+
+def served_snapshot(db: Session) -> dict:
+    """GET /api/platform/snapshot. n as a band, no identifier."""
+    from app.models import CapabilitySnapshot
+
+    snap = db.scalars(select(CapabilitySnapshot).order_by(
+        CapabilitySnapshot.snapshot_at.desc())).first()
+    if snap is None:
+        published = publish_snapshot(db)
+        return published
+    payload = snap.payload if isinstance(snap.payload, dict) else {}
+    return {"snapshot_at": snap.snapshot_at,
+            "cells": list(payload.get("cells") or []),
+            "cell_count": snap.cell_count}
+
+
+def replace_priors(db: Session, snapshot: dict) -> int:
+    """Replace capability_priors whole from a fetched snapshot (D12)."""
+    from app.models import CapabilityPrior
+
+    for old in db.scalars(select(CapabilityPrior)).all():
+        db.delete(old)
+    db.flush()
+    stamp = str(snapshot.get("snapshot_at") or "")
+    written = 0
+    for cell in snapshot.get("cells") or []:
+        if not isinstance(cell, dict):
+            continue
+        db.add(CapabilityPrior(
+            vendor=str(cell.get("vendor") or ""),
+            model=str(cell.get("model") or ""),
+            binary_version=str(cell.get("binary_version") or ""),
+            capability=str(cell.get("capability") or ""),
+            size_band=str(cell.get("size_band") or ""),
+            rate=cell.get("rate"),
+            n_band=str(cell.get("n") or ""),
+            source="platform",
+            snapshot_at=stamp,
+        ))
+        written += 1
+    db.flush()
+    return written
+
+
+def post_contributions(db: Session, *, opted_out: bool = False) -> dict:
+    """Self-hosted nightly POST over the deployment-sync credential (criterion 12)."""
+    import httpx
+
+    from app.models import SyncLink
+    from app.services import code_sync
+
+    link = db.get(SyncLink, "instance")
+    share = bool(link.telemetry_share) if link is not None else False
+    if not share and not opted_out:
+        return {"posted": False, "reason": "telemetry_share is off"}
+    creds = code_sync.cloud_credentials(db)
+    if creds is None:
+        return {"posted": False, "reason": "no sync credential"}
+    url, key = creds
+    rows = [] if opted_out or not share else contribution_rows_for_instance(db)
+    body = {"rows": rows, "opted_out": bool(opted_out or not share),
+            "snapshot_version_seen": latest_snapshot_at(db) or ""}
+    try:
+        resp = httpx.post(
+            f"{url.rstrip('/')}/api/platform/contributions",
+            json=body, headers={"X-API-Key": key}, timeout=30.0)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:  # noqa: BLE001 — a failed post is a page fact, not a crash
+        logger.warning("contribution post failed: %s", exc)
+        return {"posted": False, "reason": str(exc)[:200]}
+    if link is None:
+        link = SyncLink(id="instance")
+        db.add(link)
+    link.last_contribution_at = _now()
+    link.last_contribution_rows = payload.get("accepted", len(rows))
+    link.last_floors = payload.get("floors")
+    link.last_redacted_models = payload.get("redacted_models")
+    link.last_snapshot_at = payload.get("snapshot_at")
+    db.flush()
+    return {"posted": True, **payload}
+
+
+def fetch_snapshot(db: Session) -> dict:
+    """Pull the hosted snapshot into capability_priors over the sync credential."""
+    import httpx
+
+    from app.models import SyncLink
+    from app.services import code_sync
+
+    creds = code_sync.cloud_credentials(db)
+    if creds is None:
+        return {"fetched": False, "reason": "no sync credential"}
+    url, key = creds
+    try:
+        resp = httpx.get(f"{url.rstrip('/')}/api/platform/snapshot",
+                         headers={"X-API-Key": key}, timeout=30.0)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("snapshot fetch failed: %s", exc)
+        return {"fetched": False, "reason": str(exc)[:200]}
+    written = replace_priors(db, payload)
+    link = db.get(SyncLink, "instance")
+    if link is not None:
+        link.last_snapshot_at = payload.get("snapshot_at")
+        db.flush()
+    return {"fetched": True, "priors": written, "snapshot_at": payload.get("snapshot_at")}
+
+
+def instance_share(db: Session) -> dict:
+    from app.models import SyncLink
+
+    link = db.get(SyncLink, "instance")
+    return {
+        "telemetry_share": bool(link.telemetry_share) if link is not None else False,
+        "last_contribution_at": (link.last_contribution_at.isoformat()
+                                 if link is not None and link.last_contribution_at else None),
+        "last_contribution_rows": (link.last_contribution_rows
+                                   if link is not None else None),
+        "last_floors": (link.last_floors if link is not None else None),
+        "last_redacted_models": (link.last_redacted_models if link is not None else None),
+        "last_snapshot_at": (link.last_snapshot_at if link is not None else None),
+    }
+
+
+def set_instance_share(db: Session, on: bool) -> dict:
+    from app.models import SyncLink
+
+    link = db.get(SyncLink, "instance")
+    if link is None:
+        link = SyncLink(id="instance")
+        db.add(link)
+    link.telemetry_share = bool(on)
+    db.flush()
+    if not on:
+        post_contributions(db, opted_out=True)
+    return instance_share(db)
+
+
+def unavailable_rows(db: Session, project_ids: list[str], cutoff: str) -> list[dict]:
+    """Uninstalled, excluded and policy-dropped rows, greyed with the reason as the label.
+
+    A blank cell would read as unmeasured, which is a different claim from 'measured
+    elsewhere, unavailable here'.
+    """
+    if not project_ids:
+        return []
+    rows = [r for r in db.scalars(select(AttemptTelemetry).where(
+        AttemptTelemetry.project_id.in_(project_ids),
+        AttemptTelemetry.derived_at.is_not(None))).all()
+            if week_of(r.derived_at) >= cutoff]
+    seen: dict[tuple[str, str, str], dict] = {}
+    for row in rows:
+        res = row.resolution if isinstance(row.resolution, dict) else None
+        if not res:
+            continue
+        caps = list(res.get("capabilities") or []) or list(row.capabilities or []) or ["other"]
+        for dropped in res.get("dropped_rows") or []:
+            name = f"{dropped.get('harness') or ''}:{dropped.get('model') or ''}"
+            stage = dropped.get("stage") or ""
+            why = dropped.get("why") or stage
+            if stage == "installed" or "not installed" in why.lower():
+                reason, control = "not installed", "gbfleet doctor"
+            elif stage == "profile" or "excludes" in why.lower() or "defaults" in why.lower():
+                reason, control = "excluded", "PUT /api/fleet/profile"
+            elif stage == "policy":
+                reason, control = "policy", "PUT /api/fleet/policy"
+            else:
+                continue
+            for cap in caps:
+                key = (name, cap, reason)
+                seen.setdefault(key, {
+                    "vendor": dropped.get("vendor") or dropped.get("harness") or "",
+                    "model": dropped.get("model") or "",
+                    "capability": cap, "reason": reason, "label": why or reason,
+                    "control": control, "drops": 0, "score": dropped.get("score"),
+                    "layer": dropped.get("layer") or "recorded",
+                })
+                seen[key]["drops"] += 1
+    return sorted(seen.values(), key=lambda r: (r["reason"], r["vendor"], r["capability"]))
 
 
 # ---- D6: review competence ------------------------------------------------------------------

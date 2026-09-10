@@ -661,6 +661,20 @@ def check_matrix(report: Report, matrix_path: str | None = None, *, server: str 
         report.add("matrix preferences", UNKNOWN, "no server or key: resolving with no profile, no policy, nothing measured",
                    "pass --server and set GBFLEET_API_KEY to see what a spawn would actually resolve")
     _probe_suggestion_lines(report, suggestions, looked_up=looked_up)
+    snapshot_at = None
+    for cell in (cap_measured or {}).values():
+        if isinstance(cell, dict) and cell.get("snapshot_at"):
+            snapshot_at = cell["snapshot_at"]
+            break
+    if snapshot_at:
+        report.add("platform snapshot", PASS, f"dated {snapshot_at}",
+                   "shown beside the local grid; a local cell at the floor outranks it")
+    elif looked_up:
+        report.add("platform snapshot", PASS, "none fetched",
+                   "GET /api/platform/snapshot over the sync credential")
+    else:
+        report.add("platform snapshot", UNKNOWN, "not looked up",
+                   "pass --server and set GBFLEET_API_KEY to print the snapshot date beside the grid")
     installed = matrix_mod.installed_checker()
     for name, status, detail in matrix_mod.doctor_lines(mat, installed, profile, policy,
                                                         measured, bands, cap_measured):

@@ -77,7 +77,8 @@ Policy `caps` filter before any score, and a vendor that reports no tokens is dr
 the stage record (what each step dropped, and the winner's four axes with their sources).
 `codex` is a `status = "unregistered"` row so the file's existence never reads as support;
 `gbfleet doctor` prints every row against this machine, per-capability status, layer labels,
-and what each tier would resolve to under the operator's profile. See `fleet/README.md`.
+the platform snapshot date beside the local grid (PRD-41 D12), and what each tier would
+resolve to under the operator's profile. See `fleet/README.md`.
 
 ## Naming a model (GRPH-483)
 
