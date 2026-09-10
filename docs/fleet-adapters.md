@@ -46,7 +46,7 @@ without stopping the other.
 | `claude` | `2.1.233 (Claude Code)` | 2.0 – 3.0 | `--mcp-config <path>` | stdin | **no** — private temp file |
 | `gbagent` | `gbagent 0.5.0` | **exactly `0.5.0`** — a pin, not a range | `--mcp-config <path>` | `--instruction-file <path>` | **no** — private temp file |
 | `cursor-agent` | `2026.04.17-787b533` | 2026.1 – 2027.1 | none; reads `.cursor/mcp.json` from the project dir | stdin | **yes** — forced |
-| `grok` | `grok 1.0.5 (5115b46bc909) [stable]` | 1.0 – 2.0 | project-scoped `<worktree>/.grok/config.toml` (**TOML**), needs `--trust` | `--prompt-file <path>` | yes — `.grok/config.toml`, see below |
+| `grok` | `grok 1.0.25 (f7e67d6988e2) [stable]` | 1.0 – 2.0 | project-scoped `<worktree>/.grok/config.toml` (**TOML**), needs `--trust` | `--prompt-file <path>` | yes — `.grok/config.toml`, see below |
 | `qwen-code` | `0.23.0` | 0.23 – 1.0 | `--mcp-config <path>` + `--allowed-mcp-server-names graphban`; the entry must be `httpUrl` | stdin | **no** — private temp file |
 | `codex` | — | — | — | — | **not implemented** |
 
@@ -401,25 +401,74 @@ key — it answered its prompt and left. A broken seat is not a crash, it is an 
 silence, and `registration_latency` is what turns it back into a signal.
 
 A last trap for whoever reads `grok mcp doctor` next: **its *Config sources* block is
-not trustworthy and its per-server verdicts are.** Two separate ways it misleads, both
+not trustworthy and its per-server verdicts are.** Two ways it misleads on 1.0.25, both
 measured:
 
-- it reported `0 servers` for a project `.grok/config.toml` whose server it had plainly
-  loaded and started;
 - it never lists `.cursor/mcp.json` as a source at all, and credits servers loaded from
-  it to `.mcp.json`.
+  it to `.mcp.json`;
+- **the count beside a source is what survived the merge, not what the file contains.**
+  A `.mcp.json` holding one server whose name a higher source also defines reads
+  `.mcp.json  0 servers` — identical to an empty file, and identical to a file grok never
+  opened. Three different facts, one reassuring number.
 
-The per-server `✓ server started` / `✗ folder untrusted` lines are the reliable signal.
+(One trap that *was* here is gone: 1.0.5 reported `0 servers` for a project
+`.grok/config.toml` whose server it had plainly started. 1.0.25 lists that file by
+absolute path with an honest count.)
 
-**grok reads more project files than its own.** `.mcp.json` and `.cursor/mcp.json` in
-the project directory are both loaded (measured — servers from each started). A worktree
-is cut from the repository, so **anything the repo commits is in front of every grok
-child**, added to whatever its seat provides. This repo commits no such file today; a
-repo that did would be handing extra tools to every worker, and nothing in gbfleet is in
-a position to stop it. What it *cannot* do is override the seat: on a name collision
-`.grok/config.toml` wins, and two tests hold that down — one for the collision and one
-control proving the committed file is genuinely loaded when nothing outranks it, because
-"the seat won" and "the rival never entered" look identical from the outside.
+The per-server `✓ server started` / `✗ folder untrusted` lines remain the reliable signal.
+
+### What else is in a grok child, and why `GROK_HOME` no longer bounds it
+
+**grok reads more than its own files, and more than the project's** (re-measured on
+1.0.25 for GRPH-840). Five sources are merged, first winning a name collision — the order
+grok's own `07-mcp-servers.md` now states as `config.toml > Claude > Cursor > .mcp.json`,
+and which measurement confirms end to end:
+
+| Rank | Source | Whose |
+|---|---|---|
+| 1 | `<worktree>/.grok/config.toml` | **the seat** |
+| 2 | `~/.grok/config.toml` | operator — relocatable by `GROK_HOME` |
+| 3 | `~/.claude.json` | operator's Claude Code config — **not** relocatable |
+| 4 | `~/.cursor/mcp.json`, `<project>/.cursor/mcp.json` | operator + repo |
+| 5 | `<project>/.mcp.json` | repo |
+
+Two things follow, and they pull in opposite directions.
+
+**The seat is safe.** It sits at rank 1 and beats every other source on the name
+`graphban` — including the operator's own Claude Code config, which on a supervisor host
+defines `graphban` by definition. Had that collision gone the other way, every child
+would have connected with the *operator's* credential and taken the operator's role while
+its seat sat unread. Measured, and held down by a test per rival it can be handed: one
+for rank 2, one for rank 3, and one parameterised over both files of ranks 4 and 5. The
+rank-3 test needs a real `graphban` in the operator's `~/.claude.json` to collide with and
+*skips with that reason* where there is none — an operator without one proves nothing, and
+a pass there would be a lie. The user half of rank 4, `~/.cursor/mcp.json`, is untested
+for a blunter reason: exercising it means writing to the operator's home directory.
+
+**The child's tool list is not.** Ranks 3 and 4 are the operator's home directory, and
+`GROK_HOME` moves neither — it relocates grok's own directory and nothing else. The
+documented off-switches (`[compat.claude] mcps = false`, `GROK_CLAUDE_MCPS_ENABLED=false`)
+were measured on 1.0.25 and are **not honoured**; only moving `HOME` moves those files, and
+only on POSIX — which is the non-portable isolation `GROK_HOME` was adopted to replace
+(GRPH-588). So a grok child arrives holding whatever MCP servers its operator happens to
+use, gbfleet cannot bound the set, and a child reporting tools nobody configured for it is
+expected rather than alarming. It costs the child context and it is not a seat failure.
+
+**And the repo is still in front of every child.** Ranks 4 and 5 mean a repository that
+commits `.mcp.json` or `.cursor/mcp.json` — entirely reasonable, and this repo commits
+`.cursor/agents/` today — hands those servers to every worker cut from it. That warning
+has *not* shrunk: both filenames were re-measured on 1.0.25 and both still load. What it
+cannot do is take the seat.
+
+The control that proves any of this is real deserves its own note, because it is where
+this drift was found. "The seat won" and "the rival never entered the race" look
+identical from outside, so a test writes the rival with **no seat present** and asserts
+the rival is what the child gets. On 1.0.25 that test went red — and the obvious reading,
+the one its own failure message offered, was that grok had stopped loading committed
+files. It had not. The rival was named `graphban`, the operator's `~/.claude.json` defines
+`graphban` at rank 3, and the rival lost a collision that did not exist when the test was
+written. The rival is now named `gbfleet-probe-rival`: **a control has to be able to lose
+the race it is timing, and this one could lose it to the machine it was running on.**
 
 ## A sandboxed parent is every child's sandbox (GRPH-838)
 
