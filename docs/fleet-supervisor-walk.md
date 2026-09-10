@@ -136,3 +136,7 @@ GRPH-461. The walk needs a signed-in operator to mint its first seat, and could 
 one: `init` accepts any string as `--email` and reports `provisioned: true`, while
 `/api/auth/login` validates with `EmailStr` and refuses it. Found on the first attempt
 to run this.
+
+## Delegate to seat (PRD-36)
+
+On 2026-09-05 a session called delegate(seat=true) on this item, gbfleet mcp spawned gbagent on the cheap tier onto the bound seat, registration claimed the item, and the child moved it to review.

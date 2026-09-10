@@ -193,3 +193,9 @@ Each is a test. Sabotage the call, not the model.
 - PRD-19: seats, consumption, reissue, and the planner-only mint gate this PRD reuses.
 - PRD-24 S7: gbagent's `--item`, the half of this flow that already exists on the child.
 - `harness-kit/claude-code/delegation` (reviewed 2026-09-04): the shape classifier's one durable idea, delegate whole units, kept here as D10; its hook-based enforcement not carried.
+
+---
+
+## 11. Verified
+
+On 2026-09-05 a session called delegate(seat=true) on this item, gbfleet mcp spawned gbagent on the cheap tier onto the bound seat, registration claimed the item, and the child moved it to review.
