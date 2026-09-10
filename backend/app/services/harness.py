@@ -1627,10 +1627,13 @@ def _red_sabotage(item) -> bool:
 
 
 def _suite_green_on(item, head: str | None) -> bool:
+    """CI green on THIS head. No head is not a match — criterion 6 is same-head."""
     from app.services import items as items_svc
 
+    if not head:
+        return False
     for att in items_svc.attestation_receipts(getattr(item, "evidence", None)):
-        if head and att.get("commit") and att.get("commit") != head:
+        if att.get("commit") != head:
             continue
         for pred in att.get("predicates") or []:
             if isinstance(pred, dict) and pred.get("name") == "suite_green" and pred.get("passed") is True:
@@ -1940,8 +1943,11 @@ def _recompute_check(db: Session, check) -> None:
     now = _now()
 
     if check.verdict == "bounced":
-        head = check.head_commit or (item.head_commit or None)
-        if _suite_green_on(item, head) and item.status == "done":
+        # Same head the bounce stored, not the item's current head (a later green on a
+        # different revision is not this bounce being wrong). And a human sign_off
+        # (`reviewed_by`), not any path that stamps status=done.
+        head = check.head_commit or None
+        if head and _suite_green_on(item, head) and item.reviewed_by:
             check.kind = "false_bounce"
             check.unconfirmed = False
             check.contradicted_by = check.contradicted_by or item.id

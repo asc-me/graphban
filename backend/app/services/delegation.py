@@ -464,10 +464,13 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
     suppressed below 80% reporting (D16).
 
     The project layer is aggregated live from finished delegations so a test that writes
-    a row sees it without waiting on a roll. Org and platform layers read rollup tables
-    when they exist; an instance with neither emits project cells only. A declared
-    version change keeps the previous version's cell and emits it again as `prior`
-    labelled with the new version — pooling versions into one cell is the sabotage.
+    a row sees it without waiting on a roll. Probe attempts (`sampled=probe`) are
+    excluded: D7 / criterion 27 — a probe cell under n=5 feeds no D5 layer, and
+    pooling them with natural traffic is how a page split still lied to the resolver.
+    Org and platform layers read rollup tables when they exist; an instance with
+    neither emits project cells only. A declared version change keeps the previous
+    version's cell and emits it again as `prior` labelled with the new version —
+    pooling versions into one cell is the sabotage.
     """
     from app.models import AttemptTelemetry, HarnessRollup, PlatformRollup, Project
 
@@ -499,6 +502,8 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
             items[row.item_id] = db.get(Item, row.item_id) if row.item_id else None
         item = items[row.item_id]
         tel = telemetry.get(row.id)
+        if tel is not None and tel.sampled == "probe":
+            continue
         cap_list = list(tel.capabilities or []) if tel is not None else capabilities_of(item)
         if not cap_list:
             cap_list = [harness_svc.FAMILY_OTHER]

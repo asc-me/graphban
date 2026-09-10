@@ -2044,7 +2044,9 @@ class AttemptTelemetry(Base):
     wall_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_in: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tokens_out: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    exit_meaning: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 256: the gbagent budget-exhaust sentence is 76 chars and the handoff
+    # refusal is longer; VARCHAR(64) truncated them on Postgres (GRPH-819).
+    exit_meaning: Mapped[str | None] = mapped_column(String(256), nullable=True)
     adapter_launched: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     derived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

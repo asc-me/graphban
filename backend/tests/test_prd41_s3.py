@@ -56,7 +56,7 @@ def _agent(client, key, label, **kw) -> str:
 
 def _attempt(client, key, db, planner, label, *, outcome="signed_off", vendor="gbagent",
              model="qwen3.6", touchpoints=None, tokens=None, sampled=None, when=None,
-             turns=None, turn_budget=None, exit_meaning=None,
+             turns=None, turn_budget=None, exit_meaning=None, head_commit=None,
              reviewer_vendor="anthropic", reviewer_model="sonnet") -> AttemptTelemetry:
     item = _ok(_mcp(client, key, "create_item", {
         "title": label, "status": "next",
@@ -67,6 +67,10 @@ def _attempt(client, key, db, planner, label, *, outcome="signed_off", vendor="g
                    capabilities={"instance": label, "vendor": vendor, "model": model})
     assert items_svc.claim_item(db, item, child) is not None
     _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": child}))
+    if head_commit:
+        stored = db.get(Item, item)
+        stored.head_commit = head_commit
+        db.commit()
     reviewer = _agent(client, key, f"rev-{label}",
                       capabilities={"instance": f"rev-{label}",
                                     "vendor": reviewer_vendor, "model": reviewer_model})
@@ -191,25 +195,82 @@ def test_a_bug_filed_after_fourteen_and_a_half_days_is_not_a_miss(
     assert check.kind != "miss", "a bug past 14 days must not be a miss (window is not 15)"
 
 
-def test_false_bounce_is_suite_green_on_the_same_head_plus_a_human_sign_off(
-        client, key, db, proj, auth):
-    """6. Bounce, then CI green on that head, then done → false_bounce."""
-    planner = _agent(client, key, "planner")
-    tel = _attempt(client, key, db, planner, "bounced-work", outcome="bounced")
-    item = db.get(Item, tel.item_id)
-    item.head_commit = "deadbeef"
+def _green_on(item, commit: str) -> None:
     item.evidence = list(item.evidence or []) + [{
-        "kind": "attestation", "adapter": "github-actions", "commit": "deadbeef",
+        "kind": "attestation", "adapter": "github-actions", "commit": commit,
         "predicates": [{"name": "suite_green", "passed": True, "detail": "CI green"}],
     }]
+
+
+def _human_override(client, key, db, item_id: str, label: str) -> None:
+    """A different reviewer signs off — the human override D6 requires, not status=done."""
+    item = db.get(Item, item_id)
+    item.status = "review"
+    db.commit()
+    overrider = _agent(client, key, f"override-{label}",
+                       capabilities={"instance": f"override-{label}",
+                                     "vendor": "human", "model": "operator"})
+    _ok(_mcp(client, key, "sign_off", {"id": item_id, "agent_id": overrider,
+                                       "evidence": [{"kind": "note", "detail": "override"}]}))
+
+
+def test_false_bounce_is_suite_green_on_the_same_head_plus_a_human_sign_off(
+        client, key, db, proj, auth):
+    """6. Bounce stored a head; CI green on THAT head; a human signs off → false_bounce."""
+    planner = _agent(client, key, "planner")
+    tel = _attempt(client, key, db, planner, "bounced-work", outcome="bounced",
+                   head_commit="deadbeef")
+    item = db.get(Item, tel.item_id)
+    _green_on(item, "deadbeef")
+    db.commit()
+    _human_override(client, key, db, tel.item_id, "bounced-work")
+    hsvc.check_reviews(db, proj)
+    db.commit()
+    db.expire_all()
+    check = db.scalar(select(HarnessReviewCheck).where(
+        HarnessReviewCheck.item_id == tel.item_id,
+        HarnessReviewCheck.verdict == "bounced"))
+    assert check is not None
+    assert check.kind == "false_bounce"
+    assert check.head_commit == "deadbeef"
+
+
+def test_false_bounce_does_not_fall_back_to_the_items_current_head(
+        client, key, db, proj, auth):
+    """6. Bounce stored no head; a later green on a different head + sign_off is not it."""
+    planner = _agent(client, key, "planner")
+    tel = _attempt(client, key, db, planner, "no-head-bounce", outcome="bounced")
+    check = _check_for(db, tel.item_id)
+    assert not check.head_commit
+    item = db.get(Item, tel.item_id)
+    item.head_commit = "laterhead"
+    _green_on(item, "laterhead")
+    db.commit()
+    _human_override(client, key, db, tel.item_id, "no-head-bounce")
+    hsvc.check_reviews(db, proj)
+    db.commit()
+    db.expire_all()
+    bounced = db.scalar(select(HarnessReviewCheck).where(
+        HarnessReviewCheck.item_id == tel.item_id,
+        HarnessReviewCheck.verdict == "bounced"))
+    assert bounced is not None and bounced.kind != "false_bounce"
+
+
+def test_false_bounce_rejects_status_done_without_a_human_sign_off(
+        client, key, db, proj, auth):
+    """6. status=done is not a human override. Sabotage: drop the reviewed_by gate."""
+    planner = _agent(client, key, "planner")
+    tel = _attempt(client, key, db, planner, "stamped-done", outcome="bounced",
+                   head_commit="deadbeef")
+    item = db.get(Item, tel.item_id)
+    _green_on(item, "deadbeef")
     item.status = "done"
+    item.reviewed_by = None
     db.commit()
     hsvc.check_reviews(db, proj)
     db.commit()
     db.expire_all()
-    check = _check_for(db, tel.item_id)
-    assert check.kind == "false_bounce"
-    assert check.verdict == "bounced"
+    assert _check_for(db, tel.item_id).kind != "false_bounce"
 
 
 # ---- 7: F cells after five checked verdicts -------------------------------------------------
@@ -335,6 +396,46 @@ def test_a_new_declared_vendor_produces_a_probe_suggestion(client, key, db, proj
     assert hits and hits[0]["trigger"] == "new_row"
     cand = client.get(f"/api/harness/probe/candidates?project_id={proj}", headers=auth).json()
     assert any(s["vendor"] == "acme" for s in cand["suggestions"])
+
+
+# ---- 27: probe attempts do not feed D5 project quality -------------------------------------
+
+def test_measured_excludes_probe_attempts_from_project_quality(
+        client, key, db, proj, auth):
+    """27. 4 natural + 1 probe is n=4, not a floor-clearing 5. Sabotage: drop the
+    sampled!=probe filter in measured() and this cell reads n=5."""
+    from app.services import delegation as dsvc
+
+    planner = _agent(client, key, "planner")
+    for i in range(4):
+        _attempt(client, key, db, planner, f"nat-d5-{i}", sampled="first_choice")
+    _attempt(client, key, db, planner, "probe-d5", sampled="probe")
+    rows = [c for c in dsvc.measured(db, proj) if c["layer"] == "project"]
+    assert rows
+    assert all(c["quality"]["n"] == 4 for c in rows)
+    assert all(c["quality"]["n"] < hsvc.FLOOR for c in rows)
+
+
+def test_probe_only_attempts_do_not_create_a_project_quality_cell(
+        client, key, db, proj, auth):
+    """27. A probe cell under n=5 feeds no D5 layer — not even as its own project cell."""
+    from app.services import delegation as dsvc
+
+    planner = _agent(client, key, "planner")
+    for i in range(3):
+        _attempt(client, key, db, planner, f"probe-only-{i}", sampled="probe")
+    rows = [c for c in dsvc.measured(db, proj) if c["layer"] == "project"]
+    assert rows == []
+
+
+def test_exit_meaning_fits_the_gbagent_budget_exhaust_string():
+    """17. Postgres VARCHAR(64) truncated this; the column must hold the real wording."""
+    text = ("stuck: turn budget spent, evidence written, item released, "
+            "worktree salvaged")
+    assert len(text) > 64
+    col = AttemptTelemetry.__table__.c.exit_meaning
+    assert col.type.length >= len(text)
+    assert hsvc._is_budget_hit(text)
 
 
 # ---- 17: utilization ------------------------------------------------------------------------
