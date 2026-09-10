@@ -117,6 +117,9 @@ class Report:
             # is the reading that would otherwise pass for a roomy machine.
             "gated": list(self.wave.gated) if self.wave else [],
             "headroom_bytes": self.wave.headroom_at_start if self.wave else None,
+            # PRD-41 D21 / criterion 24: every stage of every resolution. Always present;
+            # empty means this run resolved nothing, not that the record was not kept.
+            "resolutions": list(self.wave.resolutions) if self.wave else [],
         }
         if self.detail:
             payload["detail"] = self.detail
@@ -491,7 +494,12 @@ def _loop(
                 if res.winner is not None:
                     factory = launch_for(res.winner.harness, res.winner.model)
                     chosen = (res.winner.harness, res.winner.model)
-                    observe.emit("resolved", item=seed, **{k: v for k, v in res.explain().items() if k in ("winner", "dropped", "eligible", "profile", "stages", "capabilities")})
+                    explained = res.explain()
+                    observe.emit("resolved", item=seed, **{k: v for k, v in explained.items() if k in ("winner", "dropped", "eligible", "profile", "stages", "capabilities")})
+                    wave.resolutions.append({"item": seed, **{k: explained[k] for k in
+                                                              ("winner", "dropped", "stages",
+                                                               "capabilities", "profile")
+                                                              if k in explained}})
                 else:
                     observe.emit("resolve_refused", item=seed, detail=res.refused)
             # GRPH-732: the child is told what it is, because only this side knows.

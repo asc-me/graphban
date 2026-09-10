@@ -197,3 +197,112 @@ def test_budget_tokens_must_be_a_positive_integer(client, auth):
     assert r.status_code == 422
     r = client.put("/api/fleet/profile", json={"budget_tokens": -5}, headers=auth)
     assert r.status_code == 422
+
+
+def _attempts_with_version(db, client, key, proj, auth, *, vendor, model, version, n, cap="B5"):
+    """Finished attempts that declared a binary_version. Criterion 25's subject."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import AttemptTelemetry
+
+    T0 = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    planner = _mcp(client, key, "register_agent", {"label": f"p-{version}"})["agent_id"]
+    child = _mcp(client, key, "register_agent", {
+        "label": f"c-{version}", "capabilities": {"vendor": vendor, "model": model},
+    })["agent_id"]
+    for i in range(n):
+        item = client.post("/api/items", json={
+            "title": f"{version} {i}", "project_id": proj,
+            "touchpoints": ["web/src/features/x.tsx"],
+        }, headers=auth).json()
+        did = f"d-{version}-{i}"
+        db.add(Delegation(
+            id=did, project_id=proj, item_id=item["id"], delegated_by=planner,
+            agent_id=child, linked_by="seat", lane="frontend", requested_tier="cheap",
+            declared_model=model, declared_tier="local", outcome="signed_off",
+            created_at=T0, claimed_at=T0 + timedelta(minutes=1),
+            finished_at=T0 + timedelta(minutes=6), lease_seconds=600,
+        ))
+        db.add(AttemptTelemetry(
+            id=f"at-{version}-{i}", delegation_id=did, project_id=proj, item_id=item["id"],
+            vendor=vendor, model=model, binary_version=version, capabilities=[cap],
+            outcome="signed_off", derived_at=T0,
+        ))
+    db.commit()
+
+
+def test_unchanged_declared_triple_does_not_start_a_cell_or_suggest_a_probe(
+        db, client, key, proj, auth):
+    """25. A supervisor-side release that leaves vendor/model/binary_version unchanged
+    starts no new cell and suggests no probe. Sabotage: keying the cell on a supervisor
+    version (or pooling nothing) would split or invent a suggestion here."""
+    _attempts_with_version(db, client, key, proj, auth, vendor="gbagent", model="q",
+                           version="1.0.0", n=6)
+    rows = dsvc.measured(db, proj)
+    project = [c for c in rows if c["layer"] == "project" and c["capability"] == "B5"]
+    assert len(project) == 1
+    assert project[0]["binary_version"] == "1.0.0"
+    assert project[0]["quality"]["n"] == 6
+    suggestions = dsvc.probe_suggestions(db, proj)
+    assert not any(s.get("trigger") == "version_change" for s in suggestions)
+    status = _mcp(client, key, "fleet_status", {"project_id": proj})
+    assert status["probe_suggestions"] == suggestions
+
+
+def test_a_declared_version_change_starts_a_cell_and_inherits_the_prior(
+        db, client, key, proj, auth):
+    """25. A declared binary_version change starts a new cell, suggests a probe, and
+    leaves the new cells filling from traffic with an inherited, labelled prior.
+    Sabotage: pooling versions into one cell empties the prior and this fails."""
+    _attempts_with_version(db, client, key, proj, auth, vendor="gbagent", model="q",
+                           version="1.0.0", n=6)
+    _attempts_with_version(db, client, key, proj, auth, vendor="gbagent", model="q",
+                           version="2.0.0", n=1)
+    rows = dsvc.measured(db, proj)
+    project = [c for c in rows if c["layer"] == "project" and c["capability"] == "B5"]
+    by_ver = {c.get("binary_version"): c for c in project}
+    assert set(by_ver) == {"1.0.0", "2.0.0"}, by_ver
+    assert by_ver["1.0.0"]["quality"]["n"] == 6
+    assert by_ver["2.0.0"]["quality"]["n"] == 1
+    prior = next(c for c in rows if c["layer"] == "prior" and c["capability"] == "B5")
+    assert prior["binary_version"] == "2.0.0"
+    assert prior["inherited_from"] == "1.0.0"
+    assert prior["quality"]["n"] == 6
+    suggestions = dsvc.probe_suggestions(db, proj)
+    hit = next(s for s in suggestions if s["trigger"] == "version_change")
+    assert hit["binary_version"] == "2.0.0"
+    assert hit["inherited_from"] == "1.0.0"
+    status = _mcp(client, key, "fleet_status", {"project_id": proj})
+    assert any(s["trigger"] == "version_change" for s in status["probe_suggestions"])
+
+
+def test_fleet_status_always_carries_probe_suggestions_even_when_empty(client, key, proj):
+    status = _mcp(client, key, "fleet_status", {"project_id": proj})
+    assert status["probe_suggestions"] == []
+    assert status["measured"] == []
+
+
+def test_brief_spend_includes_period_tokens_when_the_policy_names_a_period(
+        client, key, proj, auth, db):
+    from datetime import datetime, timezone
+
+    from app.models import AttemptTelemetry, Project
+
+    T0 = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+    item = _mcp(client, key, "create_item", {
+        "title": "period spend", "status": "next",
+        "touchpoints": ["web/src/features/x.tsx"],
+    })
+    db.add(AttemptTelemetry(
+        id="at-period-1", project_id=proj, item_id=item["id"],
+        vendor="gbagent", model="q", capabilities=["B5"], outcome="signed_off",
+        tokens_in=10_000, tokens_out=5_000, derived_at=T0,
+    ))
+    project = db.get(Project, proj)
+    project.fleet_policy = {"local_only": False, "reviewer_cross_vendor": False,
+                            "allowed_harnesses": [],
+                            "caps": {"per_period_tokens": 100_000, "period": "week"}}
+    db.commit()
+    brief = _mcp(client, key, "get_item_details", {"id": item["id"]})["brief"]
+    assert brief["spend"]["period_tokens"] == 15_000
+    assert brief["spend"]["period_reported"] == 1

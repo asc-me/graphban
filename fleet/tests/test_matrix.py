@@ -204,6 +204,8 @@ def test_spawn_resolves_an_unflagged_tier_through_the_matrix_and_the_reply_expla
     assert res["winner"]["harness"] == "fake" and res["winner"]["status"] == "verified"
     assert res["dropped"]["installed"] == ["ghost:x (ghost is not installed)"]
     assert res["profile"] == "none", "PR 1 carries no profile; the reply says so rather than inventing one"
+    stages = [s["stage"] for s in res["stages"]]
+    assert stages[0] == "rows" and stages[-1] == "score"
 
 
 def test_a_tier_flag_beats_the_matrix_and_the_reply_says_the_source_was_the_flag(fleet: Fleet):
@@ -275,6 +277,11 @@ def test_until_resolves_an_unflagged_request_through_the_matrix_and_the_log_says
     assert result.spawned == 1, result.detail
     assert launched == [("fake", "qwen-local")], "the matrix, not the default factory, chose the launch"
     assert [d["tier"] for d in delegations] == ["cheap"]
+    payload = result.as_json()
+    assert "resolutions" in payload
+    assert payload["resolutions"]
+    assert payload["resolutions"][0]["winner"]["harness"] == "fake"
+    assert [s["stage"] for s in payload["resolutions"][0]["stages"]][0] == "rows"
 
 
 # ---- PR 2: profile and policy arrive on fleet_status, read once at launch (D9, D10, D14) -----
@@ -307,6 +314,25 @@ def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
     assert profile.excludes == ("grok",) and profile.normalised() == {"cost": 1.0}
     assert policy.local_only is True and policy.allowed_harnesses == ()
     assert "u1" in note and "policy on" in note
+
+
+def test_read_preferences_parses_capability_cells_as_cap_measured():
+    from gbfleet.mcp import read_preferences
+
+    profile, policy, note, measured, cap = read_preferences(_Server({
+        "agents": [],
+        "measured": [
+            {"vendor": "gbagent", "model": "q", "capability": "A4", "layer": "project",
+             "quality": {"value": 0.4, "n": 7},
+             "cost": {"comparable": True, "reported": 7, "finished": 7,
+                      "tokens_to_signoff": 31000}},
+        ],
+    }))
+    assert measured == {}
+    cell = cap[("gbagent", "q", "A4", "project")]
+    assert cell["quality"].value == 0.4 and cell["quality"].n == 7
+    assert cell["cost"].tokens_to_signoff == 31000
+    assert "measured cells: 1" in note
 
 
 def test_read_preferences_spells_absence_and_unreachability_rather_than_inventing_a_default():

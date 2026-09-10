@@ -42,7 +42,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Agent, Delegation, Enrolment, Item, MemoryShard
+from app.models import Agent, Delegation, Enrolment, Item, MemoryShard, Project
 from app.services import harness as harness_svc
 from app.services.harness import WINDOW_DAYS
 logger = logging.getLogger(__name__)
@@ -295,6 +295,11 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     checklist = checklist_for(touchpoints)
     caps = capabilities_of(item)
     spend = item_spend(db, item.id)
+    project = db.get(Project, item.project_id) if item.project_id else None
+    policy = (project.fleet_policy or {}) if project is not None else {}
+    policy_caps = policy.get("caps") if isinstance(policy, dict) else None
+    if isinstance(policy_caps, dict) and policy_caps.get("period"):
+        spend.update(period_spend(db, item.project_id, str(policy_caps["period"])))
     measured_lane = measured_for_lane(db, item, caps)
     return {
         "item": item.key,
@@ -359,6 +364,35 @@ def item_spend(db: Session, item_id: str | None) -> dict:
     return {"item_tokens": tokens, "item_reported": reported, "item_finished": finished}
 
 
+#: D20 period lengths. A month is 30 days, not a calendar month — the cap is a budget,
+#: not an accounting period, and a moving window is what the resolver can enforce.
+PERIOD_DAYS = {"day": 1, "week": 7, "month": 30}
+
+
+def period_spend(db: Session, project_id: str | None, period: str | None) -> dict:
+    """Reported tokens on the project in the cap's window, for `caps.per_period_tokens`."""
+    from app.models import AttemptTelemetry
+
+    days = PERIOD_DAYS.get(period or "")
+    if not project_id or not days:
+        return {"period_tokens": 0, "period_reported": 0, "period_finished": 0}
+    cutoff = _now() - timedelta(days=days)
+    rows = db.scalars(select(AttemptTelemetry).where(
+        AttemptTelemetry.project_id == project_id)).all()
+    tokens = reported = finished = 0
+    for row in rows:
+        when = _aware(row.derived_at) or _aware(row.reported_at)
+        if when is None or when < cutoff:
+            continue
+        if row.outcome is None and row.derived_at is None:
+            continue
+        finished += 1
+        if row.tokens_in is not None or row.tokens_out is not None:
+            reported += 1
+            tokens += int(row.tokens_in or 0) + int(row.tokens_out or 0)
+    return {"period_tokens": tokens, "period_reported": reported, "period_finished": finished}
+
+
 def _cell_out(vendor: str, model: str, capability: str, layer: str, cell: dict) -> dict:
     durations = sorted(cell.get("durations") or [])
     latency = None
@@ -421,16 +455,19 @@ def _empty_cell() -> dict:
 
 
 def measured(db: Session, project_id: str | None, *, window_days: int | None = None) -> list[dict]:
-    """What finished attempts say, keyed on vendor × model × capability, with a layer.
+    """What finished attempts say, keyed on vendor × model × binary_version × capability.
 
-    PRD-41 D3/D5: lane and tier left the key. Each cell names which layer produced it
-    (`project | org | platform | prior`) so a score assembled from four sources cannot
-    hide which one decided. `bands` stay inside the cell (PRD-38 D9). Cost is tokens to
-    a signed-off outcome, bounced included, suppressed below 80% reporting (D16).
+    PRD-41 D3/D5: lane and tier left the key; binary_version stayed (criterion 25). Each
+    cell names which layer produced it (`project | org | platform | prior`) so a score
+    assembled from four sources cannot hide which one decided. `bands` stay inside the
+    cell (PRD-38 D9). Cost is tokens to a signed-off outcome, bounced included,
+    suppressed below 80% reporting (D16).
 
     The project layer is aggregated live from finished delegations so a test that writes
     a row sees it without waiting on a roll. Org and platform layers read rollup tables
-    when they exist; an instance with neither emits project cells only.
+    when they exist; an instance with neither emits project cells only. A declared
+    version change keeps the previous version's cell and emits it again as `prior`
+    labelled with the new version — pooling versions into one cell is the sabotage.
     """
     from app.models import AttemptTelemetry, HarnessRollup, PlatformRollup, Project
 
@@ -439,7 +476,7 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
     if project_id:
         stmt = stmt.where(Delegation.project_id == project_id)
     rows = [r for r in db.scalars(stmt).all() if (_aware(r.finished_at) or cutoff) >= cutoff]
-    cells: dict[tuple[str, str, str], dict] = {}
+    cells: dict[tuple[str, str, str, str], dict] = {}
     agents: dict[str | None, Agent | None] = {}
     items: dict[str | None, Item | None] = {}
     telemetry: dict[str, Any] = {}
@@ -478,13 +515,14 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
                 versions[(vendor, model)].append(version)
         signed = row.outcome == "signed_off"
         for cap in cap_list:
-            key = (vendor, model, cap)
+            key = (vendor, model, version, cap)
             cell = cells.setdefault(key, _empty_cell())
             _add_attempt(cell, signed_off=signed, band=band, duration=duration,
                          tokens_in=tin, tokens_out=tout)
             if version:
                 cell["binary_version"] = version
-    out = [_cell_out(v, m, c, "project", cell) for (v, m, c), cell in sorted(cells.items())]
+    out = [_cell_out(v, m, c, "project", cell)
+           for (v, m, _ver, c), cell in sorted(cells.items())]
 
     # Org layer: other projects in the same org, from rollups. Absent when there is no org
     # or no sibling traffic — not a zero.

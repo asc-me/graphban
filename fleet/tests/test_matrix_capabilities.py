@@ -158,7 +158,8 @@ def test_currency_appears_only_where_a_row_carries_a_price():
     assert "spend" in axes["gbagent"]
     assert "spend" not in axes["claude"]
     assert "spend" in axes["cursor-agent"]
-    assert axes["gbagent"]["cost"]["value"] == axes["claude"]["cost"]["value"] or True  # ranked on tokens
+    # Axis ranks on tokens even when only one row carries a price.
+    assert axes["gbagent"]["cost"]["value"] == axes["claude"]["cost"]["value"]
 
 
 # ---- 21, 23, 28: caps ------------------------------------------------------------------------
@@ -320,3 +321,25 @@ def test_the_section_7_7_fixture_carries_every_stage():
     assert out["capabilities"] == ["A4", "B1"]
     assert out["profile"]["user"] == "alex"
     assert out["profile"]["budget_tokens"] == 50_000
+
+
+# ---- 14: doctor prints row status and per-capability reading --------------------------------
+
+def test_doctor_prints_per_capability_status_and_layer_labels():
+    row = _row("gbagent", "q", vendor="gbagent", cost_class="local", local=True, status="verified",
+               evidence=[
+                   m.Evidence(item="GRPH-1", date="2026-01-01", outcome="signed_off",
+                              capability="A4"),
+                   m.Evidence(item="GRPH-2", date="2026-02-01", outcome="failed",
+                              capability="B4"),
+               ])
+    cells = _merge(
+        _q("gbagent", "q", "A4", "project", 0.40, n=7),
+        _q("gbagent", "q", "B1", "org", 0.85, n=11),
+    )
+    lines = m.doctor_lines(_matrix(row), ALL_INSTALLED, None, None, cap_measured=cells)
+    detail = next(d for n, _, d in lines if n == "matrix gbagent:q")
+    assert "A4=verified" in detail and "B4=failed" in detail
+    assert "A4/project 0.40 (n=7)" in detail
+    assert "B1/org 0.85 (n=11)" in detail
+    assert any(n.startswith("resolve ") for n, _, _ in lines)
