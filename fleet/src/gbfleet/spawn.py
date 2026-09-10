@@ -241,6 +241,9 @@ class Child:
     #: for the same reason `reported` is one, and checked by BOTH surfaces so the wave-end
     #: reap and the on-exit reap cannot run over each other.
     reaped: bool = False
+    #: PRD-41 S1. Set by the on-exit reap so the exit post can carry the diff; None
+    #: until then, which the server stores as null rather than as a zero-file shape.
+    diff_shape: dict | None = None
 
     @property
     def pid(self) -> int:

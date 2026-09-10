@@ -69,7 +69,7 @@ SIZE_L_TOUCHPOINTS, SIZE_L_CHARS = 6, 2400
 #: parameter, and the explanation is the feature.
 WINDOW_DAYS = 90
 
-SAMPLED = ("first_choice", "fallback", "explicit", "unknown")
+SAMPLED = ("first_choice", "fallback", "explicit", "unknown", "probe")
 
 
 class AttemptRefused(Exception):
@@ -120,6 +120,279 @@ def size_band(item: Item | None) -> str:
     return "M"
 
 
+# ---- PRD-41 S1: the capability set (D1–D4) ---------------------------------------------------
+
+#: Six families, twenty-four leaves. An id never changes meaning once shipped. Attempts that
+#: match no leaf land in `other`, which is a family of its own — not a silent default.
+CAPABILITY_LEAVES: tuple[str, ...] = (
+    "A1", "A2", "A3", "A4", "A5",
+    "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8",
+    "C1", "C2", "C3",
+    "H1", "H2", "H3", "H4", "H5",
+    "E1", "E2", "E3",
+    "F1", "F2", "F3",
+)
+FAMILIES: dict[str, tuple[str, ...]] = {
+    "A": ("A1", "A2", "A3", "A4", "A5"),
+    "B": ("B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8"),
+    "C": ("C1", "C2", "C3"),
+    "H": ("H1", "H2", "H3", "H4", "H5"),
+    "E": ("E1", "E2", "E3"),
+    "F": ("F1", "F2", "F3"),
+    "other": (),
+}
+CAPABILITY_LABELS: dict[str, str] = {
+    "A": "Change shape", "A1": "Localised fix", "A2": "Feature slice",
+    "A3": "Behaviour-preserving refactor", "A4": "Schema and migration",
+    "A5": "Deletion and cleanup",
+    "B": "Layer", "B1": "REST and contract surface", "B2": "MCP tool surface",
+    "B3": "Service and domain logic", "B4": "Persistence and queries",
+    "B5": "React component and state", "B6": "Visual fidelity",
+    "B7": "CLI, process and git", "B8": "Infra, CI and config",
+    "C": "Verification behaviour", "C1": "Discriminating tests",
+    "C2": "Red-to-green loop", "C3": "Reproduce first",
+    "H": "Reasoning demand", "H1": "Concurrency and idempotency",
+    "H2": "Authorization boundaries", "H3": "Cross-engine semantics",
+    "H4": "Long-context coherence", "H5": "Spec fidelity",
+    "E": "Operating the loop", "E1": "Protocol compliance",
+    "E2": "Commit hygiene", "E3": "Prose and docs",
+    "F": "Review competence", "F1": "Bounce precision", "F2": "Bounce recall",
+    "F3": "Reason quality",
+    "other": "other",
+}
+#: PRD-41 D3: history is not dropped. `general` was the mapper saying "none of the four"
+#: and becomes the family `other`, which is the same claim.
+TASK_CLASS_TO_CAPABILITY = {
+    "migration": "A4",
+    "mcp_tool": "B2",
+    "frontend": "B5",
+    "docs": "E3",
+    "general": "other",
+}
+FAMILY_OTHER = "other"
+
+_TEST_RE = re.compile(
+    r"(^|/)(tests?|__tests__|spec)(/|$)|(^|/)test_[^/]+$|_test\.(py|ts|tsx|js)$|\.test\.(ts|tsx|js)$|\.spec\.(ts|tsx|js)$",
+    re.I,
+)
+_H1_RE = re.compile(r"lease|claim|idempoten|ttl|heartbeat", re.I)
+_STATE_FILES = (
+    "agents.md", "claude.md", ".gbfleet-instruction", ".gitignore", ".cursor/mcp.json",
+    ".grok/config.toml", ".grok/mcp.json",
+)
+
+
+def capability_catalog() -> dict:
+    """The enum and family map served on GET /api/harness, so the page never hard-codes it."""
+    return {
+        "leaves": list(CAPABILITY_LEAVES),
+        "families": {k: list(v) for k, v in FAMILIES.items()},
+        "labels": dict(CAPABILITY_LABELS),
+    }
+
+
+def family_of(capability: str) -> str:
+    if capability in FAMILIES:
+        return capability
+    if capability and capability[0] in FAMILIES and capability in CAPABILITY_LEAVES:
+        return capability[0]
+    return FAMILY_OTHER
+
+
+def _norm_path(path: str) -> str:
+    p = path.strip().replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def _is_test_path(path: str) -> bool:
+    return bool(_TEST_RE.search(_norm_path(path)))
+
+
+def _is_bug(item) -> bool:
+    tags = getattr(item, "tags", None) or []
+    return any(isinstance(t, str) and t.strip().lower() == "bug" for t in tags)
+
+
+def _paths_of(item, diff_shape: dict | None) -> list[str]:
+    paths: list[str] = []
+    if item is not None:
+        paths.extend(t for t in (getattr(item, "touchpoints", None) or []) if isinstance(t, str))
+    shape = diff_shape or {}
+    for key in ("paths", "added", "modified", "deleted", "renamed"):
+        vals = shape.get(key) or []
+        if isinstance(vals, list):
+            paths.extend(p for p in vals if isinstance(p, str))
+    return [_norm_path(p) for p in paths if p and p.strip()]
+
+
+def _layer_of(path: str) -> str | None:
+    p = _norm_path(path)
+    if "/routers/" in f"/{p}/" or p.endswith("docs/api-reference.md") or p == "docs/api-reference.md":
+        return "B1"
+    if p.endswith("mcp_server.py") or p.endswith("tool_tiers.py"):
+        return "B2"
+    if "/services/" in f"/{p}/" and p.endswith(".py"):
+        return "B3"
+    if "/models/" in f"/{p}/" or "models/__init__" in p or "alembic/versions" in p:
+        return "B4"
+    if p.startswith("web/src/features") or p.startswith("web/src/lib"):
+        return "B5"
+    if p.startswith("web/src/components/ui") or p.endswith(".css"):
+        return "B6"
+    if p.startswith("fleet/src/gbfleet/") or p.startswith("cli/") or p.startswith("fleet/"):
+        return "B7"
+    if p.startswith(".github/") or p.startswith("docker") or p.startswith("pyproject"):
+        return "B8"
+    return None
+
+
+def _layers_of(paths: list[str]) -> list[str]:
+    found: list[str] = []
+    for path in paths:
+        layer = _layer_of(path)
+        if layer and layer not in found:
+            found.append(layer)
+    return found
+
+
+def _outcome_dict(outcome) -> dict:
+    if outcome is None:
+        return {}
+    if isinstance(outcome, str):
+        return {"outcome": outcome}
+    return dict(outcome)
+
+
+def capabilities(item, diff_shape: dict | None = None, outcome=None) -> list[str]:
+    """The set of §5 ids this attempt exercised (D1, D2).
+
+    Beside `size_band` on purpose: both are derived from what the ledger already holds plus
+    the supervisor's diff, with no LLM and no hand label. Returns a SET — a hybrid file or a
+    slice that touches two layers tags every matching leaf, and a primary-label derivation
+    would empty the others (criterion 1 sabotage). No match is `other`, never an empty list:
+    an absence that read as "no cell" would be the quiet wrong answer.
+    """
+    shape = diff_shape if isinstance(diff_shape, dict) else {}
+    outc = _outcome_dict(outcome)
+    paths = _paths_of(item, shape)
+    added = [_norm_path(p) for p in (shape.get("added") or []) if isinstance(p, str)]
+    deleted = [_norm_path(p) for p in (shape.get("deleted") or []) if isinstance(p, str)]
+    modified = [_norm_path(p) for p in (shape.get("modified") or []) if isinstance(p, str)]
+    renamed = [_norm_path(p) for p in (shape.get("renamed") or []) if isinstance(p, str)]
+    files_added = int(shape["files_added"]) if shape.get("files_added") is not None else len(added)
+    files_deleted = int(shape["files_deleted"]) if shape.get("files_deleted") is not None else len(deleted)
+    files_renamed = int(shape["files_renamed"]) if shape.get("files_renamed") is not None else len(renamed)
+    test_files = int(shape["test_files"]) if shape.get("test_files") is not None else sum(
+        1 for p in paths if _is_test_path(p))
+    net_lines = shape.get("net_lines")
+    layers = list(shape.get("layers") or []) or _layers_of(added or paths)
+    evidence = list(outc.get("evidence") or (getattr(item, "evidence", None) or []))
+    bounced = (outc.get("outcome") or "") == "bounced"
+    bounce_cat = outc.get("bounce_category")
+    hits: list[str] = []
+
+    def add(cap: str) -> None:
+        if cap not in hits:
+            hits.append(cap)
+
+    non_test = [p for p in (added + modified + deleted + renamed or paths) if not _is_test_path(p)]
+    if _is_bug(item) and len(set(non_test)) <= 2 and test_files >= 1:
+        add("A1")
+    added_layers = _layers_of(added) if added else [L for L in layers if files_added]
+    if len(set(added_layers)) >= 2:
+        add("A2")
+    tests_touched = any(_is_test_path(p) for p in (added + modified + deleted))
+    if files_renamed >= 1 and not tests_touched:
+        add("A3")
+    if any("alembic/versions" in p or p.endswith("models/__init__.py") or "models/__init__" in p
+           for p in paths):
+        add("A4")
+    if net_lines is not None and net_lines < 0 and files_deleted >= 1:
+        add("A5")
+    elif files_deleted >= 1 and (net_lines is None) and (files_added + len(modified)) == 0:
+        add("A5")
+
+    if any("/routers/" in f"/{p}/" or p.endswith("docs/api-reference.md") or p == "docs/api-reference.md"
+           for p in paths):
+        add("B1")
+    if any(p.endswith("mcp_server.py") or p.endswith("tool_tiers.py") for p in paths):
+        add("B2")
+    service_py = [p for p in paths if "/services/" in f"/{p}/" and p.endswith(".py")]
+    other_layers = {L for L in _layers_of(paths) if L != "B3"}
+    if service_py and not other_layers:
+        add("B3")
+    if any("/models/" in f"/{p}/" or "models/__init__" in p for p in paths):
+        add("B4")
+    if any(p.startswith("web/src/features") or p.startswith("web/src/lib") for p in paths):
+        add("B5")
+    if any(p.startswith("web/src/components/ui") or p.endswith(".css") for p in paths):
+        add("B6")
+    if any(p.startswith("fleet/src/gbfleet/") or p.startswith("cli/") or p.startswith("fleet/")
+           for p in paths):
+        add("B7")
+    if any(p.startswith(".github/") or p.startswith("docker") or p.startswith("pyproject")
+           for p in paths):
+        add("B8")
+
+    for ev in evidence:
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("kind") == "sabotage" and int(ev.get("tests_failed") or 0) >= 1:
+            add("C1")
+        if ev.get("kind") == "test":
+            add("C2")
+    if outc.get("turns_used") is not None and test_files >= 1:
+        add("C2")
+    if _is_bug(item) and (any(_is_test_path(p) for p in added) or (
+            files_added >= 1 and test_files >= 1)):
+        add("C3")
+
+    if any(_H1_RE.search(p) for p in paths):
+        add("H1")
+    if any(p.endswith("security/authz.py") or p.endswith("keys.py") or "authz" in p
+           or ( _is_test_path(p) and "refus" in p.lower()) for p in paths):
+        add("H2")
+    has_pg = any("postgres" in p.lower() or "psycopg" in p.lower() for p in paths)
+    has_sqlite = any("sqlite" in p.lower() for p in paths)
+    if has_pg and has_sqlite:
+        add("H3")
+    if size_band(item) == "L":
+        add("H4")
+    # H5 is graded on every attempt (scope-bounce share) but tagged when a spec exists.
+    # Tagging every attempt would make criterion 2's `other` cell unreachable.
+    if item is not None and (getattr(item, "prd_id", None) or getattr(item, "prd_section", None)):
+        add("H5")
+
+    ending = outc.get("outcome") or ""
+    tool_errors = outc.get("tool_errors")
+    has_branch = outc.get("has_branch")
+    # Signed-off/bounced attempts in tests often have no branch; that is not a protocol
+    # failure. E1 is released/expired, a missing branch on a non-verdict ending, or
+    # malformed tool calls the adapter counted.
+    if ending in ("released", "expired"):
+        add("E1")
+    elif has_branch is False and ending not in ("signed_off", "bounced"):
+        add("E1")
+    if tool_errors is not None and int(tool_errors) > 0:
+        add("E1")
+    if any(_norm_path(p).lower() in _STATE_FILES or _norm_path(p).lower().endswith(s)
+           for p in paths for s in _STATE_FILES):
+        add("E2")
+    if any(p.startswith("docs/") or p.endswith(".md") for p in paths):
+        add("E3")
+
+    if outc.get("role") == "reviewer":
+        add("F1")
+        if ending == "signed_off":
+            add("F2")
+        if bounced and bounce_cat and bounce_cat != "other":
+            add("F3")
+
+    return hits or [FAMILY_OTHER]
+
+
 def _declared(db: Session, row: Delegation) -> tuple[str, str]:
     """The child's declared vendor and model, in the same terms `delegation.measured` uses."""
     from app.services.delegation import UNDECLARED
@@ -143,6 +416,8 @@ def sampled_from(*, declared_vendor: str, declared_model: str, winner: str | Non
     gap it hides: a supervisor that could not reach the server has not turned every attempt
     into somebody's first choice.
     """
+    if source == "probe":
+        return "probe"
     if source == "explicit":
         return "explicit"
     if not winner:
@@ -233,6 +508,7 @@ def derive(db: Session, row: Delegation) -> AttemptTelemetry | None:
     telemetry.outcome = row.outcome
     telemetry.bounce_category = (bounce_category(getattr(item, "bounce_reason", None))
                                  if row.outcome == "bounced" else None)
+    telemetry.capabilities = _capabilities_for_row(item, telemetry)
     telemetry.claim_to_finish_s = (int((finished - claimed).total_seconds())
                                    if claimed and finished and finished >= claimed else None)
     telemetry.sampled = sampled_from(
@@ -259,6 +535,18 @@ def task_class(item: Item | None) -> str:
     if item is None:
         return "general"
     return delegation_svc.checklist_for(item.touchpoints) or "general"
+
+
+def _capabilities_for_row(item: Item | None, row: AttemptTelemetry) -> list[str]:
+    """Exit-time set: touchpoints + the supervisor's diff + the outcome (D2)."""
+    return capabilities(item, row.diff_shape, {
+        "outcome": row.outcome,
+        "bounce_category": row.bounce_category,
+        "tool_errors": row.tool_errors,
+        "turns_used": row.turns_used,
+        "evidence": list(item.evidence or []) if item is not None else [],
+        "has_branch": bool(getattr(item, "branch", None)) if item is not None else None,
+    })
 
 
 def _enrolment_of(db: Session, row: Delegation) -> str | None:
@@ -426,6 +714,12 @@ def record_exit(db: Session, *, target: Target, values: dict) -> AttemptTelemetr
     _merge(row, values)
     row.report_count = (row.report_count or 0) + 1
     row.reported_at = _now()
+    # Diff shape arriving after the outcome must re-tag: the set at derive-time had no
+    # diff, and leaving it would make criterion 1's A2 unreachable whenever the supervisor
+    # posted second (the ordinary order).
+    if row.derived_at is not None:
+        item = db.get(Item, row.item_id) if row.item_id else None
+        row.capabilities = _capabilities_for_row(item, row)
     db.flush()
     return row
 
@@ -486,6 +780,9 @@ def row_dict(row: AttemptTelemetry) -> dict:
         "tier_requested": row.tier_requested,
         "task_class": row.task_class,
         "size_band": row.size_band,
+        "capabilities": list(row.capabilities or []),
+        "diff_shape": row.diff_shape,
+        "tool_errors": row.tool_errors,
         "attempt_no": row.attempt_no,
         "sampled": row.sampled,
         "declaration_mismatch": row.declaration_mismatch,
@@ -520,7 +817,7 @@ SKEW_SHARE = 0.8
 #: numerator over a full denominator makes a vendor that prints nothing look cheap.
 COST_COVERAGE = 0.8
 
-CELL_KEYS = ("vendor", "model", "binary_version", "lane", "tier", "task_class", "size_band")
+CELL_KEYS = ("vendor", "model", "binary_version", "capability", "size_band")
 
 
 def week_of(when: datetime) -> str:
@@ -529,9 +826,19 @@ def week_of(when: datetime) -> str:
     return f"{year}-W{week:02d}"
 
 
-def _cell_of(row: AttemptTelemetry) -> tuple:
-    return (row.vendor or "", row.model or "", row.binary_version or "", row.lane or "",
-            row.tier_requested or "", row.task_class or "", row.size_band or "")
+def _caps_of(row: AttemptTelemetry) -> list[str]:
+    """The set this attempt contributes to. Falls back through the D3 map so a row
+    derived before S1 still lands somewhere rather than vanishing from the grid."""
+    caps = [c for c in (row.capabilities or []) if isinstance(c, str) and c]
+    if caps:
+        return caps
+    mapped = TASK_CLASS_TO_CAPABILITY.get(row.task_class or "", FAMILY_OTHER)
+    return [mapped]
+
+
+def _cell_keys_of(row: AttemptTelemetry) -> list[tuple]:
+    base = (row.vendor or "", row.model or "", row.binary_version or "", row.size_band or "")
+    return [(*base[:3], cap, base[3]) for cap in _caps_of(row)]
 
 
 def _median(values: list[float]) -> float | None:
@@ -562,24 +869,25 @@ def roll(db: Session, project_id: str, *, weeks: set[str] | None = None) -> int:
         week = week_of(row.derived_at)
         if weeks is not None and week not in weeks:
             continue
-        cell = buckets.setdefault((week, *_cell_of(row)), {
-            "finished": 0, "signed_off": 0, "bounced": 0, "seconds": [],
-            "tokens_in": 0, "tokens_out": 0, "tokens_reported": 0, "signed_off_reported": 0,
-            "first_choice": 0, "fallback": 0, "explicit": 0, "unknown": 0})
-        cell["finished"] += 1
-        cell["signed_off"] += 1 if row.outcome == "signed_off" else 0
-        cell["bounced"] += 1 if row.outcome == "bounced" else 0
-        if row.claim_to_finish_s is not None:
-            cell["seconds"].append(float(row.claim_to_finish_s))
-        # Tokens are SUMMED over the attempts that reported, with the count of those attempts
-        # beside them. No average is stored, which is what keeps "not reported" from becoming
-        # a zero the moment a week is aggregated.
-        if row.tokens_in is not None or row.tokens_out is not None:
-            cell["tokens_in"] += row.tokens_in or 0
-            cell["tokens_out"] += row.tokens_out or 0
-            cell["tokens_reported"] += 1
-            cell["signed_off_reported"] += 1 if row.outcome == "signed_off" else 0
-        cell[row.sampled if row.sampled in SAMPLED else "unknown"] += 1
+        for key in _cell_keys_of(row):
+            cell = buckets.setdefault((week, *key), {
+                "finished": 0, "signed_off": 0, "bounced": 0, "seconds": [],
+                "tokens_in": 0, "tokens_out": 0, "tokens_reported": 0, "signed_off_reported": 0,
+                "first_choice": 0, "fallback": 0, "explicit": 0, "unknown": 0, "probe": 0})
+            cell["finished"] += 1
+            cell["signed_off"] += 1 if row.outcome == "signed_off" else 0
+            cell["bounced"] += 1 if row.outcome == "bounced" else 0
+            if row.claim_to_finish_s is not None:
+                cell["seconds"].append(float(row.claim_to_finish_s))
+            # Tokens are SUMMED over the attempts that reported, with the count of those attempts
+            # beside them. No average is stored, which is what keeps "not reported" from becoming
+            # a zero the moment a week is aggregated.
+            if row.tokens_in is not None or row.tokens_out is not None:
+                cell["tokens_in"] += row.tokens_in or 0
+                cell["tokens_out"] += row.tokens_out or 0
+                cell["tokens_reported"] += 1
+                cell["signed_off_reported"] += 1 if row.outcome == "signed_off" else 0
+            cell[row.sampled if row.sampled in SAMPLED else "unknown"] += 1
 
     touched = weeks if weeks is not None else {k[0] for k in buckets}
     existing = db.scalars(select(HarnessRollup).where(
@@ -589,18 +897,19 @@ def roll(db: Session, project_id: str, *, weeks: set[str] | None = None) -> int:
             db.delete(old)
     db.flush()
     now = _now()
-    for (week, vendor, model, version, lane, tier, task_class, band), cell in buckets.items():
+    for (week, vendor, model, version, capability, band), cell in buckets.items():
         db.add(HarnessRollup(
             project_id=project_id, week=week, vendor=vendor, model=model,
-            binary_version=version, lane=lane, tier=tier, task_class=task_class,
-            size_band=band, finished=cell["finished"], signed_off=cell["signed_off"],
+            binary_version=version, capability=capability, size_band=band,
+            finished=cell["finished"], signed_off=cell["signed_off"],
             bounced=cell["bounced"],
             median_seconds=(int(_median(cell["seconds"])) if cell["seconds"] else None),
             tokens_in=cell["tokens_in"] or None, tokens_out=cell["tokens_out"] or None,
             tokens_reported=cell["tokens_reported"],
             signed_off_reported=cell["signed_off_reported"],
             first_choice=cell["first_choice"], fallback=cell["fallback"],
-            explicit=cell["explicit"], unknown=cell["unknown"], rolled_at=now))
+            explicit=cell["explicit"], unknown=cell["unknown"], probe=cell["probe"],
+            rolled_at=now))
     db.flush()
     return len(buckets)
 
@@ -679,10 +988,11 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
            versions: str = "current", overlay: bool = False) -> dict:
     """The Harness page's whole read: one entry per cell, each with its weekly series.
 
-    `versions="current"` keeps only the newest `binary_version` seen for each vendor+model and
-    names the others in `versions_seen`, which is what "defaults to the current version and
-    shows both on request" means (criterion 7). Every cell carries `n`, `below_floor`, its
-    sampling counts and skew badge, and a cost proxy that says when it will not compare.
+    `versions="current"` keeps the newest `binary_version` per vendor+model AND the previous
+    one when both exist in the window (PRD-41 D13: version cells sit side by side rather than
+    drawing one trend through two versions). `versions=all` returns every version. Every cell
+    carries `n`, `below_floor`, its sampling counts and skew badge, and a cost proxy that
+    says when it will not compare.
     """
     roll_if_stale(db, project_id)
     window = WINDOW_DAYS if window_days is None else window_days
@@ -692,9 +1002,26 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
     out = _shape(rows, window=window, versions=versions)
     out["project_id"] = project_id
     out["scope"] = "project"
+    out["capability_set"] = capability_catalog()
+    out["coverage"] = _coverage(db, [project_id], cutoff)
     if overlay:
         attach_platform(db, out)
     return out
+
+
+def _coverage(db: Session, project_ids: list[str], cutoff: str) -> dict:
+    """Attempts that derived to ≥1 leaf over attempts. The number the page shows so a
+    rotting heuristic is a fact, not a silent reclassification (criterion 2)."""
+    if not project_ids:
+        return {"attempts": 0, "with_leaf": 0, "rate": None}
+    rows = [r for r in db.scalars(select(AttemptTelemetry).where(
+        AttemptTelemetry.project_id.in_(project_ids),
+        AttemptTelemetry.derived_at.is_not(None))).all()
+            if week_of(r.derived_at) >= cutoff]
+    attempts = len(rows)
+    with_leaf = sum(1 for r in rows if any(c in CAPABILITY_LEAVES for c in _caps_of(r)))
+    return {"attempts": attempts, "with_leaf": with_leaf,
+            "rate": round(with_leaf / attempts, 3) if attempts else None}
 
 
 def _shape(rows: list, *, window: int, versions: str, per_project: bool = False) -> dict:
@@ -703,8 +1030,7 @@ def _shape(rows: list, *, window: int, versions: str, per_project: bool = False)
     definition of the same number."""
     cells: dict[tuple, dict] = {}
     for row in rows:
-        key = (row.vendor, row.model, row.binary_version, row.lane, row.tier,
-               row.task_class, row.size_band)
+        key = (row.vendor, row.model, row.binary_version, row.capability, row.size_band)
         cell = cells.setdefault(key, {
             "finished": 0, "signed_off": 0, "bounced": 0, "tokens_in": 0, "tokens_out": 0,
             "tokens_reported": 0, "signed_off_reported": 0,
@@ -723,7 +1049,7 @@ def _shape(rows: list, *, window: int, versions: str, per_project: bool = False)
         cell["tokens_reported"] += row.tokens_reported
         cell["signed_off_reported"] += row.signed_off_reported or 0
         for reason in SAMPLED:
-            cell["sampling"][reason] += getattr(row, reason)
+            cell["sampling"][reason] += getattr(row, reason, 0) or 0
         if row.median_seconds is not None:
             cell["medians"].append(float(row.median_seconds))
         cell["series"].append({
@@ -736,26 +1062,31 @@ def _shape(rows: list, *, window: int, versions: str, per_project: bool = False)
             "median_seconds": row.median_seconds,
         })
 
-    # "Current" is per vendor+model, not per cell: one binary runs every lane, and picking the
-    # newest version separately in each cell would show two versions side by side and call
-    # both current.
     newest: dict[tuple, str] = {}
+    previous: dict[tuple, str] = {}
     for (vendor, model, version, *_rest) in cells:
-        seen = newest.get((vendor, model))
+        pair = (vendor, model)
+        seen = newest.get(pair)
         if seen is None or _version_key(version) > _version_key(seen):
-            newest[(vendor, model)] = version
+            if seen is not None:
+                previous[pair] = seen
+            newest[pair] = version
+        elif version != seen and (pair not in previous
+                                  or _version_key(version) > _version_key(previous[pair])):
+            previous[pair] = version
     versions_seen: dict[tuple, list[str]] = {}
     for (vendor, model, version, *_rest) in cells:
         versions_seen.setdefault((vendor, model), [])
         if version not in versions_seen[(vendor, model)]:
             versions_seen[(vendor, model)].append(version)
 
-    out = []
+    leaves = []
     for key, cell in sorted(cells.items()):
-        vendor, model, version, lane, tier, task_class, band = key
-        if versions == "current" and version != newest[(vendor, model)]:
+        vendor, model, version, capability, band = key
+        if versions == "current" and version != newest[(vendor, model)] and version != previous.get(
+                (vendor, model)):
             continue
-        out.append({
+        leaves.append({
             "key": dict(zip(CELL_KEYS, key)),
             "finished": cell["finished"],
             "signed_off": cell["signed_off"],
@@ -770,23 +1101,105 @@ def _shape(rows: list, *, window: int, versions: str, per_project: bool = False)
             "versions_seen": sorted(versions_seen[(vendor, model)], key=_version_key),
             "is_current_version": version == newest[(vendor, model)],
             "series": sorted(cell["series"], key=lambda p: p["week"]),
-            # D12: which of the org's projects the number came from. Empty at project scope,
-            # where the question does not arise.
             "by_project": [{"project_id": pid, **counts}
                            for pid, counts in sorted(cell["by_project"].items())],
         })
+    out = _as_grid(leaves)
     return {
         "window_days": window,
         "versions": versions,
         "floor": FLOOR,
         "skew_share": SKEW_SHARE,
         "generated_at": _now().isoformat(),
+        "capability_set": capability_catalog(),
         "cells": out,
         # Named rather than left to be counted off a list the page may have filtered. A fleet
         # whose every cell is thin is the ordinary state of a small instance, and the page has
         # to be able to say so instead of looking empty.
         "below_floor_count": sum(1 for c in out if c["below_floor"]),
     }
+
+
+def _sum_sampling(members: list[dict]) -> dict:
+    out = {r: 0 for r in SAMPLED}
+    for m in members:
+        for reason in SAMPLED:
+            out[reason] += (m.get("sampling") or {}).get(reason, 0)
+    return out
+
+
+def _as_grid(leaves: list[dict]) -> list[dict]:
+    """Family rollups with leaves nested. A leaf under the floor stays in the payload
+    greyed; serving the rollup *as* the leaf is the criterion-3 sabotage."""
+    groups: dict[tuple, list[dict]] = {}
+    for cell in leaves:
+        cap = cell["key"]["capability"]
+        family = family_of(cap)
+        key = (cell["key"]["vendor"], cell["key"]["model"], cell["key"]["binary_version"],
+               family, cell["key"]["size_band"])
+        groups.setdefault(key, []).append(cell)
+    out: list[dict] = []
+    for (vendor, model, version, family, band), members in sorted(groups.items()):
+        if family == FAMILY_OTHER:
+            cell = members[0]
+            out.append({**cell, "kind": "other", "family": FAMILY_OTHER, "label": "other",
+                        "leaves": []})
+            continue
+        finished = sum(m["finished"] for m in members)
+        signed_off = sum(m["signed_off"] for m in members)
+        bounced = sum(m["bounced"] for m in members)
+        sampling = _sum_sampling(members)
+        series_by_week: dict[str, dict] = {}
+        for m in members:
+            for point in m["series"]:
+                seen = series_by_week.setdefault(point["week"], {
+                    "week": point["week"], "finished": 0, "signed_off": 0,
+                    "median_seconds": point.get("median_seconds")})
+                seen["finished"] += point["finished"]
+                seen["signed_off"] += point["signed_off"]
+        series = []
+        for week, point in sorted(series_by_week.items()):
+            series.append({
+                **point,
+                "rate": round(point["signed_off"] / point["finished"], 3) if point["finished"] else None,
+                "below_floor": point["finished"] < FLOOR,
+            })
+        by_project: dict[str, dict] = {}
+        for m in members:
+            for row in m.get("by_project") or []:
+                seen = by_project.setdefault(row["project_id"],
+                                             {"finished": 0, "signed_off": 0})
+                seen["finished"] += row["finished"]
+                seen["signed_off"] += row["signed_off"]
+        # Cost of a family with several leaves is on the leaves; a single-leaf family
+        # can carry that leaf's cost without pretending the two are different numbers.
+        cost = members[0]["cost"] if len(members) == 1 else {
+            "comparable": False, "reported": 0, "finished": finished,
+            "reason": "family rollup: cost is on the leaves"}
+        out.append({
+            "kind": "family",
+            "family": family,
+            "label": "family rollup",
+            "key": {"vendor": vendor, "model": model, "binary_version": version,
+                    "capability": family, "size_band": band},
+            "finished": finished,
+            "signed_off": signed_off,
+            "bounced": bounced,
+            "rate": round(signed_off / finished, 3) if finished else None,
+            "below_floor": finished < FLOOR,
+            "sampling": sampling,
+            "skew": _skew(sampling),
+            "median_seconds": members[0]["median_seconds"] if len(members) == 1 else None,
+            "cost": cost,
+            "versions_seen": members[0]["versions_seen"],
+            "is_current_version": members[0]["is_current_version"],
+            "series": series,
+            "by_project": [{"project_id": pid, **counts}
+                           for pid, counts in sorted(by_project.items())],
+            "leaves": [{**m, "kind": "leaf", "family": family,
+                        "label": m["key"]["capability"]} for m in members],
+        })
+    return out
 
 
 # ---- recommendations: what a person has seen, and what a cell teaches (D7, D8) ---------------
@@ -802,8 +1215,7 @@ def _lesson_key(cell: dict) -> str:
     mark. Crossing the floor is an event in a cell's life, not a level it can re-enter.
     """
     k = cell["key"]
-    return ":".join([k["vendor"], k["model"], k["lane"], k["tier"], k["task_class"],
-                     k["size_band"]])
+    return ":".join([k["vendor"], k["model"], k["capability"], k["size_band"]])
 
 
 def marks_for(db: Session, *, user_id: str, scope: str, scope_id: str) -> dict[str, "RecommendationMark"]:
@@ -891,8 +1303,8 @@ def lessons_for_crossings(db: Session, project_id: str, report: dict) -> list[st
             continue
         k = cell["key"]
         runner = _runner_up_cell(report, cell)
-        text = (f"For {k['lane']}/{k['task_class']} items of size {k['size_band']} at tier "
-                f"{k['tier']} in the last {report['window_days']} days, "
+        text = (f"For {k['capability']} items of size {k['size_band']} "
+                f"in the last {report['window_days']} days, "
                 f"{k['vendor']}:{k['model']} signed off {cell['signed_off']}/{cell['finished']}"
                 + (f"; {_cell_label(runner)} signed off "
                    f"{runner['signed_off']}/{runner['finished']}." if runner else "."))
@@ -921,9 +1333,8 @@ def _runner_up_cell(report: dict, cell: dict) -> dict | None:
     k = cell["key"]
     rivals = [c for c in report["cells"]
               if c is not cell and not c["below_floor"] and c["rate"] is not None
-              and (c["key"]["lane"], c["key"]["tier"], c["key"]["task_class"],
-                   c["key"]["size_band"]) == (k["lane"], k["tier"], k["task_class"],
-                                              k["size_band"])
+              and (c["key"]["capability"], c["key"]["size_band"]) == (
+                  k["capability"], k["size_band"])
               and _cell_label(c) != _cell_label(cell)]
     return max(rivals, key=lambda c: c["rate"]) if rivals else None
 
@@ -979,6 +1390,8 @@ def org_report(db: Session, org_id: str, *, window_days: int | None = None,
     out["org_id"] = org_id
     out["scope"] = "org"
     out["projects"] = projects
+    out["capability_set"] = capability_catalog()
+    out["coverage"] = _coverage(db, projects, cutoff)
     if overlay:
         attach_platform(db, out)
     return out
@@ -986,7 +1399,7 @@ def org_report(db: Session, org_id: str, *, window_days: int | None = None,
 
 def _platform_key(cell_key: dict) -> tuple:
     return (cell_key["vendor"], cell_key["model"], cell_key["binary_version"],
-            cell_key["lane"], cell_key["tier"], cell_key["task_class"], cell_key["size_band"])
+            cell_key["capability"], cell_key["size_band"])
 
 
 def attach_platform(db: Session, report_out: dict) -> None:
@@ -1009,8 +1422,7 @@ def attach_platform(db: Session, report_out: dict) -> None:
     rows = db.scalars(select(PlatformRollup)).all()
     by_key: dict[tuple, dict] = {}
     for row in rows:
-        key = (row.vendor, row.model, row.binary_version, row.lane, row.tier,
-               row.task_class, row.size_band)
+        key = (row.vendor, row.model, row.binary_version, row.capability, row.size_band)
         seen = by_key.setdefault(key, {"orgs": 0, "finished": 0, "signed_off": 0,
                                        "top_share": 0.0})
         seen["orgs"] = max(seen["orgs"], row.orgs_contributing)
@@ -1064,8 +1476,8 @@ def platform_roll(db: Session) -> int:
     if projects:
         for row in db.scalars(select(HarnessRollup).where(
                 HarnessRollup.project_id.in_(list(projects)))).all():
-            key = (row.week, row.vendor, row.model, row.binary_version, row.lane, row.tier,
-                   row.task_class, row.size_band)
+            key = (row.week, row.vendor, row.model, row.binary_version, row.capability,
+                   row.size_band)
             cell = buckets.setdefault(key, {"per_org": {}})
             org = projects[row.project_id]
             seen = cell["per_org"].setdefault(org, {"finished": 0, "signed_off": 0})
@@ -1086,10 +1498,10 @@ def platform_roll(db: Session) -> int:
         finished = sum(v["finished"] for v in cell["per_org"].values())
         signed_off = sum(v["signed_off"] for v in cell["per_org"].values())
         top = max((v["finished"] for v in cell["per_org"].values()), default=0)
-        week, vendor, model, version, lane, tier, task_class, band = key
+        week, vendor, model, version, capability, band = key
         db.add(PlatformRollup(
-            week=week, vendor=vendor, model=model, binary_version=version, lane=lane,
-            tier=tier, task_class=task_class, size_band=band,
+            week=week, vendor=vendor, model=model, binary_version=version,
+            capability=capability, size_band=band,
             orgs_contributing=len(counting), finished=finished, signed_off=signed_off,
             top_org_share=(top / finished) if finished else None, rolled_at=now))
         written += 1

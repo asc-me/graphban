@@ -831,8 +831,17 @@ def watch_tick(
     _enforce_the_lease(wave, children)
     if roster is not None:
         _catch_the_disowned(wave, children, roster, limits)
-    _report_exits(children, client, wave)
+    # Reap first so the exit post can carry the diff shape computed against the base
+    # after salvage. Reporting first would store a null shape that a later post can
+    # fill, but the ordinary path should not need two posts to say what the child did.
+    #
+    # Safe for the spend reading below (GRPH-834), whose own comment used to claim the
+    # opposite: `stdout_text` reads `<workspace>/logs/<slot>/stdout.log`, and `reap`
+    # removes `<workspace>/<slot>` — the worktree, a SIBLING of the log directory rather
+    # than its parent. Measured on a real wave: both children's logs were still readable
+    # after their worktrees were gone.
     _reap_exited(wave, children, client)
+    _report_exits(children, client, wave)
     if persist is not None:
         persist()
 
@@ -869,6 +878,7 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
             wave.failures.append(f"{child.branch}: reap failed ({exc})")
             continue
         wave.reaped.append(reaped)
+        child.diff_shape = reaped.diff_shape
         # Measured AFTER the salvage, deliberately, exactly as `_reap_all` does: measuring
         # first would miss the work that was most at risk of being lost.
         try:
@@ -1103,9 +1113,11 @@ def _report_exits(children: list[Child], client: Graphban, wave: "Wave | None" =
         # page renders as "not reported" — never as zero.
         facts = adapters.result_facts(child.adapter, child.stdout_text())
         if wave is not None and facts:
-            # Kept HERE rather than recomputed at the end of the wave, because `stdout_text`
-            # reads a log file that reaping removes with the worktree. The one moment this is
-            # knowable is the moment the child is already being asked about.
+            # Kept HERE rather than recomputed at the end of the wave: the vendor's record
+            # lives only in this child's stdout and the wave summary has no other route to
+            # it. It does NOT depend on running before the reap — the log sits in the
+            # workspace's `logs/` directory and the reap removes the worktree beside it, so
+            # the two are ordered by what the POST needs, not by what this reading needs.
             wave.spend[child.branch] = {"adapter": child.adapter, **facts}
         if not child.seat_id:
             # No seat, so there is no attempt row to address — but the run still COST
@@ -1121,6 +1133,7 @@ def _report_exits(children: list[Child], client: Graphban, wave: "Wave | None" =
             wall_seconds=int(time.monotonic() - child.started_at),
             turn_budget=child.turn_budget,
             exit_meaning=_exit_meaning(child, code),
+            diff_shape=child.diff_shape,
             **facts,
         )
 
@@ -1374,6 +1387,7 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
             tree, message=wt_mod.salvage_message(child.adapter, held),
         )
         wave.reaped.append(reaped)
+        child.diff_shape = reaped.diff_shape
 
         # AFTER the reap, deliberately: salvage has just committed whatever the worker
         # left uncommitted, so the branch now holds the whole of what it did. Measuring

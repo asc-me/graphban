@@ -129,6 +129,7 @@ def test_a_finished_delegation_produces_exactly_one_row_with_the_work_and_the_ru
     assert row.lane == "backend" and row.tier_requested == "cheap"
     assert row.vendor == "anthropic" and row.model == "sonnet"
     assert row.task_class == "general" and row.size_band == "S"
+    assert row.capabilities == ["other"]
     assert row.attempt_no == 1 and row.outcome == "signed_off"
     assert row.bounce_category is None
     assert row.claim_to_finish_s is not None and row.claim_to_finish_s >= 0
@@ -206,6 +207,33 @@ def test_the_exit_post_enriches_the_row_and_is_idempotent(client, key, db):
     assert len(db.scalars(select(AttemptTelemetry)).all()) == 1
     row = _telemetry(db, did)
     assert row.tokens_in == 91000 and row.wall_seconds == 812
+
+
+def test_an_exit_post_diff_shape_retags_and_a_null_does_not_clear_it(client, key, db):
+    """PRD-41 S1 / PRD-38 D3. Null is not zero: a second post without a shape keeps the first."""
+    planner = _agent(client, key, "planner")
+    item, did, child = _linked(
+        client, key, db, planner, "shape",
+        touchpoints=["backend/alembic/versions/0117.py"])
+    _sign_off(client, key, item, child)
+    assert "A4" in _telemetry(db, did).capabilities
+    assert "B1" not in _telemetry(db, did).capabilities
+
+    shape = {
+        "files_added": 1, "files_modified": 0, "files_deleted": 0, "files_renamed": 0,
+        "test_files": 0, "net_lines": 20, "layers": ["B1"],
+        "added": ["backend/app/routers/new.py"],
+    }
+    _post(client, key, {"delegation_id": did, "diff_shape": shape, "tool_errors": 2})
+    row = _telemetry(db, did)
+    assert row.diff_shape["files_added"] == 1
+    assert row.tool_errors == 2
+    assert set(row.capabilities) >= {"A4", "B1"}
+
+    _post(client, key, {"delegation_id": did, "binary_version": "1.0.0"})
+    row = _telemetry(db, did)
+    assert row.diff_shape["files_added"] == 1
+    assert row.tool_errors == 2
 
 
 def test_a_session_token_and_a_key_that_cannot_write_the_project_are_refused(

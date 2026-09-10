@@ -10,11 +10,12 @@ import type { HarnessCell, HarnessReport } from "@/lib/types";
 function cell(over: Partial<HarnessCell> = {}): HarnessCell {
   return {
     key: {
-      vendor: "gbagent", model: "qwen3.6", binary_version: "0.9.1", lane: "backend",
-      tier: "cheap", task_class: "general", size_band: "M",
+      vendor: "gbagent", model: "qwen3.6", binary_version: "0.9.1",
+      capability: "other", size_band: "M",
     },
     finished: 12, signed_off: 9, bounced: 3, rate: 0.75, below_floor: false,
-    sampling: { first_choice: 6, fallback: 4, explicit: 2, unknown: 0 },
+    sampling: { first_choice: 6, fallback: 4, explicit: 2, unknown: 0, probe: 0 },
+    kind: "other", family: "other", label: "other", leaves: [],
     skew: null, median_seconds: 620,
     cost: { comparable: true, reported: 12, finished: 12, tokens_per_signed_off: 8100,
             tokens_in: 70000, tokens_out: 2900 },
@@ -84,7 +85,7 @@ describe("Harness page", () => {
       report({
         cells: [cell({
           finished: 10, signed_off: 9, rate: 0.9,
-          sampling: { first_choice: 9, fallback: 0, explicit: 1, unknown: 0 },
+          sampling: { first_choice: 9, fallback: 0, explicit: 1, unknown: 0, probe: 0 },
           skew: { reason: "first_choice", share: 0.9 },
         })],
       }),
@@ -210,5 +211,45 @@ describe("Harness page", () => {
     harness.mockResolvedValueOnce(report({ cells: [], below_floor_count: 0 }));
     show();
     expect(await screen.findByText(/Nothing measured yet/)).toBeInTheDocument();
+  });
+
+  it("shows coverage and greys a leaf under a labelled family rollup", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        coverage: { attempts: 10, with_leaf: 7, rate: 0.7 },
+        cells: [cell({
+          kind: "family", family: "B", label: "family rollup",
+          key: { ...cell().key, capability: "B" },
+          finished: 4, signed_off: 2, rate: 0.5, below_floor: true,
+          leaves: [{
+            ...cell(),
+            kind: "leaf", family: "B", label: "B5",
+            key: { ...cell().key, capability: "B5" },
+            finished: 4, signed_off: 2, rate: 0.5, below_floor: true,
+          }],
+        })],
+        below_floor_count: 1,
+      }),
+    );
+    show();
+    expect(await screen.findByTestId("harness-coverage")).toHaveTextContent(
+      "Coverage 70% — 7/10 attempts tagged a leaf",
+    );
+    expect(screen.getByTestId("harness-family-label")).toHaveTextContent("family rollup");
+    const leaf = screen.getByTestId("harness-leaf");
+    expect(leaf).toHaveAttribute("data-below-floor", "true");
+    expect(leaf).toHaveTextContent("B5");
+    expect(leaf).toHaveTextContent("below the floor");
+  });
+
+  it("shows an other cell with its count rather than hiding it", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        coverage: { attempts: 3, with_leaf: 0, rate: 0 },
+        cells: [cell({ kind: "other", family: "other", label: "other", finished: 3 })],
+      }),
+    );
+    show();
+    expect(await screen.findByTestId("harness-other")).toHaveTextContent("other — 3");
   });
 });

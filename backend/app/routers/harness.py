@@ -1,8 +1,8 @@
 """The Harness page's server half (PRD-38 PR 2).
 
-One read that answers the page's whole question — how each vendor x model x lane x tier x task
-class x size band has actually turned out, week by week, with the sample count, the sampling
-skew and the cost proxy attached to every number.
+One read that answers the page's whole question — how each vendor x model x capability x size
+band has actually turned out, week by week, with the sample count, the sampling skew, the cost
+proxy, the capability enum and the derivation's coverage attached to every number.
 
 Session-authenticated, like the Fleet view beside it: the caller is a person deciding whether
 to change a preference, not an agent working inside one. The supervisor's own view of the same
@@ -31,10 +31,11 @@ def harness_report(project_id: str | None = None, org_id: str | None = None,
                    user: User = Depends(get_current_user)):
     """Every cell in the window, with its weekly series.
 
-    `versions=current` (the default) keeps the newest binary version per vendor+model and names
-    the rest in `versions_seen`; `versions=all` returns every version as its own cell, because
-    two versions of one harness are two things and pooling them would hide a regression inside
-    an average.
+    `versions=current` (the default) keeps the newest binary version per vendor+model and the
+    previous one when both exist (PRD-41 D13); `versions=all` returns every version as its own
+    cell, because two versions of one harness are two things and pooling them would hide a
+    regression inside an average. The payload also carries `capability_set` (the §5 enum and
+    family map) and `coverage` (attempts with ≥1 leaf / attempts).
     """
     if window_days is not None and (window_days < 1 or window_days > 1000):
         raise HTTPException(422, "window_days must be between 1 and 1000")
