@@ -544,3 +544,34 @@ def test_a_malformed_record_does_not_take_the_supervisor_down(recorded, tmp_path
     (child.log_dir / "stdout.log").write_text('{"gbagent": {"turns": ]]]\n', encoding="utf-8")
     _tick(fleet.client, [child])
     assert [b for path, b in posts if b.get("enrolment_id")], "no report was sent at all"
+
+
+def test_the_exit_post_carries_the_shape_of_what_the_child_changed(recorded, git_repo: Path,
+                                                                   tmp_path: Path):
+    """The reap runs BEFORE the exit post, and until this test nothing said so.
+
+    `worktree.reap` computes the diff shape against the base once salvage has committed, and
+    `_report_exits` reads it off the child. Reverse the two calls in `watch_tick` and every
+    exit post carries a null shape: the capability rollups lose the `diff_shape` axis this
+    slice exists to add (PRD-41 S1), the page renders "not reported", and nothing anywhere
+    fails. That is how the two came to be ordered differently on two branches at once —
+    six tests covered the reaping and six covered the reporting, and none covered the seam.
+
+    Sabotage: swap `_reap_exited` and `_report_exits` in `watch_tick`. This fails; measured,
+    nothing else in the fleet suite does.
+    """
+    fleet, posts = recorded
+    tree = _dirty_worktree(git_repo, tmp_path)
+    child = _exited()
+    child.worktree, child.branch, child.base = tree.path, tree.branch, tree.base
+
+    _tick(fleet.client, [child])
+
+    exits = [body for path, body in posts
+             if path == "/api/fleet/attempts" and "exit_meaning" in body]
+    assert exits, f"no exit post at all: {posts}"
+    shape = exits[-1].get("diff_shape")
+    assert shape, "the exit post carried no diff shape — the reap must run before the report"
+    # The salvage committed one new file, so the shape describes it rather than an empty diff.
+    assert shape["files_added"] == 1, shape
+    assert "note.md" in shape["added"], shape
