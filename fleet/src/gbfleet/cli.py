@@ -249,6 +249,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--deny", action="append", default=[], metavar="NAME",
         help="add a command to the deny-list children get a refusing stub for. Repeatable")
     until.add_argument(
+        "--budget", type=int, default=None, metavar="TOKENS",
+        help="end the wave once the children that REPORT their usage have spent this many "
+             "tokens. Refused up front when the adapter reports nothing, because a cap that "
+             "can never be exceeded never fires")
+    until.add_argument(
         "--dry-run", action="store_true",
         help="print what this wave WOULD delegate and exit, without minting a seat or cutting "
              "a worktree. The scoping bug existed for exactly as long as nobody could see the "
@@ -505,6 +510,7 @@ def _until(args) -> int:
             debug=args.debug,
             request=args.request,
             prd=args.prd or None,
+            budget=args.budget or None,
             shared=_shared_servers(args),
             tiers=tiers,
             launch_for=lambda name, model="": make_adapter_factory(name, None, model),

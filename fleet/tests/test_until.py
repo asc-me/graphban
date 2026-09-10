@@ -214,6 +214,93 @@ def test_a_scoped_wave_refuses_pre_minted_seats(
     assert "Drop --seats" in result.detail, "refused without saying how to proceed"
 
 
+def test_a_wave_reports_what_its_children_spent(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-834. End to end, through the vendor's own result record rather than a patched
+    reader: the child prints the line `gbagent` prints, the supervisor reads it where it
+    already reads it for the ledger, and the summary carries it.
+
+    Sabotage: drop the `wave.spend[...]` write in `_report_exits` — every attempt record still
+    posts, the ledger still gets the numbers, and the summary reports zero."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        git_repo, _factory(scripts, "reports_its_tokens", adapter="gbagent"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="gbagent",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+    )
+    spend = result.as_json()["spend"]
+
+    assert spend["tokens_in"] == 700 and spend["tokens_out"] == 400
+    assert spend["reported"] == 1
+    assert spend["by_child"][0]["turns_used"] == 3
+
+
+def test_a_wave_ends_when_the_budget_is_reached(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """THE ONE THAT MATTERS: the loop actually stops. A budget that only appeared in the
+    summary would be a report, not a control.
+
+    The wave FINISHES rather than aborting — a running child is left to its own end, because
+    killing it spends the tokens and throws away the work."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        git_repo, _factory(scripts, "reports_its_tokens", adapter="gbagent"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="gbagent",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=5,
+        limits=Limits(max_workers=1), budget=500,
+    )
+
+    assert result.reason == "budget"
+    assert result.exit == 1
+    assert "1100 measured" in result.detail
+    assert result.as_json()["spend"]["tokens"] == 1100
+
+
+def test_a_budget_the_adapter_cannot_enforce_refuses_the_wave(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """THE ONE THAT MAKES THE FLAG HONEST, pinned through `run` rather than by calling the
+    check directly — the unit test for `check_budget_can_be_enforced` passes whether or not
+    anything calls it, which is how a guard ends up defined and never wired.
+
+    Sabotage: remove the call in `run` and the unit test stays green while `--budget 500
+    --adapter claude` silently means nothing."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="claude",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1), budget=500,
+    )
+
+    assert result.reason == "config"
+    assert result.exit == 2
+    assert "reports no token usage" in result.detail
+    assert result.spawned == 0, "spent a child before refusing the flag"
+
+
+def test_a_generous_budget_does_not_end_the_wave(
+    git_repo: Path, tmp_path: Path, scripts, state: Path,
+):
+    """The control. A cap that fires on every wave is a cap nobody sets."""
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        git_repo, _factory(scripts, "reports_its_tokens", adapter="gbagent"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="gbagent",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1), budget=10_000_000,
+    )
+
+    assert result.reason == "idle"
+
+
 def test_idle_when_there_is_no_work_no_review_and_no_lease(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):
