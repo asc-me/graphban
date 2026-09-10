@@ -1238,7 +1238,14 @@ class Merger:
 
     def _record(self, wave: Wave, got: "propose_mod.Merged") -> "propose_mod.Merged":
         """The receipt. `commit` is on the row so `deps._commits` reads the merge commit as
-        one of the item's attested commits — the squash SHA is the only one the trunk has."""
+        one of the item's attested commits — the squash SHA is the only one the trunk has.
+
+        A `url` row, not an attestation: this credential holds no `gate` scope, so an
+        attestation is refused to it, and nobody ran anything at the squash SHA anyway — it
+        was observed to land. The server keeps `commit` on a `url` for exactly this row
+        (items.normalize_evidence, pinned in backend/tests/test_merge_receipt.py); it was
+        bounced once for writing a field the server stripped while the fake ledger here kept
+        it, so the fakes in the tests now drop what the server drops."""
         try:
             self.client.call("update_item", id=got.item, evidence=[{
                 "kind": "url",

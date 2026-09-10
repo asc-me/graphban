@@ -166,6 +166,16 @@ and with the loop's tick removed. A post-review push (same branch, different hea
 alone with the reason naming both commits; comparing branch names instead fails that test.
 Default-on fails the no-flag test on both commands.
 
+**Bounced once, and the walk had passed.** The receipt carried `commit`, but the server's
+`normalize_evidence` stored a `url` as `{kind, detail, url}` and dropped it — and the walk's
+fake ledger extended the raw payload, so the hold lifted in the test against a ledger the
+real server would never have shown. Which is the fake-passing shape AGENTS.md names: the
+function was right, the boundary was not. Fixed on the server side — a `url` keeps the
+commit it names, pinned in `backend/tests/test_merge_receipt.py` through the real normalizer
+AND through `update_item` under a write key with no `gate` scope, which is what the
+supervisor holds and why an attestation was never an option — and the fleet's fakes now store
+what the server stores rather than what was sent.
+
 **Not walked: a live forge.** No run from this seat reached GitHub — `gh` is refused inside a
 fleet child by design, which is the right refusal and also why this is a stand-in. Two things
 a live walk must confirm before this is trusted on a real trunk:
