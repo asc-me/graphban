@@ -1298,7 +1298,14 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
         },
     },
     "create_item": _ITEM_SCHEMA,
-    "update_item": _ITEM_SCHEMA,
+    # `evidence_intake` is about the CALL, not the item — {sent, added, dropped:[{index,
+    # reason}]} — and appears only when the call carried evidence (GRPH-839). Declared as an
+    # opaque object, the same shape `evidence` itself uses: the manifest has ~12 tokens of
+    # headroom and spelling the three keys out costs 36, which is not what a caller needs
+    # told in advance. It needs the field to EXIST, and to be there the one time it matters.
+    "update_item": {**_ITEM_SCHEMA,
+                    "properties": {**_ITEM_SCHEMA["properties"],
+                                   "evidence_intake": {"type": "object"}}},
     "suggest_next": {  # stable {item: <item|null>} wrapper — never a bare null
         "type": "object",
         "properties": {"item": {**_ITEM_SCHEMA, "type": ["object", "null"]}},
@@ -2454,7 +2461,15 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         )
         if item is None:
             raise errors.NotFound(f"item not found: {args['id']}")
-        return _item_dict(item)
+        out = _item_dict(item)
+        if args.get("evidence") is not None:
+            # GRPH-839. A refused receipt used to show only as an `evidence` array that did
+            # not grow, and this tool is the one that moves an item to `review` — so the
+            # failure was an agent claiming proof-on-done in the same call that discarded it.
+            # Attached HERE and only when the call carried evidence: the counts on a payload
+            # nobody sent would read as a clean intake rather than as no intake at all.
+            out.update(items_svc.evidence_intake(args["evidence"]))
+        return out
     if name == "search_items":
         rows = items_svc.search_items(
             db, args.get("query", ""), status=args.get("status"), project_id=pid,
