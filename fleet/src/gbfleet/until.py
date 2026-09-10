@@ -336,7 +336,7 @@ def _loop(
     matrix: "matrix_mod.Matrix | None" = None,
     adapter: str = "",
 ) -> Report:
-    from .mcp import read_preferences
+    from .mcp import _runner_up, read_preferences
     profile, policy, pref_note, measured, cap_measured = read_preferences(supervisor)
     observe.emit("preferences", detail=pref_note)
     agent_id = str(identity.get("agent_id") or identity.get("id"))
@@ -506,17 +506,11 @@ def _loop(
                     # was resolved. Fire-and-forget inside the client.
                     declare = matrix_mod.declaration(
                         res.winner.harness, res.winner.model, want or None, matrix)
-                    runner = explained.get("runner_up") if isinstance(
-                        explained.get("runner_up"), dict) else None
-                    runner_up = ""
-                    if runner:
-                        vendor = matrix_mod.vendor_of(runner.get("harness") or "", matrix)
-                        runner_up = f"{vendor}:{runner.get('model') or ''}"
                     planner.post_attempt(
                         enrolment_code=seat.code,
                         adapter=res.winner.harness,
                         winner=f"{declare.get('vendor', '')}:{declare.get('model', '')}",
-                        runner_up=runner_up,
+                        runner_up=_runner_up(explained, matrix),
                         source=explained.get("source") or "matrix",
                         resolution=explained,
                     )

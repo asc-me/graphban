@@ -5,6 +5,7 @@ matrix, a measured map, a profile and a policy; these tests build those directly
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from gbfleet import matrix as m
@@ -40,12 +41,28 @@ def _cost(vendor, model, cap, layer, tokens, *, reported=10, finished=10):
     }}
 
 
+def _lat(vendor, model, cap, layer, value, n=5):
+    return {(vendor, model, cap, layer): {
+        "latency": m.Sample(value=value, n=n, layer=layer),
+    }}
+
+
 def _merge(*maps):
     out = {}
     for mp in maps:
         for k, v in mp.items():
             out.setdefault(k, {}).update(v)
     return out
+
+
+def _without_timestamps(obj):
+    """AC24: the §7.7 object is pinned modulo timestamps."""
+    if isinstance(obj, dict):
+        return {k: _without_timestamps(v) for k, v in obj.items()
+                if k not in {"timestamp", "ts"} and not str(k).endswith("_at")}
+    if isinstance(obj, list):
+        return [_without_timestamps(v) for v in obj]
+    return obj
 
 
 # ---- 14: per-capability evidence --------------------------------------------------------------
@@ -263,8 +280,9 @@ def test_budget_tokens_scores_the_curve_and_removes_nothing():
 # ---- 24: the §7.7 stage record ---------------------------------------------------------------
 
 def test_the_section_7_7_fixture_carries_every_stage():
-    """The worked example, as a fixture. Stages, drops and winner axes are the object;
-    timestamps are none. Byte-for-byte on the stage names and drop reasons."""
+    """Criterion 24: the worked example produces the explanation byte-for-byte
+    (timestamps stripped). A wrong winner score, a missing per-axis source/n, or a
+    drifted drop reason must fail this, not a substring check."""
     gbagent = _row("gbagent", "qwen3.6", vendor="gbagent", cost_class="local", local=True,
                    status="verified", evidence=[EV])
     qwen = _row("qwen-code", "", vendor="alibaba", cost_class="cheap", order=2)
@@ -273,6 +291,8 @@ def test_the_section_7_7_fixture_carries_every_stage():
     codex = _row("codex", "", vendor="openai", cost_class="cheap", order=5, status="unregistered")
     excluded = _row("gbagent", "qwen3-coder:30b", vendor="gbagent", cost_class="local",
                     local=True, order=6)
+    # Latency cells are the 0–1 axis the server already publishes: 1 - median/3600
+    # (214s → 0.941, 61s → 0.983). Raw seconds would not be an axis in 0–1.
     cells = _merge(
         _q("gbagent", "qwen3.6", "A4", "project", 0.40, n=7),
         _q("gbagent", "qwen3.6", "B1", "project", 0.85, n=11),
@@ -286,6 +306,10 @@ def test_the_section_7_7_fixture_carries_every_stage():
         _cost("alibaba", "", "B1", "project", 40_000),
         _cost("gbagent", "qwen3-coder:30b", "A4", "project", 20_000),
         _cost("gbagent", "qwen3-coder:30b", "B1", "project", 20_000),
+        _lat("gbagent", "qwen3.6", "A4", "project", 0.941, n=8),
+        _lat("gbagent", "qwen3.6", "B1", "project", 0.941, n=8),
+        _lat("alibaba", "", "A4", "platform", 0.983, n=8),
+        _lat("alibaba", "", "B1", "org", 0.983, n=8),
     )
     prof = m.Profile(user="alex", defaults=("gbagent", "qwen-code"),
                      excludes=("gbagent:qwen3-coder:30b",),
@@ -298,29 +322,12 @@ def test_the_section_7_7_fixture_carries_every_stage():
         capabilities=["A4", "B1"], cap_measured=cells,
         spend={"item_tokens": 70_000},
     )
-    out = res.explain()
-    stages = [s["stage"] for s in out["stages"]]
-    assert stages[0] == "rows"
-    assert "policy.allowed_or_local" in stages
-    assert "policy.caps" in stages
-    assert "profile" in stages
-    assert stages[-1] == "score"
-    dropped = " ".join(out["dropped"].get("policy") or [])
-    assert "cursor-agent" in dropped and "allowed_harnesses" in dropped or "not in allowed" in dropped
-    assert "codex" in dropped
-    assert "claude:sonnet" in dropped and "per_item_tokens" in dropped
-    assert "84k" in dropped and "50k" in dropped
-    assert any("qwen3-coder:30b" in d for d in out["dropped"].get("profile") or [])
-    assert out["winner"]["harness"] == "gbagent"
-    assert out["runner_up"]["harness"] == "qwen-code"
-    q = out["winner"]["axes"]["quality"]["by_capability"]
-    by = {c["capability"]: c for c in q}
-    assert by["A4"]["layer"] == "project" and by["A4"]["n"] == 7
-    assert by["B1"]["layer"] == "project"
-    assert out["winner"]["axes"]["cost"]["value"] == 1.0
-    assert out["capabilities"] == ["A4", "B1"]
-    assert out["profile"]["user"] == "alex"
-    assert out["profile"]["budget_tokens"] == 50_000
+    got = json.loads(json.dumps(_without_timestamps(res.explain())))
+    golden = json.loads((Path(__file__).with_name("section_7_7_explain.json")).read_text())
+    assert got == golden
+    axes = got["winner"]["axes"]
+    for name in ("cost", "quality", "latency", "locality"):
+        assert "source" in axes[name] and "n" in axes[name], name
 
 
 # ---- 14: doctor prints row status and per-capability reading --------------------------------

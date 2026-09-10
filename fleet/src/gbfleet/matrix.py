@@ -650,6 +650,14 @@ class Matrix:
         return score, axes
 
 
+def _layer_source(layers: list[str | None]) -> str | None:
+    named = [layer for layer in layers if layer]
+    if not named:
+        return None
+    unique = set(named)
+    return named[0] if len(unique) == 1 else "mixed"
+
+
 def _quality_for(row: Row, capabilities: list[str],
                  cap_measured: CapMeasured | None) -> tuple[float | None, dict]:
     per = []
@@ -682,13 +690,14 @@ def _quality_for(row: Row, capabilities: list[str],
         per.append(picked)
         if picked.get("used"):
             used.append(float(picked["value"]))
+    source = _layer_source([c.get("layer") for c in per if c.get("used")])
     if used:
         mean = sum(used) / len(used)
-        return mean, {"value": round(mean, 3), "n": len(used), "used": True,
-                      "by_capability": per,
-                      "note": f"{len(used)} of {len(capabilities)} capabilities"}
-    return None, {"value": None, "n": 0, "used": False, "note": "unmeasured",
-                  "by_capability": per}
+        return mean, _axis(value=round(mean, 3), n=len(used), source=source, used=True,
+                           by_capability=per,
+                           note=f"{len(used)} of {len(capabilities)} capabilities")
+    return None, _axis(value=None, n=0, source=source, used=False, note="unmeasured",
+                       by_capability=per)
 
 
 def _cost_sample_for(row: Row, capabilities: list[str],
@@ -733,9 +742,10 @@ def _cost_axis_for(row: Row, capabilities: list[str], cap_measured: CapMeasured 
     class_value = COST_AXIS.get(row.cost_class, 0.0)
     sample = _cost_sample_for(row, capabilities, cap_measured)
     target = profile.budget_tokens if profile else None
+    reported = sample.reported if sample else 0
     if sample is None or not sample.comparable:
-        return class_value, {"value": class_value, "used": True, "note": "class",
-                             "cost_class": row.cost_class}
+        return class_value, _axis(value=class_value, n=reported, source="class", used=True,
+                                  note="class", cost_class=row.cost_class)
     tokens = sample.tokens_to_signoff
     if target:
         # D20 curve: 1.0 at the target, 0.2 at twice the target, floored at 0.2.
@@ -743,14 +753,15 @@ def _cost_axis_for(row: Row, capabilities: list[str], cap_measured: CapMeasured 
             value = 1.0
         else:
             value = max(BUDGET_FLOOR, 1.0 - (1.0 - BUDGET_FLOOR) * (tokens - target) / target)
-        return value, {"value": round(value, 3), "used": True,
-                       "note": f"measured {int(round(tokens))}/sign-off",
-                       "tokens_to_signoff": round(tokens, 1), "budget_tokens": target}
+        extra = {"note": f"measured {int(round(tokens))}/sign-off",
+                 "tokens_to_signoff": round(tokens, 1), "budget_tokens": target}
+        return value, _axis(value=round(value, 3), n=reported, source="measured", used=True,
+                            **extra)
     # Rank-scaling among comparable eligible rows (D16). Without the set, class.
     if not rows_for_cost:
-        return class_value, {"value": class_value, "used": True, "note": "class",
-                             "cost_class": row.cost_class,
-                             "tokens_to_signoff": round(tokens, 1)}
+        return class_value, _axis(value=class_value, n=reported, source="class", used=True,
+                                  note="class", cost_class=row.cost_class,
+                                  tokens_to_signoff=round(tokens, 1))
     comparable = []
     for other in rows_for_cost:
         exp, ok, _ = _expected_tokens(other, capabilities, cap_measured)
@@ -765,9 +776,9 @@ def _cost_axis_for(row: Row, capabilities: list[str], cap_measured: CapMeasured 
         else:
             # cheapest 1.0, dearest 0.2
             value = 1.0 - 0.8 * (tokens - lo) / (hi - lo)
-    return value, {"value": round(value, 3), "used": True,
-                   "note": f"measured {int(round(tokens))}/sign-off",
-                   "tokens_to_signoff": round(tokens, 1)}
+    return value, _axis(value=round(value, 3), n=reported, source="measured", used=True,
+                        note=f"measured {int(round(tokens))}/sign-off",
+                        tokens_to_signoff=round(tokens, 1))
 
 
 def _latency_for(row: Row, capabilities: list[str],
@@ -783,10 +794,11 @@ def _latency_for(row: Row, capabilities: list[str],
                 samples.append(s)
                 break
     if not samples:
-        return None, {"value": None, "n": 0, "used": False, "note": "unmeasured"}
+        return None, _axis(value=None, n=0, source=None, used=False, note="unmeasured")
     mean = sum(s.value for s in samples) / len(samples)
     n = min(s.n for s in samples)
-    return mean, {"value": round(mean, 3), "n": n, "used": True}
+    source = _layer_source([s.layer for s in samples])
+    return mean, _axis(value=round(mean, 3), n=n, source=source, used=True)
 
 
 def _currency_spend(row: Row, tokens: float, cap_measured: CapMeasured | None,

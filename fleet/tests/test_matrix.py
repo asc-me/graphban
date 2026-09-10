@@ -284,6 +284,48 @@ def test_until_resolves_an_unflagged_request_through_the_matrix_and_the_log_says
     assert [s["stage"] for s in payload["resolutions"][0]["stages"]][0] == "rows"
 
 
+def test_until_posts_the_stage_record_on_the_launch_post(
+    git_repo: Path, tmp_path: Path, scripts, state: Path, monkeypatch,
+):
+    """Criterion 24: until's matrix resolve posts the D21 stage object on the launch
+    post (PRD-38 D3), the same call spawn already makes. Sabotage: drop planner.post_attempt
+    and this is the only test that fails — the wave report still carries resolutions."""
+    from gbfleet.until import run
+    from tests.test_until import _clients, KEY
+
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (r.harness == "fake", "not here")))
+    workspace = tmp_path / "ws"
+    posts: list[dict] = []
+
+    def launch_for(name, model=""):
+        return _factory(scripts, "works_then_exits", adapter=name)
+
+    planner, supervisor = _clients(workspace, clusters=1, cluster_items=[["GRPH-7"]], delegations=[])
+    orig = planner.post_attempt
+
+    def capture(**payload):
+        posts.append(payload)
+        return orig(**payload)
+
+    planner.post_attempt = capture  # type: ignore[method-assign]
+    mat = _matrix(_row("ghost", "x", cost_class="cheap"),
+                  _row("fake", "qwen-local", cost_class="local", local=True, order=2))
+    result = run(
+        git_repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        request="cheap", tiers=TierTable(), launch_for=launch_for, matrix=mat,
+    )
+    assert result.spawned == 1, result.detail
+    launched = [p for p in posts if isinstance(p.get("resolution"), dict)]
+    assert launched, f"until resolve never called post_attempt with a resolution; posts={posts}"
+    resolution = launched[0]["resolution"]
+    assert "stages" in resolution and resolution["stages"], resolution
+    assert resolution["stages"][0]["stage"] == "rows"
+    assert launched[0].get("enrolment_code") or launched[0].get("enrolment_id")
+    assert launched[0]["source"] == "matrix"
+
+
 # ---- PR 2: profile and policy arrive on fleet_status, read once at launch (D9, D10, D14) -----
 
 class _Server:
