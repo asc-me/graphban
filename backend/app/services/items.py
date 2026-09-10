@@ -200,6 +200,16 @@ def normalize_evidence(raw) -> list[dict]:
     `kind` is advisory (test | url | screenshot | health | note) and falls back to `note`; a
     receipt with neither detail nor url is dropped.
 
+    **A bare string is the degenerate note, not a malformed receipt (GRPH-839).** It used to
+    hit the non-dict `continue` below and vanish, while `update_item` returned the item with
+    no error and the status move it was asked for — so an agent that sent
+    `evidence=["fleet suite: 1072 passed", ...]` reached `review` with its proof discarded and
+    nothing anywhere saying so. Since `kind` already falls back to `note`, the only thing a
+    string is missing is the wrapper, and inventing it loses nothing. What could NOT be
+    repaired — a number, a list, a receipt with neither detail nor url — is still refused, and
+    `evidence_intake` is what makes that refusal visible instead of an array that quietly did
+    not grow.
+
     **`sabotage`, `attestation`, and `lesson` are not advisory.** A structured kind that
     accepts unstructured input is the free-text field with a new name, and anything gating
     on it would be checking a label rather than a fact. `sabotage` needs claim / mutation /
@@ -211,9 +221,48 @@ def normalize_evidence(raw) -> list[dict]:
     can do is make the claim falsifiable and queryable, which is the same trade PRD-12 already
     accepts for citations.
     """
+    rows, _ = normalize_evidence_report(raw)
+    return rows
+
+
+def _evidence_payload(raw) -> list:
+    """The receipts as SENT, so `sent` and the loop below always count the same things.
+
+    A bare string or a lone dict is ONE receipt sent unwrapped, never a sequence of them.
+    Iterating a string would make a note out of every character and a dict out of every key —
+    and since GRPH-839 both of those are now storable, so what used to be an obvious drop
+    would have become quiet corruption. `union_touchpoints` extends the same courtesy to a
+    bare path for the same reason.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, (str, dict)):
+        return [raw]
+    return list(raw)
+
+
+def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
+    """`normalize_evidence`, and one `{index, reason}` for each receipt it refused.
+
+    The reasons exist so a caller can be TOLD. Every writer of `evidence` runs the payload
+    through here, and until GRPH-839 a refusal showed only as an array that did not grow —
+    which is indistinguishable from having sent nothing, and reads as the reassuring one. The
+    normalising itself is unchanged; this returns what it discarded on the way.
+
+    `index` is into the payload as sent, so the caller can name the entry it has in hand
+    rather than being handed a count and asked to guess which.
+    """
     out: list[dict] = []
-    for e in raw or []:
+    dropped: list[dict] = []
+    for index, e in enumerate(_evidence_payload(raw)):
+        if isinstance(e, str):
+            e = {"kind": "note", "detail": e}
         if not isinstance(e, dict):
+            # Nothing to repair: there is no reading of `42` or `["a", "b"]` that says what
+            # the agent meant, and guessing one would store a receipt it never wrote.
+            dropped.append({"index": index,
+                            "reason": f"{type(e).__name__} is not a receipt — send an "
+                                      "object, or a string for a plain note"})
             continue
         kind = str(e.get("kind") or "note").lower()
         if kind not in _EVIDENCE_KINDS:
@@ -291,9 +340,38 @@ def normalize_evidence(raw) -> list[dict]:
                 if not row["detail"]:
                     row["detail"] = "incomplete lesson receipt (no shard_id)"
         if not row["detail"] and not row["url"]:
+            dropped.append({"index": index,
+                            "reason": "receipt has neither detail nor url"})
             continue
         out.append(row)
-    return out
+    return out, dropped
+
+
+def evidence_intake(raw) -> dict:
+    """What the server DID with an evidence payload: sent, accepted, and why the rest were not.
+
+    The receipt for the receipts (GRPH-839). `update_item` returns the item, and the item's
+    `evidence` array shows the truth — but only to a caller that counts it against what it
+    sent, and an agent that got a success back has no reason to. Stating both numbers in the
+    same reply makes the mismatch impossible to miss without asking anyone to go looking.
+
+    **`added` counts what is ON THE RECORD because of this call, not how much the array
+    grew.** `append_evidence` treats an identical resend as the retry it is, so a receipt that
+    was already there is added, not dropped — reporting a retry as a refusal would send an
+    agent to re-run work that is already recorded.
+
+    Report it only where evidence was actually SENT. `dropped: []` on a call that carried none
+    says "nothing was discarded" when the truth is that nobody looked, which is the reading
+    this whole field exists to prevent.
+
+    One block rather than three sibling fields, because it describes THIS CALL where the rest
+    of the reply describes the item — and because the manifest is measured: three declared
+    properties cost 36 tokens of a surface with 12 to spare, where one opaque object costs 8
+    and says the same thing at the moment it is read.
+    """
+    accepted, dropped = normalize_evidence_report(raw)
+    return {"evidence_intake": {"sent": len(_evidence_payload(raw)),
+                                "added": len(accepted), "dropped": dropped}}
 
 
 def _prepare_lesson_evidence(db: Session, item: Item, old_len: int) -> list[str]:

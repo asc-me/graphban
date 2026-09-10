@@ -89,7 +89,14 @@ CEILING = 14200
 # `["string", "null"]` costs more than `"string"`. Not paid for by a trim: the previous
 # declaration made every FIRST delegation unusable by a validating client, so these five
 # tokens buy back a broken tool rather than a new one. Headroom 12.
-MEASURED_TOKENS = 14188
+# 14188 → 14198 (GRPH-839). `update_item` declares `evidence_intake`, so a caller is told how
+# many of its receipts the server actually took — a string receipt used to be dropped in
+# silence while the call reported success and the status moved. Ten of the twelve remaining
+# tokens, and NOT paid for by a trim, for the same reason as the line above: it buys back a
+# tool that could report a completion whose proof it had discarded. Declared as one opaque
+# object rather than three properties precisely because of this number — spelling out
+# {sent, added, dropped} costs 36 and would have needed a raise. Headroom 2.
+MEASURED_TOKENS = 14198
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
