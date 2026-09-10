@@ -198,7 +198,8 @@ def normalize_evidence(raw) -> list[dict]:
     """Coerce evidence receipts to {kind, detail, url}; drop empties (AL-53).
 
     `kind` is advisory (test | url | screenshot | health | note) and falls back to `note`; a
-    receipt with neither detail nor url is dropped.
+    receipt with neither detail nor url is dropped. A `url` keeps a `commit` it names
+    (GRPH-846) — the one advisory field that survives, see the branch below for why.
 
     **A bare string is the degenerate note, not a malformed receipt (GRPH-839).** It used to
     hit the non-dict `continue` below and vanish, while `update_item` returned the item with
@@ -326,6 +327,23 @@ def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
                             if e.get(k) is not None]
                     row["detail"] = ("incomplete attestation receipt (" + ", ".join(said) + ")"
                                      if said else "")
+        elif kind == "url":
+            # A `url` may name the COMMIT it points at (GRPH-846). The fleet's merge receipt
+            # is the reason: after `gh pr merge --squash` the reviewed commit is not an
+            # ancestor of the trunk and the squash SHA is the only one that is, so a
+            # dependency check that reads "every commit this item was attested at"
+            # (`gbfleet.deps._commits`) held every dependant forever until the merge commit
+            # was on the item too. The supervisor holds no `gate` scope, so an attestation
+            # is refused to it — and would be the wrong kind anyway: nobody ran tests at the
+            # squash SHA, it was merely observed to land.
+            #
+            # No authority escalates through this field. `attestation_receipts` reads
+            # `kind`, so a url naming a commit satisfies no completion gate; the only reader
+            # asks git whether the commit reaches the base, which a receipt cannot fake.
+            # Kept on `url` alone: `note` and `test` rows have no thing they point at.
+            commit = str(e.get("commit") or "").strip()
+            if commit:
+                row["commit"] = commit
         elif kind == "lesson":
             # shard_id is the structure. Visibility of the shard is checked in update_item
             # after persist (needs the item's project); missing id demotes here so a

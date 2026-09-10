@@ -45,6 +45,24 @@ def _done_item(item_id: str, *, reviewed: str = REVIEWED, green: str = REVIEWED,
     }
 
 
+def _stored(rows) -> list[dict]:
+    """What the SERVER keeps of a receipt: `{kind, detail, url}`, plus `commit` on a `url`
+    or an attestation — the shape `items.normalize_evidence` stores, pinned on the server
+    side in backend/tests/test_merge_receipt.py. The first version of these fakes extended
+    the raw payload, so a `commit` the real server dropped stayed visible to the walk and
+    the hold-lift criterion passed against a ledger that would never have shown it."""
+    out = []
+    for e in rows or []:
+        row = {"kind": e.get("kind") or "note", "detail": e.get("detail") or "",
+               "url": e.get("url") or ""}
+        if row["kind"] in ("url", "attestation") and e.get("commit"):
+            row["commit"] = e["commit"]
+        if row["kind"] == "attestation":
+            row["adapter"] = e.get("adapter"); row["predicates"] = e.get("predicates")
+        out.append(row)
+    return out
+
+
 class _Ledger:
     """A fake Graphban `call`: hands out items and records every write."""
 
@@ -62,7 +80,7 @@ class _Ledger:
         if tool == "search_items":
             return {"results": [r for r in self.items.values() if r["status"] == "review"]}
         if tool == "update_item":
-            self.items[kw["id"]].setdefault("evidence", []).extend(kw.get("evidence") or [])
+            self.items[kw["id"]].setdefault("evidence", []).extend(_stored(kw.get("evidence")))
             return {"id": kw["id"]}
         raise AssertionError(f"unexpected call {tool}")
 
@@ -284,7 +302,7 @@ def _server(workspace: Path, *, items: dict[str, dict], review_first: bool = Tru
             return _mcp({**row, "brief": {"lane": {"value": "backend"},
                                           "tier": {"value": "cheap"}, "text": "seed"}}, rid)
         if tool == "update_item":
-            items[args["id"]].setdefault("evidence", []).extend(args.get("evidence") or [])
+            items[args["id"]].setdefault("evidence", []).extend(_stored(args.get("evidence")))
             return _mcp({"id": args["id"]}, rid)
         if tool == "related_work":
             return _mcp({"results": [dict(items[i]) | {"link_types": ["dependency"]}
