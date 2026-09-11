@@ -352,6 +352,30 @@ def test_a_sibling_that_is_not_executable_is_not_a_supervisor(home, monkeypatch,
     assert doctor.find_supervisor() == ""
 
 
+def test_a_sibling_gbfleet_exe_is_found_when_the_bare_name_is_not_executable(
+    home, monkeypatch, tmp_path
+):
+    """MEASURED on Windows: `pip install graphban-cli[fleet]` drops `gbfleet.exe` into
+    `Scripts\\` beside `gban.exe`, and the bare-name sibling check says "not installed"
+    because the file is called `gbfleet.exe`, not `gbfleet`. The Unix hole is back in
+    `.exe` clothing.
+
+    Sabotage: the sibling check stays suffix-less and this fails — the `.exe` is there
+    and executable but the lookup returns nothing."""
+    binbase = tmp_path / "Scripts"
+    binbase.mkdir()
+    bare = binbase / "gbfleet"
+    bare.write_text("not a real binary\n")
+    bare.chmod(0o644)
+    exe = binbase / "gbfleet.exe"
+    exe.write_text("MZ-fake\n")
+    exe.chmod(0o755)
+
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
+    monkeypatch.setattr("sys.executable", str(binbase / "python.exe"))
+    assert doctor.find_supervisor() == str(exe)
+
+
 def test_the_install_it_names_is_one_that_exists(home, monkeypatch, capsys):
     """It said `uv pip install graphban-fleet` until somebody ran it. Neither package is on
     PyPI, so that 404s — a tool whose remedy does not work spends the reader's trust before
