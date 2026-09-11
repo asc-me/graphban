@@ -204,3 +204,188 @@ not a reason to add the capability.
   and does not need any of this.
 - [`docs/native-install.md`](native-install.md) — putting the Graphban **server** on the same
   box, under the same supervisor.
+
+---
+
+# Running a fleet on Windows
+
+The Linux runbook is ssh, systemd, and linger. None of that exists here. This page
+covers what an operator on Windows actually does to get from a fresh box to a running
+`qwen-code` fleet worker — in the order the tools require, with the things that are
+different from Linux called out rather than buried.
+
+**What this is not.** Not a walkthrough anyone has run end-to-end and signed off. The
+qwen-code adapter was measured on macOS (GRPH-731); the Windows host support was
+verified separately (GRPH-576, `scripts/verify_hostos_windows.py`). The commands below
+are what the binaries accept on Windows, not a transcript of a spawned wave on this
+platform. If that changes, this page should say so.
+
+---
+
+## 1. Git clone and Python
+
+```powershell
+git clone <repo-url> <dir>
+cd <dir>
+```
+
+A real clone with a `.git` directory, not a zip download. The supervisor reads the
+repository root to find worktrees, seat files, and the `.gbagent.toml` config; a copy
+without `.git` fails at `repo_root()` with `NotARepository`.
+
+Python 3.12+ via `uv`:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Then close this PowerShell and open a new one so `uv` is on PATH. Verify:
+
+```powershell
+uv --version
+python --version    # must be 3.12 or later
+```
+
+---
+
+## 2. Install the CLIs
+
+```powershell
+uv tool install graphban-cli
+uv tool install graphban-fleet
+```
+
+This gives you `gban`, `gbfleet`, and `gbagent`. **Open a new PowerShell first** — `uv tool
+install` writes shims to a directory that is not in the current session's PATH until the
+environment refreshes. Without a new window, `gban` is simply not found, and the symptom
+looks like a failed install rather than a stale PATH.
+
+Verify in the new PowerShell:
+
+```powershell
+gban --version
+gbfleet --version
+gbagent --version
+```
+
+---
+
+## 3. Qwen Code
+
+```powershell
+irm https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.ps1 | iex
+```
+
+Then verify the adapter row passes:
+
+```powershell
+gbfleet doctor --server <url> --project <project> --adapter qwen-code
+```
+
+The `qwen-code` row must read **PASS**. If it reads FAIL, the binary is not on PATH or is
+outside the supported version range (0.23 – 1.0). If it reads UNKNOWN, the check could not
+run — the reason in the output says why.
+
+On Windows, `chmod` succeeds and restricts nothing. The seat files holding credentials
+are written with `icacls` instead (`hostos.restrict_to_owner`); `doctor` checks that the
+filesystem can keep a file private and reports FAIL if it cannot.
+
+---
+
+## 4. Authenticate
+
+```powershell
+gban login
+```
+
+This **needs a TTY** — it opens a browser for the OAuth flow. Run it in Windows Terminal
+or a regular PowerShell window, not inside a piped script or a scheduled task. It refuses
+without a terminal, on purpose.
+
+Then, from inside the repository:
+
+```powershell
+gban setup
+```
+
+This mints a project-scoped API key (does not expire), configures the MCP servers, and
+verifies the connection. It sets `GBFLEET_API_KEY` in the environment for the current
+session. For subsequent sessions, export it:
+
+```powershell
+$env:GBFLEET_API_KEY = "<key-from-setup>"
+```
+
+**`gban keys mint` is the wrong credential here.** It posts to `/api/fleet/keys` with
+`FLEET_KEY_DAYS = 1` — the key expires in 24 hours. That is correct for a wave, and wrong
+for a standing worker. `gban setup` mints an ordinary project-scoped key with no expiry,
+which is what a persistent worker needs.
+
+---
+
+## 5. Prove it in the foreground
+
+Before any supervision, run the drain in the foreground and watch it work:
+
+```powershell
+gbfleet until --repo . --server <url> --project <project> --adapter qwen-code
+```
+
+This processes ready items one cluster at a time, spawning a child per item, until there
+is no more ready work and no live leases. Watch the first child register, build, and move
+its item to review. If that works, the supervised path is the same command with
+`--max-children` and (optionally) `--prd`.
+
+---
+
+## 6. The drain is foreground-only
+
+There is no `gbfleet service install` on Windows. The supervisor has no systemd unit, no
+launchd plist, and no Task Scheduler entry. Running it as a Session-0 service under
+`sc.exe` would put it in a non-interactive session where `gban login`'s credential cannot
+reach it and where vendor logins that need a desktop session break.
+
+The supported way to keep the drain running is to leave it in a terminal. Windows
+Terminal tabs, or a dedicated PowerShell window, are the current mechanism. The
+supervisor's own process management — job objects, CTRL_BREAK graceful stop, process-tree
+teardown — is implemented for Windows (GRPH-576) and works in a foreground session.
+
+If an operator wants the drain to survive closing the terminal, the current answer is:
+run it in a terminal that stays open. A Task Scheduler "run whether user is logged on or
+not" task is technically possible but has not been walked, and the credential story for
+that path (how does `gban login`'s session reach Session 0?) has not been solved.
+
+---
+
+## 7. What healthy looks like
+
+A running `gbfleet until` prints progress as it works. Idle — no ready items, no live
+leases, no unsigned reviews — is the normal end state, and the process exits on its own.
+
+On the Graphban Live view:
+
+- The agent row shows a `phase` (`building`, `verifying`, `review`, etc.) derived from
+  the item it holds, not from the adapter.
+- `idle, last exit 0` on the supervisor's own status means it finished a wave cleanly.
+- A child that registered, claimed an item, and moved it to `review` is the minimum
+  proof that the whole chain — install, credential, adapter, server — is connected.
+
+If the agent row shows `stale`, the child process died without releasing its lease. The
+item returns to the queue after the lease expires (600s). If it shows `blocked`, read the
+blocker on the item.
+
+---
+
+## What is different from Linux
+
+| Linux | Windows |
+| --- | --- |
+| `ssh` into the box | RDP or direct session |
+| `systemd` unit + `loginctl enable-linger` | foreground terminal only |
+| `chmod 600` on credential files | `icacls` (handled by `hostos.restrict_to_owner`) |
+| `.bashrc` for PATH | new PowerShell window |
+| `sc.exe` / systemd service | not available — foreground drain |
+| `brew install uv` | `irm ... \| iex` (PowerShell installer) |
+
+Do not copy Linux commands into a Windows terminal. `loginctl`, `brew`, `systemctl`, and
+`chmod` (as a permission tool) are not the Windows remedy for any of the above.

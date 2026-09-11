@@ -289,6 +289,15 @@ than to this vendor. Closed by GRPH-732: the instruction every spawned child rea
 the supervisor knows what it launched and the child does not — and a declared vendor with no
 model is counted as that vendor's default, which is the row `qwen-code` has.
 
+**Windows install.** `qwen-code` on Windows uses the standalone PowerShell installer (`irm
+... | iex`), not `brew` or a package manager. The adapter itself is platform-agnostic — the
+same argv construction and seat rewriting runs on both hosts. What changes is the
+operator's setup path: PATH refresh needs a new PowerShell window, credential file
+protection uses `icacls` instead of `chmod`, and there is no service manager to hand the
+drain to. See [Running a fleet on Windows](fleet-remote.md) for the full sequence. Nobody
+has spawned a `qwen-code` child on Windows and signed off an item; the adapter's host
+support is verified (GRPH-576) but the end-to-end walk on that platform has not been run.
+
 ## Versions do not share a scheme
 
 Measured, not assumed. `claude` is semver, `cursor-agent` is **CalVer with a git hash**,
