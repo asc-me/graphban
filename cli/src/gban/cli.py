@@ -278,7 +278,7 @@ def cmd_whoami(args) -> int:
 def cmd_doctor(args) -> int:
     url = config.resolve(args.server, config.URL_ENV, "url")
     project = config.resolve(args.project, config.PROJECT_ENV, "project")
-    api_key = os.environ.get(config.API_KEY_ENV, "")
+    api_key = doctor_mod.resolve_supervisor_key(project)
     lines, code = doctor_mod.run(url, project, api_key)
     _out({"lines": lines, "ok": code == 0}, doctor_mod.render(lines), args.as_json)
     return code
@@ -411,9 +411,11 @@ def cmd_fleet(args) -> int:
     # message is the one its own tests pin.
     #
     # The ENVIRONMENT goes through the same function `doctor` uses (GRPH-782). It used not
-    # to, so the doctor certified a local half this command could not reproduce.
+    # to, so the doctor certified a local half this command could not reproduce. The key
+    # is resolved the same way too: env, then the setup-minted agent key, never the login
+    # session — a doctor PASS that does not predict `gban fleet` is the original lie.
     return subprocess.run(argv, env=doctor_mod.child_environment(
-        os.environ.get(config.API_KEY_ENV, ""))).returncode
+        doctor_mod.resolve_supervisor_key(project))).returncode
 
 
 def _project(args, act: str) -> str:

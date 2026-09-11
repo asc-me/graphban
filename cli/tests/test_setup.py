@@ -47,6 +47,13 @@ def no_grok_config(tmp_path_factory, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def gban_home(tmp_path, monkeypatch):
+    """setup now stores the minted key next to session.json. Without this, every test
+    here would write `~/.graphban/supervisor.json` on the developer's machine."""
+    monkeypatch.setenv(config.HOME_ENV, str(tmp_path / "gbanhome"))
+
+
 class Server:
     """Mints, and answers `get_context` as the deployed one does."""
 
@@ -116,6 +123,19 @@ def test_one_run_writes_both_servers_and_a_key_that_never_expires(tmp_path, wire
     assert servers["graphban"]["headers"]["X-API-Key"].startswith("gb_sk_")
     assert servers["gbfleet"]["command"] == "gbfleet"
     assert "--project" in servers["gbfleet"]["args"]
+    stored = config.stored_supervisor_key("core")
+    assert stored == servers["graphban"]["headers"]["X-API-Key"]
+    mode = (config.home() / config.SUPERVISOR_KEYS_FILE).stat().st_mode & 0o777
+    assert mode == 0o600, "a credential at rest is owner-only, same as session.json"
+
+
+def test_setup_refuses_to_store_a_refresh_token_as_the_supervisor_key(tmp_path):
+    """session.json is a different credential. Mixing them is the remaining GRPH-782 hole."""
+    assert config.save_supervisor_key("core", "refresh-token") is None
+    assert config.stored_supervisor_key("core") == ""
+    config.save_supervisor_key("core", "gb_sk_ok")
+    config.save_supervisor_key("core", "refresh-token")
+    assert config.stored_supervisor_key("core") == "gb_sk_ok", "a bad write must not clobber"
 
 
 def test_the_credential_is_minted_with_no_expiry_and_the_fleet_tier(tmp_path, wired):
@@ -418,6 +438,7 @@ def test_reuse_repairs_a_gbfleet_entry_missing_workspace(tmp_path, wired, no_gro
     assert code == 0
     assert made.get("reused") is True
     assert server.minted == []
+    assert config.stored_supervisor_key("core") == "gb_sk_ok"
     args = tomllib.loads(no_grok_config.read_text())["mcp_servers"]["gbfleet"]["args"]
     assert "--workspace" in args
 
