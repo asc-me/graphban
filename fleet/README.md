@@ -292,11 +292,13 @@ gbfleet service status
 gbfleet service uninstall
 ```
 
-A LaunchAgent on macOS, a `systemd --user` unit on Linux. **User domain only** — a root
-installer is a different program with different failure modes, and even the server's has never
-been walked privileged. Everything after the subcommand goes to `until` unchanged, so
-`gbfleet until --help` stays the authority on its own flags, and `--dry-run` prints the unit
-without writing it.
+A LaunchAgent on macOS, a `systemd --user` unit on Linux, Task Scheduler (`schtasks`) on
+Windows. **User domain only** — a root / Session-0 installer is a different program with
+different failure modes, and even the server's has never been walked privileged. On Windows
+that means a per-user scheduled task with InteractiveToken, never an `sc.exe` service: Session
+0 is where no vendor CLI's login lives (GRPH-852). Everything after the subcommand goes to
+`until` unchanged, so `gbfleet until --help` stays the authority on its own flags, and
+`--dry-run` prints the unit without writing it.
 
 Five things about it are worth knowing before you run it:
 
@@ -308,8 +310,8 @@ Five things about it are worth knowing before you run it:
 - **The key is never in the unit.** A unit file is world-readable. `until` takes its
   credential only from `$GBFLEET_API_KEY`, so `install` reads it from your shell and writes it
   to an owner-only file the unit references — `EnvironmentFile=` on systemd, a sourced `sh -c`
-  on launchd, which has no equivalent. Two guards refuse a unit that would carry one anyway,
-  and `uninstall` removes the key file with the unit.
+  on launchd, a `.cmd` runner on Windows Task Scheduler. Two guards refuse a unit that would
+  carry one anyway, and `uninstall` removes the key file with the unit.
 - **`--every` is a real cost, not a formality.** `until` EXITS when there is no ready work,
   which is success — so the restart delay *is* the polling interval. Each cycle registers one
   planner agent (`register_agent` always creates a row; it never reuses one by label), so the
@@ -323,7 +325,9 @@ Five things about it are worth knowing before you run it:
 
 On a headless Linux box, `systemd --user` services stop when your last session ends, so a drain
 installed over ssh dies at logout. `install` warns and `status` prints `linger:` every time;
-`loginctl enable-linger <user>` is the whole fix.
+`loginctl enable-linger <user>` is the whole fix. On Windows the logout policy is named on
+every status line — default **run only when the user is logged on** (the LaunchAgent
+analogue). "Run whether logged on" is not offered until a walk proves vendor CLIs survive it.
 
 ### When the machine is the limit
 

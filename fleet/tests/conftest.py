@@ -68,6 +68,10 @@ def nowhere_near_your_home(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(service, "unit_dir", lambda kind: home / "units" / kind)
     monkeypatch.setattr(
         service, "env_path_for", lambda name: home / "config" / f"{name}.env")
+    # Windows runner sources the env file; redirect it with the rest so a suite never
+    # drops a `.cmd` into the real ~/.config (GRPH-852).
+    monkeypatch.setattr(
+        service, "runner_path_for", lambda name: home / "config" / f"{name}.cmd")
 
 
 def _git(root: Path, *args: str) -> str:

@@ -213,7 +213,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     svc = sub.add_parser(
         "service",
-        help="run a drain under launchd / systemd --user, so it outlives your terminal",
+        help="run a drain under launchd / systemd --user / Task Scheduler, so it outlives "
+             "your terminal",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Installs `gbfleet until` as a user-domain service. Everything after the "
@@ -222,7 +223,8 @@ def build_parser() -> argparse.ArgumentParser:
             "The API key is read from $" + API_KEY_ENV + " at install time and written to an "
             "owner-only file the unit references. It is NEVER put in the unit itself: a unit "
             "file is world-readable.\n\n"
-            "User domain only. A root installer is a different program with different "
+            "User domain only — LaunchAgent, systemd --user, or Task Scheduler (schtasks) on "
+            "Windows. A root / Session-0 installer is a different program with different "
             "failure modes, and even the server's has never been walked privileged."),
         epilog=(
             "Example:\n"
@@ -782,6 +784,9 @@ def _service_status(state) -> None:
                                       "(`loginctl enable-linger`)",
                   None: "could not ask"}[state.linger]
         print(f"  linger: {answer}")
+    if state.kind == "schtasks" and state.logon_policy:
+        # Named, not guessed (GRPH-852): InteractiveToken ≈ LaunchAgent.
+        print(f"  logon:  {state.logon_policy}")
     if not state.installed:
         return
     if state.path_env:
