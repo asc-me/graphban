@@ -77,6 +77,47 @@ def _budget_tokens(value: Any) -> int | None:
     return n
 
 
+def _mix(value: Any, *, defaults: list[str], excludes: list[str]) -> dict[str, float] | None:
+    """Harness → share. Empty / null is no mix. {} stores null, not a zeroed map.
+
+    Shares are normalised to 1. A zero share is dropped (it is not a name in the mix).
+    All-zero after that is a refusal, because it is not empty — it is a mix that names
+    nobody. Mix keys outside a non-empty defaults, or in excludes, cannot spawn and
+    would look like a distribution while being a no-op.
+    """
+    if value is None or value == "" or value == {}:
+        return None
+    if not isinstance(value, dict):
+        raise ProfileInvalid("mix must be an object of harness -> share")
+    out: dict[str, float] = {}
+    for key, raw in value.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ProfileInvalid("mix keys must be non-empty harness names")
+        name = key.strip()
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise ProfileInvalid(f"mix {name} must be a number")
+        share = float(raw)
+        if share < 0:
+            raise ProfileInvalid(f"mix {name} must be ≥ 0")
+        if share == 0:
+            continue
+        if name in out:
+            raise ProfileInvalid(f"mix lists {name!r} twice")
+        out[name] = share
+    if not out:
+        raise ProfileInvalid("mix must name at least one harness with a share > 0")
+    total = sum(out.values())
+    out = {k: v / total for k, v in out.items()}
+    blocked = sorted(set(out) & set(excludes))
+    if blocked:
+        raise ProfileInvalid(f"{blocked} are in mix and excludes")
+    if defaults:
+        outside = sorted(set(out) - set(defaults))
+        if outside:
+            raise ProfileInvalid(f"mix names {outside} which are not in defaults")
+    return out
+
+
 def _caps(value: Any) -> dict | None:
     """D20: a FILTER. Null / empty is no cap. Unknown keys are refused."""
     if value is None or value == {}:
@@ -145,6 +186,7 @@ def summary(row: FleetProfile) -> dict:
         "weights": dict(row.weights or {}),
         "excludes": list(row.excludes or []),
         "budget_tokens": row.budget_tokens,
+        "mix": dict(row.mix) if row.mix else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 
@@ -172,11 +214,13 @@ def both(db: Session, user_id: str, project_id: str | None) -> dict:
 
 
 def set_profile(db: Session, *, user_id: str, project_id: str | None, defaults: Any,
-                weights: Any, excludes: Any, budget_tokens: Any = None) -> FleetProfile:
+                weights: Any, excludes: Any, budget_tokens: Any = None,
+                mix: Any = None) -> FleetProfile:
     names = _names(defaults, "defaults")
     w = _weights(weights)
     ex = _names(excludes, "excludes")
     budget = _budget_tokens(budget_tokens)
+    shares = _mix(mix, defaults=names, excludes=ex)
     overlap = sorted(set(names) & set(ex))
     if overlap:
         raise ProfileInvalid(f"{overlap} are both in defaults and excludes")
@@ -185,7 +229,7 @@ def set_profile(db: Session, *, user_id: str, project_id: str | None, defaults: 
         row = FleetProfile(id=str(uuid4()), user_id=user_id, project_id=project_id)
         db.add(row)
     row.defaults, row.weights, row.excludes = names, w, ex
-    row.budget_tokens, row.updated_at = budget, utcnow()
+    row.budget_tokens, row.mix, row.updated_at = budget, shares, utcnow()
     db.commit()
     db.refresh(row)
     return row

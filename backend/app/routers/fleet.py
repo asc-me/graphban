@@ -308,6 +308,7 @@ class ProfileIn(BaseModel):
     weights: dict[str, float] = {}
     excludes: list[str] = []
     budget_tokens: int | None = None
+    mix: dict[str, float] | None = None
 
 
 class PolicyIn(BaseModel):
@@ -336,7 +337,8 @@ def write_profile(body: ProfileIn, db: Session = Depends(get_db),
         row = fleet_profiles.set_profile(db, user_id=user.id, project_id=body.project_id,
                                          defaults=body.defaults, weights=body.weights,
                                          excludes=body.excludes,
-                                         budget_tokens=body.budget_tokens)
+                                         budget_tokens=body.budget_tokens,
+                                         mix=body.mix)
     except fleet_profiles.ProfileInvalid as e:
         raise HTTPException(422, str(e))
     events_svc.record_user(db, user, action="set_fleet_profile", target_type="fleet_profile",

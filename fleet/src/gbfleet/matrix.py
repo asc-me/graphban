@@ -8,7 +8,8 @@ Three layers, three owners, and this module joins them at spawn time:
   A constraint REMOVES rows and never adjusts a score, so a strong
   preference cannot outvote it (D4).
 - **Preferences** — a user's `defaults` (an ordered allowlist of harnesses), `weights` over
-  four axes, and `excludes`. Taste, scored last (D3, D6).
+  four axes, `excludes`, and optional `mix` (harness → share of recent launches). Taste,
+  scored last (D3, D6, GRPH-865).
 
 `resolve()` runs the steps in a fixed order — rows for the tier → policy → profile →
 installed → score → ties — and keeps every step's casualties, because a resolution nobody can
@@ -36,6 +37,9 @@ AXES = ("cost", "quality", "latency", "locality")
 COST_AXIS = {"local": 1.0, "cheap": 0.6, "frontier": 0.2}
 #: D7: finished attempts before a measured axis is allowed to score.
 MIN_SAMPLE = 5
+#: GRPH-865: matrix launches in the mix window before share-error ranks. Below this the
+#: mix is unmeasured and score wins; 0/0 is not "everyone at 0%".
+MIX_FLOOR = 3
 DEFAULT_PATH = Path(__file__).with_name("matrix.toml")
 
 
@@ -149,6 +153,8 @@ class Profile:
     excludes: tuple[str, ...] = ()
     #: PRD-41 D20: soft per-sign-off target. None means rank-scaling (D16). Never a filter.
     budget_tokens: int | None = None
+    #: GRPH-865: harness → share, already normalised. Empty is winner-take-all.
+    mix: dict = field(default_factory=dict)
 
     @classmethod
     def of(cls, raw: dict | None) -> "Profile | None":
@@ -159,12 +165,28 @@ class Profile:
             budget_n = int(budget) if budget is not None else None
         except (TypeError, ValueError):
             budget_n = None
+        mix_raw = raw.get("mix") if isinstance(raw.get("mix"), dict) else {}
+        mix: dict[str, float] = {}
+        for key, val in mix_raw.items():
+            try:
+                share = float(val)
+            except (TypeError, ValueError):
+                continue
+            name = str(key).strip()
+            if name and share > 0:
+                mix[name] = share
+        total = sum(mix.values())
+        if total > 0:
+            mix = {k: v / total for k, v in mix.items()}
+        else:
+            mix = {}
         return cls(
             user=str(raw.get("user") or raw.get("user_id") or "?"),
             defaults=tuple(str(h) for h in (raw.get("defaults") or [])),
             weights={k: float(v) for k, v in (raw.get("weights") or {}).items() if k in AXES},
             excludes=tuple(str(x) for x in (raw.get("excludes") or [])),
             budget_tokens=budget_n if budget_n and budget_n > 0 else None,
+            mix=mix,
         )
 
     def normalised(self) -> dict:
@@ -354,6 +376,8 @@ class Resolution:
                        "weights": self.profile.normalised()}
             if self.profile.budget_tokens:
                 profile["budget_tokens"] = self.profile.budget_tokens
+            if self.profile.mix:
+                profile["mix"] = dict(self.profile.mix)
         out = {
             "source": self.source,
             "tier": self.tier, "lane": self.lane,
@@ -402,6 +426,7 @@ class Matrix:
         capabilities: list[str] | None = None,
         cap_measured: CapMeasured | None = None,
         spend: dict | None = None,
+        mix: dict | None = None,
     ) -> Resolution:
         """D5, in order. Every step records what it dropped and why.
 
@@ -516,11 +541,40 @@ class Matrix:
         else:
             scored = [(r, *self._score(r, profile, measured, lane)) for r in rows]
 
+        mix_n = int((mix or {}).get("n") or 0)
+        mix_by = dict((mix or {}).get("by_harness") or {})
+        targets = dict(profile.mix) if profile and profile.mix else {}
+        mix_applied = bool(targets) and mix_n >= MIX_FLOOR
+        if targets:
+            reason = "" if mix_applied else (
+                f"n={mix_n} below floor {MIX_FLOOR}" if mix_n < MIX_FLOOR
+                else "no mix counts")
+            res.stages.append({
+                "stage": "mix",
+                "n": mix_n,
+                "unreported": int((mix or {}).get("unreported") or 0),
+                "floor": MIX_FLOOR,
+                "applied": mix_applied,
+                "reason": reason or None,
+                "targets": targets,
+                "by_harness": mix_by,
+            })
+        if mix_applied:
+            for row, _score, axes in scored:
+                count = int(mix_by.get(row.harness) or 0)
+                actual = count / mix_n
+                target = float(targets.get(row.harness) or 0.0)
+                axes["mix"] = _axis(
+                    value=round(target - actual, 3), n=mix_n, source="project", used=True,
+                    target=round(target, 3), actual=round(actual, 3), count=count)
+
         def rank(entry):
-            r, score, _ = entry
+            r, score, axes = entry
             verified = 1 if r.status == "verified" else 0
             pref = -(profile.defaults.index(r.harness)) if profile and r.harness in profile.defaults else 0
-            return (score, verified, pref, -r.order)
+            mix_axis = axes.get("mix") if isinstance(axes, dict) else None
+            deficit = float(mix_axis["value"]) if isinstance(mix_axis, dict) and mix_axis.get("used") else 0.0
+            return (deficit, score, verified, pref, -r.order)
         scored.sort(key=rank, reverse=True)
         res.scored = scored
         res.winner = scored[0][0]

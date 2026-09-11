@@ -1424,6 +1424,8 @@ export interface FleetProfile {
   excludes: string[];
   /** PRD-41 D20: soft per-sign-off token target. Null / absent means rank-scaling. */
   budget_tokens?: number | null;
+  /** GRPH-865: harness → share of recent launches. Null is winner-take-all. */
+  mix?: Record<string, number> | null;
   updated_at: string | null;
 }
 

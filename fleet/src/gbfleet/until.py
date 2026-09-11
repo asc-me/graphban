@@ -304,9 +304,12 @@ def _identify(planner: Graphban, repo: Path, adapter: str = "") -> dict:
 
 
 def _item_brief(client, item_id: str | None) -> dict | None:
-    """Capabilities and spend for this item, when the planner can read it.
+    """Capabilities, spend and mix counts for this item, when the planner can read it.
 
     Failures are silence: resolving without capabilities is the pre-S2 path, not a crash.
+    Mix MUST come from this per-spawn read, not from fleet_status at launch: that payload
+    is frozen for the process and a 20-child wave would keep picking the same under-target
+    harness.
     """
     if not item_id or client is None:
         return None
@@ -526,7 +529,8 @@ def _loop(
                                      measured=measured, installed=matrix_mod.installed_checker(),
                                      capabilities=(brief or {}).get("capabilities"),
                                      cap_measured=cap_measured,
-                                     spend=(brief or {}).get("spend"))
+                                     spend=(brief or {}).get("spend"),
+                                     mix=(brief or {}).get("mix"))
                 if res.winner is not None:
                     factory = launch_for(res.winner.harness, res.winner.model)
                     chosen = (res.winner.harness, res.winner.model)

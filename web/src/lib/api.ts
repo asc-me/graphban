@@ -277,7 +277,8 @@ export const api = {
     request<FleetProfileRead>(`/fleet/profile${projectId ? `?project_id=${projectId}` : ""}`),
   saveFleetProfile: (body: { project_id: string | null; defaults: string[];
                              weights: Partial<Record<string, number>>; excludes: string[];
-                             budget_tokens?: number | null }) =>
+                             budget_tokens?: number | null;
+                             mix?: Record<string, number> | null }) =>
     request<FleetProfile>("/fleet/profile", { method: "PUT", body: JSON.stringify(body) }),
   clearFleetProfile: (projectId?: string | null) =>
     request<{ cleared: boolean }>(`/fleet/profile${projectId ? `?project_id=${projectId}` : ""}`,

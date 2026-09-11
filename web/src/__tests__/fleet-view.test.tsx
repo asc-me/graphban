@@ -968,7 +968,7 @@ describe("harness preferences", () => {
     await waitFor(() => expect(api.saveFleetProfile).toHaveBeenCalledTimes(1));
     expect(api.saveFleetProfile.mock.calls[0][0]).toEqual({
       project_id: null, defaults: ["gbagent", "claude"], excludes: [], weights: { cost: 1 },
-      budget_tokens: null,
+      budget_tokens: null, mix: null,
     });
     expect(fleet.refetch).toHaveBeenCalled();
     expect(screen.getByRole("status").textContent).toMatch(/Saved as your default/);
@@ -1009,11 +1009,30 @@ describe("harness preferences", () => {
     await user.click(screen.getByRole("button", { name: /Save profile/ }));
     await waitFor(() => expect(api.saveFleetProfile).toHaveBeenCalledTimes(1));
     expect(api.saveFleetProfile.mock.calls[0][0].budget_tokens).toBe(50000);
+    expect(api.saveFleetProfile.mock.calls[0][0].mix).toBeNull();
 
     await user.type(screen.getByLabelText("Per-item token cap"), "120000");
     await user.click(screen.getByRole("button", { name: /Save policy/ }));
     await waitFor(() => expect(api.saveFleetPolicy).toHaveBeenCalledTimes(1));
     expect(api.saveFleetPolicy.mock.calls[0][0].caps).toEqual({ per_item_tokens: 120000 });
+  });
+
+  it("saves mix shares from harness:share text and null when the field is cleared", async () => {
+    fleet.data = { ...BASE };
+    api.saveFleetProfile.mockResolvedValue({ scope: "default" });
+    const user = userEvent.setup();
+    renderView();
+    await openWave(user);
+    await user.type(screen.getByLabelText("Mix shares"), "claude:0.5, grok:0.5");
+    await user.click(screen.getByRole("button", { name: /Save profile/ }));
+    await waitFor(() => expect(api.saveFleetProfile).toHaveBeenCalledTimes(1));
+    expect(api.saveFleetProfile.mock.calls[0][0].mix).toEqual({ claude: 0.5, grok: 0.5 });
+
+    api.saveFleetProfile.mockClear();
+    await user.clear(screen.getByLabelText("Mix shares"));
+    await user.click(screen.getByRole("button", { name: /Save profile/ }));
+    await waitFor(() => expect(api.saveFleetProfile).toHaveBeenCalledTimes(1));
+    expect(api.saveFleetProfile.mock.calls[0][0].mix).toBeNull();
   });
 
   it("shows the server's refusal instead of pretending the save happened", async () => {
