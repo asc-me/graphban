@@ -53,13 +53,18 @@ def test_deny_adds_to_it():
 
 def test_a_denied_command_really_refuses(tmp_path):
     """Run for real rather than asserted: a stub that is not executable, or not first on
-    PATH, is a guard that is present, exported and inert."""
+    PATH, is a guard that is present, exported and inert.
+
+    Invoke the stub by its real path. `subprocess.run(["railway", ...])` asks
+    CreateProcess to SearchPath the *parent* process's PATHEXT, and a Git Bash CI
+    wrapper often has none — WinError 2, a false red that is not the shim (GRPH-855).
+    PATH order is `test_the_shim_goes_first_on_path`.
+    """
     where = shim.build(tmp_path / "shim")
-    # A PATH-only env on Windows omits PATHEXT/SystemRoot, and CreateProcess then
-    # cannot find `railway.cmd` (WinError 2) — a false red that is not the shim.
+    stub = where / ("railway.cmd" if os.name == "nt" else "railway")
     env = shim.environment({**os.environ, "PATH": os.defpath}, where)
 
-    done = subprocess.run(["railway", "up"], env=env, capture_output=True, text=True)
+    done = subprocess.run([str(stub), "up"], env=env, capture_output=True, text=True)
 
     assert done.returncode == 126
     assert "refusing to run 'railway'" in done.stderr
