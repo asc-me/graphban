@@ -462,3 +462,52 @@ def test_snapshot_http_is_the_served_payload(client, auth, db, proj):
     assert r.status_code == 200, r.text
     assert r.json()["snapshot_at"]
     assert r.json()["cells"][0]["n"] in ("50–199", "20–49", "200+")
+
+
+# ---- org / platform probe separation (GRPH-858 sabotage) --------------------------------
+
+def test_org_measured_subtracts_probe_from_band_n(client, auth, db):
+    """D7 / criterion 8: 8 natural + 2 probe on a sibling → platform_roll finished=8.
+
+    platform_roll aggregates HarnessRollup rows from org siblings. Sabotage: remove
+    the probe subtraction in platform_roll() for HarnessRollup — finished reads 10.
+    """
+    alex = db.scalar(select(User).where(User.email == "alex@ascme-labs.com"))
+    db.add(Organization(id="org_probe_sep", name="org_probe_sep", telemetry_share=True))
+    db.commit()
+    db.add(OrgMembership(org_id="org_probe_sep", user_id=alex.id, role="admin"))
+    db.commit()
+    p1 = client.post("/api/projects", json={"name": "ProbeSep1"}, headers=auth).json()["id"]
+    p2 = client.post("/api/projects", json={"name": "ProbeSep2"}, headers=auth).json()["id"]
+    db.get(Project, p1).org_id = "org_probe_sep"
+    db.get(Project, p2).org_id = "org_probe_sep"
+    db.add(HarnessRollup(
+        project_id=p2, week="2026-W37", vendor="gbagent", model="qwen3.6",
+        binary_version="1.0.0", capability="A4", size_band="M",
+        finished=10, signed_off=6, bounced=4, probe=2, first_choice=10))
+    db.commit()
+    hsvc.platform_roll(db)
+    rolls = db.scalars(select(PlatformRollup).where(
+        PlatformRollup.week == "2026-W37")).all()
+    assert rolls, "platform_roll should have written a PlatformRollup from the sibling"
+    roll = rolls[0]
+    assert roll.finished == 8, f"platform finished should exclude probe from sibling: got {roll.finished}"
+
+
+def test_platform_roll_subtracts_probe_from_contribution_cell(db, proj):
+    """D7 / criterion 8: 8 natural + 2 probe on a contributed instance → platform
+    finished=8, not 10. Sabotage: remove the probe subtraction in platform_roll()
+    for PlatformContributionCell — finished reads row.finished (10) instead of 8.
+    """
+    db.add(PlatformContributionCell(
+        instance_id="inst-probe-sep", week="2026-W37", vendor="gbagent",
+        model="qwen3.6", binary_version="1.0.0", capability="A4", size_band="M",
+        finished=10, signed_off=6, probe=2, first_choice=10))
+    db.commit()
+    hsvc.platform_roll(db)
+    rolls = db.scalars(select(PlatformRollup).where(
+        PlatformRollup.week == "2026-W37")).all()
+    assert rolls, "platform_roll should have written a PlatformRollup"
+    roll = rolls[0]
+    assert roll.finished == 8, f"platform finished should exclude probe: got {roll.finished}"
+    assert roll.signed_off == 6
