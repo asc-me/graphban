@@ -207,6 +207,22 @@ describe("Harness page", () => {
     );
   });
 
+  it("greys an uninstalled row with the reason as the label, not as unmeasured", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        unavailable: [{
+          vendor: "claude", model: "sonnet", capability: "A4",
+          reason: "not installed", label: "not installed",
+          control: "gbfleet doctor", drops: 6, score: 0.9, layer: "platform",
+        }],
+      }),
+    );
+    show();
+    expect(await screen.findByTestId("harness-unavailable")).toHaveTextContent("claude:sonnet");
+    expect(screen.getByTestId("harness-unavailable-reason")).toHaveTextContent("not installed");
+    expect(screen.getByText(/not because it is unmeasured/)).toBeInTheDocument();
+  });
+
   it("says nothing is measured rather than rendering an empty page", async () => {
     harness.mockResolvedValueOnce(report({ cells: [], below_floor_count: 0 }));
     show();

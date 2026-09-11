@@ -543,11 +543,18 @@ export const api = {
     if (opts.versions) q.set("versions", opts.versions);
     return request<HarnessReport>(`/harness?${q.toString()}`);
   },
-  harnessRecommendations: (projectId: string, opts: { windowDays?: number } = {}) => {
-    const q = new URLSearchParams({ project_id: projectId });
+  harnessRecommendations: (projectId: string, opts: { windowDays?: number; orgId?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.orgId) q.set("org_id", opts.orgId);
+    else q.set("project_id", projectId);
     if (opts.windowDays) q.set("window_days", String(opts.windowDays));
     return request<HarnessRecommendations>(`/harness/recommendations?${q.toString()}`);
   },
+  setTelemetryShare: (telemetry_share: boolean, orgId?: string) =>
+    request<{ telemetry_share: boolean }>(`/harness/platform/share`, {
+      method: "PUT",
+      body: JSON.stringify({ telemetry_share, org_id: orgId ?? null }),
+    }),
   markHarnessRecommendation: (body: {
     project_id: string; card_key: string; evidence_hash: string; action: "accept" | "dismiss";
   }) =>

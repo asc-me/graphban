@@ -393,6 +393,16 @@ def period_spend(db: Session, project_id: str | None, period: str | None) -> dic
     return {"period_tokens": tokens, "period_reported": reported, "period_finished": finished}
 
 
+def _n_from_band(band: str | None) -> int:
+    """The lower bound of a snapshot n-band, so the floor check has a number."""
+    text = (band or "").replace("–", "-").replace("+", "")
+    for part in text.replace("<", "").split("-"):
+        digits = "".join(c for c in part if c.isdigit())
+        if digits:
+            return int(digits)
+    return 0
+
+
 def _cell_out(vendor: str, model: str, capability: str, layer: str, cell: dict) -> dict:
     durations = sorted(cell.get("durations") or [])
     latency = None
@@ -472,7 +482,8 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
     version's cell and emits it again as `prior` labelled with the new version —
     pooling versions into one cell is the sabotage.
     """
-    from app.models import AttemptTelemetry, HarnessRollup, PlatformRollup, Project
+    from app.models import (AttemptTelemetry, CapabilityPrior, HarnessRollup,
+                            PlatformRollup, Project)
 
     cutoff = _now() - timedelta(days=WINDOW_DAYS if window_days is None else window_days)
     stmt = select(Delegation).where(Delegation.outcome.is_not(None))
@@ -546,8 +557,9 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
                         continue
                     key = (roll.vendor, roll.model, roll.capability)
                     cell = org_cells.setdefault(key, _empty_cell())
-                    cell["finished"] += roll.finished
-                    cell["signed_off"] += roll.signed_off
+                    natural = roll.finished - (getattr(roll, "probe", 0) or 0)
+                    cell["finished"] += max(natural, 0)
+                    cell["signed_off"] += min(roll.signed_off, max(natural, 0))
                     cell["tokens_in"] += roll.tokens_in or 0
                     cell["tokens_out"] += roll.tokens_out or 0
                     cell["tokens_reported"] += roll.tokens_reported
@@ -572,6 +584,23 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
         b["signed_off"] += roll.signed_off
     out.extend(_cell_out(v, m, c, "platform", cell)
                for (v, m, c), cell in sorted(plat_cells.items()) if cell["finished"])
+
+    # Fetched snapshot (self-hosted): D5's platform layer when this instance has no
+    # in-process overlay. A local cell at the floor already sits in `out` as project
+    # and outranks these.
+    if not plat_cells:
+        for prior in db.scalars(select(CapabilityPrior)).all():
+            n = _n_from_band(prior.n_band)
+            cell = _empty_cell()
+            cell["finished"] = n
+            cell["signed_off"] = int(round((prior.rate or 0.0) * n)) if n else 0
+            item = _cell_out(prior.vendor, prior.model, prior.capability, "platform", cell)
+            item["n_band"] = prior.n_band
+            item["snapshot_at"] = prior.snapshot_at
+            item["source"] = prior.source
+            if prior.binary_version:
+                item["binary_version"] = prior.binary_version
+            out.append(item)
 
     # Inherited prior: a newer binary_version with no cell of its own yet still has the
     # previous version's rate, labelled so it cannot be mistaken for a measurement of the

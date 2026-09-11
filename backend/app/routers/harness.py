@@ -52,7 +52,8 @@ def harness_report(project_id: str | None = None, org_id: str | None = None,
 
 
 @router.get("/recommendations")
-def recommendations(project_id: str, window_days: int | None = None,
+def recommendations(project_id: str | None = None, org_id: str | None = None,
+                    window_days: int | None = None,
                     include_seen: bool = False,
                     db: Session = Depends(get_db),
                     user: User = Depends(get_current_user)):
@@ -66,11 +67,22 @@ def recommendations(project_id: str, window_days: int | None = None,
     Reading also drafts lesson candidates for cells that have just crossed the sample floor
     (D8). A candidate enters the review inbox and nothing here publishes one.
     """
-    authz.require_readable(db, user.id, project_id)
-    report = harness_svc.report(db, project_id, window_days=window_days, versions="all")
-    drafted = harness_svc.lessons_for_crossings(db, project_id, report)
-    cards = harness_rules.cards(db, project_id, window_days=window_days)
-    marks = harness_svc.marks_for(db, user_id=user.id, scope="project", scope_id=project_id)
+    if org_id:
+        authz.require_org_admin(db, user.id, org_id)
+        report = harness_svc.org_report(db, org_id, window_days=window_days, versions="all")
+        drafted = 0
+        cards = harness_rules.cards(db, org_id=org_id, window_days=window_days)
+        marks = harness_svc.marks_for(db, user_id=user.id, scope="org", scope_id=org_id)
+        scope, scope_id = "org", org_id
+    else:
+        if not project_id:
+            raise HTTPException(422, "name a project_id or an org_id")
+        authz.require_readable(db, user.id, project_id)
+        report = harness_svc.report(db, project_id, window_days=window_days, versions="all")
+        drafted = harness_svc.lessons_for_crossings(db, project_id, report)
+        cards = harness_rules.cards(db, project_id, window_days=window_days)
+        marks = harness_svc.marks_for(db, user_id=user.id, scope="project", scope_id=project_id)
+        scope, scope_id = "project", project_id
     db.commit()
 
     out = []
@@ -90,9 +102,16 @@ def recommendations(project_id: str, window_days: int | None = None,
         if seen and not include_seen:
             continue
         out.append(payload)
-    return {"project_id": project_id, "cards": out, "rules": list(harness_rules.RULES),
-            "lessons_drafted": drafted,
-            "window_days": report["window_days"], "floor": report["floor"]}
+    payload = {"cards": out, "rules": list(harness_rules.RULES),
+               "lessons_drafted": drafted,
+               "window_days": report["window_days"], "floor": report["floor"],
+               "scope": scope}
+    if scope == "org":
+        payload["org_id"] = scope_id
+        payload["projects"] = report.get("projects") or []
+    else:
+        payload["project_id"] = scope_id
+    return payload
 
 
 class MarkIn(BaseModel):
@@ -140,25 +159,31 @@ def mark_recommendation(body: MarkIn, db: Session = Depends(get_db),
 
 
 class ShareIn(BaseModel):
-    org_id: str
+    org_id: str | None = None
     telemetry_share: bool
 
 
 @router.put("/platform/share")
 def set_telemetry_share(body: ShareIn, db: Session = Depends(get_db),
                         user: User = Depends(get_current_user)):
-    """Opt an organisation into (or out of) the platform average (D13).
+    """Opt into (or out of) the platform average (D13 / D11).
 
-    Off by default and hosted-only. **Opting out recomputes at once**: an org that leaves must
-    not stay inside the aggregate anyone reads next, and opt-in that keeps your numbers after
-    you leave is not opt-in. Nothing of the org's crosses the boundary either way except
-    weekly cell counts — never a raw row, never an org id.
+    Hosted: org admin, `org_id` required. Self-hosted: the instance toggle, posted over
+    the deployment-sync credential; opting out stops posting and the hosted recompute
+    drops the contributor.
     """
     from app.config import settings
     from app.models import Organization
 
     if not settings.hosted_mode:
-        raise HTTPException(404, "the platform average is a hosted-service feature")
+        out = harness_svc.set_instance_share(db, body.telemetry_share)
+        events_svc.record_user(db, user, action="set_telemetry_share", target_type="instance",
+                               target_id="sync_link",
+                               meta={"telemetry_share": out["telemetry_share"]})
+        db.commit()
+        return out
+    if not body.org_id:
+        raise HTTPException(422, "org_id is required on a hosted service")
     authz.require_org_admin(db, user.id, body.org_id)
     org = db.get(Organization, body.org_id)
     if org is None:
@@ -172,6 +197,35 @@ def set_telemetry_share(body: ShareIn, db: Session = Depends(get_db),
     db.commit()
     return {"org_id": org.id, "telemetry_share": org.telemetry_share,
             "platform_cells": rows}
+
+
+@router.post("/contribute")
+def contribute(db: Session = Depends(get_db), key=Depends(get_agent_key)):
+    """Nightly self-hosted contribution. Posts D11 rollups over the sync credential."""
+    out = harness_svc.post_contributions(db)
+    db.commit()
+    return out
+
+
+@router.post("/snapshot/fetch")
+def fetch_snapshot(db: Session = Depends(get_db), key=Depends(get_agent_key)):
+    """Pull the hosted capability snapshot into capability_priors."""
+    out = harness_svc.fetch_snapshot(db)
+    db.commit()
+    return out
+
+
+@router.post("/platform/snapshot")
+def roll_snapshot(db: Session = Depends(get_db), key=Depends(get_agent_key)):
+    """Nightly capability_snapshot after the platform roll. Hosted only."""
+    from app.config import settings
+
+    if not settings.hosted_mode:
+        raise HTTPException(404, "the platform snapshot is a hosted-service feature")
+    harness_svc.platform_roll(db)
+    out = harness_svc.publish_snapshot(db)
+    db.commit()
+    return out
 
 
 @router.get("/probe/candidates")

@@ -63,7 +63,7 @@ export function HarnessView() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        {data.cells.length === 0 ? (
+        {data.cells.length === 0 && !(data.unavailable ?? []).length ? (
           <div className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted">
             Nothing measured yet. A cell appears here once a delegation finishes — one row per
             vendor, model, capability and size band.
@@ -115,6 +115,28 @@ export function HarnessView() {
             )}
             {(data.review_cells ?? []).map((cell) => (
               <ReviewRow key={`f:${cell.key.vendor}:${cell.key.model}:${cell.key.capability}`} cell={cell} floor={data.floor} />
+            ))}
+            {(data.unavailable ?? []).map((row) => (
+              <div
+                key={`${row.vendor}:${row.model}:${row.capability}:${row.reason}`}
+                data-testid="harness-unavailable"
+                className="rounded-[10px] border border-dashed border-line-2 bg-surface-2 px-3.5 py-3 text-faint"
+              >
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                  <span className="font-mono text-[12.5px]">
+                    {row.vendor}{row.model ? `:${row.model}` : ""}
+                  </span>
+                  <span className="font-mono text-[10.5px]">{row.capability}</span>
+                  <span data-testid="harness-unavailable-reason" className="font-mono text-[10.5px]">
+                    {row.label || row.reason}
+                  </span>
+                </div>
+                <p className="mt-1 text-[12px]">
+                  Greyed because it is {row.reason}, not because it is unmeasured.
+                  Control: <span className="font-mono">{row.control}</span>
+                  {row.drops ? ` · dropped ${row.drops} times` : ""}
+                </p>
+              </div>
             ))}
             {data.cells.map((cell) => (
               <CellRow key={cellId(cell)} cell={cell} floor={data.floor} />

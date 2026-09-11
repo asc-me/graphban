@@ -873,6 +873,12 @@ class SyncStatusOut(BaseModel):
     org: str
     credential_set: bool
     linked_at: datetime | None = None
+    telemetry_share: bool = False
+    last_contribution_at: datetime | None = None
+    last_contribution_rows: int | None = None
+    last_floors: dict | None = None
+    last_redacted_models: int | None = None
+    last_snapshot_at: str | None = None
     projects: list[SyncProjectState] = []
 
 

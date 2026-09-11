@@ -73,12 +73,25 @@ def link_status(db: Session) -> dict:
     if link is not None:
         return {"linked": True, "source": "web", "cloud_url": link.cloud_url,
                 "org": link.org, "credential_set": bool(link.api_key_enc),
-                "linked_at": link.linked_at}
+                "linked_at": link.linked_at,
+                "telemetry_share": bool(link.telemetry_share),
+                "last_contribution_at": (link.last_contribution_at.isoformat()
+                                         if link.last_contribution_at else None),
+                "last_contribution_rows": link.last_contribution_rows,
+                "last_floors": link.last_floors,
+                "last_redacted_models": link.last_redacted_models,
+                "last_snapshot_at": link.last_snapshot_at}
     if settings.sync_cloud_url and settings.sync_api_key:
         return {"linked": True, "source": "env", "cloud_url": settings.sync_cloud_url,
-                "org": "", "credential_set": True, "linked_at": None}
+                "org": "", "credential_set": True, "linked_at": None,
+                "telemetry_share": False, "last_contribution_at": None,
+                "last_contribution_rows": None, "last_floors": None,
+                "last_redacted_models": None, "last_snapshot_at": None}
     return {"linked": False, "source": "", "cloud_url": "", "org": "",
-            "credential_set": False, "linked_at": None}
+            "credential_set": False, "linked_at": None,
+            "telemetry_share": False, "last_contribution_at": None,
+            "last_contribution_rows": None, "last_floors": None,
+            "last_redacted_models": None, "last_snapshot_at": None}
 
 
 def compute_diff(local: dict[str, str], pushed: dict[str, str]) -> tuple[list[str], list[str]]:

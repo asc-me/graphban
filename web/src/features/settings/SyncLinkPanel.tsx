@@ -83,12 +83,85 @@ export function SyncLinkPanel() {
       </div>
 
       <CloudLinkCard status={status} onChange={invalidate} scopedId={scopedId} onScope={setScopedId} />
+      <ContributionCard status={status} onChange={invalidate} />
 
       <ScopeBar scoped={scoped} onClear={() => setScopedId(null)} />
 
       <GraphPrivacyCard scoped={scoped} linked={status.linked} onChange={invalidate} />
       <GraphPushCard scoped={scoped} linked={status.linked} onChange={invalidate} />
       <PortableBundleCard scoped={scoped} onChange={invalidate} />
+    </div>
+  );
+}
+
+function ContributionCard({
+  status,
+  onChange,
+}: {
+  status: NonNullable<ReturnType<typeof useSyncStatus>["data"]>;
+  onChange: () => void;
+}) {
+  const [busy, setBusy] = React.useState(false);
+  const [err, setErr] = React.useState<string | null>(null);
+  const on = Boolean(status.telemetry_share);
+
+  async function toggle() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.setTelemetryShare(!on);
+      onChange();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const floors = status.last_floors;
+  return (
+    <div data-testid="sync-contribution" className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3">
+      <h3 className="text-[13px] font-medium">Capability contribution</h3>
+      <p className="mt-1 text-[12.5px] text-muted">
+        When on, this instance posts capability rollups nightly over the deployment-sync
+        credential — the D11 field set only, never a path, item or reviewer. Resist
+        casual re-identification, never anonymous. Opting out stops posting and the
+        hosted recompute drops this contributor.
+      </p>
+      <button
+        type="button"
+        data-testid="sync-contribution-toggle"
+        className="mt-2 rounded-[8px] border border-line-2 px-2 py-1 text-[12px]"
+        disabled={busy}
+        onClick={() => void toggle()}
+      >
+        {on ? "Sharing rollups" : "Not sharing"}
+      </button>
+      {err && <p className="mt-2 text-[12px] text-st-review">{err}</p>}
+      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] text-faint">
+        <dt>last contribution</dt>
+        <dd data-testid="sync-contribution-last">
+          {status.last_contribution_at ?? "never"}
+        </dd>
+        <dt>row count</dt>
+        <dd data-testid="sync-contribution-rows">
+          {status.last_contribution_rows ?? "—"}
+        </dd>
+        <dt>floors</dt>
+        <dd data-testid="sync-contribution-floors">
+          {floors
+            ? floors.cleared
+              ? "cleared"
+              : floors.reason || "not cleared"
+            : "—"}
+        </dd>
+        {status.last_snapshot_at && (
+          <>
+            <dt>snapshot</dt>
+            <dd>{status.last_snapshot_at}</dd>
+          </>
+        )}
+      </dl>
     </div>
   );
 }
