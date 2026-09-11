@@ -1371,6 +1371,10 @@ def item_dict(item: Item) -> dict:
         "built_by": item.built_by,
         "reviewed_by": item.reviewed_by,
     }
+    if item.releases:
+        # Present only when somebody handed it back (GRPH-783) — the same rule as `reach`
+        # below. Zero is the ordinary case and would cost every read a field saying so.
+        out["releases"] = int(item.releases)
     if (item.reach or "repo") != "repo":
         # PRESENT ONLY WHEN IT IS NOT THE DEFAULT (GRPH-832), the same rule the rebaseline
         # notice below follows: on the overwhelming majority of items this costs nothing, and
@@ -1494,22 +1498,85 @@ def claimable(item: Item, *, lease_seconds: int = DEFAULT_LEASE_SECONDS, now=Non
     return _is_claimable(item, cutoff)
 
 
-def _ready_candidates(db: Session, project_id: str | None, lease_seconds: int) -> list[Item]:
+#: How many worker hand-backs park an item out of the claim pool (GRPH-783). Two, not one:
+#: a single release is an agent that crashed, ran out of budget or declined on a hunch; the
+#: second is the same item telling the fleet the same thing twice, which is the pattern the
+#: live instance measured (three releases of one item over five days, each with a reason in
+#: its evidence, none of them read by anything).
+RELEASE_HOLD = 2
+
+
+def claim_pool(db: Session, project_id: str | None, *,
+               lease_seconds: int = DEFAULT_LEASE_SECONDS,
+               prd_id: str | None = None) -> tuple[list[Item], list[dict]]:
+    """What an agent could take right now, and what was claimable but WITHHELD — with why.
+
+    ONE pool for every hand-out path (GRPH-783). `claim_next` gated on dependency readiness and
+    the divvy did not: `clusters_for_project` filtered on `claimable` alone, so `claim_cluster`
+    — the path every posture is taught — handed a worker seat an item whose dependency was not
+    done. The seat read it, could do nothing, released it, and was offered the same cluster on
+    the next call. Measured live as two identical clusters back to back, every member
+    `ready: false`, thirty-four areas reserved each time so the spin blocked the rest of the
+    wave as well.
+
+    Two reasons to withhold, and each is REPORTED rather than dropped, because "nothing ready
+    to claim" and "three items exist and here is what each waits on" are different answers
+    and the quiet one reads as done:
+
+    - `dependency`: a `backlog`/`next` item with an unfinished dependency. A stale in-progress
+      reclaim is not re-gated — that work is already underway.
+    - `released`: handed back `RELEASE_HOLD` or more times since a planner last delegated it.
+      The item is saying its next step is not a worker's (a grill, a decomposition, an
+      operator's invite), and the count is the one fact every hand-back leaves behind. Reset
+      by `delegate`, which is the planner touching it; a bound seat claims straight through.
+
+    The hold is role-agnostic on purpose. The tempting version exempted planners, and the
+    supervisor IS a planner: `until` picks its seed from this pool and delegates it to a
+    worker seat automatically, so an exemption would have re-created the livelock one level
+    up. A planner that wants a withheld item worked says so by delegating it.
+
+    `takeable` is ranked ready-first by `prioritization.score`, as `claim_next` always was.
+    """
     from app.services import prioritization as prio
 
     ctx = prio.context(db, project_id)
     cutoff = utcnow() - timedelta(seconds=lease_seconds)
-    out = []
+    takeable: list[Item] = []
+    withheld: list[dict] = []
     for it in ctx.items:
+        if prd_id and (it.prd_id or "") != prd_id:
+            continue
         if not _is_claimable(it, cutoff):
             continue
-        # Fresh backlog/next must be dependency-ready; a stale in-progress reclaim is already
-        # underway, so we don't re-gate it on dependencies.
-        if it.status in ("backlog", "next") and not prio.ready(ctx, it):
+        if it.status in ("backlog", "next"):
+            waiting = prio.blocked_by(ctx, it)
+            if waiting:
+                withheld.append({"id": it.key, "why": "dependency",
+                                 "blocked_by": [ctx.by_id[d].key for d in waiting]})
+                continue
+        if int(it.releases or 0) >= RELEASE_HOLD:
+            withheld.append({"id": it.key, "why": "released",
+                             "releases": int(it.releases or 0)})
             continue
-        out.append(it)
-    out.sort(key=lambda it: (-prio.score(ctx, it), it.sort_order))
-    return out
+        takeable.append(it)
+    takeable.sort(key=lambda it: (-prio.score(ctx, it), it.sort_order))
+    return takeable, withheld
+
+
+def withheld_sentence(withheld: list[dict]) -> str:
+    """One clause per withheld item, for a refusal a person can act on."""
+    parts = []
+    for w in withheld:
+        if w.get("why") == "dependency":
+            parts.append(f"{w['id']} waits on {', '.join(w.get('blocked_by') or [])} (not done)")
+        elif w.get("why") == "released":
+            parts.append(f"{w['id']} was handed back {w.get('releases')} times — needs a "
+                         "planner: delegate it, or route it")
+    return "; ".join(parts)
+
+
+def _ready_candidates(db: Session, project_id: str | None, lease_seconds: int) -> list[Item]:
+    return claim_pool(db, project_id, lease_seconds=lease_seconds)[0]
 
 
 class ReachesOutsideTheRepo(Exception):
@@ -1836,12 +1903,17 @@ def heartbeat(db: Session, item_id: str, agent_id: str,
     return item
 
 
-def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "next") -> Item | None:
+def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "next",
+                 reason: str = "") -> Item | None:
     """Give a claimed item back to the queue. Returns the item, or None if not the holder.
 
     Also drops the item's area reservations (PRD-17 D-d). They expire lazily anyway, but an
     area held for the rest of a lease that nobody is editing is a cluster the divvy will not
     hand out — so the fleet would idle for up to ten minutes on work that had already stopped.
+
+    A worker's hand-back is COUNTED (GRPH-783), and `reason` — when given — lands on the item
+    as a note, so the next reader sees why the last one declined rather than rediscovering it.
+    At `RELEASE_HOLD` the count parks the item out of `claim_pool`; see there for why.
     """
     from app.services import fleet as fleet_svc
 
@@ -1905,6 +1977,12 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
     if (item.built_by == agent_id and item.claimed_at
             and item.updated_at <= item.claimed_at and not reserved):
         item.built_by = None
+    # THE COUNT IS THE SIGNAL (GRPH-783). Written after the authorship check above, which
+    # reads `updated_at`: a hand-back must not count as a substantive write on the item.
+    item.releases = int(item.releases or 0) + 1
+    if reason and reason.strip():
+        item.evidence = append_evidence(item.evidence, [{
+            "kind": "note", "detail": f"released by {agent_id}: {reason.strip()}"}])
     item.claimed_by = None
     item.claimed_at = None
     item.assignee = ""

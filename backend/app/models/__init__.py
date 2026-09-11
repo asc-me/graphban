@@ -531,6 +531,15 @@ class Item(Base):
     # absence of.
     review_takes: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0",
                                               default=0)
+    # How many times a WORKER handed this item back (GRPH-783). Measured on the live instance:
+    # `claim_cluster` offered the same three items to a worker seat twice in a row, each time
+    # the seat read them, found the only next step was a grill it was forbidden to run, and
+    # released — and one of them had been released three times over five days with nothing
+    # reading that. The count is the one fact every hand-back leaves behind, and at
+    # `items.RELEASE_HOLD` it parks the item out of the claim pool until a planner delegates
+    # it, which resets it. Never cleared by a release, only by that delegation.
+    releases: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0",
+                                          default=0)
     # A bounced item goes back to its AUTHOR first (PRD-17 D-f): the agent that wrote it has
     # the context, and letting the fleet re-divvy it immediately would hand a stranger a
     # half-finished change plus a review comment about code they have never seen.

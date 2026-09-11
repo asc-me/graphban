@@ -354,7 +354,8 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 8897
+CORE_TOKENS = 8896
+# 8897 -> 8896 (GRPH-783): release_item gains a bare `reason`; its description trimmed to pay.
 # 8887 -> 8897 (GRPH-839): `update_item` declares `evidence_intake`, so the reply says how
 # many receipts the server took. Core by nature — `update_item` is how every agent records
 # proof, and this is the tool that was discarding it in silence. Ten tokens is the whole

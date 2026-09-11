@@ -96,7 +96,9 @@ CEILING = 14200
 # tool that could report a completion whose proof it had discarded. Declared as one opaque
 # object rather than three properties precisely because of this number — spelling out
 # {sent, added, dropped} costs 36 and would have needed a raise. Headroom 2.
-MEASURED_TOKENS = 14198
+MEASURED_TOKENS = 14196
+# 14198 -> 14196 (GRPH-783): `reason` on release_item, bare, paid for by its own description
+# trim; `withheld` on claim_cluster / collision_clusters is reply-only for the same reason.
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

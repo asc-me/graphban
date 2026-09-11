@@ -144,7 +144,8 @@ def collision_clusters(db: Session, items: list[Item], project_id: str | None) -
 
 def clusters_for_project(db: Session, project_id: str | None, status: str | None = None,
                          lease_seconds: int = items_svc.DEFAULT_LEASE_SECONDS,
-                         prd_id: str | None = None) -> list[dict]:
+                         prd_id: str | None = None,
+                         withheld: list[dict] | None = None) -> list[dict]:
     """Collision clusters over a project's work pool. Defaults to everything an agent could
     actually take right now — which is NOT the same as the unstarted pool.
 
@@ -154,25 +155,35 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
     Once `claim_cluster` became the path every posture is taught, that meant a crashed agent's
     item was never offered to anybody again (GRPH-397).
 
-    Sharing `items_svc.claimable` is the point: two definitions of "claimable" is what produced
-    the gap, and a triage board should show the same work the claim path will hand out.
+    Sharing `items_svc.claim_pool` is the point: two definitions of "takeable" is what produced
+    that gap, and a triage board should show the same work the claim path will hand out.
 
-    (Dependency readiness stays a `claim_next` filter, as it always has — a blocked item can
-    still appear in the partition a planner reads.)
+    Dependency readiness used to stay a `claim_next` filter, on the argument that a blocked
+    item should still appear in the partition a planner reads. The planner does not only read
+    it: `until` delegates the first item of the first free cluster, and a worker seat asked
+    the divvy directly got the blocked item too (GRPH-783). So the default pool is what
+    `claim_next` would hand out, and what it declined is written into `withheld` when the
+    caller passes a list — marked, not hidden, the same courtesy `held_by` extends below.
+
+    An explicit `status` is a board view of that status, not a claim pool; it is not gated.
     """
-    pool = items_svc.list_items(db, project_id=project_id, status=status)
     if status is None:
-        pool = [it for it in pool if items_svc.claimable(it, lease_seconds=lease_seconds)]
-    if prd_id:
-        # GRPH-797. `until` had no way to say which work a wave was for, so it drained the
-        # project: a run meant for one PRD delegated an epic and three unrelated items. Parking
-        # things in `backlog` is not a defence, because backlog is claimable BY DESIGN — that
-        # is GRPH-397, and it is right. The lever has to be here.
-        #
-        # Filtering the POOL rather than the finished clusters is the whole point: a cluster is
-        # a promise that its members do not collide, and dropping members from one afterwards
-        # would hand out a promise computed over items that are no longer in it.
-        pool = [it for it in pool if (it.prd_id or "") == prd_id]
+        pool, declined = items_svc.claim_pool(db, project_id, lease_seconds=lease_seconds,
+                                              prd_id=prd_id)
+        if withheld is not None:
+            withheld.extend(declined)
+    else:
+        pool = items_svc.list_items(db, project_id=project_id, status=status)
+        if prd_id:
+            # GRPH-797. `until` had no way to say which work a wave was for, so it drained the
+            # project: a run meant for one PRD delegated an epic and three unrelated items.
+            # Parking things in `backlog` is not a defence, because backlog is claimable BY
+            # DESIGN — that is GRPH-397, and it is right. The lever has to be here.
+            #
+            # Filtering the POOL rather than the finished clusters is the whole point: a
+            # cluster is a promise that its members do not collide, and dropping members from
+            # one afterwards would hand out a promise computed over items no longer in it.
+            pool = [it for it in pool if (it.prd_id or "") == prd_id]
     return _with_reservations(db, collision_clusters(db, pool, project_id), project_id,
                              lease_seconds=lease_seconds)
 

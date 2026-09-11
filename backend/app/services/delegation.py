@@ -827,6 +827,12 @@ def delegate(db: Session, *, agent: Agent, item: Item, lane: str, tier: str,
         capabilities_at_delegate=capabilities_of(item),
     )
     db.add(row)
+    # THE PLANNER TOUCHED IT (GRPH-783). Worker hand-backs park an item out of the claim pool
+    # at `items.RELEASE_HOLD`; this is the one act that says a planner has looked at it and
+    # wants it worked, so the count starts again. Reset here rather than on any planner
+    # `update_item`, because `until` is a planner too and re-delegates from the pool
+    # automatically — the reset has to be the deliberate act, not the ambient one.
+    item.releases = 0
     db.commit()
     db.refresh(row)
     code: str | None = None

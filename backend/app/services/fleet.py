@@ -2339,10 +2339,16 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     # Scoping here rather than skipping out-of-scope members below is also what keeps
     # `claim_item`'s refusal unreachable from this path: the two agree by construction.
     scope = items_svc.seat_scope(db, agent_id)
+    # What the pool DECLINED and why (GRPH-783): a dependency not done, or an item handed back
+    # so often it is parked until a planner delegates it. Returned on every reply and named in
+    # the refusal, because a worker seat that was spinning on these items could not tell
+    # "nothing to claim" from "three items, each waiting on something that is not you".
+    withheld: list[dict] = []
 
     for cluster in collision_svc.clusters_for_project(db, project_id,
                                                        lease_seconds=lease_seconds,
-                                                       prd_id=scope or None):
+                                                       prd_id=scope or None,
+                                                       withheld=withheld):
         overlap = areas_collide(cluster.get("areas") or [], blocked)
         if overlap:
             continue
@@ -2363,7 +2369,7 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                 "items": [{"id": it.key, "stored_id": it.id, "title": it.title} for it in claimed],
                 "areas": cluster.get("areas") or [],
                 "predicted": bool(cluster.get("predicted")),
-                "reason": "", "scope": scope}
+                "reason": "", "scope": scope, "withheld": withheld}
 
     # WHO is holding what, and until when. "All ready clusters collide with in-flight work" is
     # unactionable to the one caller most likely to see it: a solo human whose previous agent
@@ -2384,8 +2390,10 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         reason = ("nothing ready to claim" if not scope else
                   f"nothing ready to claim inside {scope}, which is the scope this seat was "
                   f"minted for — the project may have other work, and this seat may not take it")
+    if withheld:
+        reason += "; withheld: " + items_svc.withheld_sentence(withheld)
     return {"claimed": False, "items": [], "areas": [], "predicted": False,
-            "held_by": held, "reason": reason, "scope": scope}
+            "held_by": held, "reason": reason, "scope": scope, "withheld": withheld}
 
 
 def holds_reservation(db: Session, *, agent_id: str, item_id: str) -> bool:

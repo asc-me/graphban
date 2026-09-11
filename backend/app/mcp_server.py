@@ -802,13 +802,17 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "release_item",
-        "description": "Return a claimed item to the queue (e.g. you can't finish it); moves it back to `next` by default.",
+        "description": "Hand a claimed item back to the queue; `reason` is noted on it.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {"type": "string"},
                 "agent_id": {"type": "string"},
                 "to_status": {"type": "string", "enum": items_svc.STATUSES},
+                # Bare on purpose: the manifest is at its ceiling (test_mcp_footprint), and
+                # the reply-side `withheld` on claim_cluster/collision_clusters is reply-only
+                # for the same reason — see `review_claimed_by` in items.item_dict.
+                "reason": {"type": "string"},
             },
             "required": ["id"],
         },
@@ -2727,8 +2731,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "collision_clusters":
         from app.services import collision as collision_svc
 
+        withheld: list = []
         clusters = collision_svc.clusters_for_project(db, pid, args.get("status"),
-                                                      prd_id=_prd_ref(db, pid, args.get("prd_id")))
+                                                      prd_id=_prd_ref(db, pid, args.get("prd_id")),
+                                                      withheld=withheld)
         # Rendered keys, not stored ids — an agent quotes these back and `services/keys`
         # resolves them (PRD-13). The service layer works in stored ids because that is what
         # is frozen; the boundary is where they become the tag-rendered form.
@@ -2736,7 +2742,11 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
         for c in clusters:
             rows = [db.get(Item, i) for i in c.get("items") or []]
             out.append({**c, "items": [r.key for r in rows if r is not None]})
-        reply = {"clusters": out, "total": len(out)}
+        # `withheld` (GRPH-783) is what the pool declined and why — a dependency not done, or
+        # an item handed back until a planner delegates it. A partition with nothing in it and
+        # three items withheld is not an empty backlog, and `until` reads this reply to decide
+        # whether a wave is finished.
+        reply = {"clusters": out, "total": len(out), "withheld": withheld}
         if args.get("holds"):
             # Only when asked. Every wave polls this tool once a second, and a reservation
             # table on every reply would be paid for by every caller to answer a question
@@ -2969,7 +2979,8 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "release_item":
         _scoped_item(db, args["id"], allowed)
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
-        item = items_svc.release_item(db, args["id"], agent, to_status=args.get("to_status", "next"))
+        item = items_svc.release_item(db, args["id"], agent, to_status=args.get("to_status", "next"),
+                                      reason=str(args.get("reason") or ""))
         if item is None:
             raise errors.Conflict(
                 f"not the lease holder for {args['id']!r}",
