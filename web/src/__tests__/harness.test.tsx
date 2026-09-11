@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
@@ -36,12 +37,23 @@ function report(over: Partial<HarnessReport> = {}): HarnessReport {
 }
 
 const harness = vi.fn(async () => report());
+const probeCandidates = vi.fn(async () => ({
+  project_id: "core",
+  by_leaf: {},
+  by_family: {},
+  floor: 5,
+  estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no probe history reported tokens" },
+  suggestions: [],
+})) as ReturnType<typeof vi.fn>;
+const startProbeRun = vi.fn(async () => ({ run_id: "run-1" }));
 
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
     projects: vi.fn(async () => [{ id: "core", name: "Core", tag: "GRPH" }]),
     harness: (...args: unknown[]) => harness(...(args as [])),
+    harnessProbeCandidates: (...args: unknown[]) => probeCandidates(...(args as [])),
+    startHarnessProbeRun: (...args: unknown[]) => startProbeRun(...(args as [])),
   },
 }));
 
@@ -327,5 +339,137 @@ describe("Harness page", () => {
     show();
     expect(await screen.findByTestId("harness-f2-label")).toHaveTextContent("by touchpoint overlap");
     expect(screen.getByTestId("harness-review-below-floor")).toHaveTextContent("3 of 5");
+  });
+});
+
+const probeItems = [
+  { id: "item-1", key: "GRPH-1", title: "Fix auth bypass", capabilities: ["B5"], touchpoints: ["src/auth.ts"] },
+  { id: "item-2", key: "GRPH-2", title: "Add retry logic", capabilities: ["B5"], touchpoints: ["src/api.ts"] },
+  { id: "item-3", key: "GRPH-3", title: "Migrate schema", capabilities: ["B5"], touchpoints: ["src/db.ts"] },
+  { id: "item-4", key: "GRPH-4", title: "Extra candidate", capabilities: ["B5"], touchpoints: ["src/extra.ts"] },
+];
+
+function probeData(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    project_id: "core",
+    by_leaf: { B5: probeItems },
+    by_family: {
+      B: { leaf_ready: ["B5"], fallback: false, n: 4, items: probeItems, thin_leaves: [] },
+    },
+    floor: 5,
+    estimated_tokens: { comparable: true, reported: 3, finished: 5, tokens_per_attempt: 12000, tokens_in: 30000, tokens_out: 6000 },
+    suggestions: [
+      { trigger: "new_row", vendor: "anthropic", model: "sonnet", binary_version: "", reason: "no natural cell" },
+    ],
+    ...over,
+  };
+}
+
+describe("Harness probe panel", () => {
+  it("shows the estimated token cost before start", async () => {
+    probeCandidates.mockResolvedValueOnce(probeData());
+    show();
+    const estimate = await screen.findByTestId("harness-probe-estimate");
+    expect(estimate).toHaveTextContent("12,000 tokens per attempt");
+    expect(estimate).toHaveTextContent("3 reported");
+  });
+
+  it("renders candidates grouped by leaf with checkboxes", async () => {
+    probeCandidates.mockResolvedValueOnce(probeData());
+    show();
+    const group = await screen.findByTestId("harness-probe-group");
+    expect(group).toHaveTextContent("B5");
+    expect(group).toHaveTextContent("4 candidates");
+    const items = within(group).getAllByTestId("harness-probe-item");
+    expect(items).toHaveLength(4);
+  });
+
+  it("limits picks to three items across all groups", async () => {
+    probeCandidates.mockResolvedValueOnce(probeData());
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-probe-panel");
+    const checkboxes = screen.getAllByRole("checkbox");
+    await user.click(checkboxes[0]);
+    await user.click(checkboxes[1]);
+    await user.click(checkboxes[2]);
+    expect(checkboxes[3]).toBeDisabled();
+  });
+
+  it("shows the start button only when a suggestion and items are picked", async () => {
+    probeCandidates.mockResolvedValueOnce(probeData());
+    harness.mockResolvedValueOnce(report({
+      probe_suggestions: [{ trigger: "new_row", vendor: "anthropic", model: "sonnet", binary_version: "", estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no history" }, reason: "no natural cell" }],
+    }));
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-probe-panel");
+    expect(screen.queryByTestId("harness-probe-start")).not.toBeInTheDocument();
+    const suggestionBtns = screen.getAllByTestId("harness-probe-suggestion");
+    await user.click(suggestionBtns[0]);
+    expect(screen.queryByTestId("harness-probe-start")).not.toBeInTheDocument();
+    const checkboxes = screen.getAllByRole("checkbox");
+    await user.click(checkboxes[0]);
+    expect(await screen.findByTestId("harness-probe-start")).toHaveTextContent("Start probe");
+    expect(screen.getByTestId("harness-probe-start")).toHaveTextContent("anthropic:sonnet");
+  });
+
+  it("calls startHarnessProbeRun with the picked items and suggestion", async () => {
+    probeCandidates.mockResolvedValueOnce(probeData());
+    harness.mockResolvedValueOnce(report({
+      probe_suggestions: [{ trigger: "new_row", vendor: "anthropic", model: "sonnet", binary_version: "", estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no history" }, reason: "no natural cell" }],
+    }));
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-probe-panel");
+    await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
+    const checkboxes = screen.getAllByRole("checkbox");
+    await user.click(checkboxes[0]);
+    await user.click(checkboxes[1]);
+    await user.click(await screen.findByTestId("harness-probe-start"));
+    expect(startProbeRun).toHaveBeenCalledWith({
+      project_id: "core",
+      vendor: "anthropic",
+      model: "sonnet",
+      capability: "B5",
+      item_ids: ["item-1", "item-2"],
+      trigger: "new_row",
+      binary_version: "",
+    });
+  });
+
+  it("shows a 409 as a visible refusal, not a silent no-op", async () => {
+    startProbeRun.mockRejectedValueOnce(new Error("a probe for this model is already running; one model and one leaf at a time"));
+    probeCandidates.mockResolvedValueOnce(probeData());
+    harness.mockResolvedValueOnce(report({
+      probe_suggestions: [{ trigger: "new_row", vendor: "anthropic", model: "sonnet", binary_version: "", estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no history" }, reason: "no natural cell" }],
+    }));
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-probe-panel");
+    await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
+    await user.click(screen.getAllByRole("checkbox")[0]);
+    await user.click(await screen.findByTestId("harness-probe-start"));
+    const err = await screen.findByTestId("harness-probe-error");
+    expect(err).toHaveTextContent("already running");
+  });
+
+  it("renders nothing when there are no candidates and no suggestions", async () => {
+    probeCandidates.mockResolvedValueOnce(probeData({ by_leaf: {}, by_family: {}, suggestions: [] }));
+    harness.mockResolvedValueOnce(report({ probe_suggestions: [] }));
+    show();
+    await screen.findByTestId("harness-view");
+    expect(screen.queryByTestId("harness-probe-panel")).not.toBeInTheDocument();
+  });
+
+  it("groups at family level when all leaves are below the floor", async () => {
+    probeCandidates.mockResolvedValueOnce(probeData({
+      by_family: {
+        B: { leaf_ready: ["B5"], fallback: true, n: 4, items: probeItems, thin_leaves: ["B5"] },
+      },
+    }));
+    show();
+    const group = await screen.findByTestId("harness-probe-group");
+    expect(group).toHaveTextContent("family");
   });
 });
