@@ -205,12 +205,22 @@ def _sibling_binary(name: str) -> str:
     exists. On Windows a `pip install` of both packages drops `gbfleet.exe` into
     `Scripts\\`; on Unix it drops `gbfleet` into `bin/`. Checking the bare name on Windows
     is the same hole the Unix sibling check used to have — the file is there and the lookup
-    says it is not."""
+    says it is not.
+
+    `os.access(X_OK)` is true of almost every file on Windows, so a leftover extensionless
+    `gbfleet` (chmod 0644 even) would win over `gbfleet.exe` if we asked for the bare name
+    first (GRPH-855).
+    """
     import sys
 
     parent = Path(sys.executable).parent
-    for candidate in (parent / name, parent / f"{name}.exe"):
-        if candidate.exists() and os.access(candidate, os.X_OK):
+    bare, exe = parent / name, parent / f"{name}.exe"
+    if os.name == "nt":
+        # X_OK is true of almost every file here, so a leftover extensionless
+        # `gbfleet` would win over `gbfleet.exe` (GRPH-855).
+        return str(exe) if exe.is_file() else ""
+    for candidate in (bare, exe):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return ""
 

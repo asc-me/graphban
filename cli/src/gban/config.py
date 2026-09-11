@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 #: The directory both tools use. Shared deliberately — a person has one Graphban.
@@ -75,8 +76,79 @@ def _write(path: Path, payload: dict) -> Path:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=1, sort_keys=True)
         fh.write("\n")
-    os.chmod(path, PRIVATE)
+    _make_private(path)
     return path
+
+
+def _make_private(path: Path) -> None:
+    """Owner-only, including on Windows where `chmod 0600` is a no-op (GRPH-855)."""
+    os.chmod(path, PRIVATE)
+    if os.name != "nt":
+        return
+    user = os.environ.get("USERNAME") or ""
+    if not user:
+        return
+    subprocess.run(
+        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:(F)"],
+        capture_output=True, text=True, timeout=30,
+    )
+    listing = subprocess.run(
+        ["icacls", str(path)], capture_output=True, text=True, timeout=30,
+    )
+    if listing.returncode != 0:
+        return
+    me = user.casefold()
+    prefix = str(path)
+    for line in listing.stdout.splitlines():
+        if ":(" not in line:
+            continue
+        principal = line.split(":(")[0].strip()
+        if principal.lower().startswith(prefix.lower()):
+            principal = principal[len(prefix):].strip()
+        if not principal:
+            continue
+        if principal.rsplit("\\", 1)[-1].casefold() == me:
+            continue
+        subprocess.run(
+            ["icacls", str(path), "/remove", principal],
+            capture_output=True, text=True, timeout=30,
+        )
+
+
+def is_private(path: Path) -> bool:
+    """Whether `path` is owner-only. POSIX is the mode bits; Windows is the ACL.
+
+    Asserting `st_mode == 0o600` goes red on NTFS for a reason that has nothing to do
+    with whether anyone else can read the file (GRPH-855).
+    """
+    path = Path(path)
+    if os.name != "nt":
+        try:
+            return stat.S_IMODE(path.stat().st_mode) == PRIVATE
+        except OSError:
+            return False
+    user = (os.environ.get("USERNAME") or "").casefold()
+    listing = subprocess.run(
+        ["icacls", str(path)], capture_output=True, text=True, timeout=30,
+    )
+    if listing.returncode != 0:
+        return False
+    prefix = str(path)
+    saw_owner = False
+    for line in listing.stdout.splitlines():
+        if ":(" not in line:
+            continue
+        principal = line.split(":(")[0].strip()
+        if principal.lower().startswith(prefix.lower()):
+            principal = principal[len(prefix):].strip()
+        if not principal:
+            continue
+        account = principal.rsplit("\\", 1)[-1].casefold()
+        if account == user:
+            saw_owner = True
+            continue
+        return False
+    return saw_owner
 
 
 def settings() -> dict:

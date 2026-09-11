@@ -4,7 +4,6 @@ from __future__ import annotations
 import io
 import json
 import os
-import stat
 from pathlib import Path
 
 import pytest
@@ -45,7 +44,7 @@ def test_login_stores_only_the_refresh_token_and_stores_it_privately(home, tty, 
     stored = json.loads(path.read_text())
     assert stored["refresh_token"] == "REFRESH-1"
     assert "ACCESS-DO-NOT-STORE" not in path.read_text()
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert config.is_private(path)
     # And the token never reaches the terminal either.
     assert "REFRESH-1" not in capsys.readouterr().out
 
