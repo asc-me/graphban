@@ -210,6 +210,11 @@ Nothing is pushed to the parent. Read the item, the Live board, or `fleet_status
 the point of the arrangement: the parent's context grows by two tool results rather than by
 a child's transcript.
 
+Spawn going silent is not a reason for the parent to go idle. After the first successful
+spawn, attach a periodic watcher with the harness's scheduler/loop (in Grok: the
+`watch-wave` skill) so status comes back without a nudge. Cancel it when the wave is idle.
+`gbfleet until` is the unattended drain; this is the parent-in-chat watcher.
+
 Three timers run independently, and none inherits from another:
 
 | Timer | Length | What it decides |

@@ -514,6 +514,28 @@ def test_setup_installs_the_skill_where_the_product_says_skills_live(tmp_path, w
     dest = repo / ".claude" / "skills" / "graphban-delegation" / "SKILL.md"
     assert dest.exists()
     assert dest.read_text().startswith("---\nname: graphban-delegation\n")
+    # THE CALL: skipping `skill()` in run() would leave this dest missing the
+    # watcher paragraph while skill_source() tests still passed.
+    body = dest.read_text()
+    assert "Do not wait for the user to ask how the wave is doing" in body
+    assert "watch-wave" in body
+
+
+def test_setup_installs_every_shipped_skill(tmp_path, wired):
+    """A second skill that exists only in the wheel is one setup never teaches.
+    Naming graphban-delegation in install_skill is how that happens."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    repo.mkdir()
+    lines, _, _ = _run(Server(), repo, home, wired=wired)
+
+    slugs = setup_mod.shipped_slugs()
+    assert "graphban-delegation" in slugs
+    assert "watch-wave" in slugs
+    for slug in slugs:
+        dest = repo / ".claude" / "skills" / slug / "SKILL.md"
+        assert dest.exists(), slug
+        assert dest.read_text() == setup_mod.skill_source(slug).read_text()
+    assert sum(1 for l in lines if l.get("name") == "skill" and l.get("status") == "PASS") == len(slugs)
 
 
 def test_an_edited_skill_is_left_alone(tmp_path, wired):
@@ -529,6 +551,10 @@ def test_an_edited_skill_is_left_alone(tmp_path, wired):
 
     assert dest.read_text() == "mine\n"
     assert any("left alone" in l["detail"] for l in lines)
+    # Editing one skill does not skip the others.
+    other = repo / ".claude" / "skills" / "watch-wave" / "SKILL.md"
+    assert other.exists()
+    assert other.read_text() == setup_mod.skill_source("watch-wave").read_text()
 
 
 def test_the_skill_tells_the_agent_the_two_things_it_cannot_work_out(tmp_path):
@@ -550,6 +576,10 @@ def test_the_skill_tells_the_agent_the_two_things_it_cannot_work_out(tmp_path):
     assert "config.toml" in body
     assert "mcp_servers" in body
     assert "gbfleet-wt" in body
+    # Spawn going silent is not a reason for the parent to go idle (GRPH-856).
+    assert "Do not wait for the user to ask how the wave is doing" in body
+    assert "watch-wave" in body
+    assert "scheduler_create" in body
 
 
 def test_the_skill_hands_the_person_a_runnable_line_and_carries_the_rest(tmp_path):
@@ -592,6 +622,19 @@ def test_the_skill_ships_in_the_wheel(tmp_path):
     wheel = next(out.glob("*.whl"))
     names = zipfile.ZipFile(wheel).namelist()
     assert any(n.endswith("skills/graphban-delegation/SKILL.md") for n in names), names[:20]
+    assert any(n.endswith("skills/watch-wave/SKILL.md") for n in names), names[:20]
+
+
+def test_watch_wave_names_the_scheduler_and_cancels_on_idle():
+    """The Grok procedure has to live in the shipped skill, not only in a laptop
+    copy under ~/.grok. A skill that never says WAVE_IDLE leaves the loop running
+    on an idle wave, which is the spam this exists to stop."""
+    body = " ".join(setup_mod.skill_source("watch-wave").read_text(encoding="utf-8").split())
+    assert "scheduler_create" in body
+    assert "WAVE_IDLE" in body
+    assert "scheduler_delete" in body
+    assert "Do not wait to be asked" in body
+    assert "in_progress" in body
 
 
 # ---- installing the supervisor -------------------------------------------------------------------
