@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -422,6 +424,18 @@ def test_both_launch_paths_go_through_one_function(home, monkeypatch):
 
 # ---- finding a supervisor that PATH cannot see -----------------------------------------------
 
+def _platform_gbfleet(binbase: Path) -> Path:
+    """The filename pip actually drops beside the interpreter (GRPH-855 / GRPH-854)."""
+    sibling = binbase / ("gbfleet.exe" if os.name == "nt" else "gbfleet")
+    sibling.write_text("MZ" if os.name == "nt" else "#!/bin/sh\nexit 0\n")
+    sibling.chmod(0o755)
+    return sibling
+
+
+def _platform_python(binbase: Path) -> str:
+    return str(binbase / ("python.exe" if os.name == "nt" else "python"))
+
+
 def test_a_sibling_gbfleet_is_found_when_path_cannot_see_it(home, monkeypatch, tmp_path):
     """MEASURED. `uv tool install "graphban-cli[fleet]"` puts gbfleet in the same `bin/` as
     gban and exposes only gban — uv deliberately exposes the requested package's executables
@@ -432,12 +446,10 @@ def test_a_sibling_gbfleet_is_found_when_path_cannot_see_it(home, monkeypatch, t
     Sabotage: go back to `shutil.which` alone and this fails."""
     binbase = tmp_path / "bin"
     binbase.mkdir()
-    sibling = binbase / "gbfleet"
-    sibling.write_text("#!/bin/sh\nexit 0\n")
-    sibling.chmod(0o755)
+    sibling = _platform_gbfleet(binbase)
 
     monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
-    monkeypatch.setattr("sys.executable", str(binbase / "python"))
+    monkeypatch.setattr("sys.executable", _platform_python(binbase))
     assert doctor.find_supervisor() == str(sibling)
 
 
@@ -519,14 +531,12 @@ def test_gban_fleet_runs_a_sibling_supervisor_too(home, monkeypatch, tmp_path):
     Sabotage: point cmd_fleet back at `shutil.which` and this fails."""
     binbase = tmp_path / "bin"
     binbase.mkdir()
-    sibling = binbase / "gbfleet"
-    sibling.write_text("#!/bin/sh\nexit 0\n")
-    sibling.chmod(0o755)
+    sibling = _platform_gbfleet(binbase)
 
     seen = {}
     monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
     monkeypatch.setattr("gban.cli.shutil.which", lambda name: None)
-    monkeypatch.setattr("sys.executable", str(binbase / "python"))
+    monkeypatch.setattr("sys.executable", _platform_python(binbase))
 
     class Done:
         returncode = 0
