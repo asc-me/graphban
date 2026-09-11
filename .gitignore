@@ -57,6 +57,24 @@ dist-release/
 # Project MCP config — holds a real API key
 .mcp.json
 
+# gban --scope project writes the same live key into Grok's project file, and
+# gbfleet's grok adapter writes the child's seat there. Tracked, spawn refuses
+# (fleet/tests/test_repo_keeps_its_own_config.py); unignored, it is one `git add`
+# from a committed credential. `.grok/mcp.json` is the pre-GRPH-575 name.
+.grok/config.toml
+.grok/mcp.json
+
+# gbfleet: enrolment code (`.gbfleet-instruction`), fallback seat, doctor/spawn
+# probes, in-tree worktree pool. Salvage already excludes the seat paths from a
+# WIP commit; git status in the parent checkout still offers them to `git add`.
+.gbfleet-*
+
+# Swamp vault ciphertext, and a nested copy of the adapter. docs/swamp.md: commit
+# `.swamp.yaml`; do not commit these. The adapter is a sibling on purpose — a
+# nested clone is one add from a tree whose licence forbids carrying Swamp source.
+.swamp/
+graphban-swamp/
+
 # Cursor claim manifest — per-session runtime state (see .cursor/hooks/README.md)
 .cursor/graphban-claim.json
 .cursor/agentledger-claim.json

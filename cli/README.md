@@ -149,6 +149,12 @@ Three properties worth knowing, each of which is a bug this command exists to no
 - **It refuses to write a key into a file git tracks.** `--scope project` on a tracked
   `.mcp.json` or `.grok/config.toml` is refused rather than warned about, because a warning
   attached to committing a credential still commits it.
+- **It gitignores the files it and `gbfleet` write into the checkout.** `.mcp.json`,
+  `.cursor/mcp.json`, `.grok/config.toml`, `.gbfleet-*`, `.swamp/`, `graphban-swamp/`.
+  A warning that said "make sure it is gitignored" still wrote the key; `gban setup`
+  now adds the lines, and `gban doctor` FAILs if a credential file would still be
+  committed. It asks git (`check-ignore`), so an equivalent pattern already in the
+  file is left alone.
 
 ## Wiring a checkout to Swamp
 

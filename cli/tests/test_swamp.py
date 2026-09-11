@@ -82,7 +82,11 @@ class Swamp:
 def wired(monkeypatch):
     def _wire(fake):
         monkeypatch.setattr(swamp_mod, "find", lambda: "/usr/local/bin/swamp")
-        monkeypatch.setattr(swamp_mod.subprocess, "run", fake)
+        # Patch the swamp wrapper, not `subprocess.run`: the latter is the global
+        # module, and gitignore.ensure needs real git during `gban swamp setup`.
+        def shim(repo, *args, stdin=None, timeout=120.0):
+            return fake(["swamp", *args, "--json"], input=stdin, cwd=str(repo))
+        monkeypatch.setattr(swamp_mod, "run", shim)
         return fake
     return _wire
 
@@ -112,6 +116,27 @@ def test_the_gate_key_never_reaches_an_mcp_config(tmp_path, wired, ctx, monkeypa
     assert code == 0, lines
     assert not home.exists(), "swamp setup created a harness config"
     assert not (repo / ".mcp.json").exists()
+
+
+def test_swamp_setup_gitignores_the_vault(tmp_path, wired, ctx):
+    """THE CALL. docs/swamp.md says do not commit `.swamp/` or a nested adapter.
+    A warning in the runbook still lets `git add .` ship ciphertext."""
+    repo, adapter = _tree(tmp_path)
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo),
+                    "-c", "user.email=t@e.invalid", "-c", "user.name=T",
+                    "commit", "--allow-empty", "-qm", "init"],
+                   check=True, capture_output=True)
+    wired(Swamp(vaults=["secrets"], sources=[str(adapter)], keys=["graphban-api-key"]))
+
+    lines, code = swamp_mod.setup(ctx(Server()), URL, "core", repo, adapter)
+
+    assert code == 0, lines
+    assert subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", "--", ".swamp/"],
+                          capture_output=True).returncode == 0
+    assert subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", "--",
+                           "graphban-swamp/"], capture_output=True).returncode == 0
+    assert any(l["name"] == "gitignore" and l["status"] == "PASS" for l in lines)
 
 
 def test_the_secret_travels_on_stdin_not_argv(tmp_path, wired, ctx):

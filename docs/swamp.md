@@ -135,7 +135,8 @@ swamp model method run grph-123 conform \
 Empty `steps` is a refusal: nobody looked is not a clean pass.
 
 Commit `.swamp.yaml`. Do not commit `.swamp/`, vault ciphertext, or a nested copy of
-`graphban-swamp/`.
+`graphban-swamp/`. `gban setup` and `gban swamp setup` write those paths into
+`.gitignore`; `gban doctor` FAILs if a credential file would still be committed.
 
 ## Licensing
 
