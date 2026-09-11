@@ -1026,6 +1026,46 @@ describe("harness preferences", () => {
     await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/between 0 and 1/));
     expect(fleet.refetch).not.toHaveBeenCalled();
   });
+
+  it("refuses to save per_period_tokens without a period — ProfileInvalid on the server", async () => {
+    // D20 trap: per_period_tokens without a period is a number without a denominator.
+    // The server refuses it as ProfileInvalid; the form must not let you get that far.
+    // Sabotage: omit period from the save payload when per_period_tokens is set — this test
+    // must fail if the guard is removed.
+    fleet.data = { ...BASE };
+    api.saveFleetPolicy.mockResolvedValue({
+      project_id: "core",
+      policy: { local_only: false, reviewer_cross_vendor: false, allowed_harnesses: [],
+                caps: { per_period_tokens: 500000, period: "week" } },
+    });
+    const user = userEvent.setup();
+    renderView();
+    await openWave(user);
+    await user.type(screen.getByLabelText("Per-period token cap"), "500000");
+    await user.click(screen.getByRole("button", { name: /Save policy/ }));
+    // The form refused, not the server.
+    expect(api.saveFleetPolicy).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toMatch(/needs a period/);
+  });
+
+  it("saves per_period_tokens with a period in the caps payload", async () => {
+    fleet.data = { ...BASE };
+    api.saveFleetPolicy.mockResolvedValue({
+      project_id: "core",
+      policy: { local_only: false, reviewer_cross_vendor: false, allowed_harnesses: [],
+                caps: { per_period_tokens: 500000, period: "week" } },
+    });
+    const user = userEvent.setup();
+    renderView();
+    await openWave(user);
+    await user.type(screen.getByLabelText("Per-period token cap"), "500000");
+    await user.selectOptions(screen.getByTestId("fleet-policy-period"), "week");
+    await user.click(screen.getByRole("button", { name: /Save policy/ }));
+    await waitFor(() => expect(api.saveFleetPolicy).toHaveBeenCalledTimes(1));
+    expect(api.saveFleetPolicy.mock.calls[0][0].caps).toEqual({
+      per_period_tokens: 500000, period: "week",
+    });
+  });
 });
 
 
