@@ -49,7 +49,8 @@ That mints a project-scoped credential that does not expire, writes the `graphba
 `gbfleet` MCP entries into every parent harness that would actually read them — Claude Code
 (`~/.claude.json`, JSON `mcpServers`) and Grok (`~/.grok/config.toml`, TOML `mcp_servers`,
 with `--workspace` under `~/.grok/gbfleet-wt/` so spawn can write worktrees inside Grok's
-sandbox) — installs the delegation skill, and verifies the result against a key those files
+sandbox) — gitignores the credential paths those writes (and gbfleet seats) put in the
+checkout, installs the delegation skill, and verifies the result against a key those files
 hold, not against a different harness's key. Read its output: every line is `PASS`, `FAIL`
 or `UNKNOWN`, and `UNKNOWN` means a check could not run, not that it passed. A working key
 with no `gbfleet` server, or a Grok gbfleet missing `--workspace`, is repaired, not left

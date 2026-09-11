@@ -35,7 +35,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-from gban import config, doctor as doctor_mod
+from gban import config, doctor as doctor_mod, gitignore
 from gban.client import Client, Refused, Unreachable
 from gban.doctor import FAIL, PASS, UNKNOWN, _line
 
@@ -121,6 +121,16 @@ def tracked_by_git(path: Path) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return done.returncode == 0
+
+
+def _ignored_in(repo: Path, path: Path) -> bool:
+    """`gitignore.ignored` takes a repo-relative path. A dest outside the repo is not
+    this question — user-scope files live in `$HOME` and cannot be committed here."""
+    try:
+        rel = path.resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError:
+        return True
+    return gitignore.ignored(repo, rel)
 
 
 def target(repo: Path, scope: str, home: Path | None = None) -> tuple[str, Path, str]:
@@ -438,6 +448,11 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
         lines.append(_line("config", UNKNOWN, "repository",
                            f"{repo} is not a git repository — the ledger half is fine, but "
                            "gbfleet cuts a worktree per child and will refuse here"))
+    else:
+        # Before any key hits the tree. A warning after the write is how `.mcp.json`
+        # ships; gitignore.ensure is the mechanical act, and the per-dest refusal
+        # below is the gate on the call.
+        lines += gitignore.ensure(repo)
     dests, dest_lines = destinations(repo, scope, home or claude_home(), grok or grok_home())
     lines += dest_lines
     if not dests:
@@ -509,6 +524,14 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
                                    f'"{home / ".cursor"}"]), and a grok child runs --sandbox '
                                    "off inside this one. `gbfleet doctor --adapter <vendor>` "
                                    "gives the verdict per vendor (GRPH-838)"))
+        if dest.scope == "project" and gitignore.usable(repo) and not _ignored_in(repo, dest.path):
+            # THE CALL, not only ensure(). Writing the key and hoping gitignore
+            # caught up is the warning this replaced.
+            lines.append(_line("config", FAIL, "secret",
+                               f"{dest.path} would not be gitignored; not writing a key "
+                               "there. Re-run with --scope user, which writes outside "
+                               "the repository"))
+            continue
         servers = entries(url, project, key, repo, workspace=workspace)
         try:
             write_dest(dest, repo, servers)
@@ -520,9 +543,6 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
         lines.append(_line("config", PASS, "written",
                            f"{LEDGER_SERVER} and {FLEET_SERVER} in {dest.path} "
                            f"({dest.harness} {dest.scope}){extra}"))
-        if dest.scope == "project":
-            lines.append(_line("config", UNKNOWN, "secret",
-                               f"{dest.path} now holds a credential. Make sure it is gitignored"))
     if reused:
         paths = ", ".join(str(d.path) for d in dests)
         lines.append(_line("config", PASS, "credential",

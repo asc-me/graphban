@@ -16,7 +16,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from gban import config
+from gban import config, gitignore
 from gban.client import Client, NoSession, Refused, Unreachable, authenticated
 
 PASS, FAIL, UNKNOWN = "PASS", "FAIL", "UNKNOWN"
@@ -290,8 +290,10 @@ def child_environment(api_key: str) -> dict:
     return env
 
 
-def run(url: str, project: str, api_key: str = "") -> tuple[list[dict], int]:
-    lines = ledger(url, project) + local(url, project, api_key)
+def run(url: str, project: str, api_key: str = "",
+        repo: Path | None = None) -> tuple[list[dict], int]:
+    lines = (ledger(url, project) + local(url, project, api_key)
+             + gitignore.check(repo or Path.cwd()))
     worst = max((SEVERITY[l["status"]] for l in lines), default=0)
     # FAIL exits 1, UNKNOWN exits 0: "could not check" is not "broken", and a doctor that
     # failed a script because a laptop lacked `gbfleet` would stop being run.

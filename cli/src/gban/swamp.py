@@ -28,6 +28,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from gban import gitignore
 from gban.client import Client, Refused, Unreachable
 from gban.doctor import FAIL, PASS, UNKNOWN, _line
 
@@ -204,6 +205,10 @@ def setup(client: Client, url: str, project: str, repo: Path, adapter: Path,
     else:
         # NEVER --force. `docs/swamp.md`: do not re-init a tree that already has a vault.
         lines.append(_line("local", PASS, "repository", ".swamp.yaml already here"))
+    # `.swamp/` is the vault (ciphertext) and `graphban-swamp/` a nested adapter clone.
+    # docs/swamp.md says commit `.swamp.yaml` and neither of those; setup writes the
+    # ignore lines so a later `git add` cannot. Idempotent if `gban setup` already did.
+    lines += gitignore.ensure(repo)
 
     if not adapter.exists():
         lines.append(_line("local", FAIL, "adapter",

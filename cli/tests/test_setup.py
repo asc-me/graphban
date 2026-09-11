@@ -17,12 +17,13 @@ These tests exist because the failure they describe is invisible when it happens
 from __future__ import annotations
 
 import json
+import subprocess
 import tomllib
 from pathlib import Path
 
 import pytest
 
-from gban import config, doctor as doctor_mod, setup as setup_mod
+from gban import config, doctor as doctor_mod, gitignore, setup as setup_mod
 from gban.doctor import _line
 from gban.client import Refused
 
@@ -1001,3 +1002,105 @@ def test_a_grok_config_without_a_live_sandbox_says_nothing_about_one(
     lines, _, _ = _run(Server(), repo, home, wired=wired)
 
     assert not any(l["name"] == "sandbox" for l in lines)
+
+
+# ---- gitignore (the call, not only ensure()) -----------------------------------------------------
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args],
+                   capture_output=True, text=True, check=True)
+
+
+def _git_init(repo: Path) -> None:
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init")
+    _git(repo, "-c", "user.email=t@e.invalid", "-c", "user.name=T",
+         "commit", "--allow-empty", "-qm", "init")
+
+
+def _ignored(repo: Path, rel: str) -> bool:
+    done = subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", "--", rel],
+                          capture_output=True, text=True)
+    return done.returncode == 0
+
+
+def test_setup_gitignores_the_credential_it_writes(tmp_path, wired):
+    """THE CALL. Scope project writes `.mcp.json`. If setup.run never asked gitignore
+    to run, this is an unignored key and `git add .` ships it."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    _git_init(repo)
+
+    lines, code, _ = _run(Server(), repo, home, scope="project", wired=wired)
+
+    assert code == 0, lines
+    assert (repo / ".mcp.json").exists()
+    assert _ignored(repo, ".mcp.json"), ".mcp.json is committable"
+    assert _ignored(repo, ".gbfleet-instruction"), "gbfleet seats are committable"
+    assert _ignored(repo, ".cursor/mcp.json")
+    assert _ignored(repo, ".grok/config.toml")
+    assert _ignored(repo, ".swamp/")
+    assert _ignored(repo, "graphban-swamp/")
+    assert any(l["name"] == "gitignore" and l["status"] == "PASS" for l in lines)
+
+
+def test_setup_gitignores_seat_paths_on_user_scope_too(tmp_path, wired):
+    """User-scope writes no key into the repo, but gbfleet still drops seats into
+    worktrees that inherit this gitignore. Skipping the write on user scope is how
+    a Cursor seat ships the first time someone runs a wave."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    _git_init(repo)
+
+    _, code, _ = _run(Server(), repo, home, scope="user", wired=wired)
+
+    assert code == 0
+    assert not (repo / ".mcp.json").exists()
+    assert _ignored(repo, ".mcp.json")
+    assert _ignored(repo, ".gbfleet-instruction")
+
+
+def test_setup_gitignore_is_idempotent(tmp_path, wired):
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    _git_init(repo)
+    _run(Server(), repo, home, wired=wired)
+    first = (repo / ".gitignore").read_text(encoding="utf-8")
+
+    _run(Server(issued={"gb_sk_new1"}), repo, home, wired=wired)
+    second = (repo / ".gitignore").read_text(encoding="utf-8")
+    assert first == second
+    assert second.count("Graphban — live keys") == 1
+
+
+def test_an_equivalent_pattern_is_not_duplicated(tmp_path, wired):
+    """Asks git, not the text of `.gitignore`. A repo that already ignores `.cursor/`
+    does not need `.cursor/mcp.json` written again."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    _git_init(repo)
+    (repo / ".gitignore").write_text(".cursor/\n.mcp.json\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "-c", "user.email=t@e.invalid", "-c", "user.name=T",
+         "commit", "-qm", "ignore")
+
+    _run(Server(), repo, home, wired=wired)
+
+    body = (repo / ".gitignore").read_text(encoding="utf-8")
+    assert body.count(".mcp.json") == 1
+    assert ".cursor/mcp.json" not in body
+    assert _ignored(repo, ".cursor/mcp.json")
+    assert _ignored(repo, ".gbfleet-instruction")
+
+
+def test_setup_refuses_to_write_a_key_that_would_not_be_ignored(tmp_path, wired, monkeypatch):
+    """Sabotage of the CALL: ensure() runs and the dest is still written even when
+    git would not ignore it. The warning this replaced did exactly that."""
+    repo, home = tmp_path / "repo", tmp_path / ".claude.json"
+    _git_init(repo)
+    monkeypatch.setattr(gitignore, "ensure",
+                        lambda repo: [{"side": "config", "status": "PASS", "name": "gitignore",
+                                       "detail": "pretend", "report": ""}])
+    monkeypatch.setattr(gitignore, "ignored", lambda repo, rel: False)
+
+    lines, code, _ = _run(Server(), repo, home, scope="project", wired=wired)
+
+    assert code == 1
+    assert not (repo / ".mcp.json").exists(), "wrote a key git would commit"
+    assert any("would not be gitignored" in l["detail"] for l in lines)

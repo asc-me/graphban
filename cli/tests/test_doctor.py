@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
-from gban import config, doctor
+from gban import config, doctor, gitignore
 from gban.cli import main
 from gban.client import EXIT_NO_SUPERVISOR, NoSession, Refused, Unreachable
 
@@ -45,21 +46,24 @@ class _Server:
         return self.me if path.startswith("/api/auth/me") else self.fleet
 
 
-def _lines(monkeypatch, server, *, gbfleet=None):
+def _lines(monkeypatch, server, home, *, gbfleet=None):
     monkeypatch.setattr("gban.doctor.authenticated", lambda url: server)
     monkeypatch.setattr("gban.doctor.shutil.which", lambda name: gbfleet)
     if gbfleet:
         class Done:
             returncode, stdout, stderr = 0, "PASS  repo  clean", ""
         monkeypatch.setattr("gban.doctor.subprocess.run", lambda *a, **kw: Done())
-    return doctor.run("http://gb.invalid", "core", "")
+    # `home` is not a git repository, so the gitignore check is silent and these
+    # tests stay about the two halves they name. A real checkout is covered in
+    # `test_gitignore.py`.
+    return doctor.run("http://gb.invalid", "core", "", repo=home)
 
 
 # ---- 6: both halves, and neither silences the other ------------------------------------------
 
 def test_every_line_says_which_side_it_came_from(home, monkeypatch):
     """6. A line that does not say where it came from sends a reader to the wrong machine."""
-    lines, code = _lines(monkeypatch, _Server(), gbfleet="/usr/bin/gbfleet")
+    lines, code = _lines(monkeypatch, _Server(), home, gbfleet="/usr/bin/gbfleet")
     assert {l["side"] for l in lines} == {"ledger", "local"}
     assert code == 0
 
@@ -67,7 +71,7 @@ def test_every_line_says_which_side_it_came_from(home, monkeypatch):
 def test_the_ledger_half_is_reported_even_with_no_gbfleet_installed(home, monkeypatch):
     """6. Sabotage: return early when `gbfleet` is missing and the half that needs no
     supervisor disappears with it."""
-    lines, code = _lines(monkeypatch, _Server(), gbfleet=None)
+    lines, code = _lines(monkeypatch, _Server(), home, gbfleet=None)
     ledger = [l for l in lines if l["side"] == "ledger"]
     assert any(l["status"] == "PASS" for l in ledger)
     local = [l for l in lines if l["side"] == "local"]
@@ -84,7 +88,7 @@ def test_an_unreachable_server_is_unknown_not_a_pass_and_not_a_fail(home, monkey
                         lambda url: (_ for _ in ()).throw(
                             Unreachable("could not reach http://gb.invalid")))
     monkeypatch.setattr("gban.doctor.shutil.which", lambda name: None)
-    lines, code = doctor.run("http://gb.invalid", "core", "")
+    lines, code = doctor.run("http://gb.invalid", "core", "", repo=home)
     assert [l["status"] for l in lines if l["side"] == "ledger"] == ["UNKNOWN"]
     assert code == 0
 
@@ -95,12 +99,12 @@ def test_the_three_ledger_failures_are_three_different_lines(home, monkeypatch):
 
     monkeypatch.setattr("gban.doctor.authenticated",
                         lambda url: (_ for _ in ()).throw(NoSession("no stored session")))
-    expired, _ = doctor.run("http://gb.invalid", "core", "")
+    expired, _ = doctor.run("http://gb.invalid", "core", "", repo=home)
     assert expired[0]["name"] == "session" and "gban login" in expired[0]["detail"]
 
     monkeypatch.setattr("gban.doctor.authenticated",
                         lambda url: _Server(error=Refused(404, "project not found")))
-    refused, code = doctor.run("http://gb.invalid", "core", "")
+    refused, code = doctor.run("http://gb.invalid", "core", "", repo=home)
     assert code == 1
     assert any(l["name"] == "session" and l["status"] == "FAIL" for l in refused)
 
@@ -114,7 +118,7 @@ def test_a_quarantined_or_refused_agent_is_named(home, monkeypatch):
             "reason": "mint_enrolment requires role 'planner'; SA-A4 is registered as 'worker'"}},
         {"id": "SA-A9", "state": "quarantined"},
     ]}
-    lines, code = _lines(monkeypatch, _Server(fleet=fleet), gbfleet=None)
+    lines, code = _lines(monkeypatch, _Server(fleet=fleet), home, gbfleet=None)
     text = doctor.render(lines)
     assert "SA-A4" in text and "refused mint_enrolment x2" in text
     assert "SA-A9" in text and "quarantined" in text
@@ -125,7 +129,7 @@ def test_the_exit_code_is_the_worst_finding_across_both_halves(home, monkeypatch
     """6. Never whichever half ran last. Sabotage: take the local half's code and a ledger
     failure reports success."""
     fleet = {"agents": [{"id": "A1", "state": "quarantined"}]}
-    lines, code = _lines(monkeypatch, _Server(fleet=fleet), gbfleet="/usr/bin/gbfleet")
+    lines, code = _lines(monkeypatch, _Server(fleet=fleet), home, gbfleet="/usr/bin/gbfleet")
     assert [l["status"] for l in lines if l["side"] == "local"] == ["PASS"]
     assert code == 1
 
@@ -229,8 +233,7 @@ def test_the_local_summary_line_says_what_happened_not_the_childs_banner(home, m
     monkeypatch.setattr("gban.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
     monkeypatch.setattr("gban.doctor.subprocess.run", lambda *a, **kw: Done())
     monkeypatch.setattr("gban.doctor.authenticated", lambda url: _Server())
-    lines, code = doctor.run("http://gb.invalid", "core", "")
-
+    lines, code = doctor.run("http://gb.invalid", "core", "", repo=home)
     local_line = [l for l in lines if l["side"] == "local"][0]
     assert "0.1.0" not in local_line["detail"], "the child's banner is not this line's reason"
     assert "exited 1" in local_line["detail"]
@@ -247,7 +250,7 @@ def test_the_childs_report_is_indented_under_its_summary(home, monkeypatch):
     monkeypatch.setattr("gban.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
     monkeypatch.setattr("gban.doctor.subprocess.run", lambda *a, **kw: Done())
     monkeypatch.setattr("gban.doctor.authenticated", lambda url: _Server())
-    lines, _ = doctor.run("http://gb.invalid", "core", "")
+    lines, _ = doctor.run("http://gb.invalid", "core", "", repo=home)
     rendered = doctor.render(lines).splitlines()
 
     summary = [i for i, r in enumerate(rendered) if r.startswith("PASS") and "local" in r][0]
@@ -478,7 +481,7 @@ def test_the_install_it_names_is_one_that_exists(home, monkeypatch, capsys):
 def test_the_doctor_names_the_same_install(home, monkeypatch):
     monkeypatch.setattr("gban.doctor.find_supervisor", lambda: "")
     monkeypatch.setattr("gban.doctor.authenticated", lambda url: _Server())
-    lines, _ = doctor.run("http://gb.invalid", "core", "")
+    lines, _ = doctor.run("http://gb.invalid", "core", "", repo=home)
     local = [l for l in lines if l["side"] == "local"][0]
     assert doctor.INSTALL_SUPERVISOR in local["detail"]
     assert "uv pip install graphban-fleet" not in local["detail"]
@@ -623,3 +626,86 @@ def test_a_declined_offer_still_prints_the_command(home, monkeypatch, capsys):
     monkeypatch.setattr("gban.cli.doctor_mod.offer_to_install", lambda: False)
     assert main(["fleet", "ps"]) == EXIT_NO_SUPERVISOR
     assert doctor.INSTALL_SUPERVISOR in capsys.readouterr().err
+
+
+# ---- gitignore (the call, not only check()) ---------------------------------------------------
+
+def _git_init(repo):
+    repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "-C", str(repo), "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo),
+                    "-c", "user.email=t@e.invalid", "-c", "user.name=T",
+                    "commit", "--allow-empty", "-qm", "init"],
+                   check=True, capture_output=True)
+
+
+def test_doctor_fails_an_unignored_credential_file(home, monkeypatch, tmp_path):
+    """THE CALL. A correct `leaking()` that doctor.run never consults is a green
+    doctor over a committable `.mcp.json`."""
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / ".mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    monkeypatch.setattr(doctor, "authenticated", lambda url: _Server())
+    monkeypatch.setattr(doctor, "find_supervisor", lambda: "")
+
+    lines, code = doctor.run("http://gb.invalid", "core", "", repo=repo)
+
+    assert code == 1
+    gitignore_lines = [l for l in lines if l["name"] == "gitignore"]
+    assert gitignore_lines and gitignore_lines[0]["status"] == "FAIL"
+    assert ".mcp.json" in gitignore_lines[0]["detail"]
+
+
+def test_doctor_passes_when_the_paths_are_ignored(home, monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    gitignore.ensure(repo)
+    (repo / ".mcp.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(doctor, "authenticated", lambda url: _Server())
+    monkeypatch.setattr(doctor, "find_supervisor", lambda: "")
+
+    lines, code = doctor.run("http://gb.invalid", "core", "", repo=repo)
+
+    assert code == 0
+    gitignore_lines = [l for l in lines if l["name"] == "gitignore"]
+    assert gitignore_lines and gitignore_lines[0]["status"] == "PASS"
+
+
+def test_doctor_does_not_treat_a_missing_pattern_as_a_clean_pass(home, monkeypatch, tmp_path):
+    """Absence of the files is not 'safe'. UNKNOWN, not PASS, and not FAIL — nothing
+    is leaking yet, but nobody has looked in the way that would stop a later spawn."""
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    monkeypatch.setattr(doctor, "authenticated", lambda url: _Server())
+    monkeypatch.setattr(doctor, "find_supervisor", lambda: "")
+
+    lines, code = doctor.run("http://gb.invalid", "core", "", repo=repo)
+
+    assert code == 0
+    gitignore_lines = [l for l in lines if l["name"] == "gitignore"]
+    assert gitignore_lines and gitignore_lines[0]["status"] == "UNKNOWN"
+    assert "gban setup" in gitignore_lines[0]["detail"]
+
+
+def test_doctor_fails_a_tracked_credential_even_when_gitignore_names_it(
+        home, monkeypatch, tmp_path):
+    """gitignore does not untrack. A pattern next to a file already in the index is
+    how a key keeps shipping after somebody 'fixed' it."""
+    repo = tmp_path / "repo"
+    _git_init(repo)
+    (repo / ".mcp.json").write_text("{}\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(".mcp.json\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-f", ".mcp.json", ".gitignore"],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo),
+                    "-c", "user.email=t@e.invalid", "-c", "user.name=T",
+                    "commit", "-qm", "key"], check=True, capture_output=True)
+    monkeypatch.setattr(doctor, "authenticated", lambda url: _Server())
+    monkeypatch.setattr(doctor, "find_supervisor", lambda: "")
+
+    lines, code = doctor.run("http://gb.invalid", "core", "", repo=repo)
+
+    assert code == 1
+    detail = " ".join(l["detail"] for l in lines if l["name"] == "gitignore")
+    assert "git tracks" in detail and ".mcp.json" in detail
+    assert "git rm --cached" in detail
