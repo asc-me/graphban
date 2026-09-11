@@ -60,8 +60,14 @@ def db(_clean_database):
 
 
 def _agent(client, key, label, role) -> str:
+    """These share ONE credential, so each declares a distinct `instance` — the same
+    requirement `tests.test_fleet_review._register` states. Before GRPH-848 this was moot:
+    `_item_in_review` sends the item without claiming, so it had no author and every reviewer
+    was independent of nobody. Now the sender is stamped, and two undeclared agents on one
+    key are, correctly, not distinguishable."""
     return _ok(_mcp(client, key, "register_agent",
-                    {"label": label, "role_hint": role}))["agent_id"]
+                    {"label": label, "role_hint": role,
+                     "capabilities": {"instance": label}}))["agent_id"]
 
 
 def _item_in_review(client, key, proj, builder, effort: int = 3) -> str:

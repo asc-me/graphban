@@ -813,7 +813,14 @@ def set_reach(db: Session, item: Item, value: str) -> Item:
     return item
 
 
-def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
+def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None = None,
+                **fields) -> Item | None:
+    """Patch fields or advance status.
+
+    `submitted_by` is who is making THIS call — an agent id, or `key:<name>` for a bare
+    credential (`fleet.caller_identity`). It is read in exactly one place: an item entering
+    `review` with no author gets it as `built_by`. See the stamp below for why.
+    """
     item = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if item is None:
         return None
@@ -1012,6 +1019,22 @@ def update_item(db: Session, item_id: str, defer=None, **fields) -> Item | None:
                 "github_url", "assignee", "prd_id", "prd_section", "fidelity"):
         if key in fields and fields[key] is not None:
             setattr(item, key, fields[key])
+    # THE AUTHORSHIP STAMP (GRPH-848). `built_by` was written in one place — the claim — so
+    # an item built inline and sent to review here carried no author at all, and
+    # `independent(reviewer, None)` read that as "human-authored": measured on 2026-09-10,
+    # 17 of the last 20 signed-off items had an empty `built_by` and a receipt claiming a
+    # comparison that was never made. "Human-authored" and "an agent that never claimed"
+    # were one value; they are not one case, because the second is the builder's own
+    # credential unless something says otherwise.
+    #
+    # On the TRANSITION into review, never on a re-save: stamping a row that is already in
+    # review would attribute somebody else's old work to whoever touched it next. And
+    # NEVER over an existing author — a bounce-and-resubmit, or a supervisor moving its
+    # child's item, keeps the real one. Rows that predate this stay empty on purpose
+    # (backfill is out of scope); the sign-off receipt says "author unrecorded" for them.
+    if (fields.get("status") == "review" and prev_status != "review"
+            and not item.built_by and submitted_by):
+        item.built_by = submitted_by
     pending_lesson_applies: list[str] = []
     if fields.get("touchpoints") is not None:
         # Unions. See `union_touchpoints` — a write here must never remove a declared or

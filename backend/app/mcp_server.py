@@ -2445,6 +2445,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # The judge and the lesson extractor are MODEL calls, and an agent completing an
             # item is single-threaded: waiting on them stops its heartbeat (GRPH-399).
             defer=defer,
+            # Who is sending it (GRPH-848). Resolved the same way every fleet tool resolves
+            # its caller, so the string `sign_off` compares `built_by` against is the string
+            # this stamps: an agent id, or `key:<name>` for a bare credential.
+            submitted_by=fleet_svc.caller_identity(args.get("agent_id"), key),
             status=args.get("status"),
             title=args.get("title"),
             description=args.get("description"),
