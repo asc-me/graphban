@@ -141,6 +141,11 @@ Nothing is pushed back to you. Read the item, or `fleet_status`. `spawn` returns
 registration and nothing after it — that is the design, not a gap. Your context grows by two
 tool results instead of by a child's transcript.
 
+Do not wait for the user to ask how the wave is doing. After the first successful spawn,
+attach a periodic watcher with the harness's scheduler/loop so status comes back on its
+own. In Grok that is the `watch-wave` skill (`scheduler_create`). Going idle after spawn
+is why they have to nudge.
+
 Three independent timers: the delegation lease (600s) decides open versus expired, the item
 lease starts fresh at the claim, and the seat expires after 30 minutes. `expired, nothing
 claimed` is a real state — it means the child never registered.
