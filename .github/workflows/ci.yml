@@ -274,16 +274,21 @@ jobs:
       # host PATH, use the venv.
       - name: Fleet suite
         working-directory: fleet
+        shell: cmd
+        # `< NUL` prevents pytest from detecting an interactive terminal and entering
+        # debug mode on error (GRPH-855). Windows runners have a TTY attached, which
+        # makes pytest's pdb integration kick in and hang the job.
         run: |
           uv venv --python 3.12 .venv
           uv pip install -e ".[dev]"
-          .venv/Scripts/python -m pytest -q
+          .venv\Scripts\python -m pytest -q < NUL
       - name: CLI suite
         working-directory: cli
+        shell: cmd
         run: |
           uv venv --python 3.12 .venv
           uv pip install -e ".[dev]"
-          .venv/Scripts/python -m pytest -q
+          .venv\Scripts\python -m pytest -q < NUL
 
   # A single required check, so branch protection has one name to point at whatever the
   # filters decided to run. Without it a skipped job reads as "pending" forever on a
