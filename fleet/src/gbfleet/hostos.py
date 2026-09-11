@@ -172,10 +172,13 @@ def restrict_to_owner(path: Path) -> bool:
     """Make `path` readable only by the user running the supervisor. True if it worked.
 
     POSIX gets `chmod`. Windows gets `icacls`, which is the tool that actually does the
-    thing the chmod was pretending to: `/inheritance:r` drops the inherited entries and
-    `/grant:r <user>:(F)` leaves exactly one. Verified on the box — a temp file that
-    began with SYSTEM, Administrators and the user ended with a single entry for the
-    user, still readable by them.
+    thing the chmod was pretending to: `/inheritance:r` drops the inherited entries,
+    `/grant:r <user>:(F)` gives the owner full control, and leftover explicit ACEs
+    (SYSTEM, Administrators on GitHub's windows-latest image) are `/remove`d so the
+    file is not still world-readable. Verified on the box — a temp file that began
+    with SYSTEM, Administrators and the user ended with a single entry for the user,
+    still readable by them. The GHA runner keeps those extras as explicit ACEs, which
+    is why `/inheritance:r` alone left `is_owner_only` false there (GRPH-855).
 
     **A directory gets `0o700`, not `0o600`.** Windows never had this problem, because
     `(F)` is full control and includes traverse; POSIX does, and getting it wrong makes
@@ -207,7 +210,54 @@ def restrict_to_owner(path: Path) -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return done.returncode == 0 and is_owner_only(path)
+    if done.returncode != 0:
+        return False
+    # GitHub's windows-latest runner (and other images that pre-ACL temp dirs)
+    # leaves SYSTEM / Administrators as *explicit* ACEs. `/inheritance:r` drops
+    # inherited ones only, so a grant that was "exactly one entry" on the walked
+    # box (GRPH-576) still reads as world-readable here (GRPH-855). Strip every
+    # principal that is not the owner.
+    me = user.casefold()
+    leftovers = [
+        principal
+        for principal in (_icacls_principals(path) or [])
+        if principal.rsplit("\\", 1)[-1].casefold() != me
+    ]
+    for principal in leftovers:
+        try:
+            subprocess.run(
+                ["icacls", str(path), "/remove", principal],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return is_owner_only(path)
+
+
+def _icacls_principals(path: Path) -> list[str] | None:
+    """Account names `icacls` reports on `path`, or None if it could not be asked."""
+    try:
+        listing = subprocess.run(
+            ["icacls", str(path)], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if listing.returncode != 0:
+        return None
+    # `icacls` prints `<path> PRINCIPAL:(F)` then one indented `PRINCIPAL:(F)` per extra
+    # entry, and finishes with a localised summary line. Keying on the `:(` separator
+    # rather than on any English word keeps this working on a non-English Windows.
+    principals: list[str] = []
+    prefix = str(path)
+    for line in listing.stdout.splitlines():
+        if ":(" not in line:
+            continue
+        principal = line.split(":(")[0].strip()
+        if principal.lower().startswith(prefix.lower()):
+            principal = principal[len(prefix) :].strip()
+        if principal:
+            principals.append(principal)
+    return principals
 
 
 def is_owner_only(path: Path) -> bool:
@@ -225,30 +275,13 @@ def is_owner_only(path: Path) -> bool:
         except OSError:
             return False
 
-    try:
-        listing = subprocess.run(
-            ["icacls", str(path)], capture_output=True, text=True, timeout=30
-        )
-    except (OSError, subprocess.SubprocessError):
+    principals = _icacls_principals(path)
+    if principals is None:
         return False
-    if listing.returncode != 0:
-        return False
-
-    # `icacls` prints `<path> PRINCIPAL:(F)` then one indented `PRINCIPAL:(F)` per extra
-    # entry, and finishes with a localised summary line. Keying on the `:(` separator
-    # rather than on any English word keeps this working on a non-English Windows.
     me = (os.environ.get("USERNAME") or _fallback_user() or "").casefold()
-    for line in listing.stdout.splitlines():
-        if ":(" not in line:
-            continue
-        principal = line.split(":(")[0].strip()
-        if principal.lower().startswith(str(path).lower()):
-            principal = principal[len(str(path)):].strip()
-        if not principal:
-            continue
+    for principal in principals:
         # `MONOLITH\Alex` and `Alex` are the same person; compare the account name.
-        account = principal.rsplit("\\", 1)[-1].casefold()
-        if account != me:
+        if principal.rsplit("\\", 1)[-1].casefold() != me:
             return False
     return True
 

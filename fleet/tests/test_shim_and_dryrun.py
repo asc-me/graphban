@@ -55,7 +55,9 @@ def test_a_denied_command_really_refuses(tmp_path):
     """Run for real rather than asserted: a stub that is not executable, or not first on
     PATH, is a guard that is present, exported and inert."""
     where = shim.build(tmp_path / "shim")
-    env = shim.environment({"PATH": os.defpath}, where)
+    # A PATH-only env on Windows omits PATHEXT/SystemRoot, and CreateProcess then
+    # cannot find `railway.cmd` (WinError 2) — a false red that is not the shim.
+    env = shim.environment({**os.environ, "PATH": os.defpath}, where)
 
     done = subprocess.run(["railway", "up"], env=env, capture_output=True, text=True)
 

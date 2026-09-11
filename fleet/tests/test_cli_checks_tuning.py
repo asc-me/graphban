@@ -85,8 +85,25 @@ def test_an_adapter_with_no_required_arguments_is_unaffected():
 
 def _a_fake_gbagent(tmp_path):
     """A binary that answers `--version` with this package's own version, which is what the
-    exact pin wants. Resolution is not what is under test here."""
+    exact pin wants. Resolution is not what is under test here.
+
+    `#!/bin/sh` is not a Win32 application (WinError 193) — the same hole GRPH-588 named
+    for vendor stubs. A `.cmd` is the portable equivalent; callers must use the returned
+    path, which on Windows is not `tmp_path / "gbagent"`.
+    """
+    import os
+
     import gbfleet
+
+    if os.name == "nt":
+        path = tmp_path / "gbagent.cmd"
+        path.write_text(
+            "@echo off\n"
+            f'if /I "%~1"=="--version" echo {gbfleet.__version__}\n'
+            'if /I "%~1"=="models" echo qwen3.6:35b\n',
+            encoding="utf-8",
+        )
+        return str(path)
 
     path = tmp_path / "gbagent"
     path.write_text(
