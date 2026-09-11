@@ -29,7 +29,7 @@ from gbfleet.spawn import (
 )
 from gbfleet.worktree import create
 from conftest import pid_alive as _alive  # noqa: E402
-from gbfleet.hostos import is_owner_only  # noqa: E402
+from gbfleet.hostos import is_owner_only, spawn_kwargs  # noqa: E402
 
 SEAT = Seat(code="WORKER-7F3K", server_url="https://gb.invalid", api_key="gbk_test")
 
@@ -435,7 +435,7 @@ def test_stopping_a_child_does_not_kill_the_supervisor(tmp_path: Path, scripts, 
         capture_output=True,
         text=True,
         timeout=60,
-        start_new_session=True,
+        **spawn_kwargs(),
     )
 
     assert result.returncode == 0, (

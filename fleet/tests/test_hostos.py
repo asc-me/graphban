@@ -18,6 +18,7 @@ What IS checked here, and is worth checking:
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -635,3 +636,24 @@ def test_proc_branch_agrees_with_meminfo():
     got = hostos._available_proc()
     # Not equality: the two readings are taken microseconds apart on a live machine.
     assert got is not None and abs(got - stated) < stated * 0.25
+
+
+_RAW_SESSION_FLAG = re.compile(r"^\s*start_new_session\s*=\s*True\s*,?\s*$")
+
+
+def test_the_suite_does_not_pass_start_new_session_as_a_raw_popen_flag():
+    """`start_new_session=True` is POSIX. Popen ignores it on Windows, so the child
+    stays in pytest's process group; `stop()`'s CTRL_BREAK then hits the CI shell
+    (pwsh debugger / cmd.exe `Terminate batch job`) and the Windows job dies at ~5%
+    — GRPH-855 / PR #759. `spawn_kwargs()` is the portable form.
+    """
+    root = Path(__file__).resolve().parent
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if _RAW_SESSION_FLAG.match(line):
+                offenders.append(f"{path.name}:{i}")
+    assert not offenders, (
+        "start_new_session=True is ignored on Windows; use **spawn_kwargs() so a "
+        f"CTRL_BREAK stays in the child's group: {offenders}"
+    )

@@ -272,23 +272,26 @@ jobs:
       # Fleet and CLI are separate distributions (PRD-22 D-e, PRD-40 D2) with their
       # own pyproject and venv — same rules as the Ubuntu jobs: pytest is not on the
       # host PATH, use the venv.
+      # bash, not pwsh or cmd.exe. `stop()` sends CTRL_BREAK; on this runner that
+      # event reaches the job shell. pwsh enters its debugger (`Entering debug
+      # mode` — first tip of PR #759). cmd.exe on a multi-line `run:` is a batch
+      # file and prompts `Terminate batch job (Y/N)?` then exits
+      # STATUS_CONTROL_C_EXIT (-1073741510) — the bounce. Git Bash does neither.
+      # Stdin from /dev/null so a leftover prompt cannot hang the runner (GRPH-855).
       - name: Fleet suite
         working-directory: fleet
-        shell: cmd
-        # `< NUL` prevents pytest from detecting an interactive terminal and entering
-        # debug mode on error (GRPH-855). Windows runners have a TTY attached, which
-        # makes pytest's pdb integration kick in and hang the job.
+        shell: bash
         run: |
           uv venv --python 3.12 .venv
           uv pip install -e ".[dev]"
-          .venv\Scripts\python -m pytest -q < NUL
+          .venv/Scripts/python -m pytest -q </dev/null
       - name: CLI suite
         working-directory: cli
-        shell: cmd
+        shell: bash
         run: |
           uv venv --python 3.12 .venv
           uv pip install -e ".[dev]"
-          .venv\Scripts\python -m pytest -q < NUL
+          .venv/Scripts/python -m pytest -q </dev/null
 
   # A single required check, so branch protection has one name to point at whatever the
   # filters decided to run. Without it a skipped job reads as "pending" forever on a
