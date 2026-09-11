@@ -200,6 +200,21 @@ def install_supervisor(timeout: float = 600.0) -> tuple[bool, str]:
     return True, ""
 
 
+def _sibling_binary(name: str) -> str:
+    """An executable beside this interpreter, trying the platform suffix that actually
+    exists. On Windows a `pip install` of both packages drops `gbfleet.exe` into
+    `Scripts\\`; on Unix it drops `gbfleet` into `bin/`. Checking the bare name on Windows
+    is the same hole the Unix sibling check used to have — the file is there and the lookup
+    says it is not."""
+    import sys
+
+    parent = Path(sys.executable).parent
+    for candidate in (parent / name, parent / f"{name}.exe"):
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return ""
+
+
 def find_supervisor() -> str:
     """`gbfleet`, from beside this interpreter first and only then from PATH.
 
@@ -213,13 +228,10 @@ def find_supervisor() -> str:
     PATH still wins for a supervisor the operator installed separately and put there on
     purpose — a sibling is a fallback for the case PATH cannot see, not an override of it.
     """
-    import sys
-
     found = shutil.which("gbfleet")
     if found:
         return found
-    beside = Path(sys.executable).parent / "gbfleet"
-    return str(beside) if beside.exists() and os.access(beside, os.X_OK) else ""
+    return _sibling_binary("gbfleet")
 
 
 #: What `gbfleet` reads. `gban` names it once, here, and both paths that launch a supervisor
