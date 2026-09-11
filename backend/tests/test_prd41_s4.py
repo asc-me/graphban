@@ -447,6 +447,62 @@ def test_fetched_priors_are_outranked_by_a_local_cell_at_the_floor(
     assert picked["quality"]["value"] == 0.2
 
 
+# ---- D7 / criterion 27: org and platform probe separation -----------------------------------
+
+def test_org_measured_subtracts_probe_from_band_n(client, key, db, proj, auth):
+    """27. 8 natural + 2 probe on a sibling: org band-n=8, not 10.
+
+    Sabotage: use roll.finished (raw) for band-n in delegation.measured() org layer —
+    this test reads n=10 and fails.
+    """
+    from app.services import delegation as dsvc
+
+    alex = db.scalar(select(User).where(User.email == "alex@ascme-labs.com"))
+    db.add(Organization(id="org_probe", name="org_probe", telemetry_share=False))
+    db.commit()
+    db.add(OrgMembership(org_id="org_probe", user_id=alex.id, role="admin"))
+    db.commit()
+    sibling = client.post("/api/projects", json={"name": "Sibling"}, headers=auth).json()["id"]
+    db.get(Project, proj).org_id = "org_probe"
+    db.get(Project, sibling).org_id = "org_probe"
+    db.commit()
+    db.add(HarnessRollup(
+        project_id=sibling, week=hsvc.week_of(hsvc._now()),
+        vendor="gbagent", model="qwen3.6", binary_version="1.0.0",
+        capability="A4", size_band="M", finished=10, signed_off=6,
+        bounced=4, first_choice=8, probe=2))
+    db.commit()
+    rows = dsvc.measured(db, proj)
+    org_cells = [c for c in rows if c["layer"] == "org"]
+    assert org_cells, "org layer must appear for a sibling with traffic"
+    cell = org_cells[0]
+    assert cell["quality"]["n"] == 8, (
+        f"org natural n must be 8 (10 finished - 2 probe), got {cell['quality']['n']}")
+    band_n = cell["bands"].get("M", {}).get("n")
+    assert band_n == 8, f"org band-n must be 8, got {band_n}"
+
+
+def test_platform_roll_subtracts_probe_from_contribution_cells(db, hosted):
+    """27. 8 natural + 2 probe on a contributed instance: platform finished=8, not 10.
+
+    Sabotage: use row.finished (raw) for contribution cells in platform_roll() —
+    this test reads finished=10 and fails.
+    """
+    db.add(PlatformContributionCell(
+        instance_id="inst-probe", week="2026-W37", vendor="gbagent", model="qwen3.6",
+        binary_version="1.0.0", capability="A4", size_band="M",
+        finished=10, signed_off=6, first_choice=8, probe=2))
+    db.commit()
+    hsvc.platform_roll(db)
+    db.commit()
+    rolls = db.scalars(select(PlatformRollup)).all()
+    assert rolls, "platform_roll must produce a row from a contribution cell"
+    roll = rolls[0]
+    assert roll.finished == 8, (
+        f"platform natural finished must be 8 (10 - 2 probe), got {roll.finished}")
+    assert roll.signed_off == 6
+
+
 def test_snapshot_http_is_the_served_payload(client, auth, db, proj):
     db.add(PlatformRollup(
         week="2026-W36", vendor="gbagent", model="qwen3.6", binary_version="1.0.0",

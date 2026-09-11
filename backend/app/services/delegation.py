@@ -565,8 +565,8 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
                     cell["tokens_reported"] += roll.tokens_reported
                     cell["signed_off_reported"] += roll.signed_off_reported or 0
                     b = cell["bands"].setdefault(roll.size_band, {"n": 0, "signed_off": 0})
-                    b["n"] += roll.finished
-                    b["signed_off"] += roll.signed_off
+                    b["n"] += max(natural, 0)
+                    b["signed_off"] += min(roll.signed_off, max(natural, 0))
                     if roll.median_seconds is not None:
                         cell["durations"].extend([float(roll.median_seconds)] * max(roll.finished, 1))
                 out.extend(_cell_out(v, m, c, "org", cell)

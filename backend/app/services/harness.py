@@ -1591,8 +1591,9 @@ def platform_roll(db: Session) -> int:
         cell = buckets.setdefault(key, {"per_org": {}})
         org = f"instance:{row.instance_id}"
         seen = cell["per_org"].setdefault(org, {"finished": 0, "signed_off": 0})
-        seen["finished"] += row.finished
-        seen["signed_off"] += row.signed_off
+        natural = row.finished - (getattr(row, "probe", 0) or 0)
+        seen["finished"] += max(natural, 0)
+        seen["signed_off"] += min(row.signed_off, max(natural, 0))
 
     for old in db.scalars(select(PlatformRollup)).all():
         db.delete(old)
