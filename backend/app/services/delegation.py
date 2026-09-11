@@ -558,15 +558,16 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
                     key = (roll.vendor, roll.model, roll.capability)
                     cell = org_cells.setdefault(key, _empty_cell())
                     natural = roll.finished - (getattr(roll, "probe", 0) or 0)
-                    cell["finished"] += max(natural, 0)
-                    cell["signed_off"] += min(roll.signed_off, max(natural, 0))
+                    natural_n = max(natural, 0)
+                    cell["finished"] += natural_n
+                    cell["signed_off"] += min(roll.signed_off, natural_n)
                     cell["tokens_in"] += roll.tokens_in or 0
                     cell["tokens_out"] += roll.tokens_out or 0
                     cell["tokens_reported"] += roll.tokens_reported
                     cell["signed_off_reported"] += roll.signed_off_reported or 0
                     b = cell["bands"].setdefault(roll.size_band, {"n": 0, "signed_off": 0})
-                    b["n"] += roll.finished
-                    b["signed_off"] += roll.signed_off
+                    b["n"] += natural_n
+                    b["signed_off"] += min(roll.signed_off, natural_n)
                     if roll.median_seconds is not None:
                         cell["durations"].extend([float(roll.median_seconds)] * max(roll.finished, 1))
                 out.extend(_cell_out(v, m, c, "org", cell)
