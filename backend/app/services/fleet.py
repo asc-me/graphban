@@ -1540,8 +1540,12 @@ def review_block_reason(db: Session, *, agent_id: str, project_id: str | None = 
         if holder is not None and holder != agent_id:
             taken.append(holder)
             continue
-        author = db.get(Agent, it.built_by) if it.built_by else None
-        if me is not None and not independent(me, author):
+        # THE SAME RULE `claim_review` FILTERS BY, or the reason lies (GRPH-848 bounce). This
+        # read `independent(me, db.get(Agent, built_by))`, so a `key:` author resolved to no
+        # Agent and answered "independent" — the caller was refused the item above and then
+        # told "no item awaiting a second pair of eyes", which sends an operator to wait
+        # where the true answer sends them to mint a seat.
+        if me is not None and not independent_of_built_by(db, me, it.built_by):
             return NOT_INDEPENDENT
     if taken:
         # Now that a review claim is a real lease (GRPH-395) it can be the reason for an empty
