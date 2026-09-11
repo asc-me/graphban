@@ -57,6 +57,14 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
+vi.mock("@/lib/queries", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/queries")>("@/lib/queries");
+  return {
+    ...actual,
+    useFleet: vi.fn(() => ({ data: { profile: null, policy: null }, refetch: vi.fn() })),
+  };
+});
+
 function show() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -339,6 +347,20 @@ describe("Harness page", () => {
     show();
     expect(await screen.findByTestId("harness-f2-label")).toHaveTextContent("by touchpoint overlap");
     expect(screen.getByTestId("harness-review-below-floor")).toHaveTextContent("3 of 5");
+  });
+
+  it("composes the profile and policy editors on the same screen as the grid and cards", async () => {
+    // D14: the grid, the probe panel, R1–R6 cards, and the profile/policy editor belong on
+    // one screen. The Preferences component is composed, not reimplemented.
+    // Sabotage: drop the ProbePanel import and render old text suggestions — this fails.
+    probeCandidates.mockResolvedValueOnce(probeData());
+    show();
+    expect(await screen.findByTestId("harness-cell")).toBeInTheDocument();
+    expect(await screen.findByTestId("harness-probe-panel")).toBeInTheDocument();
+    expect(screen.getByTestId("fleet-profile")).toBeInTheDocument();
+    expect(screen.getByTestId("fleet-policy")).toBeInTheDocument();
+    expect(screen.getByLabelText("Per-period token cap")).toBeInTheDocument();
+    expect(screen.getByTestId("fleet-policy-period")).toBeInTheDocument();
   });
 });
 
