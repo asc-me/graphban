@@ -1,4 +1,4 @@
-"""Running a drain under the machine's own supervisor (GRPH-844).
+"""Running a drain under the machine's own supervisor (GRPH-844, GRPH-852).
 
 `gbfleet until` is a long-running process that, until now, existed only for as long as the
 terminal or harness that started it. That is not a detail — it is the root of GRPH-842: the
@@ -12,17 +12,18 @@ generalise: `graphban_host.py` has to create the venv the console script would l
 cannot be that console script. `uv tool install graphban-fleet` already gives gbfleet its own
 environment, so the binary is there before anyone asks it to write a unit.
 
-**User domain only.** LaunchAgent, `systemd --user`. A root installer is a different program
-with different failure modes, and `docs/native-install.md` records that a privileged install
-was never walked even for the server.
+**User domain only.** LaunchAgent, `systemd --user`, Task Scheduler (`schtasks`) on Windows.
+A root / Session-0 installer is a different program with different failure modes:
+`docs/native-install.md` records that a privileged install was never walked even for the
+server, and on Windows a `sc.exe` service runs where no vendor CLI's login lives (GRPH-852).
 
 **Nothing in this file may write a credential into a unit file.** `until` takes its key only
 from `$GBFLEET_API_KEY`, so the key goes in an owner-only environment file beside the unit and
-the unit references it: `EnvironmentFile=` on systemd, and on launchd — which has no
-equivalent — a `sh -c` that sources it. That asymmetry is annoying and it is the correct
-trade: `scripts/graphban_systemd.py` refuses a secret in a unit because a unit is
+the unit references it: `EnvironmentFile=` on systemd, and on launchd / Task Scheduler —
+which have no equivalent — a shell that sources it. That asymmetry is annoying and it is the
+correct trade: `scripts/graphban_systemd.py` refuses a secret in a unit because a unit is
 world-readable, and putting one in `EnvironmentVariables` would be the same mistake wearing a
-plist.
+plist or a task XML.
 
 **The PATH is load-bearing and is the thing most likely to be got wrong.** A launchd job does
 not inherit your shell's environment; it gets a minimal PATH. Every vendor CLI the fleet exists
@@ -41,6 +42,7 @@ import shutil
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -51,17 +53,30 @@ from .state import repo_root
 #: an operator with a single drain gets without thinking about it.
 DEFAULT_NAME = "drain"
 
-#: Every unit this program writes is named `gbfleet-<name>.service` or
-#: `dev.graphban.fleet.<name>.plist`, and that is not cosmetic: it is what makes them
-#: ENUMERABLE. A `doctor` that only ever asks about the default name reports "none installed"
-#: on a box with a broken `drain-b` on it, which is the absence-reads-as-clean failure this
-#: repository names in its own guide.
+#: Every unit this program writes is named `gbfleet-<name>.service`,
+#: `dev.graphban.fleet.<name>.plist`, or `gbfleet-<name>.xml` (Task Scheduler), and that is
+#: not cosmetic: it is what makes them ENUMERABLE. A `doctor` that only ever asks about the
+#: default name reports "none installed" on a box with a broken `drain-b` on it, which is the
+#: absence-reads-as-clean failure this repository names in its own guide.
 UNIT_PREFIX = "gbfleet-"
 
 #: launchd labels are a reverse-DNS namespace shared by the whole machine. `dev.graphban.api`
 #: is the server's; the fleet takes its own leaf rather than a suffix on that one, because
 #: `launchctl bootout dev.graphban.api` should not be able to reach a fleet.
 LABEL_PREFIX = "dev.graphban.fleet"
+
+#: Default Windows logon policy. Named in every status line so it is never guessed:
+#: InteractiveToken ≈ LaunchAgent (dies at logout). "Run whether logged on" would be the
+#: linger analogue — and then every vendor CLI that needs DPAPI / a profile MUST be walked;
+#: until that walk exists, that mode is not offered (GRPH-852).
+LOGON_WHEN_LOGGED_ON = "run only when the user is logged on"
+
+#: Marker written into the task XML so `status` can read PATH back without assuming. A Task
+#: Scheduler schema has no EnvironmentVariables element the way a launchd plist does.
+_PATH_COMMENT = "gbfleet-path:"
+
+#: `schtasks /Query /V` reports this Last Result while the action is still running.
+_SCHED_S_TASK_RUNNING = 267009
 
 #: Durable, and deliberately NOT `state.state_root()`. That lives under `tempfile.gettempdir()`,
 #: which is exactly right for a lock that must not survive a reboot and exactly wrong for a
@@ -107,24 +122,39 @@ SECRET_MARKERS = ("secret", "password", "token", "api_key", "apikey", "private")
 def secrets_in(rendered: bytes) -> list[str]:
     """Anything in a unit that looks like a credential. Over what LANDS ON DISK, parsed back.
 
-    **Assignments, never raw substrings**, and that distinction is not fussiness: the first
-    version grepped the rendered text and refused every install on macOS, because
-    `SECRET_MARKERS` contains `private` and every path under `/private/var` matches it. A
-    guard that fires on `/private/tmp` is a guard someone will disable.
+    **Assignments / element names, never raw substrings**, and that distinction is not
+    fussiness: the first version grepped the rendered text and refused every install on
+    macOS, because `SECRET_MARKERS` contains `private` and every path under `/private/var`
+    matches it. A guard that fires on `/private/tmp` is a guard someone will disable.
 
     So the bytes are parsed back into the shape they were written in — a plist is walked for
-    KEYS, the way `scripts/graphban_service.py` walks it, and a unit file is split on the
-    assignments the way `scripts/graphban_systemd.py` splits it. `EnvironmentFile` is exempt:
-    it names the path that keeps the key OUT, and a marker firing on the fix is worse than no
-    marker.
+    KEYS, the way `scripts/graphban_service.py` walks it; a Task Scheduler XML is walked for
+    element local-names the same way; and a unit file is split on the assignments the way
+    `scripts/graphban_systemd.py` splits it. `EnvironmentFile` is exempt: it names the path
+    that keeps the key OUT, and a marker firing on the fix is worse than no marker.
 
     This finds a credential put somewhere credentials go. It cannot find one smuggled through
     an argument, which is why `install` ALSO checks for the literal key it is about to write.
     """
-    if rendered[:5] == b"<?xml" or rendered[:6] == b"bplist":
+    if rendered[:6] == b"bplist":
         try:
             return _plist_secrets(plistlib.loads(rendered))
         except (ValueError, plistlib.InvalidFileException):
+            return []
+    is_utf16 = rendered[:2] in (b"\xff\xfe", b"\xfe\xff")
+    is_xml = is_utf16 or rendered.lstrip()[:5] == b"<?xml"
+    if is_xml and not is_utf16 and b"<plist" in rendered[:200]:
+        try:
+            return _plist_secrets(plistlib.loads(rendered))
+        except (ValueError, plistlib.InvalidFileException):
+            return []
+    if is_xml:
+        # Task Scheduler XML (and anything else XML-shaped that is not a plist). Walk element
+        # NAMES — text content is where WorkingDirectory paths live, and "private" in a path
+        # is the false positive this function exists to refuse.
+        try:
+            return _xml_secrets(rendered)
+        except ET.ParseError:
             return []
     found: list[str] = []
     for raw in rendered.decode("utf-8", "replace").splitlines():
@@ -159,6 +189,25 @@ def _plist_secrets(node, path: str = "") -> list[str]:
     return found
 
 
+def _xml_secrets(rendered: bytes) -> list[str]:
+    """Element local-names that look like a credential, at any depth."""
+    text = rendered.decode("utf-16" if rendered[:2] in (b"\xff\xfe", b"\xfe\xff")
+                           else "utf-8", "replace")
+    root = ET.fromstring(text)
+    found: list[str] = []
+
+    def walk(node: ET.Element, path: str) -> None:
+        local = node.tag.rsplit("}", 1)[-1]
+        here = f"{path}{local}"
+        if any(marker in local.lower() for marker in SECRET_MARKERS):
+            found.append(here)
+        for child in node:
+            walk(child, f"{here}.")
+
+    walk(root, "")
+    return found
+
+
 class Refused(RuntimeError):
     """The install cannot be made correctly. Says which fact makes it impossible."""
 
@@ -167,7 +216,7 @@ class Refused(RuntimeError):
 class Host:
     """Which user-domain supervisor this machine has, or why it has none."""
 
-    kind: str = ""      #: "launchd" | "systemd" | ""
+    kind: str = ""      #: "launchd" | "systemd" | "schtasks" | ""
     why: str = ""       #: filled only when kind is empty
 
     @property
@@ -178,14 +227,16 @@ class Host:
 def host() -> Host:
     """What supervises a user job here.
 
-    Windows gets an honest refusal rather than a third code path: a Windows service needs
-    `sc.exe` and a service wrapper, runs in session 0 where no vendor CLI's login lives, and
-    nobody has walked it. `hostos` implements Windows everywhere else precisely so that this
-    can be a stated gap instead of a silent one.
+    Windows is Task Scheduler (`schtasks`), never a Session-0 `sc.exe` service (GRPH-852). A
+    Windows Service runs where no vendor CLI's login lives; the analogue of `--user` /
+    LaunchAgent is a per-user scheduled task with InteractiveToken. An unsupervised host —
+    no `schtasks`, no launchctl, no usable systemd — stays UNKNOWN, never "not installed".
     """
     if WINDOWS:
-        return Host("", "Windows has no user-domain equivalent here; run `gbfleet until` "
-                        "under a Task Scheduler task or a terminal you keep open")
+        if shutil.which("schtasks"):
+            return Host("schtasks")
+        return Host("", "no schtasks on PATH; Task Scheduler is how a drain outlives the "
+                        "terminal on Windows")
     if sys.platform == "darwin":
         if shutil.which("launchctl"):
             return Host("launchd")
@@ -257,6 +308,11 @@ def label_for(name: str) -> str:
     return f"{LABEL_PREFIX}.{name}"
 
 
+def task_name(name: str) -> str:
+    """Task Scheduler `/TN` name. Same prefix as the systemd unit stem."""
+    return f"{UNIT_PREFIX}{name}"
+
+
 def unit_name(name: str) -> str:
     """The systemd unit's file name. Prefixed so `installed_names` can find it again."""
     return f"{UNIT_PREFIX}{name}.service"
@@ -265,13 +321,25 @@ def unit_name(name: str) -> str:
 def unit_dir(kind: str) -> Path:
     if kind == "launchd":
         return Path.home() / "Library" / "LaunchAgents"
+    if kind == "schtasks":
+        # Ours, not Task Scheduler's private store: enumerable the same way the other two
+        # platforms are, and redirectable in tests so a suite never touches the real scheduler
+        # (GRPH-844 hygiene, GRPH-852).
+        return CONFIG_DIR / "tasks"
     return Path.home() / ".config" / "systemd" / "user"
 
 
 def unit_path_for(name: str, kind: str) -> Path:
     if kind == "launchd":
         return unit_dir(kind) / f"{label_for(name)}.plist"
+    if kind == "schtasks":
+        return unit_dir(kind) / f"{task_name(name)}.xml"
     return unit_dir(kind) / unit_name(name)
+
+
+def runner_path_for(name: str) -> Path:
+    """Windows cmd wrapper that sources the env file and sets PATH. Not used on POSIX."""
+    return CONFIG_DIR / f"{name}.cmd"
 
 
 def installed_names(kind: str = "") -> list[str]:
@@ -291,6 +359,9 @@ def installed_names(kind: str = "") -> list[str]:
     if kind == "launchd":
         for path in directory.glob(f"{LABEL_PREFIX}.*.plist"):
             names.append(path.name[len(LABEL_PREFIX) + 1:-len(".plist")])
+    elif kind == "schtasks":
+        for path in directory.glob(f"{UNIT_PREFIX}*.xml"):
+            names.append(path.name[len(UNIT_PREFIX):-len(".xml")])
     else:
         for path in directory.glob(f"{UNIT_PREFIX}*.service"):
             names.append(path.name[len(UNIT_PREFIX):-len(".service")])
@@ -392,14 +463,18 @@ def _this_gbfleet() -> str:
     running = Path(sys.argv[0])
     if running.name.startswith("gbfleet") and running.is_file():
         resolved = running.resolve()
-        if os.access(resolved, os.X_OK):
+        # `os.access(X_OK)` is not the right question on Windows: a console script is a
+        # launcher `.exe`, and the extensionless name is not what CreateProcess will run.
+        if WINDOWS or os.access(resolved, os.X_OK):
             return str(resolved)
     # NOT `.resolve()` — a venv's `bin/python` is a symlink to the interpreter it was made
     # from, so resolving lands in that interpreter's bin and the venv's own console script
     # becomes invisible. Measured: it fell through to PATH and picked the `uv tool` copy.
-    sibling = Path(sys.executable).parent / "gbfleet"
-    if sibling.is_file() and os.access(sibling, os.X_OK):
-        return str(sibling)
+    # pip writes `gbfleet.exe` on Windows, not an extensionless shim.
+    for script in ("gbfleet", "gbfleet.exe"):
+        sibling = Path(sys.executable).parent / script
+        if sibling.is_file() and (WINDOWS or os.access(sibling, os.X_OK)):
+            return str(sibling)
     found = shutil.which("gbfleet")
     if not found:
         raise Refused(
@@ -431,7 +506,121 @@ def _value_of(args: list[str], flag: str) -> str | None:
 
 
 def render(plan: Plan) -> bytes:
-    return _render_launchd(plan) if plan.kind == "launchd" else _render_systemd(plan).encode()
+    if plan.kind == "launchd":
+        return _render_launchd(plan)
+    if plan.kind == "schtasks":
+        return _render_schtasks(plan)
+    return _render_systemd(plan).encode()
+
+
+def _iso_duration(seconds: int) -> str:
+    """Task Scheduler wants `PnYnMnDTnHnMnS`. Prefer whole minutes when the delay is one."""
+    if seconds >= 60 and seconds % 60 == 0:
+        return f"PT{seconds // 60}M"
+    return f"PT{seconds}S"
+
+
+def _render_schtasks_runner(plan: Plan) -> str:
+    """cmd.exe wrapper: source the owner-only env file, set PATH, run until once.
+
+    Task Scheduler has no EnvironmentFile and no Restart=always. The env file stays out of
+    the task XML (world-readable via `schtasks /Query /XML` on some hosts); PATH is set here
+    AND marked in the XML comment so `status` can read it back. The task's LogonTrigger
+    Repetition is what restarts after `until` exits — including exit 0, which is idle success.
+    """
+    env = str(plan.env_path)
+    path = plan.path_env.replace('"', "")
+    binary = str(plan.binary)
+    args = " ".join(f'"{a}"' if (" " in a or "\\" in a) else a for a in plan.until_args)
+    # `for /f` reads KEY=VALUE lines; the env file is exactly one such line today.
+    return (
+        "@echo off\r\n"
+        f"rem {_PATH_COMMENT}{path}\r\n"
+        f'if exist "{env}" for /f "usebackq eol=# tokens=1,* delims==" %%a in ("{env}") '
+        f'do set "%%a=%%b"\r\n'
+        f'set "PATH={path}"\r\n'
+        f'"{binary}" until {args}\r\n'
+    )
+
+
+def _render_schtasks(plan: Plan) -> bytes:
+    """Task Scheduler 1.2 XML. InteractiveToken, never a Session-0 service.
+
+    **LogonType=InteractiveToken** is the LaunchAgent analogue: the task runs in the logged-on
+    user's session, where vendor CLI logins live, and stops at logout. S4U / password-based
+    "run whether logged on" is the linger analogue and is NOT offered until a walk proves the
+    vendor CLIs survive it — DPAPI and profile-scoped settings die there (GRPH-852).
+
+    **No `sc.exe`, no service account.** A Windows Service is Session 0; that is the refusal
+    this replaces, not an implementation option.
+
+    Repetition on the LogonTrigger is `--every`: `until` exits when idle, IgnoreNew skips a
+    fire while a run is still going, and the next interval starts the next cycle.
+    """
+    runner = runner_path_for(plan.name)
+    interval = _iso_duration(plan.every)
+    # UTF-16 LE with BOM is what `schtasks /Create /XML` accepts most reliably.
+    path_comment = f"{_PATH_COMMENT}{plan.path_env}"
+    xml = f"""<?xml version="1.0" encoding="UTF-16"?>
+<!-- {path_comment} -->
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <URI>\\{task_name(plan.name)}</URI>
+    <Description>Graphban fleet drain ({plan.name}) — user-domain Task Scheduler, not a Session-0 service</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>{interval}</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </LogonTrigger>
+    <RegistrationTrigger>
+      <Enabled>true</Enabled>
+    </RegistrationTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RestartOnFailure>
+      <Interval>{interval}</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{_xml_escape(os.environ.get("ComSpec", r"C:\\Windows\\System32\\cmd.exe"))}</Command>
+      <Arguments>/d /c "{_xml_escape(str(runner))}"</Arguments>
+      <WorkingDirectory>{_xml_escape(str(plan.repo))}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+"""
+    return xml.encode("utf-16")
+
+
+def _xml_escape(value: str) -> str:
+    return (value.replace("&", "&amp;")
+                 .replace("<", "&lt;")
+                 .replace(">", "&gt;")
+                 .replace('"', "&quot;"))
+
+
+def _unit_text(unit: bytes) -> str:
+    """Decode a unit for literal searches. UTF-16 for Task Scheduler; UTF-8 otherwise."""
+    if unit[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return unit.decode("utf-16", "replace")
+    return unit.decode("utf-8", "replace")
 
 
 def _render_systemd(plan: Plan) -> str:
@@ -562,7 +751,10 @@ def install(plan: Plan, api_key: str) -> Installed:
     # refused the install, since "x" appears in every path in the file. A real key is
     # `gbk_` plus entropy; anything shorter than `_MIN_KEY` is not one, and letting a
     # nonsense key through this check costs nothing — it will fail at the server instead.
-    if len(api_key) >= _MIN_KEY and api_key.encode() in unit:
+    #
+    # Decoded, not raw bytes: Task Scheduler XML is UTF-16, and a UTF-8 search over it would
+    # miss a key that is sitting in the file in plain sight (GRPH-852).
+    if len(api_key) >= _MIN_KEY and api_key in _unit_text(unit):
         raise Refused(
             "refusing to write a unit that contains the API key itself. It reached the file "
             "through an argument rather than the environment file; a unit is world-readable")
@@ -576,7 +768,14 @@ def install(plan: Plan, api_key: str) -> Installed:
     plan.log_path.parent.mkdir(parents=True, exist_ok=True)
     plan.unit_path.parent.mkdir(parents=True, exist_ok=True)
     plan.unit_path.write_bytes(unit)
-    if plan.kind == "launchd":
+    if plan.kind == "schtasks":
+        # The runner holds PATH and sources the env file. Written beside the env file, removed
+        # with uninstall, never handed to a test that did not ask for a real scheduler.
+        runner = runner_path_for(plan.name)
+        runner.write_text(_render_schtasks_runner(plan), encoding="utf-8", newline="\r\n")
+        restrict_to_owner(runner)
+        detail = _load_schtasks(plan)
+    elif plan.kind == "launchd":
         detail = _load_launchd(plan)
     else:
         detail = _load_systemd(plan)
@@ -591,6 +790,11 @@ def install(plan: Plan, api_key: str) -> Installed:
             "this user has no linger, so systemd stops your services when your last session "
             f"ends — a drain installed over ssh dies at logout. Fix it with "
             f"`loginctl enable-linger {user_tag()}`")
+    if plan.kind == "schtasks":
+        warnings.append(
+            f"logout policy: {LOGON_WHEN_LOGGED_ON} — the LaunchAgent analogue; the task "
+            "stops when this user logs out. \"Run whether logged on\" is not offered: vendor "
+            "CLIs that need a profile have not been walked in that mode")
     return Installed(plan=plan, running=state.running, detail=detail, warnings=warnings,
                      state=state)
 
@@ -617,6 +821,21 @@ def _load_systemd(plan: Plan) -> str:
     return _run(["systemctl", "--user", "restart", unit_name(plan.name)])[1]
 
 
+def _load_schtasks(plan: Plan) -> str:
+    """Register the XML with Task Scheduler. Never `sc.exe`.
+
+    `/F` replaces an existing task of the same name so re-install is idempotent. `/Create`
+    alone does not always start it (RegistrationTrigger should, and does not always); `/Run`
+    is the enable --now equivalent.
+    """
+    tn = task_name(plan.name)
+    code, out = _run(["schtasks", "/Create", "/TN", tn, "/XML", str(plan.unit_path), "/F"])
+    if code != 0:
+        return out
+    run_code, run_out = _run(["schtasks", "/Run", "/TN", tn])
+    return (out + ("\n" + run_out if run_out else "")).strip() or f"registered {tn}"
+
+
 @dataclass(frozen=True)
 class Status:
     """Three answers about a service, never two.
@@ -640,6 +859,8 @@ class Status:
     #: make the check cry wolf at exactly the moment the fleet is behaving correctly. Zero
     #: means idle between runs; non-zero means it died.
     last_exit: int | None = None
+    #: Windows logout policy, named rather than guessed (GRPH-852). Empty on POSIX.
+    logon_policy: str = ""
 
     @property
     def idle(self) -> bool:
@@ -647,35 +868,44 @@ class Status:
         return bool(self.installed) and self.running is False and self.last_exit == 0
 
     def line(self) -> str:
+        where = self.kind
+        if self.logon_policy:
+            where = f"{self.kind}, {self.logon_policy}"
         if not self.kind:
             return f"{self.name}: unknown — {self.detail}"
         if not self.installed:
-            return f"{self.name}: not installed ({self.kind})"
+            return f"{self.name}: not installed ({where})"
         if self.running is None:
             return f"{self.name}: installed at {self.unit_path}, running unknown — {self.detail}"
         if self.running:
-            return f"{self.name}: running ({self.kind}, {self.unit_path})"
+            return f"{self.name}: running ({where}, {self.unit_path})"
         if self.idle:
-            return (f"{self.name}: idle between runs, last exit 0 ({self.kind}, "
+            return (f"{self.name}: idle between runs, last exit 0 ({where}, "
                     f"{self.unit_path})")
         exit_code = "unknown" if self.last_exit is None else str(self.last_exit)
-        return f"{self.name}: NOT running, last exit {exit_code} ({self.kind}, {self.unit_path})"
+        return f"{self.name}: NOT running, last exit {exit_code} ({where}, {self.unit_path})"
 
 
 def status(name: str = DEFAULT_NAME, *, kind: str = "") -> Status:
     found = host()
     kind = kind or found.kind
+    policy = LOGON_WHEN_LOGGED_ON if kind == "schtasks" else ""
     if not kind:
         return Status(name=name, kind="", detail=found.why)
     unit = unit_path_for(name, kind)
     if not unit.exists():
         return Status(name=name, kind=kind, installed=False, unit_path=unit,
-                      linger=linger(), path_env=_path_in(unit, kind))
-    alive, detail, last_exit = (_running_launchd(label_for(name)) if kind == "launchd"
-                                else _running_systemd(name))
+                      linger=linger(), path_env=_path_in(unit, kind),
+                      logon_policy=policy)
+    if kind == "launchd":
+        alive, detail, last_exit = _running_launchd(label_for(name))
+    elif kind == "schtasks":
+        alive, detail, last_exit = _running_schtasks(name)
+    else:
+        alive, detail, last_exit = _running_systemd(name)
     return Status(name=name, kind=kind, installed=True, running=alive, unit_path=unit,
                   detail=detail, linger=linger(), path_env=_path_in(unit, kind),
-                  last_exit=last_exit)
+                  last_exit=last_exit, logon_policy=policy)
 
 
 def _path_in(unit: Path, kind: str) -> str:
@@ -690,6 +920,14 @@ def _path_in(unit: Path, kind: str) -> str:
         if kind == "launchd":
             job = plistlib.loads(unit.read_bytes())
             return str((job.get("EnvironmentVariables") or {}).get("PATH", ""))
+        if kind == "schtasks":
+            raw = unit.read_bytes()
+            text = raw.decode("utf-16" if raw[:2] in (b"\xff\xfe", b"\xfe\xff")
+                              else "utf-8", "replace")
+            for line in text.splitlines():
+                if _PATH_COMMENT in line:
+                    return line.split(_PATH_COMMENT, 1)[1].split("-->")[0].strip()
+            return ""
         for line in unit.read_text(encoding="utf-8").splitlines():
             if line.startswith("Environment=PATH="):
                 return line.split("=", 2)[2]
@@ -746,11 +984,56 @@ def _running_launchd(label: str) -> tuple[bool | None, str, int | None]:
     return False, "not listed by launchd", None
 
 
+def _running_schtasks(name: str) -> tuple[bool | None, str, int | None]:
+    """`schtasks /Query /V /FO LIST` — Status and Last Result.
+
+    Last Result `267009` (`SCHED_S_TASK_RUNNING`) means the action is still going; that is
+    not an exit code. Ready + Last Result 0 is idle between cycles, the same reading
+    launchd's `- 0 label` row gives.
+    """
+    code, out = _run(["schtasks", "/Query", "/TN", task_name(name), "/V", "/FO", "LIST"])
+    if code != 0:
+        lowered = out.lower()
+        if "cannot find" in lowered or "does not exist" in lowered or "cannot be found" in lowered:
+            return False, "not registered with Task Scheduler", None
+        return None, out or f"schtasks said nothing (exit {code})", None
+    status_word = ""
+    last_raw = ""
+    for line in out.splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "status":
+            status_word = value
+        elif key in ("last result", "last run result"):
+            last_raw = value
+    last: int | None = None
+    if last_raw:
+        try:
+            # schtasks prints decimal, sometimes with leading spaces; also accept 0xHEX.
+            last = int(last_raw, 0)
+        except ValueError:
+            last = None
+    if last == _SCHED_S_TASK_RUNNING:
+        last = None
+    word = status_word.lower()
+    if word.startswith("running"):
+        return True, status_word or "Running", last
+    if word.startswith("ready") or word.startswith("queued") or word.startswith("disabled"):
+        return False, f"last exit {last_raw or 'unknown'}", last
+    if not status_word:
+        return None, out or "schtasks returned no Status line", last
+    return None, status_word, last
+
+
 def uninstall(name: str = DEFAULT_NAME, *, kind: str = "") -> list[str]:
     """Stop it and remove what was written. Returns what was actually removed.
 
     **The environment file goes too.** It exists only to feed this unit, and a live API key
     left in `~/.config` after an uninstall is the kind of leftover nobody goes looking for.
+    On Windows the cmd runner that sources it is removed with it.
     """
     found = host()
     kind = kind or found.kind
@@ -760,9 +1043,14 @@ def uninstall(name: str = DEFAULT_NAME, *, kind: str = "") -> list[str]:
     unit = unit_path_for(name, kind)
     if kind == "launchd":
         _run(["launchctl", "bootout", f"gui/{os.getuid()}/{label_for(name)}"])
+    elif kind == "schtasks":
+        _run(["schtasks", "/Delete", "/TN", task_name(name), "/F"])
     else:
         _run(["systemctl", "--user", "disable", "--now", unit_name(name)])
-    for path in (unit, env_path_for(name)):
+    paths = [unit, env_path_for(name)]
+    if kind == "schtasks":
+        paths.append(runner_path_for(name))
+    for path in paths:
         if path.exists():
             path.unlink()
             removed.append(str(path))

@@ -1,15 +1,17 @@
-"""GRPH-844: a drain that outlives the terminal that started it.
+"""GRPH-844 / GRPH-852: a drain that outlives the terminal that started it.
 
 Most of this file is about what the unit MUST NOT contain and what `status` must not say.
-The install itself is one `launchctl` or `systemctl` call and is walked on a real box; what
-tests can hold onto is the set of facts that were each paid for once by a service that
-installed cleanly and did nothing — a unit carrying a key, a `User=` that kills every start,
-an empty PATH that resolves no vendor, and a boolean that reports "not running" for a host
-nobody could ask.
+The install itself is one `launchctl`, `systemctl`, or `schtasks` call and is walked on a
+real box; what tests can hold onto is the set of facts that were each paid for once by a
+service that installed cleanly and did nothing — a unit carrying a key, a `User=` that kills
+every start, an empty PATH that resolves no vendor, and a boolean that reports "not running"
+for a host nobody could ask.
 
-Both renderings are exercised on every platform by passing `kind=` explicitly. Without that
-the macOS run would check the plist and CI would check the unit, and neither would ever check
-the other — the same hole `test_hostos` names.
+All three renderings are exercised on every platform by passing `kind=` explicitly. Without
+that the macOS run would check the plist and CI would check the unit, and neither would ever
+check Task Scheduler — the same hole `test_hostos` names. Tests never write into the real
+Task Scheduler: `conftest` redirects the task dir and the runner path the way it redirects
+`CONFIG_DIR`.
 """
 
 from __future__ import annotations
@@ -49,16 +51,20 @@ def _plan(repo: Path, **kw):
 # --- what must never reach a unit file ---------------------------------------------
 
 
-@pytest.mark.parametrize("kind", ["systemd", "launchd"])
+@pytest.mark.parametrize("kind", ["systemd", "launchd", "schtasks"])
 def test_no_rendering_carries_the_api_key(git_repo: Path, kind, monkeypatch):
     monkeypatch.setenv(service.API_KEY_ENV, KEY)
     plan = _plan(git_repo, kind=kind)
     rendered = service.render(plan)
-    assert KEY.encode() not in rendered
+    # UTF-16 task XML would encode the key differently; decode before searching so a leak
+    # in either encoding still fails the test.
+    text = rendered.decode("utf-16" if rendered[:2] in (b"\xff\xfe", b"\xfe\xff")
+                           else "utf-8", "replace")
+    assert KEY not in text
     assert service.secrets_in(rendered) == []
 
 
-@pytest.mark.parametrize("kind", ["systemd", "launchd"])
+@pytest.mark.parametrize("kind", ["systemd", "launchd", "schtasks"])
 def test_the_guard_would_catch_a_key_that_did_reach_one(kind):
     """The guard itself, since the renderings are supposed to make it unreachable.
 
@@ -77,6 +83,13 @@ def test_the_guard_would_catch_a_key_that_did_reach_one(kind):
     assert service.secrets_in(b"WorkingDirectory=/private/var/folders/x/repo\n") == []
     assert service.secrets_in(
         plistlib.dumps({"WorkingDirectory": "/private/var/folders/x/repo"})) == []
+    leaky_task = (
+        '<?xml version="1.0"?><Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
+        "<Actions><API_KEY>gbk_x</API_KEY></Actions></Task>"
+    ).encode()
+    assert service.secrets_in(leaky_task) == ["Task.Actions.API_KEY"], (
+        f"got {service.secrets_in(leaky_task)!r}; element NAMES are where a key goes in XML"
+    )
 
 
 def test_install_refuses_a_unit_that_would_leak(git_repo: Path, monkeypatch):
@@ -127,15 +140,17 @@ def test_the_launchd_job_names_no_username(git_repo: Path):
 # --- the PATH, which is what a fleet service is actually for ------------------------
 
 
-@pytest.mark.parametrize("kind", ["systemd", "launchd"])
+@pytest.mark.parametrize("kind", ["systemd", "launchd", "schtasks"])
 def test_the_installing_shell_path_is_carried_into_the_unit(git_repo: Path, kind):
     """No vendor CLI is on a supervisor's default PATH, and the vendors are the point."""
     plan = _plan(git_repo, kind=kind, path_env="/opt/vendors:/usr/bin")
-    rendered = service.render(plan).decode("utf-8", "replace")
-    assert "/opt/vendors" in rendered
+    rendered = service.render(plan)
+    text = rendered.decode("utf-16" if rendered[:2] in (b"\xff\xfe", b"\xfe\xff")
+                           else "utf-8", "replace")
+    assert "/opt/vendors" in text
 
 
-@pytest.mark.parametrize("kind", ["systemd", "launchd"])
+@pytest.mark.parametrize("kind", ["systemd", "launchd", "schtasks"])
 def test_the_path_is_read_back_from_what_was_written(tmp_path: Path, git_repo: Path, kind,
                                                      monkeypatch):
     """`status` prints the unit's PATH, so it has to parse the file rather than guess."""
@@ -326,7 +341,7 @@ def test_a_running_service_is_never_idle():
 # --- finding a drain nobody remembered installing -----------------------------------
 
 
-@pytest.mark.parametrize("kind", ["systemd", "launchd"])
+@pytest.mark.parametrize("kind", ["systemd", "launchd", "schtasks"])
 def test_installed_names_finds_what_this_program_wrote(tmp_path: Path, kind, monkeypatch):
     """Every unit is prefixed so it can be found again.
 
@@ -341,6 +356,7 @@ def test_installed_names_finds_what_this_program_wrote(tmp_path: Path, kind, mon
     # of them, and `~/.config/systemd/user` is the user's own.
     (tmp_path / "com.someone.else.plist").write_bytes(b"x")
     (tmp_path / "syncthing.service").write_bytes(b"x")
+    (tmp_path / "SomethingElse.xml").write_bytes(b"x")
     assert service.installed_names(kind) == ["drain", "nightly"]
 
 
@@ -442,3 +458,164 @@ def test_no_gbfleet_anywhere_is_refused(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(service.shutil, "which", lambda _n: None)
     with pytest.raises(Refused, match="absolute path to gbfleet"):
         service._this_gbfleet()
+
+
+# --- Windows: Task Scheduler, never Session-0 (GRPH-852) -----------------------------
+
+
+def test_windows_host_is_schtasks_not_the_old_refusal(monkeypatch):
+    """`host()` today must not return the Session-0 refusal string; schtasks is the kind."""
+    monkeypatch.setattr(service, "WINDOWS", True)
+    monkeypatch.setattr(service.shutil, "which",
+                        lambda n: r"C:\Windows\System32\schtasks.exe" if n == "schtasks"
+                        else None)
+    found = service.host()
+    assert found.kind == "schtasks" and found.supervised
+    assert "Session" not in found.why
+    assert "no user-domain equivalent" not in found.why
+
+
+def test_windows_without_schtasks_is_unknown_not_not_installed(monkeypatch):
+    monkeypatch.setattr(service, "WINDOWS", True)
+    monkeypatch.setattr(service.shutil, "which", lambda _n: None)
+    found = service.host()
+    assert found.kind == "" and not found.supervised
+    state = service.status("drain")
+    assert state.installed is None and state.running is None
+    assert "schtasks" in state.detail or "Task Scheduler" in state.detail
+
+
+def test_schtasks_rendering_is_task_scheduler_not_sc_exe(git_repo: Path):
+    """Sabotage of 'write a sc.exe service instead' is refused by asserting the shape."""
+    plan = _plan(git_repo, kind="schtasks", path_env=r"C:\vendors;C:\Windows\System32")
+    rendered = service.render(plan)
+    assert rendered[:2] == b"\xff\xfe", "schtasks /Create /XML wants UTF-16 LE"
+    text = rendered.decode("utf-16")
+    assert "schemas.microsoft.com/windows/2004/02/mit/task" in text
+    assert "InteractiveToken" in text
+    assert "LogonTrigger" in text
+    assert "Session-0" in text or "Session 0" in text or "not a Session-0" in text
+    assert "sc.exe" not in text.lower()
+    assert "create service" not in text.lower()
+    assert KEY not in text
+    assert r"C:\vendors" in text
+    assert "InteractiveToken" in text  # logged-on-only; not S4U / password
+
+
+def test_schtasks_runner_sources_env_and_sets_path(git_repo: Path):
+    plan = _plan(git_repo, kind="schtasks", path_env=r"C:\vendors;C:\Windows")
+    runner = service._render_schtasks_runner(plan)
+    assert service.API_KEY_ENV not in runner or KEY not in runner
+    assert str(plan.env_path) in runner
+    assert r"C:\vendors" in runner
+    assert "until" in runner
+    assert str(plan.binary) in runner
+
+
+def test_schtasks_install_writes_runner_and_never_calls_sc(git_repo: Path, monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, timeout=20.0):
+        calls.append(list(cmd))
+        return 0, "SUCCESS"
+
+    monkeypatch.setattr(service, "_run", fake_run)
+    monkeypatch.setattr(service, "SETTLE", 0)
+    monkeypatch.setattr(service, "status",
+                        lambda name, kind="": service.Status(
+                            name=name, kind="schtasks", installed=True, running=False,
+                            last_exit=0, path_env=r"C:\vendors",
+                            logon_policy=service.LOGON_WHEN_LOGGED_ON,
+                            unit_path=service.unit_path_for(name, "schtasks")))
+    plan = _plan(git_repo, kind="schtasks", path_env=r"C:\vendors")
+    done = service.install(plan, KEY)
+    assert plan.unit_path.exists()
+    assert plan.env_path.read_text().strip() == f"{service.API_KEY_ENV}={KEY}"
+    runner = service.runner_path_for(plan.name)
+    assert runner.exists() and KEY not in runner.read_text()
+    assert any(c[:2] == ["schtasks", "/Create"] for c in calls)
+    assert not any(Path(c[0]).name.lower() in {"sc", "sc.exe"} for c in calls), (
+        f"Session-0 sc.exe must never be the install path; got {calls!r}"
+    )
+    assert done.state is not None and done.state.idle
+    assert any(service.LOGON_WHEN_LOGGED_ON in w for w in done.warnings)
+
+
+def test_schtasks_uninstall_removes_env_and_runner(tmp_path: Path, git_repo: Path,
+                                                     monkeypatch):
+    unit = tmp_path / "gbfleet-drain.xml"
+    env = tmp_path / "drain.env"
+    runner = tmp_path / "drain.cmd"
+    unit.write_bytes(b"x")
+    env.write_text("GBFLEET_API_KEY=x\n")
+    runner.write_text("@echo off\n")
+    monkeypatch.setattr(service, "host", lambda: service.Host("schtasks"))
+    monkeypatch.setattr(service, "unit_path_for", lambda n, k: unit)
+    monkeypatch.setattr(service, "env_path_for", lambda n: env)
+    monkeypatch.setattr(service, "runner_path_for", lambda n: runner)
+    deleted: list[list[str]] = []
+    monkeypatch.setattr(service, "_run",
+                        lambda cmd, timeout=20.0: (deleted.append(list(cmd)) or (0, "")))
+    removed = service.uninstall("drain")
+    assert set(removed) == {str(unit), str(env), str(runner)}
+    assert not unit.exists() and not env.exists() and not runner.exists()
+    assert any(c[:2] == ["schtasks", "/Delete"] for c in deleted)
+
+
+def test_schtasks_status_names_logon_policy_and_idle_is_not_a_fault(monkeypatch):
+    idle = service.Status(
+        name="drain", kind="schtasks", installed=True, running=False, last_exit=0,
+        unit_path=Path("C:/x.xml"), logon_policy=service.LOGON_WHEN_LOGGED_ON,
+        path_env=r"C:\vendors")
+    assert idle.idle
+    line = idle.line()
+    assert "idle between runs" in line
+    assert service.LOGON_WHEN_LOGGED_ON in line
+
+
+def test_schtasks_query_ready_with_exit_0_is_idle(monkeypatch):
+    listing = (
+        "\nFolder: \\\n"
+        "HostName:                             BOX\n"
+        "TaskName:                             \\gbfleet-drain\n"
+        "Status:                               Ready\n"
+        "Last Result:                          0\n"
+    )
+    monkeypatch.setattr(service, "_run", lambda cmd, timeout=20.0: (0, listing))
+    running, detail, last = service._running_schtasks("drain")
+    assert running is False and last == 0
+    assert "0" in detail
+
+
+def test_schtasks_query_running_is_alive(monkeypatch):
+    listing = (
+        "Status:                               Running\n"
+        "Last Result:                          267009\n"
+    )
+    monkeypatch.setattr(service, "_run", lambda cmd, timeout=20.0: (0, listing))
+    running, _, last = service._running_schtasks("drain")
+    assert running is True and last is None
+
+
+def test_schtasks_load_uses_schtasks_create_xml(git_repo: Path, monkeypatch):
+    seen: list[list[str]] = []
+    monkeypatch.setattr(service, "_run",
+                        lambda cmd, timeout=20.0: (seen.append(list(cmd)) or (0, "ok")))
+    plan = _plan(git_repo, kind="schtasks")
+    plan.unit_path.parent.mkdir(parents=True, exist_ok=True)
+    plan.unit_path.write_bytes(b"x")
+    service._load_schtasks(plan)
+    create = next(c for c in seen if c[:2] == ["schtasks", "/Create"])
+    assert "/XML" in create and str(plan.unit_path) in create
+    assert service.task_name(plan.name) in create
+    assert any(c[:2] == ["schtasks", "/Run"] for c in seen)
+
+
+def test_install_refuses_a_utf16_task_that_embeds_the_key(git_repo: Path, monkeypatch):
+    """UTF-8 byte search would miss a key living in a UTF-16 task XML."""
+    plan = _plan(git_repo, kind="schtasks")
+    smuggled = f'<?xml version="1.0"?><Task><Arguments>--auth={KEY}</Arguments></Task>'
+    monkeypatch.setattr(service, "render", lambda _p: smuggled.encode("utf-16"))
+    with pytest.raises(Refused, match="contains the API key"):
+        service.install(plan, KEY)
+    assert not plan.unit_path.exists()
