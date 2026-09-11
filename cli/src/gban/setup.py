@@ -311,13 +311,27 @@ def write_dest(dest: Dest, repo: Path, servers: dict) -> None:
     write_entries(dest.path, dest.scope, repo, servers)
 
 
+def _key_from_servers(servers: dict) -> str:
+    """The minted agent key, from the ledger header first and the supervisor env second.
+
+    Setup writes both. The field walk that reopened GRPH-782 scraped
+    `mcp_servers.gbfleet.env.GBFLEET_API_KEY` because that is what `gbfleet` actually
+    reads; a lookup that only knows the ledger header would miss a dest that has the
+    supervisor entry and not the ledger one.
+    """
+    header = str(((servers.get(LEDGER_SERVER) or {}).get("headers") or {}).get("X-API-Key") or "")
+    if header:
+        return header
+    env = (servers.get(FLEET_SERVER) or {}).get("env") or {}
+    return str(env.get(doctor_mod.SUPERVISOR_KEY_ENV) or "")
+
+
 def grok_key(path: Path) -> str:
     try:
         blob = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, tomllib.TOMLDecodeError):
         return ""
-    server = ((blob.get("mcp_servers") or {}).get(LEDGER_SERVER) or {})
-    return str(((server.get("headers") or {}).get("X-API-Key")) or "")
+    return _key_from_servers(blob.get("mcp_servers") or {})
 
 
 def grok_sandbox_profile(path: Path) -> str:
@@ -405,7 +419,7 @@ def existing_key(path: Path, scope: str, repo: Path) -> str:
         return ""
     servers = ((blob.get("projects") or {}).get(str(repo.resolve()), {}).get("mcpServers")
                if scope == "user" else blob.get("mcpServers")) or {}
-    return ((servers.get(LEDGER_SERVER) or {}).get("headers") or {}).get("X-API-Key", "")
+    return _key_from_servers(servers)
 
 
 # ---- the act ---------------------------------------------------------------------------------
@@ -458,6 +472,12 @@ def run(client: Client, url: str, project: str, repo: Path, *, scope: str = "use
         if not key:
             lines.append(_line("ledger", FAIL, "mint", "the server returned no key"))
             return lines, 1, {}
+
+    # So `gban fleet` can find this key without an env var and without scraping a harness
+    # dest. Stored even on reuse: a machine that ran setup before this file existed still
+    # gets one the next time setup runs. Never a refresh token — save_supervisor_key
+    # refuses anything that is not `gb_sk_…`.
+    config.save_supervisor_key(project, key)
 
     for dest in dests:
         workspace = None

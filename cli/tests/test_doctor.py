@@ -13,6 +13,13 @@ from gban.client import EXIT_NO_SUPERVISOR, NoSession, Refused, Unreachable
 @pytest.fixture()
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv(config.HOME_ENV, str(tmp_path))
+    # Isolate harness dests too: resolve_supervisor_key reads them when the env
+    # has no key, and the developer's ~/.claude.json / ~/.grok/config.toml must
+    # not leak a real gb_sk_ into these tests (GRPH-782).
+    monkeypatch.setenv("CLAUDE_CONFIG_PATH", str(tmp_path / "claude.json"))
+    monkeypatch.setenv("GROK_CONFIG_PATH", str(tmp_path / "grok" / "config.toml"))
+    # dest lookup uses cwd as the repo; a real checkout's `.mcp.json` must not leak in.
+    monkeypatch.chdir(tmp_path)
     # Clear gban's knobs AND the supervisor's key. A fleet seat exports
     # GBFLEET_API_KEY into the parent; leaving it would make child_environment
     # keep the host value and silently skip the GRAPHBAN→GBFLEET translation
@@ -293,6 +300,109 @@ def test_a_credential_the_caller_set_for_the_supervisor_is_not_overwritten(home,
                         lambda argv, **kw: (seen.update(env=kw.get("env") or {}), Done())[1])
     main(["fleet", "ps"])
     assert seen["env"]["GBFLEET_API_KEY"] == "gb_sk_THEIRS"
+
+
+def _stub_supervisor(monkeypatch, seen):
+    """`gban fleet` looks up the binary in doctor, then launches it via cli.subprocess."""
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
+
+    class Done:
+        returncode = 0
+
+    monkeypatch.setattr("gban.cli.subprocess.run",
+                        lambda argv, **kw: (seen.update(argv=argv, env=kw.get("env") or {}),
+                                            Done())[1])
+
+
+def test_gban_fleet_uses_the_setup_written_mcp_key_when_the_env_has_none(home, monkeypatch):
+    """THE REMAINING HOLE. After `gban login` + `gban setup`, a terminal has a session
+    and a minted key in the harness dest, and no `$GRAPHBAN_API_KEY`. `gban whoami`
+    works. `gban fleet until --dry-run` did not, until the operator scraped
+    `~/.grok/config.toml` `mcp_servers.gbfleet.env.GBFLEET_API_KEY`.
+
+    Sabotage: skip the harness dest in `resolve_supervisor_key` and this fails."""
+    config.save_session("refresh-token-MUST-NOT-BE-THE-KEY", user="alex@example.com")
+    grok = home / "grok" / "config.toml"
+    grok.parent.mkdir(parents=True)
+    grok.write_text(
+        '[mcp_servers.gbfleet]\ncommand = "gbfleet"\n'
+        'args = ["mcp", "--repo", "/repo", "--project", "core"]\n'
+        'env = { GBFLEET_API_KEY = "gb_sk_MINTED" }\nenabled = true\n'
+    )
+    seen = {}
+    _stub_supervisor(monkeypatch, seen)
+    assert main(["fleet", "ps"]) == 0
+    assert seen["env"].get("GBFLEET_API_KEY") == "gb_sk_MINTED"
+    assert "refresh-token-MUST-NOT-BE-THE-KEY" not in str(seen["env"].get("GBFLEET_API_KEY"))
+
+
+def test_gban_fleet_uses_the_key_setup_stored_next_to_the_session(home, monkeypatch):
+    """The dest lookup is the fallback for a machine that already ran setup. A new
+    setup also writes `supervisor.json`, so a dest that later disappears still works."""
+    config.save_session("refresh-token", user="alex@example.com")
+    config.save_supervisor_key("core", "gb_sk_STORED")
+    seen = {}
+    _stub_supervisor(monkeypatch, seen)
+    assert main(["fleet", "ps"]) == 0
+    assert seen["env"].get("GBFLEET_API_KEY") == "gb_sk_STORED"
+
+
+def test_gban_fleet_does_not_feed_the_login_session_to_the_supervisor(home, monkeypatch):
+    """A refresh token is a different kind of credential. Mixing them is how
+    `client.py` produces 'session expired' on a key that is working."""
+    config.save_session("refresh-token", user="alex@example.com")
+    seen = {}
+    _stub_supervisor(monkeypatch, seen)
+    assert main(["fleet", "ps"]) == 0
+    assert not seen["env"].get("GBFLEET_API_KEY")
+    assert doctor.resolve_supervisor_key("core") == ""
+
+
+def test_a_caller_set_supervisor_key_still_wins_over_the_setup_key(home, monkeypatch):
+    config.save_supervisor_key("core", "gb_sk_STORED")
+    monkeypatch.setenv("GBFLEET_API_KEY", "gb_sk_THEIRS")
+    seen = {}
+    _stub_supervisor(monkeypatch, seen)
+    main(["fleet", "ps"])
+    assert seen["env"]["GBFLEET_API_KEY"] == "gb_sk_THEIRS"
+
+
+def test_doctor_hands_the_setup_key_to_the_local_half_too(home, monkeypatch):
+    """A doctor PASS on the local half that does not predict `gban fleet` is the
+    same class of lie GRPH-782 was opened for."""
+    config.save_supervisor_key("core", "gb_sk_MINTED")
+    seen = {}
+    monkeypatch.setattr("gban.doctor.shutil.which", lambda name: "/usr/bin/gbfleet")
+    monkeypatch.setattr("gban.doctor.authenticated", lambda url: _Server())
+
+    class Done:
+        returncode, stdout, stderr = 0, "PASS", ""
+
+    monkeypatch.setattr(
+        "gban.doctor.subprocess.run",
+        lambda argv, **kw: (seen.update(env=kw.get("env") or {}), Done())[1])
+    main(["doctor"])
+    assert seen["env"].get("GBFLEET_API_KEY") == "gb_sk_MINTED"
+
+
+def test_both_commands_resolve_the_supervisor_key_the_same_way(home):
+    """They disagreed about the environment once. Disagreeing about which key
+    fills it is the same defect one step earlier."""
+    import inspect
+
+    from gban import cli as cli_mod
+
+    for fn in (cli_mod.cmd_fleet, cli_mod.cmd_doctor):
+        assert "resolve_supervisor_key" in inspect.getsource(fn), (
+            f"{fn.__qualname__} finds the supervisor key some other way")
+
+
+def test_resolve_supervisor_key_does_not_consult_the_session_file(home):
+    config.save_session("refresh-token", user="alex@example.com")
+    import inspect
+    src = inspect.getsource(doctor.resolve_supervisor_key)
+    assert "config.session" not in src
+    assert doctor.resolve_supervisor_key("core") == ""
 
 
 def test_both_launch_paths_go_through_one_function(home, monkeypatch):

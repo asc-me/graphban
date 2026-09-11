@@ -4,6 +4,11 @@
 stops at the directory. `gban` reads `gban.json` (`url`, `project`) and `session.json` (a refresh
 token) and **never opens `config.json`**, which is `graphban`'s and may hold a database link.
 
+A third file, `supervisor.json`, holds the project-scoped **agent** keys `gban setup` minted
+(`gb_sk_…`). It is not the login session. `gban fleet` / `gban doctor` hand that key to
+`gbfleet`; feeding the refresh token instead is how a working session produces "session
+expired" on the supervisor (GRPH-782).
+
 The grill made that stricter than the draft. Reading `config.json` and ignoring the keys it did
 not recognise would have been true and insufficient: the risk is not misreading a database
 password, it is that password living in a file which now has a second consumer and a second
@@ -27,9 +32,17 @@ SETTINGS_FILE = "gban.json"
 #: The refresh token, alone in its own file so that copying settings never carries it.
 SESSION_FILE = "session.json"
 
+#: Project-scoped agent keys `gban setup` minted. Next to the session, never inside it —
+#: a refresh token and a `gb_sk_…` are different credentials, and mixing them is the
+#: remaining hole GRPH-782 was reopened for.
+SUPERVISOR_KEYS_FILE = "supervisor.json"
+
 #: `graphban`'s file. Named here only so the test that asserts `gban` never opens it has
 #: something to name, and so a reader knows the omission is deliberate.
 NOT_OURS = "config.json"
+
+#: What a minted agent key looks like. `gbfleet` wants this; a user refresh token is not it.
+AGENT_KEY_PREFIX = "gb_sk_"
 
 URL_ENV = "GRAPHBAN_URL"
 PROJECT_ENV = "GRAPHBAN_PROJECT"
@@ -91,6 +104,31 @@ def clear_session() -> bool:
         return True
     except FileNotFoundError:
         return False
+
+
+def _agent_key(value: str) -> str:
+    value = (value or "").strip()
+    return value if value.startswith(AGENT_KEY_PREFIX) else ""
+
+
+def save_supervisor_key(project: str, key: str) -> Path | None:
+    """Store the project-scoped agent key `gban setup` minted. Refuses a refresh token."""
+    key = _agent_key(key)
+    if not project or not key:
+        return None
+    blob = _read(home() / SUPERVISOR_KEYS_FILE)
+    keys = blob.get("keys") if isinstance(blob.get("keys"), dict) else {}
+    keys[project] = key
+    return _write(home() / SUPERVISOR_KEYS_FILE, {"keys": keys})
+
+
+def stored_supervisor_key(project: str) -> str:
+    """The agent key setup stored for this project, or empty. Never reads `session.json`."""
+    if not project:
+        return ""
+    blob = _read(home() / SUPERVISOR_KEYS_FILE)
+    keys = blob.get("keys") if isinstance(blob.get("keys"), dict) else {}
+    return _agent_key(str(keys.get(project) or ""))
 
 
 def resolve(flag: str | None, env: str, key: str) -> str:

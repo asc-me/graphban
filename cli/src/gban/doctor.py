@@ -227,6 +227,45 @@ def find_supervisor() -> str:
 SUPERVISOR_KEY_ENV = "GBFLEET_API_KEY"
 
 
+def resolve_supervisor_key(project: str, repo: Path | None = None) -> str:
+    """The agent key we hand `child_environment` as `api_key`.
+
+    Order (GRPH-782 remaining hole): `$GRAPHBAN_API_KEY`, then the project-scoped key
+    `gban setup` stored next to `session.json`, then the key setup already wrote into a
+    harness dest for this repository. `$GBFLEET_API_KEY` the caller set is preserved
+    inside `child_environment`, so it is not resolved here.
+
+    Never the login session. A refresh token is a different kind of credential.
+    """
+    env_key = (os.environ.get(config.API_KEY_ENV) or "").strip()
+    if env_key:
+        return env_key
+    stored = config.stored_supervisor_key(project)
+    if stored:
+        return stored
+    return _harness_supervisor_key(repo)
+
+
+def _harness_supervisor_key(repo: Path | None) -> str:
+    """The key `gban setup` already wrote into a parent-harness dest.
+
+    Lazy-imports setup: that module imports this one, and a top-level cycle would
+    make `gban doctor` fail to import on a machine that has never run setup.
+    """
+    from gban import setup as setup_mod
+
+    repo = (repo or Path.cwd()).resolve()
+    seen: list[str] = []
+    for scope in ("user", "project"):
+        dests, _ = setup_mod.destinations(
+            repo, scope, setup_mod.claude_home(), setup_mod.grok_home())
+        for dest in dests:
+            key = (setup_mod.dest_key(dest, repo) or "").strip()
+            if key.startswith(config.AGENT_KEY_PREFIX) and key not in seen:
+                seen.append(key)
+    return seen[0] if seen else ""
+
+
 def child_environment(api_key: str) -> dict:
     """The environment a `gbfleet` child is launched with, for `doctor` AND for `fleet`.
 

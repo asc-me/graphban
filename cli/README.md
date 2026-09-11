@@ -113,10 +113,16 @@ mint a credential for it while you are standing in another repository, and a key
 project is not a mistake anybody notices quickly.
 
 `setup` mints a project-scoped credential, writes the `graphban` and `gbfleet` MCP entries
-into every parent harness that would actually read them, installs the supervisor if it is
-missing, drops the delegation skill into `.claude/skills/`, and then **verifies** rather than
+into every parent harness that would actually read them, stores that key next to the login
+session (a `gb_sk_…`, never the refresh token), installs the supervisor if it is missing,
+drops the delegation skill into `.claude/skills/`, and then **verifies** rather than
 asserting: it asks the new credential what it can actually see. Restart the session that will
 call `delegate`/`spawn` afterwards — MCP servers are read at startup.
+
+`gban fleet` and `gban doctor`'s local half then use that minted key. They do not feed the
+login session to the supervisor. The order is `$GBFLEET_API_KEY` if you set it, then
+`$GRAPHBAN_API_KEY`, then the key `gban setup` stored — and, for a machine that already ran
+setup, the one already in the harness dest.
 
 Three properties worth knowing, each of which is a bug this command exists to not have:
 
