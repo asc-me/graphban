@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { AlertTriangle, Scale } from "lucide-react";
 
+import { Preferences } from "@/features/harness/Preferences";
 import { Recommendations } from "@/features/harness/Recommendations";
 import { useProjectCtx } from "@/features/ProjectContext";
-import { useHarness } from "@/lib/queries";
+import { useFleet, useHarness } from "@/lib/queries";
 import type {
   HarnessCell,
   HarnessCost,
@@ -22,9 +23,11 @@ import type {
  * anything — that is PR 3 — and nothing here changes a preference.
  */
 export function HarnessView() {
-  const { activeId } = useProjectCtx();
+  const { activeId, active } = useProjectCtx();
+  const scope = active?.tag || active?.name || activeId;
   const [versions, setVersions] = useState<"current" | "all">("current");
   const { data, isLoading } = useHarness(activeId, { versions });
+  const { data: fleetData, refetch: refetchFleet } = useFleet(activeId);
 
   if (isLoading || !data) {
     return (
@@ -143,6 +146,16 @@ export function HarnessView() {
             ))}
           </div>
         )}
+
+        <div className="mx-auto mt-6 max-w-4xl">
+          <Preferences
+            projectId={activeId}
+            scope={scope}
+            profile={fleetData?.profile ?? null}
+            policy={fleetData?.policy ?? null}
+            onSaved={() => { void refetchFleet(); }}
+          />
+        </div>
       </div>
     </div>
   );
