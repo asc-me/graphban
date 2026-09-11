@@ -81,6 +81,43 @@ def test_no_shim_leaves_the_environment_alone(tmp_path):
     assert shim.environment(env, None) == env
 
 
+def test_windows_build_writes_cmd_stubs(tmp_path, monkeypatch):
+    """Windows resolves executables via PATHEXT (.exe, .cmd, …). An extensionless
+    #!/bin/sh file is inert there — GRPH-588: 32 of 50 failures on the first Windows
+    run were CreateProcess reporting '%1 is not a valid Win32 application'. A name
+    without extension must NOT be the only file."""
+    monkeypatch.setattr(os, "name", "nt")
+
+    where = shim.build(tmp_path / "shim")
+
+    cmd_files = list(where.glob("*.cmd"))
+    assert len(cmd_files) > 0, "no .cmd stubs written — Windows guard is inert"
+    for name in ("railway", "gh", "psql"):
+        assert (where / f"{name}.cmd").exists(), f"{name}.cmd missing"
+        bare = where / name
+        assert not bare.exists(), (
+            f"extensionless '{name}' should not exist on nt — "
+            f"a name without extension as the only file is the bug this fixes"
+        )
+    sample = (where / "railway.cmd").read_text(encoding="utf-8")
+    assert "refusing to run 'railway'" in sample
+    assert "exit /b 126" in sample
+
+
+def test_posix_build_writes_shebang_stubs(tmp_path, monkeypatch):
+    """POSIX keeps the existing #!/bin/sh files — the Windows branch must not
+    change what POSIX writes."""
+    monkeypatch.setattr(os, "name", "posix")
+
+    where = shim.build(tmp_path / "shim")
+
+    assert (where / "railway").exists()
+    assert not (where / "railway.cmd").exists(), "POSIX must not write .cmd stubs"
+    content = (where / "railway").read_text(encoding="utf-8")
+    assert content.startswith("#!/bin/sh")
+    assert "exit 126" in content
+
+
 # ---- --dry-run ------------------------------------------------------------------------------------
 
 class _Planner:

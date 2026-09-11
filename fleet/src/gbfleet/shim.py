@@ -53,6 +53,14 @@ echo "  If this item genuinely needs it, the operator starts the wave with --all
 exit 126
 """
 
+_STUB_CMD = """@echo off
+echo gbfleet: refusing to run '{name}' inside a fleet child. 1>&2
+echo   This process is building one ledger item in a worktree. {name} reaches outside it, 1>&2
+echo   with the credentials of whoever started the wave. 1>&2
+echo   If this item genuinely needs it, the operator starts the wave with --allow {name}. 1>&2
+exit /b 126
+"""
+
 
 def denied(deny: list[str] | None = None, allow: list[str] | None = None) -> list[str]:
     """The names to stub, in order. `allow` wins, so punching a hole is one flag."""
@@ -66,12 +74,22 @@ def denied(deny: list[str] | None = None, allow: list[str] | None = None) -> lis
 
 
 def build(where: Path, deny: list[str] | None = None, allow: list[str] | None = None) -> Path:
-    """Write the stub directory and return it. Idempotent; safe to call per child."""
+    """Write the stub directory and return it. Idempotent; safe to call per child.
+
+    On Windows (``os.name == "nt"``), stubs are ``<name>.cmd`` — an extensionless
+    ``#!/bin/sh`` file is not a Win32 executable (GRPH-588: 32 of 50 failures on the
+    first Windows run were ``CreateProcess`` reporting ``%1 is not a valid Win32
+    application``). POSIX keeps the shebang files.
+    """
     where.mkdir(parents=True, exist_ok=True)
     for name in denied(deny, allow):
-        stub = where / name
-        stub.write_text(_STUB.format(name=name), encoding="utf-8")
-        stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        if os.name == "nt":
+            stub = where / f"{name}.cmd"
+            stub.write_text(_STUB_CMD.format(name=name), encoding="utf-8")
+        else:
+            stub = where / name
+            stub.write_text(_STUB.format(name=name), encoding="utf-8")
+            stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     return where
 
 
