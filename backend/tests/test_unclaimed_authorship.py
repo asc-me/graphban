@@ -114,6 +114,10 @@ def test_the_credential_cannot_sign_off_what_it_sent_through_an_agent_on_the_sam
 
     out = _ok(client, agent_key, "claim_review", {"agent_id": me["agent_id"]})
     assert out["claimed"] is False, "claim_review applies the same rule, so it is never leased"
+    # And the REASON says so. `review_block_reason` resolved the author through `Agent` and
+    # answered "no item awaiting a second pair of eyes" for a `key:` author — a refusal with
+    # the wrong reason sends this reviewer to wait where it should go and get a seat.
+    assert out["reason"] == fleet.NOT_INDEPENDENT, out
 
     err = _refused(client, agent_key, "sign_off",
                    {"id": item_id, "agent_id": me["agent_id"],
