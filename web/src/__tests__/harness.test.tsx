@@ -352,8 +352,11 @@ describe("Harness page", () => {
   it("composes the profile and policy editors on the same screen as the grid and cards", async () => {
     // D14: the grid, the probe panel, R1–R6 cards, and the profile/policy editor belong on
     // one screen. The Preferences component is composed, not reimplemented.
+    // Sabotage: drop the ProbePanel import and render old text suggestions — this fails.
+    probeCandidates.mockResolvedValueOnce(probeData());
     show();
     expect(await screen.findByTestId("harness-cell")).toBeInTheDocument();
+    expect(await screen.findByTestId("harness-probe-panel")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-profile")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-policy")).toBeInTheDocument();
     expect(screen.getByLabelText("Per-period token cap")).toBeInTheDocument();
