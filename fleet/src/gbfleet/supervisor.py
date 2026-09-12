@@ -376,11 +376,15 @@ def _remember_holdings(children: Sequence[Child], partition: Partition) -> None:
 
 
 def item_status(client: Graphban) -> dict[str, dict]:
-    """id -> {status, claimed_by} for `choose_resume`. Empty if this client may not read items.
+    """id -> {status, claimed_by, claimed_at} for `choose_resume`. Empty if this client may not read items.
 
     D9 bounce: CLI `up` and MCP `spawn` must resume without the caller injecting `items=`.
     `search_items` is a read; ALLOWED_TOOLS stays two. Callers that permit this extra
     read get resume; a pure supervisor client gets {}.
+
+    `claimed_at` is included so `choose_resume` can distinguish a live lease from a stale
+    one (GRPH-850): an `in_progress` item whose holder stopped heartbeating is eligible
+    for resume even though `claimed_by` is still set.
     """
     try:
         payload = client.call("search_items", fields="full", limit=10_000)
@@ -396,6 +400,9 @@ def item_status(client: Graphban) -> dict[str, dict]:
         out[str(row["id"])] = {
             "status": row.get("status") or "",
             "claimed_by": row.get("claimed_by") or "",
+            # GRPH-850: `choose_resume` uses this to decide whether the lease is stale.
+            # `item_dict` emits unix seconds (or "" when nobody holds).
+            "claimed_at": row.get("claimed_at") or "",
             # The DECLARATION the partition was computed from (GRPH-785). Kept here rather
             # than re-read at reap on purpose: the question is whether the input to the
             # divvy was right, and that input is this snapshot, not whatever the item says
@@ -834,10 +841,11 @@ def watch_tick(
     for child in children:
         if not child.running:
             continue
-        if time.monotonic() - child.started_at > limits.child_wall_clock:
+        cap = child.wall_clock_cap if child.wall_clock_cap is not None else limits.child_wall_clock
+        if time.monotonic() - child.started_at > cap:
             stop(child, Reason.WALL_CLOCK)
             wave.failures.append(
-                f"{child.adapter} pid {child.pid}: over {limits.child_wall_clock:.0f}s, stopped"
+                f"{child.adapter} pid {child.pid}: over {cap:.0f}s, stopped"
             )
 
     _watch_output(wave, children, limits, debug=debug)

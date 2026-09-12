@@ -233,6 +233,10 @@ class Child:
     #: the exit report so a child that stopped AT its budget is distinguishable from one that
     #: finished early — the same number read two ways otherwise.
     turn_budget: int | None = None
+    #: Per-child wall-clock cap override (seconds). When set, watch_tick uses this instead
+    #: of limits.child_wall_clock. Allows frontier/effort-8 spawns to request more time
+    #: without changing the global default (GRPH-849).
+    wall_clock_cap: float | None = None
     #: PRD-38 D3: this child's exit has already been reported. A flag rather than a set held
     #: by the caller, because `watch_tick` is shared by `up` and the MCP supervisor and the
     #: two would keep separate sets that disagree after an adopt.

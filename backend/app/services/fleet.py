@@ -808,6 +808,10 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     from app.services import delegation as delegation_svc
     from app.services import fleet_profiles
 
+    # GRPH-850: release items held by offline agents BEFORE building the roster, so the
+    # supervisor sees the freed rows on the same tick it detects the absence. Idempotent —
+    # a second call on the same tick finds nothing to release.
+    requeue_offline_items(db, project_id=project_id, lease_seconds=lease_seconds)
     agents = list_agents(db, project_id, lease_seconds=lease_seconds)
     live = [a for a in agents if a["state"] != "offline"]
     # Counted BY ROLE, not just totalled. "4 agents online" is the same number whether it is a
@@ -2126,6 +2130,48 @@ def _offline_holders(db: Session, agent_ids: set[str], *, now: datetime) -> set[
         return set()
     rows = db.scalars(select(Agent).where(Agent.id.in_(agent_ids))).all()
     return {a.id for a in rows if presence_state(a, now=now) == "offline"}
+
+
+def requeue_offline_items(db: Session, *, project_id: str | None = None,
+                          lease_seconds: int = DEFAULT_LEASE_SECONDS) -> list[str]:
+    """Release items held by agents the roster calls offline (GRPH-850).
+
+    `register_agent` promises "heartbeat … or you go offline and your items requeue".
+    The promise was not kept: `_is_claimable` treated a stale lease as claimable, but the
+    row stayed `in_progress` / `claimed_by=<dead agent>` until a human intervened. The
+    planner had no release verb, `choose_resume` skipped `in_progress` unconditionally,
+    and the salvage branch sat orphaned while a fresh spawn cut from main.
+
+    Called from `fleet_status` — the supervisor's heartbeat poll — so the release happens
+    on the same cadence that already detects the offline agent. Idempotent: a second call
+    finds nothing to release.
+    """
+    from app.models import ApiKey
+
+    now = datetime.now(timezone.utc)
+    stmt = select(Agent)
+    if project_id:
+        stmt = stmt.where(Agent.project_id == project_id)
+    agents = list(db.scalars(stmt).all())
+    if not agents:
+        return []
+
+    dead_keys: set[str] = set()
+    keys = {k.id: k for k in db.scalars(select(ApiKey)).all()}
+    dead_keys = {kid for kid, k in keys.items() if k.revoked}
+
+    offline_ids = {
+        a.id for a in agents
+        if a.api_key_id in dead_keys or presence_state(a, lease_seconds=lease_seconds, now=now) == "offline"
+    }
+    if not offline_ids:
+        return []
+
+    released: list[str] = []
+    for it in db.scalars(select(Item).where(Item.claimed_by.in_(offline_ids))).all():
+        if items_svc.release_item(db, it.id, it.claimed_by):
+            released.append(it.id)
+    return released
 
 
 def active_reservations(db: Session, project_id: str | None = None, *,

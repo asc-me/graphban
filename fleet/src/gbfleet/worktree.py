@@ -722,13 +722,22 @@ def resume(repo: Path, path: Path, orphan: Orphan) -> Worktree:
 def choose_resume(
     found: list[Orphan],
     items: dict[str, dict],
+    *,
+    lease_seconds: int = 1800,
+    now: int | None = None,
 ) -> list[Orphan]:
     """Newest salvage orphan per open unclaimed item (P30 D9).
 
-    `items` is id -> {status, claimed_by}. Missing, done, review, claimed, or
-    blocked: leave the branch listed, do not reuse. `blocked` at death does not
-    burn the branch — once the item is next/backlog and unclaimed, it is eligible.
+    `items` is id -> {status, claimed_by[, claimed_at]}. Missing, done, review, or
+    blocked: leave the branch listed, do not reuse. `in_progress` with a LIVE holder
+    also skips — but a stale lease (claimed_at older than `lease_seconds`) or no holder
+    at all is eligible, because the row is claimable on the server by the same clock
+    (GRPH-850). `blocked` at death does not burn the branch — once the item is
+    next/backlog and unclaimed, it is eligible.
     """
+    import time as _time
+    now = now if now is not None else int(_time.time())
+    cutoff = now - lease_seconds
     eligible: dict[str, list[Orphan]] = {}
     for orphan in found:
         if not orphan.salvaged or not orphan.item_keys:
@@ -738,11 +747,26 @@ def choose_resume(
             if not row:
                 continue
             status = str(row.get("status") or "")
-            if status in ("done", "review", "blocked", "in_progress"):
+            if status in ("done", "review", "blocked"):
                 continue
-            if row.get("claimed_by"):
-                continue
-            if status not in ("next", "backlog"):
+            claimed_by = row.get("claimed_by") or ""
+            if status == "in_progress":
+                # Eligible only when the holder's lease has expired or no holder exists.
+                # A live holder means another agent is actively working; resuming under
+                # them would produce two workers on one branch.
+                if claimed_by:
+                    claimed_at = row.get("claimed_at")
+                    if claimed_at is None:
+                        continue
+                    try:
+                        if int(claimed_at) > cutoff:
+                            continue
+                    except (TypeError, ValueError):
+                        continue
+            elif status in ("next", "backlog"):
+                if claimed_by:
+                    continue
+            else:
                 continue
             eligible.setdefault(key, []).append(orphan)
     picked: list[Orphan] = []

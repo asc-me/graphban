@@ -379,10 +379,55 @@ def test_choose_resume_skips_done_review_claimed_and_blocked(git_repo: Path, tmp
     (wt.path / "wip.py").write_text("x\n", encoding="utf-8")
     reap(wt, message=salvage_message("fake", ["GRPH-1"]))
     found = orphans(git_repo)
-    for status in ("done", "review", "blocked", "in_progress"):
+    for status in ("done", "review", "blocked"):
         assert choose_resume(found, {"GRPH-1": {"status": status}}) == []
     assert choose_resume(found, {"GRPH-1": {"status": "next", "claimed_by": "AGT"}}) == []
     assert choose_resume(found, {}) == []  # unknown item: do not resume
+
+
+def test_choose_resume_eligible_for_in_progress_without_holder(git_repo: Path, tmp_path: Path):
+    """GRPH-850: in_progress with no claimed_by is eligible — the holder died and the
+    server has not yet requeued, or the item was left in this state by a bug."""
+    wt = create(git_repo, tmp_path / "dead", "wave-1", "GRPH-A2")
+    (wt.path / "wip.py").write_text("x\n", encoding="utf-8")
+    reap(wt, message=salvage_message("fake", ["GRPH-1"]))
+    found = orphans(git_repo)
+    picked = choose_resume(found, {"GRPH-1": {"status": "in_progress", "claimed_by": ""}})
+    assert [o.branch for o in picked] == [wt.branch]
+
+
+def test_choose_resume_skips_in_progress_with_live_holder(git_repo: Path, tmp_path: Path):
+    """GRPH-850: in_progress with a recent claimed_at and a holder is NOT eligible."""
+    import time
+    wt = create(git_repo, tmp_path / "dead", "wave-1", "GRPH-A2")
+    (wt.path / "wip.py").write_text("x\n", encoding="utf-8")
+    reap(wt, message=salvage_message("fake", ["GRPH-1"]))
+    found = orphans(git_repo)
+    now = int(time.time())
+    picked = choose_resume(
+        found,
+        {"GRPH-1": {"status": "in_progress", "claimed_by": "GRPH-A99", "claimed_at": now}},
+        lease_seconds=1800,
+    )
+    assert picked == []
+
+
+def test_choose_resume_eligible_for_in_progress_with_stale_lease(git_repo: Path, tmp_path: Path):
+    """GRPH-850: in_progress whose claimed_at is older than lease_seconds IS eligible —
+    the holder's lease has expired and the item is claimable on the server by the same clock."""
+    import time
+    wt = create(git_repo, tmp_path / "dead", "wave-1", "GRPH-A2")
+    (wt.path / "wip.py").write_text("x\n", encoding="utf-8")
+    reap(wt, message=salvage_message("fake", ["GRPH-1"]))
+    found = orphans(git_repo)
+    now = int(time.time())
+    stale_claimed_at = now - 3600  # 1 hour ago, well past the 30-min default lease
+    picked = choose_resume(
+        found,
+        {"GRPH-1": {"status": "in_progress", "claimed_by": "GRPH-A99", "claimed_at": stale_claimed_at}},
+        lease_seconds=1800,
+    )
+    assert [o.branch for o in picked] == [wt.branch]
 
 
 def test_resume_refuses_when_the_branch_is_not_a_descendant(

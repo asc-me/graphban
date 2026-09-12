@@ -1355,6 +1355,11 @@ def item_dict(item: Item) -> dict:
         "effort": item.effort,
         "assignee": item.assignee,
         "claimed_by": item.claimed_by,
+        # GRPH-850: unix timestamp so `choose_resume` can tell a live lease from a stale
+        # one. Empty string when nobody holds. Reply-only, like `review_claimed_by` —
+        # do not add it to `_ITEM_SCHEMA`; that copies onto every item tool and blows the
+        # MCP token ceiling (PR #774: 82 tokens, 80 over CEILING).
+        "claimed_at": int(item.claimed_at.timestamp()) if item.claimed_at else "",
         # The reviewer's hold, distinct from the lease above (GRPH-429: a different column,
         # deliberately). `claimed_by` stays the BUILDER's through `review`, so a supervisor
         # that read it as "somebody is reviewing this" never spawned a reviewer for any real

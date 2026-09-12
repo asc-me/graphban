@@ -204,6 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--deny", action="append", default=[], metavar="NAME",
         help="add a command to the deny-list children get a refusing stub for. Repeatable")
     stdio.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
+    stdio.add_argument("--child-wall-clock", type=float, default=3600.0,
+        help="per-child wall-clock cap in seconds (default 3600). A spawn can override per-child via child_wall_clock=...")
     stdio.add_argument(
         "--tier", action="append", default=[], metavar="NAME=ADAPTER[:MODEL]",
         help="what a tier means on this machine, e.g. cheap=gbagent:qwen3.6:35b-a3b-coding-mtp-det "
@@ -651,7 +653,7 @@ def _serve_stdio(args) -> int:
                 client=client,
                 launch_for=lambda name, model="", tuning=None: make_adapter_factory(name, None, model, tuning),
                 lock=acquired,
-                limits=Limits(max_workers=args.max_workers),
+                limits=Limits(max_workers=args.max_workers, child_wall_clock=args.child_wall_clock),
                 tiers=tiers,
                 matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
                 shared=_shared_servers(args),
