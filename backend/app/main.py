@@ -27,6 +27,7 @@ from app.routers import (
     harness,
     items,
     learning,
+    linear,
     live,
     memory,
     orgs,
@@ -275,6 +276,7 @@ app.include_router(platform.router, prefix=API)
 app.include_router(public.router, prefix=API)
 app.include_router(reports.router, prefix=API)
 app.include_router(sync.router, prefix=API)
+app.include_router(linear.router, prefix=API)
 app.include_router(mcp_router, prefix=API)
 # The Organization layer is a hosted-SaaS surface only (AL-74). It's mounted here but
 # every route is gated by a hosted-only dependency (see routers/orgs.require_hosted):
