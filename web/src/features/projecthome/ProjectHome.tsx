@@ -127,7 +127,7 @@ const SURFACES = [
     desc: "Candidates until you publish them." },
   { to: "lessons", label: "Lessons", icon: <BookMarked size={15} />,
     desc: "Published memory, scored against whether it is still catching anything." },
-  { to: "fleet", label: "Agents", icon: <Users size={15} />,
+  { to: "fleet.v1", label: "Fleet.v1", icon: <Users size={15} />,
     desc: "Who is working here right now, what they hold, and for how long." },
   { to: "live", label: "Live", icon: <Activity size={15} />,
     desc: "Who is on this project right now, what they hold, and whether a PR was recorded." },

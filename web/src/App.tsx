@@ -16,6 +16,7 @@ import { EmbedFeedbackPage } from "@/features/feedback/EmbedFeedbackPage";
 import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
 import { LinksGraphView } from "@/features/links/LinksGraphView";
 import { FleetView } from "@/features/fleet/FleetView";
+import { FleetV2View } from "@/features/fleet/FleetV2View";
 import { OutpostsView } from "@/features/fleet/OutpostsView";
 import { GalaxyView } from "@/features/galaxy/GalaxyView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
@@ -83,7 +84,8 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["code", <CodeGraphView />],
   ["roadmap", <RoadmapView />],
   ["mcp-tools", <McpToolsView />],
-  ["fleet", <FleetView />],
+  ["fleet.v1", <FleetView />],
+  ["fleet.v2", <FleetV2View />],
   ["outposts", <OutpostsView />],
   ["harness", <HarnessView />],
   ["activity", <ActivityView />],
@@ -129,6 +131,10 @@ function AuthedApp() {
           : PROJECT_VIEWS.filter(([path]) => !["dashboard", "mcp-tools", "feedback-kit"].includes(path)).map(
               ([path, el]) => <Route key={path} path={`/${path}`} element={el} />,
             )}
+        {/* /fleet is the old URL. The named pages are fleet.v1 (roster) and fleet.v2 (catalog). */}
+        {hosted
+          ? <Route path="/p/:tag/fleet" element={<FleetAliasRedirect />} />
+          : <Route path="/fleet" element={<FleetAliasRedirect />} />}
         {hosted && <Route path="/p/:tag" element={<ProjectHome />} />}
         {!hosted && (
           <>
@@ -164,6 +170,7 @@ function AuthedApp() {
             {PROJECT_VIEWS.map(([path]) => (
               <Route key={`flat-${path}`} path={`/${path}`} element={<FlatRedirect />} />
             ))}
+            <Route path="/fleet" element={<FlatRedirect />} />
             <Route path="/organization" element={<Navigate to={ORG_BASE} replace />} />
           </>
         )}
@@ -178,6 +185,13 @@ function AuthedApp() {
       </Route>
     </Routes>
   );
+}
+
+/** Old `/fleet` bookmark — the redesign is Fleet.v2, roster is Fleet.v1. */
+function FleetAliasRedirect() {
+  const { pathname } = useLocation();
+  const dest = pathname.replace(/\/fleet\/?$/, "/fleet.v2");
+  return <Navigate to={dest || "/fleet.v2"} replace />;
 }
 
 /**

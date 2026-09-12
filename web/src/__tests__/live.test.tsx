@@ -379,7 +379,7 @@ describe("Live board", () => {
     expect(screen.getByText("declared on item, not reserved")).toBeInTheDocument();
     expect(screen.queryByText(/^leased$/)).not.toBeInTheDocument();
     expect(screen.getByText("1 worker")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Fleet" })).toHaveAttribute("href", "/fleet");
+    expect(screen.getByRole("link", { name: "Fleet.v1" })).toHaveAttribute("href", "/fleet.v1");
   });
 
   // ---- PRD-34 PR 1: the feed. Silence is a word; sources are named; nothing is guessed. ----

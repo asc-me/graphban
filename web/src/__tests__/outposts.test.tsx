@@ -55,6 +55,7 @@ describe("OutpostsView", () => {
       </QueryClientProvider>,
     );
     expect(screen.getByTestId("outposts-empty")).toHaveTextContent(/No host has registered/);
+    expect(screen.getByRole("link", { name: "Fleet catalog" })).toHaveAttribute("href", "/fleet.v2");
   });
 
   it("renders declared build info for a host", () => {

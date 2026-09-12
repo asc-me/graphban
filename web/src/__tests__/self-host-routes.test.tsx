@@ -45,6 +45,13 @@ describe("the org plane is absent on self-host, not guarded", () => {
     expect(app).toMatch(/path=\{`\/\$\{path\}`\}/);
   });
 
+  it("names Fleet.v1 and Fleet.v2 as pages, and aliases /fleet to v2", () => {
+    expect(app).toContain('["fleet.v1"');
+    expect(app).toContain('["fleet.v2"');
+    expect(app).toContain("FleetAliasRedirect");
+    expect(app).toContain('"/fleet.v2"');
+  });
+
   it("clears org state on boot for a self-host build", () => {
     // D1.2: a self-host build must not resurrect an org context it has no way to serve.
     const routes = import.meta.glob("../lib/routes.ts", {

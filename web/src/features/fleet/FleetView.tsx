@@ -12,17 +12,14 @@ import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useConfig, useFleet } from "@/lib/queries";
 import { projectPath, settingsPath } from "@/lib/routes";
-import { MatrixTable } from "./matrixTable";
-import { MixAllocation } from "./MixAllocation";
 import { WAVE_ROLES } from "./wave";
 import type { FleetAgent } from "@/lib/types";
 
 /**
- * The Fleet view (PRD-17 D5).
+ * Fleet.v1 — the original roster / wave / connections page (PRD-17 D5).
  *
- * Without it every wave costs a trip through Settings and three hand-assembled pastes per
- * terminal — the tax that stops anyone actually running four agents. D1–D3 make a fleet
- * possible; this is what makes it usable.
+ * Catalog and mix live on Fleet.v2. This file stays the provision-and-watch
+ * surface so the two are not one scroll.
  */
 
 /**
@@ -641,11 +638,11 @@ export function FleetView() {
   const liveWave = wave ?? waves[0] ?? "wave-1";
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col" data-testid="fleet-v1">
       <div className="flex flex-none items-center justify-between border-b border-line px-5 py-4">
         <div>
           <h1 className="text-[18px] font-semibold tracking-tight">
-            Fleet <span className="font-mono text-[13px] font-normal text-muted">{scope}</span>
+            Fleet.v1 <span className="font-mono text-[13px] font-normal text-muted">{scope}</span>
           </h1>
           <p className="mt-0.5 text-[12.5px] text-muted">
             {data
@@ -673,6 +670,12 @@ export function FleetView() {
           )}
         </div>
         <div className="flex items-center gap-3">
+          <Link
+            to={viewHref("fleet.v2")}
+            className="text-[12px] text-muted transition-colors hover:text-fg-2"
+          >
+            Fleet.v2
+          </Link>
           {/* Fleet issues seats and watches the roster. The MCP config and the key that
               goes in it live on Settings → API keys — the page people open this one
               looking for. Named as a question because the destination is the answer. */}
@@ -691,18 +694,6 @@ export function FleetView() {
 
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         {error && <p className="mb-3 text-[12px] text-red-400">{error}</p>}
-
-        <MatrixTable
-          rows={data?.matrix?.rows ?? []}
-          harnessHref={viewHref("harness")}
-        />
-        <MixAllocation
-          projectId={activeId}
-          profile={data?.profile ?? null}
-          rows={data?.matrix?.rows ?? []}
-          recent={data?.mix}
-          onSaved={() => { void refetch(); }}
-        />
 
         {confirming && (
           <div className="mb-5 rounded-[11px] border border-[color:var(--color-st-blocked)]/50 bg-surface-2 p-4">

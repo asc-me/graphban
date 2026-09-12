@@ -20,8 +20,8 @@ export function OutpostsView() {
   const { data: config } = useConfig();
   const { data, isLoading } = useFleet(activeId);
   const fleetHref = config?.hosted_mode && active?.tag
-    ? projectPath(active.tag, "fleet")
-    : "/fleet";
+    ? projectPath(active.tag, "fleet.v2")
+    : "/fleet.v2";
 
   const outposts = groupOutposts(data?.agents ?? []);
 

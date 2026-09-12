@@ -38,8 +38,8 @@ export function LiveView() {
   const user = params.get("user");
   const { data, isLoading, isError } = useLive(activeId, user);
   const fleetTo = config?.hosted_mode && active?.tag
-    ? projectPath(active.tag, "fleet")
-    : "/fleet";
+    ? projectPath(active.tag, "fleet.v1")
+    : "/fleet.v1";
 
   if (isError) {
     return (
@@ -73,7 +73,7 @@ export function LiveView() {
         <div className="ml-auto flex items-center gap-3">
           <RoleCounts byRole={data.by_role ?? {}} roles={data.roles ?? []} />
           <Link to={fleetTo} className="text-[12.5px] text-muted hover:text-fg-2">
-            Fleet
+            Fleet.v1
           </Link>
         </div>
       </div>
