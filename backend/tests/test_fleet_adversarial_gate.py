@@ -190,3 +190,67 @@ def test_the_threshold_is_a_named_constant(client, key):
     assert fleet.needs_adversarial_evidence(Item(effort=3)) is True
     assert fleet.needs_adversarial_evidence(Item(effort=2)) is False
     assert fleet.needs_adversarial_evidence(Item(effort=None)) is False
+
+
+# ---- probe attestations satisfy the gate (GRPH-623) -------------------------------------------
+
+PROBE_SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+
+
+def _probe_attestation(*, passed: bool):
+    return {"kind": "attestation", "adapter": "mutation-probe", "commit": PROBE_SHA,
+            "predicates": [{"name": "sabotage_observed", "passed": passed,
+                            "detail": "4 test(s) failed" if passed else "broke NOTHING"}]}
+
+
+def test_a_probe_attestation_lets_a_substantial_item_through(client, key, auth, proj):
+    """THE FIX (GRPH-623). A probe that OBSERVED tests failing is the same measurement as a
+    sabotage receipt with tests_failed > 0, from a different adapter. sign_off must accept it."""
+    item, reviewer = _ready_for_review(client, key, effort=5)
+    gate_key = client.post("/api/api-keys", json={"name": "gate", "project_id": proj,
+                           "scopes": ["read", "write", "gate"]},
+                           headers=auth).json()["plaintext"]
+    _ok(client, gate_key, "update_item",
+        {"id": item, "evidence": [_probe_attestation(passed=True)]})
+
+    out = _ok(client, key, "sign_off", {"id": item, "agent_id": reviewer["agent_id"]})
+
+    assert out["status"] == "done"
+
+
+def test_a_failing_probe_attestation_does_not_let_it_through(client, key, auth, proj):
+    """Direction two. A probe that broke nothing must not satisfy the gate — same property
+    as a sabotage receipt with tests_failed=0."""
+    item, reviewer = _ready_for_review(client, key, effort=5)
+    gate_key = client.post("/api/api-keys", json={"name": "gate", "project_id": proj,
+                           "scopes": ["read", "write", "gate"]},
+                           headers=auth).json()["plaintext"]
+    _ok(client, gate_key, "update_item",
+        {"id": item, "evidence": [_probe_attestation(passed=False)]})
+
+    res = _rpc(client, key, "sign_off", {"id": item, "agent_id": reviewer["agent_id"]})
+
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict"
+    assert "adversarial" in err["message"].lower() or "sabotage" in err["message"].lower()
+
+
+def test_the_minted_attestation_says_probe_or_sabotage(client, key, auth, proj):
+    """The sign_off attestation records WHY adversarial evidence passed. With the probe path
+    open, the detail must say so — a later reader must not assume it was a sabotage receipt."""
+    item, reviewer = _ready_for_review(client, key, effort=5)
+    gate_key = client.post("/api/api-keys", json={"name": "gate", "project_id": proj,
+                           "scopes": ["read", "write", "gate"]},
+                           headers=auth).json()["plaintext"]
+    _ok(client, gate_key, "update_item",
+        {"id": item, "evidence": [_probe_attestation(passed=True)]})
+
+    out = _ok(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA})
+
+    from app.services import items as items_svc
+    atts = items_svc.valid_attestations(out["evidence"], commit=PROBE_SHA)
+    sign_off_att = next(a for a in atts if a.get("adapter") == "fleet.sign_off")
+    adv = next(p for p in sign_off_att["predicates"] if p["name"] == "adversarial_evidence")
+    assert "probe attestation" in adv["detail"], \
+        f"the receipt does not mention the probe path: {adv['detail']}"
