@@ -376,11 +376,15 @@ def _remember_holdings(children: Sequence[Child], partition: Partition) -> None:
 
 
 def item_status(client: Graphban) -> dict[str, dict]:
-    """id -> {status, claimed_by} for `choose_resume`. Empty if this client may not read items.
+    """id -> {status, claimed_by, claimed_at} for `choose_resume`. Empty if this client may not read items.
 
     D9 bounce: CLI `up` and MCP `spawn` must resume without the caller injecting `items=`.
     `search_items` is a read; ALLOWED_TOOLS stays two. Callers that permit this extra
     read get resume; a pure supervisor client gets {}.
+
+    `claimed_at` is included so `choose_resume` can distinguish a live lease from a stale
+    one (GRPH-850): an `in_progress` item whose holder stopped heartbeating is eligible
+    for resume even though `claimed_by` is still set.
     """
     try:
         payload = client.call("search_items", fields="full", limit=10_000)
@@ -396,6 +400,9 @@ def item_status(client: Graphban) -> dict[str, dict]:
         out[str(row["id"])] = {
             "status": row.get("status") or "",
             "claimed_by": row.get("claimed_by") or "",
+            # GRPH-850: `choose_resume` uses this to decide whether the lease is stale.
+            # Stored as ISO string by the server; converted to epoch by the caller.
+            "claimed_at": row.get("claimed_at") or "",
             # The DECLARATION the partition was computed from (GRPH-785). Kept here rather
             # than re-read at reap on purpose: the question is whether the input to the
             # divvy was right, and that input is this snapshot, not whatever the item says

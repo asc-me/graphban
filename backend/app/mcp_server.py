@@ -1240,6 +1240,7 @@ _ITEM_SCHEMA = {
         "effort": {"type": "integer"},
         "assignee": _STR,
         "claimed_by": _NULLABLE_STR,
+        "claimed_at": {"type": ["integer", "string"]},
         "prd_id": _NULLABLE_STR,
         "prd_section": _STR,
         "fidelity": {"type": "string", "enum": _FIDELITY_ENUM},

@@ -1355,6 +1355,9 @@ def item_dict(item: Item) -> dict:
         "effort": item.effort,
         "assignee": item.assignee,
         "claimed_by": item.claimed_by,
+        # GRPH-850: unix timestamp so the supervisor's `choose_resume` can decide whether
+        # the lease is stale without parsing ISO. Absent when nobody holds the item.
+        "claimed_at": int(item.claimed_at.timestamp()) if item.claimed_at else "",
         # The reviewer's hold, distinct from the lease above (GRPH-429: a different column,
         # deliberately). `claimed_by` stays the BUILDER's through `review`, so a supervisor
         # that read it as "somebody is reviewing this" never spawned a reviewer for any real
