@@ -6,6 +6,28 @@ import { errorDetail } from "@/lib/errors";
 import { FLEET_AXES } from "@/lib/types";
 import type { FleetPolicy, FleetProfile } from "@/lib/types";
 
+function formatMix(mix: Record<string, number> | null | undefined): string {
+  if (!mix) return "";
+  return Object.entries(mix)
+    .map(([name, share]) => `${name}:${Number(share.toPrecision(4))}`)
+    .join(", ");
+}
+
+function parseMix(raw: string): Record<string, number> | null | "invalid" {
+  const text = raw.trim();
+  if (!text) return null;
+  const out: Record<string, number> = {};
+  for (const part of text.split(",")) {
+    const token = part.trim();
+    if (!token) continue;
+    const m = token.match(/^(\S+)\s*[:=]\s*([0-9]*\.?[0-9]+)$/)
+      || token.match(/^(\S+)\s+([0-9]*\.?[0-9]+)$/);
+    if (!m) return "invalid";
+    out[m[1]] = Number(m[2]);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function Section({ title, desc, children }: { title: string; desc: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="mb-7">
@@ -34,6 +56,7 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
   const [excludes, setExcludes] = React.useState("");
   const [weights, setWeights] = React.useState<Record<string, number>>({});
   const [budgetTokens, setBudgetTokens] = React.useState("");
+  const [mix, setMix] = React.useState("");
   const [overrideHere, setOverrideHere] = React.useState(false);
   const [localOnly, setLocalOnly] = React.useState(false);
   const [crossVendor, setCrossVendor] = React.useState(false);
@@ -50,6 +73,7 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
     setExcludes((profile?.excludes ?? []).join(", "));
     setWeights({ ...(profile?.weights ?? {}) });
     setBudgetTokens(profile?.budget_tokens != null ? String(profile.budget_tokens) : "");
+    setMix(formatMix(profile?.mix));
     setOverrideHere(profile?.scope === "project");
   }, [profile]);
   React.useEffect(() => {
@@ -66,11 +90,17 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
 
   async function saveProfile() {
     setError(""); setNote("");
+    const parsed = parseMix(mix);
+    if (parsed === "invalid") {
+      setError("mix is harness:share, e.g. claude:0.4, grok:0.4");
+      return;
+    }
     try {
       const saved = await api.saveFleetProfile({
         project_id: overrideHere ? projectId : null,
         defaults: names(defaults), excludes: names(excludes), weights,
         budget_tokens: budgetTokens === "" ? null : Number(budgetTokens),
+        mix: parsed,
       });
       setNote(saved.scope === "project"
         ? `Saved for ${scope} only. Your default profile still applies elsewhere.`
@@ -178,10 +208,19 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
                    onChange={(e) => setBudgetTokens(e.target.value)}
                    placeholder="50000" />
           </label>
+          <label className="mt-2 block text-[11.5px] text-muted">
+            Mix of recent spawns (empty = always pick the winner)
+            <input className={field} aria-label="Mix shares"
+                   value={mix}
+                   onChange={(e) => setMix(e.target.value)}
+                   placeholder="claude:0.4, grok:0.4, gbagent:0.2" />
+          </label>
           <p className="mt-1 text-[11px] text-muted">
             Weights are 0–1 and normalised; blank or 0 means indifferent, not excluded. Measured
             axes (quality, latency) count only once five attempts exist. A budget target scores
-            rows at or under it 1.0 on cost and does not remove them.
+            rows at or under it 1.0 on cost and does not remove them. A mix is a share of the
+            last 20 launches in this project, not a cap, and does not apply until three
+            matrix-resolved launches exist.
           </p>
           <label className="mt-2 flex items-center gap-2 text-[12px]">
             <input type="checkbox" checked={overrideHere} onChange={(e) => setOverrideHere(e.target.checked)} />

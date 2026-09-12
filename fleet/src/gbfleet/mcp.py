@@ -402,7 +402,8 @@ def _is_quiet(described: dict, quiet_after: float) -> bool:
 
 def _brief_for(fleet: "Fleet", item_id: str | None) -> dict | None:
     """The item's brief, when spawn named it. Failures are silence: resolving without
-    capabilities is the old path, not a crash."""
+    capabilities is the old path, not a crash. Mix counts ride here, next to spend,
+    because fleet_status is read once at launch and a mix frozen there cannot rebalance."""
     if not item_id or fleet.client is None:
         return None
     try:
@@ -467,7 +468,8 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
                                   measured=fleet.measured,
                                   capabilities=(brief or {}).get("capabilities"),
                                   cap_measured=fleet.cap_measured,
-                                  spend=(brief or {}).get("spend"))
+                                  spend=(brief or {}).get("spend"),
+                                  mix=(brief or {}).get("mix"))
                 if res.winner is None:
                     raise ValueError(f"no harness resolves for tier {tier!r}: {res.refused}. "
                                      + json.dumps(res.explain()["dropped"]))

@@ -301,6 +301,7 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
     if isinstance(policy_caps, dict) and policy_caps.get("period"):
         spend.update(period_spend(db, item.project_id, str(policy_caps["period"])))
     measured_lane = measured_for_lane(db, item, caps)
+    mix = mix_counts(db, item.project_id)
     return {
         "item": item.key,
         "title": item.title,
@@ -327,6 +328,9 @@ def brief(db: Session, item: Item, *, user_id: str | None = None) -> dict:
         "capabilities": caps,
         "measured_for_lane": measured_lane,
         "spend": spend,
+        # GRPH-865: last-window matrix launches in this project. Always present so a missing
+        # key cannot be mistaken for n=0. n=0 is unmeasured, not "everyone at 0%".
+        "mix": mix,
         # PRD-37 D9: the caller's profile and the project's policy, for the supervisor that
         # resolves the tier. NOT in `text` — the spawn text carries no suggestion (PRD-35 D5).
         **fleet_profiles.attach(db, {}, user_id=user_id, project_id=item.project_id),
@@ -368,6 +372,12 @@ def item_spend(db: Session, item_id: str | None) -> dict:
 #: not an accounting period, and a moving window is what the resolver can enforce.
 PERIOD_DAYS = {"day": 1, "week": 7, "month": 30}
 
+#: GRPH-865. Last N dated telemetry rows in the project, of any source. `n` is how many
+#: of those were matrix-resolved; `unreported` is the rest. A mix controller wants a
+#: recent window, not last-N matrix-only (which would ignore a stretch of explicit
+#: adapter spawns and keep "correcting" a mix that is no longer happening).
+MIX_WINDOW = 20
+
 
 def period_spend(db: Session, project_id: str | None, period: str | None) -> dict:
     """Reported tokens on the project in the cap's window, for `caps.per_period_tokens`."""
@@ -391,6 +401,41 @@ def period_spend(db: Session, project_id: str | None, period: str | None) -> dic
             reported += 1
             tokens += int(row.tokens_in or 0) + int(row.tokens_out or 0)
     return {"period_tokens": tokens, "period_reported": reported, "period_finished": finished}
+
+
+def mix_counts(db: Session, project_id: str | None, *, window: int = MIX_WINDOW) -> dict:
+    """Recent launches in this project, for a mix to rank against (GRPH-865).
+
+    `n` is matrix-resolved rows in the window. `unreported` is the rest (explicit flags,
+    missing source, a launch post with no harness). Unreported is never folded into a
+    zero share. n=0 is unmeasured — the resolver must not treat it as everyone at 0%.
+    """
+    from app.models import AttemptTelemetry
+
+    empty = {"n": 0, "by_harness": {}, "unreported": 0}
+    if not project_id or window <= 0:
+        return empty
+    rows = db.scalars(select(AttemptTelemetry).where(
+        AttemptTelemetry.project_id == project_id)).all()
+
+    def when(row: AttemptTelemetry):
+        return _aware(row.reported_at) or _aware(row.derived_at)
+
+    dated = [(when(row), row) for row in rows if when(row) is not None]
+    dated.sort(key=lambda pair: pair[0], reverse=True)
+    by_harness: dict[str, int] = {}
+    n = unreported = 0
+    for _, row in dated[:window]:
+        if (row.chosen_source or "") != "matrix":
+            unreported += 1
+            continue
+        harness = (row.adapter_launched or "").strip() or (row.chosen_winner or "").split(":", 1)[0]
+        if not harness:
+            unreported += 1
+            continue
+        n += 1
+        by_harness[harness] = by_harness.get(harness, 0) + 1
+    return {"n": n, "by_harness": by_harness, "unreported": unreported}
 
 
 def _n_from_band(band: str | None) -> int:

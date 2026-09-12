@@ -1891,7 +1891,8 @@ class FleetProfile(Base):
 
     `defaults` is an ordered ALLOWLIST; empty means every matrix row is considered. `weights`
     is `{cost, quality, latency, locality}` each 0–1, normalised by the reader; a weight of 0
-    is indifference, never exclusion — that is `excludes`.
+    is indifference, never exclusion — that is `excludes`. `mix` is a harness→share map
+    (GRPH-865); null is winner-take-all. A mix never removes a row — that is policy.
     """
 
     __tablename__ = "fleet_profiles"
@@ -1905,6 +1906,8 @@ class FleetProfile(Base):
     #: PRD-41 D20: soft per-sign-off token target. Null means no target and rank-scaling
     #: applies (D16). A number here never removes a row — that is `fleet_policy.caps`.
     budget_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: GRPH-865: target share of recent matrix launches per harness. Null is no mix.
+    mix: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (
