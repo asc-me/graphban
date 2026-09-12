@@ -1397,6 +1397,21 @@ export interface FleetOverview {
   /** What finished delegations measured, per declared vendor × model × lane × requested tier
    *  (PRD-37 D7). Counts, never pooled; the supervisor decides whether `n` is enough. */
   measured: FleetMeasured[];
+  /** Committed preference-matrix catalog (GRPH-866). Always present. */
+  matrix?: { rows: FleetMatrixRow[] };
+  /** Recent matrix-launch histogram for mix sliders. n=0 is unmeasured, not 0%. */
+  mix?: { n: number; by_harness: Record<string, number>; unreported: number };
+}
+
+export interface FleetMatrixRow {
+  harness: string;
+  model: string;
+  vendor: string;
+  lane: string;
+  tier: "cheap" | "frontier" | string;
+  status: "verified" | "unverified" | "failed" | "unregistered" | string;
+  cost_class: "local" | "cheap" | "frontier" | string;
+  local: boolean;
 }
 
 export interface FleetMeasured {

@@ -90,6 +90,7 @@ describe("P28 self-host rail", () => {
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Build" }));
     expect(await screen.findByText("Code graph")).toBeInTheDocument();
+    expect(screen.getByText("Outposts")).toBeInTheDocument();
     expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
     // A header is a disclosure, not a link: opening Build must not move you off /tracker.
     expect(screen.getByTestId("here")).toHaveTextContent("/tracker");

@@ -16,6 +16,7 @@ import { EmbedFeedbackPage } from "@/features/feedback/EmbedFeedbackPage";
 import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
 import { LinksGraphView } from "@/features/links/LinksGraphView";
 import { FleetView } from "@/features/fleet/FleetView";
+import { OutpostsView } from "@/features/fleet/OutpostsView";
 import { GalaxyView } from "@/features/galaxy/GalaxyView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { LessonsView } from "@/features/lessons/LessonsView";
@@ -83,6 +84,7 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["roadmap", <RoadmapView />],
   ["mcp-tools", <McpToolsView />],
   ["fleet", <FleetView />],
+  ["outposts", <OutpostsView />],
   ["harness", <HarnessView />],
   ["activity", <ActivityView />],
   ["live", <LiveView />],

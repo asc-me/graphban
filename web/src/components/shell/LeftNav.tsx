@@ -33,6 +33,7 @@ const WORKSPACE = [
   { to: "roadmap", icon: <Map size={16} />, label: "Roadmap" },
   { to: "mcp-tools", icon: <Plug size={16} />, label: "MCP Tools" },
   { to: "fleet", icon: <Users size={16} />, label: "Fleet" },
+  { to: "outposts", icon: <Server size={16} />, label: "Outposts" },
   { to: "memory-review", icon: <Inbox size={16} />, label: "Memory review", count: "review" },
   { to: "lessons", icon: <BookMarked size={16} />, label: "Lessons" },
   { to: "activity", icon: <ScrollText size={16} />, label: "Activity" },
@@ -216,6 +217,7 @@ const BUILD = [
   { to: "/code", icon: <Network size={16} />, label: "Code graph" },
   { to: "/links", icon: <GitFork size={16} />, label: "Links" },
   { to: "/fleet", icon: <Users size={16} />, label: "Fleet" },
+  { to: "/outposts", icon: <Server size={16} />, label: "Outposts" },
 ];
 const OBSERVE = [
   { to: "/activity", icon: <ScrollText size={16} />, label: "Activity" },

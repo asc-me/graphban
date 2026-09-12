@@ -156,13 +156,39 @@ const CONTENT: Record<string, DocEntry> = {
   "/fleet": {
     badge: "FLEET",
     title: "Fleet",
-    tagline: "Agents on this project, what they hold, and who must review.",
+    tagline: "The catalog of harnesses, how you allocate them, and who is here.",
     sections: [
-      { num: 1, h: "Roster and posture", b: "Offline agents fade rather than vanish — one that died holding a branch is what you need to see. Fleet posture: specialised roles review themselves. Single-agent: you are the reviewer." },
-      { num: 2, h: "Review queue and clusters", b: "The queue names who built each item — the reason it needs somebody else. Clusters are non-colliding work; anything held back says why." },
+      { num: 1, h: "Catalog and allocation", b: "The harness × model × tier table is the committed matrix. Allocation is your mix of recent spawns — off means the scorer always picks the winner. Performance and rankings live on Observe → Harness." },
+      { num: 2, h: "Roster and posture", b: "Offline agents fade rather than vanish — one that died holding a branch is what you need to see. Fleet posture: specialised roles review themselves. Single-agent: you are the reviewer." },
       { num: 3, h: "Waves and seats", b: "A seat is the role for this session — paste it into the prompt, not the MCP config. Ending a wave is irreversible and names which wave. The API key that authenticates is minted on Settings → API keys; a wave key minted here is swept by End wave." },
     ],
-    related: [{ label: "API keys", to: settingsPath("project/api-keys") }],
+    related: [
+      { label: "Outposts", to: "/outposts" },
+      { label: "Harness", to: "/harness" },
+      { label: "API keys", to: settingsPath("project/api-keys") },
+    ],
+  },
+
+  "/harness": {
+    badge: "HARNESS",
+    title: "Harness",
+    tagline: "How each model has turned out on this project.",
+    sections: [
+      { num: 1, h: "Rates with their n", b: "Each cell is vendor × model × capability × size band. Under five finished attempts the rate is grey — not yet a measurement. Rankings here are history, not a chooser." },
+      { num: 2, h: "Recommendations are drafts", b: "A card can suggest promoting, demoting, or reweighting. Accepting it writes through the same profile or matrix commit a person would make. Nothing here auto-routes." },
+    ],
+    related: [{ label: "Fleet", to: "/fleet" }],
+  },
+
+  "/outposts": {
+    badge: "OUTPOSTS",
+    title: "Outposts",
+    tagline: "gban/gbfleet hosts that have registered on this project.",
+    sections: [
+      { num: 1, h: "A host is who checked in", b: "Grouped from each agent's declared host, or the label after @. Unspecified is a real group — it is not localhost. Empty means nobody has registered, not a list of zero machines." },
+      { num: 2, h: "Build info", b: "Vendor, model, tier, OS if declared, worktree and branch — what the agent said about itself at register/heartbeat." },
+    ],
+    related: [{ label: "Fleet", to: "/fleet" }],
   },
 
   "/roadmap": {

@@ -10,8 +10,10 @@ import { api } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { useFleet } from "@/lib/queries";
-import { settingsPath } from "@/lib/routes";
+import { useConfig, useFleet } from "@/lib/queries";
+import { projectPath, settingsPath } from "@/lib/routes";
+import { MatrixTable } from "./matrixTable";
+import { MixAllocation } from "./MixAllocation";
 import { WAVE_ROLES } from "./wave";
 import type { FleetAgent } from "@/lib/types";
 
@@ -417,7 +419,10 @@ export function FleetView() {
   // NAME is what an operator can check against what they meant.
   const { activeId, active } = useProjectCtx();
   const scope = active?.tag || active?.name || activeId;
+  const { data: config } = useConfig();
   const { data, refetch } = useFleet(activeId);
+  const viewHref = (view: string) =>
+    config?.hosted_mode && active?.tag ? projectPath(active.tag, view) : `/${view}`;
   const [role, setRole] = React.useState("worker");
   const [minted, setMinted] = React.useState<{ plaintext: string; role: string } | null>(null);
   // Held in component state ONLY, and never written anywhere: these are plaintext credentials,
@@ -686,6 +691,18 @@ export function FleetView() {
 
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         {error && <p className="mb-3 text-[12px] text-red-400">{error}</p>}
+
+        <MatrixTable
+          rows={data?.matrix?.rows ?? []}
+          harnessHref={viewHref("harness")}
+        />
+        <MixAllocation
+          projectId={activeId}
+          profile={data?.profile ?? null}
+          rows={data?.matrix?.rows ?? []}
+          recent={data?.mix}
+          onSaved={() => { void refetch(); }}
+        />
 
         {confirming && (
           <div className="mb-5 rounded-[11px] border border-[color:var(--color-st-blocked)]/50 bg-surface-2 p-4">
