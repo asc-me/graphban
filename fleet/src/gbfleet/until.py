@@ -130,6 +130,22 @@ class Report:
             # PRD-41 D21 / criterion 24: every stage of every resolution. Always present;
             # empty means this run resolved nothing, not that the record was not kept.
             "resolutions": list(self.wave.resolutions) if self.wave else [],
+            # GRPH-867: the diagnostic surface for a wave that hit cap with duplicates.
+            # All four are computed on the Wave whether or not the wave ended `cap`; an
+            # empty value reads as "nothing of this kind happened", not "we did not look".
+            # `collided`: files changed on more than one branch (path → branches).
+            "collided": dict(self.wave.collided) if self.wave else {},
+            # `give_ups`: children that exited 75 (stuck, evidence written, item released).
+            # A slot spent here is a slot that produced nothing a reviewer can read.
+            "give_ups": list(self.wave.give_ups) if self.wave else [],
+            # `proposed`: branches for which a draft PR was opened (branch → Proposed).
+            # A branch that was published but NOT proposed is work nobody has been asked
+            # to merge — the state this exists to make visible.
+            "proposed": {b: {"url": getattr(p, "url", ""), "ok": getattr(p, "ok", False)}
+                         for b, p in (self.wave.proposed.items() if self.wave else {})},
+            # `undeclared`: measured paths that no DECLARED touchpoint covers (GRPH-785).
+            # The partition's input was wrong; a worker changed a file nobody declared.
+            "undeclared": dict(self.wave.undeclared) if self.wave else {},
         }
         if self.detail:
             payload["detail"] = self.detail

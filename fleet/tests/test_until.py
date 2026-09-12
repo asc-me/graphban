@@ -1096,3 +1096,40 @@ def test_loop_passes_planner_to_watch_tick_and_reap_all():
         "_reap_all must receive the planner client for PR receipt recording"
     )
     assert "_reap_all(wave, finished, client=supervisor)" not in src
+
+
+# --- GRPH-867: the diagnostic surface for cap+duplicate waves -----------------
+
+def test_report_surfaces_collided_give_ups_proposed_and_undeclared():
+    """An operator seeing `cap` exit needs to know whether the slots were spent on empty
+    exits or duplicate work. The Wave already computes all four; the report just was not
+    surfacing them. Empty is 'nothing of this kind happened', not 'we did not look'.
+
+    Sabotage: drop any of these four keys from `as_json` → this test fails.
+    """
+    from gbfleet.supervisor import Wave
+    report = Report(ok=False, reason="cap", exit=1, spawned=8, wave=Wave())
+    payload = report.as_json()
+
+    assert "collided" in payload, "collided files must be in the report"
+    assert "give_ups" in payload, "give_ups must be in the report"
+    assert "proposed" in payload, "proposed PRs must be in the report"
+    assert "undeclared" in payload, "undeclared touchpoints must be in the report"
+
+    # Empty is not absent — all four are present with empty defaults.
+    assert payload["collided"] == {}
+    assert payload["give_ups"] == []
+    assert payload["proposed"] == {}
+    assert payload["undeclared"] == {}
+
+
+def test_report_collided_carries_the_actual_overlap():
+    """When two branches changed the same file, the operator must see WHICH file."""
+    from gbfleet.supervisor import Wave
+    wave = Wave()
+    wave.collided = {"fleet/src/gbfleet/supervisor.py": ["gb/w-1", "gb/w-2"]}
+    report = Report(ok=False, reason="cap", exit=1, spawned=8, wave=wave)
+    payload = report.as_json()
+
+    assert "fleet/src/gbfleet/supervisor.py" in payload["collided"]
+    assert payload["collided"]["fleet/src/gbfleet/supervisor.py"] == ["gb/w-1", "gb/w-2"]
