@@ -37,11 +37,14 @@ def create_link(
     authority: bool = True,
     field_mapping: dict | None = None,
     write_back_comment: bool = True,
+    storage_tier: str = "bodies_in_hub",
 ) -> TrackerLink:
     if tracker_kind not in TRACKER_KINDS:
         raise HTTPException(422, f"unsupported tracker kind: {tracker_kind}")
     if not tracker_team_id.strip():
         raise HTTPException(422, "tracker_team_id is required")
+    if storage_tier not in ("bodies_in_hub", "metadata_only"):
+        raise HTTPException(422, f"invalid storage_tier: {storage_tier}")
 
     existing = db.scalar(
         select(TrackerLink).where(
@@ -63,6 +66,7 @@ def create_link(
         authority=authority,
         field_mapping=field_mapping or {},
         write_back_comment=write_back_comment,
+        storage_tier=storage_tier,
     )
     db.add(link)
     db.commit()
@@ -95,6 +99,7 @@ def update_link(
     field_mapping: dict | None = None,
     write_back_comment: bool | None = None,
     tracker_team_name: str | None = None,
+    storage_tier: str | None = None,
 ) -> TrackerLink:
     link = get_link(db, link_id=link_id)
     if authority is not None:
@@ -105,6 +110,10 @@ def update_link(
         link.write_back_comment = write_back_comment
     if tracker_team_name is not None:
         link.tracker_team_name = tracker_team_name.strip()
+    if storage_tier is not None:
+        if storage_tier not in ("bodies_in_hub", "metadata_only"):
+            raise HTTPException(422, f"invalid storage_tier: {storage_tier}")
+        link.storage_tier = storage_tier
     link.updated_at = utcnow()
     db.commit()
     db.refresh(link)
