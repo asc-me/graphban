@@ -34,6 +34,7 @@ from . import adapters
 from .adapters import explain_exit
 from .client import Graphban, NotPermitted, ServerUnreachable, ToolFailed
 from . import headroom as headroom_mod
+from gbagent.config import SetupFailed, prepare
 from .headroom import Headroom
 from .hostos import restrict_to_owner
 from .lock import Acquired, hold
@@ -628,6 +629,12 @@ def start_one(
     dropped exactly that child out of the wave, and the only symptom was one fewer line
     in a log nobody was reading yet.
     """
+    # GRPH-870: run [setup].commands for EVERY adapter, not only gbagent. A fresh
+    # `git worktree` has no generated client, no node_modules, no .venv — a vendor
+    # child that starts in an unbuilt tree and reports green tests is the worse
+    # outcome. `prepare` no-ops when `.gbagent.toml` has no [setup]; a setup that
+    # fails refuses the spawn (SetupFailed ⊂ ConfigRefused).
+    prepare(tree.path)
     launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name), debug_file)
     child = spawn(
         launch, tree.path, tree.branch, _logs(workspace, f"{wave_name}-{slot}"), base=tree.base,
@@ -770,7 +777,7 @@ def _start(
                 workspace=workspace, wave_name=wave_name, slot=slot,
                 on_spawned=remember, debug_file=debug_file,
             )
-        except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists) as exc:
+        except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists, SetupFailed) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
             vendor_limit = isinstance(exc, VendorLimit)
             if tree is not None and tree.path.exists() and not any(
