@@ -476,6 +476,7 @@ def up(
     debug: bool = False,
     items: dict | None = None,
     merger: "Merger | None" = None,
+    base: str = "",
 ) -> Wave:
     """Run one wave to completion and return what happened.
 
@@ -540,7 +541,7 @@ def up(
             wave, seats[:wanted], launch_factory, repo, workspace, wave_name, client,
             limits, debug=debug, occupied=occupied, items=items,
             into=children, persist=persist,
-            room=room,
+            room=room, base=base,
         )
         persist()
         _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
@@ -560,7 +561,8 @@ def up(
     return wave
 
 
-def _tree_for(repo: Path, workspace: Path, wave_name: str, slot: str) -> Worktree:
+def _tree_for(repo: Path, workspace: Path, wave_name: str, slot: str,
+              base: str = "") -> Worktree:
     """One worktree on its own branch.
 
     D-g names the branch `gb/<wave>-<agent-short-id>`, and the agent id does not exist
@@ -568,6 +570,10 @@ def _tree_for(repo: Path, workspace: Path, wave_name: str, slot: str) -> Worktre
     child is running, which cannot happen until it has a worktree on a branch. The slot
     stands in — deterministic, collision-free within a wave, and the roster ties agent to
     worktree once the child registers.
+
+    `base` (GRPH-847) is the ref the worktree is cut from. Empty means HEAD (the default
+    `wt_mod.create` behaviour); a resolved remote ref like `origin/integration` cuts
+    children from that instead.
     """
     try:
         workspace.mkdir(parents=True, exist_ok=True)
@@ -581,7 +587,8 @@ def _tree_for(repo: Path, workspace: Path, wave_name: str, slot: str) -> Worktre
             "(Grok's sandbox allows ~/.grok/ and the repository, not a sibling)."
         ) from exc
     try:
-        return wt_mod.create(repo, workspace / f"{wave_name}-{slot}", wave_name, slot)
+        return wt_mod.create(repo, workspace / f"{wave_name}-{slot}", wave_name, slot,
+                             base=base or "HEAD")
     except wt_mod.GitError as exc:
         text = str(exc).lower()
         if "operation not permitted" in text or "permission denied" in text:
@@ -662,6 +669,7 @@ def _start(
     into: list[Child] | None = None,
     persist: Callable[[], None] | None = None,
     room: Headroom | None = None,
+    base: str = "",
 ) -> Iterable[Child]:
     """Create a worktree per seat, spawn into it, and wait for it to register.
 
@@ -731,7 +739,7 @@ def _start(
                         )
                     continue
                 try:
-                    tree = _tree_for(repo, workspace, wave_name, slot)
+                    tree = _tree_for(repo, workspace, wave_name, slot, base=base)
                 except wt_mod.BranchExists:
                     taken.add(branch)
                     continue
@@ -1019,7 +1027,7 @@ def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
 
 
 def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
-             child: Child | None) -> None:
+             child: Child | None, base_override: str = "") -> None:
     """Open a draft PR for the branch just published (GRPH-804).
 
     The other half of "done does not mean merged". GRPH-798 HOLDS an item whose dependency is
@@ -1032,19 +1040,23 @@ def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
     """
     propose_branch(wave, tree.repo, tree.branch,
                    [i for i in ((child.held_items if child else []) or []) if i],
-                   client=client)
+                   client=client, base_override=base_override)
 
 
 def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
-                   client: Graphban | None) -> None:
+                   client: Graphban | None,
+                   base_override: str = "") -> None:
     """The branch, the items it served, and a draft PR joining them.
 
     Split out of `_propose` for the salvage path (GRPH-830), which has a repo, a branch and a
     list of items but no `Worktree` — by the time a takeover runs, the tree is gone — and no
     `Child`, because the process it belonged to is dead.
+
+    `base_override` (GRPH-847) targets the PR at a non-default base (e.g. an integration
+    branch for stacked slices). Empty means the remote's default ref.
     """
     remote = wt_mod.remote_for(repo)
-    base = wt_mod.default_ref(repo, remote) if remote else ""
+    base = base_override or (wt_mod.default_ref(repo, remote) if remote else "")
     title, body = propose_mod.describe(branch, items,
                                        propose_mod.subject(repo, branch, base))
     got = propose_mod.propose(repo, branch, base, title=title, body=body)

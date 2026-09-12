@@ -814,6 +814,43 @@ def refresh_ref(repo: Path | str, remote: str, ref: str) -> bool:
     return proc.returncode == 0
 
 
+class BaseBranchNotFound(GitError):
+    """The `--base` branch does not exist on the remote. Refuse at startup."""
+
+
+def resolve_base(repo: Path | str, remote: str, branch: str) -> str:
+    """Resolve a branch name to `origin/<branch>`, fetching it and verifying it exists.
+
+    GRPH-847. A `--base` that does not exist on the remote refuses at startup, naming the
+    branch; it does not fall back to the default ref. A silent fallback would cut children
+    from the wrong base and the dependency check would measure against the wrong ref —
+    the exact absence-reads-as-clean failure the whole chain exists to prevent.
+    """
+    if not remote:
+        raise BaseBranchNotFound(
+            f"--base {branch}: repository has no remote to resolve it against"
+        )
+    ref = f"{remote}/{branch}"
+    proc = subprocess.run(
+        ["git", "fetch", "--quiet", remote, branch],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        raise BaseBranchNotFound(
+            f"--base {branch}: could not fetch {ref} from {remote} "
+            f"({proc.stderr.strip() or 'branch does not exist on the remote'})"
+        )
+    probe = subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/{ref}"],
+        cwd=str(repo), capture_output=True, text=True,
+    )
+    if probe.returncode != 0:
+        raise BaseBranchNotFound(
+            f"--base {branch}: {ref} does not exist on the remote"
+        )
+    return ref
+
+
 def behind_ref(repo: Path | str, base: str, ref: str) -> int:
     """How many commits `ref` has that `base` does not — how STALE this work is.
 

@@ -922,3 +922,145 @@ def test_until_waits_for_room_instead_of_spawning_into_a_full_machine(
     assert "no room" in payload["gated"][0]
     assert payload["headroom_bytes"] == headroom.RESERVE
     assert result.reason != "config", payload
+
+
+# ---- GRPH-847: --base for stacked slices -----------------------------------------------------
+
+import subprocess
+
+def _repo_with_remote(tmp_path: Path) -> Path:
+    """A repo with a bare remote that has both `main` and an `integration` branch."""
+    bare = tmp_path / "remote.git"
+    bare.mkdir()
+    subprocess.run(["git", "init", "--bare", "-q", str(bare)], check=True)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    g = lambda *a: subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True,
+                                   check=True)
+    g("init", "-q", "-b", "main")
+    g("config", "user.email", "t@t.t")
+    g("config", "user.name", "t")
+    g("remote", "add", "origin", str(bare))
+    (repo / "README.md").write_text("x\n")
+    g("add", "-A")
+    g("commit", "-qm", "first")
+    g("push", "-q", "-u", "origin", "main")
+
+    # Create an integration branch on the remote with an extra commit.
+    g("checkout", "-q", "-b", "integration")
+    (repo / "integration-work.txt").write_text("stacked\n")
+    g("add", "-A")
+    g("commit", "-qm", "integration base")
+    g("push", "-q", "origin", "integration")
+    g("checkout", "-q", "main")
+    return repo
+
+
+def test_base_branch_not_found_refuses_at_startup(
+    tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-847. A `--base` that does not exist on the remote refuses at startup,
+    naming the branch; it does not fall back to the default ref."""
+    repo = _repo_with_remote(tmp_path)
+    workspace = tmp_path / "ws"
+    planner, supervisor = _clients(workspace)
+    result = run(
+        repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
+        base_branch="no-such-branch",
+    )
+    assert result.reason == "config"
+    assert result.exit == 2
+    assert "no-such-branch" in result.detail
+
+
+def test_base_branch_cuts_children_from_the_integration_ref(
+    tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-847. With `--base integration`, children are cut from origin/integration,
+    not from the default ref. The worktree's base sha is the integration branch tip."""
+    repo = _repo_with_remote(tmp_path)
+    workspace = tmp_path / "ws"
+
+    # Resolve what origin/integration points at, so we can verify the worktree was cut
+    # from it.
+    integration_sha = subprocess.run(
+        ["git", "rev-parse", "origin/integration"], cwd=repo,
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    planner, supervisor = _clients(workspace, clusters=1, workers=0)
+    result = run(
+        repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+        base_branch="integration",
+    )
+    assert result.spawned == 1
+    assert result.reason == "idle"
+    # The child's worktree was cut from the integration ref, not main.
+    child = result.wave.spawned[0]
+    assert child.base == integration_sha, (
+        f"child base {child.base[:12]} != integration {integration_sha[:12]}"
+    )
+
+
+def test_dependency_check_reads_the_integration_branch(
+    tmp_path: Path, scripts, state: Path,
+):
+    """GRPH-847 sabotage. The dependency check must read 'merged into <base>', not the
+    default ref. A dependency whose commit is on origin/integration but NOT on origin/main
+    must be considered present when --base integration is set.
+
+    Sabotage: make deps.check keep reading the default ref (origin/main) → the item whose
+    dependency landed only on the integration branch is held when it should be free."""
+    repo = _repo_with_remote(tmp_path)
+    workspace = tmp_path / "ws"
+
+    # The integration branch has a commit that main does not.
+    integration_sha = subprocess.run(
+        ["git", "rev-parse", "origin/integration"], cwd=repo,
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    # A cluster with one item that depends on a 'done' item whose commit is the
+    # integration-only commit. With --base integration, the dependency IS in the base and
+    # the item should be delegated (not held).
+    planner, supervisor = _clients(
+        workspace, clusters=1, workers=0,
+        cluster_items=[["GRPH-DEP"]],
+    )
+
+    # Patch the mock to return a dependency row for GRPH-DEP whose commit is the
+    # integration-only sha.
+    orig_handler = planner._transport._handler if hasattr(planner, '_transport') else None
+
+    # We need the related_work call for GRPH-DEP to return a dependency whose commit is
+    # on integration but not main. We do this by wrapping the planner's call method.
+    real_call = planner.call
+    def patched_call(tool, **kw):
+        if tool == "related_work" and kw.get("id") == "GRPH-DEP":
+            return {"results": [
+                {"id": "GRPH-DEP-DEP", "title": "dep", "status": "done",
+                 "link_types": ["dependency"],
+                 "evidence": [{"kind": "attestation", "commit": integration_sha}]},
+            ]}
+        return real_call(tool, **kw)
+    planner.call = patched_call
+
+    result = run(
+        repo, _factory(scripts, "works_then_exits"),
+        planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
+        state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=3,
+        limits=Limits(max_workers=1),
+        base_branch="integration",
+    )
+    # The item was NOT held — its dependency is in origin/integration, which is the base.
+    assert result.spawned == 1, (
+        f"dependency on integration branch should have been satisfied; "
+        f"spawned={result.spawned}, reason={result.reason}"
+    )
+    assert result.reason == "idle"
