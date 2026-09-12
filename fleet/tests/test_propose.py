@@ -460,7 +460,7 @@ def test_propose_branch_records_the_pr_url_on_the_item(gh, git_repo, monkeypatch
     from gbfleet.supervisor import Wave, propose_branch
     from gbfleet import propose as propose_mod
 
-    proposed = propose_mod.Proposed(ok=True, url="https://github.com/o/r/pull/42")
+    proposed = propose_mod.Proposed(branch="gb/wave-1", ok=True, url="https://github.com/o/r/pull/42")
     monkeypatch.setattr(propose_mod, "subject", lambda *a, **kw: "title")
     monkeypatch.setattr(propose_mod, "describe", lambda *a, **kw: ("title", "body"))
     monkeypatch.setattr(propose_mod, "propose", lambda *a, **kw: proposed)
@@ -484,7 +484,7 @@ def test_propose_branch_with_no_client_opens_the_pr_but_records_nothing(gh, git_
     from gbfleet.supervisor import Wave, propose_branch
     from gbfleet import propose as propose_mod
 
-    proposed = propose_mod.Proposed(ok=True, url="https://github.com/o/r/pull/42")
+    proposed = propose_mod.Proposed(branch="gb/w-1", ok=True, url="https://github.com/o/r/pull/42")
     monkeypatch.setattr(propose_mod, "subject", lambda *a, **kw: "title")
     monkeypatch.setattr(propose_mod, "describe", lambda *a, **kw: ("title", "body"))
     monkeypatch.setattr(propose_mod, "propose", lambda *a, **kw: proposed)
@@ -500,7 +500,7 @@ def test_propose_branch_records_a_refused_client_as_a_failure(gh, git_repo, monk
     from gbfleet.supervisor import Wave, propose_branch
     from gbfleet import propose as propose_mod
 
-    proposed = propose_mod.Proposed(ok=True, url="https://github.com/o/r/pull/42")
+    proposed = propose_mod.Proposed(branch="gb/w-1", ok=True, url="https://github.com/o/r/pull/42")
     monkeypatch.setattr(propose_mod, "subject", lambda *a, **kw: "title")
     monkeypatch.setattr(propose_mod, "describe", lambda *a, **kw: ("title", "body"))
     monkeypatch.setattr(propose_mod, "propose", lambda *a, **kw: proposed)

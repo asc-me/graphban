@@ -1064,3 +1064,35 @@ def test_dependency_check_reads_the_integration_branch(
         f"spawned={result.spawned}, reason={result.reason}"
     )
     assert result.reason == "idle"
+
+
+# --- GRPH-869: the CALL — planner, not supervisor, records the receipt --------
+
+def test_loop_passes_planner_to_watch_tick_and_reap_all():
+    """THE CALL. `watch_tick` → `_reap_exited` → `_publish` → `propose_branch` →
+    `update_item`. The supervisor allowlist is two reads; `update_item` is on the planner.
+    Passing `supervisor` here opened the PR and then logged "PR opened but not recorded"
+    on every item.
+
+    Sabotage: swap `planner` for `supervisor` in either call → this test fails. Pinning
+    the variable name, not that `PLANNER_TOOLS` contains `update_item` — the set could
+    grow and the bug would still be there if the wrong client was passed.
+    """
+    import inspect
+    from gbfleet.until import _loop
+
+    src = inspect.getsource(_loop)
+
+    # watch_tick must receive `planner`, not `supervisor`.
+    assert "watch_tick(wave, children, limits, planner" in src, (
+        "watch_tick must receive the planner client, not supervisor"
+    )
+    assert "watch_tick(wave, children, limits, supervisor" not in src, (
+        "watch_tick must NOT receive the supervisor client"
+    )
+
+    # _reap_all must receive client=planner, not client=None or client=supervisor.
+    assert "_reap_all(wave, finished, client=planner)" in src, (
+        "_reap_all must receive the planner client for PR receipt recording"
+    )
+    assert "_reap_all(wave, finished, client=supervisor)" not in src
