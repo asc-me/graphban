@@ -409,7 +409,11 @@ def _loop(
     held: dict[str, list[str]] = {}
 
     while True:
-        watch_tick(wave, children, limits, supervisor, debug=debug, persist=persist)
+        # GRPH-869: planner, not supervisor. `watch_tick` → `_reap_exited` → `_publish`
+        # → `propose_branch` → `update_item`. The supervisor allowlist is two reads;
+        # `update_item` is on the planner. Passing supervisor here opened the PR and
+        # then logged "PR opened but not recorded" on every item.
+        watch_tick(wave, children, limits, planner, debug=debug, persist=persist)
         # GRPH-834: checked HERE, right after the tick that reads the exit records, and before
         # anything else this pass can spawn. `_cap_children` guards `--max-children` at the
         # spawn site, and that is the wrong shape for a budget: a wave whose last child has
@@ -445,7 +449,7 @@ def _loop(
             # Idempotent: `child.reported` makes a second pass a no-op, so the common case
             # where `watch_tick` already reported the child costs nothing.
             _report_exits(finished, supervisor, wave)
-            _reap_all(wave, finished)
+            _reap_all(wave, finished, client=planner)
             children[:] = [c for c in children if c.running]
             persist()
             if any("handoff-failed" in f for f in wave.failures):

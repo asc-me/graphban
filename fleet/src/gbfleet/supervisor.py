@@ -547,7 +547,7 @@ def up(
         persist()
         _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
                   persist=persist, merger=merger)
-        _reap_all(wave, children)
+        _reap_all(wave, children, client=client)
         persist()
         if merger is not None:
             # Once more after the reap: the last child's sign-off may have landed between
@@ -1587,7 +1587,7 @@ def _enforce_the_lease(wave: Wave, children: list[Child]) -> None:
             wave.failures.append(f"{child.adapter} pid {child.pid}: {reason}")
 
 
-def _reap_all(wave: Wave, children: list[Child]) -> None:
+def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = None) -> None:
     """Reap each worktree, then take away any seat that was never inside one.
 
     `worktree.reap` removes the seat files it knows about — the ones a vendor forced
@@ -1597,6 +1597,10 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
     Walk step 8 says the child's seat file is gone after reap, with no exception for the
     vendors that were tidy about where it went. Without this, the vendor that handled
     credentials BEST is the one that leaves one behind.
+
+    **`client` is the one that records PR receipts on the item** (GRPH-869). The planner
+    in `until`, the single client in `up`. A supervisor-allowlist client raises
+    `NotPermitted` on `update_item`; passing it here is the bug this parameter fixes.
     """
     for child in children:
         if child.reaped:
@@ -1635,7 +1639,7 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
             )
         _note_touchpoints(wave, child)
         _note_staleness(wave, tree)
-        _publish(wave, tree)
+        _publish(wave, tree, client=client)
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
 

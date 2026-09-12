@@ -428,3 +428,85 @@ def test_the_pr_selector_prefers_the_item_pr_then_the_receipt_then_the_branch():
     assert propose_mod.pr_selector({"pr": None, "evidence": [receipt], "branch": "gb/w"}).endswith("/3")
     assert propose_mod.pr_selector({"pr": "", "evidence": [], "branch": "gb/w"}) == "gb/w"
     assert propose_mod.pr_selector({}) == ""
+
+
+# --- GRPH-869: the receipt must land on the item ----------------------------------------
+
+
+class _RecordingClient:
+    """A client that records `update_item` calls. Stands in for the planner."""
+
+    def __init__(self, refuse=False):
+        self.refuse = refuse
+        self.calls: list[dict] = []
+
+    def call(self, tool, **kwargs):
+        if tool == "update_item":
+            if self.refuse:
+                from gbfleet.client import NotPermitted
+                raise NotPermitted("update_item not allowed")
+            self.calls.append(kwargs)
+            return {"id": kwargs.get("id")}
+        return {}
+
+
+def test_propose_branch_records_the_pr_url_on_the_item(gh, git_repo, monkeypatch):
+    """A successful draft PR produces a `url` receipt on the item via `update_item`.
+
+    The CALL is `client.call("update_item", id=..., evidence=[{url: ...}])`. Sabotage:
+    pass `client=None` → no receipt lands. Pass a client that raises `NotPermitted` →
+    the failure is recorded in `wave.failures`.
+    """
+    from gbfleet.supervisor import Wave, propose_branch
+    from gbfleet import propose as propose_mod
+
+    proposed = propose_mod.Proposed(ok=True, url="https://github.com/o/r/pull/42")
+    monkeypatch.setattr(propose_mod, "subject", lambda *a, **kw: "title")
+    monkeypatch.setattr(propose_mod, "describe", lambda *a, **kw: ("title", "body"))
+    monkeypatch.setattr(propose_mod, "propose", lambda *a, **kw: proposed)
+
+    wave = Wave()
+    client = _RecordingClient()
+    propose_branch(wave, git_repo, "gb/wave-1", ["GRPH-1"], client=client)
+    assert len(client.calls) == 1, f"expected one update_item call, got {client.calls}"
+    assert client.calls[0]["id"] == "GRPH-1"
+    evidence = client.calls[0]["evidence"]
+    assert any(e.get("kind") == "url" and "/pull/42" in e.get("url", "") for e in evidence)
+
+
+def test_propose_branch_with_no_client_opens_the_pr_but_records_nothing(gh, git_repo, monkeypatch):
+    """`client=None` is the _reap_all bug: the PR opens, the receipt never lands.
+
+    This pins the CALL — if `_reap_all` passes `client=None` to `_publish`, this test
+    documents the consequence: the item has no URL receipt and a reviewer looking at
+    the ledger sees nothing.
+    """
+    from gbfleet.supervisor import Wave, propose_branch
+    from gbfleet import propose as propose_mod
+
+    proposed = propose_mod.Proposed(ok=True, url="https://github.com/o/r/pull/42")
+    monkeypatch.setattr(propose_mod, "subject", lambda *a, **kw: "title")
+    monkeypatch.setattr(propose_mod, "describe", lambda *a, **kw: ("title", "body"))
+    monkeypatch.setattr(propose_mod, "propose", lambda *a, **kw: proposed)
+
+    wave = Wave()
+    propose_branch(wave, git_repo, "gb/w-1", ["GRPH-1"], client=None)
+    # PR was proposed (it's in wave.proposed), but no client call was made.
+    assert "gb/w-1" in wave.proposed
+
+
+def test_propose_branch_records_a_refused_client_as_a_failure(gh, git_repo, monkeypatch):
+    """A client that raises NotPermitted records the failure, does not break the wave."""
+    from gbfleet.supervisor import Wave, propose_branch
+    from gbfleet import propose as propose_mod
+
+    proposed = propose_mod.Proposed(ok=True, url="https://github.com/o/r/pull/42")
+    monkeypatch.setattr(propose_mod, "subject", lambda *a, **kw: "title")
+    monkeypatch.setattr(propose_mod, "describe", lambda *a, **kw: ("title", "body"))
+    monkeypatch.setattr(propose_mod, "propose", lambda *a, **kw: proposed)
+
+    wave = Wave()
+    client = _RecordingClient(refuse=True)
+    propose_branch(wave, git_repo, "gb/w-1", ["GRPH-1"], client=client)
+    assert wave.failures, "a refused write should be recorded"
+    assert any("not recorded" in f for f in wave.failures), wave.failures
