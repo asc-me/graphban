@@ -19,8 +19,10 @@ from app.security.deps import get_agent_key, get_current_user
 from app.models import Project
 from app.services import events as events_svc
 from app.services import fleet as fleet_svc
+from app.services import fleet_matrix
 from app.services import fleet_profiles
 from app.services import harness as harness_svc
+from app.services import delegation as delegation_svc
 
 router = APIRouter(prefix="/fleet", tags=["fleet"])
 
@@ -51,6 +53,10 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
         "credentials": fleet_svc.list_credentials(db, project_id),
         # Only waves that still own something. History is not a thing you can end.
         "waves": fleet_svc.live_waves(db, project_id),
+        # GRPH-866: the committed catalog the Fleet page draws. Not a resolve.
+        "matrix": fleet_matrix.payload(),
+        # Recent matrix-launch shares for the mix sliders. n=0 is unmeasured, not 0%.
+        "mix": delegation_svc.mix_counts(db, project_id),
     }
 
 

@@ -90,6 +90,9 @@ describe("P28 self-host rail", () => {
     await screen.findByText("Tracker");
     await user.click(screen.getByRole("button", { name: "Build" }));
     expect(await screen.findByText("Code graph")).toBeInTheDocument();
+    expect(screen.getByText("Fleet.v2")).toBeInTheDocument();
+    expect(screen.getByText("Fleet.v1")).toBeInTheDocument();
+    expect(screen.getByText("Outposts")).toBeInTheDocument();
     expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
     // A header is a disclosure, not a link: opening Build must not move you off /tracker.
     expect(screen.getByTestId("here")).toHaveTextContent("/tracker");
@@ -141,6 +144,11 @@ describe("P28 self-host rail", () => {
       eager: true,
     }) as Record<string, string>;
     const src = Object.values(sources)[0] ?? "";
+    const build = src.match(/const BUILD = \[[\s\S]*?\];/)?.[0] ?? "";
+    expect(build).toContain('to: "/fleet.v2"');
+    expect(build).toContain('to: "/fleet.v1"');
+    expect(build).not.toContain('to: "/fleet",');
+
     const observe = src.match(/const OBSERVE = \[[\s\S]*?\];/)?.[0] ?? "";
     expect(observe).toContain('to: "/lessons"');
     expect(observe).toContain('to: "/memory-review"');

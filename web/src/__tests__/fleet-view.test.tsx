@@ -30,7 +30,10 @@ vi.mock("@/features/ProjectContext", () => ({
 }));
 
 const fleet = vi.hoisted(() => ({ data: null as unknown, refetch: vi.fn() }));
-vi.mock("@/lib/queries", () => ({ useFleet: () => fleet }));
+vi.mock("@/lib/queries", () => ({
+  useFleet: () => fleet,
+  useConfig: () => ({ data: { hosted_mode: false } }),
+}));
 
 function renderView() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -56,6 +59,7 @@ const BASE = {
   presence_ttl_seconds: 150, heartbeat_interval_seconds: 50,
   review_queue: [], clusters: [], seats: [], credentials: [], waves: ["wave-1"],
   profile: null, policy: null, measured: [],
+  matrix: { rows: [] }, mix: { n: 0, by_harness: {}, unreported: 0 },
 };
 
 /**
@@ -913,7 +917,7 @@ describe("Fleet view", () => {
     // declaring it once above them is not.
     fleet.data = { ...BASE };
     renderView();
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\s*core/);
+    expect(screen.getByRole("heading", { level: 1 }).textContent).toMatch(/Fleet\.v1\s*core/);
   });
 });
 
@@ -1084,6 +1088,22 @@ describe("harness preferences", () => {
     expect(api.saveFleetPolicy.mock.calls[0][0].caps).toEqual({
       per_period_tokens: 500000, period: "week",
     });
+  });
+});
+
+
+describe("Fleet.v1 stays the roster", () => {
+  it("does not mix the catalog into this page", () => {
+    fleet.data = {
+      ...BASE,
+      matrix: { rows: [{ harness: "gbagent", model: "qwen3.6", vendor: "gbagent",
+                         lane: "any", tier: "cheap", status: "verified",
+                         cost_class: "local", local: true }] },
+    };
+    renderView();
+    expect(screen.getByTestId("fleet-v1")).toBeInTheDocument();
+    expect(screen.queryByTestId("fleet-matrix")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Fleet.v2" })).toHaveAttribute("href", "/fleet.v2");
   });
 });
 

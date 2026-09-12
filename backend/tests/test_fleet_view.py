@@ -107,6 +107,9 @@ def test_a_registered_agent_appears_on_the_roster(client, auth, proj):
     assert row["state"] != "offline"
     # The cadence travels with the roster, so a client never has to read it out of docs.
     assert view["heartbeat_interval_seconds"] * 3 == view["presence_ttl_seconds"]
+    assert view["matrix"]["rows"], "an empty matrix is unlooked, not a catalog of nothing"
+    assert {row["harness"] for row in view["matrix"]["rows"]} >= {"gbagent", "claude", "grok"}
+    assert view["mix"] == {"n": 0, "by_harness": {}, "unreported": 0}
 
 
 # ---- end wave ---------------------------------------------------------------------------------

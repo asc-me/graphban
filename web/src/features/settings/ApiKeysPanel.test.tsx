@@ -301,7 +301,7 @@ describe("listing", () => {
   it("points roles at Fleet, not at minting another key", async () => {
     view();
     const link = await screen.findByRole("link", { name: /seats on Fleet/i });
-    expect(link).toHaveAttribute("href", "/fleet");
+    expect(link).toHaveAttribute("href", "/fleet.v1");
   });
 
   it("sends someone looking for seats to Fleet, not a second mint on this page", async () => {
@@ -309,7 +309,7 @@ describe("listing", () => {
     // another key here would be the two-surfaces bug wearing the other shirt.
     view();
     expect(await screen.findByRole("link", { name: /looking for seats\?/i }))
-      .toHaveAttribute("href", "/fleet");
+      .toHaveAttribute("href", "/fleet.v1");
   });
 
   it("sends someone looking for LLM credentials to AI Providers, not a mint here", async () => {
@@ -435,7 +435,7 @@ describe("docs overlay", () => {
     expect(body).toMatch(/gate/i);
     expect(body).toMatch(/scope/i);
     expect(body).toMatch(/seat/i);
-    expect(keys.related?.some((r) => r.label === "Fleet")).toBe(true);
+    expect(keys.related?.some((r) => r.label === "Fleet.v1")).toBe(true);
     expect(keys.related?.some((r) => r.label === "AI providers")).toBe(true);
     expect(docFor(settingsPath("project/providers")).title).toBe("AI providers");
     expect(docFor(settingsPath("deployment/providers")).title).toBe("AI providers");

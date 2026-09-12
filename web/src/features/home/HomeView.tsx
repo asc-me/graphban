@@ -96,7 +96,7 @@ export function HomeView() {
 
         <div className="mt-6 grid gap-3 sm:grid-cols-3">
           <Quick to="/triage" label="Triage" icon={<Radar size={15} />} desc="What came in, beside the in-flight work it would collide with." />
-          <Quick to="/fleet" label="Fleet" icon={<Users size={15} />} desc="Who is working here right now, what they hold, and for how long." />
+          <Quick to="/fleet.v1" label="Fleet.v1" icon={<Users size={15} />} desc="Who is working here right now, what they hold, and for how long." />
           <Quick to="/code" label="Code graph" icon={<Network size={15} />} desc="The structure agents describe as they work." />
         </div>
       </div>
