@@ -1810,6 +1810,45 @@ class SyncLink(Base):
     )
 
 
+class LinearIntegration(Base):
+    """Per-org Linear OAuth link (PRD-P10 §Linear integration adapter).
+
+    One row per org ↔ Linear workspace. The access token and webhook secret are
+    encrypted at rest via ``security.secrets`` — the same Fernet path as provider
+    BYOK keys. The tracker is authoritative: this adapter reads issues, subscribes
+    to webhooks, and writes back only the constrained set (status, comments, assignee).
+
+    ``org_id`` mirrors ``Credential.org_id``: NULL on self-host (one workspace, no
+    tenant boundary), populated on hosted installs so one org's Linear link cannot
+    reach another's.
+    """
+
+    __tablename__ = "linear_integrations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # linteg_...
+    org_id: Mapped[str | None] = mapped_column(
+        ForeignKey("organizations.id"), nullable=True, index=True
+    )
+    access_token_enc: Mapped[str] = mapped_column(String, default="")
+    webhook_secret_enc: Mapped[str] = mapped_column(String, default="")
+    workspace_id: Mapped[str] = mapped_column(String, default="")
+    workspace_name: Mapped[str] = mapped_column(String, default="")
+    linked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    last_sync_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_webhook_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    @property
+    def token_set(self) -> bool:
+        return bool(self.access_token_enc)
+
+
 class IdempotencyKey(Base):
     """Maps an agent-supplied idempotency key to the resource a create tool produced,
     so a retried call returns the original resource instead of a duplicate."""
