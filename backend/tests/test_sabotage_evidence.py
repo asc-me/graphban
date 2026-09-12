@@ -127,6 +127,45 @@ def test_existing_evidence_is_untouched():
     assert all(set(e) == {"kind", "detail", "url"} for e in ev), "no new keys on old kinds"
 
 
+def test_a_probe_attestation_with_sabotage_observed_satisfies_the_gate():
+    """GRPH-623. A probe attestation with `sabotage_observed: true` is an independent
+    observation of tests failing under mutation — the same property `has_effective_sabotage`
+    gates on, measured rather than self-reported."""
+    ev = normalize_evidence([{
+        "kind": "attestation", "adapter": "mutation-probe", "commit": "a" * 40,
+        "predicates": [{"name": "sabotage_observed", "passed": True,
+                        "detail": "4 tests failed under mutation"}],
+    }])
+
+    assert has_effective_sabotage(ev) is True
+
+
+def test_a_probe_attestation_with_sabotage_not_observed_does_not_satisfy():
+    """The other direction. A probe that observed zero failures attests the mutation broke
+    nothing — the exact condition the gate exists to catch."""
+    ev = normalize_evidence([{
+        "kind": "attestation", "adapter": "mutation-probe", "commit": "a" * 40,
+        "predicates": [{"name": "sabotage_observed", "passed": False,
+                        "detail": "broke NOTHING"}],
+    }])
+
+    assert has_effective_sabotage(ev) is False
+
+
+def test_a_probe_attestation_with_a_failing_predicate_does_not_satisfy():
+    """`valid_attestations` requires ALL predicates to pass. A probe attestation carrying
+    another failing predicate has contradicted itself, not proved anything."""
+    ev = normalize_evidence([{
+        "kind": "attestation", "adapter": "mutation-probe", "commit": "a" * 40,
+        "predicates": [
+            {"name": "sabotage_observed", "passed": True, "detail": "4 failed"},
+            {"name": "suite_green", "passed": False, "detail": "baseline red"},
+        ],
+    }])
+
+    assert has_effective_sabotage(ev) is False
+
+
 # ---- over MCP -------------------------------------------------------------------------------------
 
 def test_a_sabotage_receipt_survives_a_round_trip(client, auth):

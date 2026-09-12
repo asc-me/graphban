@@ -530,8 +530,14 @@ def has_effective_sabotage(evidence) -> bool:
     The question a gate asks. `tests_failed >= 1` is the whole of it: a sabotage nothing
     failed under is evidence the guard is absent, so counting it would let exactly the
     condition it detects satisfy the check that exists to detect it.
+
+    A probe attestation with `sabotage_observed` passed also satisfies this — it is an
+    independent observation of the same property (tests failed under mutation), measured
+    rather than self-reported (GRPH-623).
     """
-    return any(e.get("tests_failed") for e in sabotage_receipts(evidence))
+    if any(e.get("tests_failed") for e in sabotage_receipts(evidence)):
+        return True
+    return "sabotage_observed" in attested_predicates(evidence)
 
 
 def attestation_receipts(evidence) -> list[dict]:

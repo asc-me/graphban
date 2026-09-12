@@ -1797,6 +1797,8 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             "receipt naming the claim, the mutation, and how many tests_failed"
             + (f" — {len(vacuous)} recorded sabotage(s) broke NOTHING, which means the test "
                "cannot fail rather than that the claim is guarded" if vacuous else "")
+            + (" — or a probe attestation with `sabotage_observed` passed (GRPH-623)"
+               if not vacuous else "")
         )
 
     # THE FIRST ATTESTATION ADAPTER (GRPH-544). The gates above already decided this item is
