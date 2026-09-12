@@ -1849,6 +1849,65 @@ class LinearIntegration(Base):
         return bool(self.access_token_enc)
 
 
+class SyncFingerprint(Base):
+    """Outbound write fingerprint for echo suppression (PRD-P10 / GRPH-188).
+
+    When the hub writes back to the tracker (status, assignee, comment), it records
+    a fingerprint keyed by (link_id, issue_id, field, expected_version). When the
+    tracker's webhook echoes that same change back, the fingerprint matches and the
+    hub drops it — only unrecognized changes count as real external edits.
+
+    Do NOT confuse with IdempotencyKey: that maps agent create-tool retries; this
+    maps outbound tracker writes.
+    """
+
+    __tablename__ = "sync_fingerprints"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    link_id: Mapped[str] = mapped_column(
+        ForeignKey("tracker_links.id"), nullable=False, index=True
+    )
+    issue_id: Mapped[str] = mapped_column(String, nullable=False)
+    field: Mapped[str] = mapped_column(String, nullable=False)
+    expected_version: Mapped[str] = mapped_column(String, nullable=False)
+    write_token: Mapped[str] = mapped_column(String, nullable=False)
+    consumed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_sync_fingerprints_lookup", "link_id", "issue_id", "field"),
+    )
+
+
+class TrackerMirror(Base):
+    """Mirrored issue state from the external tracker (PRD-P10 / GRPH-188).
+
+    The hub stores the latest snapshot of each mirrored issue. Reconcile diffs
+    incoming Linear state against this to detect external edits. Tracker-owned
+    fields (title, description, status, assignee) apply on the hub immediately;
+    AgentLedger-only fields (local links, provenance, memory) are never overwritten.
+    """
+
+    __tablename__ = "tracker_mirror"
+
+    issue_id: Mapped[str] = mapped_column(String, primary_key=True)
+    link_id: Mapped[str] = mapped_column(
+        ForeignKey("tracker_links.id"), nullable=False, index=True
+    )
+    tracker_kind: Mapped[str] = mapped_column(String, default="linear")
+    identifier: Mapped[str] = mapped_column(String, default="")
+    title: Mapped[str] = mapped_column(String, default="")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    canonical_status: Mapped[str] = mapped_column(String, default="backlog")
+    assignee_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    assignee_name: Mapped[str] = mapped_column(String, default="")
+    labels: Mapped[list] = mapped_column(JSON, default=list)
+    tracker_updated_at: Mapped[str] = mapped_column(String, default="")
+    version: Mapped[str] = mapped_column(String, default="")
+    url: Mapped[str] = mapped_column(String, default="")
+    mirrored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class IdempotencyKey(Base):
     """Maps an agent-supplied idempotency key to the resource a create tool produced,
     so a retried call returns the original resource instead of a duplicate."""
