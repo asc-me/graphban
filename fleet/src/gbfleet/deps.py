@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from .worktree import reaches
+from . import propose as propose_mod
 
 
 def _commits(item: dict) -> list[str]:
@@ -39,6 +40,25 @@ def _is_dependency(row: dict) -> bool:
     return "dependency" in [str(t) for t in (row.get("link_types") or [])]
 
 
+def _pr_is_merged(repo: Path | str, dep_row: dict) -> bool | None:
+    """Did the forge say this dependency's PR is MERGED? (GRPH-868)
+
+    A squash merge rewrites the SHA, so the attested commit is never an ancestor of trunk.
+    The PR state is the fact that survives the rewrite: a MERGED PR means the work is in
+    the base, regardless of which SHA carries it.
+
+    Three answers: True (MERGED), False (open/closed/not found), None (gh could not say).
+    None is not False — a forge we cannot reach is not evidence the PR is unmerged.
+    """
+    selector = propose_mod.pr_selector(dep_row)
+    if not selector:
+        return False
+    pr, err = propose_mod.view(Path(repo) if not isinstance(repo, Path) else repo, selector)
+    if pr is None:
+        return None
+    return str(pr.get("state") or "").upper() == "MERGED"
+
+
 def check(planner: Any, item_id: str, repo: Path | str, base: str) -> tuple[list[dict], list[dict]]:
     """`(absent, unknown)` — finished dependencies whose work is not in `base`, and the ones
     this clone could not resolve.
@@ -47,6 +67,11 @@ def check(planner: Any, item_id: str, repo: Path | str, base: str) -> tuple[list
     grounds to hold the item back; "I have never seen that commit" is not, and merging the two
     would either refuse every wave on a fresh clone or wave through the exact case this exists
     to catch, depending which way the collapse went.
+
+    GRPH-868: a squash-merging repo rewrites the SHA, so the attested commit is never an
+    ancestor of trunk. When the dependency's PR is MERGED at the forge, the work IS in the
+    base — the squash SHA carries it, not the reviewed one. A forge we cannot reach is
+    `unknown`, not `absent`.
     """
     absent: list[dict] = []
     unknown: list[dict] = []
@@ -67,6 +92,18 @@ def check(planner: Any, item_id: str, repo: Path | str, base: str) -> tuple[list
             continue
         answers = [reaches(repo, base, c) for c in commits]
         if any(a is True for a in answers):
+            continue
+        # GRPH-868: SHA ancestry says "not in base", but a squash merge rewrites the SHA.
+        # Ask the forge whether the PR for this dependency is MERGED — that is the fact
+        # that survives the rewrite.
+        merged = _pr_is_merged(repo, row)
+        if merged is True:
+            continue
+        if merged is None:
+            # Forge unreachable. The PR might be merged; we cannot tell. Unknown, not absent.
+            unknown.append({"id": str(row.get("id") or ""),
+                            "title": str(row.get("title") or ""),
+                            "commits": commits})
             continue
         entry = {"id": str(row.get("id") or ""), "title": str(row.get("title") or ""),
                  "commits": commits}
