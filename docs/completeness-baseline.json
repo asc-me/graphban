@@ -107,11 +107,13 @@
       "org_requests",
       "org_usage",
       "project_edges",
+      "sync_fingerprints",
       "sync_link",
       "sync_state",
       "team_grants",
       "team_members",
       "teams",
+      "tracker_mirror",
       "verdicts",
       "work_classifications"
     ]
