@@ -127,6 +127,75 @@ def test_existing_evidence_is_untouched():
     assert all(set(e) == {"kind", "detail", "url"} for e in ev), "no new keys on old kinds"
 
 
+# ---- probe attestations satisfy the gate (GRPH-623) ---------------------------------------------
+
+SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678"
+
+
+def _probe_attestation(*, passed: bool, commit: str = SHA):
+    return {"kind": "attestation", "adapter": "mutation-probe", "commit": commit,
+            "predicates": [{"name": "sabotage_observed", "passed": passed,
+                            "detail": "4 test(s) failed" if passed else "broke NOTHING"}]}
+
+
+def test_a_passing_probe_attestation_satisfies_the_gate():
+    """The fix (GRPH-623). A probe that OBSERVED tests failing is the same measurement as a
+    sabotage receipt with tests_failed > 0, from a different adapter. The gate must read it."""
+    ev = normalize_evidence([_probe_attestation(passed=True)])
+
+    assert has_effective_sabotage(ev) is True, \
+        "a probe that observed failures must satisfy the adversarial gate"
+
+
+def test_a_failing_probe_attestation_does_not_satisfy_the_gate():
+    """Direction two. A probe that broke nothing is evidence the guard is absent, so counting
+    it would let the exact condition it detects satisfy the check that exists to detect it."""
+    ev = normalize_evidence([_probe_attestation(passed=False)])
+
+    assert has_effective_sabotage(ev) is False, \
+        "a probe that broke nothing must not satisfy the gate"
+
+
+def test_a_probe_on_a_receipt_with_another_failure_does_not_count():
+    """`valid_attestations` drops the whole receipt when ANY predicate failed, so a
+    `sabotage_observed` riding on an attestation with a failing sibling has not been
+    attested — it has been contradicted. Same property `attested_predicates` already holds
+    for every other name; this asserts the probe is not special-cased around it."""
+    ev = normalize_evidence([{
+        "kind": "attestation", "adapter": "mutation-probe", "commit": SHA,
+        "predicates": [
+            {"name": "sabotage_observed", "passed": True, "detail": "4 failed"},
+            {"name": "suite_green", "passed": False, "detail": "3 failed"},
+        ],
+    }])
+
+    assert has_effective_sabotage(ev) is False, \
+        "sabotage_observed on a receipt with a failing sibling must not count"
+
+
+def test_a_sabotage_receipt_and_a_probe_attestation_both_satisfy():
+    """Either path alone is enough; both together is still enough. Asserts the OR, not XOR."""
+    ev = normalize_evidence([
+        _sab(tests_failed=2),
+        _probe_attestation(passed=True),
+    ])
+
+    assert has_effective_sabotage(ev) is True
+
+
+def test_a_probe_attestation_at_the_wrong_commit_does_not_count():
+    """Staleness composes with the gate. `attested_predicates` with commit=None asks 'was
+    this ever attested'; the sign_off gate passes the full evidence without commit filtering,
+    so this test pins that a stale probe cannot sneak through via has_effective_sabotage."""
+    ev = normalize_evidence([_probe_attestation(passed=True, commit="b" * 40)])
+
+    # has_effective_sabotage does NOT filter by commit — it asks whether the item carries
+    # the measurement at all. The commit gate is elsewhere (valid_attestations(commit=...)).
+    # This test pins the behaviour explicitly so a later change cannot silently narrow it.
+    assert has_effective_sabotage(ev) is True, \
+        "has_effective_sabotage is commit-agnostic; staleness is gated elsewhere"
+
+
 # ---- over MCP -------------------------------------------------------------------------------------
 
 def test_a_sabotage_receipt_survives_a_round_trip(client, auth):

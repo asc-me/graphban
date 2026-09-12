@@ -1798,7 +1798,8 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
         vacuous = items_svc.vacuous_sabotages(merged)
         raise MissingAdversarialEvidence(
             f"{item.key} is effort {item.effort} and needs adversarial evidence: a `sabotage` "
-            "receipt naming the claim, the mutation, and how many tests_failed"
+            "receipt naming the claim, the mutation, and how many tests_failed, "
+            "or a probe attestation with `sabotage_observed` passed"
             + (f" — {len(vacuous)} recorded sabotage(s) broke NOTHING, which means the test "
                "cannot fail rather than that the claim is guarded" if vacuous else "")
         )
@@ -1843,7 +1844,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                 {"name": "adversarial_evidence",
                  "passed": True,
                  "detail": (f"effort {item.effort} needs adversarial evidence and the item "
-                            "carries an effective sabotage receipt"
+                            "carries an effective sabotage receipt or probe attestation"
                             if needs_adversarial_evidence(item)
                             else f"effort {item.effort} is below the threshold of "
                                  f"{ADVERSARIAL_EFFORT_THRESHOLD}; not required")},
