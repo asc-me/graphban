@@ -142,6 +142,14 @@ TOOLS: list[dict[str, Any]] = [
                         "carries it and chooses nothing."
                     ),
                 },
+                "child_wall_clock": {
+                    "type": "number",
+                    "description": (
+                        "Per-child wall-clock cap in seconds, overriding the process default "
+                        "(3600). Use for effort-8 frontier slices that need more than an hour; "
+                        "omit to use the process default set by --child-wall-clock."
+                    ),
+                },
             },
             "required": ["enrolment_code"],
         },
@@ -371,6 +379,8 @@ def _describe(child: Child, statuses: dict[str, dict] | None = None) -> dict:
         "registration_latency": child.registration_latency,
         "stopped_because": child.stopped_because.value if child.stopped_because else None,
         "debug_log": str(child.debug_path) if child.debug_path else None,
+        # GRPH-849: per-child wall-clock cap, when overridden at spawn.
+        "wall_clock_cap": child.wall_clock_cap,
         # The question `running` cannot answer (GRPH-812).
         "outcome": _outcome(child, statuses or {}),
     }
@@ -569,6 +579,14 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
             child.turn_budget = int(args["turns"]) if args.get("turns") else None
         except (TypeError, ValueError):
             child.turn_budget = None
+        # GRPH-849: per-child wall-clock cap. When set, overrides the process default so
+        # frontier/effort-8 spawns can request more time without changing the global cap.
+        cwc = args.get("child_wall_clock")
+        if cwc is not None:
+            try:
+                child.wall_clock_cap = float(cwc)
+            except (TypeError, ValueError):
+                child.wall_clock_cap = None
         adopt_mod.persist(adopt_mod.children_path(fleet.repo), fleet.children)
         described = _describe(child)
         # PRD-36 D6/D15: name what ran and what the seat handed the child. `assigned` is

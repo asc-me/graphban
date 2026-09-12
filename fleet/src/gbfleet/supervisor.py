@@ -834,10 +834,11 @@ def watch_tick(
     for child in children:
         if not child.running:
             continue
-        if time.monotonic() - child.started_at > limits.child_wall_clock:
+        cap = child.wall_clock_cap if child.wall_clock_cap is not None else limits.child_wall_clock
+        if time.monotonic() - child.started_at > cap:
             stop(child, Reason.WALL_CLOCK)
             wave.failures.append(
-                f"{child.adapter} pid {child.pid}: over {limits.child_wall_clock:.0f}s, stopped"
+                f"{child.adapter} pid {child.pid}: over {cap:.0f}s, stopped"
             )
 
     _watch_output(wave, children, limits, debug=debug)
