@@ -189,3 +189,25 @@ a live walk must confirm before this is trusted on a real trunk:
 
 Branch protection on the trunk is the backstop and is not bypassed: `BLOCKED` is `MERGE
 SKIPPED`, and a merge the forge refuses is the forge's reason on the summary line.
+
+## Stacked slices (GRPH-847)
+
+`until` resolves its base once at startup as the remote's default ref and cuts every child
+from it. That is right for independent items. For a PRD whose slices strictly depend on each
+other (S1 → S2 → S3), each slice is held (GRPH-798) until the previous one is merged to main,
+so the wave serialises on a person's merges.
+
+`--base <branch>` cuts children from `origin/<branch>` instead of the default ref, and the
+GRPH-798 dependency check reads "merged into `<branch>`" — so a slice that landed on the
+integration branch unblocks the next slice without waiting for a trunk merge. PRs are
+proposed against the integration branch. The operator merges it to main once at the end, as
+one reviewed PR whose parts were each reviewed already.
+
+**When to use it:** a PRD whose slices are sequential and each depends on the previous one
+landing. Create the integration branch on the remote, run `gbfleet until --prd <id> --base
+<integration>`, and merge the integration branch to main when the wave finishes.
+
+**When not to:** independent items, or items whose dependencies are already on main. The
+default behaviour (cut from the remote's default ref) is right for those — `--base` is the
+exception for stacked slices, not the rule. A `--base` that does not exist on the remote
+refuses at startup; it does not fall back.

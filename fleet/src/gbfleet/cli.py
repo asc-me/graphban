@@ -151,6 +151,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--merge", action="store_true", default=False, help=_MERGE_HELP)
     run.add_argument(
+        "--base", default=None, metavar="BRANCH",
+        help="cut children from origin/BRANCH instead of the remote's default ref (GRPH-847). "
+             "Refuses at startup when the branch does not exist on the remote",
+    )
+    run.add_argument(
         "argv", nargs=argparse.REMAINDER, help="-- followed by the command to run per child"
     )
 
@@ -336,6 +341,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds of no output before a child is REPORTED as quiet",
     )
     until.add_argument("--merge", action="store_true", default=False, help=_MERGE_HELP)
+    until.add_argument(
+        "--base", default=None, metavar="BRANCH",
+        help="cut children from origin/BRANCH instead of the remote's default ref, and "
+             "target PRs at that branch. For PRDs whose slices are sequential (S1→S2→S3): "
+             "each slice lands on the integration branch and unblocks the next. Refuses at "
+             "startup when the branch does not exist on the remote (GRPH-847)",
+    )
     until.add_argument(
         "argv", nargs=argparse.REMAINDER, help="-- followed by the command to run per child"
     )
@@ -604,6 +616,7 @@ def _until(args) -> int:
             launch_for=lambda name, model="": make_adapter_factory(name, None, model),
             matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
             merge=bool(args.merge),
+            base_branch=args.base,
         )
     except RepoLocked as exc:
         print(f"gbfleet until: {exc}", file=sys.stderr)
@@ -864,20 +877,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"gbfleet up: no seats in {args.seats_file}", file=sys.stderr)
         return 2
 
+    repo = Path(args.repo)
+    base_ref = ""
+    if args.base:
+        from .worktree import resolve_base, BaseBranchNotFound
+        remote = remote_for(repo)
+        try:
+            base_ref = resolve_base(repo, remote, args.base)
+        except BaseBranchNotFound as exc:
+            print(f"gbfleet up: {exc}", file=sys.stderr)
+            return 2
+
     merger = None
     if args.merge:
         # The ONE widening, under the one flag that asks for it (GRPH-846).
         client = Graphban(base_url=args.server, api_key=api_key,
                           allowed=SPAWN_READS | MERGE_TOOLS, project_id=args.project)
-        repo = Path(args.repo)
         remote = remote_for(repo)
         merger = Merger(repo, client, enabled=True, remote=remote,
-                        base=default_ref(repo, remote) if remote else "")
+                        base=base_ref or (default_ref(repo, remote) if remote else ""))
     else:
         client = Graphban(base_url=args.server, api_key=api_key, allowed=SPAWN_READS, project_id=args.project)
     try:
         wave = up(
-            Path(args.repo),
+            repo,
             seats,
             factory,
             client,
@@ -891,6 +914,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             workspace=Path(args.workspace) if args.workspace else None,
             debug=args.debug,
+            base=base_ref,
         )
     except RepoLocked as exc:
         print(f"gbfleet up: {exc}", file=sys.stderr)

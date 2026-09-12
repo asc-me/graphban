@@ -164,6 +164,7 @@ def run(
     launch_for: Callable[..., LaunchFactory] | None = None,
     matrix: "matrix_mod.Matrix | None" = None,
     merge: bool = False,
+    base_branch: str | None = None,
 ) -> Report:
     """Hold the repo lock and run until idle, a cap, or a config refusal.
 
@@ -174,6 +175,10 @@ def run(
     follow the brief's suggestion — a stated policy of this program, not a server default.
     `tiers` is the operator's tier table (PRD-36 D6): when the requested tier is mapped,
     `launch_for(adapter, model)` builds the child's launch; otherwise `launch_factory` does.
+
+    `base_branch` (GRPH-847) cuts children from `origin/<branch>` instead of the remote's
+    default ref, for PRDs whose slices are sequential. Refuses at startup when the branch
+    does not exist on the remote — no silent fallback.
     """
     if planner.allowed & {"mint_enrolment"} and "mint_enrolment" in ALLOWED_TOOLS:
         raise ConfigError("ALLOWED_TOOLS must not include mint_enrolment")
@@ -246,12 +251,17 @@ def run(
                 matrix=matrix,
                 adapter=adapter,
                 merge=merge,
+                base_branch=base_branch,
             )
             result.wave = wave
             minted = result.minted
             persist()
             return result
     except ConfigError as exc:
+        wave.reason = "config"
+        return Report(ok=False, reason="config", exit=2, detail=str(exc), wave=wave,
+                      minted=minted, spawned=len(wave.spawned))
+    except wt_mod.BaseBranchNotFound as exc:
         wave.reason = "config"
         return Report(ok=False, reason="config", exit=2, detail=str(exc), wave=wave,
                       minted=minted, spawned=len(wave.spawned))
@@ -354,6 +364,7 @@ def _loop(
     matrix: "matrix_mod.Matrix | None" = None,
     adapter: str = "",
     merge: bool = False,
+    base_branch: str | None = None,
 ) -> Report:
     from .mcp import _runner_up, read_preferences
     profile, policy, pref_note, measured, cap_measured = read_preferences(supervisor)
@@ -379,7 +390,14 @@ def _loop(
     if prd:
         check_scope_is_honoured(planner, prd)
     remote = wt_mod.remote_for(repo)
-    base = wt_mod.default_ref(repo, remote) if remote else ""
+    # GRPH-847. An explicit `--base` resolves to `origin/<branch>` and refuses when the
+    # branch does not exist on the remote — no silent fallback to the default ref. A fallback
+    # would cut children from the wrong base and the dependency check would measure against
+    # the wrong ref, which is the exact absence-reads-as-clean failure the chain prevents.
+    if base_branch:
+        base = wt_mod.resolve_base(repo, remote, base_branch)
+    else:
+        base = wt_mod.default_ref(repo, remote) if remote else ""
     if base:
         wt_mod.refresh_ref(repo, remote, base)
     # GRPH-846. Built whether or not `merge` was asked for, and inert when it was not:
@@ -563,6 +581,7 @@ def _loop(
             _spawn_one(
                 wave, children, occupied, persist, seat, factory,
                 repo, workspace, wave_name, supervisor, limits, planner, debug,
+                base=base,
             )
             continue
 
@@ -596,6 +615,7 @@ def _loop(
             _spawn_one(
                 wave, children, occupied, persist, seat, launch_factory,
                 repo, workspace, wave_name, supervisor, limits, planner, debug,
+                base=base,
             )
             if len(wave.spawned) == before:
                 review_fails += 1
@@ -662,6 +682,7 @@ def _spawn_one(
     limits: Limits,
     planner: Graphban,
     debug: bool,
+    base: str = "",
 ) -> None:
     before = len(wave.spawned)
     # No `room=` on purpose (GRPH-842). `_start`'s own gate is for `up`, which decides how
@@ -672,7 +693,7 @@ def _spawn_one(
         wave, [seat], launch_factory, repo, workspace, wave_name, supervisor,
         limits, debug=debug, occupied=occupied, items=_declared_into(wave,
                                                                      item_status(planner)),
-        into=children, persist=persist,
+        into=children, persist=persist, base=base,
     )
     occupied.update(c.branch for c in children)
     persist()
