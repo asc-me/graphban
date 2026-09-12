@@ -65,7 +65,7 @@ def test_authorship_is_absent_from_the_lean_declaration(client, key):
     """Naming the projection is only useful if the fields that caused the misreading are
     visibly NOT in it."""
     page = _call(client, key, "search_items", {"query": ""})
-    for f in ("built_by", "claimed_by", "reviewed_by", "review_claimed_by"):
+    for f in ("built_by", "claimed_by", "reviewed_by", "review_claimed_by", "claimed_at"):
         assert f not in page["fields"]
 
 
@@ -97,6 +97,19 @@ def test_full_still_carries_the_authorship(client, auth, key, tool):
     page = _call(client, key, tool, _args(tool, fields="full"))
     assert page["results"]
     assert "built_by" in page["results"][0]
+
+
+def test_full_search_carries_claimed_at_as_unix_seconds(client, auth, key):
+    """GRPH-850: gbfleet `item_status` / `choose_resume` read this from search_items
+    `fields=full`. The CALL is this payload. Declaring `claimed_at` on `_ITEM_SCHEMA`
+    is not the call — it copies onto every item tool and blows CEILING."""
+    claim = _call(client, key, "claim_next", {})
+    assert claim["claimed"] is True and claim["item"], claim
+    item_id = claim["item"]["id"]
+    page = _call(client, key, "search_items", {"query": "", "fields": "full"})
+    row = next(r for r in page["results"] if r["id"] == item_id)
+    assert isinstance(row["claimed_at"], int), row
+    assert row["claimed_at"] > 1_700_000_000
 
 
 # ── the description ───────────────────────────────────────────────────────────

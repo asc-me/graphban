@@ -401,7 +401,7 @@ def item_status(client: Graphban) -> dict[str, dict]:
             "status": row.get("status") or "",
             "claimed_by": row.get("claimed_by") or "",
             # GRPH-850: `choose_resume` uses this to decide whether the lease is stale.
-            # Stored as ISO string by the server; converted to epoch by the caller.
+            # `item_dict` emits unix seconds (or "" when nobody holds).
             "claimed_at": row.get("claimed_at") or "",
             # The DECLARATION the partition was computed from (GRPH-785). Kept here rather
             # than re-read at reap on purpose: the question is whether the input to the
