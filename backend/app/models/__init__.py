@@ -2759,6 +2759,14 @@ class TrackerLink(Base):
     write_back_comment: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default=true(), nullable=False
     )
+    # What the hub stores for this link (PRD-10 / GRPH-194).
+    # "bodies_in_hub" (default): full mirror including descriptions and comments.
+    # "metadata_only": IDs/state/assignee/labels/timestamps only — bodies stay on
+    # the local spoke. Under metadata_only, hub-side collision clustering is
+    # unavailable (a third answer, not labels-as-cluster).
+    storage_tier: Mapped[str] = mapped_column(
+        String, default="bodies_in_hub", server_default="bodies_in_hub", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
