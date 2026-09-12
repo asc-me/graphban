@@ -37,6 +37,7 @@ from app.routers import (
     reports,
     requests,
     sync,
+    tracker_links,
 )
 
 
@@ -282,6 +283,7 @@ app.include_router(mcp_router, prefix=API)
 # org surface. Gating per-request (vs. a build-time `if`) keeps the flag authoritative
 # at runtime and lets the test suite exercise the surface under a monkeypatched flag.
 app.include_router(orgs.router, prefix=API)
+app.include_router(tracker_links.router, prefix=API)
 # Operator plane (AL-91): hosted + platform-admin gated at the router level; every
 # route 404s for tenants, so the surface is invisible outside the operator allowlist.
 app.include_router(admin.router, prefix=API)
