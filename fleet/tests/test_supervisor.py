@@ -858,3 +858,120 @@ def test_the_gate_binds_on_a_real_kernel_reading(
     assert len(wave.spawned) == 1
     assert wave.gated and "no room" in wave.gated[0]
     assert wave.headroom_at_start and wave.headroom_at_start > 0
+
+
+# --- GRPH-870: vendor worktrees must run [setup] ---------------------------------
+
+
+def test_start_one_runs_setup_commands_for_every_adapter(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """`prepare` is called in the gbfleet spawn path, not only inside gbagent.
+
+    A fresh `git worktree` has no generated client, no node_modules, no .venv.
+    Vendor children that start in an unbuilt tree and report green tests are the
+    worse outcome. The CALL — `prepare(tree.path)` in `start_one` — is what closes
+    the gap. Sabotage: remove that line; this test fails because the marker file
+    the setup command creates never appears.
+    """
+    import subprocess
+    import sys
+    from conftest import make_stub_script, stub_command
+    from gbfleet.supervisor import Limits, Partition, start_one, _tree_for
+    from gbfleet.spawn import Launch
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    def _git(cwd: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    # A setup stub that creates a marker file.
+    setup_script = make_stub_script(git_repo / "setup_mark.py", touch=(".setup-ran",))
+    setup_cmd = stub_command(setup_script)
+
+    # Commit a `.gbagent.toml` whose [setup] runs the stub.
+    toml = (
+        f"[tests]\ncommand = '{stub_command(make_stub_script(git_repo / 'test_stub.py'))}'\n"
+        f"\n[setup]\ncommands = ['{setup_cmd}']\n"
+    )
+    (git_repo / ".gbagent.toml").write_text(toml, encoding="utf-8")
+    _git(git_repo, "add", ".gbagent.toml", "setup_mark.py", "test_stub.py")
+    _git(git_repo, "commit", "-qm", "add setup config")
+
+    tree = _tree_for(git_repo, workspace, "wave-setup", "1")
+    client = _server(workspace)
+
+    child = start_one(
+        tree,
+        _seats(1)[0],
+        lambda s, t, i, d: Launch(
+            adapter="fake",
+            argv=[str(scripts["python"]), str(scripts["exits_immediately"])],
+            seat_path=t.path / SEAT_FILES[0],
+            config=s.mcp_config(),
+            instruction="",
+        ),
+        client, Limits(registration_window=30.0), Partition(),
+        workspace=workspace, wave_name="wave-setup", slot="1",
+    )
+    # The marker file was created by `prepare`, not by the child process (which
+    # exits immediately). If `prepare` is not called, this file does not exist.
+    assert (tree.path / ".setup-ran").exists(), (
+        "setup commands were not run in the worktree — prepare() is missing "
+        "from the gbfleet spawn path"
+    )
+
+
+def test_a_failing_setup_refuses_the_wave_slot(
+    git_repo: Path, tmp_path: Path, scripts, state: Path
+):
+    """A setup that fails stops the wave, exactly like a broken adapter.
+
+    `SetupFailed` ⊂ `ConfigRefused`. The `_start` except clause catches it alongside
+    `LaunchFailed`, reaps the empty worktree, and records the failure. A wave that
+    continued past a failed setup would spawn children into unbuilt trees — the
+    exact outcome GRPH-870 exists to prevent.
+    """
+    import subprocess
+    import sys
+    from conftest import make_stub_script, stub_command
+    from gbfleet.supervisor import Limits, up
+
+    workspace = tmp_path / "ws"
+
+    def _git(cwd: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+    # A setup stub that always fails.
+    fail_script = make_stub_script(git_repo / "setup_fail.py", exit_code=1)
+    fail_cmd = stub_command(fail_script)
+    test_script = make_stub_script(git_repo / "test_stub.py")
+    test_cmd = stub_command(test_script)
+
+    toml = (
+        f"[tests]\ncommand = '{test_cmd}'\n"
+        f"\n[setup]\ncommands = ['{fail_cmd}']\n"
+    )
+    (git_repo / ".gbagent.toml").write_text(toml, encoding="utf-8")
+    _git(git_repo, "add", ".gbagent.toml", "setup_fail.py", "test_stub.py")
+    _git(git_repo, "commit", "-qm", "add failing setup")
+
+    wave = up(
+        git_repo,
+        _seats(2),
+        _factory(scripts, "exits_immediately"),
+        _server(workspace),
+        limits=Limits(max_workers=4),
+        state=state,
+        workspace=workspace,
+    )
+    assert wave.failures, "a failing setup should record a failure"
+    assert any("setup" in f.lower() or "exited" in f.lower() for f in wave.failures), (
+        f"failure should name the setup: {wave.failures}"
+    )
+    assert len(wave.spawned) == 0, "no child should have started past a failed setup"

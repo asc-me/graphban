@@ -191,3 +191,75 @@ def test_the_explanation_names_the_item_the_commit_and_the_remedy(tmp_path):
     assert "abc123def" in said
     assert "origin/main" in said
     assert "merge" in said
+
+
+# --- GRPH-868: squash merge — PR state survives the SHA rewrite ---------------
+
+def _dep_with_pr(item_id, commit, *, pr_url="https://github.com/o/r/pull/7", **kw):
+    """A dependency with a PR URL receipt (the kind `propose_branch` writes)."""
+    row = _dep(item_id, commit, **kw)
+    row["evidence"].append({"kind": "url", "url": pr_url, "detail": "draft PR"})
+    return row
+
+
+def test_a_squash_merged_pr_frees_the_dependant(tmp_path, monkeypatch):
+    """THE CASE. The attested SHA is not an ancestor of main (squash rewrote it), but the
+    PR is MERGED at the forge. The work IS in the base — the squash SHA carries it."""
+    from gbfleet import propose as propose_mod
+
+    repo = _repo(tmp_path)
+    stranded = _branch_commit(repo, "dep-branch")
+    monkeypatch.setattr(propose_mod, "view", lambda *a, **kw: (
+        {"state": "MERGED", "mergeCommit": {"oid": "c" * 40}}, ""))
+
+    absent, unknown = deps.check(
+        Planner([_dep_with_pr("SA-417", stranded)]), "SA-420", repo, "main")
+
+    assert absent == [], "a MERGED PR means the work is in the base despite the squash"
+    assert unknown == []
+
+
+def test_an_open_pr_with_unmerged_sha_is_still_absent(tmp_path, monkeypatch):
+    """The PR is open, the SHA is not ancestral. Not merged yet — hold the dependant."""
+    from gbfleet import propose as propose_mod
+
+    repo = _repo(tmp_path)
+    stranded = _branch_commit(repo, "dep-branch")
+    monkeypatch.setattr(propose_mod, "view", lambda *a, **kw: ({"state": "OPEN"}, ""))
+
+    absent, unknown = deps.check(
+        Planner([_dep_with_pr("SA-417", stranded)]), "SA-420", repo, "main")
+
+    assert [d["id"] for d in absent] == ["SA-417"]
+    assert unknown == []
+
+
+def test_an_unreachable_forge_is_unknown_not_absent(tmp_path, monkeypatch):
+    """`gh` could not run. The PR might be merged; we cannot tell. Unknown, not absent —
+    collapsing this to absent would refuse waves on a machine without `gh`."""
+    from gbfleet import propose as propose_mod
+
+    repo = _repo(tmp_path)
+    stranded = _branch_commit(repo, "dep-branch")
+    monkeypatch.setattr(propose_mod, "view", lambda *a, **kw: (None, "gh could not run"))
+
+    absent, unknown = deps.check(
+        Planner([_dep_with_pr("SA-417", stranded)]), "SA-420", repo, "main")
+
+    assert absent == [], "an unreachable forge is not evidence the PR is unmerged"
+    assert [d["id"] for d in unknown] == ["SA-417"]
+
+
+def test_no_pr_at_all_with_unmerged_sha_is_still_absent(tmp_path, monkeypatch):
+    """No PR URL on the item, SHA not ancestral. The forge has nothing to say — absent."""
+    from gbfleet import propose as propose_mod
+
+    repo = _repo(tmp_path)
+    stranded = _branch_commit(repo, "dep-branch")
+    monkeypatch.setattr(propose_mod, "view", lambda *a, **kw: (None, "no PR found"))
+
+    absent, unknown = deps.check(
+        Planner([_dep("SA-417", stranded)]), "SA-420", repo, "main")
+
+    assert [d["id"] for d in absent] == ["SA-417"]
+    assert unknown == []

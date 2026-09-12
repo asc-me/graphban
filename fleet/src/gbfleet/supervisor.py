@@ -34,6 +34,7 @@ from . import adapters
 from .adapters import explain_exit
 from .client import Graphban, NotPermitted, ServerUnreachable, ToolFailed
 from . import headroom as headroom_mod
+from gbagent.config import SetupFailed, prepare
 from .headroom import Headroom
 from .hostos import restrict_to_owner
 from .lock import Acquired, hold
@@ -546,7 +547,7 @@ def up(
         persist()
         _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
                   persist=persist, merger=merger)
-        _reap_all(wave, children)
+        _reap_all(wave, children, client=client)
         persist()
         if merger is not None:
             # Once more after the reap: the last child's sign-off may have landed between
@@ -628,6 +629,12 @@ def start_one(
     dropped exactly that child out of the wave, and the only symptom was one fewer line
     in a log nobody was reading yet.
     """
+    # GRPH-870: run [setup].commands for EVERY adapter, not only gbagent. A fresh
+    # `git worktree` has no generated client, no node_modules, no .venv — a vendor
+    # child that starts in an unbuilt tree and reports green tests is the worse
+    # outcome. `prepare` no-ops when `.gbagent.toml` has no [setup]; a setup that
+    # fails refuses the spawn (SetupFailed ⊂ ConfigRefused).
+    prepare(tree.path)
     launch = launch_factory(seat, tree, _instruction_file(tree, seat, wave_name), debug_file)
     child = spawn(
         launch, tree.path, tree.branch, _logs(workspace, f"{wave_name}-{slot}"), base=tree.base,
@@ -770,7 +777,7 @@ def _start(
                 workspace=workspace, wave_name=wave_name, slot=slot,
                 on_spawned=remember, debug_file=debug_file,
             )
-        except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists) as exc:
+        except (LaunchFailed, wt_mod.GitError, wt_mod.BranchExists, SetupFailed) as exc:
             wave.failures.append(f"{agent_slot}: {exc}")
             vendor_limit = isinstance(exc, VendorLimit)
             if tree is not None and tree.path.exists() and not any(
@@ -1580,7 +1587,7 @@ def _enforce_the_lease(wave: Wave, children: list[Child]) -> None:
             wave.failures.append(f"{child.adapter} pid {child.pid}: {reason}")
 
 
-def _reap_all(wave: Wave, children: list[Child]) -> None:
+def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = None) -> None:
     """Reap each worktree, then take away any seat that was never inside one.
 
     `worktree.reap` removes the seat files it knows about — the ones a vendor forced
@@ -1590,6 +1597,10 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
     Walk step 8 says the child's seat file is gone after reap, with no exception for the
     vendors that were tidy about where it went. Without this, the vendor that handled
     credentials BEST is the one that leaves one behind.
+
+    **`client` is the one that records PR receipts on the item** (GRPH-869). The planner
+    in `until`, the single client in `up`. A supervisor-allowlist client raises
+    `NotPermitted` on `update_item`; passing it here is the bug this parameter fixes.
     """
     for child in children:
         if child.reaped:
@@ -1628,7 +1639,7 @@ def _reap_all(wave: Wave, children: list[Child]) -> None:
             )
         _note_touchpoints(wave, child)
         _note_staleness(wave, tree)
-        _publish(wave, tree)
+        _publish(wave, tree, client=client)
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
 
