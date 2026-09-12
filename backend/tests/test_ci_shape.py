@@ -84,3 +84,46 @@ def test_every_job_declares_which_changes_it_needs():
         f"job(s) {sorted(unconditional)} have no `if:` guard, so they run on every PR. "
         "If that is intended, say so with `if: always()` rather than by leaving it out."
     )
+
+
+def test_windows_job_gates_fleet_and_cli_on_windows_latest():
+    """GRPH-855: Ubuntu-only CI let POSIX-only fleet breaks stay green (GRPH-588)."""
+    job = _workflow()["jobs"]["windows"]
+    assert job["runs-on"] == "windows-latest"
+    guard = job["if"]
+    assert "fleet" in guard and "cli" in guard, (
+        f"windows job if: {guard!r} — a fleet- or cli-only PR would not pay for it, "
+        "which is the opposite of a Windows gate"
+    )
+
+
+def test_windows_pytest_is_not_an_interactive_shell_wrapper():
+    """The job this item adds must not die to the wrapper that runs pytest.
+
+    First tip of PR #759 used the default Windows shell (pwsh). A child `stop()` sends
+    CTRL_BREAK; pwsh treated it as a break-into-debugger (`Entering debug mode`) and
+    the step exited 1.
+
+    The salvage switched to `shell: cmd` plus `< NUL`. That stopped the debugger, then
+    cmd.exe's batch wrapper prompted `Terminate batch job (Y/N)?` and the job exited
+    STATUS_CONTROL_C_EXIT (-1073741510) — the bounce.
+
+    bash on the Windows runner does neither. Stdin from `/dev/null` so a leftover
+    prompt cannot hang the runner. Sabotage: put `shell: cmd` back on a pytest step.
+    """
+    job = _workflow()["jobs"]["windows"]
+    pytest_steps = [
+        step for step in job["steps"] if "pytest" in str(step.get("run", ""))
+    ]
+    assert pytest_steps, "windows job never invokes pytest"
+    for step in pytest_steps:
+        shell = step.get("shell")
+        assert shell == "bash", (
+            f"step {step.get('name')!r} uses shell: {shell!r}. pwsh enters its "
+            "debugger on CTRL_BREAK; cmd.exe prompts Terminate batch job (Y/N)? — "
+            "both killed PR #759. bash does not."
+        )
+        assert "</dev/null" in step["run"], (
+            f"step {step.get('name')!r} leaves pytest stdin attached — a TTY or a "
+            "cmd.exe Y/N prompt can hang the runner. Redirect from /dev/null."
+        )

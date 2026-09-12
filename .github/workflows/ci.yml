@@ -254,6 +254,45 @@ jobs:
       - run: uv pip install -e ".[dev]"
       - run: .venv/bin/python -m pytest -q
 
+  windows:
+    # The Windows port of gbfleet was walked on a box (GRPH-576, GRPH-588, GRPH-599)
+    # and then never gated. First Windows run: 50 failures, 32 of them `#!/bin/sh`
+    # is not a Win32 application. Those are green on every PR today because CI was
+    # Ubuntu only. This job is what makes a POSIX-only break fail a PR (GRPH-588).
+    # Do not drop it as slow — that is the point of it.
+    name: Fleet + CLI tests (Windows)
+    needs: changes
+    if: >-
+      (needs.changes.outputs.fleet == 'true' || needs.changes.outputs.cli == 'true')
+      && needs.changes.outputs.stamp_only != 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # Fleet and CLI are separate distributions (PRD-22 D-e, PRD-40 D2) with their
+      # own pyproject and venv — same rules as the Ubuntu jobs: pytest is not on the
+      # host PATH, use the venv.
+      # bash, not pwsh or cmd.exe. `stop()` sends CTRL_BREAK; on this runner that
+      # event reaches the job shell. pwsh enters its debugger (`Entering debug
+      # mode` — first tip of PR #759). cmd.exe on a multi-line `run:` is a batch
+      # file and prompts `Terminate batch job (Y/N)?` then exits
+      # STATUS_CONTROL_C_EXIT (-1073741510) — the bounce. Git Bash does neither.
+      # Stdin from /dev/null so a leftover prompt cannot hang the runner (GRPH-855).
+      - name: Fleet suite
+        working-directory: fleet
+        shell: bash
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install -e ".[dev]"
+          .venv/Scripts/python -m pytest -q </dev/null
+      - name: CLI suite
+        working-directory: cli
+        shell: bash
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install -e ".[dev]"
+          .venv/Scripts/python -m pytest -q </dev/null
+
   # A single required check, so branch protection has one name to point at whatever the
   # filters decided to run. Without it a skipped job reads as "pending" forever on a
   # protected branch — the filter would look like it had wedged CI rather than saved time.
@@ -266,7 +305,7 @@ jobs:
     # Every job defined above must appear here. A job that runs but is not needed by this
     # gate is worse than no job: it burns the minutes and reports nowhere.
     # `test_ci_gate_covers_every_job` in the backend suite is what enforces that.
-    needs: [changes, backend-sqlite, backend-postgres, backend-packaging, frontend, fleet, cli-tests]
+    needs: [changes, backend-sqlite, backend-postgres, backend-packaging, frontend, fleet, cli-tests, windows]
     # `always()` so a failed/skipped suite still runs the gate (otherwise a broken
     # filter looks like a green PR). Fork PRs are excluded: this job talks to the
     # LAN ledger on ubuntu-srv, and a public repo must not run untrusted checkout

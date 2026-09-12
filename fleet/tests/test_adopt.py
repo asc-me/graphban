@@ -12,6 +12,7 @@ import pytest
 
 from gbfleet import adopt
 from gbfleet.adopt import Snapshot, UnadoptableFile, classify, load, save
+from gbfleet.hostos import spawn_kwargs
 from gbfleet.lock import hold
 from gbfleet.supervisor import Limits, up, watch_tick
 from gbfleet.worktree import create
@@ -109,7 +110,7 @@ def test_recover_attaches_a_live_pid(
     sleeper = subprocess.Popen(
         [str(scripts["python"]), str(scripts["sleeper"])],
         cwd=str(git_repo),
-        start_new_session=True,
+        **spawn_kwargs(),
     )
     try:
         monkeypatch.setattr(adopt, "process_start_token", lambda pid: "tok")
@@ -243,7 +244,7 @@ def test_takeover_attaches_the_leftover_pid(
     sleeper = subprocess.Popen(
         [str(scripts["python"]), str(scripts["sleeper"])],
         cwd=str(git_repo),
-        start_new_session=True,
+        **spawn_kwargs(),
     )
     try:
         monkeypatch.setattr(adopt, "process_start_token", lambda pid: "tok")
@@ -294,7 +295,7 @@ def test_takeover_ticks_the_leftover_pid(
     sleeper = subprocess.Popen(
         [str(scripts["python"]), str(scripts["sleeper"])],
         cwd=str(git_repo),
-        start_new_session=True,
+        **spawn_kwargs(),
     )
     try:
         # classify() reads adopt.*; AttachedProcess.poll / persist's running
@@ -379,7 +380,7 @@ def test_until_ticks_the_leftover_pid(
     sleeper = subprocess.Popen(
         [str(scripts["python"]), str(scripts["sleeper"])],
         cwd=str(git_repo),
-        start_new_session=True,
+        **spawn_kwargs(),
     )
     try:
         def _tok(_pid: int) -> str:
@@ -455,7 +456,7 @@ def test_mcp_ticks_the_leftover_pid(
     sleeper = subprocess.Popen(
         [str(scripts["python"]), str(scripts["sleeper"])],
         cwd=str(git_repo),
-        start_new_session=True,
+        **spawn_kwargs(),
     )
     try:
         def _tok(_pid: int) -> str:

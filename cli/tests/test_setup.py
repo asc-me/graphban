@@ -126,8 +126,9 @@ def test_one_run_writes_both_servers_and_a_key_that_never_expires(tmp_path, wire
     assert "--project" in servers["gbfleet"]["args"]
     stored = config.stored_supervisor_key("core")
     assert stored == servers["graphban"]["headers"]["X-API-Key"]
-    mode = (config.home() / config.SUPERVISOR_KEYS_FILE).stat().st_mode & 0o777
-    assert mode == 0o600, "a credential at rest is owner-only, same as session.json"
+    assert config.is_private(config.home() / config.SUPERVISOR_KEYS_FILE), (
+        "a credential at rest is owner-only, same as session.json"
+    )
 
 
 def test_setup_refuses_to_store_a_refresh_token_as_the_supervisor_key(tmp_path):
