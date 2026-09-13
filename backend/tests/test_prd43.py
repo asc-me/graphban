@@ -308,6 +308,43 @@ def test_comment_absence_is_private(client, auth):
         db.close()
 
 
+def test_public_vote_sets_cookie_and_is_idempotent(client, auth):
+    """D6: first vote sets gb_vote; the same cookie does not increment again."""
+    db = _get_db()
+    try:
+        from app.services.platform import get_config
+        cfg = get_config(db, "core")
+        cfg.public_share_enabled = True
+        cfg.intake_enabled = True
+        cfg.public_issues_enabled = True
+        db.commit()
+        token = cfg.share_token
+    finally:
+        db.close()
+
+    created = client.post("/api/public/requests", json={
+        "type": "bug",
+        "title": "Votable",
+        "token": token or "",
+    })
+    assert created.status_code == 201
+    req_id = created.json()["request"]["id"]
+    assert client.post(f"/api/public/requests/{req_id}/publish", headers=auth).status_code == 200
+
+    first = client.post(f"/api/public/requests/{req_id}/vote?token={token}")
+    assert first.status_code == 200
+    assert first.json()["voted"] is True
+    assert first.json()["votes"] == 1
+    cookie = first.cookies.get("gb_vote")
+    assert cookie, "first vote must Set-Cookie gb_vote so uniqueness can bind"
+    client.cookies.set("gb_vote", cookie)
+
+    second = client.post(f"/api/public/requests/{req_id}/vote?token={token}")
+    assert second.status_code == 200
+    assert second.json()["voted"] is False
+    assert second.json()["votes"] == 1
+
+
 def test_slug_validation(client, auth):
     """D8: slug validation rejects reserved names and bad formats."""
     # Valid slug.

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from secrets import token_urlsafe
 
 from fastapi import (
     APIRouter,
@@ -22,6 +23,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
+from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -434,23 +436,23 @@ def public_vote(
             RequestVote.voter_key == voter_key,
         )
     )
-    if existing:
-        resp = Response(status_code=200)
-        resp.set_cookie("gb_vote", voter_cookie, httponly=True, samesite="lax")
-        return {"votes": req.votes, "voted": False}
-    vote = RequestVote(request_id=req.id, voter_key=voter_key)
-    db.add(vote)
-    req.votes = max(0, req.votes + 1)
-    db.commit()
-    db.refresh(req)
-    resp_data = {"votes": req.votes, "voted": True}
-    return resp_data
+    voted = False
+    if existing is None:
+        db.add(RequestVote(request_id=req.id, voter_key=voter_key))
+        req.votes = max(0, req.votes + 1)
+        db.commit()
+        db.refresh(req)
+        voted = True
+    # Cookie on both paths: first-time voters without gb_vote used to get a new
+    # random id every request, so uniqueness never bound (GRPH-876).
+    resp = JSONResponse({"votes": req.votes, "voted": voted})
+    resp.set_cookie("gb_vote", voter_cookie, httponly=True, samesite="lax")
+    return resp
 
 
 # ---- PRD-43: authenticated operator endpoints ----
 
 from app.security.deps import get_current_user
-from secrets import token_urlsafe
 
 
 @router.post("/ingest-token", response_model=IngestTokenOut)

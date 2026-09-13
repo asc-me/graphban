@@ -1721,7 +1721,9 @@ class RequestComment(Base):
     request_id: Mapped[str] = mapped_column(ForeignKey("requests.id"), index=True)
     author_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     body: Mapped[str] = mapped_column(Text, default="")
-    visibility: Mapped[str] = mapped_column(String, default="private")  # private | public
+    visibility: Mapped[str] = mapped_column(
+        String, default="private", server_default="private", nullable=False
+    )  # private | public; absence of the tag is private (PRD-43 D7)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

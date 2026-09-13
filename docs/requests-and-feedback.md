@@ -27,8 +27,10 @@ An unauthenticated, themeable widget that drops submissions straight into the tr
 - **Theming** via URL params: `accent` (hex, no `#`), `radius` (px), `types` (comma list),
   `email` (`1`/`0`), `project`. Example:
   `…/embed/feedback?accent=a78bfa&radius=20&types=bug,feature,feedback`
-- **Backend:** `POST /api/public/requests` (no auth, rate-limited) creates the request and
-  returns any duplicates it found.
+- **Backend:** `POST /api/public/requests` (ingest token or legacy share token, rate-limited)
+  creates the request and returns any duplicates it found. Native apps POST the same
+  contract; see the Feedback Kit. Exposing a self-host box to the public internet:
+  [self-host exposure](self-host-exposure.md).
 
 ### Auto-duplicate detection
 
