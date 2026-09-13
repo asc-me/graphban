@@ -7,16 +7,16 @@ Two tables:
 - tracker_mirror: mirrored issue state from the external tracker. The hub stores
   the latest snapshot; reconcile diffs against this to detect external edits.
 
-Revision ID: 0126
-Revises: 0125
+Revision ID: 0127
+Revises: 0126
 """
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0126"
-down_revision: Union[str, None] = "0125"
+revision: str = "0127"
+down_revision: Union[str, None] = "0126"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
