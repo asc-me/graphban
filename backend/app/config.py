@@ -250,6 +250,15 @@ class Settings(BaseSettings):
     # Google Drive Desktop folder to reach Drive with no OAuth.
     sync_dir: str = "/data/sync"
 
+    # Linear integration (PRD-P10). OAuth app credentials for the Linear authorization
+    # code flow; blank = the integration surface is unreachable (no OAuth URL to build).
+    # The per-org access token is stored encrypted at rest in `linear_integrations`.
+    linear_client_id: str = ""
+    linear_client_secret: str = ""
+    # Base URL the OAuth callback redirects to. Defaults to app_base_url; override when
+    # the API is served on a different origin from the SPA.
+    linear_redirect_uri: str = ""
+
     # Seed the design's dataset on startup when the DB is empty.
     seed_on_start: bool = True
 

@@ -67,6 +67,26 @@ mail is simply not sent, so an invite can be "issued" and never arrive.
 | `UPSTREAM_FEEDBACK_PROJECT` | `agentledger` | |
 | `UPSTREAM_FEEDBACK_TOKEN` | *(empty)* | |
 
+## Linear integration (PRD-P10)
+
+OAuth app credentials for the Linear authorization code flow. The per-org access token is
+stored encrypted at rest (same Fernet path as provider BYOK keys). Leave blank and the
+integration surface is unreachable.
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `LINEAR_CLIENT_ID` | *(empty)* | Linear OAuth app client id. Register at linear.app/settings/api |
+| `LINEAR_CLIENT_SECRET` | *(empty)* | Linear OAuth app client secret |
+| `LINEAR_REDIRECT_URI` | *(empty)* | OAuth callback URL. Defaults to `{APP_BASE_URL}/api/linear/callback`. Override when the API is served on a different origin from the SPA |
+
+## Governance and data boundary (PRD-10)
+
+Two independent boundaries govern how tracker data is handled:
+
+**Inference (BYOK):** the customer configures their own inference endpoint via `EMBED_PROVIDER` and `CHAT_PROVIDER` (see AI providers below). Ticket content reaches only the customer's configured endpoint. A strict local-only-inference posture (`stub` or `ollama` for both) is available. No AgentLedger-shared model.
+
+**At-rest storage:** controlled per tracker link via the `storage_tier` field. Default is `bodies_in_hub` — the hub stores mirrored ticket bodies (titles, descriptions, comments) so cloud-side features (triage board, server-side agent reasoning, collision clustering) are full-featured. Set `metadata_only` for regulated buyers: the hub stores only IDs/state/assignee/labels/timestamps and keeps bodies on the local spoke. Under `metadata_only`, hub-side collision clustering is **unavailable** (a third answer, not labels-as-cluster).
+
 ## AI providers
 
 | Var | Default | Notes |

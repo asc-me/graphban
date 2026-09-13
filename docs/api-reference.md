@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 140 of the 208 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 142 of the 217 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -380,6 +380,17 @@ Four rules follow, and each is a wrong answer avoided:
 A derived membership refuses a direct edit through `PUT /api/projects/{id}/members/{user_id}`
 (409, naming the team). That is the drift materializing costs, made visible rather than silent:
 an edit there would be undone by the next recompute.
+
+## Tracker links (hosted only, PRD-10 / GRPH-186)
+
+A link between an external tracker (Linear first) and an AgentLedger project, scoped to the
+org. When linked, the tracker is authoritative: AgentLedger mirrors read-heavy and writes
+back only canonical status transitions, comments/links, and the triage-board assignee.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET / POST | `/api/orgs/{id}/tracker-links` | List or create tracker links |
+| GET / PATCH / DELETE | `/api/orgs/{id}/tracker-links/{link_id}` | Read, update, or remove a link |
 
 ## Membership mutations (hosted only, PRD-21 D8)
 

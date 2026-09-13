@@ -27,6 +27,7 @@ from app.routers import (
     harness,
     items,
     learning,
+    linear,
     live,
     memory,
     orgs,
@@ -36,7 +37,9 @@ from app.routers import (
     public,
     reports,
     requests,
+    slice_pull,
     sync,
+    tracker_links,
 )
 
 
@@ -275,6 +278,8 @@ app.include_router(platform.router, prefix=API)
 app.include_router(public.router, prefix=API)
 app.include_router(reports.router, prefix=API)
 app.include_router(sync.router, prefix=API)
+app.include_router(linear.router, prefix=API)
+app.include_router(slice_pull.router, prefix=API)
 app.include_router(mcp_router, prefix=API)
 # The Organization layer is a hosted-SaaS surface only (AL-74). It's mounted here but
 # every route is gated by a hosted-only dependency (see routers/orgs.require_hosted):
@@ -282,6 +287,7 @@ app.include_router(mcp_router, prefix=API)
 # org surface. Gating per-request (vs. a build-time `if`) keeps the flag authoritative
 # at runtime and lets the test suite exercise the surface under a monkeypatched flag.
 app.include_router(orgs.router, prefix=API)
+app.include_router(tracker_links.router, prefix=API)
 # Operator plane (AL-91): hosted + platform-admin gated at the router level; every
 # route 404s for tenants, so the surface is invisible outside the operator allowlist.
 app.include_router(admin.router, prefix=API)
