@@ -306,3 +306,41 @@ def test_comment_absence_is_private(client, auth):
         assert len(pub_comments) == 0
     finally:
         db.close()
+
+
+def test_slug_validation(client, auth):
+    """D8: slug validation rejects reserved names and bad formats."""
+    # Valid slug.
+    resp = client.get("/api/public/slugs/validate?slug=acme")
+    assert resp.json()["valid"] is True
+
+    # Reserved name.
+    resp = client.get("/api/public/slugs/validate?slug=www")
+    assert resp.json()["valid"] is False
+    assert "reserved" in resp.json()["error"]
+
+    # Bad format (uppercase).
+    resp = client.get("/api/public/slugs/validate?slug=ACME")
+    assert resp.json()["valid"] is False
+
+    # Leading hyphen.
+    resp = client.get("/api/public/slugs/validate?slug=-acme")
+    assert resp.json()["valid"] is False
+
+
+def test_slug_claim_project_path(client, auth):
+    """D8: claim a project path id."""
+    resp = client.post("/api/public/slugs/project-path?project_id=core",
+                       json={"slug": "mobile"}, headers=auth)
+    assert resp.status_code == 200
+    assert resp.json()["public_path_id"] == "mobile"
+
+    # Claiming the same slug again for the same project is fine (idempotent).
+    resp = client.post("/api/public/slugs/project-path?project_id=core",
+                       json={"slug": "mobile"}, headers=auth)
+    assert resp.status_code == 200
+
+    # Reserved slug rejected.
+    resp = client.post("/api/public/slugs/project-path?project_id=core",
+                       json={"slug": "api"}, headers=auth)
+    assert resp.status_code == 409

@@ -536,3 +536,47 @@ def create_comment_endpoint(
         "visibility": comment.visibility,
         "created_at": comment.created_at.isoformat(),
     }
+
+
+# ---- PRD-43 D8: slug management ----
+
+from app.services.platform import claim_org_host, claim_project_path_id, validate_slug
+
+
+@router.post("/slugs/org-host")
+def claim_org_host_endpoint(
+    body: dict,
+    org_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """PRD-43 D8: claim a public host slug for an org."""
+    slug = body.get("slug", "")
+    try:
+        return claim_org_host(db, org_id, slug)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@router.post("/slugs/project-path")
+def claim_project_path_endpoint(
+    body: dict,
+    project_id: str = "core",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """PRD-43 D8: claim a public path id for a project."""
+    slug = body.get("slug", "")
+    try:
+        return claim_project_path_id(db, project_id, slug)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@router.get("/slugs/validate")
+def validate_slug_endpoint(slug: str):
+    """PRD-43 D8: validate a slug without claiming it."""
+    err = validate_slug(slug)
+    if err:
+        return {"valid": False, "error": err}
+    return {"valid": True}

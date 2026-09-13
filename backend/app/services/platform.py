@@ -994,3 +994,71 @@ def org_enable_all_feedback(db: Session, org_id: str) -> int:
         count += 1
     db.commit()
     return count
+
+
+# ---- PRD-43 D8: hosted URL grammar, slug management ----
+
+import re
+
+SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
+
+RESERVED_HOSTS = {
+    "www", "cloud", "api", "app", "feedback", "admin", "mail",
+    "status", "embed", "static", "assets",
+}
+
+
+def validate_slug(slug: str) -> str | None:
+    """PRD-43 D8: validate a slug. Returns error message or None if valid."""
+    if not slug:
+        return "slug is required"
+    if not SLUG_RE.match(slug):
+        return "slug must be lowercase alphanumeric with hyphens, no leading/trailing hyphen, 1-63 chars"
+    if slug in RESERVED_HOSTS:
+        return f"slug {slug!r} is reserved"
+    return None
+
+
+def claim_org_host(db: Session, org_id: str, slug: str) -> dict:
+    """PRD-43 D8: claim a public host for an org. 409 on collision."""
+    from app.models import Organization
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise LookupError(org_id)
+    err = validate_slug(slug)
+    if err:
+        raise ValueError(err)
+    # Check uniqueness.
+    existing = db.scalar(
+        select(Organization).where(Organization.public_host == slug)
+    )
+    if existing is not None:
+        raise ValueError(f"host {slug!r} is taken")
+    org.public_host = slug
+    org.public_host_custom = True  # claimed, not random
+    db.commit()
+    return {"public_host": slug, "custom": True}
+
+
+def claim_project_path_id(db: Session, project_id: str, slug: str) -> dict:
+    """PRD-43 D8: claim a public path id for a project. 409 on collision within org."""
+    from app.models import Project
+    project = db.get(Project, project_id)
+    if project is None:
+        raise LookupError(project_id)
+    err = validate_slug(slug)
+    if err:
+        raise ValueError(err)
+    # Check uniqueness within the same org.
+    cfg = get_config(db, project_id)
+    existing = db.scalar(
+        select(PlatformConfig).where(PlatformConfig.public_path_id == slug)
+    )
+    if existing is not None and existing.project_id != project_id:
+        # Check same org.
+        other_project = db.get(Project, existing.project_id)
+        if other_project and other_project.org_id == project.org_id:
+            raise ValueError(f"path id {slug!r} is taken in this org")
+    cfg.public_path_id = slug
+    db.commit()
+    return {"public_path_id": slug}
