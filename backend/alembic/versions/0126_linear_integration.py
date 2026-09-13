@@ -3,16 +3,16 @@
 Per-org Linear OAuth link: encrypted access token, webhook secret, workspace identity,
 and freshness timestamps. One row per org ↔ Linear workspace.
 
-Revision ID: 0125
-Revises: 0124
+Revision ID: 0126
+Revises: 0125
 """
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0125"
-down_revision: Union[str, None] = "0124"
+revision: str = "0126"
+down_revision: Union[str, None] = "0125"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

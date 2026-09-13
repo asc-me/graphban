@@ -8,16 +8,16 @@ stay on the local spoke).
 Under metadata_only, hub-side collision clustering is unavailable (a third answer,
 not labels-as-cluster).
 
-Revision ID: 0127
-Revises: 0126
+Revision ID: 0128
+Revises: 0127
 """
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
 
-revision: str = "0127"
-down_revision: Union[str, None] = "0126"
+revision: str = "0128"
+down_revision: Union[str, None] = "0127"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
