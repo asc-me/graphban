@@ -1131,13 +1131,21 @@ MERGE_RECHECK_S = 60.0
 
 @dataclass
 class Merger:
-    """Finishes the merge for items that reach `done` (GRPH-846). Off unless asked.
+    """Finishes the merge for items that reach `done` (GRPH-846, GRPH-880). Off unless asked.
 
-    WHAT IT WATCHES. An item is a candidate the moment it LEAVES `review` — the loop reads
-    the review rows every tick anyway, and an id that was there and is not has either been
-    signed off or bounced; `get_item_details` says which. And an item the GRPH-798 hold
-    names as an absent dependency is a candidate too: it is `done` by definition, its PR is
-    the click the held item is waiting on, and clearing that hold is the whole point.
+    WHAT IT WATCHES (GRPH-880). An item is a candidate when the `fleet.sign_off` attestation
+    names a commit — the reviewer's judgement is the handoff, not the moment this process
+    observed the item leave a list. The candidacy predicate is:
+
+        candidate ≡ item is in (this wave's scope ∪ GRPH-798 hold deps)
+                AND status == done
+                AND last fleet.sign_off attestation names a commit
+                AND the item names a PR (or the propose url receipt does)
+
+    `scope` is the PRD this wave was asked about (if any), else the project this key writes
+    to. Hold deps stay a second source so a finished-but-not-on-base dependency outside the
+    PRD can still land and clear the hold. A bounce (status != done) is never a candidate:
+    leaving `review` for `next` does not enqueue a merge.
 
     WHAT IT DOES. `propose.merge`, with the commit the sign-off attestation names and the
     commits CI attested, both read from the item — never derived from a branch. A merge
@@ -1154,10 +1162,9 @@ class Merger:
     repo: Path
     client: Graphban
     enabled: bool = False
-    #: Item ids seen in `review` at the last read, so a departure is visible.
-    in_review: set[str] = field(default_factory=set)
-    #: id -> branch as last seen in review, kept so a departed item still has its hint.
-    branches: dict[str, str] = field(default_factory=dict)
+    #: The PRD this wave is scoped to (if any). Candidates outside this scope are not merged
+    #: unless a GRPH-798 hold names them.
+    prd_id: str = ""
     #: Candidates: item id -> the branch it was last seen on (a selector hint; the item's
     #: own PR and receipts are preferred once it is read).
     watching: dict[str, str] = field(default_factory=dict)
@@ -1172,18 +1179,15 @@ class Merger:
     #: Set once the client turned out not to hold a tool this needs. Reported once and the
     #: merger stops asking, rather than a refusal per tick for the length of the wave.
     disabled_because: str = ""
+    #: Item ids already discovered as candidates, so we do not re-scan them every tick.
+    _seen: set[str] = field(default_factory=set, repr=False)
 
     def note_review(self, rows: list[dict]) -> None:
-        """Rows currently in `review`. Whatever was there last time and is not now is a
-        candidate — signed off or bounced, and `tick` reads the item to tell which."""
-        if not self.enabled:
-            return
-        now = {str(r.get("id")): str(r.get("branch") or "") for r in rows
-               if isinstance(r, dict) and r.get("id")}
-        for item_id in self.in_review - set(now):
-            self.watching.setdefault(item_id, self.branches.get(item_id, ""))
-        self.branches = now
-        self.in_review = set(now)
+        """Rows currently in `review`. Kept for interface compatibility; candidacy is now
+        read from the sign_off attestation, not from observing departures (GRPH-880)."""
+        # No-op: the set-difference that used to live here was the two-phase miss.
+        # An item already `done` when the `--merge` wave starts was never in this process's
+        # `in_review`, so it was invisible. The attestation is the handoff now.
 
     def note_hold(self, absent: list[dict]) -> None:
         """Dependencies the GRPH-798 check found finished-but-not-on-the-base. Each is a
@@ -1195,17 +1199,13 @@ class Merger:
             if item_id:
                 self.watching.setdefault(item_id, "")
 
-    def tick(self, wave: Wave, *, rows: list[dict] | None = None,
-             now: Callable[[], float] = time.monotonic) -> bool:
+    def tick(self, wave: Wave, *, now: Callable[[], float] = time.monotonic) -> bool:
         """Ask once per candidate that is due. Returns True when something MERGED this tick,
         so the caller knows the base moved and any hold keyed on it should be re-asked."""
         if not self.enabled or self.disabled_because:
             return False
-        if rows is None:
-            rows = self._review_rows()
-            if rows is None:
-                return False
-        self.note_review(rows)
+        # GRPH-880: discover candidates from the attestation, not from observing departures.
+        self._discover_candidates()
         merged_any = False
         for item_id in list(self.watching):
             stamp = now()
@@ -1228,18 +1228,50 @@ class Merger:
             wt_mod.refresh_ref(self.repo, self.remote, self.base)
         return merged_any
 
-    def _review_rows(self) -> list[dict] | None:
+    def _discover_candidates(self) -> None:
+        """Scan for done items with a fleet.sign_off attestation naming a commit.
+
+        GRPH-880: candidacy is a READ of a named fact, not an observation of departure.
+        An item already `done` when the `--merge` wave starts is a candidate on the first
+        tick — no requirement that this process saw it leave `review`.
+
+        Scope: if `prd_id` is set, only items belonging to that PRD are candidates.
+        Hold deps (added via `note_hold`) bypass the scope filter — they are merges that
+        would clear a hold, which is the merge most worth finishing.
+        """
+        if not self.enabled or self.disabled_because:
+            return
         try:
-            payload = self.client.call("search_items", status="review", fields="full",
+            payload = self.client.call("search_items", status="done", fields="full",
                                        limit=10_000)
         except NotPermitted as exc:
-            self._disable(f"cannot read review rows: {exc}")
-            return None
+            self._disable(f"cannot read done items: {exc}")
+            return
         except (ToolFailed, ServerUnreachable):
-            return None
+            return
         rows = payload.get("results") if isinstance(payload, dict) else None
-        return [r for r in rows if isinstance(r, dict) and r.get("id")] \
-            if isinstance(rows, list) else None
+        if not isinstance(rows, list):
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            item_id = str(row.get("id") or "")
+            if not item_id or item_id in self._seen:
+                continue
+            # Scope filter: if prd_id is set, skip items not belonging to it.
+            # Hold deps bypass this (they were added explicitly via note_hold).
+            if self.prd_id:
+                item_prd = str(row.get("prd_id") or "")
+                if item_prd != self.prd_id and item_id not in self.watching:
+                    continue
+            # Check for fleet.sign_off attestation naming a commit.
+            if not propose_mod.reviewed_commit(row):
+                continue
+            # Check for a PR (or propose url receipt).
+            if not propose_mod.pr_selector(row):
+                continue
+            self._seen.add(item_id)
+            self.watching.setdefault(item_id, str(row.get("branch") or ""))
 
     def _attempt(self, wave: Wave, item_id: str) -> "propose_mod.Merged | None":
         try:
@@ -1252,8 +1284,8 @@ class Merger:
             return None
         status = str(item.get("status") or "")
         if status != "done":
-            # Bounced, or still moving. Not a candidate until it is done — and a bounced
-            # item that later returns to review is picked up again by `note_review`.
+            # Bounced, or still moving. Not a candidate — a bounce is a verdict, not a
+            # merge miss (GRPH-880).
             self.watching.pop(item_id, None)
             return None
         selector = propose_mod.pr_selector(item) or self.watching.get(item_id, "")

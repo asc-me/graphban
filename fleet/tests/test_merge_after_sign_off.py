@@ -78,7 +78,10 @@ class _Ledger:
         if tool == "get_item_details":
             return dict(self.items[kw["id"]])
         if tool == "search_items":
-            return {"results": [r for r in self.items.values() if r["status"] == "review"]}
+            # GRPH-880: filter by the requested status, not just "review".
+            status = kw.get("status")
+            return {"results": [r for r in self.items.values()
+                               if r["status"] == (status or r["status"])]}
         if tool == "update_item":
             self.items[kw["id"]].setdefault("evidence", []).extend(_stored(kw.get("evidence")))
             return {"id": kw["id"]}
@@ -109,18 +112,17 @@ def forge(monkeypatch):
 
 # ---- the merger on its own ---------------------------------------------------------------------
 
-def test_an_item_that_leaves_review_as_done_is_merged_and_recorded(forge):
-    """Seen in review, gone next tick, `done` when read: merge it, and put the MERGE COMMIT
-    on the item — a squash rewrites the SHA, so without that receipt the dependency check
-    would hold every dependant forever on a merge that happened."""
+def test_an_item_already_done_with_attestation_is_merged_and_recorded(forge):
+    """GRPH-880: an item already `done` with a fleet.sign_off attestation is a candidate on
+    the first tick — no requirement that this process saw it leave review. The MERGE COMMIT
+    is recorded on the item because a squash rewrites the SHA."""
     gh = forge(_Forge(draft=True))
-    ledger = _Ledger({"SA-417": _done_item("SA-417", status="review")})
+    # Item is already done with the attestation when the wave starts.
+    ledger = _Ledger({"SA-417": _done_item("SA-417", status="done")})
     merger = Merger(REPO, ledger, enabled=True)
     wave = Wave()
 
-    merger.note_review([{"id": "SA-417", "branch": "gb/w-1"}])
-    ledger.items["SA-417"]["status"] = "done"
-    landed = merger.tick(wave, rows=[])
+    landed = merger.tick(wave)
 
     assert landed is True
     got = wave.merged["SA-417"]
@@ -138,22 +140,23 @@ def test_off_by_default_the_merger_asks_nothing(forge):
     ledger = _Ledger({"SA-417": _done_item("SA-417")})
     merger = Merger(REPO, ledger)
 
-    merger.note_review([{"id": "SA-417", "branch": "gb/w-1"}])
+    # note_hold adds the item as a candidate, but the merger is disabled.
     merger.note_hold([{"id": "SA-417", "commits": [REVIEWED]}])
-    landed = merger.tick(Wave(), rows=[])
+    landed = merger.tick(Wave())
 
     assert merger.enabled is False and landed is False
     assert gh.calls == [] and ledger.calls == []
 
 
 def test_a_bounced_item_is_not_a_candidate(forge):
-    """Left review as `next`, not `done`. Nothing to merge, and nothing asked of the forge."""
+    """GRPH-880: a bounce is a verdict, not a merge miss. An item with status != done is
+    never a candidate, even if it has an attestation. Nothing asked of the forge."""
     gh = forge(_Forge())
+    # Item has the attestation but status is "next" (bounced).
     ledger = _Ledger({"SA-417": _done_item("SA-417", status="next")})
     merger = Merger(REPO, ledger, enabled=True)
 
-    merger.note_review([{"id": "SA-417", "branch": "gb/w-1"}])
-    merger.tick(Wave(), rows=[])
+    merger.tick(Wave())
 
     assert gh.calls == []
     assert "SA-417" not in merger.watching
@@ -168,7 +171,7 @@ def test_a_held_dependency_is_a_candidate(forge):
     wave = Wave()
 
     merger.note_hold([{"id": "SA-417", "title": "t", "commits": [REVIEWED]}])
-    merger.tick(wave, rows=[])
+    merger.tick(wave)
 
     assert wave.merged["SA-417"].ok
     assert "pr merge" in [" ".join(c[1:3]) for c in gh.calls]
@@ -184,7 +187,7 @@ def test_a_precondition_miss_leaves_the_item_alone_and_is_re_asked_later(forge):
     clock = {"t": 1000.0}
 
     merger.note_hold([{"id": "SA-417", "commits": [REVIEWED]}])
-    merger.tick(wave, rows=[], now=lambda: clock["t"])
+    merger.tick(wave, now=lambda: clock["t"])
     got = wave.merged["SA-417"]
     assert not got.ok and not got.skipped and "reviewed commit" in got.reason
     assert [" ".join(c[1:3]) for c in gh.calls] == ["pr view"]
@@ -192,27 +195,37 @@ def test_a_precondition_miss_leaves_the_item_alone_and_is_re_asked_later(forge):
     assert "SA-417" in merger.watching
 
     clock["t"] += MERGE_RECHECK_S / 2
-    merger.tick(wave, rows=[], now=lambda: clock["t"])
+    merger.tick(wave, now=lambda: clock["t"])
     assert len(gh.calls) == 1, "re-asked the forge inside the recheck interval"
 
     clock["t"] += MERGE_RECHECK_S
-    merger.tick(wave, rows=[], now=lambda: clock["t"])
+    merger.tick(wave, now=lambda: clock["t"])
     assert len(gh.calls) == 2, "never re-asked after the interval"
 
 
 def test_skipped_is_final_and_pending_is_not(forge):
+    """Skipped (BLOCKED) is final — item removed from watching. Pending (auto-merge armed)
+    is not — item stays in watching for re-ask."""
+    # Test skipped (BLOCKED) scenario.
     gh = forge(_Forge(draft=False, status="BLOCKED"))
-    ledger = _Ledger({"SA-417": _done_item("SA-417"), "SA-418": _done_item("SA-418")})
+    ledger = _Ledger({"SA-417": _done_item("SA-417")})
     merger = Merger(REPO, ledger, enabled=True)
     wave = Wave()
 
     merger.note_hold([{"id": "SA-417", "commits": [REVIEWED]}])
-    merger.tick(wave, rows=[])
+    merger.tick(wave)
     assert wave.merged["SA-417"].skipped and "SA-417" not in merger.watching
 
-    forge(_Forge(draft=False, lands=False))
+
+def test_pending_stays_in_watching(forge):
+    """Pending (auto-merge armed, lands=False) is not final — item stays in watching."""
+    gh = forge(_Forge(draft=False, lands=False))
+    ledger = _Ledger({"SA-418": _done_item("SA-418")})
+    merger = Merger(REPO, ledger, enabled=True)
+    wave = Wave()
+
     merger.note_hold([{"id": "SA-418", "commits": [REVIEWED]}])
-    merger.tick(wave, rows=[])
+    merger.tick(wave)
     assert wave.merged["SA-418"].pending and "SA-418" in merger.watching
 
 
@@ -226,7 +239,7 @@ def test_a_merge_refetches_the_base(forge, monkeypatch):
     merger = Merger(REPO, ledger, enabled=True, remote="origin", base="origin/main")
 
     merger.note_hold([{"id": "SA-417", "commits": [REVIEWED]}])
-    merger.tick(Wave(), rows=[])
+    merger.tick(Wave())
 
     assert fetched == [("origin", "origin/main")]
 
@@ -240,8 +253,8 @@ def test_a_client_without_the_tools_disables_the_merger_once(forge):
     wave = Wave()
 
     merger.note_hold([{"id": "SA-417", "commits": [REVIEWED]}])
-    merger.tick(wave, rows=[])
-    merger.tick(wave, rows=[])
+    merger.tick(wave)
+    merger.tick(wave)
 
     assert "get_item_details" in merger.disabled_because
     assert gh.calls == [] and wave.merged == {}
@@ -263,10 +276,105 @@ def test_a_merge_that_cannot_be_recorded_is_a_failure_not_a_silence(forge):
     wave = Wave()
 
     merger.note_hold([{"id": "SA-417", "commits": [REVIEWED]}])
-    merger.tick(wave, rows=[])
+    merger.tick(wave)
 
     assert wave.merged["SA-417"].ok
     assert any("merged as" in f and "not recorded" in f for f in wave.failures)
+
+
+# ---- GRPH-880: attestation-based candidacy -----------------------------------------------------
+
+def test_two_phase_item_already_done_before_merge_wave_starts(forge):
+    """THE CALL for GRPH-880. An item is already `done` with a fleet.sign_off attestation
+    BEFORE the `--merge` wave starts. Under the old set-difference, this item was invisible
+    because it was never in this process's `in_review`. Now it is a candidate on the first
+    tick because candidacy is a READ of the attestation, not an observation of departure."""
+    gh = forge(_Forge(draft=True))
+    # Item is already done with the attestation when the wave starts — no review observation.
+    ledger = _Ledger({"SA-417": _done_item("SA-417", status="done")})
+    merger = Merger(REPO, ledger, enabled=True)
+    wave = Wave()
+
+    # First tick: should discover and merge the item.
+    landed = merger.tick(wave)
+
+    assert landed is True, "two-phase miss: item already done was not merged"
+    assert wave.merged["SA-417"].ok
+    assert "pr merge" in [" ".join(c[1:3]) for c in gh.calls]
+
+
+def test_prd_scope_excludes_items_from_other_prds(forge):
+    """GRPH-880: `--prd X --merge` does not merge a done item whose prd_id is not X, unless
+    a GRPH-798 hold names it. The scope filter prevents cross-PRD merges."""
+    gh = forge(_Forge(draft=True))
+    # Item belongs to PRD-OTHER, not PRD-X.
+    item = _done_item("SA-417", status="done")
+    item["prd_id"] = "PRD-OTHER"
+    ledger = _Ledger({"SA-417": item})
+    # Merger is scoped to PRD-X.
+    merger = Merger(REPO, ledger, enabled=True, prd_id="PRD-X")
+    wave = Wave()
+
+    merger.tick(wave)
+
+    # Item should NOT be merged because it's outside the scope.
+    assert gh.calls == [], "merged an item outside the PRD scope"
+    assert wave.merged == {}
+
+
+def test_prd_scope_hold_dep_bypasses_filter(forge):
+    """GRPH-880: a GRPH-798 hold dep bypasses the PRD scope filter. The hold names a
+    finished item whose PR is the click the dependant waits on."""
+    gh = forge(_Forge(draft=False))
+    # Item belongs to PRD-OTHER, not PRD-X.
+    item = _done_item("SA-417", status="done")
+    item["prd_id"] = "PRD-OTHER"
+    ledger = _Ledger({"SA-417": item})
+    # Merger is scoped to PRD-X, but the item is added as a hold dep.
+    merger = Merger(REPO, ledger, enabled=True, prd_id="PRD-X")
+    wave = Wave()
+
+    merger.note_hold([{"id": "SA-417", "title": "t", "commits": [REVIEWED]}])
+    merger.tick(wave)
+
+    # Item SHOULD be merged because it's a hold dep.
+    assert wave.merged["SA-417"].ok
+    assert "pr merge" in [" ".join(c[1:3]) for c in gh.calls]
+
+
+def test_no_attestation_means_not_a_candidate(forge):
+    """GRPH-880: an item without a fleet.sign_off attestation is not a candidate, even if
+    it is done and has a PR."""
+    gh = forge(_Forge(draft=True))
+    # Item is done with a PR but no attestation.
+    item = {"id": "SA-417", "status": "done", "branch": "gb/w-1", "pr": "https://github.com/x/y/pull/9",
+            "evidence": []}
+    ledger = _Ledger({"SA-417": item})
+    merger = Merger(REPO, ledger, enabled=True)
+    wave = Wave()
+
+    merger.tick(wave)
+
+    assert gh.calls == [], "merged an item without a sign_off attestation"
+    assert wave.merged == {}
+
+
+def test_no_pr_means_not_a_candidate(forge):
+    """GRPH-880: an item without a PR (or propose url receipt) is not a candidate, even if
+    it is done with an attestation."""
+    gh = forge(_Forge(draft=True))
+    # Item is done with attestation but no PR.
+    item = _done_item("SA-417", status="done")
+    item["pr"] = None
+    item["branch"] = ""  # No branch either.
+    ledger = _Ledger({"SA-417": item})
+    merger = Merger(REPO, ledger, enabled=True)
+    wave = Wave()
+
+    merger.tick(wave)
+
+    assert gh.calls == [], "merged an item without a PR"
+    assert wave.merged == {}
 
 
 # ---- through the loop ----------------------------------------------------------------------------
@@ -318,6 +426,9 @@ def _server(workspace: Path, *, items: dict[str, dict], review_first: bool = Tru
                     if r["status"] == "review":
                         r["status"] = "done"
                 return _mcp({"results": rows}, rid)
+            if args.get("status") == "done":
+                # GRPH-880: return done items for _discover_candidates.
+                return _mcp({"results": [r for r in items.values() if r["status"] == "done"]}, rid)
             return _mcp({"results": []}, rid)
         if tool == "collision_clusters":
             # A cluster stays offered until its seed has been delegated.
@@ -522,7 +633,8 @@ def test_up_merge_finishes_the_merge_after_the_reap(
                       allowed=ALLOWED_TOOLS | {"search_items", "get_item_details",
                                                "related_work", "update_item"})
     merger = Merger(git_repo, client, enabled=True)
-    merger.note_review([{"id": "SA-417", "branch": "gb/w-1"}])
+    # GRPH-880: candidacy is discovered from the attestation, not from note_review.
+    # The item is already done with the attestation, so _discover_candidates will find it.
 
     wave = sup.up(git_repo, _seats(1), _factory(scripts, "works_then_exits"), client,
                   state=state, workspace=workspace, merger=merger)
