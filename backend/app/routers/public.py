@@ -53,6 +53,8 @@ router = APIRouter(prefix="/public", tags=["public"])
 _UPLOAD_RATE = 10  # attachment uploads per IP per minute
 
 
+from app.security import authz
+from app.security.deps import get_current_user
 from app.security.net import client_ip as _client_ip  # shared with auth rate limiting
 
 
@@ -452,7 +454,13 @@ def public_vote(
 
 # ---- PRD-43: authenticated operator endpoints ----
 
-from app.security.deps import get_current_user
+
+def _writable_request(db: Session, user: User, request_id: str) -> Request:
+    req = db.get(Request, req_svc.keys.resolve_request(db, request_id) or request_id)
+    if req is None:
+        raise HTTPException(404, "not found")
+    authz.require_writable(db, user.id, req.project_id, "request")
+    return req
 
 
 @router.post("/ingest-token", response_model=IngestTokenOut)
@@ -462,6 +470,7 @@ def mint_token_endpoint(
     db: Session = Depends(get_db),
 ):
     """PRD-43 D1: mint or rotate the ingest token for a project."""
+    authz.require_writable(db, current_user.id, project_id)
     plain, prefix = mint_ingest_token(db, project_id)
     return IngestTokenOut(token=plain, prefix=prefix)
 
@@ -474,6 +483,7 @@ def set_surface_flags(
     db: Session = Depends(get_db),
 ):
     """PRD-43 D4: set per-surface flags for a project."""
+    authz.require_writable(db, current_user.id, project_id)
     cfg = update_surface_flags(db, project_id, flags)
     return SurfaceFlagsOut(
         intake_enabled=cfg.intake_enabled,
@@ -495,6 +505,7 @@ def publish_endpoint(
     db: Session = Depends(get_db),
 ):
     """PRD-43 D5: publish a request (make it visible on public boards)."""
+    _writable_request(db, current_user, request_id)
     req = req_svc.publish_request(db, request_id)
     if req is None:
         raise HTTPException(404, "not found")
@@ -508,6 +519,7 @@ def unpublish_endpoint(
     db: Session = Depends(get_db),
 ):
     """PRD-43 D5: unpublish a request (remove from public boards)."""
+    _writable_request(db, current_user, request_id)
     req = req_svc.unpublish_request(db, request_id)
     if req is None:
         raise HTTPException(404, "not found")
@@ -522,6 +534,7 @@ def create_comment_endpoint(
     db: Session = Depends(get_db),
 ):
     """PRD-43 D7: create an operator comment on a request."""
+    _writable_request(db, current_user, request_id)
     try:
         comment = req_svc.create_comment(
             db,
@@ -553,6 +566,7 @@ def claim_org_host_endpoint(
     db: Session = Depends(get_db),
 ):
     """PRD-43 D8: claim a public host slug for an org."""
+    authz.require_org_admin(db, current_user.id, org_id)
     slug = body.get("slug", "")
     try:
         return claim_org_host(db, org_id, slug)
@@ -568,6 +582,7 @@ def claim_project_path_endpoint(
     db: Session = Depends(get_db),
 ):
     """PRD-43 D8: claim a public path id for a project."""
+    authz.require_writable(db, current_user.id, project_id)
     slug = body.get("slug", "")
     try:
         return claim_project_path_id(db, project_id, slug)

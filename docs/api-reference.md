@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 144 of the 221 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 156 of the 233 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -493,10 +493,29 @@ See [MCP tools](mcp.md) for the tool catalog.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| POST | `/api/public/requests` | Submit feedback + return duplicates |
+| POST | `/api/public/requests` | Submit feedback + return duplicates. Hosted: ingest token (`Authorization: Bearer gbfb_…`) or legacy share token; never a raw `project_id` |
 | GET | `/api/public/duplicates` | Live duplicate check (`?q=&project_id=`) |
 | GET | `/api/public/roadmap` | Read-only roadmap (for the share link) |
+| GET | `/api/public/boards/issues` | Published bugs (allow-list payload; surface flag off → 404) |
+| GET | `/api/public/boards/requests` | Published features/enhancements (same allow-list) |
+| GET | `/api/public/t/{track_token}` | Submitter tracking page. Capability URL; unpublished still 200 for a real token |
+| POST | `/api/public/requests/{request_id}/vote` | Anonymous upvote on a published row. Sets `gb_vote` cookie; unpublished → 404 |
+| GET | `/api/public/slugs/validate` | Check a vanity slug without claiming it |
 | POST | `/api/public/github/webhook` | Inbound GitHub issue → tracker item |
 | POST | `/api/public/stripe/webhook` | Stripe → `Organization.plan`. 404 when Stripe is unset; 401 on a bad signature. Never applies an unsigned payload |
+
+## Public (operator, JWT)
+
+These share the public router so the Feedback Kit and Settings can share one origin. They are **not** unauthenticated. Cross-org writes 404.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/public/ingest-token` | Mint/rotate the per-project ingest token (`gbfb_…`). Shown once |
+| PUT | `/api/public/surface-flags` | Per-surface flags (intake/form/roadmap/issues/requests) + `capture_identity` |
+| POST | `/api/public/requests/{request_id}/publish` | Put a request on the matching public board |
+| POST | `/api/public/requests/{request_id}/unpublish` | Take it off; tracking URL still works |
+| POST | `/api/public/requests/{request_id}/comments` | Operator comment. Default `visibility=private` |
+| POST | `/api/public/slugs/org-host` | Claim `{org}.graphban.dev` (enterprise; org admin) |
+| POST | `/api/public/slugs/project-path` | Claim the `{project_id}` path segment |
 
 All public endpoints share a per-IP sliding-window rate limit (20/60s).
