@@ -99,7 +99,6 @@
       "events",
       "grill_dimensions",
       "grill_turns",
-      "idempotency_keys",
       "ingest_watermarks",
       "linear_integrations",
       "org_invites",
