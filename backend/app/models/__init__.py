@@ -255,6 +255,17 @@ class Organization(Base):
         Boolean, default=False, server_default=false(), nullable=False
     )
 
+    # PRD-43 D8: the public host label for this org ({org_host}.graphban.dev).
+    # Random until claimed (free/pro); enterprise may choose a custom slug.
+    public_host: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    public_host_custom: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
+    # PRD-43 D4: org-wide default for new projects when "Turn on feedback for all" is used.
+    feedback_default_on: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
+
 
 class OrgMembership(Base):
     """A user's seat in an organization (hosted-only, AL-74)."""
@@ -1097,6 +1108,10 @@ class Request(Base):
     meta: Mapped[dict] = mapped_column(JSON, default=dict)  # user_agent, app_version, custom
     attachment_ids: Mapped[list] = mapped_column(JSON, default=list)  # screenshot ids
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # PRD-43 D5: operator publish mark. NULL = unpublished (not on public boards).
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # PRD-43 D3: unguessable tracking token (stored hashed). The URL is the capability.
+    track_token_hash: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
 
     __table_args__ = (UniqueConstraint("project_id", "number", name="uq_request_number"),)
 
@@ -1642,6 +1657,23 @@ class PlatformConfig(Base):
     public_share_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
     share_token: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
 
+    # PRD-43 D1: ingest credential split from the public URL. The ingest token is
+    # rotatable, stored hashed, prefixed gbfb_ so leaks are greppable. The public_path_id
+    # is the guessable URL segment (routing, not auth).
+    ingest_token_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+    ingest_token_prefix: Mapped[str] = mapped_column(String, default="", server_default="")
+    public_path_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+
+    # PRD-43 D4: per-surface flags replacing the single public_share_enabled switch.
+    intake_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    public_form_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    public_roadmap_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    public_issues_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    public_requests_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+
+    # PRD-43 D3: whether the project requires identity on public submit.
+    capture_identity: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+
     github_connected: Mapped[bool] = mapped_column(Boolean, default=False)
     github_account: Mapped[str] = mapped_column(String, default="")
     github_repo: Mapped[str] = mapped_column(String, default="")
@@ -1678,6 +1710,35 @@ class PlatformConfig(Base):
                 "key_set": bool(c.get("api_key")),
             }
         return out
+
+
+class RequestComment(Base):
+    """PRD-43 D7: operator comment on a request. Default private; tagged public explicitly."""
+
+    __tablename__ = "request_comments"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # rcom_...
+    request_id: Mapped[str] = mapped_column(ForeignKey("requests.id"), index=True)
+    author_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    body: Mapped[str] = mapped_column(Text, default="")
+    visibility: Mapped[str] = mapped_column(
+        String, default="private", server_default="private", nullable=False
+    )  # private | public; absence of the tag is private (PRD-43 D7)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RequestVote(Base):
+    """PRD-43 D6: anonymous public vote on a published request. voter_key is a hash of the
+    server-signed cookie id, not an email or IP."""
+
+    __tablename__ = "request_votes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(ForeignKey("requests.id"), index=True)
+    voter_key: Mapped[str] = mapped_column(String)  # hash of signed cookie id
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (UniqueConstraint("request_id", "voter_key", name="uq_request_vote"),)
 
 
 class Attachment(Base):
