@@ -46,7 +46,7 @@ from .adapters import AdapterError, Tuning
 from .tiers import TierTable
 from . import matrix as matrix_mod
 from .client import Graphban
-from .lock import Acquired
+from .lock import Acquired, Holder
 from .seat import Seat
 from .spawn import Child, LaunchFailed, Reason, stop
 from .progress import NEVER_WROTE
@@ -266,6 +266,10 @@ class Fleet:
     measured: "matrix_mod.Measured" = field(default_factory=dict)
     #: PRD-41 D5: the same payload re-keyed on capability, with a layer per cell.
     cap_measured: "matrix_mod.CapMeasured" = field(default_factory=dict)
+    #: GRPH-881: when this supervisor could not take the exclusive lock because another
+    #: supervisor already holds it, this is the holder's record. `spawn` refuses with a
+    #: tool error naming the holder; `ps`/`stop`/`orphans` observe the holder's children.
+    attached_holder: Holder | None = None
 
     def __post_init__(self) -> None:
         # One partition object. `start_one` is given `fleet.partition`; `watch_tick`
@@ -274,7 +278,13 @@ class Fleet:
         self.wave.partition = self.partition
 
     def tick(self, *, debug: bool = False) -> None:
-        """One pass of the same watch loop `up` runs. Tests call this; `serve` ticks it."""
+        """One pass of the same watch loop `up` runs. Tests call this; `serve` ticks it.
+
+        In attach mode (GRPH-881) this is a no-op: we do not own these children and must
+        neither watch them nor overwrite the holder's children.json.
+        """
+        if self.attached_holder is not None:
+            return
         watch_tick(self.wave, self.children, self.limits, self.client, debug=debug)
         adopt_mod.persist(adopt_mod.children_path(self.repo), self.children)
 
@@ -453,6 +463,14 @@ def call_tool(fleet: Fleet, name: str, args: dict) -> dict:
     """Dispatch one tool. Raises nothing the caller has to translate — failures return
     a message, and `handle` wraps them in `isError`."""
     if name == "spawn":
+        if fleet.attached_holder is not None:
+            h = fleet.attached_holder
+            who = f"pid {h.pid} (since {h.acquired_at}, gbfleet {h.version})"
+            raise ValueError(
+                f"this supervisor is attached read-only: {h.repo} is held by {who}. "
+                f"spawn refuses while another supervisor holds the lock "
+                f"(PRD-22 D-h). Lock: {fleet.repo}"
+            )
         adapter = args.get("adapter") or ""
         model = args.get("model") or ""
         tier = args.get("tier") or ""

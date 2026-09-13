@@ -288,3 +288,64 @@ def test_a_pre_existing_lock_file_gets_tightened(git_repo: Path, state: Path):
 
     with hold(git_repo, state) as acquired:
         assert is_owner_only(acquired.path)
+
+
+# --- GRPH-881: gbfleet mcp attaches read-only when the lock is held -----------------
+
+
+MCP_ATTACH_SCRIPT = """
+import json, subprocess, sys, os
+
+# Send initialize to gbfleet mcp via stdin, read the reply from stdout.
+proc = subprocess.Popen(
+    [sys.executable, "-m", "gbfleet.cli", "mcp",
+     "--repo", sys.argv[1], "--server", "http://127.0.0.1:1"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    text=True, env={**os.environ, "GBFLEET_API_KEY": "test-key"},
+)
+init_msg = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}) + "\\n"
+stdout, stderr = proc.communicate(init_msg, timeout=10)
+# Write the exit code and stdout for the test to read.
+print(json.dumps({"exit_code": proc.returncode, "stdout": stdout, "stderr": stderr}))
+"""
+
+
+def test_mcp_initialize_succeeds_while_another_supervisor_holds_the_repo(
+    git_repo: Path, state: Path
+):
+    """THE load-bearing test (GRPH-881). With a live holder, send MCP `initialize` on
+    stdin and assert a JSON-RPC result (protocolVersion + serverInfo) on stdout, exit 0
+    after stdin closes. If initialize still exits 3 under a held lock, this test fails.
+    """
+    holder = _spawn_holder(git_repo, state)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", MCP_ATTACH_SCRIPT, str(git_repo)],
+            capture_output=True, text=True, timeout=15,
+        )
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+        assert data["exit_code"] == 0, (
+            f"gbfleet mcp exited {data['exit_code']}: {data['stderr']}")
+        # Parse the JSON-RPC reply from stdout.
+        lines = [l for l in data["stdout"].strip().splitlines() if l.strip()]
+        assert lines, "no JSON-RPC reply on stdout — initialize was never answered"
+        reply = json.loads(lines[0])
+        assert reply.get("result", {}).get("protocolVersion"), (
+            f"no protocolVersion in reply: {reply}")
+        assert reply["result"]["serverInfo"]["name"] == "gbfleet"
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)
+
+
+def test_a_second_drain_on_the_same_repo_still_exits_3(
+    git_repo: Path, state: Path
+):
+    """Two `gbfleet up`/`until` on the same clone still refuse at startup.
+    Do not weaken drain-vs-drain (PRD-22 D-h).
+    """
+    with hold(git_repo, state):
+        with pytest.raises(RepoLocked) as exc:
+            with hold(git_repo, state):
+                pass
+    assert exc.value.holder is not None

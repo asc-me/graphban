@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from gbfleet import mcp
+from gbfleet.lock import Holder
 from gbfleet.mcp import METHOD_NOT_FOUND, PARSE_ERROR, TOOLS, Fleet, handle, serve
 from gbfleet.spawn import Reason
 from gbfleet.supervisor import Limits
@@ -568,3 +569,78 @@ def test_a_failed_shutdown_reap_is_reported_and_does_not_raise(fleet: Fleet, mon
     serve(fleet, stdin=_io.StringIO(""), stdout=_io.StringIO(), poll=60.0)
     assert any("final reap on shutdown failed" in f for f in fleet.wave.failures), \
         fleet.wave.failures
+
+
+# --- GRPH-881: attach mode when the lock is held by another supervisor ---------------
+
+
+def _attached_fleet(git_repo: Path, tmp_path: Path) -> Fleet:
+    """A Fleet in attach mode: no lock, with a holder record."""
+    holder = Holder(pid=99999, repo=str(git_repo),
+                    acquired_at="2026-09-13T00:00:00+00:00", version="0.0.0")
+    return Fleet(
+        repo=git_repo,
+        workspace=tmp_path / "ws",
+        client=_server(tmp_path / "ws"),
+        launch_for=lambda name, model="", tuning=None: (_ for _ in ()).throw(
+            RuntimeError("spawn must not be reached in attach mode")
+        ),
+        attached_holder=holder,
+    )
+
+
+def test_initialize_succeeds_when_the_lock_is_held_by_another_supervisor(
+    git_repo: Path, tmp_path: Path
+):
+    """The handshake MUST complete. Grok auto-starts `gbfleet mcp` at session start;
+    if initialize exits 3 before writing a JSON-RPC result, the MCP client marks the
+    server unavailable and the planner can never share the clone with a CLI wave."""
+    fleet = _attached_fleet(git_repo, tmp_path)
+    reply = handle(fleet, {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    assert reply is not None
+    assert reply["result"]["protocolVersion"] == mcp.PROTOCOL_VERSION
+    assert reply["result"]["serverInfo"]["name"] == "gbfleet"
+
+
+def test_tools_list_still_lists_all_four_tools_in_attach_mode(
+    git_repo: Path, tmp_path: Path
+):
+    """The planner needs spawn (to see it refuse), ps, stop, and orphans."""
+    fleet = _attached_fleet(git_repo, tmp_path)
+    reply = handle(fleet, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    names = [t["name"] for t in reply["result"]["tools"]]
+    assert names == ["spawn", "stop", "ps", "orphans"]
+
+
+def test_spawn_refuses_as_a_tool_error_naming_the_holder(
+    git_repo: Path, tmp_path: Path
+):
+    """NOT a process exit. A tool result carrying isError, so the planner can read it
+    and the process stays up for ps/stop/orphans."""
+    fleet = _attached_fleet(git_repo, tmp_path)
+    result = _call(fleet, "spawn", enrolment_code="WORKER-1")
+    assert result["isError"] is True
+    msg = result["content"][0]["text"]
+    assert "read-only" in msg
+    assert "99999" in msg
+    assert "PRD-22 D-h" in msg
+
+
+def test_ps_returns_an_empty_roster_when_no_children_are_attached(
+    git_repo: Path, tmp_path: Path
+):
+    """An attach with no live children is an empty fleet, not a crash."""
+    fleet = _attached_fleet(git_repo, tmp_path)
+    listing = _value(_call(fleet, "ps"))
+    assert listing["children"] == []
+    assert listing["running"] == 0
+
+
+def test_tick_is_a_noop_in_attach_mode(git_repo: Path, tmp_path: Path):
+    """We do not own these children. The watch tick must neither poll the server on
+    their behalf nor overwrite the holder's children.json."""
+    fleet = _attached_fleet(git_repo, tmp_path)
+    # Should not raise, should not write anything.
+    fleet.tick()
+    assert fleet.wave.failures == []
+
