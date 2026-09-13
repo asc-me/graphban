@@ -684,11 +684,73 @@ def _serve_stdio(args) -> int:
                     print(f"gbfleet mcp: {note}", file=sys.stderr)
             serve(fleet)
     except RepoLocked as exc:
-        print(f"gbfleet mcp: {exc}", file=sys.stderr)
-        return 3
+        # GRPH-881: instead of exiting, attach read-only. The MCP client (Grok) auto-starts
+        # this process at session start; exiting before initialize breaks the handshake.
+        # A planner holding `mcp` must still see the running wave and be able to stop children,
+        # while spawn refuses as a tool error naming the holder.
+        return _serve_attached(root, workspace, client, exc, args)
     finally:
         client.close()
     return 0
+
+
+def _serve_attached(root: Path, workspace: Path, client: Graphban,
+                    exc: RepoLocked, args) -> int:
+    """Serve MCP read-only, attached to the holder's children (GRPH-881).
+
+    The lock is held by another supervisor. We do NOT take it. We read the holder's
+    children.json, attach to live pids, and serve ps/stop/orphans while spawn refuses.
+    """
+    holder = exc.holder
+    who = f"pid {holder.pid}" if holder else "unknown holder"
+    print(f"gbfleet mcp: attached read-only to {root} held by {who}", file=sys.stderr)
+
+    try:
+        tiers = TierTable.parse(args.tier)
+    except ValueError as exc_tier:
+        print(f"gbfleet mcp: {exc_tier}", file=sys.stderr)
+        return 2
+
+    children = _load_holders_children(root)
+    print(f"gbfleet mcp: observing {len(children)} live child(ren)", file=sys.stderr)
+
+    fleet = Fleet(
+        repo=root,
+        workspace=workspace,
+        client=client,
+        launch_for=lambda name, model="", tuning=None: make_adapter_factory(name, None, model, tuning),
+        lock=None,
+        limits=Limits(max_workers=args.max_workers, child_wall_clock=args.child_wall_clock),
+        tiers=tiers,
+        matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
+        shared=_shared_servers(args),
+        attached_holder=holder,
+    )
+    fleet.children.extend(children)
+    fleet.profile, fleet.policy, pref_note, fleet.measured, fleet.cap_measured = read_preferences(client)
+    print(f"gbfleet mcp: {pref_note}", file=sys.stderr)
+    serve(fleet)
+    return 0
+
+
+def _load_holders_children(root: Path) -> list:
+    """Read the holder's children.json and attach to live pids. Dead children are skipped.
+
+    Does NOT salvage: we are observers, not owners. The holder manages those trees.
+    """
+    path = adopt_mod.children_path(root)
+    loaded = adopt_mod.load(path)
+    if isinstance(loaded, adopt_mod.UnadoptableFile):
+        return []
+    attached = []
+    for snap in loaded:
+        verdict = adopt_mod.classify(snap)
+        if verdict.fate == "attached":
+            try:
+                attached.append(adopt_mod.attach(snap))
+            except OSError:
+                pass
+    return attached
 
 
 def _shared_servers(args) -> dict:
