@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 142 of the 219 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 144 of the 221 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -391,6 +391,17 @@ back only canonical status transitions, comments/links, and the triage-board ass
 | --- | --- | --- |
 | GET / POST | `/api/orgs/{id}/tracker-links` | List or create tracker links |
 | GET / PATCH / DELETE | `/api/orgs/{id}/tracker-links/{link_id}` | Read, update, or remove a link |
+
+## Slice pull (PRD-10 / GRPH-190)
+
+Spoke-initiated: the local instance authenticates to the hub and pulls only the
+authenticated user's assigned tickets from the mirror. Tracker-owned bodies are
+dropped under `metadata_only`. 404 when the project has no tracker link.
+
+| Method | Path | Auth | Purpose |
+| --- | --- | --- | --- |
+| GET | `/api/slice/my` | JWT | The caller's assigned slice (`project_id` required) |
+| GET | `/api/slice/count` | JWT | Count of that slice |
 
 ## Membership mutations (hosted only, PRD-21 D8)
 

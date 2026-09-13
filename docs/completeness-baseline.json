@@ -99,7 +99,6 @@
       "events",
       "grill_dimensions",
       "grill_turns",
-      "idempotency_keys",
       "ingest_watermarks",
       "linear_integrations",
       "org_invites",
@@ -107,13 +106,11 @@
       "org_requests",
       "org_usage",
       "project_edges",
-      "sync_fingerprints",
       "sync_link",
       "sync_state",
       "team_grants",
       "team_members",
       "teams",
-      "tracker_mirror",
       "verdicts",
       "work_classifications"
     ]
