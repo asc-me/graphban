@@ -1072,6 +1072,14 @@ class PrdAiOut(BaseModel):
 
 
 # ---- Public feedback (Phase 2) ----
+class AccountIn(BaseModel):
+    """PRD-43 D2: submitter identity from the calling app. Stored in meta.account,
+    not in `by`. `by` is the triage display handle derived from account.name/email."""
+    id: str = ""
+    name: str = ""
+    email: str = ""
+
+
 class PublicRequestIn(BaseModel):
     type: str
     title: str
@@ -1084,6 +1092,7 @@ class PublicRequestIn(BaseModel):
     attachment_ids: list[str] = []
     hp: str = ""  # honeypot — must stay empty
     turnstile_token: str = ""
+    account: AccountIn | None = None  # PRD-43 D2: app-side identity
 
 
 class DuplicateHit(BaseModel):
@@ -1098,6 +1107,55 @@ class DuplicateHit(BaseModel):
 class PublicRequestOut(BaseModel):
     request: RequestOut
     duplicates: list[DuplicateHit]
+    track_url: str = ""  # PRD-43 D3: unguessable tracking URL
+
+
+# ---- PRD-43: tracking, public boards, comments ----
+class TrackingOut(BaseModel):
+    """PRD-43 D3: what the tracking page shows. Allow-list — no secrets."""
+    title: str
+    type: str
+    status: str  # new / triaging / linked
+    linked_status: str | None = None  # item status when linked
+    votes: int
+    comments: list["PublicCommentOut"] = []
+
+
+class PublicCommentOut(BaseModel):
+    """PRD-43 D7: public operator comment. Only visibility=public appear here."""
+    id: str
+    body: str
+    created_at: datetime
+
+
+class PublicBoardRow(BaseModel):
+    """PRD-43 D5: one row on the public issues/requests board. Allow-list."""
+    id: str
+    type: str
+    title: str
+    votes: int
+    created_at: datetime
+    linked_status: str | None = None  # absent when unlinked
+    comments: list[PublicCommentOut] = []
+
+
+class IngestTokenOut(BaseModel):
+    """PRD-43 D1: mint/rotate response. Plaintext shown ONCE."""
+    token: str
+    prefix: str
+
+
+class SurfaceFlagsOut(BaseModel):
+    """PRD-43 D4: surface flags for the UI."""
+    intake_enabled: bool = False
+    public_form_enabled: bool = False
+    public_roadmap_enabled: bool = False
+    public_issues_enabled: bool = False
+    public_requests_enabled: bool = False
+    capture_identity: bool = False
+    public_share_enabled: bool = False  # derived compatibility read
+    ingest_token_prefix: str = ""
+    public_path_id: str | None = None
 
 
 # ---- Agent chat ----
