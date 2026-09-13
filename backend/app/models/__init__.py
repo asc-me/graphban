@@ -2622,3 +2622,51 @@ class LlmCallSpan(Base):
     # span has nothing to label (embed, error, empty reply) — not an empty string.
     # The prompt is deliberately not stored: spans are telemetry, not a transcript.
     output_preview: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class TrackerLink(Base):
+    """A link between an external tracker (Linear, later Jira) and an AgentLedger
+    project, scoped to the org (PRD-10 / GRPH-186).
+
+    When linked, the tracker is AUTHORITATIVE: AgentLedger mirrors read-heavy and
+    writes back only canonical status transitions, comments/links, and the
+    triage-board assignee. The authority flag and field-mapping config live per link.
+
+    Write-back attribution: Graphban audit always records the acting human (required).
+    A Linear comment on assignee/status writes is on by default with a per-link opt-out
+    (`write_back_comment`).
+    """
+
+    __tablename__ = "tracker_links"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)  # trl_...
+    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    # "linear" now; "jira" in v3. Kept as a string so a new adapter is not a migration.
+    tracker_kind: Mapped[str] = mapped_column(String, default="linear")
+    # The external team/project identifier (e.g. Linear team UUID).
+    tracker_team_id: Mapped[str] = mapped_column(String)
+    # Display name cached from the tracker (e.g. "Platform Eng").
+    tracker_team_name: Mapped[str] = mapped_column(String, default="")
+    # When true, the tracker is authoritative — AgentLedger mirrors read-heavy and
+    # writes back only the constrained set (status, comments/links, assignee).
+    authority: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
+    # Per-link field mapping: which tracker fields map to which AgentLedger fields.
+    # Explicitly lossy and configurable. Empty dict = defaults.
+    field_mapping: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Whether write-backs post a Linear comment attributing the acting human.
+    # On by default so Linear's activity stream is not a lie; per-link opt-out.
+    write_back_comment: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=true(), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "tracker_kind", "tracker_team_id",
+                         name="uq_tracker_link_team"),
+    )

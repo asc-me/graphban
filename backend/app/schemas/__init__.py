@@ -1324,3 +1324,35 @@ class UpstreamReportIn(BaseModel):
     type: str = "feedback"
     title: str
     detail: str = ""
+
+
+# ---- Tracker links (PRD-10 / GRPH-186) ----
+class TrackerLinkCreate(BaseModel):
+    project_id: str
+    tracker_kind: str = "linear"
+    tracker_team_id: str
+    tracker_team_name: str = ""
+    authority: bool = True
+    field_mapping: dict = {}
+    write_back_comment: bool = True
+
+
+class TrackerLinkUpdate(BaseModel):
+    authority: bool | None = None
+    field_mapping: dict | None = None
+    write_back_comment: bool | None = None
+    tracker_team_name: str | None = None
+
+
+class TrackerLinkOut(ORMModel):
+    id: str
+    org_id: str
+    project_id: str
+    tracker_kind: str
+    tracker_team_id: str
+    tracker_team_name: str
+    authority: bool
+    field_mapping: dict
+    write_back_comment: bool
+    created_at: datetime
+    updated_at: datetime
