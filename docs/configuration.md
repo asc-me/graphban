@@ -67,6 +67,18 @@ mail is simply not sent, so an invite can be "issued" and never arrive.
 | `UPSTREAM_FEEDBACK_PROJECT` | `agentledger` | |
 | `UPSTREAM_FEEDBACK_TOKEN` | *(empty)* | |
 
+## Linear integration (PRD-P10)
+
+OAuth app credentials for the Linear authorization code flow. The per-org access token is
+stored encrypted at rest (same Fernet path as provider BYOK keys). Leave blank and the
+integration surface is unreachable.
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `LINEAR_CLIENT_ID` | *(empty)* | Linear OAuth app client id. Register at linear.app/settings/api |
+| `LINEAR_CLIENT_SECRET` | *(empty)* | Linear OAuth app client secret |
+| `LINEAR_REDIRECT_URI` | *(empty)* | OAuth callback URL. Defaults to `{APP_BASE_URL}/api/linear/callback`. Override when the API is served on a different origin from the SPA |
+
 ## AI providers
 
 | Var | Default | Notes |
