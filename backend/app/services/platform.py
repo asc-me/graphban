@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass
 from secrets import token_urlsafe
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings as app_settings
@@ -917,3 +918,79 @@ def set_project_credential(db: Session, project_id: str, *,
     db.commit()
     db.refresh(project)
     return project
+
+
+# ---- PRD-43: ingest token, surface flags, org enable-all ----
+
+import hashlib
+
+
+def mint_ingest_token(db: Session, project_id: str) -> tuple[str, str]:
+    """PRD-43 D1: mint a new ingest token. Returns (plaintext, prefix).
+    Stored hashed; plaintext shown once."""
+    cfg = get_config(db, project_id)
+    plain = f"gbfb_{token_urlsafe(32)}"
+    prefix = plain[:10] + "…"
+    cfg.ingest_token_hash = hashlib.sha256(plain.encode()).hexdigest()
+    cfg.ingest_token_prefix = prefix
+    db.commit()
+    return plain, prefix
+
+
+def verify_ingest_token(db: Session, project_id: str, token: str) -> bool:
+    """PRD-43 D1: check if a token matches the project's stored hash."""
+    cfg = get_config(db, project_id)
+    if not cfg.ingest_token_hash:
+        return False
+    return hashlib.sha256(token.encode()).hexdigest() == cfg.ingest_token_hash
+
+
+def resolve_project_by_ingest_token(db: Session, token: str) -> str | None:
+    """PRD-43 D1: find which project owns this ingest token."""
+    h = hashlib.sha256(token.encode()).hexdigest()
+    cfg = db.scalar(
+        select(PlatformConfig).where(PlatformConfig.ingest_token_hash == h)
+    )
+    return cfg.project_id if cfg else None
+
+
+def update_surface_flags(db: Session, project_id: str, flags: dict) -> PlatformConfig:
+    """PRD-43 D4: set per-surface flags."""
+    cfg = get_config(db, project_id)
+    allowed = {
+        "intake_enabled", "public_form_enabled", "public_roadmap_enabled",
+        "public_issues_enabled", "public_requests_enabled", "capture_identity",
+    }
+    for key, val in flags.items():
+        if key in allowed:
+            setattr(cfg, key, bool(val))
+    # PRD-43 D4: public_share_enabled is derived — true if any surface flag is on.
+    cfg.public_share_enabled = any(
+        getattr(cfg, f) for f in allowed
+        if f != "capture_identity" and getattr(cfg, f)
+    )
+    db.commit()
+    db.refresh(cfg)
+    return cfg
+
+
+def org_enable_all_feedback(db: Session, org_id: str) -> int:
+    """PRD-43 D4: turn on intake + form for every project in the org.
+    Sets feedback_default_on so new projects inherit. Does NOT touch boards/roadmap."""
+    from app.models import Organization, Project
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise LookupError(org_id)
+    org.feedback_default_on = True
+    projects = db.scalars(
+        select(Project).where(Project.org_id == org_id)
+    ).all()
+    count = 0
+    for p in projects:
+        cfg = get_config(db, p.id)
+        cfg.intake_enabled = True
+        cfg.public_form_enabled = True
+        cfg.public_share_enabled = True
+        count += 1
+    db.commit()
+    return count
