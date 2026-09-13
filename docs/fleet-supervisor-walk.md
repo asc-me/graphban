@@ -145,12 +145,28 @@ claimed the item, and the child moved it to review. That is criterion 18 observe
 delegation read claimed on the Live board within one poll, then finished when the child
 advanced the item.
 
-## Finishing the merge (GRPH-846)
+## Finishing the merge (GRPH-846, GRPH-880)
 
 `done` is a ledger state, not a git state. After step 7 the reviewed PR sat as a draft until
 a person merged it, and every item `until` held on it (GRPH-798) was idle fleet time waiting
 for that click. `--merge` is the click, opt-in, and this section says what was walked and
 what was not.
+
+**Candidacy is the sign_off attestation, not "left review" (GRPH-880).** An item is a
+candidate when the `fleet.sign_off` attestation names a commit — the reviewer's judgement is
+the handoff, not the moment this process observed the item leave a list. The predicate is:
+
+    candidate ≡ item is in (this wave's scope ∪ GRPH-798 hold deps)
+            AND status == done
+            AND last fleet.sign_off attestation names a commit
+            AND the item names a PR (or the propose url receipt does)
+
+`scope` is the PRD this wave was asked about (if given), else the project this key writes
+to. Hold deps bypass the scope filter — they are merges that would clear a hold, which is
+the merge most worth finishing. A bounce (status != done) is never a candidate: leaving
+`review` for `next` does not enqueue a merge. This fixes the two-phase miss: an item already
+`done` when the `--merge` wave starts is a candidate on the first tick — no requirement that
+this process saw it leave `review`.
 
 **Walked, in-process, on 2026-09-10** (`fleet/tests/test_merge_after_sign_off.py`): a real
 bare `origin`, a clone the wave runs in, and a second clone standing in for the forge. SA-420

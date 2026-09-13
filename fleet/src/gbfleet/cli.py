@@ -65,10 +65,11 @@ SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset({"search_items"})
 MERGE_TOOLS: frozenset[str] = frozenset({"get_item_details", "related_work", "update_item"})
 
 _MERGE_HELP = (
-    "after an item reaches `done`, mark its PR ready and enable squash auto-merge via gh — "
-    "only when the PR head is the commit the sign-off attestation names, CI attested "
-    "suite_green on it, and the forge reports it MERGEABLE/CLEAN. Any miss is reported and "
-    "the item is left alone. Default off (GRPH-846)")
+    "finish the merge for items whose fleet.sign_off attestation names a commit — the "
+    "reviewer's sign-off is the handoff, not the moment this process watched the item "
+    "leave review. Only when the PR head is the reviewed commit, CI attested suite_green "
+    "on it, and the forge reports it MERGEABLE/CLEAN. Scoped to --prd when given; hold "
+    "deps bypass the scope. Default off (GRPH-846, GRPH-880)")
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -416,10 +416,13 @@ def _loop(
         base = wt_mod.default_ref(repo, remote) if remote else ""
     if base:
         wt_mod.refresh_ref(repo, remote, base)
-    # GRPH-846. Built whether or not `merge` was asked for, and inert when it was not:
+    # GRPH-846, GRPH-880. Built whether or not `merge` was asked for, and inert when it was not:
     # `enabled` is the flag, read once here, so the loop below has one call site and no
-    # branch on it — the branch is inside, where a test can see it stay closed.
-    merger = Merger(repo, planner, enabled=bool(merge), remote=remote, base=base)
+    # branch on it — the branch is inside, where a test can see it stay closed. `prd_id`
+    # scopes candidates: an item outside this PRD is not merged unless a GRPH-798 hold
+    # names it.
+    merger = Merger(repo, planner, enabled=bool(merge), remote=remote, base=base,
+                    prd_id=prd or "")
     # Items the GRPH-798 check HELD, with the finished dependencies they wait on. A merge
     # changes the answer, so these are lifted out of `delegated` when one lands.
     held: dict[str, list[str]] = {}
@@ -492,9 +495,10 @@ def _loop(
                 f"search_items unreachable; leftover review is unknown, not empty ({exc})",
             ) from exc
 
-        # GRPH-846. The rows just read are handed over rather than read twice; an id that
-        # was in review last tick and is not now is what the merger looks at.
-        if merger.tick(wave, rows=rows):
+        # GRPH-846, GRPH-880. The merger discovers candidates from the attestation, not from
+        # observing departures. An item already `done` with a sign_off attestation is a
+        # candidate on the first tick.
+        if merger.tick(wave):
             # The base moved. Whatever was held on a finished-but-unmerged dependency is
             # offered again — the check re-runs against the freshly fetched ref and either
             # lets it through or holds it on whatever is still missing.
