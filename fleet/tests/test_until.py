@@ -1066,6 +1066,51 @@ def test_dependency_check_reads_the_integration_branch(
     assert result.reason == "idle"
 
 
+def test_pr_proposed_against_the_integration_branch(tmp_path: Path, scripts, state: Path):
+    """GRPH-847 sabotage. PRs must be proposed against the integration branch when
+    --base is set, not against the default ref. The wiring: `watch_tick`/`_reap_all`
+    receive `base_branch=base`, which flows through `_reap_exited`/`_publish` to
+    `_propose` as `base_override`, and from there to `propose_branch`.
+
+    Sabotage: delete the `base_override=base_branch` assignment in `_publish` or the
+    `base_branch=base` assignment in `_loop` → this test fails. Without it, PRs target
+    the default ref and a stacked-slices wave opens PRs against the wrong base.
+    """
+    import inspect
+    from gbfleet.supervisor import _publish, _propose, propose_branch, _reap_exited, _reap_all
+    from gbfleet.until import _loop
+
+    # _publish must pass base_branch to _propose as base_override.
+    publish_src = inspect.getsource(_publish)
+    assert "base_override=base_branch" in publish_src, (
+        "_publish must pass base_branch to _propose as base_override"
+    )
+
+    # _propose must pass base_override to propose_branch.
+    propose_src = inspect.getsource(_propose)
+    assert "base_override=base_override" in propose_src, (
+        "_propose must pass base_override to propose_branch"
+    )
+
+    # _reap_exited must pass base_branch to _publish.
+    reap_exited_src = inspect.getsource(_reap_exited)
+    assert "base_branch=base_branch" in reap_exited_src, (
+        "_reap_exited must pass base_branch to _publish"
+    )
+
+    # _reap_all must pass base_branch to _publish.
+    reap_all_src = inspect.getsource(_reap_all)
+    assert "base_branch=base_branch" in reap_all_src, (
+        "_reap_all must pass base_branch to _publish"
+    )
+
+    # _loop must pass the resolved base to watch_tick and _reap_all.
+    loop_src = inspect.getsource(_loop)
+    assert "base_branch=base)" in loop_src, (
+        "_loop must pass the resolved base ref to watch_tick and _reap_all"
+    )
+
+
 # --- GRPH-869: the CALL — planner, not supervisor, records the receipt --------
 
 def test_loop_passes_planner_to_watch_tick_and_reap_all():
@@ -1092,7 +1137,8 @@ def test_loop_passes_planner_to_watch_tick_and_reap_all():
     )
 
     # _reap_all must receive client=planner, not client=None or client=supervisor.
-    assert "_reap_all(wave, finished, client=planner)" in src, (
+    # GRPH-847: the call now also passes base_branch=base for the integration branch.
+    assert "_reap_all(wave, finished, client=planner" in src, (
         "_reap_all must receive the planner client for PR receipt recording"
     )
     assert "_reap_all(wave, finished, client=supervisor)" not in src

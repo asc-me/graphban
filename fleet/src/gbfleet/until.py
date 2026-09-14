@@ -227,6 +227,14 @@ def run(
                 "and let the loop mint scoped seats, or drop --prd and accept an unscoped wave")
         with hold(repo, state) as acquired:
             wave.lock = acquired
+            # GRPH-847: resolve the base ref once, before any publish path can use it.
+            # An explicit `--base` refuses when the branch does not exist on the remote;
+            # the exception is caught below and returned as a config error.
+            remote = wt_mod.remote_for(repo)
+            if base_branch:
+                base = wt_mod.resolve_base(repo, remote, base_branch)
+            else:
+                base = wt_mod.default_ref(repo, remote) if remote else ""
             leftover: list[Child] = []
             occupied: set[str] = set()
             if acquired.takeover:
@@ -239,7 +247,9 @@ def run(
                 # finished child gets — pushed, and named on the item it belongs to. Before
                 # this the commit stayed local and the item was re-delegated and rebuilt from
                 # `main`, so the recovery and the loss were the same event.
-                publish_salvaged(wave, repo, recovered.salvaged, client=planner)
+                # GRPH-847: pass the resolved base ref so PRs target the integration branch.
+                publish_salvaged(wave, repo, recovered.salvaged, client=planner,
+                                 base_branch=base)
 
             children: list[Child] = list(leftover)
             roster_path = adopt_mod.children_path(repo, state)
@@ -432,7 +442,9 @@ def _loop(
         # → `propose_branch` → `update_item`. The supervisor allowlist is two reads;
         # `update_item` is on the planner. Passing supervisor here opened the PR and
         # then logged "PR opened but not recorded" on every item.
-        watch_tick(wave, children, limits, planner, debug=debug, persist=persist)
+        # GRPH-847: pass the resolved base ref so PRs target the integration branch.
+        watch_tick(wave, children, limits, planner, debug=debug, persist=persist,
+                   base_branch=base)
         # GRPH-834: checked HERE, right after the tick that reads the exit records, and before
         # anything else this pass can spawn. `_cap_children` guards `--max-children` at the
         # spawn site, and that is the wrong shape for a budget: a wave whose last child has
@@ -468,7 +480,8 @@ def _loop(
             # Idempotent: `child.reported` makes a second pass a no-op, so the common case
             # where `watch_tick` already reported the child costs nothing.
             _report_exits(finished, supervisor, wave)
-            _reap_all(wave, finished, client=planner)
+            # GRPH-847: pass the resolved base ref so PRs target the integration branch.
+            _reap_all(wave, finished, client=planner, base_branch=base)
             children[:] = [c for c in children if c.running]
             persist()
             if any("handoff-failed" in f for f in wave.failures):
