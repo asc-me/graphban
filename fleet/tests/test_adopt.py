@@ -535,3 +535,58 @@ def test_a_child_is_in_the_children_file_before_it_registers(
         state=state, workspace=workspace, poll=0.05,
     )
     assert seen, "await_registration was never reached"
+
+
+def test_wall_clock_cap_round_trips_through_snapshot(tmp_path: Path):
+    """GRPH-849 bounce. snapshot_of and _as_dict omitted wall_clock_cap, so a
+    restarted supervisor dropped a 4h override back to 3600s. Sabotage: remove
+    wall_clock_cap from _as_dict or _parse_row; this fails.
+    """
+    path = tmp_path / "children.json"
+    snap = Snapshot(
+        pid=os.getpid(), worktree="/wt", branch="gb/wave-1", adapter="gbagent",
+        start_token="tok", seat_id="seat-1", agent_id="GRPH-A1", slot="1",
+        wall_clock_cap=14400.0,
+    )
+    save(path, [snap])
+    loaded = load(path)
+    assert not isinstance(loaded, UnadoptableFile)
+    assert loaded[0].wall_clock_cap == 14400.0
+
+    snap_none = Snapshot(
+        pid=os.getpid(), worktree="/wt", branch="gb/wave-2", adapter="gbagent",
+        start_token="tok", seat_id="seat-2", agent_id="GRPH-A2", slot="2",
+    )
+    save(path, [snap_none])
+    loaded2 = load(path)
+    assert not isinstance(loaded2, UnadoptableFile)
+    assert loaded2[0].wall_clock_cap is None
+
+
+def test_wall_clock_cap_survives_an_older_supervisor(tmp_path: Path):
+    """A children file written before wall_clock_cap existed has no such key.
+    _parse_row must tolerate that and return None, not crash.
+    """
+    path = tmp_path / "children.json"
+    payload = {
+        "generation": 1,
+        "children": [{
+            "pid": os.getpid(),
+            "start_token": "tok",
+            "worktree": "/wt",
+            "branch": "gb/wave-1",
+            "adapter": "gbagent",
+            "seat_id": "seat-1",
+            "agent_id": "GRPH-A1",
+            "slot": "1",
+            "base": "",
+            "seat_path": "",
+            "log_dir": "",
+            "started_wall": 0.0,
+            "held_items": [],
+        }],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = load(path)
+    assert not isinstance(loaded, UnadoptableFile)
+    assert loaded[0].wall_clock_cap is None

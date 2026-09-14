@@ -52,6 +52,9 @@ class Snapshot:
     #: has none, and an empty list means "not recorded" — the salvage still publishes the
     #: branch, it just cannot write the receipt on an item.
     held_items: list[str] = field(default_factory=list)
+    #: Per-child wall-clock cap override (GRPH-849). None means use the process default.
+    #: Persisted so a supervisor restart does not drop a 4h override back to 3600s.
+    wall_clock_cap: float | None = None
 
 
 @dataclass
@@ -128,6 +131,7 @@ def snapshot_of(child: Child, slot: str = "") -> Snapshot:
         log_dir=str(child.log_dir),
         started_wall=time.time() - max(0.0, time.monotonic() - child.started_at),
         held_items=list(child.held_items or []),
+        wall_clock_cap=child.wall_clock_cap,
     )
 
 
@@ -253,6 +257,7 @@ def attach(snap: Snapshot) -> Child:
         agent_id=snap.agent_id,
         seat_id=snap.seat_id,
         attached=True,
+        wall_clock_cap=snap.wall_clock_cap,
     )
     emit("adopted", pid=snap.pid, branch=snap.branch, agent_id=snap.agent_id or "")
     return child
@@ -273,6 +278,7 @@ def _as_dict(s: Snapshot) -> dict:
         "log_dir": s.log_dir,
         "started_wall": s.started_wall,
         "held_items": list(s.held_items or []),
+        "wall_clock_cap": s.wall_clock_cap,
     }
 
 
@@ -301,6 +307,7 @@ def _parse_row(row: object) -> Snapshot | None:
         # Tolerant, because a file written by an older supervisor has no such key and a
         # takeover that refused to read it would strand the very trees this exists to save.
         held_items=[str(i) for i in (row.get("held_items") or []) if i],
+        wall_clock_cap=float(row["wall_clock_cap"]) if row.get("wall_clock_cap") is not None else None,
     )
 
 

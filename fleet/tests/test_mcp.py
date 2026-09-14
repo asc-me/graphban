@@ -644,3 +644,68 @@ def test_tick_is_a_noop_in_attach_mode(git_repo: Path, tmp_path: Path):
     fleet.tick()
     assert fleet.wave.failures == []
 
+
+def test_spawn_sets_per_child_wall_clock_cap(git_repo: Path, tmp_path: Path, scripts):
+    """GRPH-849. Passing child_wall_clock through spawn sets it on the child;
+    omitting it leaves the field None (process default). Sabotage: remove the
+    handler assignment in call_tool; this fails.
+    """
+    workspace = tmp_path / "ws"
+    fleet = Fleet(
+        repo=git_repo,
+        workspace=workspace,
+        client=_server(workspace),
+        launch_for=lambda name, model="", tuning=None: _factory(scripts, "sleeper", adapter=name),
+        limits=Limits(child_wall_clock=3600.0),
+    )
+    try:
+        described = _value(_call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-1",
+                                  child_wall_clock=14400))
+        child = fleet.children[0]
+        assert child.wall_clock_cap == 14400.0, (
+            f"spawn did not set wall_clock_cap: {child.wall_clock_cap}"
+        )
+        assert described["wall_clock_cap"] == 14400.0
+    finally:
+        _call(fleet, "stop", pid=described["pid"])
+
+    fleet2 = Fleet(
+        repo=git_repo,
+        workspace=workspace,
+        client=_server(workspace),
+        launch_for=lambda name, model="", tuning=None: _factory(scripts, "sleeper", adapter=name),
+        limits=Limits(child_wall_clock=3600.0),
+    )
+    try:
+        described2 = _value(_call(fleet2, "spawn", adapter="claude", enrolment_code="WORKER-2"))
+        child2 = fleet2.children[0]
+        assert child2.wall_clock_cap is None, (
+            f"spawn without child_wall_clock should leave cap None: {child2.wall_clock_cap}"
+        )
+    finally:
+        _call(fleet2, "stop", pid=described2["pid"])
+
+
+def test_spawn_child_wall_clock_cap_kills_the_child(git_repo: Path, tmp_path: Path, scripts):
+    """GRPH-849 sabotage: a spawn with child_wall_clock=1 must die of wall_clock.
+    A test that only checks the field is set is the hole that shipped this.
+    """
+    workspace = tmp_path / "ws"
+    fleet = Fleet(
+        repo=git_repo,
+        workspace=workspace,
+        client=_server(workspace),
+        launch_for=lambda name, model="", tuning=None: _factory(scripts, "sleeper", adapter=name),
+        limits=Limits(child_wall_clock=3600.0),
+    )
+    described = _value(_call(fleet, "spawn", adapter="claude", enrolment_code="WORKER-1",
+                              child_wall_clock=0.0))
+    try:
+        fleet.tick()
+        child = fleet.children[0]
+        assert child.stopped_because is Reason.WALL_CLOCK, (
+            f"child with cap=0 was not killed by wall_clock: {child.stopped_because}"
+        )
+    finally:
+        _call(fleet, "stop", pid=described["pid"])
+
