@@ -63,6 +63,25 @@ function show() {
 }
 
 describe("Harness recommendations", () => {
+  it("still renders a probe card whose replay has no moves (live payload)", async () => {
+    cards.mockResolvedValueOnce(payload({
+      cards: [card({
+        rule: "probe",
+        key: "probe:anthropic:claude-opus-5:",
+        title: "Probe anthropic:claude-opus-5",
+        detail: "a harness first resolved with no cell for it",
+        cells: [],
+        siblings: [],
+        draft: { target: "anthropic:claude-opus-5", trigger: "new_row", scheduled: false },
+        replay: {} as HarnessCard["replay"],
+        thresholds: { floor: 5 },
+      })],
+    }));
+    show();
+    expect(await screen.findByTestId("harness-card")).toHaveAttribute("data-rule", "probe");
+    expect(screen.getByText("Probe anthropic:claude-opus-5")).toBeInTheDocument();
+  });
+
   it("names the rule and shows the replay rather than a bare suggestion", async () => {
     show();
     const row = await screen.findByTestId("harness-card");

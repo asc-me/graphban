@@ -84,12 +84,12 @@ function CardRow({
             </p>
           )}
           <p data-testid="harness-card-replay" className="mt-1.5 font-mono text-[11px] text-faint">
-            {card.replay.summary}
-            {card.replay.moves.length > 0 &&
+            {card.replay?.summary}
+            {(card.replay?.moves?.length ?? 0) > 0 &&
               ` — ${card.replay.moves
                 .map((m) => `${m.count} from ${m.from} to ${m.to}`)
                 .join(", ")}`}
-            {card.replay.truncated && " (replay truncated)"}
+            {card.replay?.truncated && " (replay truncated)"}
           </p>
         </div>
         <div className="flex flex-none gap-1.5">

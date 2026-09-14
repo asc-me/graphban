@@ -509,3 +509,19 @@ def test_nothing_this_pr_writes_is_published(client, key, db, proj, auth):
     card = _by_rule(_cards(client, auth, proj), "R1")[0]
     _mark(client, auth, proj, card, "accept")
     assert all(s.status == "candidate" for s in _shards(db))
+
+
+def test_probe_cards_carry_a_replay_the_page_can_read():
+    """A probe is not a rerank, but HarnessView reads `replay.moves.length`. An empty
+    `{}` (the dataclass default) white-screens the page on any project with suggestions."""
+    cards = rules._probe_suggestions({
+        "probe_suggestions": [{
+            "vendor": "anthropic", "model": "claude-opus-5",
+            "trigger": "new_row", "binary_version": "",
+            "reason": "a harness first resolved with no cell for it",
+        }],
+    })
+    assert len(cards) == 1
+    replay = cards[0].as_dict()["replay"]
+    assert isinstance(replay.get("moves"), list)
+    assert "summary" in replay
