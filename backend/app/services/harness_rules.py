@@ -304,6 +304,12 @@ def _probe_suggestions(report: dict) -> list[Card]:
                    "binary_version": sug.get("binary_version") or "",
                    "estimated_tokens": sug.get("estimated_tokens"),
                    "scheduled": False},
+            # A probe is not a rerank. Empty replay still has the keys the page reads
+            # (`moves`, `summary`) — an `{}` crashed HarnessView on any project with
+            # probe suggestions (agentledger had eleven).
+            replay={"considered": 0, "changed": 0, "skipped_no_resolution": 0,
+                    "truncated": False, "moves": [],
+                    "summary": "a new harness has no recorded resolutions to replay"},
             thresholds={"scheduled": False, "floor": harness_svc.FLOOR},
         ))
     return out
