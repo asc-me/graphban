@@ -254,3 +254,169 @@ def test_the_minted_attestation_says_probe_or_sabotage(client, key, auth, proj):
     adv = next(p for p in sign_off_att["predicates"] if p["name"] == "adversarial_evidence")
     assert "probe attestation" in adv["detail"], \
         f"the receipt does not mention the probe path: {adv['detail']}"
+
+
+# ---- acceptance coverage gate (GRPH-884) -----------------------------------------------------
+
+DESC_TWO_CLAUSES = """\
+## Problem
+
+Something needs doing.
+
+## Tests
+
+- the veto blocks an accept
+- the pin lapses after timeout
+"""
+
+DESC_ONE_CLAUSE = """\
+## Tests
+
+- the veto blocks an accept
+"""
+
+
+def _ready_with_description(client, key, *, effort, description):
+    """Like `_ready_for_review` but stamps a description on the item at creation."""
+    worker = _ok(client, key, "register_agent",
+                 {"label": "w", "capabilities": {"instance": "w"}})
+    made = _ok(client, key, "create_item",
+               {"title": "some work", "status": "next", "effort": effort,
+                "description": description})
+    c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
+    _ok(client, key, "update_item",
+        {"id": c["item"]["id"], "status": "review", "agent_id": worker["agent_id"]})
+    reviewer = _ok(client, key, "register_agent",
+                   {"label": "r", "role_hint": "reviewer",
+                    "capabilities": {"instance": "r"}})
+    return c["item"]["id"], reviewer
+
+
+def test_uncovered_acceptance_clause_is_refused(client, key):
+    """THE criterion (GRPH-884). Two acceptance clauses, one named test, two sabotage receipts.
+    Sabotage receipts do NOT substitute for a missing test — that is the defect this closes."""
+    item, reviewer = _ready_with_description(
+        client, key, effort=5, description=DESC_TWO_CLAUSES)
+
+    res = _rpc(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [
+            {"kind": "test", "detail": "the veto blocks an accept"},
+            SABOTAGE,
+            dict(SABOTAGE, claim="the pin lapses", mutation="never expire", tests_failed=1),
+        ]})
+
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict", err
+    assert "pin lapses after timeout" in err["message"], \
+        f"the refusal does not name the uncovered clause: {err['message']}"
+    assert "acceptance" in err["message"].lower() or "clause" in err["message"].lower()
+    assert _ok(client, key, "get_item_details", {"id": item})["status"] == "review"
+
+
+def test_all_clauses_named_lets_it_through(client, key):
+    """The control. Both clauses have a named test, adversarial evidence is present — the
+    item proceeds. The acceptance gate does not add tax when its condition is met."""
+    item, reviewer = _ready_with_description(
+        client, key, effort=5, description=DESC_TWO_CLAUSES)
+
+    out = _ok(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [
+            {"kind": "test", "detail": "the veto blocks an accept"},
+            {"kind": "test", "detail": "the pin lapses after timeout"},
+            SABOTAGE,
+        ]})
+
+    assert out["status"] == "done"
+
+
+def test_below_threshold_item_with_clauses_is_still_refused(client, key):
+    """The acceptance gate is independent of the effort threshold. A trivial item with
+    acceptance clauses still needs them covered — the D9 effort gate stays, and this gate
+    fires on its own condition (clauses present) regardless of effort."""
+    item, reviewer = _ready_with_description(
+        client, key, effort=1, description=DESC_TWO_CLAUSES)
+
+    res = _rpc(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [
+            {"kind": "test", "detail": "the veto blocks an accept"},
+        ]})
+
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict", err
+    assert "pin lapses after timeout" in err["message"]
+
+
+def test_item_without_tests_section_is_unaffected(client, key):
+    """Items that predate the `## Tests` convention have no clauses, so the gate does not
+    fire. This is what keeps the existing ~71 test setup paths working."""
+    item, reviewer = _ready_for_review(client, key, effort=5)
+
+    out = _ok(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [SABOTAGE]})
+
+    assert out["status"] == "done"
+
+
+def test_attestation_records_acceptance_coverage(client, key, auth, proj):
+    """The attestation predicate records pass/fail with the clause count, not a receipt count.
+    A later reader must be able to tell whether the gate checked anything."""
+    item, reviewer = _ready_with_description(
+        client, key, effort=5, description=DESC_TWO_CLAUSES)
+    gate_key = client.post("/api/api-keys", json={"name": "gate", "project_id": proj,
+                           "scopes": ["read", "write", "gate"]},
+                           headers=auth).json()["plaintext"]
+    _ok(client, gate_key, "update_item", {"id": item, "evidence": [
+        {"kind": "test", "detail": "the veto blocks an accept"},
+        {"kind": "test", "detail": "the pin lapses after timeout"},
+        SABOTAGE,
+    ]})
+
+    out = _ok(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA})
+
+    from app.services import items as items_svc
+    atts = items_svc.valid_attestations(out["evidence"], commit=PROBE_SHA)
+    sign_off_att = next(a for a in atts if a.get("adapter") == "fleet.sign_off")
+    cov = next(p for p in sign_off_att["predicates"] if p["name"] == "acceptance_coverage")
+    assert cov["passed"] is True
+    assert "2 acceptance clause(s)" in cov["detail"]
+
+
+def test_sabotage_receipts_do_not_cover_a_clause(client, key):
+    """The defect, pinned. Two sabotage receipts and zero test evidence must NOT satisfy the
+    gate — sabotage can only mutate code some test already reaches, so a clause with no test
+    is invisible to it."""
+    item, reviewer = _ready_with_description(
+        client, key, effort=5, description=DESC_ONE_CLAUSE)
+
+    res = _rpc(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [
+            SABOTAGE,
+            dict(SABOTAGE, claim="the pin lapses", mutation="never expire", tests_failed=1),
+        ]})
+
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict", err
+    assert "veto blocks an accept" in err["message"], \
+        f"the refusal does not name the uncovered clause: {err['message']}"
+
+
+def test_the_call_is_load_bearing():
+    """Sabotage the CALL. A helper with unit tests is not the gate — deleting the check from
+    sign_off must make the suite fail. This test reads the source and asserts the call exists.
+    """
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent / "app" / "services" /
+           "fleet.py").read_text()
+    assert "acceptance_covered(clauses, merged)" in src, (
+        "sign_off no longer calls acceptance_covered — the gate is a helper with tests "
+        "that nothing calls, which is the defect GRPH-884 exists to close"
+    )
+    assert "MissingAcceptanceCoverage" in src, (
+        "the refusal exception is missing — sign_off cannot refuse uncovered clauses"
+    )
