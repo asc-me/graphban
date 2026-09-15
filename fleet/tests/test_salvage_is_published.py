@@ -119,7 +119,7 @@ def test_publishing_pushes_then_proposes_and_writes_the_receipt(monkeypatch, tmp
     monkeypatch.setattr(sup.wt_mod, "push_branch",
                         lambda repo, branch, base: calls.append(("push", branch)) or _Pushed())
     monkeypatch.setattr(sup, "propose_branch",
-                        lambda wave, repo, branch, items, *, client:
+                        lambda wave, repo, branch, items, *, client, base_override="":
                         calls.append(("propose", branch, items)))
 
     wave = Wave()
