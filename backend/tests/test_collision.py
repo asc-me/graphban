@@ -98,3 +98,31 @@ def test_endpoint_returns_clusters_and_requires_auth(client, auth, monkeypatch):
     assert r.status_code == 200
     pay = next(cl for cl in r.json()["clusters"] if a["id"] in cl["items"])
     assert {a["id"], b["id"]} <= set(pay["items"]) and pay["collides"] is True
+
+
+def test_clusters_for_project_withholds_items_with_unmet_dependencies(db, monkeypatch):
+    """GRPH-885: items whose blocked_by dependencies are unfinished are withheld from the
+    partition. A cluster that includes a blocked item is a promise the divvy cannot keep."""
+    _no_code_hits(monkeypatch)
+    root = _item(db, "Root", touchpoints=["backend/app/spanner.py"])
+    child = _item(db, "Child", touchpoints=["backend/app/spanner.py"])
+    # child depends on root
+    links_svc.create_link(db, a=child.id, b=root.id, type_="dependency", project_id="core")
+
+    clusters = collision.clusters_for_project(db, "core")
+    # Both items share touchpoints, so they would normally cluster together.
+    # But child is blocked by root (not done), so only root should appear.
+    all_items = [it for cl in clusters for it in cl["items"]]
+    assert root.id in all_items
+    assert child.id not in all_items
+
+
+def test_clusters_for_project_withholds_items_with_manual_blocker(db, monkeypatch):
+    """GRPH-885: items with a manual blocker field are also withheld."""
+    _no_code_hits(monkeypatch)
+    blocked = _item(db, "Blocked", touchpoints=["backend/app/x.py"])
+    items_svc.update_item(db, blocked.id, blocker="Waiting on external API")
+
+    clusters = collision.clusters_for_project(db, "core")
+    all_items = [it for cl in clusters for it in cl["items"]]
+    assert blocked.id not in all_items

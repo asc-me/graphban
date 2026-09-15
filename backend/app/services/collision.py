@@ -157,9 +157,14 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
     Sharing `items_svc.claimable` is the point: two definitions of "claimable" is what produced
     the gap, and a triage board should show the same work the claim path will hand out.
 
-    (Dependency readiness stays a `claim_next` filter, as it always has — a blocked item can
-    still appear in the partition a planner reads.)
+    GRPH-885: dependency readiness is NOW a filter here too, not only in `claim_next`. An item
+    whose `blocked_by` dependencies are unmet is withheld from the partition — a cluster is a
+    promise that its members can be delegated, and a blocked member cannot. Without this, a
+    bounce pin on the seed made the rest of the file-neighborhood the seed, and `claim_cluster`
+    handed out items whose dependencies were still unfinished.
     """
+    from app.services import prioritization as prio
+
     pool = items_svc.list_items(db, project_id=project_id, status=status)
     if status is None:
         pool = [it for it in pool if items_svc.claimable(it, lease_seconds=lease_seconds)]
@@ -173,6 +178,12 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
         # a promise that its members do not collide, and dropping members from one afterwards
         # would hand out a promise computed over items that are no longer in it.
         pool = [it for it in pool if (it.prd_id or "") == prd_id]
+    # GRPH-885: filter out items with unmet dependencies. A cluster that includes a blocked
+    # item is a promise the divvy cannot keep — the seed may be pinned or refused, and the
+    # rest of the glob becomes the seed, skip-ahead the DAG. Withholding blocked items from
+    # the pool means the partition only contains work that can actually be delegated.
+    ctx = prio.context(db, project_id)
+    pool = [it for it in pool if it.status == "in_progress" or prio.ready(ctx, it)]
     return _with_reservations(db, collision_clusters(db, pool, project_id), project_id,
                              lease_seconds=lease_seconds)
 
