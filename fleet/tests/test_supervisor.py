@@ -215,7 +215,9 @@ def test_up_resumes_a_salvage_orphan_without_injected_items(
     )
     assert ALLOWED_TOOLS == frozenset({"fleet_status", "propose_allocation"})
     assert "search_items" not in ALLOWED_TOOLS
+    assert "release_item" not in ALLOWED_TOOLS
     assert "search_items" in SPAWN_READS
+    assert "release_item" in SPAWN_READS
 
 
 def test_remember_holdings_keeps_the_last_non_empty():

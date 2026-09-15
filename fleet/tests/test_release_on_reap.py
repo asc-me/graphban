@@ -46,6 +46,16 @@ def planner_client() -> Graphban:
 
 
 @pytest.fixture
+def spawn_reads_client() -> Graphban:
+    """mcp/`up` client: SPAWN_READS. This is the wall_clock death path (GRPH-849/850)."""
+    from gbfleet.cli import SPAWN_READS
+    client = MagicMock(spec=Graphban)
+    client.allowed = SPAWN_READS
+    client.call = MagicMock(return_value={})
+    return client
+
+
+@pytest.fixture
 def supervisor_client() -> Graphban:
     """A mock supervisor client WITHOUT release_item in its allowlist."""
     client = MagicMock(spec=Graphban)
@@ -109,6 +119,30 @@ def test_reap_releases_held_items(
     for c in release_calls:
         agent = c.kwargs.get("agent_id") or c.args[2] if len(c.args) > 2 else c.kwargs.get("agent_id")
         assert agent == "GRPH-A123"
+
+
+def test_reap_releases_with_spawn_reads_client(
+    git_repo: Path, tmp_path: Path, wave: Wave, spawn_reads_client: Graphban
+):
+    """THE MCP/UP CALL. SPAWN_READS used to omit release_item, so wall_clock under
+    gbfleet mcp skipped the release and the next spawn cut from main.
+
+    Sabotage: drop release_item from SPAWN_READS; this fails while the planner-client
+    test above still passes.
+    """
+    from gbfleet.cli import SPAWN_READS
+    assert "release_item" in SPAWN_READS
+    child = _make_child(git_repo, tmp_path / "ws", held_items=["GRPH-850"])
+
+    _reap_exited(wave, [child], client=spawn_reads_client)
+
+    release_calls = [
+        c for c in spawn_reads_client.call.call_args_list
+        if c.args and c.args[0] == "release_item"
+    ]
+    assert len(release_calls) == 1, f"SPAWN_READS client did not release: {release_calls}"
+    assert release_calls[0].kwargs.get("id") == "GRPH-850"
+    assert release_calls[0].kwargs.get("agent_id") == "GRPH-A123"
 
 
 def test_reap_skips_release_when_client_lacks_permission(
