@@ -1680,6 +1680,71 @@ class MissingAdversarialEvidence(Exception):
     """Above-threshold work signed off with nothing that tried to break it."""
 
 
+class MissingAcceptanceCoverage(Exception):
+    """Work signed off while an acceptance clause has no named test (GRPH-884)."""
+
+
+def extract_acceptance_clauses(description: str) -> list[str]:
+    """Pull acceptance clauses from a `## Tests` heading in the item description.
+
+    Each markdown list item under that heading (until the next `## ` or end of text) is one
+    clause. Items without a `## Tests` section return an empty list — the gate does not fire,
+    and existing items that predate the convention are unaffected.
+
+    The heading convention is the simplest shape that works with the existing data model:
+    descriptions are markdown, evidence already carries `{kind: test, detail: ...}`, and a
+    substring match between the two is enough to name the mapping without a schema change.
+    """
+    if not description:
+        return []
+    lines = description.splitlines()
+    clauses: list[str] = []
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            heading = stripped[3:].strip().lower()
+            in_section = heading == "tests"
+            continue
+        if not in_section:
+            continue
+        if not stripped:
+            continue
+        if stripped.startswith("## "):
+            break
+        if stripped.startswith(("- ", "* ", "+ ")) or (
+            len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in ".)"
+        ):
+            text = stripped.lstrip("-*+0123456789.) ").strip()
+            if text:
+                clauses.append(text)
+    return clauses
+
+
+def acceptance_covered(clauses: list[str], evidence: list[dict]) -> tuple[bool, list[str]]:
+    """Whether every acceptance clause has a named test in the evidence.
+
+    A clause is covered when at least one `{kind: test}` evidence entry's `detail` contains
+    the clause text (case-insensitive). Sabotage receipts do NOT substitute — that is the
+    defect this gate closes: a sabotage pass can only mutate code some test already reaches,
+    so a function with no test is invisible to it.
+
+    Returns `(passed, uncovered)` where `uncovered` names the clauses with no test.
+    """
+    if not clauses:
+        return True, []
+    test_details = [
+        e.get("detail", "").lower()
+        for e in (evidence or [])
+        if isinstance(e, dict) and e.get("kind") == "test" and e.get("detail")
+    ]
+    uncovered = [
+        c for c in clauses
+        if not any(c.lower() in d for d in test_details)
+    ]
+    return not uncovered, uncovered
+
+
 class NotInReview(Exception):
     """A review verdict on work that was never submitted for review (GRPH-383).
 
@@ -1803,6 +1868,19 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             + (f" — {len(vacuous)} recorded sabotage(s) broke NOTHING, which means the test "
                "cannot fail rather than that the claim is guarded" if vacuous else "")
         )
+    # THE ACCEPTANCE COVERAGE GATE (GRPH-884). Each acceptance clause in the item's `## Tests`
+    # section must have a named test in the evidence. A sabotage receipt does NOT substitute —
+    # that is the defect this closes: sabotage can only mutate code some test already reaches,
+    # so a clause with no test is invisible to it. Items without a `## Tests` section are
+    # unaffected — the gate does not fire on descriptions that predate the convention.
+    clauses = extract_acceptance_clauses(item.description or "")
+    covered, uncovered = acceptance_covered(clauses, merged)
+    if not covered:
+        raise MissingAcceptanceCoverage(
+            f"{item.key} has {len(uncovered)} acceptance clause(s) with no named test: "
+            + "; ".join(f'"{c}"' for c in uncovered)
+            + " — add a `{kind: test}` evidence entry whose detail names each clause"
+        )
 
     # THE FIRST ATTESTATION ADAPTER (GRPH-544). The gates above already decided this item is
     # finished; this records WHAT WAS CHECKED in a form the completion gate can read, so the
@@ -1848,6 +1926,11 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                             if needs_adversarial_evidence(item)
                             else f"effort {item.effort} is below the threshold of "
                                  f"{ADVERSARIAL_EFFORT_THRESHOLD}; not required")},
+                {"name": "acceptance_coverage",
+                 "passed": True,
+                 "detail": (f"all {len(clauses)} acceptance clause(s) have a named test"
+                            if clauses
+                            else "no acceptance clauses in description; not checked")},
             ],
         }])
         fresh, merged = fresh + attestation, merged + attestation

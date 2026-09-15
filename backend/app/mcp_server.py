@@ -2814,6 +2814,14 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.Conflict(str(e), hint=(
                 "dispatch two opposing-lens critics, or run the passes yourself, and record "
                 "each as evidence {kind: sabotage, claim, mutation, tests_failed}"))
+        except fleet_svc.MissingAcceptanceCoverage as e:
+            events_svc.record_key(
+                db, key, action="sign_off_refused", target_type="item",
+                target_id=args.get("id", ""), project_id=pid,
+                meta={"reason": str(e), "agent_id": args.get("agent_id")})
+            raise errors.Conflict(str(e), hint=(
+                "add a {kind: test} evidence entry whose detail names each uncovered "
+                "acceptance clause from the item's ## Tests section"))
         out = _item_dict(item)
         if fleet_svc.is_credential(agent):
             # Say it in the response, not only in the column. A caller that never registered
