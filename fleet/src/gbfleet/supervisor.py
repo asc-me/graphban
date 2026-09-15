@@ -506,7 +506,8 @@ def up(
             # GRPH-830: both takeover paths publish, not just `until`'s. A salvage that
             # depends on which command happened to run next is a salvage the operator cannot
             # rely on.
-            publish_salvaged(wave, repo, recovered.salvaged, client=client)
+            publish_salvaged(wave, repo, recovered.salvaged, client=client,
+                             base_branch=base)
         wave.before = _read_allocation(client, wave)
         if wave.offline:
             # D-i: no new spawns while the server is unreachable. A child that cannot
@@ -546,8 +547,8 @@ def up(
         )
         persist()
         _wait_out(wave, children, limits, client, poll=poll, sleep=sleep, debug=debug,
-                  persist=persist, merger=merger)
-        _reap_all(wave, children, client=client)
+                  persist=persist, merger=merger, base_branch=base)
+        _reap_all(wave, children, client=client, base_branch=base)
         persist()
         if merger is not None:
             # Once more after the reap: the last child's sign-off may have landed between
@@ -842,6 +843,7 @@ def watch_tick(
     *,
     debug: bool = False,
     persist: Callable[[], None] | None = None,
+    base_branch: str = "",
 ) -> None:
     """One pass of the watch loop: wall-clock, output pulse, lease, disowned.
 
@@ -876,7 +878,7 @@ def watch_tick(
     # removes `<workspace>/<slot>` — the worktree, a SIBLING of the log directory rather
     # than its parent. Measured on a real wave: both children's logs were still readable
     # after their worktrees were gone.
-    _reap_exited(wave, children, client)
+    _reap_exited(wave, children, client, base_branch=base_branch)
     _report_exits(children, client, wave)
     if persist is not None:
         persist()
@@ -911,7 +913,8 @@ def _release_held_items(wave: Wave, child: Child, client: Graphban | None) -> No
             wave.failures.append(f"{child.branch}: release_item {item_id} failed ({exc})")
 
 
-def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = None) -> None:
+def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = None,
+                 *, base_branch: str = "") -> None:
     """Salvage a child's work onto its branch as soon as it exits (PRD-38 walk finding).
 
     `_reap_all` has always done this — `worktree.reap` salvages whatever the worker left
@@ -961,7 +964,7 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
                 child.adapter, git_paths, child.stdout_text())
         _note_touchpoints(wave, child)
         _note_staleness(wave, tree)
-        _publish(wave, tree, client=client, child=child)
+        _publish(wave, tree, client=client, child=child, base_branch=base_branch)
 
 
 def _declared_into(wave: Wave, items: dict) -> dict:
@@ -1033,7 +1036,8 @@ def _note_touchpoints(wave: Wave, child: Child) -> None:
 
 
 def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
-             child: Child | None = None, propose_prs: bool = True) -> None:
+             child: Child | None = None, propose_prs: bool = True,
+             base_branch: str = "") -> None:
     """Put the child's branch where the reviewer can read it (GRPH-750).
 
     A step AFTER the reap rather than part of salvage. Salvage commits, which the supervisor
@@ -1064,7 +1068,7 @@ def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
     if pushed.ok and client is not None and child is not None and child.seat_id:
         client.post_attempt(enrolment_id=child.seat_id, branch_published=True)
     if pushed.ok and propose_prs:
-        _propose(wave, tree, client=client, child=child)
+        _propose(wave, tree, client=client, child=child, base_override=base_branch)
 
 
 def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
@@ -1123,7 +1127,7 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
 
 
 def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
-                     client: Graphban | None) -> None:
+                     client: Graphban | None, base_branch: str = "") -> None:
     """Push what a takeover recovered, and say on the item that it exists (GRPH-830).
 
     Adopting a stranded worktree already worked — the commit is made and the note is printed.
@@ -1154,7 +1158,8 @@ def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
             continue
         observe.emit("adopt", detail=f"{row.branch}: published salvaged work"
                                      + (f" for {', '.join(row.items)}" if row.items else ""))
-        propose_branch(wave, repo, row.branch, list(row.items or []), client=client)
+        propose_branch(wave, repo, row.branch, list(row.items or []), client=client,
+                       base_override=base_branch)
 
 
 #: How long a watched item waits before its merge is re-asked. Each ask is a ledger read and
@@ -1453,6 +1458,7 @@ def _wait_out(
     debug: bool = False,
     persist: Callable[[], None] | None = None,
     merger: "Merger | None" = None,
+    base_branch: str = "",
 ) -> None:
     """Wait for children to exit on their own, stopping any that overrun or outlive their claim.
 
@@ -1467,7 +1473,8 @@ def _wait_out(
     the item to somebody else and a second agent is already working it.
     """
     while any(child.running for child in children):
-        watch_tick(wave, children, limits, client, debug=debug, persist=persist)
+        watch_tick(wave, children, limits, client, debug=debug, persist=persist,
+                   base_branch=base_branch)
         if merger is not None:
             merger.tick(wave)
         if any(child.running for child in children):
@@ -1653,7 +1660,8 @@ def _enforce_the_lease(wave: Wave, children: list[Child]) -> None:
             wave.failures.append(f"{child.adapter} pid {child.pid}: {reason}")
 
 
-def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = None) -> None:
+def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = None,
+              base_branch: str = "") -> None:
     """Reap each worktree, then take away any seat that was never inside one.
 
     `worktree.reap` removes the seat files it knows about — the ones a vendor forced
@@ -1705,7 +1713,7 @@ def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = No
             )
         _note_touchpoints(wave, child)
         _note_staleness(wave, tree)
-        _publish(wave, tree, client=client)
+        _publish(wave, tree, client=client, base_branch=base_branch)
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
 
