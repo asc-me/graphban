@@ -332,7 +332,7 @@ def test_sign_off_with_a_commit_mints_a_valid_attestation(db):
     [att] = items_svc.valid_attestations(out.evidence)
     assert att["adapter"] == "fleet.sign_off"
     assert {p["name"] for p in att["predicates"]} == {
-        "independent_review", "adversarial_evidence"}
+        "independent_review", "adversarial_evidence", "acceptance_coverage"}
 
 
 def test_sign_off_without_a_commit_attests_nothing_and_adds_nothing(db):
