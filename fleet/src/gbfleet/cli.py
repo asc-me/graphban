@@ -52,9 +52,12 @@ API_KEY_ENV = "GBFLEET_API_KEY"
 
 #: `ALLOWED_TOOLS` stays two reads (P30 G5). Resume (D9) needs item status so a
 #: salvage branch is reused without the caller injecting `items=`. `search_items`
-#: is a read; this set is the CLI/MCP process, not a widening of the supervisor
-#: authority table.
-SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset({"search_items"})
+#: is a read. `release_item` is the GRPH-850 reap verb: mcp/`up` construct this
+#: client and pass it to `_reap_exited`, and without it a wall-clock death left
+#: the row `in_progress` so `choose_resume` skipped the salvage. The supervisor
+#: table is still two reads; this set is the CLI/MCP process. The server still
+#: bounds `release_item` by role (the dead child's worker id).
+SPAWN_READS: frozenset[str] = ALLOWED_TOOLS | frozenset({"search_items", "release_item"})
 
 #: What `up --merge` needs beyond `SPAWN_READS` (GRPH-846): the item and its attestations,
 #: the dependency rows, and ONE write — the receipt naming the merge commit. Only under the

@@ -890,10 +890,9 @@ def _release_held_items(wave: Wave, child: Child, client: Graphban | None) -> No
     branch sits orphaned while a fresh spawn cuts from main — losing the work just salvaged.
 
     Called from `_reap_exited` after the git salvage, so the branch is committed before the
-    ledger row is freed. The planner client (passed as `client` from `until.run`) has
-    `release_item` in its allowlist; a pure supervisor client does not, and the call is
-    silently skipped — the row stays stuck until `fleet_status` calls `requeue_offline_items`
-    on the next presence lapse, by which time a fresh spawn has already cut from main.
+    ledger row is freed. `until`'s planner client and mcp/`up`'s `SPAWN_READS` both include
+    `release_item`. A pure `ALLOWED_TOOLS` supervisor client does not, and the call is
+    skipped — the row stays stuck until `fleet_status` calls `requeue_offline_items`.
 
     Idempotent: a second call finds nothing to release. A failed release is reported, never
     fatal — the salvage is already committed, and the row will be freed by the offline requeue.
@@ -947,9 +946,8 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
         child.diff_shape = reaped.diff_shape
         # GRPH-850: release the child's held items so `choose_resume` can pick up the
         # salvage branch. Without this, the row stays `in_progress` / `claimed_by=<dead>`
-        # and a fresh spawn cuts from main, losing the work just salvaged. The planner
-        # client (passed as `client` from `until.run`) has `release_item` in its allowlist;
-        # a pure supervisor client does not, and the call is silently skipped.
+        # and a fresh spawn cuts from main, losing the work just salvaged. mcp/`up` pass
+        # SPAWN_READS (includes release_item); until passes the planner client.
         _release_held_items(wave, child, client)
         # Measured AFTER the salvage, deliberately, exactly as `_reap_all` does: measuring
         # first would miss the work that was most at risk of being lost.
