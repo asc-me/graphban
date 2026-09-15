@@ -105,7 +105,8 @@ def test_uvicorn_reads_the_setting_from_the_environment(monkeypatch):
     from uvicorn.config import Config
 
     monkeypatch.delenv("FORWARDED_ALLOW_IPS", raising=False)
-    assert Config("app.main:app").forwarded_allow_ips == "127.0.0.1"
+    # uvicorn's default is loopback; some versions include IPv6 (`127.0.0.1,::1`).
+    assert Config("app.main:app").forwarded_allow_ips in ("127.0.0.1", "127.0.0.1,::1")
 
     monkeypatch.setenv("FORWARDED_ALLOW_IPS", "10.0.0.0/8")
     assert Config("app.main:app").forwarded_allow_ips == "10.0.0.0/8", (
