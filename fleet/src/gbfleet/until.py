@@ -65,6 +65,13 @@ PLANNER_TOOLS: frozenset[str] = frozenset({
     # not this set. The supervisor's own `ALLOWED_TOOLS` stays two.
     "related_work",
     "update_item",
+    # GRPH-850: when a child dies (wall_clock / reap / stop), the planner releases its
+    # held items so `choose_resume` can pick up the salvage branch. Without this, the row
+    # stays `in_progress` / `claimed_by=<dead agent>` until the agent goes offline and
+    # `fleet_status` calls `requeue_offline_items` — but by then a fresh spawn has already
+    # cut from main and lost the work. The planner has the standing (it minted the seat);
+    # the server bounds what `release_item` may do by role, not this set.
+    "release_item",
 })
 
 EMPTY_TICKS = 3

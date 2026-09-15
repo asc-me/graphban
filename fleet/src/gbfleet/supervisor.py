@@ -882,6 +882,36 @@ def watch_tick(
         persist()
 
 
+def _release_held_items(wave: Wave, child: Child, client: Graphban | None) -> None:
+    """Release items the child held so `choose_resume` can pick up the salvage branch (GRPH-850).
+
+    A child that dies (wall_clock / reap / stop) leaves its items `in_progress` / `claimed_by`
+    set to the dead agent. `choose_resume` skips `in_progress` unconditionally, so the salvage
+    branch sits orphaned while a fresh spawn cuts from main — losing the work just salvaged.
+
+    Called from `_reap_exited` after the git salvage, so the branch is committed before the
+    ledger row is freed. The planner client (passed as `client` from `until.run`) has
+    `release_item` in its allowlist; a pure supervisor client does not, and the call is
+    silently skipped — the row stays stuck until `fleet_status` calls `requeue_offline_items`
+    on the next presence lapse, by which time a fresh spawn has already cut from main.
+
+    Idempotent: a second call finds nothing to release. A failed release is reported, never
+    fatal — the salvage is already committed, and the row will be freed by the offline requeue.
+    """
+    if not client or not child.held_items:
+        return
+    if "release_item" not in client.allowed:
+        return
+    agent_id = child.agent_id
+    if not agent_id:
+        return
+    for item_id in child.held_items:
+        try:
+            client.call("release_item", id=item_id, agent_id=agent_id)
+        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+            wave.failures.append(f"{child.branch}: release_item {item_id} failed ({exc})")
+
+
 def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = None) -> None:
     """Salvage a child's work onto its branch as soon as it exits (PRD-38 walk finding).
 
@@ -915,6 +945,12 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
             continue
         wave.reaped.append(reaped)
         child.diff_shape = reaped.diff_shape
+        # GRPH-850: release the child's held items so `choose_resume` can pick up the
+        # salvage branch. Without this, the row stays `in_progress` / `claimed_by=<dead>`
+        # and a fresh spawn cuts from main, losing the work just salvaged. The planner
+        # client (passed as `client` from `until.run`) has `release_item` in its allowlist;
+        # a pure supervisor client does not, and the call is silently skipped.
+        _release_held_items(wave, child, client)
         # Measured AFTER the salvage, deliberately, exactly as `_reap_all` does: measuring
         # first would miss the work that was most at risk of being lost.
         try:
