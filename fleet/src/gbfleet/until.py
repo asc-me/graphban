@@ -534,7 +534,6 @@ def _loop(
             continue
 
         if need > 0:
-            empty = 0
             # Re-read before minting into a cluster that just filled (allocation race).
             try:
                 need = _wanted_workers(planner, supervisor, live_n=len(live),
@@ -557,16 +556,17 @@ def _loop(
             # GRPH-885: when _delegate_next returns None for seed, there is no delegable work
             # (all clusters are held or refused). Do NOT spawn an unbound child — that would
             # tell the child to `claim_cluster` on a neighborhood whose seed is pinned, which
-            # skip-aheads the DAG. Skip this tick and let the next one retry.
+            # skip-aheads the DAG. Do NOT reset `empty` either: `_wanted_workers` still
+            # counts those free file-clusters, so zeroing here spun the loop forever
+            # (CI cancelled the fleet suite after 6h). Count toward idle like a no-work tick.
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base, held=held,
                                               merger=merger)
             if seed is None:
-                # No delegable work this tick. The cluster(s) are held or refused; the next
-                # tick will retry after the pin lapses or the holder releases. Do NOT spawn
-                # an unbound child. Fall through to the idle detection below.
+                # No takeable work this tick. Fall through to the idle counter below.
                 pass
             elif code:
+                empty = 0
                 seat = Seat(shared=dict(shared or {}),
                             code=code, server_url=server, api_key=api_key, role="worker",
                             item=seed)
@@ -623,6 +623,7 @@ def _loop(
                 )
                 continue
             else:
+                empty = 0
                 seat, minted_one = _take_seat(
                     pool, planner, agent_id, wave_name, server, api_key,
                     mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,

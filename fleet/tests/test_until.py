@@ -69,6 +69,12 @@ def _clients(
     sticky_clusters: bool = False,
 ):
     """Planner + supervisor clients sharing one mock Graphban."""
+    # GRPH-885: `_delegate_next` only seeds a cluster that names an item. Fixtures that
+    # used `clusters=1` with an empty `items` list used to spawn an unbound drain child;
+    # that is the skip-ahead path this item closes. Default a seed so spawn-path tests
+    # still exercise the loop; pass `cluster_items=[[]]` for a deliberately empty cluster.
+    if cluster_items is None and clusters:
+        cluster_items = [[f"GRPH-{i+1}"] for i in range(clusters)]
     seen_agents = {"yes": False}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -700,7 +706,9 @@ def test_a_seat_with_no_cluster_item_makes_no_delegate_call(
     workspace = tmp_path / "ws"
     delegations: list = []
     calls: list = []
-    planner, supervisor = _clients(workspace, clusters=1, delegations=delegations, calls=calls)
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[[]], delegations=delegations, calls=calls,
+    )
     result = run(
         git_repo, _factory(scripts, "works_then_exits"),
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
@@ -735,8 +743,9 @@ def test_the_tier_flag_is_what_the_loop_requests(
 def test_a_refused_delegation_does_not_stop_the_spawn(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):
-    """Another planner's open delegation, or a bounce pin, is theirs to hold. The seat is
-    still minted; the divvy decides what the child claims and the record says so."""
+    """GRPH-885: a refused bound delegate (conflict / bounce pin) does not mint an
+    unbound child. The cluster is held; the next tick retries. Spawning anyway is
+    how SA-P14 skip-ahead the DAG via claim_cluster."""
     workspace = tmp_path / "ws"
     delegations: list = []
     planner, supervisor = _clients(
@@ -748,7 +757,7 @@ def test_a_refused_delegation_does_not_stop_the_spawn(
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
     )
-    assert result.spawned == 1, result.detail
+    assert result.spawned == 0, result.detail
     assert delegations == []
 
 
