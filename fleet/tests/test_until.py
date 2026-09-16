@@ -69,6 +69,12 @@ def _clients(
     sticky_clusters: bool = False,
 ):
     """Planner + supervisor clients sharing one mock Graphban."""
+    # GRPH-885: `_delegate_next` only seeds a cluster that names an item. Fixtures that
+    # used `clusters=1` with an empty `items` list used to spawn an unbound drain child;
+    # that is the skip-ahead path this item closes. Default a seed so spawn-path tests
+    # still exercise the loop; pass `cluster_items=[[]]` for a deliberately empty cluster.
+    if cluster_items is None and clusters:
+        cluster_items = [[f"GRPH-{i+1}"] for i in range(clusters)]
     seen_agents = {"yes": False}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -693,17 +699,25 @@ def test_until_delegates_the_seed_before_minting_the_seat(
 def test_a_seat_with_no_cluster_item_makes_no_delegate_call(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):
-    """Criterion 22, second half. The absence is the record: nothing was handed over."""
+    """Criterion 22, second half. The absence is the record: nothing was handed over.
+    GRPH-885: when there is no delegable work (empty cluster), no child is spawned. The
+    old behavior spawned an unbound child that would call `claim_cluster`, but that is
+    exactly the skip-ahead path this fix closes."""
     workspace = tmp_path / "ws"
     delegations: list = []
     calls: list = []
-    planner, supervisor = _clients(workspace, clusters=1, delegations=delegations, calls=calls)
+    planner, supervisor = _clients(
+        workspace, clusters=1, cluster_items=[[]], delegations=delegations, calls=calls,
+    )
     result = run(
         git_repo, _factory(scripts, "works_then_exits"),
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
     )
-    assert result.spawned == 1, result.detail
+    # GRPH-885: no delegable work means no spawn. The cluster is empty, so there's nothing
+    # to delegate, and spawning an unbound child would just have it call `claim_cluster` on
+    # an empty neighborhood.
+    assert result.spawned == 0, result.detail
     assert delegations == []
     assert "delegate" not in calls
 
@@ -729,8 +743,9 @@ def test_the_tier_flag_is_what_the_loop_requests(
 def test_a_refused_delegation_does_not_stop_the_spawn(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):
-    """Another planner's open delegation, or a bounce pin, is theirs to hold. The seat is
-    still minted; the divvy decides what the child claims and the record says so."""
+    """GRPH-885: a refused bound delegate (conflict / bounce pin) does not mint an
+    unbound child. The cluster is held; the next tick retries. Spawning anyway is
+    how SA-P14 skip-ahead the DAG via claim_cluster."""
     workspace = tmp_path / "ws"
     delegations: list = []
     planner, supervisor = _clients(
@@ -742,7 +757,7 @@ def test_a_refused_delegation_does_not_stop_the_spawn(
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
     )
-    assert result.spawned == 1, result.detail
+    assert result.spawned == 0, result.detail
     assert delegations == []
 
 
@@ -785,11 +800,13 @@ def test_until_mints_a_bound_seat_through_delegate_and_skips_mint_enrolment(
     assert "claim_cluster" in instruction and "Do NOT call claim_cluster" in instruction
 
 
-def test_a_refused_bound_seat_falls_back_to_an_unbound_delegation(
+def test_a_refused_bound_seat_does_not_fall_back_to_unbound(
     git_repo: Path, tmp_path: Path, scripts, state: Path,
 ):
-    """Criterion 13 / D13: the areas were held, so the delegation stands without a seat and
-    the seat is minted the old way — the divvy decides what the child claims."""
+    """GRPH-885: a bound seat refusal means the seed is pinned or its areas are held.
+    Do NOT fall back to an unbound delegate — that tells the child to `claim_cluster` on
+    the neighborhood, which takes the rest of the glob and skip-aheads the DAG. Instead,
+    skip this cluster entirely and let the next tick retry after the pin lapses."""
     workspace = tmp_path / "ws"
     delegations: list = []
     calls: list = []
@@ -803,10 +820,10 @@ def test_a_refused_bound_seat_falls_back_to_an_unbound_delegation(
         planner, supervisor, api_key=KEY, server="http://gb.invalid", adapter="fake",
         state=state, workspace=workspace, poll=0, sleep=lambda _: None, empty_ticks=1,
     )
-    assert result.spawned == 1, result.detail
-    assert [d.get("seat") for d in delegations] == [None], "the retry carried no seat"
-    assert "mint_enrolment" in calls
-    assert "BOUND" not in captured[0]
+    # GRPH-885: no spawn happens when the bound seat is refused. The cluster is held, not
+    # available, and the next tick will retry after the pin lapses or the holder releases.
+    assert result.spawned == 0, "a refused bound seat should not spawn an unbound child"
+    assert "mint_enrolment" not in calls, "no unbound fallback means no mint_enrolment"
 
 
 def test_a_stale_hold_is_not_a_holding():

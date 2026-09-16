@@ -534,7 +534,6 @@ def _loop(
             continue
 
         if need > 0:
-            empty = 0
             # Re-read before minting into a cluster that just filled (allocation race).
             try:
                 need = _wanted_workers(planner, supervisor, live_n=len(live),
@@ -554,15 +553,77 @@ def _loop(
             # the child claims the seed rather than whatever the divvy hands it. When the
             # server refused a bound seat (areas held) the delegation stands without one
             # and the seat is minted as before; when nothing was delegable, likewise.
+            # GRPH-885: when _delegate_next returns None for seed, there is no delegable work
+            # (all clusters are held or refused). Do NOT spawn an unbound child — that would
+            # tell the child to `claim_cluster` on a neighborhood whose seed is pinned, which
+            # skip-aheads the DAG. Do NOT reset `empty` either: `_wanted_workers` still
+            # counts those free file-clusters, so zeroing here spun the loop forever
+            # (CI cancelled the fleet suite after 6h). Count toward idle like a no-work tick.
             seed, code, want = _delegate_next(planner, agent_id, wave_name, delegated,
                                               request, prd, repo, base, held=held,
                                               merger=merger)
-            if code:
+            if seed is None:
+                # No takeable work this tick. Fall through to the idle counter below.
+                pass
+            elif code:
+                empty = 0
                 seat = Seat(shared=dict(shared or {}),
                             code=code, server_url=server, api_key=api_key, role="worker",
                             item=seed)
                 minted += 1
+                factory = launch_factory
+                chosen = (adapter, "")
+                if want and want in tiers.lanes and launch_for is not None:
+                    lane = tiers.resolve(want)
+                    factory = launch_for(lane.adapter, lane.model)
+                    chosen = (lane.adapter, lane.model)
+                elif want and launch_for is not None and matrix is not None:
+                    # PRD-37: no flag for this tier — the matrix resolves under the profile and
+                    # policy read at launch, and the log says how.
+                    brief = _item_brief(planner, seed)
+                    res = matrix.resolve(tier=want, profile=profile, policy=policy,
+                                         measured=measured, installed=matrix_mod.installed_checker(),
+                                         capabilities=(brief or {}).get("capabilities"),
+                                         cap_measured=cap_measured,
+                                         spend=(brief or {}).get("spend"),
+                                         mix=(brief or {}).get("mix"))
+                    if res.winner is not None:
+                        factory = launch_for(res.winner.harness, res.winner.model)
+                        chosen = (res.winner.harness, res.winner.model)
+                        explained = res.explain()
+                        observe.emit("resolved", item=seed, **{k: v for k, v in explained.items() if k in ("winner", "dropped", "eligible", "profile", "stages", "capabilities")})
+                        wave.resolutions.append({"item": seed, **{k: explained[k] for k in
+                                                                  ("winner", "dropped", "stages",
+                                                                   "capabilities", "profile")
+                                                                  if k in explained}})
+                        # PRD-41 D21 / criterion 24: the same object spawn already posts
+                        # (PRD-38 D3). until is the fleet's primary path; without this,
+                        # attempt_telemetry has no stages and replay/R6 cannot see what
+                        # was resolved. Fire-and-forget inside the client.
+                        declare = matrix_mod.declaration(
+                            res.winner.harness, res.winner.model, want or None, matrix)
+                        planner.post_attempt(
+                            enrolment_code=seat.code,
+                            adapter=res.winner.harness,
+                            winner=f"{declare.get('vendor', '')}:{declare.get('model', '')}",
+                            runner_up=_runner_up(explained, matrix),
+                            source=explained.get("source") or "matrix",
+                            resolution=explained,
+                        )
+                    else:
+                        observe.emit("resolve_refused", item=seed, detail=res.refused)
+                # GRPH-732: the child is told what it is, because only this side knows.
+                if chosen[0]:
+                    seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
+                _cap_children(wave, limits)
+                _spawn_one(
+                    wave, children, occupied, persist, seat, factory,
+                    repo, workspace, wave_name, supervisor, limits, planner, debug,
+                    base=base,
+                )
+                continue
             else:
+                empty = 0
                 seat, minted_one = _take_seat(
                     pool, planner, agent_id, wave_name, server, api_key,
                     mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
@@ -571,57 +632,57 @@ def _loop(
                 if minted_one:
                     minted += 1
                     mint_left -= 1
-            factory = launch_factory
-            chosen = (adapter, "")
-            if want and want in tiers.lanes and launch_for is not None:
-                lane = tiers.resolve(want)
-                factory = launch_for(lane.adapter, lane.model)
-                chosen = (lane.adapter, lane.model)
-            elif want and launch_for is not None and matrix is not None:
-                # PRD-37: no flag for this tier — the matrix resolves under the profile and
-                # policy read at launch, and the log says how.
-                brief = _item_brief(planner, seed)
-                res = matrix.resolve(tier=want, profile=profile, policy=policy,
-                                     measured=measured, installed=matrix_mod.installed_checker(),
-                                     capabilities=(brief or {}).get("capabilities"),
-                                     cap_measured=cap_measured,
-                                     spend=(brief or {}).get("spend"),
-                                     mix=(brief or {}).get("mix"))
-                if res.winner is not None:
-                    factory = launch_for(res.winner.harness, res.winner.model)
-                    chosen = (res.winner.harness, res.winner.model)
-                    explained = res.explain()
-                    observe.emit("resolved", item=seed, **{k: v for k, v in explained.items() if k in ("winner", "dropped", "eligible", "profile", "stages", "capabilities")})
-                    wave.resolutions.append({"item": seed, **{k: explained[k] for k in
-                                                              ("winner", "dropped", "stages",
-                                                               "capabilities", "profile")
-                                                              if k in explained}})
-                    # PRD-41 D21 / criterion 24: the same object spawn already posts
-                    # (PRD-38 D3). until is the fleet's primary path; without this,
-                    # attempt_telemetry has no stages and replay/R6 cannot see what
-                    # was resolved. Fire-and-forget inside the client.
-                    declare = matrix_mod.declaration(
-                        res.winner.harness, res.winner.model, want or None, matrix)
-                    planner.post_attempt(
-                        enrolment_code=seat.code,
-                        adapter=res.winner.harness,
-                        winner=f"{declare.get('vendor', '')}:{declare.get('model', '')}",
-                        runner_up=_runner_up(explained, matrix),
-                        source=explained.get("source") or "matrix",
-                        resolution=explained,
-                    )
-                else:
-                    observe.emit("resolve_refused", item=seed, detail=res.refused)
-            # GRPH-732: the child is told what it is, because only this side knows.
-            if chosen[0]:
-                seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
-            _cap_children(wave, limits)
-            _spawn_one(
-                wave, children, occupied, persist, seat, factory,
-                repo, workspace, wave_name, supervisor, limits, planner, debug,
-                base=base,
-            )
-            continue
+                factory = launch_factory
+                chosen = (adapter, "")
+                if want and want in tiers.lanes and launch_for is not None:
+                    lane = tiers.resolve(want)
+                    factory = launch_for(lane.adapter, lane.model)
+                    chosen = (lane.adapter, lane.model)
+                elif want and launch_for is not None and matrix is not None:
+                    # PRD-37: no flag for this tier — the matrix resolves under the profile and
+                    # policy read at launch, and the log says how.
+                    brief = _item_brief(planner, seed)
+                    res = matrix.resolve(tier=want, profile=profile, policy=policy,
+                                         measured=measured, installed=matrix_mod.installed_checker(),
+                                         capabilities=(brief or {}).get("capabilities"),
+                                         cap_measured=cap_measured,
+                                         spend=(brief or {}).get("spend"),
+                                         mix=(brief or {}).get("mix"))
+                    if res.winner is not None:
+                        factory = launch_for(res.winner.harness, res.winner.model)
+                        chosen = (res.winner.harness, res.winner.model)
+                        explained = res.explain()
+                        observe.emit("resolved", item=seed, **{k: v for k, v in explained.items() if k in ("winner", "dropped", "eligible", "profile", "stages", "capabilities")})
+                        wave.resolutions.append({"item": seed, **{k: explained[k] for k in
+                                                                  ("winner", "dropped", "stages",
+                                                                   "capabilities", "profile")
+                                                                  if k in explained}})
+                        # PRD-41 D21 / criterion 24: the same object spawn already posts
+                        # (PRD-38 D3). until is the fleet's primary path; without this,
+                        # attempt_telemetry has no stages and replay/R6 cannot see what
+                        # was resolved. Fire-and-forget inside the client.
+                        declare = matrix_mod.declaration(
+                            res.winner.harness, res.winner.model, want or None, matrix)
+                        planner.post_attempt(
+                            enrolment_code=seat.code,
+                            adapter=res.winner.harness,
+                            winner=f"{declare.get('vendor', '')}:{declare.get('model', '')}",
+                            runner_up=_runner_up(explained, matrix),
+                            source=explained.get("source") or "matrix",
+                            resolution=explained,
+                        )
+                    else:
+                        observe.emit("resolve_refused", item=seed, detail=res.refused)
+                # GRPH-732: the child is told what it is, because only this side knows.
+                if chosen[0]:
+                    seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
+                _cap_children(wave, limits)
+                _spawn_one(
+                    wave, children, occupied, persist, seat, factory,
+                    repo, workspace, wave_name, supervisor, limits, planner, debug,
+                    base=base,
+                )
+                continue
 
         # S6 (PRD-39 D-i): unheld review rows need a merged worker. Re-keyed off the
         # fact it measures — a child was spawned against unheld review rows, exited,
@@ -1043,6 +1104,8 @@ def _delegate_next(
         observe.emit("delegate_skipped", detail=f"collision_clusters: {exc}")
         return None, None, None
     seed: str | None = None
+    lane = "backend"
+    want = str(request or "cheap")
     for cluster in clusters.get("clusters") or []:
         if not isinstance(cluster, dict) or cluster.get("held_by"):
             continue
@@ -1071,42 +1134,46 @@ def _delegate_next(
             # the work is missing, and refusing on it would stop every wave on a fresh clone.
             observe.emit("dependency_unresolved", item=candidate,
                          detail=f"{row['id']}'s commit is not in this clone; not checked")
-        seed = candidate
-        break
-    if seed is None:
-        return None, None, None
-    try:
-        details = planner.call("get_item_details", id=seed) or {}
-        brief = details.get("brief") if isinstance(details.get("brief"), dict) else {}
-        lane = str(((brief.get("lane") or {}).get("value")) or "backend")
-        want = str(request or ((brief.get("tier") or {}).get("value")) or "cheap")
-    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
-        observe.emit("delegate_refused", item=seed, detail=str(exc))
-        return None, None, None
-    note = f"gbfleet until, wave {wave_name}"
-    code: str | None = None
-    try:
-        # PRD-36 D9: a BOUND seat. The server refuses one when the seed's areas are held
-        # by someone else (D13); then the delegation is written without a seat and the
-        # divvy decides, exactly as before PRD-36.
-        reply = planner.call("delegate", id=seed, lane=lane, tier=want, agent_id=agent_id,
-                             note=note, seat=True, wave=wave_name, **_seat_scope(prd))
-        got = reply.get("enrolment_code") if isinstance(reply, dict) else None
-        code = str(got) if got else None
-    except ToolFailed as exc:
-        observe.emit("bound_seat_refused", item=seed, detail=str(exc))
+        # Try to delegate this candidate. If the bound seat is refused, continue to the next
+        # cluster instead of falling back to an unbound delegate.
         try:
-            planner.call("delegate", id=seed, lane=lane, tier=want, agent_id=agent_id, note=note,
-                         **_seat_scope(prd))
-        except (ToolFailed, NotPermitted, ServerUnreachable) as exc2:
-            observe.emit("delegate_refused", item=seed, detail=str(exc2))
-            return None, None, None
-    except (NotPermitted, ServerUnreachable) as exc:
-        observe.emit("delegate_refused", item=seed, detail=str(exc))
-        return None, None, None
-    delegated.add(seed)
-    observe.emit("delegated", item=seed, lane=lane, tier=want, bound=bool(code))
-    return seed, code, want
+            details = planner.call("get_item_details", id=candidate) or {}
+            brief = details.get("brief") if isinstance(details.get("brief"), dict) else {}
+            lane = str(((brief.get("lane") or {}).get("value")) or "backend")
+            want = str(request or ((brief.get("tier") or {}).get("value")) or "cheap")
+        except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+            observe.emit("delegate_refused", item=candidate, detail=str(exc))
+            continue
+        note = f"gbfleet until, wave {wave_name}"
+        code: str | None = None
+        try:
+            # PRD-36 D9: a BOUND seat. The server refuses one when the seed's areas are held
+            # by someone else (D13); then the delegation is written without a seat and the
+            # divvy decides, exactly as before PRD-36.
+            reply = planner.call("delegate", id=candidate, lane=lane, tier=want, agent_id=agent_id,
+                                 note=note, seat=True, wave=wave_name, **_seat_scope(prd))
+            got = reply.get("enrolment_code") if isinstance(reply, dict) else None
+            code = str(got) if got else None
+        except ToolFailed as exc:
+            # GRPH-885: a bound seat refusal means the seed is pinned or its areas are held.
+            # Do NOT fall back to an unbound delegate — that tells the child to `claim_cluster`
+            # on the neighborhood, which takes the rest of the glob and skip-aheads the DAG.
+            # Instead, skip this cluster entirely and try the next one. The cluster is held,
+            # not available, and the next tick will retry after the pin lapses or the holder
+            # releases.
+            observe.emit("bound_seat_refused", item=candidate, detail=str(exc))
+            delegated.add(candidate)  # Mark delegated so the next tick does not re-offer and spin
+            continue
+        except (NotPermitted, ServerUnreachable) as exc:
+            observe.emit("delegate_refused", item=candidate, detail=str(exc))
+            continue
+        # Success: this candidate is delegated
+        seed = candidate
+        delegated.add(seed)
+        observe.emit("delegated", item=seed, lane=lane, tier=want, bound=bool(code))
+        return seed, code, want
+    # No cluster was delegable
+    return None, None, None
 
 
 #: How many distinct gate refusals a wave records. `until` re-reads the condition every
