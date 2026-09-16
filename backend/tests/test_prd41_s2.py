@@ -284,11 +284,14 @@ def test_fleet_status_always_carries_probe_suggestions_even_when_empty(client, k
 
 def test_brief_spend_includes_period_tokens_when_the_policy_names_a_period(
         client, key, proj, auth, db):
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     from app.models import AttemptTelemetry, Project
 
-    T0 = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+    # Rolling 7-day window (`PERIOD_DAYS["week"]`), not a calendar week. A pinned
+    # 2026-09-09 timestamp fell out of the window on 2026-09-16 and the assertion
+    # became `0 == 15000`.
+    T0 = datetime.now(timezone.utc) - timedelta(days=1)
     item = _mcp(client, key, "create_item", {
         "title": "period spend", "status": "next",
         "touchpoints": ["web/src/features/x.tsx"],
