@@ -126,3 +126,28 @@ def test_clusters_for_project_withholds_items_with_manual_blocker(db, monkeypatc
     clusters = collision.clusters_for_project(db, "core")
     all_items = [it for cl in clusters for it in cl["items"]]
     assert blocked.id not in all_items
+
+
+def test_clusters_for_project_includes_review_items_for_clustering(db, monkeypatch):
+    """GRPH-886: items in `review` are included in the pool for clustering purposes.
+
+    They are not claimable, but they still occupy their glob — their reservations are still
+    active, and their siblings in the same file neighborhood should form clusters with them
+    so `_with_reservations` can mark those clusters as `held_by`. Without this, a `review`
+    item leaves the pool, its siblings form separate clusters, and those clusters look free
+    even though the `review` item's reservations should block them.
+    """
+    _no_code_hits(monkeypatch)
+    review_item = _item(db, "In Review", touchpoints=["backend/app/spanner.py"])
+    sibling = _item(db, "Sibling", touchpoints=["backend/app/spanner.py"])
+    # Move review_item to review status
+    items_svc.update_item(db, review_item.id, status="review")
+
+    clusters = collision.clusters_for_project(db, "core")
+    # Both items should be in the same cluster (they share touchpoints)
+    all_items = [it for cl in clusters for it in cl["items"]]
+    assert review_item.id in all_items
+    assert sibling.id in all_items
+    # They should be in the same cluster
+    review_cluster = next(cl for cl in clusters if review_item.id in cl["items"])
+    assert sibling.id in review_cluster["items"]

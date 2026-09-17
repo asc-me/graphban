@@ -1113,6 +1113,39 @@ def _delegate_next(
         if not items or items[0] in delegated:
             continue
         candidate = items[0]
+        # GRPH-886: a git-merged item still in `next` is not a new build — it is already in
+        # the base, so delegating it would rebuild work that is done. Check if the candidate's
+        # branch (or its attested commits) are already in the base, and skip if so. This is
+        # the same shape as GRPH-798's dependency check, but applied to the candidate itself
+        # rather than its dependencies.
+        if base and repo:
+            try:
+                details = planner.call("get_item_details", id=candidate) or {}
+                cand_branch = str(details.get("branch") or "").strip()
+                cand_commits = []
+                for e in (details.get("evidence") or []):
+                    if isinstance(e, dict):
+                        c = str(e.get("commit") or "").strip()
+                        if c and c not in cand_commits:
+                            cand_commits.append(c)
+                # Check if the candidate's branch is in the base
+                branch_in_base = False
+                if cand_branch:
+                    from .worktree import reaches as wt_reaches
+                    branch_in_base = wt_reaches(repo, base, cand_branch) is True
+                # Or if any attested commit is in the base
+                commit_in_base = False
+                if not branch_in_base and cand_commits:
+                    from .worktree import reaches as wt_reaches
+                    commit_in_base = any(wt_reaches(repo, base, c) is True for c in cand_commits)
+                if branch_in_base or commit_in_base:
+                    observe.emit("delegate_held", item=candidate,
+                                 detail=f"{candidate} is already in {base} (git-merged); "
+                                        f"skipping as it is not a new build")
+                    delegated.add(candidate)
+                    continue
+            except Exception:  # noqa: BLE001 — a failed lookup is not evidence the item is merged
+                pass
         # GRPH-798. A child branches from `base`, so an item whose finished dependency is not
         # THERE would be built without it. SKIPPED, not fatal: the rest of the wave is still
         # buildable, and stopping would turn one unmerged branch into an idle fleet.

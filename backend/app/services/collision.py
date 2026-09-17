@@ -167,7 +167,14 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
 
     pool = items_svc.list_items(db, project_id=project_id, status=status)
     if status is None:
-        pool = [it for it in pool if items_svc.claimable(it, lease_seconds=lease_seconds)]
+        # GRPH-886: include items in `review` in the pool for clustering purposes. They are not
+        # claimable, but they still occupy their glob — their reservations are still active,
+        # and their siblings in the same file neighborhood should form clusters with them so
+        # `_with_reservations` can mark those clusters as `held_by`. Without this, a `review`
+        # item leaves the pool, its siblings form separate clusters, and those clusters look
+        # free even though the `review` item's reservations should block them.
+        pool = [it for it in pool if items_svc.claimable(it, lease_seconds=lease_seconds)
+                or it.status == "review"]
     if prd_id:
         # GRPH-797. `until` had no way to say which work a wave was for, so it drained the
         # project: a run meant for one PRD delegated an epic and three unrelated items. Parking
@@ -183,7 +190,7 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
     # rest of the glob becomes the seed, skip-ahead the DAG. Withholding blocked items from
     # the pool means the partition only contains work that can actually be delegated.
     ctx = prio.context(db, project_id)
-    pool = [it for it in pool if it.status == "in_progress" or prio.ready(ctx, it)]
+    pool = [it for it in pool if it.status in ("in_progress", "review") or prio.ready(ctx, it)]
     return _with_reservations(db, collision_clusters(db, pool, project_id), project_id,
                              lease_seconds=lease_seconds)
 
