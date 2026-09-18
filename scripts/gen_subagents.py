@@ -45,6 +45,10 @@ TOOLCHAINS = ("cursor", "claude", "codex")
 # the Fleet view emits the config with the keys in it. Cursor holds several server entries with
 # different literal headers perfectly well, so roles stay ENFORCED rather than advisory.
 PLUGIN_DIR = ".cursor/plugins/graphban"
+# Cursor plugin skills live here as the source; render_plugin_files copies each
+# `<name>/SKILL.md` to `{PLUGIN_DIR}/skills/<name>/SKILL.md`. A loose `.md` in
+# `skills/` is not a skill — Cursor loads a directory named in the manifest.
+PLUGIN_SKILLS_SRC = REPO / "scripts" / "plugin_skills"
 WAVE_ROLES = ("planner", "worker")
 # MUST match web/src/features/fleet/wave.ts. A rename on one side makes the Fleet view's
 # pasted block stop matching this config, which reads as "the key is wrong" rather than "the
@@ -259,6 +263,21 @@ them with a `basis`, and the server never defaults them — and paste the return
 `parent_agent_id`, or through a seat you minted; anyone else's claim supersedes it. A
 delegation nobody claims reads `expired` on the Live board, which is the point.
 
+When the child is a pstack `poteto-agent`, also map those fields onto the pstack
+template (PRD-44 D3) — the paste stays verbatim; the mapping sits next to it:
+
+| pstack field | Graphban source |
+|---|---|
+| GOAL | `brief.summary` / item title |
+| SCOPE | `brief.touchpoints` — **whitelist** of predicted write areas (may write these; anything else is out) |
+| ACCEPTANCE | item acceptance / checklist |
+| VERIFY | the operating loop in `AGENTS.md` (both DB engines; real PRD) |
+| STANDING | `AGENTS.md` invariants, pasted or pointed at |
+
+Touchpoints are a **whitelist**, not a blacklist and not default-allow. Well outside them →
+stop and flag. If the PRD or item description forbids a file listed in touchpoints, the **PRD
+wins**: stop and flag. Touchpoints are not a must-write list.
+
 To run it on a cheaper model through the fleet, `delegate(..., seat=true)` mints a worker
 seat BOUND to the item; `gbfleet spawn(enrolment_code, tier="cheap", item=<id>)` runs it on
 the adapter the operator mapped to that tier, and registering on the seat claims the item
@@ -411,6 +430,20 @@ without colliding*, then delegate.
    no default, because a default would be the server choosing. It claims nothing and
    returns the `brief` again. Paste `brief.text` into the spawn prompt VERBATIM: it is
    what the child needs and carries no suggestion, so it cannot smuggle a tier in.
+   When the child is a pstack `poteto-agent`, also map those fields onto the pstack
+   template (PRD-44 D3) — the paste stays verbatim; the mapping sits next to it:
+
+   | pstack field | Graphban source |
+   |---|---|
+   | GOAL | `brief.summary` / item title |
+   | SCOPE | `brief.touchpoints` — **whitelist** of predicted write areas (may write these; anything else is out) |
+   | ACCEPTANCE | item acceptance / checklist |
+   | VERIFY | the operating loop in `AGENTS.md` (both DB engines; real PRD) |
+   | STANDING | `AGENTS.md` invariants, pasted or pointed at |
+
+   Touchpoints are a **whitelist**, not a blacklist and not default-allow. Well outside them →
+   stop and flag. If the PRD or item description forbids a file listed in touchpoints, the **PRD
+   wins**: stop and flag. Touchpoints are not a must-write list.
 5. Spawn by lane and tier, one cluster member at a time:
    - Claude Code: `gb-frontend` for `frontend`, `gb-implementer` otherwise, and pass
      `model: haiku` for `cheap` or inherit for `frontier` on the Agent call.
@@ -503,7 +536,7 @@ ledger and running both in the same wave is out of spec (PRD-44 D2). If pstack i
 installed, the existing loop above stands — absence of pstack is not a blocker.
 
 If you skip a pstack playbook, record skip-with-reason on the todo **and** as evidence
-(`update_item(evidence=[{{"kind": "note", "detail": "skipped <playbook>: <reason>"}}])`).
+(`update_item(evidence=[{"kind": "note", "detail": "skipped <playbook>: <reason>"}])`).
 
 ## Invariants (violating these is the review comment you'll get)
 
@@ -565,7 +598,7 @@ ledger and running both in the same wave is out of spec (PRD-44 D2). If pstack i
 installed, the existing loop above stands — absence of pstack is not a blocker.
 
 If you skip a pstack playbook, record skip-with-reason on the todo **and** as evidence
-(`update_item(evidence=[{{"kind": "note", "detail": "skipped <playbook>: <reason>"}}])`).
+(`update_item(evidence=[{"kind": "note", "detail": "skipped <playbook>: <reason>"}])`).
 
 ## Frontend invariants
 
@@ -749,6 +782,9 @@ def render_plugin_files() -> dict[str, str]:
         ),
         "author": {"name": "Graphban"},
         "keywords": ["graphban", "fleet", "mcp"],
+        # Cursor loads skills/<name>/SKILL.md only when the manifest names the dir
+        # (pstack 0.15.2 ships `"skills": "./skills/"` the same way).
+        "skills": "./skills/",
     }
     files = {
         f"{PLUGIN_DIR}/plugin.json": json.dumps(manifest, indent=2) + "\n",
@@ -757,6 +793,12 @@ def render_plugin_files() -> dict[str, str]:
     ext, render = RENDERERS["cursor"]
     for role in FLEET_ROSTER:
         files[f"{PLUGIN_DIR}/agents/{role['name']}{ext}"] = render(role)
+    for skill in sorted(PLUGIN_SKILLS_SRC.glob("*/SKILL.md")):
+        files[f"{PLUGIN_DIR}/skills/{skill.parent.name}/SKILL.md"] = skill.read_text(
+            encoding="utf-8"
+        )
+    if not any(k.endswith("/SKILL.md") for k in files if "/skills/" in k):
+        raise SystemExit(f"no plugin skills found under {PLUGIN_SKILLS_SRC}")
     return files
 
 

@@ -49,6 +49,21 @@ them with a `basis`, and the server never defaults them — and paste the return
 `parent_agent_id`, or through a seat you minted; anyone else's claim supersedes it. A
 delegation nobody claims reads `expired` on the Live board, which is the point.
 
+When the child is a pstack `poteto-agent`, also map those fields onto the pstack
+template (PRD-44 D3) — the paste stays verbatim; the mapping sits next to it:
+
+| pstack field | Graphban source |
+|---|---|
+| GOAL | `brief.summary` / item title |
+| SCOPE | `brief.touchpoints` — **whitelist** of predicted write areas (may write these; anything else is out) |
+| ACCEPTANCE | item acceptance / checklist |
+| VERIFY | the operating loop in `AGENTS.md` (both DB engines; real PRD) |
+| STANDING | `AGENTS.md` invariants, pasted or pointed at |
+
+Touchpoints are a **whitelist**, not a blacklist and not default-allow. Well outside them →
+stop and flag. If the PRD or item description forbids a file listed in touchpoints, the **PRD
+wins**: stop and flag. Touchpoints are not a must-write list.
+
 To run it on a cheaper model through the fleet, `delegate(..., seat=true)` mints a worker
 seat BOUND to the item; `gbfleet spawn(enrolment_code, tier="cheap", item=<id>)` runs it on
 the adapter the operator mapped to that tier, and registering on the seat claims the item

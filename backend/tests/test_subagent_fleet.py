@@ -9,6 +9,7 @@ Guards `scripts/gen_subagents.py`:
   4. The fleet README's invariants are the *verbatim* AGENTS.md invariants (anti-drift).
 """
 import importlib.util
+import json
 import tomllib
 from pathlib import Path
 
@@ -168,6 +169,119 @@ def test_the_plugin_readme_states_what_it_does_not_guarantee():
     assert "not an adversarial boundary" in readme
     assert "two codes" in readme, "name the residual risk, not a retired one"
     assert "cannot scope" not in readme, "that caveat described the three-server config"
+
+
+def test_why_graphban_is_a_loadable_cursor_skill():
+    """GRPH-887 bounce. A loose markdown file is not a Cursor skill.
+
+    Cursor loads `skills/<name>/SKILL.md` when plugin.json sets `"skills": "./skills/"`
+    (pstack 0.15.2 does this). Deleting the skills field, or emitting
+    `skills/why-graphban.md` instead of `skills/why-graphban/SKILL.md`, leaves /why
+    with nothing to load — Graphban still files as a Linear-shaped tracker.
+    """
+    gen = _load_generator()
+    files = gen.render_files()
+    manifest = json.loads(files[f"{gen.PLUGIN_DIR}/plugin.json"])
+    skill_rel = f"{gen.PLUGIN_DIR}/skills/why-graphban/SKILL.md"
+
+    assert manifest.get("skills") == "./skills/", (
+        "plugin.json does not declare skills — Cursor will not load why-graphban"
+    )
+    assert skill_rel in files, "generator does not emit the /why skill"
+    assert f"{gen.PLUGIN_DIR}/skills/why-graphban.md" not in files, (
+        "a loose why-graphban.md is not a skill; Cursor will not load it"
+    )
+    assert not (REPO / gen.PLUGIN_DIR / "skills" / "why-graphban.md").exists(), (
+        "leftover loose why-graphban.md still on disk — Cursor will not load it"
+    )
+
+    skill = files[skill_rel]
+    memory = skill.split("## Category 3: Memory", 1)[1].split("## Category 4:", 1)[0]
+    assert "related_work" in memory, (
+        "memory category lost related_work — the prior-attempt surface D5 said "
+        "not to fold into tickets"
+    )
+    assert "| **Results** |" in skill and "| **Empty** |" in skill and "| **Unavailable** |" in skill
+    assert "Issue / ticket tracker" in skill
+    assert "Long-form documents" in skill
+    assert "Code graph" in skill
+    assert "## Category 5: Live" in skill
+
+
+PSTACK_ORCHESTRATE_FORBID = "Never invoke Orchestrate, Autopilot-full, or Autopilot-stack."
+PSTACK_WORKER_ROLES = ("gb-implementer", "gb-frontend")
+
+
+def test_pstack_orchestrate_forbid_is_pinned_in_worker_prompts():
+    """GRPH-888 bounce. A2's acceptance is the test of the forbid, not the prompt existing.
+
+    Delete the forbid line from the implementer/frontend bodies in gen_subagents.py
+    and this fails. test_committed_fleet_matches_generator staying green does not
+    cover this — it only checks the files match the generator, whatever it says.
+    """
+    gen = _load_generator()
+    workers = [r for r in gen.ROSTER if r["name"] in PSTACK_WORKER_ROLES]
+    assert {r["name"] for r in workers} == set(PSTACK_WORKER_ROLES)
+
+    for role in workers:
+        assert PSTACK_ORCHESTRATE_FORBID in role["body"], (
+            f"{role['name']} lost the Orchestrate forbid"
+        )
+        assert 'evidence=[{"kind": "note"' in role["body"], (
+            f"{role['name']} skip-with-reason example is not copyable JSON"
+        )
+        assert "evidence=[{{" not in role["body"], (
+            f"{role['name']} skip-with-reason example still has doubled braces"
+        )
+
+    # Sabotage the CALL: generated files, not only the roster source.
+    files = gen.render_files()
+    for rel, content in files.items():
+        if not any(name in Path(rel).name for name in PSTACK_WORKER_ROLES):
+            continue
+        if rel.endswith("README.md"):
+            continue
+        assert PSTACK_ORCHESTRATE_FORBID in content, (
+            f"{rel} lost the Orchestrate forbid — spawned workers will not see it"
+        )
+        assert "evidence=[{{" not in content, (
+            f"{rel} still emits doubled braces a worker would copy"
+        )
+
+
+def test_planner_and_orchestrator_map_brief_next_to_verbatim_paste():
+    """GRPH-889 bounce. Mapping sits next to the verbatim paste, not instead of it.
+
+    The point of VERBATIM is that brief.text cannot smuggle a tier. Replacing the
+    paste with the D3 table would drop that. A child spawned from the planner
+    never sees the delegation skill, so the table has to be in this body too.
+    """
+    gen = _load_generator()
+    planner = next(r for r in gen.ROSTER if r["name"] == "gb-planner")
+    orch = next(r for r in gen.FLEET_ROSTER if r["name"] == "gb-orchestrator")
+    fields = ("GOAL", "SCOPE", "ACCEPTANCE", "VERIFY", "STANDING")
+
+    assert "VERBATIM" in planner["body"], (
+        "planner lost the verbatim paste — the brief can smuggle a tier"
+    )
+    assert "brief.text" in orch["body"]
+    for role in (planner, orch):
+        for field in fields:
+            assert field in role["body"], (
+                f"{role['name']} missing {field} — a poteto-agent child stays freelance"
+            )
+
+    files = gen.render_files()
+    for rel, content in files.items():
+        name = Path(rel).name
+        if not (name.startswith("gb-planner") or name.startswith("gb-orchestrator")):
+            continue
+        if rel.endswith("README.md"):
+            continue
+        for field in fields:
+            assert field in content, f"{rel} lost {field}"
+        if name.startswith("gb-planner"):
+            assert "VERBATIM" in content, f"{rel} lost the verbatim paste"
 
 
 # ---- the Cursor rules file (GRPH-147) -----------------------------------------------------

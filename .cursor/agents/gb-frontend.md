@@ -37,7 +37,7 @@ ledger and running both in the same wave is out of spec (PRD-44 D2). If pstack i
 installed, the existing loop above stands — absence of pstack is not a blocker.
 
 If you skip a pstack playbook, record skip-with-reason on the todo **and** as evidence
-(`update_item(evidence=[{{"kind": "note", "detail": "skipped <playbook>: <reason>"}}])`).
+(`update_item(evidence=[{"kind": "note", "detail": "skipped <playbook>: <reason>"}])`).
 
 ## Frontend invariants
 

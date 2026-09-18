@@ -61,18 +61,22 @@ report."
 
 Shards and lessons — decisions, corrections, project knowledge that persists across sessions.
 pstack's seven-bucket map has no slot for this; name it separately, do not fold it into
-tickets.
+tickets. `related_work` is the prior-attempt / neighborhood surface — also not a ticket search.
 
-**Tools:** `search_memory`, `get_lessons`, `extract_lessons`
+**Tools:** `search_memory`, `related_work`, `get_lessons`, `extract_lessons`
 
 - `search_memory` — semantic search over memory shards. Published shards ranked by
   similarity (score, status). `include_candidates: true` adds unreviewed shards.
+- `related_work` — items related to a task by shared touchpoints and typed links (the
+  prior-attempt and code-neighborhood surface). Do not fold this into the issue-tracker
+  category; it is not a Linear search.
 - `get_lessons` — published lesson catalog with effectiveness, caught-issues, and
   org-eligibility. `score null` / `candidate` = not yet judged.
 - `extract_lessons` — distil lessons from a session into memory (async; see linked_shards).
 
 **Empty is a finding.** No memory shards for an area means nothing was learned or recorded.
-Empty memory is a named finding, not "the memory system is not in use."
+Empty `related_work` means no neighborhood is linked — report it, do not treat it as "no
+tickets." Empty memory is a named finding, not "the memory system is not in use."
 
 ---
 
@@ -119,7 +123,7 @@ Do NOT treat empty Live as transient or unavailable.
 |---|---|---|
 | Issue tracker | `search_items`, `get_item_details`, `get_backlog` | Work is not tracked |
 | PRDs | `get_prd`, `prd_coverage`, `prd_acceptance` | No spec or no decomposition |
-| Memory | `search_memory`, `get_lessons`, `extract_lessons` | Nothing learned or recorded |
+| Memory | `search_memory`, `related_work`, `get_lessons`, `extract_lessons` | Nothing learned, linked, or recorded |
 | Code graph | `get_code_map`, `code_neighbors`, `search_code`, `graph_query` | Structure never described |
 | Live | `fleet_status` | Nobody is working |
 
