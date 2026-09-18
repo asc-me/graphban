@@ -501,3 +501,49 @@ def test_a_declared_cluster_is_not_marked_a_guess(client, key, db):
     assert got["claimed"] and got["predicted"] is False
     rows = db.query(AreaReservation).filter_by(agent_id=w["agent_id"]).all()
     assert rows and not any(r.predicted for r in rows)
+
+
+# ---- GRPH-886: bound seat refuses claim_cluster -----------------------------------------------
+
+def test_claim_cluster_refuses_when_agent_holds_bound_item(client, key, db, proj):
+    """GRPH-886: a bound seat already holds one item. `claim_cluster` must refuse to hand it
+    more — a bound child that vacuums the rest of the neighborhood skip-aheads the DAG.
+
+    Sabotage: register on a bound seat, then call `claim_cluster`; must return `claimed: false`
+    naming the bound item, not the rest of the neighborhood.
+    """
+    from app.models import Agent, Enrolment
+
+    # Create two items in the same glob
+    item1 = _item(client, key, "bound item", ["backend/app/spanner.py"])
+    item2 = _item(client, key, "sibling item", ["backend/app/spanner.py"])
+
+    # Register a planner agent (no role_hint, shared key has planner scope)
+    planner_res = _ok(client, key, "register_agent",
+                      {"label": "planner", "capabilities": {"instance": "planner"}})
+    planner_id = planner_res["agent_id"]
+
+    # Delegate item1 with a bound seat (seat=True) via MCP
+    delegate_res = _ok(client, key, "delegate",
+                       {"id": item1["id"], "lane": "backend", "tier": "cheap",
+                        "agent_id": planner_id, "seat": True, "wave": "test-wave"})
+    enrolment_code = delegate_res.get("enrolment_code")
+    assert enrolment_code, "delegation with seat=True must return a code"
+
+    # Now register a worker on that bound seat
+    worker_res = _ok(client, key, "register_agent",
+                     {"label": "bound-worker", "enrolment_code": enrolment_code,
+                      "worktree": "/tmp/test-wt", "branch": "gb/test"})
+    worker_id = worker_res["agent_id"]
+    assert worker_res.get("assigned", {}).get("state") == "claimed", (
+        f"bound seat registration should claim the item, got: {worker_res}"
+    )
+
+    # Now the worker holds a bound item. Try to claim_cluster.
+    result = _ok(client, key, "claim_cluster", {"agent_id": worker_id})
+
+    # Must refuse
+    assert result["claimed"] is False, "claim_cluster must refuse for agents on bound seats"
+    assert "bound seat already holds" in result["reason"], (
+        f"reason must name the bound item, got: {result['reason']}"
+    )

@@ -1074,6 +1074,48 @@ def _seat_scope(prd: str | None) -> dict:
     return {"scope": prd} if prd else {}
 
 
+def _seed_ready(details: dict) -> bool:
+    """Startable the way `get_backlog` means ready: next/backlog, no unfinished blocker.
+
+    A file-cluster's `items[0]` is not that. Review, done, blocked, and an item whose brief
+    still names an unfinished dependency are not seeds (GRPH-886).
+    """
+    if str(details.get("status") or "") not in ("next", "backlog"):
+        return False
+    brief = details.get("brief") if isinstance(details.get("brief"), dict) else {}
+    if brief.get("blocked_by"):
+        return False
+    if str(details.get("blocker") or "").strip():
+        return False
+    return True
+
+
+def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
+    """True when this item's branch or an attested commit is already in `base`.
+
+    A git-merged item still `next` (waiting on sign-off) is not a new build. `reaches`
+    returns None when this clone cannot tell; that is not "merged".
+    """
+    if not base or repo is None:
+        return False
+    from .worktree import reaches as wt_reaches
+
+    branch = str(details.get("branch") or "").strip()
+    if branch and wt_reaches(repo, base, branch) is True:
+        return True
+    seen: list[str] = []
+    for entry in details.get("evidence") or []:
+        if not isinstance(entry, dict):
+            continue
+        commit = str(entry.get("commit") or "").strip()
+        if not commit or commit in seen:
+            continue
+        seen.append(commit)
+        if wt_reaches(repo, base, commit) is True:
+            return True
+    return False
+
+
 def _delegate_next(
     planner: Graphban,
     agent_id: str,
@@ -1110,68 +1152,89 @@ def _delegate_next(
         if not isinstance(cluster, dict) or cluster.get("held_by"):
             continue
         items = [i for i in (cluster.get("items") or []) if isinstance(i, str) and i]
-        if not items or items[0] in delegated:
+        if not items:
             continue
-        candidate = items[0]
-        # GRPH-798. A child branches from `base`, so an item whose finished dependency is not
-        # THERE would be built without it. SKIPPED, not fatal: the rest of the wave is still
-        # buildable, and stopping would turn one unmerged branch into an idle fleet.
-        absent, unknown = deps.check(planner, candidate, repo, base) if base else ([], [])
-        if absent:
-            observe.emit("delegate_held", item=candidate,
-                         detail=deps.explain(candidate, absent, base))
-            # Marked delegated so the next tick does not re-offer it and spin. It is held for
-            # this wave, not refused forever — a merge changes the answer, and under
-            # `--merge` (GRPH-846) the dependency it names is the next merge to finish.
-            delegated.add(candidate)
-            if held is not None:
-                held[candidate] = [str(d.get("id") or "") for d in absent]
-            if merger is not None:
-                merger.note_hold(absent)
+        # GRPH-886: seeds are DAG-ready members, not items[0]. A review member, or an
+        # unsigned next/backlog member already in `--base`, occupies the whole glob.
+        # Do not walk to the sibling, and do not mark anyone delegated — hiding the
+        # merged id would make the sibling the seed on the next tick (SA-467/470).
+        details_for: dict[str, dict] = {}
+        review_occupies = False
+        base_occupies = False
+        for item_id in items:
+            if item_id in delegated:
+                continue
+            try:
+                got = planner.call("get_item_details", id=item_id) or {}
+            except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+                observe.emit("delegate_refused", item=item_id, detail=str(exc))
+                continue
+            if not isinstance(got, dict):
+                continue
+            details_for[item_id] = got
+            status = str(got.get("status") or "")
+            if status == "review":
+                review_occupies = True
+            elif status in ("next", "backlog") and _already_in_base(got, repo, base):
+                base_occupies = True
+        if review_occupies or base_occupies:
+            if base_occupies:
+                observe.emit(
+                    "delegate_held",
+                    detail=f"a member is already in {base} (unsigned, git-merged); "
+                           "the glob stays occupied",
+                )
             continue
-        for row in unknown:
-            # Reported and NOT acted on. "I have never seen that commit" is not evidence that
-            # the work is missing, and refusing on it would stop every wave on a fresh clone.
-            observe.emit("dependency_unresolved", item=candidate,
-                         detail=f"{row['id']}'s commit is not in this clone; not checked")
-        # Try to delegate this candidate. If the bound seat is refused, continue to the next
-        # cluster instead of falling back to an unbound delegate.
-        try:
-            details = planner.call("get_item_details", id=candidate) or {}
+        for candidate in items:
+            if candidate in delegated or candidate not in details_for:
+                continue
+            details = details_for[candidate]
+            if not _seed_ready(details):
+                continue
+            # GRPH-798. A child branches from `base`, so an item whose finished dependency is not
+            # THERE would be built without it. SKIPPED, not fatal: the rest of the wave is still
+            # buildable, and stopping would turn one unmerged branch into an idle fleet.
+            absent, unknown = deps.check(planner, candidate, repo, base) if base else ([], [])
+            if absent:
+                observe.emit("delegate_held", item=candidate,
+                             detail=deps.explain(candidate, absent, base))
+                # Marked delegated so the next tick does not re-offer it and spin. It is held for
+                # this wave, not refused forever — a merge changes the answer, and under
+                # `--merge` (GRPH-846) the dependency it names is the next merge to finish.
+                delegated.add(candidate)
+                if held is not None:
+                    held[candidate] = [str(d.get("id") or "") for d in absent]
+                if merger is not None:
+                    merger.note_hold(absent)
+                continue
+            for row in unknown:
+                # Reported and NOT acted on. "I have never seen that commit" is not evidence that
+                # the work is missing, and refusing on it would stop every wave on a fresh clone.
+                observe.emit("dependency_unresolved", item=candidate,
+                             detail=f"{row['id']}'s commit is not in this clone; not checked")
             brief = details.get("brief") if isinstance(details.get("brief"), dict) else {}
             lane = str(((brief.get("lane") or {}).get("value")) or "backend")
             want = str(request or ((brief.get("tier") or {}).get("value")) or "cheap")
-        except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
-            observe.emit("delegate_refused", item=candidate, detail=str(exc))
-            continue
-        note = f"gbfleet until, wave {wave_name}"
-        code: str | None = None
-        try:
-            # PRD-36 D9: a BOUND seat. The server refuses one when the seed's areas are held
-            # by someone else (D13); then the delegation is written without a seat and the
-            # divvy decides, exactly as before PRD-36.
-            reply = planner.call("delegate", id=candidate, lane=lane, tier=want, agent_id=agent_id,
-                                 note=note, seat=True, wave=wave_name, **_seat_scope(prd))
-            got = reply.get("enrolment_code") if isinstance(reply, dict) else None
-            code = str(got) if got else None
-        except ToolFailed as exc:
-            # GRPH-885: a bound seat refusal means the seed is pinned or its areas are held.
-            # Do NOT fall back to an unbound delegate — that tells the child to `claim_cluster`
-            # on the neighborhood, which takes the rest of the glob and skip-aheads the DAG.
-            # Instead, skip this cluster entirely and try the next one. The cluster is held,
-            # not available, and the next tick will retry after the pin lapses or the holder
-            # releases.
-            observe.emit("bound_seat_refused", item=candidate, detail=str(exc))
-            delegated.add(candidate)  # Mark delegated so the next tick does not re-offer and spin
-            continue
-        except (NotPermitted, ServerUnreachable) as exc:
-            observe.emit("delegate_refused", item=candidate, detail=str(exc))
-            continue
-        # Success: this candidate is delegated
-        seed = candidate
-        delegated.add(seed)
-        observe.emit("delegated", item=seed, lane=lane, tier=want, bound=bool(code))
-        return seed, code, want
+            note = f"gbfleet until, wave {wave_name}"
+            code: str | None = None
+            try:
+                # PRD-36 D9: a BOUND seat. The server refuses one when the seed's areas are held
+                # by someone else (D13). GRPH-885: do not fall back to an unbound delegate.
+                reply = planner.call("delegate", id=candidate, lane=lane, tier=want, agent_id=agent_id,
+                                     note=note, seat=True, wave=wave_name, **_seat_scope(prd))
+                got_code = reply.get("enrolment_code") if isinstance(reply, dict) else None
+                code = str(got_code) if got_code else None
+            except ToolFailed as exc:
+                observe.emit("bound_seat_refused", item=candidate, detail=str(exc))
+                delegated.add(candidate)
+                continue
+            except (NotPermitted, ServerUnreachable) as exc:
+                observe.emit("delegate_refused", item=candidate, detail=str(exc))
+                continue
+            seed = candidate
+            delegated.add(seed)
+            observe.emit("delegated", item=seed, lane=lane, tier=want, bound=bool(code))
+            return seed, code, want
     # No cluster was delegable
     return None, None, None
 

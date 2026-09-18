@@ -126,3 +126,45 @@ def test_clusters_for_project_withholds_items_with_manual_blocker(db, monkeypatc
     clusters = collision.clusters_for_project(db, "core")
     all_items = [it for cl in clusters for it in cl["items"]]
     assert blocked.id not in all_items
+
+
+def test_review_occupies_the_glob_after_its_reservation_drops(db, monkeypatch):
+    """GRPH-886 CALL. Move the seed to review and drop its reservation. The sibling
+    that shares the glob must not be startable: not in an unheld cluster, and not a
+    member `claim_cluster` can take.
+
+    Sabotage: delete the `_occupy_review_globs` call in `clusters_for_project`. This
+    fails — the sibling is back in a free cluster and until would seed it.
+    """
+    from datetime import timedelta
+
+    from app.models import Agent
+    from app.services import fleet as fleet_svc
+
+    _no_code_hits(monkeypatch)
+    review_item = _item(db, "In Review", touchpoints=["backend/app/spanner.py"])
+    sibling = _item(db, "Sibling", touchpoints=["backend/app/spanner.py"])
+    items_svc.update_item(db, review_item.id, status="review")
+
+    agent = Agent(id="CORE-A886", project_id="core", number=1886, label="886",
+                  active_role="worker")
+    db.add(agent)
+    db.commit()
+    fleet_svc.reserve_areas(
+        db, agent_id=agent.id, item_id=review_item.id,
+        areas=["backend/app/spanner.py"],
+        expires_at=items_svc.utcnow() + timedelta(seconds=600),
+        predicted=False,
+    )
+    db.commit()
+    fleet_svc.release_reservations(db, item_id=review_item.id)
+
+    clusters = collision.clusters_for_project(db, "core")
+    seedable = [it for cl in clusters if not cl.get("held_by") for it in cl["items"]]
+    members = [it for cl in clusters for it in cl["items"]]
+    assert sibling.id not in seedable
+    assert sibling.id not in members, "a stripped sibling must not be claimable"
+    assert review_item.id not in seedable, "the review id itself is not a seed"
+    assert seedable, "work outside the review glob stays startable"
+    review_cluster = next(cl for cl in clusters if review_item.id in cl["items"])
+    assert "review" in (review_cluster.get("held_by") or [])

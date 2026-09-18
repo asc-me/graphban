@@ -2445,6 +2445,29 @@ def reserve_areas(db: Session, *, agent_id: str, item_id: str, areas: list[str],
                                expires_at=expires_at, predicted=predicted))
 
 
+def _holds_bound_item(db: Session, agent_id: str) -> str | None:
+    """Return the item key if this agent holds a bound seat's item, else None (GRPH-886).
+
+    A bound seat is one whose enrolment carries an item_id. When the agent registered on it,
+    `_claim_bound_seat` claimed that item. The agent now holds exactly one item by bound
+    lineage, and `claim_cluster` must refuse to hand it more — a bound child that vacuums the
+    rest of the neighborhood skip-aheads the DAG (the seat was minted for ONE item, not the
+    glob). The server refuses rather than asking the model to behave.
+    """
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return None
+    enrolment = db.get(Enrolment, agent.enrolment_id)
+    if enrolment is None or not enrolment.item_id:
+        return None
+    item = db.get(Item, enrolment.item_id)
+    if item is None:
+        return None
+    if item.claimed_by == agent_id:
+        return item.key
+    return None
+
+
 def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                   max_items: int = 3,
                   lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
@@ -2459,8 +2482,21 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     Reservations are written in the SAME transaction as the claims that justify them, so there
     is no window in which items are claimed but their areas unreserved — a window a second
     agent would claim straight through.
+
+    GRPH-886: refuses when the caller already holds a bound seat's item. A bound seat is
+    minted for ONE item; allowing `claim_cluster` on top of it would let a cheap adapter
+    vacuum the rest of the neighborhood in one transaction, skip-ahead the DAG, and defeat
+    the bound-seat invariant. The server refuses rather than asking the model to behave.
     """
     from app.services import collision as collision_svc
+
+    # GRPH-886: a bound seat already holds one item. Refuse to hand out more.
+    bound_item = _holds_bound_item(db, agent_id)
+    if bound_item:
+        return {"claimed": False, "items": [], "areas": [], "predicted": False,
+                "held_by": [], "reason": f"bound seat already holds {bound_item}: "
+                f"claim_cluster is refused for agents on bound seats",
+                "scope": items_svc.seat_scope(db, agent_id)}
 
     now = datetime.now(timezone.utc)
     taken = active_reservations(db, project_id, now=now)
