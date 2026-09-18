@@ -167,12 +167,9 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
 
     pool = items_svc.list_items(db, project_id=project_id, status=status)
     if status is None:
-        # GRPH-886: include items in `review` in the pool for clustering purposes. They are not
-        # claimable, but they still occupy their glob — their reservations are still active,
-        # and their siblings in the same file neighborhood should form clusters with them so
-        # `_with_reservations` can mark those clusters as `held_by`. Without this, a `review`
-        # item leaves the pool, its siblings form separate clusters, and those clusters look
-        # free even though the `review` item's reservations should block them.
+        # GRPH-886: include items in `review` so they still occupy their glob. Reservations
+        # are released on the way to review, so area holds are not the occupation — see
+        # `_occupy_review_globs`, which strips claimable siblings and marks the cluster held.
         pool = [it for it in pool if items_svc.claimable(it, lease_seconds=lease_seconds)
                 or it.status == "review"]
     if prd_id:
@@ -191,8 +188,44 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
     # the pool means the partition only contains work that can actually be delegated.
     ctx = prio.context(db, project_id)
     pool = [it for it in pool if it.status in ("in_progress", "review") or prio.ready(ctx, it)]
-    return _with_reservations(db, collision_clusters(db, pool, project_id), project_id,
-                             lease_seconds=lease_seconds)
+    clusters = _with_reservations(db, collision_clusters(db, pool, project_id), project_id,
+                                  lease_seconds=lease_seconds)
+    return _occupy_review_globs(clusters, pool)
+
+
+def _occupy_review_globs(clusters: list[dict], pool: list[Item]) -> list[dict]:
+    """A member in `review` occupies the glob after its reservation is gone (GRPH-886).
+
+    `sign_off` / `release_item` / `bounce` drop area reservations, and moving to `review`
+    does not keep one. Co-clustering the review row with its siblings is not a hold:
+    `_with_reservations` only sets `held_by` from live reservations, so with none the
+    sibling is a free seed and `claim_cluster` takes it. Strip those siblings out of the
+    cluster (so they are not claimable) and mark what remains held (so `until` does not
+    seed the review id itself).
+    """
+    by_id = {it.id: it for it in pool}
+    out: list[dict] = []
+    for cluster in clusters:
+        ids = [i for i in (cluster.get("items") or []) if isinstance(i, str)]
+        review_ids = [i for i in ids if by_id.get(i) is not None and by_id[i].status == "review"]
+        if not review_ids:
+            out.append(cluster)
+            continue
+        occupied = dict(cluster)
+        occupied["items"] = review_ids
+        holders = set(occupied.get("held_by") or [])
+        holders.add("review")
+        occupied["held_by"] = sorted(holders)
+        because = list(occupied.get("held_because") or [])
+        because.append({
+            "area": "",
+            "reserved": "review",
+            "by": "review",
+            "rule": "a member is in review; the glob stays occupied after reservations drop",
+        })
+        occupied["held_because"] = because
+        out.append(occupied)
+    return out
 
 
 def _with_reservations(db: Session, clusters: list[dict], project_id: str | None,

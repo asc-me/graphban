@@ -88,7 +88,7 @@ def _clients(
         if calls is not None:
             calls.append(tool)
         if tool == "get_item_details":
-            return _mcp({"id": args.get("id"), "title": "seed", "brief": {
+            return _mcp({"id": args.get("id"), "title": "seed", "status": "next", "brief": {
                 "lane": {"value": "backend", "basis": ["backend/app/x.py"]},
                 "tier": {"value": "cheap", "basis": "none"},
                 "text": "Item seed",
@@ -1189,3 +1189,99 @@ def test_report_collided_carries_the_actual_overlap():
 
     assert "fleet/src/gbfleet/supervisor.py" in payload["collided"]
     assert payload["collided"]["fleet/src/gbfleet/supervisor.py"] == ["gb/w-1", "gb/w-2"]
+
+
+class _SeedPlanner:
+    """Enough of Graphban.call for `_delegate_next` (GRPH-886)."""
+
+    def __init__(self, clusters, details):
+        self.clusters = clusters
+        self.details = details
+        self.delegated: list[str] = []
+
+    def call(self, tool, **kw):
+        if tool == "collision_clusters":
+            return {"clusters": self.clusters}
+        if tool == "get_item_details":
+            return dict(self.details[kw["id"]])
+        if tool == "related_work":
+            return {"results": []}
+        if tool == "delegate":
+            self.delegated.append(kw["id"])
+            return {"enrolment_code": "WORKER-X"}
+        raise AssertionError(tool)
+
+
+def test_a_review_member_keeps_the_sibling_from_being_the_seed(tmp_path: Path):
+    """GRPH-886 CALL. items[0] is review, the sibling is next, and the cluster is not
+    held_by. The sibling must not be delegated.
+
+    Sabotage: stop treating status=review as occupying the glob (seed items[0]'s
+    neighbor). This fails: delegate is called with SIB.
+    """
+    from gbfleet.until import _delegate_next
+
+    brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
+    planner = _SeedPlanner(
+        [{"items": ["REV", "SIB"]}],
+        {
+            "REV": {"id": "REV", "status": "review", "brief": brief},
+            "SIB": {"id": "SIB", "status": "next", "brief": brief},
+        },
+    )
+    seed, _code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", set(), None, repo=tmp_path, base="origin/main",
+    )
+    assert seed is None
+    assert planner.delegated == []
+
+
+def test_a_git_merged_items0_is_not_the_seed(tmp_path: Path, monkeypatch):
+    """GRPH-886 CALL. items[0] is already in base; the next ready member is the seed.
+
+    Sabotage: go back to seeding items[0] unconditionally. This fails: the seed is
+    MERGED, not READY.
+    """
+    from gbfleet import worktree as wt
+    from gbfleet.until import _delegate_next
+
+    monkeypatch.setattr(wt, "reaches", lambda repo, base, ref: ref == "gb/merged")
+    brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
+    planner = _SeedPlanner(
+        [{"items": ["MERGED", "READY"]}],
+        {
+            "MERGED": {"id": "MERGED", "status": "next", "branch": "gb/merged",
+                       "brief": brief, "evidence": []},
+            "READY": {"id": "READY", "status": "next", "branch": "gb/ready",
+                      "brief": brief, "evidence": []},
+        },
+    )
+    seed, code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", seen := set(), None, repo=tmp_path, base="origin/main",
+    )
+    assert seed == "READY" and code == "WORKER-X"
+    assert planner.delegated == ["READY"]
+    assert "MERGED" in seen and "READY" in seen
+
+
+def test_a_blocked_items0_is_not_the_seed(tmp_path: Path):
+    """GRPH-886. items[0] still names an unfinished dependency; the next ready member is the seed.
+
+    Sabotage: seed the first id in the cluster. This fails: the seed is BLOCKED.
+    """
+    from gbfleet.until import _delegate_next
+
+    blocked = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": ["DEP"]}
+    ready = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
+    planner = _SeedPlanner(
+        [{"items": ["BLOCKED", "READY"]}],
+        {
+            "BLOCKED": {"id": "BLOCKED", "status": "next", "brief": blocked},
+            "READY": {"id": "READY", "status": "next", "brief": ready},
+        },
+    )
+    seed, code, _want = _delegate_next(
+        planner, "GRPH-A1", "w", set(), None, repo=tmp_path, base="",
+    )
+    assert seed == "READY" and code == "WORKER-X"
+    assert planner.delegated == ["READY"]
