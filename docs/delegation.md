@@ -178,6 +178,26 @@ required and neither has a default.** `get_item_details` carries a `brief` that 
 them with its basis, and you type the value anyway — the server never guesses what you are
 willing to pay for. Paste `brief.text` into the spawn.
 
+### Brief → pstack template (PRD-44 D3)
+
+When the child is a pstack `poteto-agent`, map `brief.text` fields to the pstack template so
+the child is a Graphban worker rather than a freelance Cursor session:
+
+| pstack field | Graphban source |
+| --- | --- |
+| GOAL | `brief.summary` / item title |
+| SCOPE | `brief.touchpoints` — **whitelist** of predicted write areas (may write these; anything else is out) |
+| ACCEPTANCE | item acceptance / checklist |
+| VERIFY | the operating loop in `AGENTS.md` (both DB engines; real PRD) |
+| STANDING | `AGENTS.md` invariants, pasted or pointed at |
+
+Touchpoints are a **whitelist**, not a blacklist and not default-allow. Well outside them →
+stop and flag. If the PRD or item description forbids a file listed in touchpoints, the
+**PRD wins**: stop and flag. Touchpoints are not a must-write list.
+
+No schema change to `brief` is needed — the mapping is in the prompt, not the server
+(PRD-44 D7).
+
 What `seat: true` buys: the delegation also mints a **worker seat bound to the item**.
 `register_agent` on that seat resolves the item, claims it, reserves its touch areas and
 links the delegation, all inside one savepoint — so a claim with no link, or a link with no
