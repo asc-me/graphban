@@ -1236,32 +1236,33 @@ def test_a_review_member_keeps_the_sibling_from_being_the_seed(tmp_path: Path):
     assert planner.delegated == []
 
 
-def test_a_git_merged_items0_is_not_the_seed(tmp_path: Path, monkeypatch):
-    """GRPH-886 CALL. items[0] is already in base; the next ready member is the seed.
+def test_a_git_merged_member_occupies_the_glob(tmp_path: Path, monkeypatch):
+    """GRPH-886 CALL. Unsigned `next` already in base occupies the glob. The sibling
+    is not the seed, in either order.
 
-    Sabotage: go back to seeding items[0] unconditionally. This fails: the seed is
-    MERGED, not READY.
+    Sabotage: skip the merged id and seed the next ready member. This fails: seed is
+    READY and delegate was called with READY.
     """
     from gbfleet import worktree as wt
     from gbfleet.until import _delegate_next
 
     monkeypatch.setattr(wt, "reaches", lambda repo, base, ref: ref == "gb/merged")
     brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
-    planner = _SeedPlanner(
-        [{"items": ["MERGED", "READY"]}],
-        {
-            "MERGED": {"id": "MERGED", "status": "next", "branch": "gb/merged",
-                       "brief": brief, "evidence": []},
-            "READY": {"id": "READY", "status": "next", "branch": "gb/ready",
-                      "brief": brief, "evidence": []},
-        },
-    )
-    seed, code, _want = _delegate_next(
-        planner, "GRPH-A1", "w", seen := set(), None, repo=tmp_path, base="origin/main",
-    )
-    assert seed == "READY" and code == "WORKER-X"
-    assert planner.delegated == ["READY"]
-    assert "MERGED" in seen and "READY" in seen
+    details = {
+        "MERGED": {"id": "MERGED", "status": "next", "branch": "gb/merged",
+                   "brief": brief, "evidence": []},
+        "READY": {"id": "READY", "status": "next", "branch": "gb/ready",
+                  "brief": brief, "evidence": []},
+    }
+    for order in (["MERGED", "READY"], ["READY", "MERGED"]):
+        planner = _SeedPlanner([{"items": order}], details)
+        seen: set[str] = set()
+        seed, _code, _want = _delegate_next(
+            planner, "GRPH-A1", "w", seen, None, repo=tmp_path, base="origin/main",
+        )
+        assert seed is None
+        assert planner.delegated == []
+        assert "READY" not in seen and "MERGED" not in seen
 
 
 def test_a_blocked_items0_is_not_the_seed(tmp_path: Path):

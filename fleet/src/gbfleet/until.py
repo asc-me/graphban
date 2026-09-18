@@ -1154,11 +1154,13 @@ def _delegate_next(
         items = [i for i in (cluster.get("items") or []) if isinstance(i, str) and i]
         if not items:
             continue
-        # GRPH-886: seeds are DAG-ready members, not items[0]. A review member occupies
-        # the whole glob for this tick (siblings are not the new seed). A git-merged
-        # item still `next` is skipped and the next ready member may be the seed.
+        # GRPH-886: seeds are DAG-ready members, not items[0]. A review member, or an
+        # unsigned next/backlog member already in `--base`, occupies the whole glob.
+        # Do not walk to the sibling, and do not mark anyone delegated — hiding the
+        # merged id would make the sibling the seed on the next tick (SA-467/470).
         details_for: dict[str, dict] = {}
         review_occupies = False
+        base_occupies = False
         for item_id in items:
             if item_id in delegated:
                 continue
@@ -1170,21 +1172,24 @@ def _delegate_next(
             if not isinstance(got, dict):
                 continue
             details_for[item_id] = got
-            if str(got.get("status") or "") == "review":
+            status = str(got.get("status") or "")
+            if status == "review":
                 review_occupies = True
-        if review_occupies:
+            elif status in ("next", "backlog") and _already_in_base(got, repo, base):
+                base_occupies = True
+        if review_occupies or base_occupies:
+            if base_occupies:
+                observe.emit(
+                    "delegate_held",
+                    detail=f"a member is already in {base} (unsigned, git-merged); "
+                           "the glob stays occupied",
+                )
             continue
         for candidate in items:
             if candidate in delegated or candidate not in details_for:
                 continue
             details = details_for[candidate]
             if not _seed_ready(details):
-                continue
-            if _already_in_base(details, repo, base):
-                observe.emit("delegate_held", item=candidate,
-                             detail=f"{candidate} is already in {base} (git-merged); "
-                                    f"skipping as it is not a new build")
-                delegated.add(candidate)
                 continue
             # GRPH-798. A child branches from `base`, so an item whose finished dependency is not
             # THERE would be built without it. SKIPPED, not fatal: the rest of the wave is still
