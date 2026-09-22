@@ -124,6 +124,26 @@ spawn(enrolment_code="…", tier="cheap", item="<item>", wave="<name>")
 
 Paste `brief.text` from step 3 into the child's instructions.
 
+### Brief → pstack template (PRD-44 D3)
+
+When the child is a pstack `poteto-agent`, map `brief.text` fields to the pstack template so
+the child is a Graphban worker rather than a freelance Cursor session:
+
+| pstack field | Graphban source |
+|---|---|
+| GOAL | `brief.summary` / item title |
+| SCOPE | `brief.touchpoints` — **whitelist** of predicted write areas (may write these; anything else is out) |
+| ACCEPTANCE | item acceptance / checklist |
+| VERIFY | the operating loop in `AGENTS.md` (both DB engines; real PRD) |
+| STANDING | `AGENTS.md` invariants, pasted or pointed at |
+
+Touchpoints are a **whitelist**, not a blacklist and not default-allow. Well outside them →
+stop and flag. If the PRD or item description forbids a file listed in touchpoints, the **PRD
+wins**: stop and flag. Touchpoints are not a must-write list.
+
+No schema change to `brief` is needed — the mapping is in the prompt, not the server
+(PRD-44 D7).
+
 If the adapter is `gbagent`, `turns` and `window` are **required** — it refuses to guess them,
 and a spawn without them exits before registering. That presents as a delegation that expired
 with nothing claimed, not as an error on the spawn, so check these first when a child never

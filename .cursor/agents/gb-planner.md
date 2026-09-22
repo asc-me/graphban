@@ -28,6 +28,20 @@ without colliding*, then delegate.
    no default, because a default would be the server choosing. It claims nothing and
    returns the `brief` again. Paste `brief.text` into the spawn prompt VERBATIM: it is
    what the child needs and carries no suggestion, so it cannot smuggle a tier in.
+   When the child is a pstack `poteto-agent`, also map those fields onto the pstack
+   template (PRD-44 D3) — the paste stays verbatim; the mapping sits next to it:
+
+   | pstack field | Graphban source |
+   |---|---|
+   | GOAL | `brief.summary` / item title |
+   | SCOPE | `brief.touchpoints` — **whitelist** of predicted write areas (may write these; anything else is out) |
+   | ACCEPTANCE | item acceptance / checklist |
+   | VERIFY | the operating loop in `AGENTS.md` (both DB engines; real PRD) |
+   | STANDING | `AGENTS.md` invariants, pasted or pointed at |
+
+   Touchpoints are a **whitelist**, not a blacklist and not default-allow. Well outside them →
+   stop and flag. If the PRD or item description forbids a file listed in touchpoints, the **PRD
+   wins**: stop and flag. Touchpoints are not a must-write list.
 5. Spawn by lane and tier, one cluster member at a time:
    - Claude Code: `gb-frontend` for `frontend`, `gb-implementer` otherwise, and pass
      `model: haiku` for `cheap` or inherit for `frontier` on the Agent call.

@@ -112,9 +112,30 @@ handlers in [`.cursor/hooks/`](../.cursor/hooks/README.md):
 See [`.cursor/hooks/README.md`](../.cursor/hooks/README.md) for the I/O contract, the claim
 manifest, and the honest limits of each hook.
 
+## 6. `/why` source playbook (PRD-44 A1)
+
+Graphban is five `/why` categories, not one. A playbook in
+[`.cursor/plugins/graphban/skills/why-graphban/SKILL.md`](../.cursor/plugins/graphban/skills/why-graphban/SKILL.md)
+classifies the MCP surface so a `/why` investigator does not misfile Graphban as a Linear-shaped
+issue tracker. The five categories:
+
+1. **Issue / ticket tracker** — items, claims, evidence (`search_items`, `get_item_details`, `get_backlog`)
+2. **Long-form documents** — PRDs (`get_prd`, `prd_coverage`, `prd_acceptance`)
+3. **Memory** — shards, lessons, and prior-attempt neighborhood (`search_memory`, `related_work`, `get_lessons`, `extract_lessons`)
+4. **Code graph** — structure and edges (`get_code_map`, `code_neighbors`, `search_code`, `graph_query`)
+5. **Live** — who holds what now (`fleet_status`)
+
+Each category encodes three states: **results** (tool returned data), **empty** (tool worked,
+returned nothing — this is a **finding**), and **unavailable** (tool error / MCP unreachable —
+skip-with-reason). The load-bearing distinction: *unavailable* and *empty* are NOT the same.
+Live with zero agents is empty, not unavailable.
+
+A missing category in a `/why` report is itself a finding. Every category must be addressed.
+
 ## Related
 
 - [mcp.md](mcp.md) — the full tool reference, client table, and error taxonomy.
 - [`.cursor/agents/`](../.cursor/agents/README.md) — the generated sub-agent fleet (AL-213).
 - [`.cursor/hooks/`](../.cursor/hooks/README.md) — the lifecycle hooks (AL-214).
+- [`.cursor/plugins/graphban/skills/why-graphban/SKILL.md`](../.cursor/plugins/graphban/skills/why-graphban/SKILL.md) — the `/why` source playbook (PRD-44 A1).
 - [grok-build.md](grok-build.md) — the sibling connect guide (Grok Build).

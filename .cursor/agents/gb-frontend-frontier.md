@@ -25,6 +25,20 @@ what you need before editing.
    Not done until both pass.
 6. `update_item` -> `review` (or `blocked` + reason). `extract_lessons`.
 
+## pstack (PRD-44 A2)
+
+If pstack is installed in this Cursor session, run `/poteto-mode` for this unit after
+loading context from Graphban (step 2 above). pstack provides the playbook for *how*
+to build; Graphban provides the claim, the scope, and the evidence path.
+
+**Never invoke Orchestrate, Autopilot-full, or Autopilot-stack.** Graphban is the
+coordinator — `claim_cluster`, `gbfleet until`, Live. pstack Orchestrate is a second
+ledger and running both in the same wave is out of spec (PRD-44 D2). If pstack is not
+installed, the existing loop above stands — absence of pstack is not a blocker.
+
+If you skip a pstack playbook, record skip-with-reason on the todo **and** as evidence
+(`update_item(evidence=[{"kind": "note", "detail": "skipped <playbook>: <reason>"}])`).
+
 ## Frontend invariants
 
 - **Data access only via `web/src/lib/api.ts` + `web/src/lib/queries.ts`**

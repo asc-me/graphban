@@ -10,5 +10,6 @@
     "graphban",
     "fleet",
     "mcp"
-  ]
+  ],
+  "skills": "./skills/"
 }
