@@ -8,7 +8,7 @@ that tag — compose via the host helper, native via `graphban_host.py upgrade`.
 
     python3 scripts/graphban_release.py next
     python3 scripts/graphban_release.py stamp          # writes the three version files
-    python3 scripts/graphban_release.py notes          # merges since the previous CalVer
+    python3 scripts/graphban_release.py notes          # what landed since the previous CalVer
     python3 scripts/graphban_release.py publish        # after the stamp is on origin/main
 
 Does not merge to main, does not apply to a box (Install is the operator gate),
@@ -212,6 +212,10 @@ def stamp(repo: pathlib.Path, version: str) -> list[pathlib.Path]:
 
 
 _MERGE_PR = re.compile(r"^Merge pull request #(\d+)\b")
+# GRPH-891. A squash landing keeps the PR title as the subject and appends `(#NNN)`:
+# `GRPH-886: until seeds the glob after review … (#801)`. Both shapes are in this history
+# — true merges up to 2026-09-10, squashes after — so the parser reads both.
+_SQUASH_PR = re.compile(r"^(?P<title>.+?)\s*\(#(?P<pr>\d+)\)$")
 _FIELD_SEP = "\x1f"
 _RECORD_SEP = "\x1e"
 
@@ -242,34 +246,58 @@ def _is_stamp_merge(subject: str, title: str) -> bool:
     )
 
 
-def parse_merge_note(subject: str, body: str) -> tuple[str, str] | None:
-    """(pr_number, title) from a GitHub merge commit. None = omit (the stamp)."""
+def parse_change_note(subject: str, body: str) -> tuple[str, str] | None:
+    """(pr_number, title) from one first-parent commit. None = omit (the stamp).
+
+    Three shapes land on `main` here and all three are read (GRPH-891):
+
+    - a true merge, `Merge pull request #576 from asc-me/feat/x` — the title is the
+      merge body's first line, because the subject is GitHub boilerplate;
+    - a squash, `feat: the thing (#801)` — the title IS the subject, minus the trailing
+      PR number, and the body is the PR description rather than a title;
+    - a direct commit with neither, whose subject is all there is.
+
+    Taking the body's first line unconditionally is what the merge-only version did, and
+    on a squash that yields the first line of the PR description. So the shape decides
+    where the title comes from, rather than one rule guessing for both.
+    """
     subject = (subject or "").strip()
-    title = ""
-    for line in (body or "").splitlines():
-        line = line.strip()
-        if line:
-            title = line
-            break
-    if not title:
-        m_from = re.search(r" from \S+/(\S+)\s*$", subject)
-        title = m_from.group(1).replace("-", " ") if m_from else subject
+    merge = _MERGE_PR.match(subject)
+    if merge:
+        title = ""
+        for line in (body or "").splitlines():
+            line = line.strip()
+            if line:
+                title = line
+                break
+        if not title:
+            m_from = re.search(r" from \S+/(\S+)\s*$", subject)
+            title = m_from.group(1).replace("-", " ") if m_from else subject
+        pr = merge.group(1)
+    else:
+        squash = _SQUASH_PR.match(subject)
+        title = squash.group("title").strip() if squash else subject
+        pr = squash.group("pr") if squash else ""
     if not title or _is_stamp_merge(subject, title):
         return None
-    m = _MERGE_PR.match(subject)
-    pr = m.group(1) if m else ""
     return pr, title
 
 
-def list_merges(repo: pathlib.Path, previous: str, until: str, *,
-                git_run=None) -> list[tuple[str, str]] | None:
-    """First-parent merges in `previous..until`, oldest first.
+def list_changes(repo: pathlib.Path, previous: str, until: str, *,
+                 git_run=None) -> list[tuple[str, str]] | None:
+    """First-parent commits in `previous..until`, oldest first.
+
+    NOT `--merges`. This repository landed work as merge commits until 2026-09-10 and has
+    squashed since, so filtering to merges reported an empty changelog for six consecutive
+    cuts (GRPH-891) — true, useless, and indistinguishable from a quiet release. First-parent
+    alone is the honest filter: it is one entry per landing whichever way the landing was made,
+    and it still excludes the commits inside a merged branch.
 
     None means the log could not run (missing tag, etc.) — not an empty cut.
     """
     run = git_run or git
     proc = run(
-        repo, "log", "--merges", "--first-parent", "--reverse",
+        repo, "log", "--first-parent", "--reverse",
         f"--format=%s{_FIELD_SEP}%b{_RECORD_SEP}",
         f"{previous}..{until}",
         check=False,
@@ -282,7 +310,7 @@ def list_merges(repo: pathlib.Path, previous: str, until: str, *,
         if not rec.strip():
             continue
         subject, _, body = rec.partition(_FIELD_SEP)
-        note = parse_merge_note(subject, body)
+        note = parse_change_note(subject, body)
         if note is not None:
             out.append(note)
     return out
@@ -298,13 +326,13 @@ def changes_section(previous: str | None,
     if changes is None:
         return (
             f"**Since {previous}**\n"
-            f"Could not list first-parent merges since `{previous}`. "
+            f"Could not list first-parent changes since `{previous}`. "
             "The interval is unmeasured, not empty.\n"
         )
     if not changes:
         return (
             f"**Since {previous}**\n"
-            f"No merges on first-parent between `{previous}` and this cut.\n"
+            f"Nothing landed on first-parent between `{previous}` and this cut.\n"
         )
     lines = [f"**Since {previous}**"]
     for pr, title in changes:
@@ -336,7 +364,7 @@ def notes_for(version: str, sha: str, *, previous: str | None = None,
 
 def collect_notes(repo: pathlib.Path, version: str, until: str, sha_short: str, *,
                   git_run=None) -> tuple[str, str | None, list[tuple[str, str]] | None]:
-    """Notes body plus the previous tag / merge list used to build it."""
+    """Notes body plus the previous tag / change list used to build it."""
     run = git_run or git
     tags = existing_tags(repo, git_run=run)
     prev = previous_tag(version, tags)
@@ -351,7 +379,7 @@ def collect_notes(repo: pathlib.Path, version: str, until: str, sha_short: str, 
         if fetched.returncode != 0:
             body = notes_for(version, sha_short, previous=prev, changes=None)
             return body, prev, None
-    changes = list_merges(repo, prev, until, git_run=run)
+    changes = list_changes(repo, prev, until, git_run=run)
     body = notes_for(version, sha_short, previous=prev, changes=changes)
     return body, prev, changes
 
@@ -537,7 +565,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_notes = sub.add_parser(
         "notes",
-        help="print the GitHub Release body (merges since the previous CalVer)")
+        help="print the GitHub Release body (what landed since the previous CalVer)")
     p_notes.add_argument("version", nargs="?", default="")
     p_notes.add_argument("--ref", default="origin/main")
     p_notes.add_argument("--no-fetch", action="store_true")

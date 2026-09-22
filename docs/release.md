@@ -74,11 +74,22 @@ GitHub Release marked latest, and refuses if the tarball is missing. A
 Release that already exists without the tarball gets `gh release upload`,
 which is how you repair a source-zip-only cut.
 
-Notes list first-parent merges since the previous CalVer tag, using each
-merge's PR title (`#576 live: …`). The stamp PR for this cut is omitted.
-No previous tag, a missing tag, or an empty interval are named — they are
-not a quiet empty changelog. Direct (non-merge) commits on `main` are not
-listed; this repo lands work as merges.
+Notes list every **first-parent** commit since the previous CalVer tag — one
+entry per landing, whichever way it landed — titled by its PR title
+(`#576 live: …`). The stamp PR for this cut is omitted. No previous tag, a
+missing tag, or an empty interval are named — they are not a quiet empty
+changelog.
+
+**Not `--merges`, and that is GRPH-891.** This repo landed work as merge
+commits until 2026-09-10 and has squashed since, so a merges-only filter
+found nothing and six consecutive cuts — `2026.09.21` through `2026.09.26` —
+published *"No merges on first-parent between X and this cut."* True, useless,
+and identical to what a genuinely quiet release would say. Both shapes are
+read now: a merge takes its title from the merge body, a squash from its
+subject (`… (#801)`), because on a squash the body is the PR description.
+That blank changelog is not only a GitHub page — `UpdatesPanel.tsx` renders
+the same body in Settings → Updates, which is what an operator reads before
+clicking Install.
 
 Does not merge, does not push `main`, does not apply to a box.
 

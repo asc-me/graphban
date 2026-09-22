@@ -309,20 +309,40 @@ def test_previous_tag_is_the_latest_earlier_calver():
     assert rel.previous_tag("2026.09.8", set()) is None
 
 
-def test_parse_merge_note_uses_the_pr_title_and_skips_the_stamp():
-    got = rel.parse_merge_note(
+def test_parse_change_note_uses_the_pr_title_and_skips_the_stamp():
+    got = rel.parse_change_note(
         "Merge pull request #576 from asc-me/feat/observe-live-page",
         "live: Observe Live page — humans, leases, recorded PRs (GRPH-673)\n",
     )
     assert got == ("576", "live: Observe Live page — humans, leases, recorded PRs (GRPH-673)")
-    assert rel.parse_merge_note(
+    assert rel.parse_change_note(
         "Merge pull request #583 from asc-me/chore/stamp-2026.09.8",
         "stamp: 2026.09.8\n",
     ) is None
-    assert rel.parse_merge_note(
+    assert rel.parse_change_note(
         "Merge pull request #583 from asc-me/chore/stamp-2026.09.8",
         "Stamp product version 2026.09.8\n",
     ) is None
+
+
+def test_parse_change_note_reads_a_squash_subject_not_its_pr_body(tmp_path):
+    """GRPH-891. The title is the SUBJECT on a squash; the body is the PR description.
+
+    Reading the body's first line here — which is what the merge-only parser did for
+    every shape — puts the opening sentence of a PR description in the changelog.
+    """
+    got = rel.parse_change_note(
+        "GRPH-886: until seeds the glob after review (#801)",
+        "This PR fixes the divvy so that a member in review occupies its glob.\n",
+    )
+    assert got == ("801", "GRPH-886: until seeds the glob after review")
+
+    # A squash with no PR number at all is still a landing, and still has a title.
+    assert rel.parse_change_note("until --base PRs target the integration branch", "") == (
+        "", "until --base PRs target the integration branch")
+
+    # The stamp is this cut, whichever way it landed.
+    assert rel.parse_change_note("Stamp product version 2026.09.27 (#798)", "") is None
 
 
 def test_notes_name_an_empty_interval_and_a_missing_previous():
@@ -330,7 +350,7 @@ def test_notes_name_an_empty_interval_and_a_missing_previous():
     assert "first named cut" in first
     assert "- #" not in first
     empty = rel.notes_for(NEXT, "abc1234", previous=VER, changes=[])
-    assert f"No merges on first-parent between `{VER}`" in empty
+    assert f"Nothing landed on first-parent between `{VER}`" in empty
     unmeasured = rel.notes_for(NEXT, "abc1234", previous=VER, changes=None)
     assert "unmeasured" in unmeasured
     assert "not empty" in unmeasured
@@ -360,32 +380,85 @@ def _merge_pr(src: pathlib.Path, *, branch: str, number: str, title: str,
          "-m", title)
 
 
-def test_list_merges_is_first_parent_oldest_first_and_drops_the_stamp(tmp_path):
+def _direct_commit(src: pathlib.Path, *, title: str, filename: str) -> None:
+    """No PR number at all. Rare, but `6f288d81` on this repo's `main` is one."""
+    (src / "backend" / "app" / filename).write_text(f"{title}\n", encoding="utf-8")
+    _git(src, "add", "-A")
+    _git(src, "commit", "-m", title)
+
+
+def _squash_pr(src: pathlib.Path, *, branch: str, number: str, title: str,
+               filename: str, body: str = "") -> None:
+    """How this repository has landed work since 2026-09-10 (GRPH-891).
+
+    `git merge --squash` is what GitHub's squash button does: ONE non-merge commit on
+    `main`, subject `<PR title> (#NNN)`, body the PR description. `--merges` cannot see it.
+    """
+    _git(src, "checkout", "-b", branch)
+    (src / "backend" / "app" / filename).write_text(f"{title}\n", encoding="utf-8")
+    _git(src, "add", "-A")
+    _git(src, "commit", "-m", f"wip on {branch}")
+    _git(src, "checkout", "main")
+    _git(src, "merge", "--squash", branch)
+    args = ["commit", "-m", f"{title} (#{number})"]
+    if body:
+        args += ["-m", body]
+    _git(src, *args)
+
+
+def test_list_changes_reads_merges_and_squashes_in_one_interval(tmp_path):
+    """GRPH-891. An interval spanning 2026-09-10 contains both shapes; so does this one."""
     src = make_git_src(tmp_path, version=VER)
     _git(src, "tag", "-a", VER, "-m", VER)
     _merge_pr(src, branch="feat/live", number="576",
               title="live: Observe Live page", filename="live.py")
-    _merge_pr(src, branch="feat/other", number="580",
-              title="docs: PRD-33", filename="prd.md")
+    _squash_pr(src, branch="feat/other", number="580", title="docs: PRD-33",
+               filename="prd.md", body="Rewrites the PRD-33 section on live feeds.")
+    _direct_commit(src, title="until --base PRs target the integration branch",
+                   filename="base.py")
     _merge_pr(src, branch="chore/stamp-2026.09.5", number="583",
               title="stamp: 2026.09.5", filename="stamp.txt")
-    got = rel.list_merges(src, VER, "HEAD")
+    _squash_pr(src, branch="chore/stamp-2026.09.6", number="584",
+               title="Stamp product version 2026.09.6", filename="stamp6.txt")
+    got = rel.list_changes(src, VER, "HEAD")
     assert got == [
         ("576", "live: Observe Live page"),
         ("580", "docs: PRD-33"),
+        ("", "until --base PRs target the integration branch"),
     ]
 
 
-def test_THE_CALL_publish_notes_are_the_merges_since_the_last_tag(tmp_path):
-    """A boilerplate body with no merge list is the old notes_for — sabotage that."""
+def test_list_changes_does_not_list_the_commits_inside_a_merged_branch(tmp_path):
+    """Dropping `--merges` must not cost `--first-parent`: one entry per landing."""
+    src = make_git_src(tmp_path, version=VER)
+    _git(src, "tag", "-a", VER, "-m", VER)
+    _git(src, "checkout", "-b", "feat/three")
+    for n in ("one", "two", "three"):
+        (src / "backend" / "app" / f"{n}.py").write_text(f"{n}\n", encoding="utf-8")
+        _git(src, "add", "-A")
+        _git(src, "commit", "-m", f"step {n}")
+    _git(src, "checkout", "main")
+    _git(src, "merge", "--no-ff", "feat/three",
+         "-m", "Merge pull request #590 from asc-me/feat/three",
+         "-m", "feat: the three steps")
+    assert rel.list_changes(src, VER, "HEAD") == [("590", "feat: the three steps")]
+
+
+def test_THE_CALL_publish_notes_are_the_changes_since_the_last_tag(tmp_path):
+    """A boilerplate body with no change list is the old notes_for — sabotage that.
+
+    GRPH-891: the landing here is a SQUASH, which is the shape that shipped six blank
+    changelogs. Restore `--merges` in `list_changes` and this is the test that fails.
+    """
     src = make_git_src(tmp_path, version=VER)
     _git(src, "tag", "-a", VER, "-m", VER)
     _git(src, "push", "origin", VER)
-    _merge_pr(src, branch="feat/live", number="576",
-              title="live: Observe Live page", filename="live.py")
+    _squash_pr(src, branch="feat/live", number="576",
+               title="live: Observe Live page", filename="live.py",
+               body="Adds the Observe Live page and its feed.")
     rel.stamp(src, NEXT)
     _git(src, "add", "-A")
-    _git(src, "commit", "-m", f"stamp {NEXT}")
+    _git(src, "commit", "-m", f"Stamp product version {NEXT} (#583)")
     _git(src, "push", "origin", "main")
 
     out = tmp_path / "dist"
@@ -409,6 +482,8 @@ def test_THE_CALL_publish_notes_are_the_merges_since_the_last_tag(tmp_path):
     assert f"**Since {VER}**" in notes
     assert "#576 live: Observe Live page" in notes
     assert "first named cut" not in notes
+    # The stamp PR is this cut, not a change in it — and it squashes like everything else.
+    assert "Stamp product version" not in notes
 
 
 def test_dry_run_does_not_pack_or_publish(tmp_path):
@@ -444,7 +519,7 @@ def test_runbook_names_the_two_commands_and_the_traps():
     assert "python3 scripts/graphban_release.py stamp" in text
     assert "python3 scripts/graphban_release.py publish" in text
     assert "python3 scripts/graphban_release.py notes" in text
-    assert "first-parent merges" in text
+    assert "first-parent" in text
     assert "source zip" in text.lower()
     assert "Settings" in text and "Install" in text
     assert "fleet" in text.lower()
