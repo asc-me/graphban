@@ -13,6 +13,7 @@ import time
 import httpx
 
 from app.config import settings
+from app.providers.base import clamp_embed_input
 
 logger = logging.getLogger("graphban.providers.openai")
 
@@ -34,6 +35,7 @@ class OpenAIEmbedder:
         A cold model behind a gateway can take a while on the first call, and a blip
         shouldn't cost an ingest — so retry a bounded number of times with a short
         backoff before giving up. Callers that must not fail use `safe_embed`."""
+        text = clamp_embed_input(text)
         attempts = max(1, settings.embed_max_retries + 1)
         last: Exception | None = None
         for attempt in range(attempts):
@@ -68,6 +70,7 @@ class OpenAIEmbedder:
         """
         if not texts:
             return []
+        texts = [clamp_embed_input(t) for t in texts]
         r = httpx.post(
             f"{self.base_url.rstrip('/')}/embeddings",
             headers={"Authorization": f"Bearer {self.api_key}"},

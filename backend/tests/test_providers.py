@@ -223,3 +223,57 @@ def test_the_custom_probe_lands_on_the_url_the_form_named(client, auth):
     finally:
         httpd.shutdown()
         httpd.server_close()
+
+
+# ---- the embed input is bounded (2026-09-23) --------------------------------------------
+def test_every_embedder_clamps_its_input(monkeypatch):
+    """bge-m3 behind Ollama refuses anything over its 2048-token batch with a 500, and a
+    decomposed item carries ~9k characters of its PRD's framing. One such item, predicted
+    for touch-areas, made every fleet planner call a 500. The embedders bound what they send;
+    the stub sees the same input so a test that embeds a long text sees what production would."""
+    import httpx
+
+    from app.config import settings
+    from app.providers import ollama, openai, stub
+
+    sent: list[tuple[str, dict]] = []
+
+    class _Reply:
+        status_code = 200
+
+        def __init__(self, n):
+            self.n = n
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"embedding": [0.0] * 4, "embeddings": [[0.0] * 4] * self.n,
+                    "data": [{"index": i, "embedding": [0.0] * 4} for i in range(self.n)],
+                    "usage": {}}
+
+    def fake_post(url, **kw):
+        body = kw["json"]
+        sent.append((url, body))
+        inp = body.get("input")
+        return _Reply(len(inp) if isinstance(inp, list) else 1)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    long = "touchpoint path words " * 1000  # 22k characters, ~4k tokens
+    assert len(long) > settings.embed_max_chars
+
+    ollama.OllamaEmbedder("http://box:11434", "bge-m3", 4).embed(long)
+    ollama.OllamaEmbedder("http://box:11434", "bge-m3", 4).embed_many([long, long])
+    openai.OpenAIEmbedder("http://gw/v1", "k", "m", 4).embed(long)
+    openai.OpenAIEmbedder("http://gw/v1", "k", "m", 4).embed_many([long])
+
+    assert len(sent) == 4, [u for u, _ in sent]
+    for url, body in sent:
+        payload = body.get("prompt") if "prompt" in body else body["input"]
+        for text in (payload if isinstance(payload, list) else [payload]):
+            assert len(text) <= settings.embed_max_chars, (url, len(text))
+            assert text == long[: settings.embed_max_chars]  # the head, not a summary
+
+    s = stub.StubEmbedder(16)
+    assert s.embed(long) == s.embed(long[: settings.embed_max_chars])
+    assert s.embed("short") == s.embed("short")

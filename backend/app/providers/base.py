@@ -128,6 +128,23 @@ def require_answer(text: str, provider: str, *, model: str = "", endpoint: str =
     ), status=None, retryable=True)
 
 
+def clamp_embed_input(text: str) -> str:
+    """The head of `text`, bounded to `settings.embed_max_chars`.
+
+    A vector of the first N characters is a worse vector than one of the whole text, and a far
+    better one than the 500 the model returns for the whole text. Item descriptions are the
+    input that overflows — decomposed items carry their PRD's framing after the section — and
+    their opening (title, summary, the section itself) is the part that names what they touch.
+    Applied in every embedder, the stub included, so a test that embeds a long text sees the
+    same input the real providers would send.
+    """
+    from app.config import settings
+
+    limit = max(1, int(settings.embed_max_chars))
+    text = text or ""
+    return text if len(text) <= limit else text[:limit]
+
+
 @runtime_checkable
 class Embedder(Protocol):
     dim: int

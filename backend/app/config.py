@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 90.0
     # Transient blips and cold starts get a retry before ingest degrades to "no vector".
     embed_max_retries: int = 2
+    # The longest text an embedder is asked to vectorise, in characters. Ollama refuses an
+    # input above the model's physical batch — bge-m3: "input (2526 tokens) is too large to
+    # process (current batch size: 2048)" — with a 500, and a decomposed item carries ~9k
+    # characters of its PRD's framing. Predicting touch-areas for ONE such item took the whole
+    # fleet planner down on 2026-09-23 (every propose_allocation a 500). Measured on bge-m3 /
+    # ollama 0.32: English prose is ~3.4 chars per token, so 5000 chars is ~1500 tokens, under
+    # the batch with room for denser, code-heavy text.
+    embed_max_chars: int = 5000
 
     # Hosted deployments should embed with a real provider: on `stub`, vectors are
     # deterministic noise, so search silently returns nonsense while looking healthy.

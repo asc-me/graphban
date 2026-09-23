@@ -106,6 +106,7 @@ Two independent boundaries govern how tracker data is handled:
 | `OLLAMA_KEEP_ALIVE` | *(empty — Ollama's own 5m)* | How long Ollama holds the model resident: `30m`, `1h`, `-1` to pin. Measured cost of a reload: 9.7s for a 24B model, and on a single-slot host nobody else can use those seconds either |
 | `LLM_TIMEOUT_SECONDS` | `90` | Per model call. A local coding model can exceed this |
 | `EMBED_MAX_RETRIES` | `2` | Retries before an embedding write gives up |
+| `EMBED_MAX_CHARS` | `5000` | The longest text sent to the embedder, in characters; longer inputs are cut to their head. bge-m3 behind Ollama refuses anything over its 2048-token batch with a 500, and a decomposed item carries ~9k characters of PRD framing — one such item took the fleet planner down (2026-09-23). ~3.4 chars per token on English prose |
 | `REQUIRE_REAL_EMBEDDINGS` | `false` | **Refuses to write a stub vector.** Without it a misconfigured provider silently fills the index with vectors that match nothing |
 
 See [AI providers](ai-providers.md) for the details (and why embeddings are deploy-time).

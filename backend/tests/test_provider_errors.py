@@ -122,3 +122,26 @@ def test_the_mcp_error_is_unavailable_not_internal(client, auth, monkeypatch):
     assert err["code"] == "unavailable", err
     assert "ms-s1-ubt" in err["message"], err
     assert "safe to retry once" not in json.dumps(err)
+
+
+def test_a_raw_transport_failure_inside_a_tool_is_unavailable_not_a_500(client, auth, monkeypatch):
+    """The branch for an UNWRAPPED httpx error called `_fail` with a keyword it does not
+    take, so the handler itself raised and the client got a 500 — which `gbfleet until`
+    reads as "server unreachable" and stops spawning (2026-09-23, every propose_allocation).
+    An unwrapped provider failure is `unavailable`, an answer, never a crash."""
+    from app import mcp_server
+
+    def boom(*a, **k):
+        raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(mcp_server.code_svc, "search_code", boom)
+    key = client.post("/api/api-keys", json={"name": "a", "scopes": ["read"]},
+                      headers=auth).json()["plaintext"]
+    r = client.post("/api/mcp",
+                    json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": "search_code", "arguments": {"query": "x"}}},
+                    headers={"X-API-Key": key})
+    assert r.status_code == 200, r.text[:200]
+    err = r.json()["result"]["structuredContent"]["error"]
+    assert err["code"] == "unavailable", err
+    assert "ConnectError" in err["message"]

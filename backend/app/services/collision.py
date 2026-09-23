@@ -15,12 +15,16 @@ glob/dir-aware match as code-locality clustering (`clustering.shared_touchpoints
 """
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy.orm import Session
 
 from app.models import Item
 from app.services import clustering
 from app.services import code_graph
 from app.services import items as items_svc
+
+logger = logging.getLogger("graphban.collision")
 
 _PREDICT_TOP_K = 5
 _PREDICT_MIN_SIM = 0.15  # ignore weak semantic matches when inferring touch-areas
@@ -36,7 +40,20 @@ def predict_touch_areas(db: Session, item: Item, project_id: str | None,
     # inference: the nearest code nodes to the item's title + description
     text = f"{item.title} {item.description or ''}".strip()
     if text:
-        for node, sim in code_graph.search_code(db, text, project_id, top_k=top_k):
+        # A provider failure here degrades to the learned signal below; it does not raise.
+        # `propose_allocation` and `collision_clusters` predict for every ready item without
+        # touchpoints, so one item the embedder refused took the whole planner down: every
+        # fleet tick a 500, no spawn possible, for as long as that item stayed open
+        # (2026-09-23). Inference is one of two signals and its absence is stated in the log,
+        # not hidden — but a planner that cannot cluster is worse than a cluster missing one
+        # predicted path.
+        try:
+            hits = code_graph.search_code(db, text, project_id, top_k=top_k)
+        except Exception as exc:  # noqa: BLE001 — any provider failure; the planner must answer
+            logger.warning("touch-area inference unavailable for %s (%s: %s); predicting from "
+                           "linked items only", item.id, type(exc).__name__, exc)
+            hits = []
+        for node, sim in hits:
             if sim >= _PREDICT_MIN_SIM and node.path:
                 areas.add(node.path)
 
