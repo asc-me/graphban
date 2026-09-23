@@ -9,6 +9,7 @@ from functools import lru_cache
 
 from app.config import settings
 from app.providers.base import ChatModel, Embedder, Extractor, cosine_similarity
+from app.providers.decide import Decision, Decider, Question, choice, noul, score
 from app.providers.stub import StubChat, StubEmbedder, StubExtractor
 
 from app.providers import registry
@@ -17,6 +18,12 @@ __all__ = [
     "Embedder",
     "ChatModel",
     "Extractor",
+    "Decider",
+    "Decision",
+    "Question",
+    "noul",
+    "score",
+    "choice",
     "cosine_similarity",
     "get_embedder",
     "get_chat_model",
@@ -28,6 +35,7 @@ __all__ = [
     "build_chat",
     "build_embedder",
     "build_extractor",
+    "build_decider",
 ]
 
 
@@ -103,6 +111,33 @@ def build_extractor(provider: str = "stub", *, base_url: str = "", api_key: str 
     from app.providers import llm_meter
 
     return llm_meter.metered(StubExtractor(), provider="stub", project_id=project_id)
+
+
+def build_decider(provider: str = "stub", *, base_url: str = "", api_key: str = "",
+                  model: str = "", project_id: str = "") -> Decider:
+    """Construct a decider adapter from an explicit provider config (GRPH-895).
+
+    Same per-project resolution pattern as `build_chat` and `build_embedder`. The stub
+    refuses — a decider that answers in prose is the defect this type exists to prevent.
+    """
+    provider = provider or "stub"
+    if provider in ("systemone", "typesafe"):
+        from app.providers import llm_meter, systemone
+
+        meta = registry.get(provider) or {}
+        resolved_model = model or meta.get("chat_model", "")
+        resolved_url = base_url or meta.get("base_url", "")
+        return llm_meter.metered(
+            systemone.decider(base_url=resolved_url, api_key=api_key, model=resolved_model),
+            provider=provider, model=resolved_model, project_id=project_id,
+        )
+    # The stub refuses. A decider that answers in prose is the defect this type exists to
+    # prevent; returning a fake Decision would be worse than raising.
+    from app import errors
+    raise errors.Unavailable(
+        f"no decider provider configured (got {provider!r})",
+        hint="configure a System One or TypeSafe credential in Settings → AI providers",
+    )
 
 
 def build_embedder(provider: str = "stub", *, base_url: str = "", api_key: str = "",
