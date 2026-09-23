@@ -2819,9 +2819,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 db, key, action="sign_off_refused", target_type="item",
                 target_id=args.get("id", ""), project_id=pid,
                 meta={"reason": str(e), "agent_id": args.get("agent_id")})
+            if isinstance(e, fleet_svc.UnreadableAcceptance):
+                raise errors.Conflict(str(e), hint=(
+                    "bounce it, or update_item the description so each acceptance clause is a "
+                    "list item under ## Acceptance, then name each in a {kind: test} entry"))
             raise errors.Conflict(str(e), hint=(
                 "add a {kind: test} evidence entry whose detail names each uncovered "
-                "acceptance clause from the item's ## Tests section"))
+                "acceptance clause from the item's ## Acceptance / ## Tests section"))
         out = _item_dict(item)
         if fleet_svc.is_credential(agent):
             # Say it in the response, not only in the column. A caller that never registered
