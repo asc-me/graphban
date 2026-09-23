@@ -63,7 +63,23 @@ def test_handle_status_reports_the_clone_not_the_rsync_target(tmp_path):
     assert got["deploy"] is True
 
 
-def test_listen_round_trip(tmp_path):
+def _talk(sock: pathlib.Path, msg: dict) -> dict:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(2)
+        s.connect(str(sock))
+        s.sendall((json.dumps(msg) + "\n").encode())
+        buf = b""
+        while b"\n" not in buf:
+            buf += s.recv(1024)
+    return json.loads(buf.decode())
+
+
+def test_listen_round_trip(tmp_path, monkeypatch):
+    """GRPH-892 CALL. bind() creates the path two lines before listen() accepts.
+    Polling Path.exists() then connecting once races under load (CI -n auto).
+    Inject that gap so exists()-then-one-connect fails here, and retrying the
+    connect until it is accepted is the only green path. Do not sleep after exists().
+    """
     repo = tmp_path / "src"
     (repo / "scripts").mkdir(parents=True)
     (repo / "scripts" / "deploy.sh").write_text("#!/bin/sh\n", encoding="utf-8")
@@ -71,26 +87,29 @@ def test_listen_round_trip(tmp_path):
     # AF_UNIX paths are short; pytest's tmp_path is often too long on macOS.
     sock = pathlib.Path(f"/tmp/gb-apply-{os.getpid()}.sock")
 
+    orig_listen = socket.socket.listen
+
+    def listen_after_gap(self, *a, **k):
+        time.sleep(0.25)
+        return orig_listen(self, *a, **k)
+
+    monkeypatch.setattr(socket.socket, "listen", listen_after_gap)
+
     t = threading.Thread(
         target=ch.listen, args=(sock, repo, dest), daemon=True)
     t.start()
-    for _ in range(50):
-        if sock.exists():
+    deadline = time.time() + 2.0
+    st = None
+    last_err: BaseException | None = None
+    while time.time() < deadline:
+        try:
+            st = _talk(sock, {"op": "status"})
             break
-        time.sleep(0.02)
-    assert sock.exists()
+        except (ConnectionRefusedError, FileNotFoundError, TimeoutError, OSError) as e:
+            last_err = e
+            time.sleep(0.02)
     try:
-        def talk(msg: dict) -> dict:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.settimeout(2)
-                s.connect(str(sock))
-                s.sendall((json.dumps(msg) + "\n").encode())
-                buf = b""
-                while b"\n" not in buf:
-                    buf += s.recv(1024)
-            return json.loads(buf.decode())
-
-        st = talk({"op": "status"})
+        assert st is not None, f"compose-host never accepted: {last_err!r}"
         assert st["ok"] is True
         assert st["deploy"] is True
     finally:
