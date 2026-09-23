@@ -9,7 +9,7 @@ from functools import lru_cache
 
 from app.config import settings
 from app.providers.base import ChatModel, Embedder, Extractor, cosine_similarity
-from app.providers.decide import Decision, Decider, Question, choice, noul, score
+from app.providers.decide import Answer, Decision, Decider, Question, choice, noul, score
 from app.providers.stub import StubChat, StubEmbedder, StubExtractor
 
 from app.providers import registry
@@ -18,6 +18,7 @@ __all__ = [
     "Embedder",
     "ChatModel",
     "Extractor",
+    "Answer",
     "Decider",
     "Decision",
     "Question",

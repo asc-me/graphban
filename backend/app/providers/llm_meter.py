@@ -365,6 +365,7 @@ def metered(obj: Any, *, provider: str, model: str = "", base_url: str = "",
         ("extract", "extract", False),
         ("embed", "embed", False),
         ("embed_many", "embed", False),
+        ("decide", "decide", False),
         ("stream", "chat", True),
     ):
         fn = getattr(obj, name, None)

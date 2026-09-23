@@ -1,179 +1,195 @@
 """Decider provider tests (GRPH-895, PRD-45 S1).
 
-The adapter against a recorded laya response and a recorded TypeSafe response; the stub
-refuses; a noul without confidence parses; a 401 is Unavailable with the message; a 200
-in the wrong shape is Unavailable and says so.
+The adapter against a laya reply that was actually recorded (ms-s1-ubt, 2026-09-23) and a
+TypeSafe-shaped reply; the request is the protocol's shape; a hole in the answers is
+`Unavailable`, never a default; a 401 is `Unavailable` with the status; the stub refuses.
+
+The first version of this file carried a "real laya response" with `action` / `legend` and
+no `answers`, which no endpoint has ever sent, and passed 19 tests against it. The reply
+below was captured from the box with curl, and the body test is the one that fails if
+anyone reintroduces `state.answer_space`.
 """
 from __future__ import annotations
-
-import json
 
 import httpx
 import pytest
 
 from app import errors
-from app.providers import build_decider, noul, score, choice
-from app.providers.decide import Decision, Question
-from app.providers.systemone import SystemOneDecider, _parse_response
+from app.providers import build_decider, choice, noul, score
+from app.providers.decide import Answer, Decision, Question
+from app.providers.systemone import SystemOneDecider, _build_body, _parse_response
 
+# ---- recorded replies ------------------------------------------------------------------
 
-# ---- recorded responses -----------------------------------------------------------
-
-# A real laya response for a keep/quality question pair (measured 2026-09-23).
-_LAYA_RESPONSE = {
+#: Verbatim from `POST http://ms-s1-ubt:8090/v1/systemone` on 2026-09-23, three questions.
+LAYA_REPLY = {
     "model": "laya-rl-agent",
-    "routing": {"model": "english"},
-    "action": {"act_probability": 0.708},
-    "confidence": 0.708,
-    "answer": {"quality": 0.42},
-    "legend": {"0": {"keep": 0.708}, "1": {"quality": 0.42}},
+    "answers": {
+        "keep": {"type": "noul", "noul": 0.4361, "confidence": 0.5639,
+                 "action": {"act_probability": 1.0}},
+        "quality": {"type": "score", "score": 2.1258,
+                    "legend": {"0": "useless", "1": "weak", "2": "fair", "3": "good", "4": "excellent"},
+                    "probabilities": {"0": 0.0283, "1": 0.2371, "2": 0.3983, "3": 0.2533, "4": 0.0831},
+                    "confidence": 0.153, "action": {"act_probability": 1.0}},
+        "kind": {"type": "choice", "choice": "convention",
+                 "probabilities": {"convention": 0.5183, "gotcha": 0.4539, "status": 0.0278},
+                 "confidence": 0.273, "action": {"act_probability": 1.0}},
+    },
     "usage": {"input_tokens": 223, "output_tokens": 0},
+    "routing": {"model": "english", "repo": "convaiinnovations/laya",
+                "reason": "explicit model='english'", "detection": None, "workflow": None},
 }
 
-# A TypeSafe-shaped response with explicit `answers` dict.
-_TYPESAFE_RESPONSE = {
+#: TypeSafe's documented shape: a noul carries no confidence; a score's legend is by index.
+TYPESAFE_REPLY = {
     "model": "jev-1.13.0",
     "answers": {
-        "keep": {"probability": 0.85},
-        "quality": {"value": 0.72},
+        "keep": {"type": "noul", "noul": 0.85},
+        "quality": {"type": "score", "score": 3.1,
+                    "legend": {"0": "useless", "1": "weak", "2": "fair", "3": "good", "4": "excellent"},
+                    "probabilities": {"0": 0.01, "1": 0.04, "2": 0.15, "3": 0.5, "4": 0.3},
+                    "confidence": 0.62},
     },
     "usage": {"input_tokens": 180, "output_tokens": 0},
 }
 
-
-# ---- Question builders -----------------------------------------------------------
-
-class TestQuestionBuilders:
-    def test_noul(self):
-        q = noul("keep")
-        assert q.key == "keep"
-        assert q.type == "noul"
-        assert q.to_dict() == {"type": "noul"}
-
-    def test_score(self):
-        q = score("quality", min=0.0, max=1.0)
-        assert q.key == "quality"
-        assert q.type == "score"
-        assert q.to_dict() == {"type": "score", "min": 0.0, "max": 1.0}
-
-    def test_choice(self):
-        q = choice("category", options=["bug", "feature", "chore"])
-        assert q.key == "category"
-        assert q.type == "choice"
-        d = q.to_dict()
-        assert d["type"] == "choice"
-        assert d["options"] == ["bug", "feature", "chore"]
+LEVELS = ["useless", "weak", "fair", "good", "excellent"]
+KEEP = noul("keep", "The note is durable, specific and actionable",
+            true="a rule, gotcha or decision with enough detail to act on",
+            false="vague, transient, obvious, redundant, or a status update")
+QUALITY = score("quality", "How useful this note is to a future agent", LEVELS)
+KIND = choice("kind", "What kind of note this is",
+              {"convention": "a rule the project follows", "gotcha": "a trap and its fix",
+               "status": "a transient status update"})
 
 
-# ---- Response parsing -------------------------------------------------------------
+# ---- the request is the protocol's shape -----------------------------------------------
 
-class TestParseResponse:
-    def test_laya_shape(self):
-        qs = [noul("keep"), score("quality")]
-        decision = _parse_response(_LAYA_RESPONSE, qs)
-        assert isinstance(decision, Decision)
-        assert decision.answers["keep"] == pytest.approx(0.708)
-        assert decision.answers["quality"] == pytest.approx(0.42)
-        assert decision.confidence == pytest.approx(0.708)
+class TestRequest:
+    def test_the_body_is_model_state_questions(self):
+        """Sabotage: put `answer_space` back under `state`; this fails on the missing key."""
+        body = _build_body("multilingual", "Always run pnpm install --frozen-lockfile", [KEEP, QUALITY, KIND])
+        assert set(body) == {"model", "state", "questions"}
+        assert body["model"] == "multilingual"
+        assert body["state"] == "Always run pnpm install --frozen-lockfile"
+        q = body["questions"]
+        assert q["keep"] == {"type": "noul", "instructions": KEEP.instructions,
+                             "criteria": {"true": KEEP.criteria["true"], "false": KEEP.criteria["false"]}}
+        assert q["quality"] == {"type": "score", "instructions": QUALITY.instructions, "criteria": LEVELS}
+        assert q["kind"]["type"] == "choice" and set(q["kind"]["criteria"]) == {"convention", "gotcha", "status"}
 
-    def test_typesafe_shape(self):
-        qs = [noul("keep"), score("quality")]
-        decision = _parse_response(_TYPESAFE_RESPONSE, qs)
-        assert decision.answers["keep"] == pytest.approx(0.85)
-        assert decision.answers["quality"] == pytest.approx(0.72)
+    def test_a_noul_without_criteria_carries_only_instructions(self):
+        assert noul("k", "is it?").to_dict() == {"type": "noul", "instructions": "is it?"}
 
-    def test_noul_without_confidence(self):
-        """A noul without `confidence` still parses from act_probability."""
-        resp = {"action": {"act_probability": 0.6}}
-        qs = [noul("keep")]
-        decision = _parse_response(resp, qs)
-        assert decision.answers["keep"] == pytest.approx(0.6)
-        assert decision.confidence is None
-
-    def test_choice_response(self):
-        resp = {"answers": {"category": {"bug": 0.7, "feature": 0.2, "chore": 0.1}}}
-        qs = [choice("category", options=["bug", "feature", "chore"])]
-        decision = _parse_response(resp, qs)
-        assert isinstance(decision.answers["category"], dict)
-        assert decision.answers["category"]["bug"] == pytest.approx(0.7)
-
-    def test_empty_answers_raises(self):
-        """A 200 with no parseable answers is Unavailable, not a silent empty Decision."""
-        resp = {"model": "something", "unrelated": True}
-        qs = [noul("keep")]
-        decision = _parse_response(resp, qs)
-        assert decision.answers == {}
+    def test_the_protocol_bounds_are_enforced_before_the_wire(self):
+        with pytest.raises(ValueError):
+            score("q", "one level is not a scale", ["only"])
+        with pytest.raises(ValueError):
+            score("q", "too many", [str(i) for i in range(11)])
+        with pytest.raises(ValueError):
+            choice("c", "none", [])
+        assert choice("c", "list form", ["a", "b"]).criteria == {"a": None, "b": None}
 
 
-# ---- Adapter integration (mocked HTTP) -------------------------------------------
+# ---- the reply is read from `answers`, typed by the question -------------------------
 
-class TestSystemOneAdapter:
-    def _mock_client(self, response_data: dict, status: int = 200):
-        """Build a mock httpx.Client that returns the given response."""
-        transport = httpx.MockTransport(
-            lambda request: httpx.Response(
-                status, json=response_data, request=request,
-            )
-        )
-        return httpx.Client(transport=transport)
+class TestReply:
+    def test_the_recorded_laya_reply(self):
+        d = _parse_response(LAYA_REPLY, [KEEP, QUALITY, KIND])
+        assert isinstance(d, Decision)
+        assert d.answers["keep"] == Answer(value=0.4361, probabilities=None, confidence=0.5639)
+        assert d.answers["quality"].value == pytest.approx(2.1258)
+        assert d.answers["quality"].probabilities["2"] == pytest.approx(0.3983)
+        assert d.answers["kind"].value == "convention"
+        assert d.answers["kind"].probabilities["gotcha"] == pytest.approx(0.4539)
+        assert d.model == "english"  # the head that answered, not the reply's `model`
 
-    def test_laya_roundtrip(self, monkeypatch):
-        """The adapter parses a real laya response correctly."""
-        decider = SystemOneDecider(
-            base_url="http://ms-s1-ubt:8090",
-            api_key="",
-            model="english",
-        )
-        client = self._mock_client(_LAYA_RESPONSE)
-        monkeypatch.setattr("app.providers.systemone.httpx.post",
-                            lambda *a, **kw: client.post(*a, **{k: v for k, v in kw.items()
-                                                                if k != "timeout"}))
-        # Directly test _parse_response since mocking httpx.post is fragile
-        qs = [noul("keep"), score("quality")]
-        decision = _parse_response(_LAYA_RESPONSE, qs)
-        assert decision.answers["keep"] == pytest.approx(0.708)
+    def test_a_typesafe_reply_without_noul_confidence(self):
+        d = _parse_response(TYPESAFE_REPLY, [KEEP, QUALITY])
+        assert d.answers["keep"].value == pytest.approx(0.85) and d.answers["keep"].confidence is None
+        assert d.answers["quality"].value == pytest.approx(3.1)
+        assert d.model == "jev-1.13.0"
 
-    def test_401_is_unavailable(self):
-        """A 401 from the endpoint is Unavailable, not a raw HTTPStatusError."""
-        decider = SystemOneDecider(
-            base_url="http://example.com",
-            api_key="bad-key",
-            model="english",
-        )
-        transport = httpx.MockTransport(
-            lambda request: httpx.Response(
-                401, json={"error": "invalid api key"}, request=request,
-            )
-        )
-        with httpx.Client(transport=transport) as client:
-            with pytest.raises(errors.Unavailable) as exc_info:
-                from app.providers.base import provider_errors
-                with provider_errors("systemone", model="english",
-                                     endpoint="http://example.com/v1/systemone"):
-                    r = client.post("http://example.com/v1/systemone", json={},
-                                    timeout=15.0)
-                    r.raise_for_status()
-            assert "401" in str(exc_info.value)
+    def test_a_hole_in_the_answers_is_unavailable_not_a_default(self):
+        """Sabotage: fill a missing answer with 0.5; every branch below passes and the
+        review queue publishes on a number nobody computed."""
+        with pytest.raises(errors.Unavailable, match="System One shape"):
+            _parse_response({"answers": {"keep": {"type": "noul", "noul": 0.9}}}, [KEEP, QUALITY])
+        with pytest.raises(errors.Unavailable, match="numeric"):
+            _parse_response({"answers": {"keep": {"type": "noul", "noul": "yes"}}}, [KEEP])
+        with pytest.raises(errors.Unavailable, match="no `choice`"):
+            _parse_response({"answers": {"kind": {"type": "choice", "probabilities": {}}}}, [KIND])
 
-    def test_wrong_shape_is_unavailable(self):
-        """A 200 in the wrong shape raises Unavailable, not a silent empty answer."""
-        decider = SystemOneDecider(
-            base_url="http://example.com",
-            api_key="",
-            model="english",
-        )
-        # A response that is valid JSON but not a /v1/systemone response.
-        bad_response = {"status": "ok", "data": "not a decision"}
-        qs = [noul("keep")]
-        decision = _parse_response(bad_response, qs)
-        # The parser returns empty answers; the adapter raises on that.
-        assert decision.answers == {}
+    def test_the_shape_the_first_version_invented_is_refused(self):
+        """What S1 v1 called a laya reply. No endpoint sends it; the adapter must not read it."""
+        invented = {"model": "laya-rl-agent", "routing": {"model": "english"},
+                    "action": {"act_probability": 0.708}, "confidence": 0.708,
+                    "answer": {"quality": 0.42}, "legend": {"0": {"keep": 0.708}}}
+        with pytest.raises(errors.Unavailable, match="no `answers`"):
+            _parse_response(invented, [KEEP, QUALITY])
 
-    def test_stub_refuses(self):
-        """build_decider with the stub provider raises Unavailable."""
-        with pytest.raises(errors.Unavailable) as exc_info:
+
+# ---- the adapter end to end, over a fake transport ----------------------------------------
+
+def _serve(monkeypatch, status: int, payload: dict, seen: list):
+    def fake_post(url, *, json, headers, timeout):
+        seen.append((url, json, headers))
+        req = httpx.Request("POST", url)
+        return httpx.Response(status, json=payload, request=req)
+    monkeypatch.setattr("app.providers.systemone.httpx.post", fake_post)
+
+
+class TestAdapter:
+    def test_round_trip_against_laya(self, monkeypatch):
+        seen: list = []
+        _serve(monkeypatch, 200, LAYA_REPLY, seen)
+        d = SystemOneDecider("http://ms-s1-ubt:8090", "", "multilingual").decide(
+            state="Always run pnpm install --frozen-lockfile", questions=[KEEP, QUALITY, KIND])
+        url, body, headers = seen[0]
+        assert url == "http://ms-s1-ubt:8090/v1/systemone"
+        assert "questions" in body and "answer_space" not in str(body)
+        assert "Authorization" not in headers  # no key, no header
+        assert d.answers["keep"].value == pytest.approx(0.4361)
+
+    def test_a_key_travels_as_a_bearer(self, monkeypatch):
+        seen: list = []
+        _serve(monkeypatch, 200, TYPESAFE_REPLY, seen)
+        SystemOneDecider("https://api.typesafe.ai", "sk-x", "jev-1.13.0").decide(state="t", questions=[KEEP, QUALITY])
+        assert seen[0][2]["Authorization"] == "Bearer sk-x"
+
+    def test_a_401_is_unavailable_with_the_status(self, monkeypatch):
+        _serve(monkeypatch, 401, {"detail": "invalid api key"}, [])
+        with pytest.raises(errors.Unavailable) as e:
+            SystemOneDecider("https://api.typesafe.ai", "bad", "jev-1.13.0").decide(state="t", questions=[KEEP])
+        assert "401" in str(e.value)
+
+    def test_a_200_in_the_wrong_shape_is_unavailable(self, monkeypatch):
+        _serve(monkeypatch, 200, {"status": "ok", "data": "not a decision"}, [])
+        with pytest.raises(errors.Unavailable, match="System One shape"):
+            SystemOneDecider("http://box:8090", "", "english").decide(state="t", questions=[KEEP])
+
+    def test_no_questions_is_a_caller_error(self):
+        with pytest.raises(ValueError):
+            SystemOneDecider("http://box:8090", "", "english").decide(state="t", questions=[])
+
+    def test_the_stub_refuses(self):
+        with pytest.raises(errors.Unavailable):
             build_decider("stub")
-        assert "no decider" in str(exc_info.value).lower() or "stub" in str(exc_info.value).lower()
+
+    def test_build_decider_meters_decide(self, monkeypatch):
+        """`llm_meter.metered` wraps the protocol methods it knows; `decide` must be one of
+        them or a decider call never becomes a span (PRD-45 D3)."""
+        from app.providers import llm_meter
+        wrapped: list[str] = []
+        real = llm_meter._wrap
+
+        def spy(fn, kind, meta, gen):
+            wrapped.append(kind)
+            return real(fn, kind, meta, gen)
+
+        monkeypatch.setattr(llm_meter, "_wrap", spy)
+        build_decider("systemone", base_url="http://box:8090", model="multilingual")
+        assert "decide" in wrapped
 
 
 # ---- Registry --------------------------------------------------------------------
