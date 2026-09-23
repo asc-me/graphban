@@ -19,7 +19,7 @@ import { copyText } from "@/lib/clipboard";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
-import { keys, useApiKeys, useConfig, useMembers, usePlatform } from "@/lib/queries";
+import { keys, useApiKeys, useConfig, useMembers, useMintIngestToken, usePlatform } from "@/lib/queries";
 import { adminPath, settingsPath } from "@/lib/routes";
 import type { ApiKey, PlatformConfig, Project } from "@/lib/types";
 import { Link, NavLink, Navigate, useLocation } from "react-router-dom";
@@ -248,6 +248,9 @@ function IntegrationsPanel() {
   const [drAccount, setDrAccount] = React.useState("");
   const [drFolder, setDrFolder] = React.useState("");
   const [copied, setCopied] = React.useState(false);
+  const [mintedToken, setMintedToken] = React.useState<string | null>(null);
+  const [tokenCopied, setTokenCopied] = React.useState(false);
+  const mintIngestToken = useMintIngestToken();
   const [syncing, setSyncing] = React.useState(false);
   const [syncReport, setSyncReport] = React.useState<Awaited<ReturnType<typeof api.gdriveSync>> | null>(null);
   async function runSync() {
@@ -438,6 +441,62 @@ function IntegrationsPanel() {
             </button>
           </div>
         )}
+      </div>
+
+      {/* Ingest token (PRD-43 D1) */}
+      <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
+        <div className="mb-1 flex items-center gap-2.5">
+          <KeyRound size={17} className="text-fg" />
+          <div className="text-[14px] font-semibold">Ingest token</div>
+        </div>
+        <p className="mb-3 text-[12px] text-muted">
+          Bearer credential for <code className="font-mono text-[11px]">POST /api/public/requests</code>.
+          Rotating immediately invalidates the previous token.
+        </p>
+        {cfg.ingest_token_prefix ? (
+          <div className="mb-3 flex items-center gap-2">
+            <span className="font-mono text-[11px] text-fg-2">{cfg.ingest_token_prefix}…</span>
+          </div>
+        ) : (
+          <p className="mb-3 text-[11px] text-faint">No token minted yet.</p>
+        )}
+        {mintedToken && (
+          <div className="mb-3 rounded-md border border-accent/30 bg-accent/5 p-2.5">
+            <p className="mb-1.5 text-[11px] text-accent">
+              Copy now — this is the only time the full token is shown.
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 break-all rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 font-mono text-[11px] text-fg-2">
+                {mintedToken}
+              </code>
+              <button
+                className="flex-none rounded-md border border-line-2 bg-surface-3 p-1.5 text-muted hover:text-fg"
+                onClick={() =>
+                  copyText(mintedToken).then(
+                    (ok) => ok && (setTokenCopied(true), setTimeout(() => setTokenCopied(false), 1500)),
+                  )
+                }
+              >
+                {tokenCopied ? <Check size={13} className="text-accent" /> : <Copy size={13} />}
+              </button>
+            </div>
+          </div>
+        )}
+        <Button
+          size="sm"
+          disabled={mintIngestToken.isPending}
+          onClick={() =>
+            mintIngestToken.mutate(activeId, {
+              onSuccess: (data) => setMintedToken(data.token),
+            })
+          }
+        >
+          {mintIngestToken.isPending
+            ? "Minting…"
+            : cfg.ingest_token_prefix
+              ? "Rotate token"
+              : "Mint token"}
+        </Button>
       </div>
 
       {/* Spam protection */}

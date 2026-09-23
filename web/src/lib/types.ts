@@ -660,6 +660,8 @@ export interface PlatformConfig {
   provider_config: Record<string, ProviderConfigView>;
   public_share_enabled: boolean;
   share_token: string | null;
+  /** PRD-43 D1: prefix of the current ingest token (gbfb_…). Empty = none minted. */
+  ingest_token_prefix: string;
   /** AL-137 D8: whether this project's code graph pushes to the linked cloud. */
   sync_graph: boolean;
 }

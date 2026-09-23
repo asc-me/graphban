@@ -120,17 +120,20 @@ export function FeedbackWidget({ config, preview = false }: { config: FeedbackCo
     }
     setSubmitting(true);
     try {
-      const res = await publicApi.submit({
-        type,
-        title: title.trim(),
-        detail: detail.trim(),
-        email: email.trim(),
-        project_id: config.projectId,
-        source_url: sourceUrl,
-        attachment_ids: atts.map((a) => a.id),
-        turnstile_token: tsToken,
-        hp,
-      });
+      const res = await publicApi.submit(
+        {
+          type,
+          title: title.trim(),
+          detail: detail.trim(),
+          email: email.trim(),
+          project_id: config.projectId,
+          source_url: sourceUrl,
+          attachment_ids: atts.map((a) => a.id),
+          turnstile_token: tsToken,
+          hp,
+        },
+        config.ingestToken || undefined,
+      );
       setDoneRef(res.request.id);
       postToHost({ type: "submitted", id: res.request.id });
     } catch {

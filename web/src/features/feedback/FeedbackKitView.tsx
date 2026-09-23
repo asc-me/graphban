@@ -188,6 +188,19 @@ export function FeedbackKitView() {
             </p>
           </Section>
 
+          <Section label="Ingest token">
+            <TextField
+              label="Bearer token for submit (paste from Settings → Ingest token)"
+              value={cfg.ingestToken}
+              onChange={(v) => set("ingestToken", v)}
+            />
+            <p className="mt-1.5 text-[11px] text-faint">
+              {platform?.ingest_token_prefix
+                ? `Current token: ${platform.ingest_token_prefix}…`
+                : "No token minted yet — mint one in Settings → Integrations → Ingest token."}
+            </p>
+          </Section>
+
           <Section label="Embed snippet">
             <div className="relative">
               <pre className="max-h-64 overflow-auto rounded-lg border border-line-2 bg-surface-2 p-3 pr-10 font-mono text-[11px] leading-relaxed text-muted-2">

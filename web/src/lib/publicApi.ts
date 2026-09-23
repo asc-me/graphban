@@ -31,10 +31,13 @@ export const publicApi = {
     return res.json();
   },
 
-  async submit(body: PublicSubmitBody): Promise<PublicSubmitResponse> {
+  async submit(body: PublicSubmitBody, ingestToken?: string): Promise<PublicSubmitResponse> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    // PRD-43 D1: ingest token takes precedence over legacy share-token / no auth.
+    if (ingestToken) headers.Authorization = `Bearer ${ingestToken}`;
     const res = await fetch("/api/public/requests", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`submit failed: ${res.status}`);

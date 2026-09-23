@@ -23,6 +23,8 @@ export interface FeedbackConfig {
   // Capabilities
   attachments: boolean; // allow screenshot upload
   turnstileSitekey: string; // Cloudflare Turnstile; empty → no captcha
+  // PRD-43 D1: ingest token for Bearer auth on submit. Empty = legacy share-token / no auth.
+  ingestToken: string;
 }
 
 export const ALL_TYPES: RequestType[] = ["bug", "feature", "enhancement", "feedback"];
@@ -43,6 +45,7 @@ export const DEFAULT_CONFIG: FeedbackConfig = {
   position: "bottom-right",
   attachments: true,
   turnstileSitekey: "",
+  ingestToken: "",
 };
 
 // Params the /embed/feedback iframe reads (widget-affecting only; launcher options
@@ -61,6 +64,7 @@ export function toParams(cfg: FeedbackConfig): string {
   if (cfg.successText !== DEFAULT_CONFIG.successText) p.set("done", cfg.successText);
   if (!cfg.attachments) p.set("att", "0");
   if (cfg.turnstileSitekey) p.set("ts", cfg.turnstileSitekey);
+  if (cfg.ingestToken) p.set("it", cfg.ingestToken);
   return p.toString();
 }
 
@@ -87,6 +91,7 @@ export function fromParams(search: URLSearchParams): FeedbackConfig {
     successText: search.get("done") ?? DEFAULT_CONFIG.successText,
     attachments: search.get("att") !== "0",
     turnstileSitekey: search.get("ts") ?? "",
+    ingestToken: search.get("it") ?? "",
   };
 }
 
