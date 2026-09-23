@@ -124,3 +124,60 @@ def db(_clean_database):
         yield s
     finally:
         s.close()
+
+
+class TestWire:
+    """The request is TypeSafe's shape and the reply is read from `answers` (2026-09-23).
+
+    The first run against laya was 1,626 × 400 Bad Request: the body was `state.answer_space`,
+    a shape from no protocol, and the per-shard `except` turned that into a clean-looking
+    report with `n_labelled=0` on every head. Sabotage: send `answer_space` again; the first
+    test fails on the missing `questions`."""
+
+    def test_the_body_declares_the_two_questions(self):
+        body = cal._request_body("multilingual", "Always run pnpm install --frozen-lockfile")
+        assert body["model"] == "multilingual"
+        assert body["state"]["note"] == "Always run pnpm install --frozen-lockfile"
+        q = body["questions"]
+        assert q["keep"]["type"] == "noul" and set(q["keep"]["criteria"]) == {"true", "false"}
+        assert q["quality"]["type"] == "score" and len(q["quality"]["criteria"]) == 5
+        assert "answer_space" not in body["state"]
+
+    def test_a_laya_reply_is_read_from_answers(self):
+        keep, quality = cal._parse_answers({
+            "model": "laya-rl-agent",
+            "answers": {"keep": {"type": "noul", "noul": 0.708, "confidence": 0.5},
+                        "quality": {"type": "score", "score": 2.63,
+                                    "probabilities": {"0": 0.1, "1": 0.2, "2": 0.4, "3": 0.2, "4": 0.1}}},
+            "usage": {"input_tokens": 223, "output_tokens": 0},
+        })
+        assert keep == 0.708
+        assert abs(quality - 2.63 / 4) < 1e-9
+
+    def test_a_reply_without_answers_is_an_error_not_a_coin_flip(self):
+        with pytest.raises(ValueError):
+            cal._parse_answers({"detail": "request body must be an object with a questions field"})
+        with pytest.raises(ValueError):
+            cal._parse_answers({"answers": {"keep": {"type": "noul"}, "quality": {"score": 1}}})
+
+
+class TestLabelledCorpus:
+    def test_a_human_decision_counts_and_a_scored_one_does_not(self, db):
+        from app.models import MemoryShard
+        db.add_all([
+            MemoryShard(id="m_human_pub", project_id=None, text="a rule", status="published",
+                        scoring_source=None, origin="agent:gb-cc"),
+            MemoryShard(id="m_human_rej", project_id=None, text="noise", status="rejected",
+                        scoring_source="", origin="ingest:claude-code:transient"),
+            MemoryShard(id="m_llm", project_id=None, text="judged", status="published",
+                        scoring_source="llm", origin="agent:auto-extract"),
+            MemoryShard(id="m_cand", project_id=None, text="undecided", status="candidate",
+                        scoring_source=None, origin="agent:gb-cc"),
+        ])
+        db.commit()
+        got = {s.shard_id: s for s in cal._load_labelled_shards(db)}
+        assert set(got) == {"m_human_pub", "m_human_rej"}, set(got)
+        assert got["m_human_pub"].label_keep is True and got["m_human_pub"].human_published
+        assert got["m_human_rej"].label_keep is False
+        scored = {s.shard_id for s in cal._load_scored_shards(db)}
+        assert scored == {"m_llm"}
