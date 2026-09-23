@@ -168,3 +168,21 @@ def test_review_occupies_the_glob_after_its_reservation_drops(db, monkeypatch):
     assert seedable, "work outside the review glob stays startable"
     review_cluster = next(cl for cl in clusters if review_item.id in cl["items"])
     assert "review" in (review_cluster.get("held_by") or [])
+
+
+def test_prediction_survives_an_embedding_failure(db, monkeypatch):
+    """`propose_allocation` predicts areas for every ready item without touchpoints. On
+    2026-09-23 one such item's text overflowed the embedder, the provider raised out of
+    `search_code`, and every planner call was a 500 for as long as the item stayed open — no
+    spawn possible. Inference is one of two signals; losing it is logged, not fatal."""
+    import httpx
+
+    def boom(db_, q, pid, top_k=5):
+        raise httpx.HTTPStatusError("500 input too large", request=None, response=None)
+
+    monkeypatch.setattr(code_graph, "search_code", boom)
+    it = _item(db, "No touchpoints, long text", desc="context " * 1200)
+    areas, src = collision.touch_areas(db, it, "core")
+    assert src == "predicted" and areas == []
+    clusters = collision.collision_clusters(db, [it], "core")
+    assert [c["items"] for c in clusters] == [[it.id]]

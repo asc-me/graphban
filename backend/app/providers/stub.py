@@ -9,6 +9,7 @@ import math
 import re
 
 from app.config import settings
+from app.providers.base import clamp_embed_input
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _SENT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -22,6 +23,7 @@ class StubEmbedder:
         self.dim = dim
 
     def embed(self, text: str) -> list[float]:
+        text = clamp_embed_input(text)
         vec = [0.0] * self.dim
         for tok in _TOKEN_RE.findall((text or "").lower()):
             h = hashlib.sha256(tok.encode()).digest()

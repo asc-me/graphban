@@ -3843,7 +3843,6 @@ async def mcp_endpoint(
             return _fail("unavailable", f"AI provider unreachable: {type(e).__name__}",
                 hint="check the provider base URL, key and model in Settings -> AI "
                      "providers; this is configuration, not a transient failure",
-                modern=modern,
             )
         except Exception:  # noqa: BLE001 — never leak a raw 500 to a JSON-RPC client
             logger.exception("MCP tool %r failed", name)

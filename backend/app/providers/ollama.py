@@ -11,7 +11,7 @@ import time
 import httpx
 
 from app.config import settings
-from app.providers.base import provider_errors, require_answer
+from app.providers.base import clamp_embed_input, provider_errors, require_answer
 
 logger = logging.getLogger("graphban.providers.ollama")
 
@@ -76,6 +76,7 @@ class OllamaEmbedder:
         """
         if not texts:
             return []
+        texts = [clamp_embed_input(t) for t in texts]
         try:
             r = httpx.post(
                 f"{self.base_url}/api/embed",
@@ -106,6 +107,7 @@ class OllamaEmbedder:
         """Embed one string, retrying transient failures — a cold model behind a
         gateway can be slow on the first call, and a blip shouldn't cost an ingest.
         Callers that must not fail use `safe_embed`."""
+        text = clamp_embed_input(text)
         attempts = max(1, settings.embed_max_retries + 1)
         last: Exception | None = None
         for attempt in range(attempts):
