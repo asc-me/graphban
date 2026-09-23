@@ -86,7 +86,7 @@ class ShardSample:
     label_keep: bool | None  # None = no human label available
     chat_judge_keep: bool | None  # None = no stored review verdict
     chat_judge_quality: float | None
-    human_published: bool  # True when a human stood behind this (status=published + origin=eval-sample)
+    human_published: bool  # True when a person published this (status=published, no scorer)
 
 
 @dataclass
@@ -130,88 +130,104 @@ def _discover_heads(endpoint: str, client: httpx.Client) -> list[str]:
     return []
 
 
+#: PRD-45 D6, verbatim: the write-path judge's two questions. The decider is measured on
+#: the same question the chat judge answers (`_JUDGE_SYSTEM` is carried in the state so the
+#: instruction it was written for travels with the text), but the ANSWER SPACE is declared
+#: here, which is the whole difference between a decider and a chat model.
+_QUALITY_LEVELS = ("useless", "weak", "fair", "good", "excellent")
+_QUESTIONS = {
+    "keep": {
+        "type": "noul",
+        "instructions": "The note is a durable, specific, actionable fact, decision or "
+                        "convention a future agent working on this project can act on.",
+        "criteria": {
+            "true": "a rule, gotcha or decision with enough detail to act on",
+            "false": "vague, transient, obvious, redundant, or a status update",
+        },
+    },
+    "quality": {
+        "type": "score",
+        "instructions": "How useful this note is to a future agent on this project.",
+        "criteria": list(_QUALITY_LEVELS),
+    },
+}
+
+
+def _request_body(head: str, text: str) -> dict:
+    """The System One request for one shard: TypeSafe's `{model, state, questions}`.
+
+    The first version of this script sent `state.answer_space` — a shape that exists in no
+    protocol — and every one of 1,626 calls on the first real run was a 400, which the
+    per-shard `except` turned into an empty report with `n_labelled=0` on every head. The
+    body is a function so a test can assert its shape without an endpoint.
+    """
+    return {
+        "model": head,
+        "state": {"instructions": _JUDGE_SYSTEM, "note": text, "question": _JUDGE_QUESTION},
+        "questions": _QUESTIONS,
+    }
+
+
+def _parse_answers(data: dict) -> tuple[float, float]:
+    """`(keep_prob, quality)` from a System One reply.
+
+    `answers.keep.noul` is P(keep). `answers.quality.score` lands on the 0..4 level scale
+    (fractional between levels) and is normalised to 0..1 here so the rest of the report
+    can compare it with the chat judge's 0..1 quality. Missing or malformed answers raise:
+    a shard the endpoint did not actually judge must not be counted at 0.5.
+    """
+    answers = data.get("answers")
+    if not isinstance(answers, dict):
+        raise ValueError(f"no answers in reply: {str(data)[:120]}")
+    keep = answers.get("keep") or {}
+    quality = answers.get("quality") or {}
+    if not isinstance(keep.get("noul"), (int, float)):
+        raise ValueError(f"keep is not a noul: {keep}")
+    if not isinstance(quality.get("score"), (int, float)):
+        raise ValueError(f"quality is not a score: {quality}")
+    top = len(_QUALITY_LEVELS) - 1
+    q = min(max(float(quality["score"]) / top, 0.0), 1.0)
+    return float(keep["noul"]), q
+
+
 def _decide(endpoint: str, head: str, text: str, client: httpx.Client,
             *, api_key: str = "") -> HeadDecision:
     """Call the decider for one shard. Returns keep probability, quality, and latency."""
-    body = {
-        "model": head,
-        "state": {
-            "system": _JUDGE_SYSTEM,
-            "context": text,
-            "question": _JUDGE_QUESTION,
-            "answer_space": {
-                "keep": {"type": "noul"},
-                "quality": {"type": "score", "min": 0.0, "max": 1.0},
-            },
-        },
-    }
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
     t0 = time.perf_counter()
-    r = client.post(f"{endpoint}/v1/systemone", json=body, headers=headers, timeout=30.0)
+    r = client.post(f"{endpoint}/v1/systemone", json=_request_body(head, text),
+                    headers=headers, timeout=30.0)
     latency_ms = (time.perf_counter() - t0) * 1000.0
     r.raise_for_status()
     data = r.json()
-
-    # The response carries `action.act_probability` and `confidence` on a noul.
-    # `legend` is keyed by index and names the answer options.
-    keep_prob = 0.5
-    quality = 0.5
-
-    # Try act_probability first (the protocol's primary signal).
-    action = data.get("action") or {}
-    if isinstance(action, dict):
-        ap = action.get("act_probability")
-        if isinstance(ap, (int, float)):
-            keep_prob = float(ap)
-
-    # Confidence on the noul is the protocol's own keep probability when present.
-    conf = data.get("confidence")
-    if isinstance(conf, (int, float)) and conf > 0:
-        # Confidence is P(keep) on a noul — the decider's own calibration.
-        keep_prob = float(conf)
-
-    # Quality comes from a score head or from the legend-indexed probabilities.
-    # The PRD measured quality as a /4 value from the chat judge; the decider returns
-    # it as 0..1 on a score answer space.
-    legend = data.get("legend") or {}
-    if isinstance(legend, dict):
-        # If the legend has quality-related keys, extract them.
-        for _idx, entry in legend.items():
-            if isinstance(entry, dict) and "quality" in entry:
-                quality = float(entry["quality"])
-                break
-
-    # Fallback: derive quality from the answer distribution if available.
-    answer = data.get("answer") or {}
-    if isinstance(answer, dict):
-        q = answer.get("quality")
-        if isinstance(q, (int, float)):
-            quality = float(q)
-        elif isinstance(answer.get("score"), (int, float)):
-            quality = float(answer["score"])
-
-    # If the response has a top-level quality, prefer it.
-    if isinstance(data.get("quality"), (int, float)):
-        quality = float(data["quality"])
-
+    routed = (data.get("routing") or {}).get("model") if isinstance(data.get("routing"), dict) else None
+    if routed and routed != head:
+        # laya routes unknown names to a default head and says so; a report that names a
+        # head nothing answered for is the substitution PRD-45 §12 warns about.
+        logger.warning("head %s was answered by %s — the endpoint routed the name", head, routed)
+    keep_prob, quality = _parse_answers(data)
     return HeadDecision(keep_prob=keep_prob, quality=quality, latency_ms=latency_ms)
 
 
 def _load_labelled_shards(db) -> list[ShardSample]:
-    """Human-labelled shards: eval-samples with a human keep/reject decision.
+    """Human-labelled shards: a published or rejected shard that no scorer decided.
 
-    ``status=published`` + ``origin=agent:eval-sample`` = human kept.
-    ``status=rejected`` + ``origin=agent:eval-sample`` = human rejected.
+    `scoring_source` is set by `triage_candidate` (`similarity` / `llm` / `trusted`) and by
+    agent adjudication (`agent`); a decided shard with no source was decided by a person in
+    the review queue. That is the label PRD-45 §6 asks for — "every shard whose outcome is a
+    human action". The first version accepted only `origin=agent:eval-sample`, a corpus the
+    deployed store does not have (0 rows on 2026-09-23, beside 147 human-decided shards).
     """
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
     from app.models import MemoryShard
 
     stmt = select(MemoryShard).where(
-        MemoryShard.origin == _SAMPLE_ORIGIN,
         MemoryShard.status.in_(("published", "rejected")),
+        or_(MemoryShard.scoring_source.is_(None), MemoryShard.scoring_source == ""),
+        MemoryShard.text.isnot(None),
     )
     rows = list(db.scalars(stmt))
     samples = []
