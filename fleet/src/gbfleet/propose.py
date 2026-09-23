@@ -287,6 +287,31 @@ def _merge_commit(pr: dict) -> str:
     return str(got.get("oid") or "") if isinstance(got, dict) else ""
 
 
+#: The shortest commit id `same_commit` will treat as naming one commit. Git's own default
+#: abbreviation is 7; anything shorter is a prefix that could name several commits, and a
+#: check that exists to refuse the wrong commit must not accept a fragment that matches many.
+COMMIT_MIN = 7
+
+
+def same_commit(a: str, b: str) -> bool:
+    """Whether two commit ids name the same commit, when one may be abbreviated.
+
+    The first version compared with `!=`. A reviewer's sign-off carries whatever the reviewer
+    wrote — `git rev-parse --short` gives 7 to 12 characters — while the forge reports the
+    full 40, so on 2026-09-23 a signed-off, CI-green, mergeable PR was refused with
+    "PR head d565a6835398 is not the reviewed commit d565a683": the same commit, twice. The
+    comparison is prefix-based in either direction, on hex only, never below `COMMIT_MIN`,
+    and never on an empty side — an empty reviewed commit is "nothing to compare", handled
+    before this is asked, and must not become a match for everything.
+    """
+    a, b = (a or "").strip().lower(), (b or "").strip().lower()
+    if len(a) < COMMIT_MIN or len(b) < COMMIT_MIN:
+        return False
+    if not all(c in "0123456789abcdef" for c in a + b):
+        return False
+    return a.startswith(b) or b.startswith(a)
+
+
 def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
           green: set[str]) -> Merged:
     """Finish one item's merge, or say exactly which precondition stopped it.
@@ -335,13 +360,13 @@ def merge(repo: Path, item_id: str, selector: str, *, reviewed: str,
     # after review keeps the branch name and changes the head, and a comparison on names
     # would merge code nobody reviewed under a sign-off that vouches for something else.
     head = str(pr.get("headRefOid") or "")
-    if head != reviewed:
+    if not same_commit(head, reviewed):
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=f"PR head {head[:12] or '?'} is not the reviewed commit "
                              f"{reviewed[:12]} — the branch moved after sign-off; it needs "
                              "review again, not a merge")
     checked.append("head=reviewed")
-    if reviewed not in green:
+    if not any(same_commit(reviewed, g) for g in green):
         return Merged(item=item_id, selector=selector, url=url, checked=tuple(checked),
                       reason=f"CI has not attested {CI_PREDICATE} on {reviewed[:12]}")
     checked.append(f"ci={CI_PREDICATE}")
