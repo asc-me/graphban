@@ -510,3 +510,44 @@ def test_propose_branch_records_a_refused_client_as_a_failure(gh, git_repo, monk
     propose_branch(wave, git_repo, "gb/w-1", ["GRPH-1"], client=client)
     assert wave.failures, "a refused write should be recorded"
     assert any("not recorded" in f for f in wave.failures), wave.failures
+
+
+# ---- an abbreviated sign-off names the same commit (2026-09-23) --------------------------------
+
+def test_an_abbreviated_reviewed_commit_that_prefixes_the_head_merges(gh):
+    """A reviewer writes `git rev-parse --short`; the forge reports 40 characters. The first
+    real wave under `--merge` was refused on exactly this: "PR head d565a6835398 is not the
+    reviewed commit d565a683". Same commit. CI attests the full id, so that side must match
+    the abbreviation too.
+
+    Sabotage: put `!=` back; this fails with the sentence above."""
+    forge = _Forge(draft=True)
+
+    got = _merge(forge, gh, reviewed=REVIEWED[:8], green={REVIEWED})
+
+    assert got.ok, got.reason
+    assert "head=reviewed" in got.checked
+
+
+def test_an_abbreviation_of_a_different_commit_is_still_refused(gh):
+    forge = _Forge(draft=True, head=MOVED)
+
+    got = _merge(forge, gh, reviewed=REVIEWED[:8])
+
+    assert not got.ok and "reviewed commit" in got.reason
+    assert forge.verbs() == ["pr view"]
+
+
+def test_a_fragment_too_short_to_name_a_commit_never_matches(gh):
+    """`same_commit` must not become "starts with the same letter". Below git's own
+    abbreviation floor a prefix names many commits, and a check that exists to refuse the
+    wrong commit cannot accept it."""
+    forge = _Forge(draft=True)
+
+    got = _merge(forge, gh, reviewed=REVIEWED[:5])
+
+    assert not got.ok and "reviewed commit" in got.reason
+    assert forge.verbs() == ["pr view"]
+    assert not propose_mod.same_commit("", REVIEWED)
+    assert not propose_mod.same_commit(REVIEWED, "")
+    assert not propose_mod.same_commit("zzzzzzzz", "zzzzzzzz")  # not hex, not a commit
