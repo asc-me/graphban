@@ -172,6 +172,7 @@ class ScopeDefaultsIn(BaseModel):
     default_credential_id: str | None = None
     fallback_credential_id: str | None = None
     embed_credential_id: str | None = None
+    decider_credential_id: str | None = None
 
 
 class ProjectCredentialIn(BaseModel):
@@ -307,7 +308,8 @@ def set_defaults(body: ScopeDefaultsIn, project_id: str = "core",
         raise HTTPException(409, str(e)) from None
     return {"scope": row.scope, "default_credential_id": row.default_credential_id,
             "fallback_credential_id": row.fallback_credential_id,
-            "embed_credential_id": row.embed_credential_id}
+            "embed_credential_id": row.embed_credential_id,
+            "decider_credential_id": row.decider_credential_id}
 
 
 @router.put("/credentials/project")
@@ -323,6 +325,28 @@ def set_project_credential(body: ProjectCredentialIn, project_id: str = "core",
         raise HTTPException(404, "no such credential or project") from None
     return {"project_id": project.id, "credential_id": project.credential_id,
             "model_override": project.model_override}
+
+
+class ProjectDeciderIn(BaseModel):
+    """Per-project decider override (PRD-45 S2). `None` clears (inherit platform default)."""
+    decider_credential_id: str | None = None
+
+
+@router.put("/credentials/project/decider")
+def set_project_decider(body: ProjectDeciderIn, project_id: str = "core",
+                        db: Session = Depends(get_db),
+                        user: User = Depends(get_current_user)):
+    """Point one project at a decider credential. The credential must be a decider kind."""
+    _scope(db, user, project_id)
+    try:
+        project = platform_svc.set_project_decider(
+            db, project_id, decider_credential_id=body.decider_credential_id)
+    except LookupError:
+        raise HTTPException(404, "no such credential or project") from None
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
+    return {"project_id": project.id,
+            "decider_credential_id": project.decider_credential_id}
 
 
 @router.put("/credentials/roles")

@@ -254,6 +254,12 @@ CHAT_ROLES = (
     "spec.critique",
 )
 
+# Named tasks that may use a decider (PRD-45 S2). The decider is a third model type
+# beside chat and embed; roles let specific surfaces override the project pointer.
+DECIDER_ROLES = (
+    "memory.judge",
+)
+
 
 def resolve_chat(db: Session, project_id: str) -> Resolved:
     """Which chat provider a project gets, in the transitional order of PRD-25 S1.
@@ -368,6 +374,46 @@ def resolve_role(db: Session, project_id: str, role: str) -> Resolved:
                                     fell_back_from=inherited.fell_back_from,
                                     db=db, scope=scope, project_id=project_id)
     return inherited
+
+
+def resolve_decider(db: Session, project_id: str) -> Resolved:
+    """Which decider a project gets (PRD-45 S2).
+
+    The decider is a third model type beside chat and embed. Resolution order:
+    1. the project's `decider_credential_id` (per-project override)
+    2. the scope's `decider_credential_id` (platform default)
+    3. None (no decider configured — caller degrades to similarity/chat judge)
+
+    Unlike chat, there is no stub fallback: a decider that does not answer degrades to
+    similarity, which IS the fallback. Returning a stub decider would answer in prose,
+    which is the defect this type exists to prevent.
+    """
+    scope = scope_for(db, project_id)
+    project = db.get(Project, project_id)
+    pointer = getattr(project, "decider_credential_id", None) if project is not None else None
+
+    cred = credential_in_scope(db, pointer, scope)
+    if usable(cred):
+        return _from_credential(cred, "project", "",
+                                db=db, scope=scope, project_id=project_id)
+
+    wanted = pointer or ""
+    if wanted:
+        why = ("is unreachable" if cred is not None
+               else "does not resolve in this scope")
+        logger.warning(
+            "project %s asked for decider credential %s, which %s; falling back",
+            project_id, wanted, why,
+        )
+
+    row = db.get(DeploymentConfig, scope)
+    default = credential_in_scope(db, row.decider_credential_id if row else None, scope)
+    if default is not None:
+        return _from_credential(default, "deployment", fell_back_from=wanted,
+                                db=db, scope=scope, project_id=project_id)
+
+    # No decider configured. Return None so the caller can degrade gracefully.
+    return None
 
 
 def set_project_roles(db: Session, project_id: str, roles: dict) -> Project:
@@ -826,8 +872,9 @@ def delete_credential(db: Session, credential_id: str, scope: str) -> None:
 
 def set_scope_defaults(db: Session, scope: str, *, default_credential_id: str | None = ...,
                        fallback_credential_id: str | None = ...,
-                       embed_credential_id: str | None = ...) -> DeploymentConfig:
-    """Point a scope's default / fallback / embedding at credentials it owns.
+                       embed_credential_id: str | None = ...,
+                       decider_credential_id: str | None = ...) -> DeploymentConfig:
+    """Point a scope's default / fallback / embedding / decider at credentials it owns.
 
     `...` means "leave alone" and `None` means "clear", which are different intentions and
     would be indistinguishable if absence meant clear.
@@ -883,6 +930,29 @@ def set_scope_defaults(db: Session, scope: str, *, default_credential_id: str | 
         db.commit()
         return emb_svc.set_embed_credential(db, scope, embed_credential_id)
 
+    # The decider pointer (PRD-45 S2). Like embed, there is no fallback service — a decider
+    # that does not answer degrades to similarity, which IS the fallback. The credential must
+    # be a decider kind (systemone or typesafe), not a chat provider.
+    if decider_credential_id is not ...:
+        if decider_credential_id is None:
+            row.decider_credential_id = None
+        else:
+            cred = credential_in_scope(db, decider_credential_id, scope)
+            if cred is None:
+                raise LookupError(decider_credential_id)
+            if cred.state == UNPROVEN:
+                raise ValueError(
+                    f"{decider_credential_id} has never been validated, so it cannot be the "
+                    "decider credential. Use Test connection, or correct and resave it, first."
+                )
+            from app.providers import registry
+            if not registry.serves_decide(cred.provider):
+                raise ValueError(
+                    f"{decider_credential_id} is a {cred.provider} credential, which does not "
+                    "serve decisions. Use a System One or TypeSafe credential."
+                )
+            row.decider_credential_id = decider_credential_id
+
     db.commit()
     db.refresh(row)
     return row
@@ -915,6 +985,35 @@ def set_project_credential(db: Session, project_id: str, *,
         project.credential_migrated = True
     if model_override is not ...:
         project.model_override = model_override or ""
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+def set_project_decider(db: Session, project_id: str, *,
+                        decider_credential_id: str | None) -> Project:
+    """Point one project at a decider credential (PRD-45 S2).
+
+    The credential must belong to the project's own scope and must be a decider kind
+    (systemone or typesafe). Unlike chat, there is no model override: a decider's model
+    is the head/algorithm, not a generative model name.
+    """
+    project = db.get(Project, project_id)
+    if project is None:
+        raise LookupError(project_id)
+    if decider_credential_id is None:
+        project.decider_credential_id = None
+    else:
+        cred = credential_in_scope(db, decider_credential_id, (project.org_id or ""))
+        if cred is None:
+            raise LookupError(decider_credential_id)
+        from app.providers import registry
+        if not registry.serves_decide(cred.provider):
+            raise ValueError(
+                f"{decider_credential_id} is a {cred.provider} credential, which does not "
+                "serve decisions. Use a System One or TypeSafe credential."
+            )
+        project.decider_credential_id = decider_credential_id
     db.commit()
     db.refresh(project)
     return project
