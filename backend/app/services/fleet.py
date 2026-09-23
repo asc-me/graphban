@@ -11,6 +11,7 @@ top of it.
 """
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
@@ -1684,41 +1685,86 @@ class MissingAcceptanceCoverage(Exception):
     """Work signed off while an acceptance clause has no named test (GRPH-884)."""
 
 
-def extract_acceptance_clauses(description: str) -> list[str]:
-    """Pull acceptance clauses from a `## Tests` heading in the item description.
+class UnreadableAcceptance(MissingAcceptanceCoverage):
+    """The description states acceptance in a shape the gate cannot read (GRPH-893).
 
-    Each markdown list item under that heading (until the next `## ` or end of text) is one
-    clause. Items without a `## Tests` section return an empty list — the gate does not fire,
-    and existing items that predate the convention are unaffected.
-
-    The heading convention is the simplest shape that works with the existing data model:
-    descriptions are markdown, evidence already carries `{kind: test, detail: ...}`, and a
-    substring match between the two is enough to name the mapping without a schema change.
+    A subclass because it IS a coverage refusal — nothing was shown to cover those clauses —
+    but the fix is different: restate the clauses as a list, not add a test.
     """
-    if not description:
-        return []
-    lines = description.splitlines()
+
+
+# The headings a clause list may sit under. `tests` is the GRPH-884 convention; the other two
+# are what planners actually write when nobody told them it (GRPH-893: SA-498).
+_ACCEPTANCE_HEADINGS = {"tests", "acceptance", "acceptance criteria"}
+_HEADING = re.compile(r"^(#{2,3})\s+(.*?)\s*#*$")
+# An `Acceptance:` label as prose — `Acceptance: the gate names…`, `**Acceptance:** …`.
+_ACCEPTANCE_LABEL = re.compile(
+    r"^[\W_]*acceptance(?:\s+criteria)?[*_]*\s*:[*_]*\s*(.*)$", re.IGNORECASE)
+_LIST_ITEM = re.compile(r"^(?:[-*+]|\d+[.)])\s+(.*)$")
+
+
+def parse_acceptance(description: str) -> tuple[list[str], list[str]]:
+    """Read the acceptance clauses in an item description, and what could not be read.
+
+    Returns `(clauses, unreadable)`. A clause is a markdown list item under a `## Tests`,
+    `## Acceptance` or `## Acceptance criteria` heading (`###` too), or under a bare
+    `Acceptance:` label line. `unreadable` names acceptance text that is there but is not in
+    that shape: an `Acceptance:` label with prose after it, or an acceptance heading with no
+    list under it.
+
+    `unreadable` is the half GRPH-893 added, and it is why this returns two things rather than
+    one. The first parser read only `## Tests`, so SA-476 (`Acceptance: …` inline) and SA-498
+    (`## Acceptance` + five numbered clauses) both parsed to NOTHING, and the gate recorded
+    that as a pass. "No clauses found" and "no clauses written" were the same answer; this is
+    what tells them apart.
+    """
     clauses: list[str] = []
+    unreadable: list[str] = []
     in_section = False
-    for line in lines:
+    section_label = ""
+    section_count = 0
+
+    def close() -> None:
+        if in_section and section_count == 0:
+            unreadable.append(f"{section_label} has no list items under it")
+
+    for line in (description or "").splitlines():
         stripped = line.strip()
-        if stripped.startswith("## "):
-            heading = stripped[3:].strip().lower()
-            in_section = heading == "tests"
+        heading = _HEADING.match(stripped)
+        if heading:
+            level, name = heading.group(1), heading.group(2).strip().rstrip(":").lower()
+            if name in _ACCEPTANCE_HEADINGS:
+                close()
+                in_section, section_label, section_count = True, f"`{level} {heading.group(2).strip()}`", 0
+            elif level == "##":
+                # A `###` that is not an acceptance heading is a sub-heading of whatever
+                # section it sits in; a `##` ends it.
+                close()
+                in_section = False
             continue
-        if not in_section:
+        label = _ACCEPTANCE_LABEL.match(stripped)
+        if label and not _LIST_ITEM.match(stripped):
+            close()
+            rest = label.group(1).strip()
+            if rest:
+                unreadable.append(f'inline "{stripped[:80]}"')
+                in_section = False
+            else:
+                in_section, section_label, section_count = True, "`Acceptance:`", 0
             continue
-        if not stripped:
+        if not in_section or not stripped:
             continue
-        if stripped.startswith("## "):
-            break
-        if stripped.startswith(("- ", "* ", "+ ")) or (
-            len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in ".)"
-        ):
-            text = stripped.lstrip("-*+0123456789.) ").strip()
-            if text:
-                clauses.append(text)
-    return clauses
+        item = _LIST_ITEM.match(stripped)
+        if item and item.group(1).strip():
+            clauses.append(item.group(1).strip())
+            section_count += 1
+    close()
+    return clauses, unreadable
+
+
+def extract_acceptance_clauses(description: str) -> list[str]:
+    """The clauses half of `parse_acceptance` — see there for the shapes it reads."""
+    return parse_acceptance(description)[0]
 
 
 def acceptance_covered(clauses: list[str], evidence: list[dict]) -> tuple[bool, list[str]]:
@@ -1873,7 +1919,18 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # that is the defect this closes: sabotage can only mutate code some test already reaches,
     # so a clause with no test is invisible to it. Items without a `## Tests` section are
     # unaffected — the gate does not fire on descriptions that predate the convention.
-    clauses = extract_acceptance_clauses(item.description or "")
+    #
+    # UNREADABLE IS NOT ABSENT (GRPH-893). Acceptance the parser cannot structure refuses
+    # rather than passing. Before this, SA-476 and SA-498 — both with acceptance text in the
+    # description — signed off with `acceptance_coverage: passed` and "not checked", so the
+    # receipt vouched for a check that had read nothing.
+    clauses, unreadable = parse_acceptance(item.description or "")
+    if unreadable:
+        raise UnreadableAcceptance(
+            f"{item.key} states acceptance the gate cannot read: " + "; ".join(unreadable)
+            + " — restate each clause as a list item under `## Acceptance` (or `## Tests`) "
+              "so each one can be matched to a named test"
+        )
     covered, uncovered = acceptance_covered(clauses, merged)
     if not covered:
         raise MissingAcceptanceCoverage(
@@ -1930,7 +1987,9 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                  "passed": True,
                  "detail": (f"all {len(clauses)} acceptance clause(s) have a named test"
                             if clauses
-                            else "no acceptance clauses in description; not checked")},
+                            # Only reachable when the description states NO acceptance —
+                            # acceptance it cannot read refused above (GRPH-893).
+                            else "description states no acceptance clauses; nothing to check")},
             ],
         }])
         fresh, merged = fresh + attestation, merged + attestation

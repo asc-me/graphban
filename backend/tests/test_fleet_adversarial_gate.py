@@ -406,6 +406,113 @@ def test_sabotage_receipts_do_not_cover_a_clause(client, key):
         f"the refusal does not name the uncovered clause: {err['message']}"
 
 
+# ---- acceptance the gate could not read (GRPH-893) --------------------------------------------
+# Found on SA: SA-476 (inline `Acceptance: …`) and SA-498 (`## Acceptance` + numbered clauses)
+# both parsed to zero clauses and signed off with `acceptance_coverage: passed`. The gate had
+# never fired on that project.
+
+DESC_ACCEPTANCE_HEADING = """\
+## Problem
+
+Something needs doing.
+
+## Acceptance
+
+1. the veto blocks an accept
+2. the pin lapses after timeout
+
+## Notes
+
+- not a clause
+"""
+
+DESC_INLINE_ACCEPTANCE = """\
+Wire the gate into the chart.
+
+Acceptance: closed gate names the region and the action; an override shows as a hatched split.
+"""
+
+DESC_EMPTY_ACCEPTANCE_HEADING = """\
+## Acceptance
+
+The gate names the region and the action, and an override is visible.
+"""
+
+
+def test_acceptance_heading_is_parsed_as_clauses(client, key):
+    """SA-498's shape. A `## Acceptance` list is read like `## Tests`: an uncovered clause is
+    refused by name, and a list under a later heading is not swept in."""
+    assert fleet.extract_acceptance_clauses(DESC_ACCEPTANCE_HEADING) == [
+        "the veto blocks an accept", "the pin lapses after timeout"]
+    item, reviewer = _ready_with_description(
+        client, key, effort=5, description=DESC_ACCEPTANCE_HEADING)
+
+    res = _rpc(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [{"kind": "test", "detail": "the veto blocks an accept"}, SABOTAGE]})
+
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict", err
+    assert "pin lapses after timeout" in err["message"], err["message"]
+
+
+def test_inline_acceptance_refuses_sign_off(client, key):
+    """SA-476's shape. Prose after an `Acceptance:` label cannot be matched to a test, so the
+    gate refuses and says what it could not read — it does not attest a pass."""
+    item, reviewer = _ready_with_description(
+        client, key, effort=5, description=DESC_INLINE_ACCEPTANCE)
+
+    res = _rpc(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA,
+        "evidence": [{"kind": "test", "detail": "closed gate names the region"}, SABOTAGE]})
+
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict", err
+    assert "cannot read" in err["message"] and "Acceptance:" in err["message"], err["message"]
+    assert "## Acceptance" in err.get("hint", ""), err
+    assert _ok(client, key, "get_item_details", {"id": item})["status"] == "review"
+
+
+def test_acceptance_heading_with_no_list_refuses_sign_off(client, key):
+    """An acceptance heading over prose is acceptance that is there and unread."""
+    item, reviewer = _ready_with_description(
+        client, key, effort=5, description=DESC_EMPTY_ACCEPTANCE_HEADING)
+
+    res = _rpc(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"], "evidence": [SABOTAGE]})
+
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict", err
+    assert "no list items" in err["message"], err["message"]
+
+
+def test_description_with_no_acceptance_still_signs_off(client, key, auth, proj):
+    """The control, and the receipt's wording: with no acceptance text at all the gate has
+    nothing to check, and the predicate says THAT rather than 'not checked'."""
+    item, reviewer = _ready_with_description(
+        client, key, effort=5,
+        description="## Problem\n\nThe acceptance of this is obvious.\n\n- a list\n")
+
+    out = _ok(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA,
+        "evidence": [SABOTAGE]})
+
+    assert out["status"] == "done"
+    from app.services import items as items_svc
+    [att] = [a for a in items_svc.valid_attestations(out["evidence"], commit=PROBE_SHA)
+             if a.get("adapter") == "fleet.sign_off"]
+    cov = next(p for p in att["predicates"] if p["name"] == "acceptance_coverage")
+    assert cov["detail"] == "description states no acceptance clauses; nothing to check"
+
+
+def test_bare_acceptance_label_starts_a_list():
+    """`Acceptance:` alone on a line, with the list under it, is readable — no refusal."""
+    clauses, unreadable = fleet.parse_acceptance(
+        "Acceptance:\n- the veto blocks an accept\n- the pin lapses\n")
+    assert clauses == ["the veto blocks an accept", "the pin lapses"]
+    assert unreadable == []
+
+
 def test_the_call_is_load_bearing():
     """Sabotage the CALL. A helper with unit tests is not the gate — deleting the check from
     sign_off must make the suite fail. This test reads the source and asserts the call exists.
@@ -419,4 +526,8 @@ def test_the_call_is_load_bearing():
     )
     assert "MissingAcceptanceCoverage" in src, (
         "the refusal exception is missing — sign_off cannot refuse uncovered clauses"
+    )
+    assert "raise UnreadableAcceptance(" in src, (
+        "sign_off no longer refuses acceptance it cannot read — unread clauses pass again "
+        "(GRPH-893)"
     )
