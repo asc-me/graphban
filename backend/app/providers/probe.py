@@ -47,6 +47,30 @@ def _openai_compat(base_url: str, api_key: str) -> set[str]:
     return {m["id"] for m in (r.json().get("data") or []) if m.get("id")}
 
 
+def _systemone(base_url: str, api_key: str) -> set[str] | None:
+    """Probe a /v1/systemone endpoint for loaded heads (GRPH-895).
+
+    laya exposes ``GET /health`` with ``{"loaded": ["english", "multilingual", ...]}``.
+    TypeSafe's cloud has no listing endpoint; a 404 from /health means "cannot be asked"
+    (return None), not "has no models" (return empty set). The distinction matters: an
+    empty set would mark the credential unreachable for a model name that was never checkable.
+    """
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        r = httpx.get(f"{base_url.rstrip('/')}/health", headers=headers, timeout=TIMEOUT)
+        r.raise_for_status()
+    except httpx.HTTPStatusError:
+        # The endpoint does not serve /health — cannot be asked, not "has nothing".
+        return None
+    data = r.json()
+    loaded = data.get("loaded") if isinstance(data, dict) else None
+    if isinstance(loaded, list) and loaded:
+        return {str(m) for m in loaded if m}
+    # /health answered but named no heads — reachable but uninformative. Return empty set
+    # so the caller knows the endpoint lives; model validation is S0's job, not the probe's.
+    return set()
+
+
 def known_models(provider_id: str, base_url: str, api_key: str = "") -> frozenset[str] | None:
     """What this provider says it can run, or `None` when it cannot be asked.
 
@@ -61,6 +85,8 @@ def known_models(provider_id: str, base_url: str, api_key: str = "") -> frozense
     try:
         if provider_id == "ollama":
             names = _ollama(base_url, api_key)
+        elif registry.kind(provider_id) == "systemone":
+            names = _systemone(base_url, api_key)
         else:
             names = _openai_compat(base_url, api_key)
     except Exception:  # noqa: BLE001 — unreachable is "unchecked", never "invalid"
