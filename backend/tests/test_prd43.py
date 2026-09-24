@@ -381,3 +381,207 @@ def test_slug_claim_project_path(client, auth):
     resp = client.post("/api/public/slugs/project-path?project_id=core",
                        json={"slug": "api"}, headers=auth)
     assert resp.status_code == 409
+
+
+def _make_org_with_user(db, org_id, name, plan, **kwargs):
+    """Helper: create an org and make the seed user (u1) its owner."""
+    from app.models import Organization, OrgMembership
+    org = Organization(id=org_id, name=name, plan=plan, **kwargs)
+    db.add(org)
+    db.flush()
+    db.add(OrgMembership(org_id=org_id, user_id="u1", role="owner"))
+    db.commit()
+    return org
+
+
+def test_slug_plan_gate_free_cannot_claim_org_host(client, auth):
+    """D8 acceptance 10: free plan cannot claim org host."""
+    db = _get_db()
+    try:
+        org = _make_org_with_user(db, "org_free_test", "Free Org", "free")
+        org_id = org.id
+    finally:
+        db.close()
+
+    resp = client.post(f"/api/public/slugs/org-host?org_id={org_id}",
+                       json={"slug": "freeorg"}, headers=auth)
+    assert resp.status_code == 409
+    assert "free" in resp.json()["detail"].lower() or "enterprise" in resp.json()["detail"].lower()
+
+
+def test_slug_plan_gate_pro_cannot_claim_org_host(client, auth):
+    """D8 acceptance 10: pro/team plan cannot claim org host."""
+    db = _get_db()
+    try:
+        org = _make_org_with_user(db, "org_pro_test", "Pro Org", "pro")
+        org_id = org.id
+    finally:
+        db.close()
+
+    resp = client.post(f"/api/public/slugs/org-host?org_id={org_id}",
+                       json={"slug": "proorg"}, headers=auth)
+    assert resp.status_code == 409
+    assert "enterprise" in resp.json()["detail"].lower()
+
+
+def test_slug_plan_gate_enterprise_can_claim_org_host(client, auth):
+    """D8 acceptance 10: enterprise plan can claim org host."""
+    db = _get_db()
+    try:
+        org = _make_org_with_user(db, "org_ent_test", "Ent Org", "enterprise",
+                                  public_host="randomhost")
+        org_id = org.id
+    finally:
+        db.close()
+
+    resp = client.post(f"/api/public/slugs/org-host?org_id={org_id}",
+                       json={"slug": "enterprise"}, headers=auth)
+    assert resp.status_code == 200
+    assert resp.json()["public_host"] == "enterprise"
+    assert resp.json()["custom"] is True
+
+
+def test_slug_plan_gate_free_cannot_claim_path_id(client, auth):
+    """D8 acceptance 10: free plan cannot claim custom path id."""
+    db = _get_db()
+    try:
+        from app.models import Organization, Project, Membership
+        org = Organization(id="org_free_path", name="Free Path Org", plan="free")
+        db.add(org)
+        db.flush()
+        proj = Project(id="proj_free_path", name="Free Path Proj", tag="abcd", org_id=org.id)
+        db.add(proj)
+        db.flush()
+        db.add(Membership(user_id="u1", project_id=proj.id, role="owner", access="write"))
+        from app.services.platform import get_config
+        cfg = get_config(db, proj.id)
+        cfg.public_path_id = "randompath"
+        db.commit()
+        proj_id = proj.id
+    finally:
+        db.close()
+
+    resp = client.post(f"/api/public/slugs/project-path?project_id={proj_id}",
+                       json={"slug": "custompath"}, headers=auth)
+    assert resp.status_code == 409
+    assert "free" in resp.json()["detail"].lower() or "pro" in resp.json()["detail"].lower()
+
+
+def test_slug_plan_gate_pro_can_claim_path_id(client, auth):
+    """D8 acceptance 10: pro/team plan can claim path id."""
+    db = _get_db()
+    try:
+        from app.models import Organization, Project, Membership
+        org = Organization(id="org_pro_path", name="Pro Path Org", plan="pro")
+        db.add(org)
+        db.flush()
+        proj = Project(id="proj_pro_path", name="Pro Path Proj", tag="efgh", org_id=org.id)
+        db.add(proj)
+        db.flush()
+        db.add(Membership(user_id="u1", project_id=proj.id, role="owner", access="write"))
+        from app.services.platform import get_config
+        cfg = get_config(db, proj.id)
+        cfg.public_path_id = "randompath2"
+        db.commit()
+        proj_id = proj.id
+    finally:
+        db.close()
+
+    resp = client.post(f"/api/public/slugs/project-path?project_id={proj_id}",
+                       json={"slug": "propath"}, headers=auth)
+    assert resp.status_code == 200
+    assert resp.json()["public_path_id"] == "propath"
+
+
+def test_slug_claim_org_host_endpoint_called(client, auth):
+    """D8: POST /api/public/slugs/org-host is called, not just validate_slug."""
+    db = _get_db()
+    try:
+        org = _make_org_with_user(db, "org_ep_test", "EP Org", "enterprise",
+                                  public_host="oldhost")
+        org_id = org.id
+    finally:
+        db.close()
+
+    resp = client.post(f"/api/public/slugs/org-host?org_id={org_id}",
+                       json={"slug": "newhost"}, headers=auth)
+    assert resp.status_code == 200
+    assert resp.json()["public_host"] == "newhost"
+
+
+def test_slug_idempotent_reclaim(client, auth):
+    """D8: claiming the same slug twice for the same org is idempotent."""
+    db = _get_db()
+    try:
+        org = _make_org_with_user(db, "org_idem", "Idem Org", "enterprise",
+                                  public_host="myhost")
+        org_id = org.id
+    finally:
+        db.close()
+
+    resp1 = client.post(f"/api/public/slugs/org-host?org_id={org_id}",
+                        json={"slug": "myhost"}, headers=auth)
+    assert resp1.status_code == 200
+
+    resp2 = client.post(f"/api/public/slugs/org-host?org_id={org_id}",
+                        json={"slug": "myhost"}, headers=auth)
+    assert resp2.status_code == 200
+    assert resp2.json()["public_host"] == "myhost"
+
+
+def test_slug_301_redirect_on_upgrade(client, auth):
+    """D8: upgrade creates a redirect from old host to new host."""
+    db = _get_db()
+    try:
+        org = _make_org_with_user(db, "org_redir", "Redir Org", "enterprise",
+                                  public_host="oldslug")
+        org_id = org.id
+    finally:
+        db.close()
+
+    # Claim new slug — should create redirect from oldslug → newslug.
+    resp = client.post(f"/api/public/slugs/org-host?org_id={org_id}",
+                       json={"slug": "newslug"}, headers=auth)
+    assert resp.status_code == 200
+
+    # Check redirect resolves (don't follow the redirect).
+    resp_redir = client.get(f"/api/public/slugs/redirect?host=oldslug", follow_redirects=False)
+    assert resp_redir.status_code == 301
+    assert "newslug" in resp_redir.headers.get("location", "")
+
+
+def test_slug_redirect_404_for_unknown(client, auth):
+    """D8: redirect returns 404 for unknown host."""
+    resp = client.get("/api/public/slugs/redirect?host=nonexistent")
+    assert resp.status_code == 404
+
+
+def test_org_create_assigns_random_public_host(client, auth):
+    """D8: creating an org assigns a random public_host."""
+    db = _get_db()
+    try:
+        from app.services.orgs import create_org
+        from app.models import User
+        user = db.query(User).first()
+        org = create_org(db, user, "Test Random Host Org")
+        assert org.public_host is not None
+        assert len(org.public_host) >= 6
+        assert org.public_host_custom is False
+    finally:
+        db.close()
+
+
+def test_project_create_assigns_random_public_path_id(client, auth):
+    """D8: creating a project assigns a random public_path_id."""
+    db = _get_db()
+    try:
+        from app.services.projects import create_project
+        from app.models import User
+        user = db.query(User).first()
+        proj = create_project(db, name="Test Random Path Project", owner_user_id=user.id)
+        from app.services.platform import get_config
+        cfg = get_config(db, proj.id)
+        assert cfg.public_path_id is not None
+        assert len(cfg.public_path_id) >= 6
+    finally:
+        db.close()

@@ -56,7 +56,12 @@ def create_project(
     Deriving rather than rejecting matters for bootstrapping: creating a project must
     not fail over a missing four-character string, and the result is visible and
     changeable immediately (PRD-13).
+
+    PRD-43 D8: assigns a random public_path_id on creation. Free keeps it random;
+    pro/team/enterprise may claim a custom one.
     """
+    from app.services.platform import random_slug, get_config
+
     name = name.strip()
     if not name:
         raise ValueError("project name is required")
@@ -78,6 +83,9 @@ def create_project(
     )
     db.add(project)
     db.flush()
+    # PRD-43 D8: assign random public_path_id via platform_config.
+    cfg = get_config(db, project.id)
+    cfg.public_path_id = random_slug()
     db.add(Membership(user_id=owner_user_id, project_id=project.id, role="owner", access="write"))
     db.commit()
     db.refresh(project)

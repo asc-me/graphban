@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 156 of the 233 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 157 of the 234 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -517,5 +517,6 @@ These share the public router so the Feedback Kit and Settings can share one ori
 | POST | `/api/public/requests/{request_id}/comments` | Operator comment. Default `visibility=private` |
 | POST | `/api/public/slugs/org-host` | Claim `{org}.graphban.dev` (enterprise; org admin) |
 | POST | `/api/public/slugs/project-path` | Claim the `{project_id}` path segment |
+| GET | `/api/public/slugs/redirect` | Resolve upgrade 301: old host → new host |
 
 All public endpoints share a per-IP sliding-window rate limit (20/60s).
