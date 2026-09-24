@@ -322,6 +322,7 @@ def test_mcp_initialize_succeeds_while_another_supervisor_holds_the_repo(
         result = subprocess.run(
             [sys.executable, "-c", MCP_ATTACH_SCRIPT, str(git_repo)],
             capture_output=True, text=True, timeout=15,
+            cwd=str(git_repo),
         )
         data = json.loads(result.stdout.strip().splitlines()[-1])
         assert data["exit_code"] == 0, (

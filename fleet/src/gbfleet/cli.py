@@ -656,6 +656,26 @@ def _serve_stdio(args) -> int:
         print(f"gbfleet mcp: {exc}", file=sys.stderr)
         return 2
 
+    # GRPH-928: when a user-level MCP config outranks the repo's .mcp.json, this process
+    # starts with --repo pointing at a DIFFERENT repository than the session's cwd. The
+    # planner then sees fleet tools for the wrong project and believes they work. Refuse
+    # rather than silently serve the wrong repo — the fix is to remove the shadowing entry
+    # from the user config, not to guess which repo was meant.
+    try:
+        cwd_root = repo_root(Path.cwd())
+    except NotARepository:
+        cwd_root = None
+    if cwd_root is not None and root.resolve() != cwd_root.resolve():
+        print(
+            f"gbfleet mcp: --repo {root} does not match this session's cwd ({Path.cwd()}).\n"
+            f"     A user-level MCP config (~/.claude.json or ~/.grok/config.toml) is likely "
+            f"shadowing the repo's .mcp.json.\n"
+            f"     Remove the gbfleet entry for {root.name} from the user config, or start "
+            f"this session from inside {root}.",
+            file=sys.stderr,
+        )
+        return 2
+
     workspace = Path(args.workspace) if args.workspace else root.parent / f"{root.name}-gbfleet"
     try:
         tiers = TierTable.parse(args.tier)

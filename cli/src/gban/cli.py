@@ -266,13 +266,39 @@ def cmd_logout(args) -> int:
 
 def cmd_whoami(args) -> int:
     url = _server(args)
-    me = authenticated(url).call("GET", "/api/auth/me")
+    client = authenticated(url)
+    me = client.call("GET", "/api/auth/me")
     project = config.resolve(args.project, config.PROJECT_ENV, "project")
-    _out({"server": url, "project": project, **me},
-         f"{PROG}: {me.get('email') or me.get('id')} at {url}"
-         + (f"\n     project {project}" if project else "\n     no default project set"),
-         args.as_json)
+    payload: dict = {"server": url, "project": project, **me}
+    human = (f"{PROG}: {me.get('email') or me.get('id')} at {url}"
+             + (f"\n     project {project}" if project else "\n     no default project set"))
+    mismatch = _cwd_project_mismatch(client, project)
+    if mismatch:
+        payload["cwd_project"] = mismatch
+        human += f"\n     WARNING: cwd resolves to project {mismatch!r}, not {project!r}"
+    _out(payload, human, args.as_json)
     return 0
+
+
+def _cwd_project_mismatch(client, configured: str) -> str:
+    """Return the project id the cwd resolves to if it differs from *configured*, else "".
+
+    A session that stands in repo X but carries a credential for project Y is the exact
+    shadowing GRPH-928 fixes on the fleet side. The directory decides; a stored default
+    does not — so we ask setup.resolve_project with no `asked` and the configured project
+    as `stored`. If the directory resolves to a different project, name it.
+    """
+    if not configured:
+        return ""
+    try:
+        cwd_project, _ = setup_mod.resolve_project(client, Path.cwd(), "", configured)
+    except setup_mod.Unresolved:
+        return ""
+    except Exception:
+        return ""
+    if cwd_project and cwd_project != configured:
+        return cwd_project
+    return ""
 
 
 def cmd_doctor(args) -> int:
