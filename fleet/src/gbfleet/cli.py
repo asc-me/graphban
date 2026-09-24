@@ -544,6 +544,26 @@ def _until(args) -> int:
         print(f"gbfleet until: ${API_KEY_ENV} is not set", file=sys.stderr)
         return 2
 
+    # GRPH-928: same shadowing guard as `mcp`. A user-level config that points --repo at
+    # a different repository than the cwd silently delegates work to the wrong project.
+    try:
+        until_root = repo_root(Path(args.repo))
+        cwd_root = repo_root(Path.cwd())
+    except NotARepository:
+        cwd_root = None  # non-repo cwd is fine; run_until will refuse if --repo is bad
+    else:
+        if until_root.resolve() != cwd_root.resolve():
+            print(
+                f"gbfleet until: --repo {until_root} does not match this session's cwd "
+                f"({Path.cwd()}).\n"
+                f"     A user-level MCP config (~/.claude.json or ~/.grok/config.toml) is "
+                f"likely shadowing the repo's .mcp.json.\n"
+                f"     Remove the gbfleet entry for {until_root.name} from the user config, "
+                f"or start this session from inside {until_root}.",
+                file=sys.stderr,
+            )
+            return 2
+
     template = [a for a in (args.argv or []) if a != "--"]
     try:
         factory = (
@@ -654,6 +674,26 @@ def _serve_stdio(args) -> int:
         root = repo_root(repo)
     except NotARepository as exc:
         print(f"gbfleet mcp: {exc}", file=sys.stderr)
+        return 2
+
+    # GRPH-928: when a user-level MCP config outranks the repo's .mcp.json, this process
+    # starts with --repo pointing at a DIFFERENT repository than the session's cwd. The
+    # planner then sees fleet tools for the wrong project and believes they work. Refuse
+    # rather than silently serve the wrong repo — the fix is to remove the shadowing entry
+    # from the user config, not to guess which repo was meant.
+    try:
+        cwd_root = repo_root(Path.cwd())
+    except NotARepository:
+        cwd_root = None
+    if cwd_root is not None and root.resolve() != cwd_root.resolve():
+        print(
+            f"gbfleet mcp: --repo {root} does not match this session's cwd ({Path.cwd()}).\n"
+            f"     A user-level MCP config (~/.claude.json or ~/.grok/config.toml) is likely "
+            f"shadowing the repo's .mcp.json.\n"
+            f"     Remove the gbfleet entry for {root.name} from the user config, or start "
+            f"this session from inside {root}.",
+            file=sys.stderr,
+        )
         return 2
 
     workspace = Path(args.workspace) if args.workspace else root.parent / f"{root.name}-gbfleet"

@@ -490,6 +490,7 @@ def test_main_until_is_the_call(monkeypatch, capsys, git_repo: Path):
     monkeypatch.setattr(cli, "Graphban", FakeGB)
     monkeypatch.setattr(cli, "run_until", fake_run)
     monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: object())
+    monkeypatch.chdir(git_repo)
 
     code = cli.main([
         "until", "--repo", str(git_repo),

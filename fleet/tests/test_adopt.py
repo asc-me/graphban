@@ -490,6 +490,7 @@ def test_mcp_ticks_the_leftover_pid(
 
         monkeypatch.setattr(cli, "serve", fake_serve)
         monkeypatch.setenv("GBFLEET_API_KEY", KEY)
+        monkeypatch.chdir(git_repo)
         code = cli.main([
             "mcp", "--repo", str(git_repo), "--server", "http://gb.invalid",
             "--workspace", str(workspace),

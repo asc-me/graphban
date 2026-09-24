@@ -697,6 +697,7 @@ def test_main_until_passes_the_flag_through(monkeypatch, git_repo: Path):
     monkeypatch.setattr(cli, "Graphban", FakeGB)
     monkeypatch.setattr(cli, "run_until", fake_run)
     monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: object())
+    monkeypatch.chdir(git_repo)
 
     base = ["until", "--repo", str(git_repo), "--server", "http://gb.invalid",
             "--adapter", "gbagent"]
