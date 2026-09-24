@@ -660,6 +660,13 @@ export interface PlatformConfig {
   effective_chat_provider: string;
   provider_config: Record<string, ProviderConfigView>;
   public_share_enabled: boolean;
+  /** PRD-43 D4: per-surface flags replacing the single public_share_enabled switch. */
+  intake_enabled: boolean;
+  public_form_enabled: boolean;
+  public_roadmap_enabled: boolean;
+  public_issues_enabled: boolean;
+  public_requests_enabled: boolean;
+  capture_identity: boolean;
   share_token: string | null;
   /** PRD-43 D1: prefix of the current ingest token (gbfb_…). Empty = none minted. */
   ingest_token_prefix: string;

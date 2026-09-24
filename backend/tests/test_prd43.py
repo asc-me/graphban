@@ -585,3 +585,115 @@ def test_project_create_assigns_random_public_path_id(client, auth):
         assert len(cfg.public_path_id) >= 6
     finally:
         db.close()
+
+
+# ---- PRD-43 D4 sabotage tests -----------------------------------------------
+
+def test_surface_flags_in_platform_schema(client, auth):
+    """Sabotage: schema exposure — per-surface flags must appear in GET /platform."""
+    resp = client.get("/api/platform?project_id=core", headers=auth)
+    assert resp.status_code == 200
+    data = resp.json()
+    for flag in ("intake_enabled", "public_form_enabled", "public_roadmap_enabled",
+                 "public_issues_enabled", "public_requests_enabled", "capture_identity"):
+        assert flag in data, f"{flag} missing from PlatformConfig schema"
+
+
+def test_enable_all_route_exists(client, auth, monkeypatch):
+    """Sabotage: route existence — the enable-all endpoint must be reachable."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "hosted_mode", True)
+
+    # Create an org first.
+    org_resp = client.post("/api/orgs", json={"name": "Test Org"}, headers=auth)
+    assert org_resp.status_code == 201
+    org_id = org_resp.json()["id"]
+
+    resp = client.post(f"/api/orgs/{org_id}/enable-all-feedback", headers=auth)
+    assert resp.status_code == 200
+    assert resp.json()["feedback_default_on"] is True
+
+
+def test_enable_all_admin_gate(client, auth, monkeypatch):
+    """Sabotage: admin gate — non-admin members cannot call enable-all."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "hosted_mode", True)
+
+    # Alex creates an org.
+    org_resp = client.post("/api/orgs", json={"name": "Gate Org"}, headers=auth)
+    org_id = org_resp.json()["id"]
+
+    # Dana logs in (a different user, not an admin of this org).
+    dana_resp = client.post("/api/auth/login", json={"email": "dana@ascme-labs.com", "password": "graphban"})
+    dana_auth = {"Authorization": f"Bearer {dana_resp.json()['access_token']}"}
+
+    # Dana is not a member at all → 404 (org is indistinguishable from non-existent).
+    resp = client.post(f"/api/orgs/{org_id}/enable-all-feedback", headers=dana_auth)
+    assert resp.status_code in (403, 404)
+
+
+def test_inherit_on_create_when_org_default_on(client, auth, monkeypatch):
+    """Sabotage: inherit on create — new projects in an org with feedback_default_on
+    must get intake + form enabled automatically."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "hosted_mode", True)
+
+    # Create an org and turn on feedback_default_on.
+    org_resp = client.post("/api/orgs", json={"name": "Inherit Org"}, headers=auth)
+    org_id = org_resp.json()["id"]
+
+    db = _get_db()
+    try:
+        from app.models import Organization
+        org = db.get(Organization, org_id)
+        org.feedback_default_on = True
+        db.commit()
+    finally:
+        db.close()
+
+    # Create a project under this org.
+    proj_resp = client.post("/api/projects", json={
+        "name": "Inherited Project",
+        "org_id": org_id,
+    }, headers=auth)
+    assert proj_resp.status_code == 201
+    project_id = proj_resp.json()["id"]
+
+    # Check the project's platform config has intake + form enabled.
+    db = _get_db()
+    try:
+        from app.services.platform import get_config
+        cfg = get_config(db, project_id)
+        assert cfg.intake_enabled is True, "intake not inherited from org default"
+        assert cfg.public_form_enabled is True, "form not inherited from org default"
+    finally:
+        db.close()
+
+
+def test_no_inherit_when_org_default_off(client, auth, monkeypatch):
+    """Sabotage: conditional inherit — projects in orgs without feedback_default_on
+    must NOT get feedback flags enabled."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "hosted_mode", True)
+
+    # Create an org WITHOUT feedback_default_on (the default).
+    org_resp = client.post("/api/orgs", json={"name": "No Inherit Org"}, headers=auth)
+    org_id = org_resp.json()["id"]
+
+    # Create a project under this org.
+    proj_resp = client.post("/api/projects", json={
+        "name": "Clean Project",
+        "org_id": org_id,
+    }, headers=auth)
+    assert proj_resp.status_code == 201
+    project_id = proj_resp.json()["id"]
+
+    # Check the project's platform config has flags OFF.
+    db = _get_db()
+    try:
+        from app.services.platform import get_config
+        cfg = get_config(db, project_id)
+        assert cfg.intake_enabled is False, "intake should not be on without org default"
+        assert cfg.public_form_enabled is False, "form should not be on without org default"
+    finally:
+        db.close()

@@ -89,6 +89,19 @@ def create_project(
     db.add(Membership(user_id=owner_user_id, project_id=project.id, role="owner", access="write"))
     db.commit()
     db.refresh(project)
+
+    # PRD-43 D4: inherit org feedback defaults so new projects match the org posture.
+    if org_id:
+        from app.models import Organization
+        from app.services.platform import get_config
+        org = db.get(Organization, org_id)
+        if org is not None and org.feedback_default_on:
+            cfg = get_config(db, project.id)
+            cfg.intake_enabled = True
+            cfg.public_form_enabled = True
+            cfg.public_share_enabled = True
+            db.commit()
+
     return project
 
 
