@@ -228,6 +228,9 @@ export function CommandPalette({
             autoComplete="off"
             spellCheck={false}
           />
+          <p className="sr-only" aria-live="polite" aria-atomic="true">
+            {flat.length} result{flat.length === 1 ? "" : "s"}
+          </p>
         </div>
 
         <div ref={listRef} className="max-h-[min(52vh,420px)] overflow-y-auto px-2 py-2">

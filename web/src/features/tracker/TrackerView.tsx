@@ -1,6 +1,12 @@
 import * as React from "react";
 import { useSearchParams } from "react-router-dom";
 
+import {
+  PlannerEmpty,
+  PlannerError,
+  PlannerFilteredEmpty,
+  TrackerListSkeleton,
+} from "@/components/planner/PlannerStates";
 import { Dot } from "@/components/ui/badge";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
@@ -16,7 +22,7 @@ import { NewItemDialog } from "./NewItemDialog";
 export function TrackerView() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { activeId } = useProjectCtx();
-  const { data: items = [], isLoading } = useItems(activeId);
+  const { data: items = [], isLoading, isError, refetch } = useItems(activeId);
   const update = useUpdateItem();
   const reorder = useReorderItems();
 
@@ -48,9 +54,25 @@ export function TrackerView() {
   }, [ordered]);
 
   const selected = items.find((i) => i.id === selectedId) ?? null;
+  const isEmpty = !isLoading && !isError && ordered.length === 0;
+  const isFilteredEmpty = !isLoading && !isError && ordered.length > 0 && visible.length === 0;
 
   function setStatus(item: Item, status: Status) {
     update.mutate({ id: item.id, body: { status } });
+  }
+
+  function reorderIds(ids: string[]) {
+    reorder.mutate(ids);
+  }
+
+  function moveItem(id: string, delta: -1 | 1) {
+    const ids = ordered.map((i) => i.id);
+    const idx = ids.indexOf(id);
+    if (idx < 0) return;
+    const next = idx + delta;
+    if (next < 0 || next >= ids.length) return;
+    ids.splice(next, 0, ids.splice(idx, 1)[0]);
+    reorderIds(ids);
   }
 
   function onDrop() {
@@ -63,10 +85,25 @@ export function TrackerView() {
     const from = ids.indexOf(dragId);
     const to = ids.indexOf(overId);
     ids.splice(to, 0, ids.splice(from, 1)[0]);
-    reorder.mutate(ids);
+    reorderIds(ids);
     setDragId(null);
     setOverId(null);
   }
+
+  React.useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!selectedId || !e.altKey) return;
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        moveItem(selectedId, -1);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        moveItem(selectedId, 1);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedId, ordered]);
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
@@ -98,33 +135,52 @@ export function TrackerView() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
-          <div className="p-8 text-center text-[13px] text-muted">Loading stream…</div>
-        ) : visible.length === 0 ? (
-          <div className="p-8 text-center text-[13px] text-muted">No items match.</div>
+          <TrackerListSkeleton rows={items.length > 0 ? items.length : 8} />
+        ) : isError ? (
+          <PlannerError message="Items unavailable" onRetry={() => refetch()} />
+        ) : isEmpty ? (
+          <PlannerEmpty
+            title="No items yet"
+            description="The tracker is your project's linear stream — one ordered list of work. Create the first item to start grooming."
+            action={<NewItemDialog />}
+          />
+        ) : isFilteredEmpty ? (
+          <PlannerFilteredEmpty
+            message={`No items match this filter${filter !== "all" ? ` (${STATUS_META[filter as Status].label})` : ""}.`}
+            onClear={() => setFilter("all")}
+          />
         ) : (
-          visible.map((item) => (
-            <ItemRow
-              key={item.id}
-              item={item}
-              selected={item.id === selectedId}
-              onSelect={() => setSelectedId(item.id)}
-              onStatus={(s) => setStatus(item, s)}
-              dragging={dragId === item.id}
-              dragOver={overId === item.id && dragId !== item.id}
-              dragHandlers={{
-                onDragStart: () => setDragId(item.id),
-                onDragEnter: () => setOverId(item.id),
-                onDragOver: (e) => e.preventDefault(),
-                onDragEnd: onDrop,
-              }}
-            />
-          ))
+          visible.map((item) => {
+            const globalIndex = ordered.findIndex((i) => i.id === item.id);
+            return (
+              <ItemRow
+                key={item.id}
+                item={item}
+                selected={item.id === selectedId}
+                onSelect={() => setSelectedId(item.id)}
+                onStatus={(s) => setStatus(item, s)}
+                onMoveUp={() => moveItem(item.id, -1)}
+                onMoveDown={() => moveItem(item.id, 1)}
+                canMoveUp={globalIndex > 0}
+                canMoveDown={globalIndex >= 0 && globalIndex < ordered.length - 1}
+                dragging={dragId === item.id}
+                dragOver={overId === item.id && dragId !== item.id}
+                dragHandlers={{
+                  onDragStart: () => setDragId(item.id),
+                  onDragEnter: () => setOverId(item.id),
+                  onDragOver: (e) => e.preventDefault(),
+                  onDragEnd: onDrop,
+                }}
+              />
+            );
+          })
         )}
       </div>
 
       {selected && (
         <ItemDetailPanel
           item={selected}
+          open={!!selected}
           onClose={() => setSelectedId(null)}
           onStatus={(s) => setStatus(selected, s)}
         />

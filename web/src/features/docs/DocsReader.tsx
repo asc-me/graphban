@@ -2,6 +2,7 @@ import { BookMarked, ExternalLink, Info, ThumbsDown, ThumbsUp, X } from "lucide-
 import * as React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
+import { cn } from "@/lib/cn";
 import { useInputModality } from "@/lib/input-modality";
 
 import { GLOBAL_SHORTCUTS, docFor } from "./content";
@@ -13,6 +14,7 @@ export function DocsReader() {
   const [rendered, setRendered] = React.useState(false);
   const [thanks, setThanks] = React.useState(false);
   const { pathname } = useLocation();
+  const plannerRoute = /\/(home|tracker|prds|memory-review|requests)(\/|$)/.test(pathname);
   const navigate = useNavigate();
   const doc = docFor(pathname);
   const liveModality = useInputModality();
@@ -83,7 +85,10 @@ export function DocsReader() {
         onClick={() => openDocs("pointer")}
         title="Docs for this page"
         aria-label="Open docs for this page"
-        className="gb-pressable fixed bottom-6 right-6 z-[55] flex h-[50px] w-[50px] items-center justify-center rounded-full [@media(hover:hover)_and_(pointer:fine)]:transition-transform [@media(hover:hover)_and_(pointer:fine)]:hover:-translate-y-0.5"
+        className={cn(
+          "gb-pressable fixed right-6 z-[55] flex h-[50px] w-[50px] items-center justify-center rounded-full [@media(hover:hover)_and_(pointer:fine)]:transition-transform [@media(hover:hover)_and_(pointer:fine)]:hover:-translate-y-0.5",
+          plannerRoute ? "bottom-24" : "bottom-6",
+        )}
         style={{
           background: "linear-gradient(150deg,#c6f24e,#8fd12e)",
           border: "1px solid rgba(198,242,78,.4)",

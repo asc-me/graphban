@@ -74,7 +74,7 @@ export function TopBar({
       <div className="flex items-center gap-1.5 rounded-lg border border-[#1c2620] bg-[rgba(95,208,122,0.05)] px-2.5 py-1.5 font-mono text-[10.5px] text-st-done">
         <span className="blink h-1.5 w-1.5 rounded-full bg-st-done shadow-[0_0_8px_#5fd07a]" />
         MCP · {liveTools} TOOLS LIVE
-        {keys && keys.length > 0 && <span className="text-faint">· {keys.length} KEYS</span>}
+        {keys && keys.length > 0 && <span className="text-muted-2">· {keys.length} KEYS</span>}
       </div>
 
       <Button variant="agent" size="sm" onClick={onToggleAgent} aria-pressed={agentOpen}>
@@ -87,7 +87,10 @@ export function TopBar({
       {user && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="flex h-9 items-center gap-2 rounded-full border border-line-2 bg-surface py-0.5 pl-0.5 pr-2 transition-colors hover:border-line-hover">
+            <button
+              aria-label={user.name}
+              className="flex h-9 items-center gap-2 rounded-full border border-line-2 bg-surface py-0.5 pl-0.5 pr-2 transition-colors hover:border-line-hover"
+            >
               <Avatar initials={user.initials} color={user.avatar} size={28} />
               <ChevronDown size={12} className="text-faint" />
             </button>

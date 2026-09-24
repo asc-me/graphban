@@ -2,6 +2,11 @@ import { FileText, Plus, Upload, X } from "lucide-react";
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
 
+import {
+  PlannerEmpty,
+  PlannerError,
+  PrdListSkeleton,
+} from "@/components/planner/PlannerStates";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -21,7 +26,7 @@ import { prdStatusMeta } from "./meta";
 
 export function PrdListView() {
   const { activeId } = useProjectCtx();
-  const { data: prds = [], isLoading } = usePrds(activeId);
+  const { data: prds = [], isLoading, isError, refetch } = usePrds(activeId);
   const navigate = useNavigate();
 
   return (
@@ -38,11 +43,19 @@ export function PrdListView() {
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
-          <div className="p-8 text-center text-[13px] text-muted">Loading…</div>
+          <PrdListSkeleton rows={prds.length > 0 ? prds.length : 6} />
+        ) : isError ? (
+          <PlannerError message="PRDs unavailable" onRetry={() => refetch()} />
+        ) : prds.length === 0 ? (
+          <PlannerEmpty
+            title="No PRDs yet"
+            description="Product specs live here — versioned requirements with linked items and AI drafting. Write the first PRD to define what you are building."
+            action={<NewPrdDialog onCreated={(id) => navigate(`/prds/${id}`)} />}
+          />
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-2 p-4">
             {prds.map((p) => {
               const meta = prdStatusMeta(p.status);
               return (

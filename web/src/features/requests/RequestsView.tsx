@@ -1,6 +1,12 @@
 import { ChevronRight, ChevronUp, ExternalLink } from "lucide-react";
 import * as React from "react";
 
+import {
+  PlannerEmpty,
+  PlannerError,
+  PlannerFilteredEmpty,
+  RequestsListSkeleton,
+} from "@/components/planner/PlannerStates";
 import { LinkedCode } from "@/features/code/LinkedCode";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
@@ -20,7 +26,7 @@ type Filter = "all" | RequestType;
 
 export function RequestsView() {
   const { activeId } = useProjectCtx();
-  const { data: requests = [], isLoading } = useRequests(activeId);
+  const { data: requests = [], isLoading, isError, refetch } = useRequests(activeId);
   const vote = useVoteRequest();
   const [filter, setFilter] = React.useState<Filter>("all");
 
@@ -55,11 +61,23 @@ export function RequestsView() {
         ))}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (
-          <div className="p-8 text-center text-[13px] text-muted">Loading queue…</div>
+          <RequestsListSkeleton rows={requests.length > 0 ? requests.length : 6} />
+        ) : isError ? (
+          <PlannerError message="Requests unavailable" onRetry={() => refetch()} />
+        ) : requests.length === 0 ? (
+          <PlannerEmpty
+            title="No requests yet"
+            description="The triage queue collects submissions from the public form. When someone files a request it appears here for linking to items and memory."
+          />
+        ) : visible.length === 0 ? (
+          <PlannerFilteredEmpty
+            message={`No requests match this filter${filter !== "all" ? ` (${TYPE_META[filter as RequestType].label})` : ""}.`}
+            onClear={() => setFilter("all")}
+          />
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-2 p-4">
             {visible.map((r) => (
               <RequestRow
                 key={r.id}
@@ -68,9 +86,6 @@ export function RequestsView() {
                 onVote={() => vote.mutate({ id: r.id, delta: 1 })}
               />
             ))}
-            {visible.length === 0 && (
-              <div className="p-8 text-center text-[13px] text-muted">No requests match.</div>
-            )}
           </div>
         )}
       </div>

@@ -72,6 +72,12 @@ function FrameBody({ hosted }: { hosted: boolean }) {
 
   return (
     <div className="flex h-full flex-col">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:border focus:border-line-hover focus:bg-surface-3 focus:px-3 focus:py-2 focus:text-[13px] focus:text-fg"
+      >
+        Skip to main content
+      </a>
       <TopBar
         agentOpen={agentOpen}
         onToggleAgent={toggleAgent}
@@ -80,7 +86,7 @@ function FrameBody({ hosted }: { hosted: boolean }) {
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
       <div className="flex min-h-0 flex-1">
         <LeftNav hosted={hosted} />
-        <main className="relative flex min-w-0 flex-1 flex-col">
+        <main id="main-content" className="relative flex min-w-0 flex-1 flex-col">
           {/* The project bar belongs to the project plane. On the org plane there is no
               active project in play, and showing one implies the page is scoped to it. */}
           {hosted && active && !onOrgPlane && <ProjectBar />}

@@ -1,6 +1,7 @@
 import { Check, Layers, RotateCcw, Sparkles, X } from "lucide-react";
 import * as React from "react";
 
+import { MemoryReviewSkeleton, PlannerError } from "@/components/planner/PlannerStates";
 import { cn } from "@/lib/cn";
 import { useProjectCtx } from "@/features/ProjectContext";
 import {
@@ -22,7 +23,7 @@ import type { CandidateJudge, ReviewSuggestion, ScoredCandidate, Shard, ShardClu
 export function MemoryReviewView() {
   const { activeId, active } = useProjectCtx();
   const judgeOn = Boolean(active?.memory_llm_judge);
-  const { data: candidates, isLoading } = useCandidateShards(activeId);
+  const { data: candidates, isLoading, isError, refetch } = useCandidateShards(activeId);
   const { data: clusters } = useCandidateClusters(activeId);
   const { data: scored } = useScoredCandidates(activeId);
   const { data: autoActions } = useAutoActions(activeId);
@@ -32,7 +33,32 @@ export function MemoryReviewView() {
   const [unvettedOnly, setUnvettedOnly] = React.useState(false);
 
   if (isLoading || !candidates) {
-    return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
+          <div>
+            <h1 className="text-[18px] font-semibold tracking-tight">Memory review</h1>
+            <p className="mt-0.5 text-[12.5px] text-muted">
+              Agent-written memory is a candidate until you publish it.
+            </p>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <MemoryReviewSkeleton />
+        </div>
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <div className="flex flex-none border-b border-line px-5 py-4">
+          <h1 className="text-[18px] font-semibold tracking-tight">Memory review</h1>
+        </div>
+        <PlannerError message="Memory review unavailable" onRetry={() => refetch()} />
+      </div>
+    );
   }
 
   const clustered = new Set((clusters ?? []).flatMap((c) => [c.representative.id, ...c.members.map((m) => m.id)]));

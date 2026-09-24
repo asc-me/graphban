@@ -1,7 +1,13 @@
-import { Github, GitPullRequest, GripVertical } from "lucide-react";
+import { ArrowDown, ArrowUp, Github, GitPullRequest, GripVertical, MoreHorizontal } from "lucide-react";
 import * as React from "react";
 
 import { Avatar } from "@/components/ui/avatar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/cn";
 import { CHECK_COLOR, PR_STATE_COLOR } from "@/lib/meta";
 import type { Item, Status } from "@/lib/types";
@@ -24,6 +30,10 @@ export function ItemRow({
   selected,
   onSelect,
   onStatus,
+  onMoveUp,
+  onMoveDown,
+  canMoveUp,
+  canMoveDown,
   dragHandlers,
   dragging,
   dragOver,
@@ -32,6 +42,10 @@ export function ItemRow({
   selected: boolean;
   onSelect: () => void;
   onStatus: (s: Status) => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
   dragHandlers: {
     onDragStart: (e: React.DragEvent) => void;
     onDragEnter: (e: React.DragEvent) => void;
@@ -46,9 +60,12 @@ export function ItemRow({
       draggable
       {...dragHandlers}
       onClick={onSelect}
+      aria-selected={selected}
       className={cn(
-        "group flex cursor-pointer items-center gap-3 border-b border-line/70 px-4 py-3 transition-colors",
-        selected ? "bg-surface-3" : "hover:bg-surface/60",
+        "group relative flex cursor-pointer items-center gap-3 border-b border-line/70 px-4 py-3 transition-colors",
+        selected
+          ? "border-l-2 border-l-accent bg-surface-3 pl-[calc(1rem-2px)]"
+          : "border-l-2 border-l-transparent hover:bg-surface/60",
         dragging && "opacity-40",
         dragOver && "border-t-2 border-t-accent",
       )}
@@ -151,6 +168,30 @@ export function ItemRow({
           size={22}
         />
       )}
+
+      <div className="flex-none opacity-0 transition-opacity group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label={`Actions for ${item.id}`}
+              className="flex size-7 items-center justify-center rounded-md text-faint hover:bg-surface-3 hover:text-fg"
+            >
+              <MoreHorizontal size={14} />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem disabled={!canMoveUp} onSelect={onMoveUp}>
+              <ArrowUp size={14} className="text-muted" />
+              Move up
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled={!canMoveDown} onSelect={onMoveDown}>
+              <ArrowDown size={14} className="text-muted" />
+              Move down
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </div>
   );
 }

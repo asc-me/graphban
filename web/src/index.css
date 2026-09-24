@@ -153,6 +153,11 @@ body {
 
 ::selection { background: var(--color-accent); color: var(--color-bg); }
 
+/* Focus not obscured by the sticky h-14 top bar (PRD-46 §12). */
+:focus-visible {
+  scroll-margin-top: 3.75rem;
+}
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb {
   background: #20272d;
