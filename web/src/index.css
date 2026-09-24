@@ -63,8 +63,16 @@
   --color-op-faint-3: #333a47;
   --color-op-accent: #7ca2ff;
 
-  --animate-fade: alFade 0.16s ease both;
-  --animate-slide-up: alSlideUp 0.18s ease both;
+  /* Motion system (PRD-46 §6) — named easings/durations; primitives consume these. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --duration-press: 120ms;
+  --duration-ui: 180ms;
+  --duration-overlay: 240ms;
+
+  --animate-fade: alFade var(--duration-ui) var(--ease-out) both;
+  --animate-slide-up: alSlideUp var(--duration-overlay) var(--ease-out) both;
+  --animate-enter: alEnter var(--duration-ui) var(--ease-out) both;
 }
 
 @keyframes alFade {
@@ -82,9 +90,34 @@
   from { transform: translateX(100%); }
   to { transform: translateX(0); }
 }
-@keyframes alPop {
-  from { transform: scale(0.6); opacity: 0; }
+/* Enter from ≥0.95 — never scale(0). Replaces alPop. */
+@keyframes alEnter {
+  from { transform: scale(0.95); opacity: 0; }
   to { transform: scale(1); opacity: 1; }
+}
+@keyframes gbOverlayIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes gbOverlayOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes gbDialogIn {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.95); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes gbDialogOut {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  to { opacity: 0; transform: translate(-50%, -50%) scale(0.95); }
+}
+@keyframes gbSheetIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes gbSheetOut {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
 }
 
 * { box-sizing: border-box; }
@@ -121,12 +154,106 @@ body {
 }
 .hold-pulse { animation: alHoldPulse 2.4s ease-in-out infinite; }
 
+/* Overlay / sheet motion helpers — enter and exit share the same path. */
+.gb-overlay {
+  animation: gbOverlayOut var(--duration-overlay) var(--ease-out) both;
+}
+.gb-overlay[data-state="open"] {
+  animation: gbOverlayIn var(--duration-overlay) var(--ease-out) both;
+}
+.gb-dialog-content {
+  animation: gbDialogOut var(--duration-overlay) var(--ease-out) both;
+}
+.gb-dialog-content[data-state="open"] {
+  animation: gbDialogIn var(--duration-overlay) var(--ease-out) both;
+}
+.gb-sheet {
+  animation: gbSheetOut var(--duration-overlay) var(--ease-out) both;
+}
+.gb-sheet[data-state="open"] {
+  animation: gbSheetIn var(--duration-overlay) var(--ease-out) both;
+}
+.gb-sheet[data-motion="instant"],
+.gb-overlay[data-motion="instant"],
+.gb-dialog-content[data-motion="instant"] {
+  animation-duration: 0ms;
+}
+/* Dropdown / popover: opacity + scale from ≥0.95; origin set by the trigger box. */
+.gb-popover {
+  animation: alEnter var(--duration-ui) var(--ease-out) both;
+}
+.gb-popover[data-motion="instant"] {
+  animation-duration: 0ms;
+}
+/* Agent rail: pointer slides 240ms both ways; keyboard is instant reflow (data-motion=instant). */
+.gb-agent-rail {
+  overflow: hidden;
+  width: 360px;
+  flex: none;
+  transform: translateX(0);
+  transition:
+    transform var(--duration-overlay) var(--ease-out),
+    width var(--duration-overlay) var(--ease-out);
+}
+.gb-agent-rail[data-open="false"] {
+  width: 0;
+  transform: translateX(100%);
+  border-color: transparent;
+}
+.gb-agent-rail[data-motion="instant"] {
+  transition-duration: 0ms;
+}
+.gb-agent-rail-inner {
+  width: 360px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+/* Press feedback — pointer only; keyboard activation must not squash. */
+@media (hover: hover) and (pointer: fine) {
+  .gb-pressable:active:not(:disabled) {
+    transform: scale(0.97);
+    transition: transform var(--duration-press) var(--ease-out);
+  }
+}
+
 /* The information is in the RING, not the animation — the animation only makes it findable in
    peripheral vision. So reduced motion holds the ring at the pulse's mean opacity and stops it
-   moving, rather than hiding presence from anyone who asked for less motion. */
+   moving, rather than hiding presence from anyone who asked for less motion.
+   Spatial transforms go to 0 everywhere; opacity/colour ≤200ms may remain. */
 @media (prefers-reduced-motion: reduce) {
   .blink { animation: none; }
   .hold-pulse { animation: none; opacity: 0.575; }
+
+  .gb-overlay,
+  .gb-overlay[data-state="open"],
+  .gb-dialog-content,
+  .gb-dialog-content[data-state="open"],
+  .gb-sheet,
+  .gb-sheet[data-state="open"],
+  .gb-popover,
+  .animate-fade,
+  .animate-slide-up,
+  .animate-enter {
+    animation-name: gbOverlayIn;
+    animation-duration: 160ms;
+  }
+  .gb-overlay[data-state="closed"],
+  .gb-dialog-content[data-state="closed"],
+  .gb-sheet[data-state="closed"] {
+    animation-name: gbOverlayOut;
+    animation-duration: 160ms;
+  }
+  .gb-agent-rail {
+    transition-property: width, opacity;
+    transition-duration: 0ms;
+  }
+  .gb-agent-rail[data-open="false"] {
+    transform: none;
+  }
+  .gb-pressable:active:not(:disabled) {
+    transform: none;
+  }
 }
 
 /* Element defaults live in @layer base so Tailwind utility classes (which sit in a

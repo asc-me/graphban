@@ -5,43 +5,59 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import type { InputModality } from "@/lib/input-modality";
 import { useAddShard, useShards } from "@/lib/queries";
 import type { ShardHit } from "@/lib/types";
 
 const SHARD_PAGE = 50;
 
-export function AgentSidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
-  if (!open) return null;
+export function AgentSidebar({
+  open,
+  onClose,
+  modality = "pointer",
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Keyboard toggles must reflow with duration 0; pointer slides 240ms (PRD-46 §6). */
+  modality?: InputModality;
+}) {
   return (
-    <aside className="flex w-[360px] flex-none flex-col border-l border-line bg-surface/50">
-      <div className="flex h-12 flex-none items-center justify-between border-b border-line px-4">
-        <div className="flex items-center gap-2 text-[13px] font-semibold">
-          <Brain size={15} className="text-purple" />
-          Agent context
+    <aside
+      className="gb-agent-rail border-l border-line bg-surface/50"
+      data-open={open ? "true" : "false"}
+      data-motion={modality === "keyboard" ? "instant" : "pointer"}
+      aria-hidden={!open}
+    >
+      <div className="gb-agent-rail-inner">
+        <div className="flex h-12 flex-none items-center justify-between border-b border-line px-4">
+          <div className="flex items-center gap-2 text-[13px] font-semibold">
+            <Brain size={15} className="text-purple" />
+            Agent context
+          </div>
+          <button onClick={onClose} className="text-faint hover:text-fg" aria-label="Close agent sidebar">
+            <X size={15} />
+          </button>
         </div>
-        <button onClick={onClose} className="text-faint hover:text-fg">
-          <X size={15} />
-        </button>
-      </div>
 
-      <Tabs defaultValue="memory" className="flex min-h-0 flex-1 flex-col">
-        <div className="px-4 pt-3">
-          <TabsList className="w-full">
-            <TabsTrigger value="memory" className="flex-1">
-              Memory
-            </TabsTrigger>
-            <TabsTrigger value="agent" className="flex-1">
-              Chat
-            </TabsTrigger>
-          </TabsList>
-        </div>
-        <TabsContent value="memory" className="min-h-0 flex-1 focus:outline-none">
-          <MemoryPanel />
-        </TabsContent>
-        <TabsContent value="agent" className="min-h-0 flex-1 focus:outline-none">
-          <AgentChat />
-        </TabsContent>
-      </Tabs>
+        <Tabs defaultValue="memory" className="flex min-h-0 flex-1 flex-col">
+          <div className="px-4 pt-3">
+            <TabsList className="w-full">
+              <TabsTrigger value="memory" className="flex-1">
+                Memory
+              </TabsTrigger>
+              <TabsTrigger value="agent" className="flex-1">
+                Chat
+              </TabsTrigger>
+            </TabsList>
+          </div>
+          <TabsContent value="memory" className="min-h-0 flex-1 focus:outline-none">
+            <MemoryPanel />
+          </TabsContent>
+          <TabsContent value="agent" className="min-h-0 flex-1 focus:outline-none">
+            <AgentChat />
+          </TabsContent>
+        </Tabs>
+      </div>
     </aside>
   );
 }
