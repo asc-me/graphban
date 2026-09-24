@@ -61,7 +61,7 @@ const prds: PrdSummary[] = [
     status: "draft",
     version: "1.0",
     linked: [],
-    updated: "Sep 1",
+    updated_at: "2026-09-01T12:00:00Z",
   },
 ];
 

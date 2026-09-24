@@ -22,6 +22,8 @@ import { api } from "@/lib/api";
 import { keys, usePrds } from "@/lib/queries";
 import { useQueryClient } from "@tanstack/react-query";
 
+import { relTime } from "@/features/admin/parts";
+
 import { prdStatusMeta } from "./meta";
 
 export function PrdListView() {
@@ -85,7 +87,7 @@ export function PrdListView() {
                     {meta.label}
                   </span>
                   <span className="w-[52px] flex-none text-right font-mono text-[10px] text-faint-2">
-                    {p.updated}
+                    {relTime(p.updated_at) ?? "—"}
                   </span>
                 </button>
               );

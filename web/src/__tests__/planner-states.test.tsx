@@ -13,6 +13,7 @@ import statusMenuSrc from "../features/tracker/StatusMenu.tsx?raw";
 import itemRowSrc from "../features/tracker/ItemRow.tsx?raw";
 import trackerSrc from "../features/tracker/TrackerView.tsx?raw";
 import { ProjectProvider } from "@/features/ProjectContext";
+import prdListSrc from "../features/prds/PrdListView.tsx?raw";
 import { PrdListView } from "@/features/prds/PrdListView";
 import { TrackerView } from "@/features/tracker/TrackerView";
 import type { Item, PrdSummary } from "@/lib/types";
@@ -179,6 +180,40 @@ describe("planner surfaces (GRPH-913)", () => {
   it("sabotage: reverting empty copy to No items match would fail", () => {
     expect(trackerSrc).toMatch(/No items yet/);
     expect(trackerSrc).not.toMatch(/No items match\./);
+  });
+});
+
+describe("PRD list recency (GRPH-922)", () => {
+  beforeEach(() => {
+    servedPrds = [
+      {
+        id: "CP-P1",
+        title: "Stale PRD",
+        status: "draft",
+        version: "v0.1",
+        linked: [],
+        updated_at: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+      },
+    ];
+  });
+
+  it("formats relative time from updated_at", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <ProjectProvider>
+            <PrdListView />
+          </ProjectProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("3h ago")).toBeInTheDocument();
+  });
+
+  it("sabotage: preferring the stored updated string would fail", () => {
+    expect(prdListSrc).toMatch(/updated_at/);
+    expect(prdListSrc).not.toMatch(/\{p\.updated\}/);
   });
 });
 
