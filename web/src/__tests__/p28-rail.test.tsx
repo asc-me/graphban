@@ -209,7 +209,12 @@ describe("P28 Home", () => {
   it("renders KPIs from counts/dashboard, not as a quiet zero while loading", async () => {
     wrap(<HomeView />, "/home");
     expect(await screen.findByText("Home")).toBeInTheDocument();
+    // Wait for counts/dashboard before asserting hierarchy (GRPH-925).
     expect(await screen.findByText("41")).toBeInTheDocument();
+    expect(screen.getByText("Needs attention")).toBeInTheDocument();
+    // 3 in progress + 5 in review + 2 blocked + 5 memory queue = 15
+    expect(screen.getByText("15")).toBeInTheDocument();
+    expect(screen.getByText("Inventory")).toBeInTheDocument();
     expect(screen.getByText("Triage")).toBeInTheDocument();
     expect(screen.getByText("Memory waiting for review")).toBeInTheDocument();
   });

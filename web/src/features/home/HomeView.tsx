@@ -1,4 +1,4 @@
-import { Boxes, CircleDot, Network, Radar, TriangleAlert, Users } from "lucide-react";
+import { Boxes, Network, Radar, Users } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
@@ -8,6 +8,8 @@ import { useCounts, useDashboard, useFleet } from "@/lib/queries";
 /**
  * Self-host Home (GRPH-P28 D2). KPIs come from the dashboard payload and the shell
  * counts endpoint — never from fetching items/shards to call `.length` (GRPH-431).
+ *
+ * GRPH-925: one focal "needs attention" number; inventory totals stay visible but secondary.
  */
 export function HomeView() {
   const { activeId } = useProjectCtx();
@@ -24,10 +26,18 @@ export function HomeView() {
       <div className="p-6">
         <h1 className="text-[18px] font-semibold tracking-tight">Home</h1>
         <p className="mt-0.5 text-[12.5px] text-muted">Project health at a glance.</p>
-        <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6" aria-busy="true">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="h-[88px] animate-pulse rounded-[12px] border border-line-2 bg-surface-2" />
-          ))}
+        <div className="mt-6 space-y-4" aria-busy="true">
+          <div className="h-[108px] animate-pulse rounded-[14px] border border-line-2 bg-surface-2" />
+          <div className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="h-[52px] animate-pulse rounded-[12px] border border-line-2 bg-surface-2" />
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="h-[64px] animate-pulse rounded-[11px] border border-line-2 bg-surface-2" />
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -47,9 +57,14 @@ export function HomeView() {
   const d = dash.data;
   const c = counts.data;
   const live = fleet.data?.online ?? 0;
-  const review = c?.review ?? 0;
+  const memoryQueue = c?.review ?? 0;
   const blocked = d?.blocked_count ?? 0;
   const inFlight = d?.in_progress_count ?? c?.items_in_progress ?? 0;
+  const itemReview = d?.items_by_status?.review ?? 0;
+  const needsAttention = inFlight + itemReview + blocked + memoryQueue;
+  const itemsTotal = d?.items_total ?? c?.items ?? 0;
+  const shardTotal = d?.shard_count ?? 0;
+  const prdTotal = d?.prd_count ?? 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -67,31 +82,45 @@ export function HomeView() {
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <Kpi label="Items" value={d?.items_total ?? c?.items ?? 0} icon={<Boxes size={15} />} />
-          <Kpi label="In progress" value={inFlight} icon={<CircleDot size={15} />} accent="#c6f24e" />
-          <Kpi label="Blocked" value={blocked} icon={<TriangleAlert size={15} />} accent="#ff6b6b" />
-          <Kpi label="PRDs" value={d?.prd_count ?? 0} />
-          <Kpi label="Memory shards" value={d?.shard_count ?? 0} accent="#a78bfa" />
-          <Kpi label="Live agents" value={live} accent="#5fd07a" icon={<Users size={15} />} />
+        <div className="rounded-[14px] border border-line-2 bg-surface-2 p-5">
+          <div className="text-[11.5px] font-medium uppercase tracking-wide text-muted">Needs attention</div>
+          <div className="mt-1 text-[40px] font-semibold leading-none tracking-tight text-fg">{needsAttention}</div>
+          <p className="mt-2 text-[12.5px] text-muted">
+            In progress, review, blocked, and memory waiting — not inventory totals.
+          </p>
         </div>
 
-        <div className="mt-6 space-y-2">
+        <div className="mt-4 space-y-2">
           <Attention
-            label="Blocked items"
+            label="In progress"
+            value={inFlight}
+            empty="No items in progress right now."
+          />
+          <Attention
+            label="In review"
+            value={itemReview}
+            empty="No items waiting for review."
+          />
+          <Attention
+            label="Blocked"
             value={blocked}
             empty="No blocked items — that is a looked-at zero, not an unread queue."
           />
           <Attention
             label="Memory waiting for review"
-            value={review}
+            value={memoryQueue}
             empty="No shards waiting for review."
           />
-          <Attention
-            label="Agents in flight"
-            value={inFlight}
-            empty="No items in progress right now."
-          />
+        </div>
+
+        <div className="mt-6">
+          <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-faint">Inventory</div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Inventory label="Items" value={itemsTotal} icon={<Boxes size={13} />} />
+            <Inventory label="PRDs" value={prdTotal} />
+            <Inventory label="Memory shards" value={shardTotal} accent="#a78bfa" />
+            <Inventory label="Live agents" value={live} accent="#5fd07a" icon={<Users size={13} />} />
+          </div>
         </div>
 
         <div className="mt-6 grid gap-3 sm:grid-cols-3">
@@ -104,16 +133,16 @@ export function HomeView() {
   );
 }
 
-function Kpi({
+function Inventory({
   label, value, icon, accent,
 }: { label: string; value: number; icon?: ReactNode; accent?: string }) {
   return (
-    <div className="rounded-[12px] border border-line-2 bg-surface-2 p-3.5">
+    <div className="rounded-[11px] border border-line-2 bg-surface-2 px-3 py-2.5">
       {icon && (
-        <div className="mb-2 text-muted" style={{ color: accent }}>{icon}</div>
+        <div className="mb-1 text-faint" style={{ color: accent }}>{icon}</div>
       )}
-      <div className="text-[22px] font-semibold leading-none tracking-tight text-fg">{value}</div>
-      <div className="mt-1.5 text-[11.5px] text-muted">{label}</div>
+      <div className="text-[17px] font-semibold leading-none tracking-tight text-fg-2">{value}</div>
+      <div className="mt-1 text-[10.5px] text-muted">{label}</div>
     </div>
   );
 }
