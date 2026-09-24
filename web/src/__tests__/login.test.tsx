@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import loginSrc from "@/features/auth/LoginPage.tsx?raw";
+import { contrastRatio, TOKENS } from "./design-tokens.test";
 
 const auth = vi.hoisted(() => ({
   login: vi.fn(),
@@ -75,5 +76,41 @@ describe("login page (GRPH-912)", () => {
     expect(loginSrc).not.toMatch(
       /<label className="mb-1\.5 block font-mono text-\[10px\] uppercase tracking-wide text-faint">\s*\{label\}/,
     );
+  });
+});
+
+describe("login page (GRPH-921)", () => {
+  it("tagline copy meets the 4.5:1 contrast floor on the page canvas", () => {
+    const ratio = contrastRatio(TOKENS["color-muted-2"]!, TOKENS["color-bg"]!);
+    expect(ratio).toBeGreaterThanOrEqual(4.5);
+    expect(loginSrc).toMatch(
+      /text-muted-2[\s\S]{0,120}AGENT MEMORY · LINEAR EXECUTION/,
+    );
+    expect(loginSrc).not.toMatch(
+      /text-faint[\s\S]{0,120}AGENT MEMORY · LINEAR EXECUTION/,
+    );
+  });
+
+  it("forgot password is a named control with helper as aria-describedby when email is empty", async () => {
+    await renderLogin();
+    const forgot = screen.getByRole("button", { name: /forgot your password/i });
+    expect(forgot).toBeDisabled();
+    expect(forgot).toHaveAttribute("aria-describedby", "login-forgot-hint");
+    expect(screen.getByText(/enter your email above/i)).toBeVisible();
+  });
+
+  it("enables forgot password once email is filled", async () => {
+    await renderLogin();
+    const forgot = screen.getByRole("button", { name: /forgot your password/i });
+    expect(forgot).toBeDisabled();
+    await userEvent.type(screen.getByLabelText("Email"), "planner@example.com");
+    expect(forgot).toBeEnabled();
+    expect(forgot).not.toHaveAttribute("aria-describedby");
+  });
+
+  it("sabotage: static forgot copy without a button would fail the control tests above", () => {
+    expect(loginSrc).toMatch(/Forgot your password\?/);
+    expect(loginSrc).toMatch(/type="button"/);
+    expect(loginSrc).toMatch(/aria-describedby=\{!email\.trim\(\) \? FORGOT_HINT_ID : undefined\}/);
   });
 });

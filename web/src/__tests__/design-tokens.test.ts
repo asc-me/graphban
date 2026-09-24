@@ -4,11 +4,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /** Parsed from index.css @theme — sabotage reverts there must fail these assertions. */
-const TOKENS = parseThemeTokens(
+export const TOKENS = parseThemeTokens(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../index.css"), "utf8"),
 );
 
-function parseThemeTokens(css: string): Record<string, string> {
+export function parseThemeTokens(css: string): Record<string, string> {
   const tokens: Record<string, string> = {};
   for (const m of css.matchAll(/--([a-z0-9-]+):\s*([^;]+);/gi)) {
     tokens[m[1]!] = m[2]!.trim();

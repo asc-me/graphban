@@ -11,6 +11,7 @@ import { useAuth } from "./AuthContext";
 type Mode = "signin" | "signup";
 
 const SIGNIN_ERROR = "Invalid email or password.";
+const FORGOT_HINT_ID = "login-forgot-hint";
 
 export function LoginPage() {
   const { login, register } = useAuth();
@@ -25,6 +26,7 @@ export function LoginPage() {
 
   const isSignup = mode === "signup";
   const authFailed = !isSignup && error === SIGNIN_ERROR;
+  const canForgot = !isSignup && Boolean(email.trim()) && !busy;
 
   function clearError() {
     if (error) setError("");
@@ -88,7 +90,7 @@ export function LoginPage() {
           <LogoMark />
           <div className="leading-none">
             <div className="text-[17px] font-bold tracking-tight">Graphban</div>
-            <div className="mt-1 font-mono text-[9.5px] tracking-[0.6px] text-faint">
+            <div className="mt-1 font-mono text-[9.5px] tracking-[0.6px] text-muted-2">
               AGENT MEMORY · LINEAR EXECUTION
             </div>
           </div>
@@ -197,21 +199,27 @@ export function LoginPage() {
                   <button
                     type="button"
                     onClick={forgot}
-                    disabled={busy || !email.trim()}
+                    disabled={!canForgot}
+                    aria-describedby={!email.trim() ? FORGOT_HINT_ID : undefined}
                     className={cn(
-                      "min-h-6 rounded-sm px-1 text-muted-2",
-                      "[@media(hover:hover)_and_(pointer:fine)]:hover:text-fg-2 [@media(hover:hover)_and_(pointer:fine)]:hover:underline",
+                      "min-h-6 rounded-sm px-0.5",
+                      canForgot
+                        ? "text-accent [@media(hover:hover)_and_(pointer:fine)]:hover:underline"
+                        : "cursor-not-allowed text-muted-2",
                       "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
-                      "disabled:cursor-not-allowed disabled:text-muted-2",
                     )}
                   >
                     Forgot your password?
                   </button>
-                  {!email.trim() && (
-                    <p className="mt-1.5 text-[11px] text-muted-2">
-                      Enter your email above to request a reset link.
-                    </p>
-                  )}
+                  <p
+                    id={FORGOT_HINT_ID}
+                    className={cn(
+                      "mt-1.5 text-[11px] text-muted-2",
+                      email.trim() && "sr-only",
+                    )}
+                  >
+                    Enter your email above to request a reset link.
+                  </p>
                 </>
               )}
             </div>
