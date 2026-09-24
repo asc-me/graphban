@@ -13,6 +13,7 @@ import { useInputModality } from "@/lib/input-modality";
 import { ProjectBar } from "./ProjectBar";
 
 import { AgentSidebar } from "./AgentSidebar";
+import { CommandPalette } from "./CommandPalette";
 import { LeftNav } from "./LeftNav";
 import { TopBar } from "./TopBar";
 
@@ -51,7 +52,7 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   const { projects, loading, active, notFound } = useProjectCtx();
   const { pathname } = useLocation();
   const [agentOpen, setAgentOpen] = React.useState(true);
-  const [search, setSearch] = React.useState("");
+  const [paletteOpen, setPaletteOpen] = React.useState(false);
   // Sticky modality at the moment of the toggle — keyboard Agent must not inherit a
   // later pointer event mid-slide (PRD-46 §6).
   const liveModality = useInputModality();
@@ -74,9 +75,9 @@ function FrameBody({ hosted }: { hosted: boolean }) {
       <TopBar
         agentOpen={agentOpen}
         onToggleAgent={toggleAgent}
-        search={search}
-        onSearch={setSearch}
+        onOpenPalette={() => setPaletteOpen(true)}
       />
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
       <div className="flex min-h-0 flex-1">
         <LeftNav hosted={hosted} />
         <main className="relative flex min-w-0 flex-1 flex-col">
@@ -84,7 +85,7 @@ function FrameBody({ hosted }: { hosted: boolean }) {
               active project in play, and showing one implies the page is scoped to it. */}
           {hosted && active && !onOrgPlane && <ProjectBar />}
           <div className="min-h-0 flex-1 overflow-auto">
-            {notFound ? <ProjectNotFound /> : <Outlet context={search} />}
+            {notFound ? <ProjectNotFound /> : <Outlet />}
           </div>
         </main>
         <AgentSidebar

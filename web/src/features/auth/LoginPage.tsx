@@ -2,12 +2,15 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/cn";
 
 import { api } from "@/lib/api";
 
 import { useAuth } from "./AuthContext";
 
 type Mode = "signin" | "signup";
+
+const SIGNIN_ERROR = "Invalid email or password.";
 
 export function LoginPage() {
   const { login, register } = useAuth();
@@ -21,9 +24,20 @@ export function LoginPage() {
   const [busy, setBusy] = React.useState(false);
 
   const isSignup = mode === "signup";
+  const authFailed = !isSignup && error === SIGNIN_ERROR;
 
-  async function onSubmit(e: React.FormEvent) {
+  function clearError() {
+    if (error) setError("");
+  }
+
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    const form = e.currentTarget;
+    if (!form.checkValidity()) {
+      form.reportValidity();
+      return;
+    }
+
     setBusy(true);
     setError("");
     try {
@@ -36,7 +50,7 @@ export function LoginPage() {
       setError(
         isSignup
           ? messageFor(err, "Could not create account. That email or handle may already be in use.")
-          : "Invalid email or password.",
+          : SIGNIN_ERROR,
       );
     } finally {
       setBusy(false);
@@ -44,6 +58,7 @@ export function LoginPage() {
   }
 
   async function forgot() {
+    if (!email.trim()) return;
     setBusy(true);
     setError("");
     try {
@@ -67,8 +82,8 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-full items-center justify-center p-6">
-      <div className="w-full max-w-sm">
+    <div className="flex min-h-full min-w-0 items-center justify-center overflow-x-hidden p-6">
+      <div className="w-full max-w-sm min-w-0">
         <div className="mb-8 flex items-center gap-3">
           <LogoMark />
           <div className="leading-none">
@@ -94,41 +109,68 @@ export function LoginPage() {
 
           {isSignup && (
             <>
-              <Field label="Name">
-                <Input value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
+              <Field label="Name" htmlFor="signup-name">
+                <Input
+                  value={name}
+                  onChange={(e) => {
+                    setName(e.target.value);
+                    clearError();
+                  }}
+                  autoComplete="name"
+                  required
+                />
               </Field>
-              <Field label="Handle">
+              <Field label="Handle" htmlFor="signup-handle">
                 <Input
                   value={handle}
-                  onChange={(e) => setHandle(e.target.value)}
+                  onChange={(e) => {
+                    setHandle(e.target.value);
+                    clearError();
+                  }}
                   placeholder="yourhandle"
                   autoComplete="username"
+                  required
+                  className="placeholder:italic"
                 />
               </Field>
             </>
           )}
 
-          <Field label="Email">
+          <Field label="Email" htmlFor="login-email">
             <Input
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                clearError();
+              }}
               autoComplete={isSignup ? "email" : "username"}
+              required
+              aria-invalid={authFailed || undefined}
             />
           </Field>
 
-          <Field label="Password">
+          <Field label="Password" htmlFor="login-password">
             <Input
               type="password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                clearError();
+              }}
               autoComplete={isSignup ? "new-password" : "current-password"}
+              required
+              aria-invalid={authFailed || undefined}
             />
           </Field>
 
-          {error && <p className="mb-4 text-[12px] text-st-blocked">{error}</p>}
+          {error && (
+            <p className="mb-4 text-[12px] text-st-blocked" role="alert">
+              {error}
+            </p>
+          )}
 
-          <Button type="submit" className="w-full" disabled={busy}>
+          <Button type="submit" className="min-h-6 w-full" disabled={busy}>
             {busy
               ? isSignup
                 ? "Creating account…"
@@ -151,14 +193,26 @@ export function LoginPage() {
                   If an account exists for that address, a reset link is on its way. Check your inbox.
                 </span>
               ) : (
-                <button
-                  type="button"
-                  onClick={forgot}
-                  disabled={busy || !email.trim()}
-                  className="text-muted hover:text-fg-2 hover:underline disabled:opacity-50"
-                >
-                  Forgot your password?
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={forgot}
+                    disabled={busy || !email.trim()}
+                    className={cn(
+                      "min-h-6 rounded-sm px-1 text-muted-2",
+                      "[@media(hover:hover)_and_(pointer:fine)]:hover:text-fg-2 [@media(hover:hover)_and_(pointer:fine)]:hover:underline",
+                      "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
+                      "disabled:cursor-not-allowed disabled:text-muted-2",
+                    )}
+                  >
+                    Forgot your password?
+                  </button>
+                  {!email.trim() && (
+                    <p className="mt-1.5 text-[11px] text-muted-2">
+                      Enter your email above to request a reset link.
+                    </p>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -167,14 +221,22 @@ export function LoginPage() {
             {isSignup ? (
               <>
                 Already have an account?{" "}
-                <button type="button" onClick={() => switchMode("signin")} className="text-accent hover:underline">
+                <button
+                  type="button"
+                  onClick={() => switchMode("signin")}
+                  className="min-h-6 rounded-sm px-0.5 text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus [@media(hover:hover)_and_(pointer:fine)]:hover:underline"
+                >
                   Sign in
                 </button>
               </>
             ) : (
               <>
                 New here?{" "}
-                <button type="button" onClick={() => switchMode("signup")} className="text-accent hover:underline">
+                <button
+                  type="button"
+                  onClick={() => switchMode("signup")}
+                  className="min-h-6 rounded-sm px-0.5 text-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus [@media(hover:hover)_and_(pointer:fine)]:hover:underline"
+                >
                   Create an account
                 </button>
               </>
@@ -186,13 +248,24 @@ export function LoginPage() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  htmlFor: string;
+  children: React.ReactElement<{ id?: string }>;
+}) {
   return (
-    <div className="mb-4">
-      <label className="mb-1.5 block font-mono text-[10px] uppercase tracking-wide text-faint">
+    <div className="mb-4 min-w-0">
+      <label
+        htmlFor={htmlFor}
+        className="mb-1.5 block font-mono text-[10px] uppercase tracking-wide text-faint"
+      >
         {label}
       </label>
-      {children}
+      {React.cloneElement(children, { id: htmlFor })}
     </div>
   );
 }

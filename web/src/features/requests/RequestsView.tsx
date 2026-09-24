@@ -1,6 +1,5 @@
 import { ChevronRight, ChevronUp, ExternalLink } from "lucide-react";
 import * as React from "react";
-import { useOutletContext } from "react-router-dom";
 
 import { LinkedCode } from "@/features/code/LinkedCode";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -20,7 +19,6 @@ const STATUS_COLOR: Record<string, string> = {
 type Filter = "all" | RequestType;
 
 export function RequestsView() {
-  const search = useOutletContext<string>();
   const { activeId } = useProjectCtx();
   const { data: requests = [], isLoading } = useRequests(activeId);
   const vote = useVoteRequest();
@@ -32,11 +30,7 @@ export function RequestsView() {
     return c;
   }, [requests]);
 
-  const visible = requests.filter((r) => {
-    if (filter !== "all" && r.type !== filter) return false;
-    if (search) return r.title.toLowerCase().includes(search.toLowerCase());
-    return true;
-  });
+  const visible = requests.filter((r) => filter === "all" || r.type === filter);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
