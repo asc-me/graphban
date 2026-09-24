@@ -842,6 +842,12 @@ export const api = {
   // PRD-43 D1: mint or rotate the ingest token. Returns the plaintext ONCE.
   mintIngestToken: (projectId: string) =>
     request<{ token: string; prefix: string }>(`/public/ingest-token${projectQuery(projectId)}`, { method: "POST" }),
+  // PRD-43 D4: set per-surface flags (intake, form, roadmap, issues, requests, capture_identity).
+  updateSurfaceFlags: (projectId: string, flags: Record<string, boolean>) =>
+    request<PlatformConfig>(`/public/surface-flags${projectQuery(projectId)}`, { method: "PUT", body: JSON.stringify(flags) }),
+  // PRD-43 D4: org-wide enable-all feedback (intake + form for every project).
+  enableAllFeedback: (orgId: string) =>
+    request<{ projects_updated: number; feedback_default_on: boolean }>(`/orgs/${orgId}/enable-all-feedback`, { method: "POST" }),
   aiProviders: () => request<{ providers: AiProvider[] }>("/platform/providers"),
 
   // ---- Credentials (PRD-25). Deployment-scoped: the project id in the query resolves the

@@ -405,30 +405,58 @@ function IntegrationsPanel() {
         </div>
       </div>
 
-      {/* Public sharing */}
+      {/* Public surfaces (PRD-43 D4) */}
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
         <div className="mb-1 flex items-center gap-2.5">
           <ShieldCheck size={17} className="text-fg" />
-          <div className="text-[14px] font-semibold">Public sharing</div>
+          <div className="text-[14px] font-semibold">Public surfaces</div>
         </div>
         <p className="mb-3 text-[12px] text-muted">
-          Off by default — no project data is public until you turn this on. When enabled, the
-          read-only roadmap and feedback widget become reachable via an unguessable link.
+          Each surface is independent. Intake is not a board. A token is not a publication.
+          <code className="ml-1 font-mono text-[11px]">public_share_enabled</code> is a derived read — on when any surface below is.
         </p>
-        <label className="mb-3 flex items-center gap-2 text-[12px] text-fg-2">
-          <input
-            type="checkbox"
-            checked={cfg.public_share_enabled}
-            onChange={async (e) => {
-              await api.updatePlatform(activeId, { public_share_enabled: e.target.checked });
-              invalidate();
-            }}
-            className="accent-accent"
-          />
-          Enable public roadmap + feedback widget for this project
-        </label>
+        <div className="space-y-2.5">
+          {([
+            ["intake_enabled", "Intake", "Accept feedback via the public API"],
+            ["public_form_enabled", "Public form", "Embeddable feedback form"],
+            ["public_roadmap_enabled", "Roadmap", "Read-only public roadmap board"],
+            ["public_issues_enabled", "Issues", "Public issues board"],
+            ["public_requests_enabled", "Requests", "Public feature requests board"],
+          ] as const).map(([key, label, desc]) => (
+            <label key={key} className="flex items-start gap-2 text-[12px] text-fg-2">
+              <input
+                type="checkbox"
+                checked={Boolean(cfg[key])}
+                onChange={async (e) => {
+                  await api.updateSurfaceFlags(activeId, { [key]: e.target.checked });
+                  invalidate();
+                }}
+                className="mt-0.5 accent-accent"
+              />
+              <span>
+                <span className="font-medium text-fg-2">{label}</span>
+                <span className="ml-1.5 text-faint">— {desc}</span>
+              </span>
+            </label>
+          ))}
+          <label className="flex items-start gap-2 border-t border-line pt-2.5 text-[12px] text-fg-2">
+            <input
+              type="checkbox"
+              checked={cfg.capture_identity}
+              onChange={async (e) => {
+                await api.updateSurfaceFlags(activeId, { capture_identity: e.target.checked });
+                invalidate();
+              }}
+              className="mt-0.5 accent-accent"
+            />
+            <span>
+              <span className="font-medium text-fg-2">Capture identity</span>
+              <span className="ml-1.5 text-faint">— require account info on submissions</span>
+            </span>
+          </label>
+        </div>
         {cfg.public_share_enabled && cfg.share_token && (
-          <div className="flex items-center gap-2">
+          <div className="mt-3 flex items-center gap-2 border-t border-line pt-3">
             <code className="flex-1 overflow-x-auto rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 font-mono text-[11px] text-fg-2">
               {origin}/embed/roadmap?token={cfg.share_token}
             </code>

@@ -1,6 +1,10 @@
-import { Boxes, Network, Server, Users } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { Boxes, MessageSquarePlus, Network, Server, Users } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 
+import { Button } from "@/components/ui/button";
+import { api } from "@/lib/api";
 import { useOrgOverview, useOrgs } from "@/lib/queries";
 import { adminPath, projectPath } from "@/lib/routes";
 import type { OrgOverviewProject } from "@/lib/types";
@@ -66,6 +70,22 @@ export function OrgOverviewView() {
   const { data: orgs = [] } = useOrgs();
   const org = orgs[0] ?? null;
   const { data, isLoading } = useOrgOverview(org?.id);
+  const qc = useQueryClient();
+  const [enableResult, setEnableResult] = useState<string | null>(null);
+  const [enabling, setEnabling] = useState(false);
+
+  async function handleEnableAll() {
+    if (!org?.id) return;
+    setEnabling(true);
+    try {
+      const res = await api.enableAllFeedback(org.id);
+      setEnableResult(`Enabled intake + form on ${res.projects_updated} project(s). New projects will inherit.`);
+      qc.invalidateQueries({ queryKey: ["org-overview"] });
+      setTimeout(() => setEnableResult(null), 5000);
+    } finally {
+      setEnabling(false);
+    }
+  }
 
   if (isLoading || !data) {
     return <div className="p-8 text-[13px] text-muted">Loading the organization…</div>;
@@ -118,6 +138,17 @@ export function OrgOverviewView() {
         <Stat icon={<Network size={12} />} label="Graph nodes" value={totals.nodes} />
         <Stat icon={<Server size={12} />} label="MCP calls" value={calls}
               sub={callCap ? `of ${callCap.toLocaleString()} this month` : undefined} />
+      </div>
+
+      {/* PRD-43 D4: org-wide feedback enable-all */}
+      <div className="mt-5 flex items-center gap-3">
+        <Button size="sm" disabled={enabling} onClick={handleEnableAll}>
+          <MessageSquarePlus size={13} className={enabling ? "animate-pulse" : ""} />
+          {enabling ? "Enabling…" : "Turn on feedback for all projects"}
+        </Button>
+        {enableResult && (
+          <span className="text-[12px] text-accent">{enableResult}</span>
+        )}
       </div>
 
       <h2 className="mb-2.5 mt-8 font-mono text-[11px] uppercase tracking-wide text-faint">

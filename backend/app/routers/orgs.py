@@ -66,6 +66,7 @@ from app.services import events as events_svc
 from app.services import galaxy as galaxy_svc
 from app.services import gitops
 from app.services import orgs as orgs_svc
+from app.services import platform as platform_svc
 from app.services import quotas
 from app.services import teams as teams_svc
 
@@ -584,3 +585,24 @@ def accept_invite(
     events_svc.record_user(db, user, action="accept_org_invite", target_type="org",
                            target_id=org.id, meta={"role": role})
     return OrgOut(id=org.id, name=org.name, plan=org.plan, role=role)
+
+
+# ---- PRD-43 D4: org-wide feedback enable-all -------------------------------
+@router.post("/orgs/{org_id}/enable-all-feedback")
+def org_enable_all_feedback(
+    org_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Turn on intake + public form for every project in the org, and set
+    feedback_default_on so new projects inherit those two flags. Does NOT
+    enable issues, requests, or roadmap — those remain per-project opt-in.
+    """
+    authz.require_org_admin(db, user.id, org_id)
+    org = db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(404, "organization not found")
+    count = platform_svc.org_enable_all_feedback(db, org_id)
+    events_svc.record_user(db, user, action="enable_all_feedback", target_type="org",
+                           target_id=org_id, meta={"projects_updated": count})
+    return {"projects_updated": count, "feedback_default_on": True}

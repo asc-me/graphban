@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
@@ -71,11 +71,11 @@ describe("DocsReader", () => {
   });
 
   it("toggles with the ? shortcut and records feedback locally", async () => {
-    const user = userEvent.setup();
     renderAt("/dashboard");
     fireEvent.keyDown(window, { key: "?" });
-    expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Helpful" }));
-    expect(await screen.findByText(/Thanks for the feedback/)).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Docs" });
+    expect(within(dialog).getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Helpful" }));
+    expect(await within(dialog).findByText(/Thanks for the feedback/)).toBeInTheDocument();
   });
 });
