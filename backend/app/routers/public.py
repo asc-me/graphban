@@ -614,3 +614,178 @@ def slug_redirect_endpoint(
         status_code=301,
         headers={"Location": f"https://{new_host}.graphban.dev/"},
     )
+
+
+# ---- PRD-43 D8: Host-header routing for public surfaces ----
+
+from app.services.platform import resolve_org_from_host_db, resolve_project_by_path_id
+
+host_router = APIRouter(tags=["host-routing"])
+
+
+def _host_resolve(request: FastAPIRequest, db: Session) -> tuple[str, str]:
+    """Resolve (org_id, project_id) from Host header + first path segment.
+
+    Raises 404 for unknown host, unknown path, or self-host mode.
+    """
+    if not settings.hosted_mode:
+        raise HTTPException(404, "not found")
+
+    host = request.headers.get("host", "").split(":")[0]
+    org = resolve_org_from_host_db(db, host)
+    if org is None:
+        raise HTTPException(404, "not found")
+
+    path_parts = request.url.path.strip("/").split("/", 1)
+    path_id = path_parts[0] if path_parts else ""
+    if not path_id:
+        raise HTTPException(404, "not found")
+
+    project_id = resolve_project_by_path_id(db, org.id, path_id)
+    if project_id is None:
+        raise HTTPException(404, "not found")
+
+    return org.id, project_id
+
+
+@host_router.get("/{path_id}/feedback")
+def host_feedback(
+    request: FastAPIRequest,
+    path_id: str,
+    db: Session = Depends(get_db),
+):
+    """PRD-43 D8: public feedback form surface on {org}.graphban.dev/{path_id}/feedback."""
+    _rate_or_429(db, request, None)
+    if not settings.hosted_mode:
+        raise HTTPException(404, "not found")
+    host = request.headers.get("host", "").split(":")[0]
+    org = resolve_org_from_host_db(db, host)
+    if org is None:
+        raise HTTPException(404, "not found")
+    project_id = resolve_project_by_path_id(db, org.id, path_id)
+    if project_id is None:
+        raise HTTPException(404, "not found")
+    cfg = get_config(db, project_id)
+    if not cfg.public_form_enabled:
+        raise HTTPException(404, "not found")
+    return {"project_id": project_id, "surface": "feedback", "turnstile_sitekey": cfg.turnstile_sitekey}
+
+
+@host_router.get("/{path_id}/roadmap")
+def host_roadmap(
+    request: FastAPIRequest,
+    path_id: str,
+    db: Session = Depends(get_db),
+):
+    """PRD-43 D8: public roadmap on {org}.graphban.dev/{path_id}/roadmap."""
+    _rate_or_429(db, request, None)
+    if not settings.hosted_mode:
+        raise HTTPException(404, "not found")
+    host = request.headers.get("host", "").split(":")[0]
+    org = resolve_org_from_host_db(db, host)
+    if org is None:
+        raise HTTPException(404, "not found")
+    project_id = resolve_project_by_path_id(db, org.id, path_id)
+    if project_id is None:
+        raise HTTPException(404, "not found")
+    cfg = get_config(db, project_id)
+    if not cfg.public_roadmap_enabled:
+        raise HTTPException(404, "not found")
+    return roadmap_svc.list_roadmap(db, project_id=project_id)
+
+
+@host_router.get("/{path_id}/issues")
+def host_issues(
+    request: FastAPIRequest,
+    path_id: str,
+    db: Session = Depends(get_db),
+):
+    """PRD-43 D8: public issues board on {org}.graphban.dev/{path_id}/issues."""
+    _rate_or_429(db, request, None)
+    if not settings.hosted_mode:
+        raise HTTPException(404, "not found")
+    host = request.headers.get("host", "").split(":")[0]
+    org = resolve_org_from_host_db(db, host)
+    if org is None:
+        raise HTTPException(404, "not found")
+    project_id = resolve_project_by_path_id(db, org.id, path_id)
+    if project_id is None:
+        raise HTTPException(404, "not found")
+    cfg = get_config(db, project_id)
+    if not cfg.public_issues_enabled:
+        raise HTTPException(404, "not found")
+    reqs = req_svc.public_board(db, project_id, types=["bug"])
+    rows = []
+    for r in reqs:
+        comments = req_svc.list_comments(db, r.id, visibility="public")
+        row = req_svc.serialize_public_row(r, comments)
+        if r.linked_to:
+            item = db.get(Item, r.linked_to)
+            if item:
+                row["linked_status"] = item.status
+        rows.append(row)
+    return rows
+
+
+@host_router.get("/{path_id}/requests")
+def host_requests(
+    request: FastAPIRequest,
+    path_id: str,
+    db: Session = Depends(get_db),
+):
+    """PRD-43 D8: public requests board on {org}.graphban.dev/{path_id}/requests."""
+    _rate_or_429(db, request, None)
+    if not settings.hosted_mode:
+        raise HTTPException(404, "not found")
+    host = request.headers.get("host", "").split(":")[0]
+    org = resolve_org_from_host_db(db, host)
+    if org is None:
+        raise HTTPException(404, "not found")
+    project_id = resolve_project_by_path_id(db, org.id, path_id)
+    if project_id is None:
+        raise HTTPException(404, "not found")
+    cfg = get_config(db, project_id)
+    if not cfg.public_requests_enabled:
+        raise HTTPException(404, "not found")
+    reqs = req_svc.public_board(db, project_id, types=["feature", "enhancement"])
+    rows = []
+    for r in reqs:
+        comments = req_svc.list_comments(db, r.id, visibility="public")
+        row = req_svc.serialize_public_row(r, comments)
+        if r.linked_to:
+            item = db.get(Item, r.linked_to)
+            if item:
+                row["linked_status"] = item.status
+        rows.append(row)
+    return rows
+
+
+@host_router.get("/{path_id}/t/{track_token}")
+def host_tracking(
+    request: FastAPIRequest,
+    path_id: str,
+    track_token: str,
+    db: Session = Depends(get_db),
+):
+    """PRD-43 D8: tracking page on {org}.graphban.dev/{path_id}/t/{token}."""
+    _rate_or_429(db, request, None)
+    if not settings.hosted_mode:
+        raise HTTPException(404, "not found")
+    host = request.headers.get("host", "").split(":")[0]
+    org = resolve_org_from_host_db(db, host)
+    if org is None:
+        raise HTTPException(404, "not found")
+    project_id = resolve_project_by_path_id(db, org.id, path_id)
+    if project_id is None:
+        raise HTTPException(404, "not found")
+    req = req_svc.resolve_track_token(db, track_token)
+    if req is None:
+        raise HTTPException(404, "not found")
+    comments = req_svc.list_comments(db, req.id, visibility="public")
+    data = req_svc.serialize_tracking(req, comments)
+    if req.linked_to:
+        item = db.get(Item, req.linked_to)
+        if item:
+            data["linked_status"] = item.status
+    return data
+
