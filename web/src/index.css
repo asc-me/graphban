@@ -6,6 +6,46 @@
   --font-sans: "IBM Plex Sans", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
+  /* Type scale — ≤6 roles, each ≥1.2× the step below. Prefer these over arbitrary text-[Npx]. */
+  --text-display: 1.6875rem; /* 27px — rare numeric KPI */
+  --text-display--line-height: 1.2;
+  --text-display--letter-spacing: -0.02em;
+
+  --text-title: 1.375rem; /* 22px — page h1 */
+  --text-title--line-height: 1.25;
+  --text-title--letter-spacing: -0.015em;
+
+  --text-body: 1.125rem; /* 18px — primary copy, row titles */
+  --text-body--line-height: 1.5;
+
+  --text-secondary: 0.9375rem; /* 15px — supporting one-liners */
+  --text-secondary--line-height: 1.45;
+
+  --text-meta: 0.75rem; /* 12px — chips, timestamps */
+  --text-meta--line-height: 1.4;
+
+  --text-micro: 0.625rem; /* 10px — IDs, keys, tabular (IBM Plex Mono at use sites) */
+  --text-micro--line-height: 1.35;
+  --text-micro--letter-spacing: 0.02em;
+
+  /* Radius — three steps: control / card / overlay */
+  --radius-control: 0.5rem; /* 8px — buttons, inputs, chips */
+  --radius-card: 0.75rem; /* 12px — panels, list rows */
+  --radius-overlay: 1rem; /* 16px — dialogs, sheets, login card */
+
+  /* Elevation — layered neutral shadows; hairline uses --color-line (≥3:1 on surface-2). */
+  --shadow-elev-1:
+    0 1px 2px rgb(0 0 0 / 0.32),
+    0 0 0 1px var(--color-line);
+  --shadow-elev-2:
+    0 4px 14px rgb(0 0 0 / 0.38),
+    0 1px 2px rgb(0 0 0 / 0.24),
+    0 0 0 1px var(--color-line);
+  --shadow-elev-3:
+    0 16px 48px rgb(0 0 0 / 0.48),
+    0 4px 12px rgb(0 0 0 / 0.32),
+    0 0 0 1px var(--color-line);
+
   --color-bg: #0a0c0e;
   --color-surface: #0d1114;
   --color-surface-2: #101418;
@@ -13,20 +53,23 @@
   --color-surface-4: #14181d;
   --color-header: rgba(12, 15, 17, 0.72);
 
-  --color-line: #1a1f24;
-  --color-line-2: #1e242a;
-  --color-line-hover: #2a333a;
-  --color-line-3: #2c353c;
+  /* Borders — ≥3:1 against surface-2 for control boundaries */
+  --color-line: #5a636c;
+  --color-line-2: #646d76;
+  --color-line-hover: #6e7780;
+  --color-line-3: #78828c;
 
   --color-fg: #e6e9ec;
   --color-fg-2: #dfe3e7;
   --color-muted: #8b949e;
   --color-muted-2: #9aa3ab;
-  --color-faint: #5c656e;
-  --color-faint-2: #4a525a;
+  /* Copy-sized faint — ≥4.5:1 on bg and surface-3 */
+  --color-faint: #7f8891;
+  --color-faint-2: #7a838c;
 
   --color-accent: #c6f24e;
   --color-accent-hi: #d8ff74;
+  --color-focus: #c6f24e;
   --color-purple: #a78bfa;
   --color-purple-2: #c9b8ff;
 
@@ -50,17 +93,17 @@
   --color-op-rail: #06080a;
   --color-op-card: #0c1015;
   --color-op-inset: #0a0d12;
-  --color-op-line: #1d222b;
-  --color-op-line-2: #161b23;
-  --color-op-line-hover: #2b3444;
-  --color-op-line-3: #12161d;
+  --color-op-line: #4f5a66;
+  --color-op-line-2: #596470;
+  --color-op-line-hover: #657080;
+  --color-op-line-3: #717c88;
   --color-op-fg: #dfe4ea;
   --color-op-fg-2: #c3cad6;
   --color-op-muted: #8a93a3;
   --color-op-muted-2: #6b7486;
-  --color-op-faint: #4d5666;
-  --color-op-faint-2: #41495a;
-  --color-op-faint-3: #333a47;
+  --color-op-faint: #7a8494;
+  --color-op-faint-2: #6a7383;
+  --color-op-faint-3: #5a6373;
   --color-op-accent: #7ca2ff;
 
   --animate-fade: alFade 0.16s ease both;
@@ -98,6 +141,8 @@ body {
     var(--color-bg);
   color: var(--color-fg);
   font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -106,7 +151,7 @@ body {
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb {
   background: #20272d;
-  border-radius: 8px;
+  border-radius: var(--radius-card);
   border: 2px solid var(--color-bg);
 }
 ::-webkit-scrollbar-thumb:hover { background: #2c353c; }
@@ -137,4 +182,9 @@ body {
   button { cursor: pointer; }
   a { color: var(--color-accent); text-decoration: none; }
   a:hover { color: var(--color-accent-hi); }
+
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
 }
