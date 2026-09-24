@@ -165,7 +165,7 @@ describe("planner surfaces (GRPH-913)", () => {
     renderTracker();
     await screen.findByText("First item");
     await user.click(screen.getByRole("button", { name: /^Backlog/ }));
-    expect(await screen.findByText(/No items match this filter/)).toBeInTheDocument();
+    expect(await screen.findByText(/No items match this filter \(Backlog\)/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Clear filter" })).toBeInTheDocument();
   });
 

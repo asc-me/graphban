@@ -19,6 +19,11 @@ import { ItemDetailPanel } from "./ItemDetailPanel";
 import { ItemRow } from "./ItemRow";
 import { NewItemDialog } from "./NewItemDialog";
 
+/** Planner-facing statuses: live work, not backlog/next/done. */
+const ACTIVE_STATUSES: Status[] = ["in_progress", "review", "blocked"];
+
+type TrackerFilter = Status | "all" | "active";
+
 export function TrackerView() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { activeId } = useProjectCtx();
@@ -26,7 +31,7 @@ export function TrackerView() {
   const update = useUpdateItem();
   const reorder = useReorderItems();
 
-  const [filter, setFilter] = React.useState<Status | "all">("all");
+  const [filter, setFilter] = React.useState<TrackerFilter>("active");
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [dragId, setDragId] = React.useState<string | null>(null);
   const [overId, setOverId] = React.useState<string | null>(null);
@@ -45,13 +50,22 @@ export function TrackerView() {
     [items],
   );
 
-  const visible = ordered.filter((it) => filter === "all" || it.status === filter);
+  const visible = ordered.filter((it) => {
+    if (filter === "all") return true;
+    if (filter === "active") return ACTIVE_STATUSES.includes(it.status);
+    return it.status === filter;
+  });
 
   const counts = React.useMemo(() => {
     const c: Record<string, number> = {};
     for (const it of ordered) c[it.status] = (c[it.status] ?? 0) + 1;
     return c;
   }, [ordered]);
+
+  const activeCount = React.useMemo(
+    () => ACTIVE_STATUSES.reduce((n, s) => n + (counts[s] ?? 0), 0),
+    [counts],
+  );
 
   const selected = items.find((i) => i.id === selectedId) ?? null;
   const isEmpty = !isLoading && !isError && ordered.length === 0;
@@ -121,6 +135,12 @@ export function TrackerView() {
 
       <div className="flex flex-none flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
         <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={ordered.length} />
+        <FilterChip
+          active={filter === "active"}
+          onClick={() => setFilter("active")}
+          label="Active"
+          count={activeCount}
+        />
         {STATUS_ORDER.map((s) => (
           <FilterChip
             key={s}
@@ -146,7 +166,7 @@ export function TrackerView() {
           />
         ) : isFilteredEmpty ? (
           <PlannerFilteredEmpty
-            message={`No items match this filter${filter !== "all" ? ` (${STATUS_META[filter as Status].label})` : ""}.`}
+            message={`No items match this filter${filterLabel(filter)}.`}
             onClear={() => setFilter("all")}
           />
         ) : (
@@ -187,6 +207,12 @@ export function TrackerView() {
       )}
     </div>
   );
+}
+
+function filterLabel(filter: TrackerFilter): string {
+  if (filter === "all") return "";
+  if (filter === "active") return " (Active)";
+  return ` (${STATUS_META[filter].label})`;
 }
 
 function FilterChip({

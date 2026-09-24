@@ -65,10 +65,39 @@ function renderTracker() {
 describe("TrackerView", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("renders the linear stream", async () => {
+  it("defaults to Active so done items are not first paint (GRPH-918)", async () => {
     renderTracker();
     expect(await screen.findByText("In progress thing")).toBeInTheDocument();
+    expect(screen.queryByText("Finished thing")).not.toBeInTheDocument();
+  });
+
+  it("shows the full stream when All is selected", async () => {
+    const user = userEvent.setup();
+    renderTracker();
+    await screen.findByText("In progress thing");
+    await user.click(screen.getByRole("button", { name: /^All/ }));
     expect(screen.getByText("Finished thing")).toBeInTheDocument();
+  });
+
+  it("includes blocked items in the Active default (GRPH-918)", async () => {
+    served = [
+      ...items,
+      {
+        ...items[0],
+        id: "AL-04",
+        title: "Blocked thing",
+        status: "blocked",
+        sort_order: 2,
+      },
+    ];
+    try {
+      renderTracker();
+      expect(await screen.findByText("In progress thing")).toBeInTheDocument();
+      expect(screen.getByText("Blocked thing")).toBeInTheDocument();
+      expect(screen.queryByText("Finished thing")).not.toBeInTheDocument();
+    } finally {
+      served = items;
+    }
   });
 
   it("filters by status", async () => {
@@ -108,7 +137,7 @@ describe("a bounced item", () => {
   it("shows why it came back", async () => {
     // GRPH-378: the reason was required of the reviewer and then discarded, so the board
     // showed an item that had silently returned from review with no account of itself.
-    served = [{ ...items[0], id: "AL-03", title: "Sent back", status: "next",
+    served = [{ ...items[0], id: "AL-03", title: "Sent back", status: "in_progress",
                 bounce_reason: "no test covers the refusal path" }];
     try {
       renderTracker();
