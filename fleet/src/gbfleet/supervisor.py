@@ -964,7 +964,13 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
                 child.adapter, git_paths, child.stdout_text())
         _note_touchpoints(wave, child)
         _note_staleness(wave, tree)
-        _publish(wave, tree, client=client, child=child, base_branch=base_branch)
+        salvaged = reaped.disposition is wt_mod.Disposition.SALVAGED
+        _publish(wave, tree, client=client, child=child,
+                 propose_prs=not salvaged, base_branch=base_branch)
+        if salvaged:
+            commit = reaped.salvage.commit if reaped.salvage else ""
+            _record_salvage_receipt(
+                wave, client, list(child.held_items or []), tree.branch, commit or "")
 
 
 def _declared_into(wave: Wave, items: dict) -> dict:
@@ -1088,6 +1094,34 @@ def _propose(wave: Wave, tree: Worktree, *, client: Graphban | None,
                    client=client, base_override=base_override)
 
 
+def _branch_head(repo: Path, branch: str) -> str:
+    try:
+        return wt_mod._git(repo, "rev-parse", branch).strip()
+    except Exception:  # noqa: BLE001 — receipt is best-effort
+        return ""
+
+
+def _record_salvage_receipt(wave: Wave, client: Graphban | None, items: list[str],
+                            branch: str, commit: str) -> None:
+    """Name the salvage on the item without opening a PR (GRPH-926).
+
+    GRPH-830 still holds: the work must be findable from the item. A `/pull/` URL was
+    the wrong receipt — those drafts were mergeable and titled `WIP: salvaged by gbfleet`.
+    """
+    if client is None or not items:
+        return
+    short = (commit or "")[:12]
+    detail = f"salvaged onto `{branch}`" + (f" `{short}`" if short else "") + "; not proposed as a PR"
+    for item_id in items:
+        try:
+            client.call("update_item", id=item_id, evidence=[{
+                "kind": "note",
+                "detail": detail,
+            }])
+        except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
+            wave.failures.append(f"{item_id}: salvage not recorded ({exc})")
+
+
 def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
                    client: Graphban | None,
                    base_override: str = "") -> None:
@@ -1099,11 +1133,21 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
 
     `base_override` (GRPH-847) targets the PR at a non-default base (e.g. an integration
     branch for stacked slices). Empty means the remote's default ref.
+
+    A salvage subject is not proposed (GRPH-926). Push already happened; the item gets a
+    note naming the commit. Opening a PR here is how `WIP: salvaged by gbfleet` drafts
+    became mergeable.
     """
     remote = wt_mod.remote_for(repo)
     base = base_override or (wt_mod.default_ref(repo, remote) if remote else "")
-    title, body = propose_mod.describe(branch, items,
-                                       propose_mod.subject(repo, branch, base))
+    subj = propose_mod.subject(repo, branch, base)
+    if wt_mod.is_salvage_subject(subj):
+        wave.proposed[branch] = propose_mod.Proposed(
+            branch=branch, skipped=True,
+            reason="salvage commit is not proposed as a PR")
+        _record_salvage_receipt(wave, client, items, branch, _branch_head(repo, branch))
+        return
+    title, body = propose_mod.describe(branch, items, subj)
     got = propose_mod.propose(repo, branch, base, title=title, body=body)
     wave.proposed[branch] = got
     if got.reason and not got.url:
@@ -1136,14 +1180,17 @@ def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
     was re-delegated minutes later, branched from `main`, and rebuilt every line. The work was
     recovered and lost in the same move, and only somebody reading local refs could tell.
 
-    Deliberately the SAME two steps a finished child gets — push, then a draft PR carrying the
-    item — rather than a quieter salvage-only path. A reviewer looking for the work has one
-    place to look either way, and the PR body already says the branch was salvaged because the
-    commit subject does.
+    Push is still required. A draft PR is not (GRPH-926): salvage subjects were landing as
+    mergeable `WIP: salvaged by gbfleet` PRs. The item gets a note naming the branch and
+    commit instead. A PR is for shipped work with a real title.
 
     Never fatal. This runs at the very start of a wave, on the crash path, and a takeover that
     refused to proceed because a push failed would strand the next wave too.
+
+    `base_branch` is accepted and unused: the salvage path no longer proposes a PR, and
+    callers still pass it. Dropping the argument would be a different kind of break.
     """
+    del base_branch  # kept on the signature; salvage is not a PR
     for row in salvaged:
         try:
             pushed = wt_mod.push_branch(repo, row.branch, row.base)
@@ -1158,8 +1205,9 @@ def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
             continue
         observe.emit("adopt", detail=f"{row.branch}: published salvaged work"
                                      + (f" for {', '.join(row.items)}" if row.items else ""))
-        propose_branch(wave, repo, row.branch, list(row.items or []), client=client,
-                       base_override=base_branch)
+        _record_salvage_receipt(
+            wave, client, list(row.items or []), row.branch,
+            _branch_head(repo, row.branch))
 
 
 #: How long a watched item waits before its merge is re-asked. Each ask is a ledger read and
@@ -1713,7 +1761,12 @@ def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = No
             )
         _note_touchpoints(wave, child)
         _note_staleness(wave, tree)
-        _publish(wave, tree, client=client, base_branch=base_branch)
+        salvaged = reaped.disposition is wt_mod.Disposition.SALVAGED
+        _publish(wave, tree, client=client, child=child,
+                 propose_prs=not salvaged, base_branch=base_branch)
+        if salvaged:
+            commit = reaped.salvage.commit if reaped.salvage else ""
+            _record_salvage_receipt(wave, client, held, tree.branch, commit or "")
         if not _inside(child.seat_path, child.worktree):
             seat_mod.remove(child.seat_path)
 

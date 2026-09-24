@@ -30,6 +30,7 @@ from gbfleet.worktree import (
     resume,
     salvage,
     salvage_message,
+    is_salvage_subject,
     agent_slug,
 )
 
@@ -139,6 +140,14 @@ def test_salvage_commits_the_work_and_not_the_credential(git_repo: Path, tmp_pat
     blob = _git(wt.path, "show", f"{result.commit}:feature.py")
     assert SECRET not in blob
     assert SECRET not in _git(wt.path, "log", "-p", "-1")
+
+
+def test_is_salvage_subject_matches_only_the_salvage_prefix():
+    """GRPH-926. A worker subject must not be classified as salvage or PRs stay closed."""
+    assert is_salvage_subject(salvage_message("cursor-agent", ["GRPH-1"]))
+    assert is_salvage_subject("WIP: salvaged by gbfleet (fake)")
+    assert not is_salvage_subject("GRPH-918: Tracker defaults to Active, not All")
+    assert not is_salvage_subject("")
 
 
 def test_a_tree_holding_only_a_credential_is_not_reported_as_salvaged(

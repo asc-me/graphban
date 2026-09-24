@@ -450,6 +450,37 @@ class _RecordingClient:
         return {}
 
 
+def test_propose_branch_does_not_open_a_pr_for_a_salvage_subject(
+    gh, git_repo, monkeypatch
+):
+    """GRPH-926: a salvage HEAD is a commit, not a draft PR.
+
+    Sabotage: delete the `is_salvage_subject` return in `propose_branch` and `gh pr create`
+    runs with title `WIP: salvaged by gbfleet`.
+    """
+    from gbfleet.supervisor import Wave, propose_branch
+    from gbfleet import propose as propose_mod
+
+    proposed = []
+    monkeypatch.setattr(
+        propose_mod, "subject",
+        lambda *a, **kw: "WIP: salvaged by gbfleet (cursor-agent) items=GRPH-1")
+    monkeypatch.setattr(
+        propose_mod, "propose",
+        lambda *a, **kw: proposed.append("create") or propose_mod.Proposed(
+            branch="gb/w-1", ok=True, url="https://github.com/o/r/pull/99"))
+
+    wave = Wave()
+    client = _RecordingClient()
+    propose_branch(wave, git_repo, "gb/w-1", ["GRPH-1"], client=client)
+    assert proposed == [], "gh pr create ran for a salvage subject"
+    assert wave.proposed["gb/w-1"].skipped
+    assert client.calls, "item was not named"
+    ev = client.calls[0]["evidence"][0]
+    assert ev["kind"] == "note" and "not proposed as a PR" in ev["detail"]
+    assert "/pull/" not in ev.get("url", "") + ev.get("detail", "")
+
+
 def test_propose_branch_records_the_pr_url_on_the_item(gh, git_repo, monkeypatch):
     """A successful draft PR produces a `url` receipt on the item via `update_item`.
 
