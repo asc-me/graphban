@@ -320,7 +320,7 @@ def submit_request(
     track_url = ""
     track_plain = getattr(req, "_track_token_plain", None)
     if track_plain:
-        track_url = f"/{project_id}/t/{track_plain}"
+        track_url = f"/track/{track_plain}"
 
     return PublicRequestOut(
         request=RequestOut.model_validate(req),

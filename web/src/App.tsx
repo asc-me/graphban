@@ -14,6 +14,10 @@ import { CodeGraphView } from "@/features/code/CodeGraphView";
 import { DashboardView } from "@/features/dashboard/DashboardView";
 import { EmbedFeedbackPage } from "@/features/feedback/EmbedFeedbackPage";
 import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
+import { PublicBoardPage } from "@/features/public/PublicBoardPage";
+import { PublicFeedbackPage } from "@/features/public/PublicFeedbackPage";
+import { PublicRoadmapPage } from "@/features/public/PublicRoadmapPage";
+import { PublicTrackingPage } from "@/features/public/PublicTrackingPage";
 import { LinksGraphView } from "@/features/links/LinksGraphView";
 import { FleetView } from "@/features/fleet/FleetView";
 import { FleetV2View } from "@/features/fleet/FleetV2View";
@@ -57,6 +61,13 @@ export function App() {
       {/* Public, unauthenticated embed targets. */}
       <Route path="/embed/feedback" element={<EmbedFeedbackPage />} />
       <Route path="/embed/roadmap" element={<EmbedRoadmapPage />} />
+      {/* PRD-43 D5: public board pages (unauthenticated, on the current origin). */}
+      <Route path="/public/:token/feedback" element={<PublicFeedbackPage />} />
+      <Route path="/public/:token/roadmap" element={<PublicRoadmapPage />} />
+      <Route path="/public/:token/issues" element={<PublicBoardPage kind="issues" />} />
+      <Route path="/public/:token/requests" element={<PublicBoardPage kind="requests" />} />
+      {/* PRD-43 D3: submitter tracking page (unauthenticated). */}
+      <Route path="/track/:trackToken" element={<PublicTrackingPage />} />
       {/* Emailed org-invite landing — works signed in or out (AL-74b). */}
       <Route path="/invite/:token" element={<InviteAcceptPage />} />
       {/* Emailed password-reset landing (GRPH-570). Public by necessity: the premise is that
