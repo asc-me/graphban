@@ -621,6 +621,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ item_id: itemId }),
     }),
+  publishRequest: (id: string) =>
+    request<{ published: boolean; published_at: string | null }>(`/requests/${id}/publish`, { method: "POST" }),
+  unpublishRequest: (id: string) =>
+    request<{ published: boolean }>(`/requests/${id}/unpublish`, { method: "POST" }),
+  createRequestComment: (id: string, body: string, visibility: "public" | "private" = "private") =>
+    request<{ id: string; body: string; visibility: string; created_at: string }>(`/requests/${id}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ body, visibility }),
+    }),
 
   apiKeys: () => request<ApiKey[]>("/api-keys"),
   createApiKey: (

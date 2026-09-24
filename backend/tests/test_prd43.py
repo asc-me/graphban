@@ -148,7 +148,7 @@ def test_tracking_page_resolves(client, auth):
     track_url = resp.json()["track_url"]
     assert track_url
 
-    track_token = track_url.split("/t/")[-1]
+    track_token = track_url.split("/track/")[-1]
     track_resp = client.get(f"/api/public/t/{track_token}")
     assert track_resp.status_code == 200
     data = track_resp.json()
@@ -262,7 +262,7 @@ def test_comment_default_private(client, auth):
     })
     req_id = resp.json()["request"]["id"]
     track_url = resp.json()["track_url"]
-    track_token = track_url.split("/t/")[-1]
+    track_token = track_url.split("/track/")[-1]
 
     client.post(f"/api/public/requests/{req_id}/comments", json={
         "body": "Internal note",

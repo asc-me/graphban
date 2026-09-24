@@ -547,6 +547,7 @@ export interface RequestItem {
   meta: Record<string, unknown>;
   attachment_ids: string[];
   created_at: string;
+  published_at: string | null;
 }
 
 /** A request or item that looks like this one. Advisory — never auto-merged. */
