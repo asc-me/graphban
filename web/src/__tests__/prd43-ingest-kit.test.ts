@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_CONFIG, fromParams, toParams } from "@/features/feedback/config";
@@ -10,13 +7,26 @@ import { inlineSnippet, launcherSnippet } from "@/features/feedback/snippets";
  * GRPH-904 bounce: the Kit copy is the load-bearing CALL, not mint_ingest_token.
  * Drop `it=` from toParams, or stop passing config.ingestToken into submit, and
  * these fail. Effort 3 requires a sabotage receipt with tests_failed ≥ 1.
+ *
+ * Source reads go through Vite `?raw` (same as graph-node-count / p28-rail).
+ * `node:fs` is not in the web tsconfig — CI typecheck failed on that import.
  */
 
-const here = dirname(fileURLToPath(import.meta.url));
-const webSrc = join(here, "..");
+const SOURCES = import.meta.glob(
+  [
+    "../features/feedback/FeedbackKitView.tsx",
+    "../features/feedback/FeedbackWidget.tsx",
+    "../features/settings/SettingsView.tsx",
+    "../lib/publicApi.ts",
+    "../lib/api.ts",
+  ],
+  { query: "?raw", import: "default", eager: true },
+) as Record<string, string>;
 
-function src(rel: string): string {
-  return readFileSync(join(webSrc, rel), "utf8");
+function src(suffix: string): string {
+  const hit = Object.entries(SOURCES).find(([k]) => k.endsWith(suffix))?.[1];
+  expect(hit, `${suffix} must be readable or these assertions mean nothing`).toBeTruthy();
+  return hit as string;
 }
 
 const TOKEN = "gbfb_test_token_rotate_me";
