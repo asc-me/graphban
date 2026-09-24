@@ -555,7 +555,7 @@ def create_comment_endpoint(
 
 # ---- PRD-43 D8: slug management ----
 
-from app.services.platform import claim_org_host, claim_project_path_id, validate_slug
+from app.services.platform import claim_org_host, claim_project_path_id, validate_slug, resolve_redirect
 
 
 @router.post("/slugs/org-host")
@@ -597,3 +597,20 @@ def validate_slug_endpoint(slug: str):
     if err:
         return {"valid": False, "error": err}
     return {"valid": True}
+
+
+@router.get("/slugs/redirect")
+def slug_redirect_endpoint(
+    host: str,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    """PRD-43 D8: resolve a slug redirect. Returns 301 if found, 404 if not."""
+    _rate_or_429(db, request, None)
+    new_host = resolve_redirect(db, host)
+    if new_host is None:
+        raise HTTPException(404, "no redirect found")
+    return Response(
+        status_code=301,
+        headers={"Location": f"https://{new_host}.graphban.dev/"},
+    )

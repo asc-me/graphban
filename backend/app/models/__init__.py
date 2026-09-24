@@ -267,6 +267,27 @@ class Organization(Base):
     )
 
 
+class SlugRedirect(Base):
+    """PRD-43 D8: upgrade 301 redirect aliases.
+
+    When an org upgrades from free→pro (claims a path id) or pro→enterprise (claims
+    {org_slug}), the OLD host stays owned as a redirect: https://{old}.graphban.dev/{path}
+    301s to https://{new}.graphban.dev/{path}. The old slug is never released from UNIQUE.
+    """
+
+    __tablename__ = "slug_redirects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_id: Mapped[str] = mapped_column(
+        ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    old_host: Mapped[str] = mapped_column(String, nullable=False, unique=True)
+    new_host: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
 class OrgMembership(Base):
     """A user's seat in an organization (hosted-only, AL-74)."""
 

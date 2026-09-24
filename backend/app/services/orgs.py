@@ -328,7 +328,13 @@ def set_project_access(
 
 
 def create_org(db: Session, user: User, name: str) -> Organization:
-    """Create an org and seat its creator as owner. Commits."""
+    """Create an org and seat its creator as owner. Commits.
+
+    PRD-43 D8: assigns a random public_host on creation (not the org name).
+    Free/pro keep the random host; enterprise may claim a custom one.
+    """
+    from app.services.platform import _ensure_unique_random_slug
+
     name = name.strip()
     if not name:
         raise HTTPException(422, "organization name is required")
@@ -336,6 +342,9 @@ def create_org(db: Session, user: User, name: str) -> Organization:
     db.add(org)
     db.flush()
     org.created_by = user.id  # durable; the seat below is not (D8.2)
+    # PRD-43 D8: assign random public_host.
+    org.public_host = _ensure_unique_random_slug(db)
+    org.public_host_custom = False
     db.add(OrgMembership(org_id=org.id, user_id=user.id, role="owner"))
     db.commit()
     db.refresh(org)

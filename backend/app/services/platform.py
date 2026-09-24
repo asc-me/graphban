@@ -1019,46 +1019,148 @@ def validate_slug(slug: str) -> str | None:
     return None
 
 
-def claim_org_host(db: Session, org_id: str, slug: str) -> dict:
-    """PRD-43 D8: claim a public host for an org. 409 on collision."""
+def random_slug(length: int = 8) -> str:
+    """PRD-43 D8: generate a random slug for initial public_host / public_path_id assignment."""
+    return token_urlsafe(length).lower().replace("-", "")[:length]
+
+
+def _ensure_unique_random_slug(db: Session, length: int = 8, max_attempts: int = 10) -> str:
+    """Generate a random slug that is not yet taken as a public_host."""
     from app.models import Organization
+    for _ in range(max_attempts):
+        candidate = random_slug(length)
+        if db.scalar(select(Organization).where(Organization.public_host == candidate)) is None:
+            return candidate
+    raise RuntimeError("could not generate a unique random slug after multiple attempts")
+
+
+def claim_org_host(db: Session, org_id: str, slug: str) -> dict:
+    """PRD-43 D8: claim a public host for an org with plan gates.
+
+    Plan gates (acceptance 10):
+    - free: cannot claim {org_slug} — must use random assignment
+    - pro/team: cannot claim org host (only path id)
+    - enterprise: can claim both
+
+    On upgrade, the old host becomes a redirect alias (301).
+    """
+    from app.models import Organization
+    from app.services.quotas import plan_of
+
     org = db.get(Organization, org_id)
     if org is None:
         raise LookupError(org_id)
     err = validate_slug(slug)
     if err:
         raise ValueError(err)
+
+    plan = plan_of(org)
+    plan_name = org.plan or "free"
+
+    # Plan gates.
+    if plan_name == "free":
+        raise ValueError("free plan cannot claim a custom org host; upgrade to enterprise")
+    if plan_name in ("pro", "team"):
+        raise ValueError("pro/team plans cannot claim org host; upgrade to enterprise")
+
     # Check uniqueness.
     existing = db.scalar(
         select(Organization).where(Organization.public_host == slug)
     )
-    if existing is not None:
+    if existing is not None and existing.id != org_id:
         raise ValueError(f"host {slug!r} is taken")
+
+    # Idempotent: if already claimed this slug, just return.
+    if org.public_host == slug and org.public_host_custom:
+        return {"public_host": slug, "custom": True}
+
+    # Upgrade 301: if there was a previous host, create a redirect.
+    old_host = org.public_host
+    if old_host and old_host != slug:
+        from app.models import SlugRedirect
+        # Check if redirect already exists.
+        existing_redirect = db.scalar(
+            select(SlugRedirect).where(SlugRedirect.old_host == old_host)
+        )
+        if existing_redirect is None:
+            db.add(SlugRedirect(org_id=org_id, old_host=old_host, new_host=slug))
+
     org.public_host = slug
-    org.public_host_custom = True  # claimed, not random
+    org.public_host_custom = True
     db.commit()
     return {"public_host": slug, "custom": True}
 
 
 def claim_project_path_id(db: Session, project_id: str, slug: str) -> dict:
-    """PRD-43 D8: claim a public path id for a project. 409 on collision within org."""
+    """PRD-43 D8: claim a public path id for a project with plan gates.
+
+    Plan gates (acceptance 10):
+    - free: cannot claim custom path id
+    - pro/team/enterprise: can claim path id
+
+    On upgrade, the old path id becomes a redirect alias.
+    """
     from app.models import Project
+    from app.services.quotas import plan_of
+
     project = db.get(Project, project_id)
     if project is None:
         raise LookupError(project_id)
     err = validate_slug(slug)
     if err:
         raise ValueError(err)
-    # Check uniqueness within the same org.
+
+    # Plan gate: free cannot claim.
+    if project.org_id:
+        from app.models import Organization
+        org = db.get(Organization, project.org_id)
+        if org is not None:
+            plan_name = org.plan or "free"
+            if plan_name == "free":
+                raise ValueError("free plan cannot claim a custom path id; upgrade to pro or higher")
+
     cfg = get_config(db, project_id)
+
+    # Check uniqueness within the same org.
     existing = db.scalar(
         select(PlatformConfig).where(PlatformConfig.public_path_id == slug)
     )
     if existing is not None and existing.project_id != project_id:
-        # Check same org.
         other_project = db.get(Project, existing.project_id)
         if other_project and other_project.org_id == project.org_id:
             raise ValueError(f"path id {slug!r} is taken in this org")
+
+    # Idempotent.
+    if cfg.public_path_id == slug:
+        return {"public_path_id": slug}
+
+    # Upgrade 301 for path id: store redirect keyed by org's public_host + old path.
+    old_path = cfg.public_path_id
+    if old_path and old_path != slug and project.org_id:
+        from app.models import SlugRedirect, Organization
+        org = db.get(Organization, project.org_id)
+        if org and org.public_host:
+            old_combined = f"{org.public_host}/{old_path}"
+            new_combined = f"{org.public_host}/{slug}"
+            existing_redirect = db.scalar(
+                select(SlugRedirect).where(SlugRedirect.old_host == old_combined)
+            )
+            if existing_redirect is None:
+                db.add(SlugRedirect(
+                    org_id=project.org_id,
+                    old_host=old_combined,
+                    new_host=new_combined,
+                ))
+
     cfg.public_path_id = slug
     db.commit()
     return {"public_path_id": slug}
+
+
+def resolve_redirect(db: Session, host: str) -> str | None:
+    """PRD-43 D8: resolve a slug redirect. Returns the new host if a redirect exists, else None."""
+    from app.models import SlugRedirect
+    redirect = db.scalar(
+        select(SlugRedirect).where(SlugRedirect.old_host == host)
+    )
+    return redirect.new_host if redirect else None
