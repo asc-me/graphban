@@ -9,6 +9,12 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import appFrameSrc from "../components/shell/AppFrame.tsx?raw";
+import appSrc from "../App.tsx?raw";
+import liveSrc from "../features/live/LiveView.tsx?raw";
+import lessonsSrc from "../features/lessons/LessonsView.tsx?raw";
+import memoryReviewSrc from "../features/memory/MemoryReviewView.tsx?raw";
+import queriesSrc from "../lib/queries.ts?raw";
+import { ShellBootSkeleton } from "@/components/shell/AppFrame";
 import statusMenuSrc from "../features/tracker/StatusMenu.tsx?raw";
 import itemRowSrc from "../features/tracker/ItemRow.tsx?raw";
 import trackerSrc from "../features/tracker/TrackerView.tsx?raw";
@@ -234,6 +240,43 @@ describe("PRD list empty (GRPH-913)", () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByText("No PRDs yet")).toBeInTheDocument();
+  });
+});
+
+describe("auth shell gate (GRPH-917)", () => {
+  it("keeps skip link and main landmark while the session rehydrates", () => {
+    render(<ShellBootSkeleton />);
+    expect(screen.getByText("Skip to main content")).toBeInTheDocument();
+    expect(document.getElementById("main-content")).toBeInTheDocument();
+    expect(screen.queryByText(/^loading…$/i)).not.toBeInTheDocument();
+  });
+
+  it("sabotage: reverting AuthedApp to a chrome-less loading string would fail", () => {
+    expect(appSrc).toMatch(/ShellBootSkeleton/);
+    expect(appSrc).not.toMatch(
+      /flex h-full items-center justify-center font-mono text-\[12px\] text-faint/,
+    );
+  });
+});
+
+describe("live and lessons loading (GRPH-919)", () => {
+  it("sabotage: centred Loading branches would fail the header-first contract", () => {
+    expect(liveSrc).toMatch(/LiveBoardSkeleton/);
+    expect(liveSrc).not.toMatch(
+      /flex h-full items-center justify-center[\s\S]{0,80}Loading…/,
+    );
+    expect(lessonsSrc).toMatch(/LessonsListSkeleton/);
+    expect(lessonsSrc).not.toMatch(
+      /flex h-full items-center justify-center[\s\S]{0,80}Loading…/,
+    );
+  });
+});
+
+describe("memory review resolution (GRPH-916)", () => {
+  it("sabotage: isLoading \|\| !candidates without a timeout would keep the skeleton forever", () => {
+    expect(memoryReviewSrc).toMatch(/awaitingFirstPayload/);
+    expect(queriesSrc).toMatch(/withFetchTimeout/);
+    expect(memoryReviewSrc).not.toMatch(/isLoading \|\| !candidates/);
   });
 });
 

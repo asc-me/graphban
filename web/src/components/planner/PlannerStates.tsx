@@ -141,6 +141,39 @@ export function RoadmapBoardSkeleton({ columns = 3 }: { columns?: number }) {
   );
 }
 
+/** Live board skeleton: header and census chips stay; agent rows pulse. */
+export function LiveBoardSkeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className="mx-auto flex max-w-3xl flex-col gap-5 p-5" aria-busy="true" aria-label="Loading live board">
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="rounded-[12px] border border-line-2 bg-surface-2 p-4">
+          <Pulse className="mb-3 h-4 w-32" />
+          <Pulse className="mb-2 h-3 w-full" />
+          <Pulse className="h-3 w-2/3" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Lessons catalog skeleton: header stays; lesson rows pulse. */
+
+/** Lessons catalog skeleton: header stays; lesson rows pulse. */
+export function LessonsListSkeleton({ rows = 6 }: { rows?: number }) {
+  return (
+    <div className="mx-auto flex max-w-3xl flex-col gap-2.5 p-5" aria-busy="true" aria-label="Loading lessons">
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="rounded-[12px] border border-line-2 bg-surface-2 px-4 py-3">
+          <Pulse className="mb-2 h-3 w-20" />
+          <Pulse className="h-3.5 w-full" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Requests queue skeleton. */
+
 /** Requests queue skeleton. */
 export function RequestsListSkeleton({ rows = 6 }: { rows?: number }) {
   return (

@@ -52,6 +52,7 @@ vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
     projects: vi.fn(async () => [project]),
+    counts: vi.fn(async () => ({ items: 0, items_in_progress: 0, requests: 0, review: 1 })),
     candidateShards: vi.fn(async () => [candidate]),
     candidateClusters: vi.fn(async () => []),
     scoredCandidates: vi.fn(async () => []),
@@ -78,6 +79,22 @@ function renderView() {
 }
 
 describe("Memory review queue", () => {
+  beforeEach(async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.candidateShards).mockResolvedValue([candidate]);
+  });
+
+  it("shows retry when the queue fetch fails instead of an endless skeleton (GRPH-916)", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.candidateShards).mockRejectedValue(
+      new Error("Memory review queue timed out after 30s"),
+    );
+    renderView();
+    expect(await screen.findByText(/taking too long to load/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Loading memory review")).not.toBeInTheDocument();
+  });
+
   it("shows candidates and publishes one", async () => {
     const user = userEvent.setup();
     renderView();

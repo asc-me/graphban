@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -100,6 +100,9 @@ const eligible: Eligibility = {
   reason: "3 project(s) × 1 user(s) → independence 3 ≥ 3",
 };
 
+let lessonsPending = false;
+let releaseLessons: ((value: LessonList) => void) | null = null;
+
 const { lessonsSpy, lessonSpy, promoteSpy, recordSpy } = vi.hoisted(() => ({
   lessonsSpy: vi.fn(async () => emptyList()),
   lessonSpy: vi.fn(async () => detail()),
@@ -139,14 +142,33 @@ function renderAt(path: string) {
 
 describe("Lessons catalog", () => {
   beforeEach(() => {
+    lessonsPending = false;
+    releaseLessons = null;
     lessonsSpy.mockReset();
     lessonSpy.mockReset();
     promoteSpy.mockReset();
     recordSpy.mockReset();
-    lessonsSpy.mockResolvedValue(emptyList());
+    lessonsSpy.mockImplementation(async () => {
+      if (lessonsPending) {
+        return new Promise<LessonList>((resolve) => {
+          releaseLessons = resolve;
+        });
+      }
+      return emptyList();
+    });
     lessonSpy.mockResolvedValue(detail());
     promoteSpy.mockResolvedValue(detail({ reach: "org" }));
     recordSpy.mockResolvedValue(detail());
+  });
+
+  it("shows a loading skeleton with the page header instead of centred Loading text (GRPH-919)", async () => {
+    lessonsPending = true;
+    renderAt("/lessons");
+    expect(screen.getByRole("heading", { name: "Lessons" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Loading lessons")).toBeInTheDocument());
+    expect(screen.queryByText(/^Loading…$/)).not.toBeInTheDocument();
+    releaseLessons?.(emptyList());
+    expect(await screen.findByText(/No published lessons in this project/)).toBeInTheDocument();
   });
 
   it("uses the catalog empty copy and links to Memory, not a scoreboard", async () => {

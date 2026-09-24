@@ -2,6 +2,10 @@ import { ArrowLeft, ArrowDown, ArrowRight, ArrowUp } from "lucide-react";
 import * as React from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 
+import {
+  LessonsListSkeleton,
+  PlannerError,
+} from "@/components/planner/PlannerStates";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -34,29 +38,20 @@ function LessonListPage() {
   const filtered = Object.keys(compact).length > 0;
   const catalogQ = useLessons(activeId);
   const listQ = useLessons(activeId, filtered ? compact : undefined);
-  const { data, isLoading, isError } = listQ;
+  const { data, isLoading, isError, refetch } = listQ;
+  const loading = isLoading || catalogQ.isLoading;
+  const failed = isError || catalogQ.isError;
 
-  if (isError || catalogQ.isError) {
-    return (
-      <div className="flex h-full items-center justify-center text-[13px] text-muted">
-        The lesson catalog could not be loaded.
-      </div>
-    );
-  }
-  if (isLoading || !data) {
-    return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
-  }
-
-  const enums = data.enums ?? catalogQ.data?.enums;
+  const enums = data?.enums ?? catalogQ.data?.enums;
   // Counts from the page we actually rendered. total is the catalog size; has_more
   // means UNMEASURED/DROPPING of this page are not the rest of the catalog.
   const page = catalogQ.data ?? data;
-  const all = page.results;
-  const published = page.total;
-  const hasMore = page.has_more;
+  const all = page?.results ?? [];
+  const published = page?.total ?? 0;
+  const hasMore = page?.has_more ?? false;
   const unmeasured = all.filter(rowIsUnmeasured).length;
   const dropping = all.filter((r) => r.effectiveness?.trend === "dropping").length;
-  const empty = published === 0;
+  const empty = !loading && !failed && published === 0;
   const allUnmeasured = !empty && all.length > 0 && unmeasured === all.length;
 
   return (
@@ -70,13 +65,22 @@ function LessonListPage() {
           </p>
         </div>
         <div className="ml-auto flex items-center gap-3 font-mono text-[10.5px] text-faint">
-          <span>{published} PUBLISHED</span>
-          <span>
-            {unmeasured} UNMEASURED{hasMore ? " THIS PAGE" : ""}
-          </span>
-          <span>
-            {dropping} DROPPING{hasMore ? " THIS PAGE" : ""}
-          </span>
+          {loading ? (
+            <>
+              <span className="h-3 w-16 animate-pulse rounded bg-surface-3" />
+              <span className="h-3 w-20 animate-pulse rounded bg-surface-3" />
+            </>
+          ) : (
+            <>
+              <span>{published} PUBLISHED</span>
+              <span>
+                {unmeasured} UNMEASURED{hasMore ? " THIS PAGE" : ""}
+              </span>
+              <span>
+                {dropping} DROPPING{hasMore ? " THIS PAGE" : ""}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
@@ -84,39 +88,48 @@ function LessonListPage() {
         <FilterBar enums={enums} filters={compact} onChange={setFilters} />
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        <div className="mx-auto flex max-w-3xl flex-col gap-2.5">
-          {empty ? (
-            <EmptyCatalog />
-          ) : (
-            <>
-              {allUnmeasured && (
-                <div className="rounded-[10px] border border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-[#e0b34a]">
-                  {hasMore
-                    ? `At least ${unmeasured} of this page of published lessons have no outcomes yet.`
-                    : `${published} published lesson${published === 1 ? " has" : "s have"} no outcomes yet.`}{" "}
-                  That is <span className="font-semibold">unknown</span>, not effective — nothing has
-                  caught or missed since they were published.
-                </div>
-              )}
-              {hasMore && (
-                <p className="text-[12px] text-faint">
-                  More lessons exist beyond this page — counts above are this page, not the rest of
-                  the catalog.
-                </p>
-              )}
-              {data.results.length === 0 ? (
-                <div className="py-16 text-center text-[13px] text-muted">
-                  No lessons match these filters.
-                </div>
-              ) : (
-                data.results.map((row) => (
-                  <LessonRow key={row.id} row={row} />
-                ))
-              )}
-            </>
-          )}
-        </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {loading ? (
+          <LessonsListSkeleton />
+        ) : failed || !data ? (
+          <PlannerError message="The lesson catalog could not be loaded." onRetry={() => {
+            void refetch();
+            void catalogQ.refetch();
+          }} />
+        ) : (
+          <div className="mx-auto flex max-w-3xl flex-col gap-2.5 p-5">
+            {empty ? (
+              <EmptyCatalog />
+            ) : (
+              <>
+                {allUnmeasured && (
+                  <div className="rounded-[10px] border border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-[#e0b34a]">
+                    {hasMore
+                      ? `At least ${unmeasured} of this page of published lessons have no outcomes yet.`
+                      : `${published} published lesson${published === 1 ? " has" : "s have"} no outcomes yet.`}{" "}
+                    That is <span className="font-semibold">unknown</span>, not effective — nothing has
+                    caught or missed since they were published.
+                  </div>
+                )}
+                {hasMore && (
+                  <p className="text-[12px] text-faint">
+                    More lessons exist beyond this page — counts above are this page, not the rest of
+                    the catalog.
+                  </p>
+                )}
+                {data.results.length === 0 ? (
+                  <div className="py-16 text-center text-[13px] text-muted">
+                    No lessons match these filters.
+                  </div>
+                ) : (
+                  data.results.map((row) => (
+                    <LessonRow key={row.id} row={row} />
+                  ))
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -355,23 +368,31 @@ function Chip({
 function LessonDetailPage({ id }: { id: string }) {
   const { activeId } = useProjectCtx();
   const navigate = useNavigate();
-  const { data, isLoading, isError } = useLesson(activeId, id);
+  const { data, isLoading, isError, refetch } = useLesson(activeId, id);
 
-  if (isLoading) {
-    return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
-  }
-  if (isError || !data) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-[13px] text-muted">
-        <p>Lesson not found.</p>
-        <button type="button" onClick={() => navigate("..")} className="text-fg underline">
-          Back to Lessons
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex flex-none items-center gap-3 border-b border-line px-5 py-4">
+        <button
+          type="button"
+          onClick={() => navigate("..")}
+          className="text-[12.5px] text-muted hover:text-fg-2"
+        >
+          ← Lessons
         </button>
+        <h1 className="text-[18px] font-semibold tracking-tight">Lesson</h1>
       </div>
-    );
-  }
-
-  return <LessonDetailBody lesson={data} />;
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {isLoading ? (
+          <LessonsListSkeleton rows={3} />
+        ) : isError || !data ? (
+          <PlannerError message="Lesson not found." onRetry={() => refetch()} />
+        ) : (
+          <LessonDetailBody lesson={data} />
+        )}
+      </div>
+    </div>
+  );
 }
 
 function LessonDetailBody({ lesson }: { lesson: LessonDetail }) {
