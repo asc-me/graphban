@@ -2,48 +2,88 @@ import { BookMarked, ExternalLink, Info, ThumbsDown, ThumbsUp, X } from "lucide-
 import * as React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
+import { useInputModality } from "@/lib/input-modality";
+
 import { GLOBAL_SHORTCUTS, docFor } from "./content";
 
 /** Inline, context-aware docs reader: a floating trigger + right slide-over whose
  *  content follows the page you're on. Mounted once inside the app shell. */
 export function DocsReader() {
   const [open, setOpen] = React.useState(false);
+  const [rendered, setRendered] = React.useState(false);
   const [thanks, setThanks] = React.useState(false);
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const doc = docFor(pathname);
+  const liveModality = useInputModality();
+  const [motion, setMotion] = React.useState(liveModality);
+  const exitTimer = React.useRef<number | null>(null);
 
   // Reset the "was this helpful" state whenever the page or open-state changes.
   React.useEffect(() => setThanks(false), [pathname, open]);
 
-  // Global keyboard: "?" toggles, "Esc" closes — ignored while typing.
+  React.useEffect(() => {
+    return () => {
+      if (exitTimer.current != null) window.clearTimeout(exitTimer.current);
+    };
+  }, []);
+
+  function openDocs(nextModality = liveModality) {
+    if (exitTimer.current != null) {
+      window.clearTimeout(exitTimer.current);
+      exitTimer.current = null;
+    }
+    setMotion(nextModality);
+    setRendered(true);
+    // Double-rAF so data-state=closed paints before open (enter path).
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => setOpen(true));
+    });
+  }
+
+  function closeDocs(nextModality = liveModality) {
+    setMotion(nextModality);
+    setOpen(false);
+    const ms = nextModality === "keyboard" ? 0 : 240;
+    if (exitTimer.current != null) window.clearTimeout(exitTimer.current);
+    exitTimer.current = window.setTimeout(() => {
+      setRendered(false);
+      exitTimer.current = null;
+    }, ms);
+  }
+
+  // Global keyboard: "?" toggles, "Esc" closes — ignored while typing. No animation (PRD-46 §6).
   React.useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const el = e.target as HTMLElement | null;
       const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
-      if (e.key === "Escape") return setOpen(false);
+      if (e.key === "Escape") {
+        if (open || rendered) closeDocs("keyboard");
+        return;
+      }
       if (e.key === "?" && !typing) {
         e.preventDefault();
-        setOpen((v) => !v);
+        if (open) closeDocs("keyboard");
+        else openDocs("keyboard");
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [open, rendered, liveModality]);
 
   function goRelated(to: string) {
-    setOpen(false);
+    closeDocs(liveModality);
     navigate(to);
   }
 
   return (
     <>
-      {/* Floating trigger */}
+      {/* Floating trigger — hover lift only on fine pointers */}
       <button
-        onClick={() => setOpen(true)}
+        onClick={() => openDocs("pointer")}
         title="Docs for this page"
         aria-label="Open docs for this page"
-        className="fixed bottom-6 right-6 z-[55] flex h-[50px] w-[50px] items-center justify-center rounded-full transition-transform hover:-translate-y-0.5"
+        className="gb-pressable fixed bottom-6 right-6 z-[55] flex h-[50px] w-[50px] items-center justify-center rounded-full [@media(hover:hover)_and_(pointer:fine)]:transition-transform [@media(hover:hover)_and_(pointer:fine)]:hover:-translate-y-0.5"
         style={{
           background: "linear-gradient(150deg,#c6f24e,#8fd12e)",
           border: "1px solid rgba(198,242,78,.4)",
@@ -53,15 +93,20 @@ export function DocsReader() {
         <Info size={22} className="text-bg" />
       </button>
 
-      {open && (
+      {rendered && (
         <>
           <div
-            onClick={() => setOpen(false)}
-            className="fixed inset-0 z-[60] animate-[alFade_.12s_ease] bg-[rgba(4,6,8,0.5)] backdrop-blur-[2px]"
+            onClick={() => closeDocs("pointer")}
+            className="gb-overlay fixed inset-0 z-[60] bg-[rgba(4,6,8,0.5)] backdrop-blur-[2px]"
+            data-state={open ? "open" : "closed"}
+            data-motion={motion === "keyboard" ? "instant" : "pointer"}
           />
           <aside
-            className="fixed inset-y-0 right-0 z-[61] flex w-[400px] max-w-[92vw] flex-col border-l border-[#1e242a] bg-[#0d1114] shadow-[-28px_0_70px_rgba(0,0,0,0.55)]"
-            style={{ animation: "alSlideLeft .18s ease both" }}
+            className="gb-sheet fixed inset-y-0 right-0 z-[61] flex w-[400px] max-w-[92vw] flex-col border-l border-[#1e242a] bg-[#0d1114] shadow-[-28px_0_70px_rgba(0,0,0,0.55)]"
+            data-state={open ? "open" : "closed"}
+            data-motion={motion === "keyboard" ? "instant" : "pointer"}
+            role="dialog"
+            aria-label="Docs"
           >
             {/* Header */}
             <div className="flex flex-none items-center gap-[11px] border-b border-line px-4 pb-3.5 pt-4">
@@ -79,7 +124,7 @@ export function DocsReader() {
                 <div className="text-[11px] text-muted">Help for the page you’re on</div>
               </div>
               <button
-                onClick={() => setOpen(false)}
+                onClick={() => closeDocs("pointer")}
                 className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg border border-line-2 bg-surface text-muted transition-colors hover:border-line-hover hover:text-fg"
                 aria-label="Close"
               >

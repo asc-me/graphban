@@ -8,6 +8,8 @@ import { CreateFirstProject } from "@/features/onboarding/CreateFirstProject";
 import { useConfig, useOrgs } from "@/lib/queries";
 import { ORG_BASE, clearOrgStateForSelfHost } from "@/lib/routes";
 
+import { useInputModality } from "@/lib/input-modality";
+
 import { ProjectBar } from "./ProjectBar";
 
 import { AgentSidebar } from "./AgentSidebar";
@@ -50,6 +52,10 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   const { pathname } = useLocation();
   const [agentOpen, setAgentOpen] = React.useState(true);
   const [search, setSearch] = React.useState("");
+  // Sticky modality at the moment of the toggle — keyboard Agent must not inherit a
+  // later pointer event mid-slide (PRD-46 §6).
+  const liveModality = useInputModality();
+  const [agentMotion, setAgentMotion] = React.useState(liveModality);
 
   if (loading) return <Loading />;
 
@@ -58,11 +64,16 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   const onOrgPlane = hosted && pathname.startsWith(ORG_BASE);
   if (projects.length === 0 && !onOrgPlane) return <CreateFirstProject />;
 
+  function toggleAgent() {
+    setAgentMotion(liveModality);
+    setAgentOpen((v) => !v);
+  }
+
   return (
     <div className="flex h-full flex-col">
       <TopBar
         agentOpen={agentOpen}
-        onToggleAgent={() => setAgentOpen((v) => !v)}
+        onToggleAgent={toggleAgent}
         search={search}
         onSearch={setSearch}
       />
@@ -76,7 +87,14 @@ function FrameBody({ hosted }: { hosted: boolean }) {
             {notFound ? <ProjectNotFound /> : <Outlet context={search} />}
           </div>
         </main>
-        <AgentSidebar open={agentOpen} onClose={() => setAgentOpen(false)} />
+        <AgentSidebar
+          open={agentOpen}
+          onClose={() => {
+            setAgentMotion(liveModality);
+            setAgentOpen(false);
+          }}
+          modality={agentMotion}
+        />
       </div>
       <DocsReader />
     </div>
