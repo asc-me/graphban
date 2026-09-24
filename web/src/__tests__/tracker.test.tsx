@@ -89,7 +89,7 @@ describe("TrackerView", () => {
     const row = (await screen.findByText("In progress thing")).closest("div")!;
 
     // Open the compact status menu on the row and pick "Review".
-    const statusBtn = within(row).getByRole("button");
+    const statusBtn = within(row).getByRole("button", { name: /Status:/ });
     statusBtn.focus();
     await user.keyboard("{Enter}");
     const reviewItem = await screen.findByRole("menuitem", { name: /Review/ });

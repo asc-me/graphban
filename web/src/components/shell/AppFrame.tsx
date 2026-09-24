@@ -8,9 +8,12 @@ import { CreateFirstProject } from "@/features/onboarding/CreateFirstProject";
 import { useConfig, useOrgs } from "@/lib/queries";
 import { ORG_BASE, clearOrgStateForSelfHost } from "@/lib/routes";
 
+import { useInputModality } from "@/lib/input-modality";
+
 import { ProjectBar } from "./ProjectBar";
 
 import { AgentSidebar } from "./AgentSidebar";
+import { CommandPalette } from "./CommandPalette";
 import { LeftNav } from "./LeftNav";
 import { TopBar } from "./TopBar";
 
@@ -49,7 +52,11 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   const { projects, loading, active, notFound } = useProjectCtx();
   const { pathname } = useLocation();
   const [agentOpen, setAgentOpen] = React.useState(true);
-  const [search, setSearch] = React.useState("");
+  const [paletteOpen, setPaletteOpen] = React.useState(false);
+  // Sticky modality at the moment of the toggle — keyboard Agent must not inherit a
+  // later pointer event mid-slide (PRD-46 §6).
+  const liveModality = useInputModality();
+  const [agentMotion, setAgentMotion] = React.useState(liveModality);
 
   if (loading) return <Loading />;
 
@@ -58,25 +65,43 @@ function FrameBody({ hosted }: { hosted: boolean }) {
   const onOrgPlane = hosted && pathname.startsWith(ORG_BASE);
   if (projects.length === 0 && !onOrgPlane) return <CreateFirstProject />;
 
+  function toggleAgent() {
+    setAgentMotion(liveModality);
+    setAgentOpen((v) => !v);
+  }
+
   return (
     <div className="flex h-full flex-col">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:border focus:border-line-hover focus:bg-surface-3 focus:px-3 focus:py-2 focus:text-[13px] focus:text-fg"
+      >
+        Skip to main content
+      </a>
       <TopBar
         agentOpen={agentOpen}
-        onToggleAgent={() => setAgentOpen((v) => !v)}
-        search={search}
-        onSearch={setSearch}
+        onToggleAgent={toggleAgent}
+        onOpenPalette={() => setPaletteOpen(true)}
       />
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
       <div className="flex min-h-0 flex-1">
         <LeftNav hosted={hosted} />
-        <main className="relative flex min-w-0 flex-1 flex-col">
+        <main id="main-content" className="relative flex min-w-0 flex-1 flex-col">
           {/* The project bar belongs to the project plane. On the org plane there is no
               active project in play, and showing one implies the page is scoped to it. */}
           {hosted && active && !onOrgPlane && <ProjectBar />}
           <div className="min-h-0 flex-1 overflow-auto">
-            {notFound ? <ProjectNotFound /> : <Outlet context={search} />}
+            {notFound ? <ProjectNotFound /> : <Outlet />}
           </div>
         </main>
-        <AgentSidebar open={agentOpen} onClose={() => setAgentOpen(false)} />
+        <AgentSidebar
+          open={agentOpen}
+          onClose={() => {
+            setAgentMotion(liveModality);
+            setAgentOpen(false);
+          }}
+          modality={agentMotion}
+        />
       </div>
       <DocsReader />
     </div>

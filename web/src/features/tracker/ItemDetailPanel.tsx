@@ -1,6 +1,7 @@
-import { BadgeCheck, ExternalLink, FlaskConical, GitPullRequest, Radio, X } from "lucide-react";
+import { BadgeCheck, ExternalLink, FlaskConical, GitPullRequest, Radio } from "lucide-react";
 
 import { Avatar } from "@/components/ui/avatar";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
 import { LinkedCode } from "@/features/code/LinkedCode";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -12,10 +13,12 @@ import { StatusMenu } from "./StatusMenu";
 
 export function ItemDetailPanel({
   item,
+  open,
   onClose,
   onStatus,
 }: {
   item: Item;
+  open: boolean;
   onClose: () => void;
   onStatus: (s: Status) => void;
 }) {
@@ -34,14 +37,13 @@ export function ItemDetailPanel({
   const blockedBy = deps.filter((id) => statusOf(id) !== "done");
 
   return (
-    <>
-      <div className="absolute inset-0 z-20 bg-black/30" onClick={onClose} />
-      <div className="absolute right-0 top-0 z-30 flex h-full w-[440px] max-w-full animate-fade flex-col border-l border-line-hover bg-surface-3 shadow-[-24px_0_60px_rgba(0,0,0,0.4)]">
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent
+        className="gb-sheet fixed inset-y-0 right-0 left-auto top-0 flex h-full w-[440px] max-w-full translate-x-0 translate-y-0 flex-col rounded-none border-l border-line-hover bg-surface-3 p-0 shadow-[-24px_0_60px_rgba(0,0,0,0.4)]"
+        aria-describedby={undefined}
+      >
         <div className="flex flex-none items-center justify-between border-b border-line px-5 py-3.5">
-          <span className="font-mono text-[11px] text-faint">{item.id}</span>
-          <button onClick={onClose} className="text-faint hover:text-fg">
-            <X size={16} />
-          </button>
+          <DialogTitle className="font-mono text-[11px] font-normal text-faint">{item.id}</DialogTitle>
         </div>
 
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-5 py-5">
@@ -291,8 +293,8 @@ export function ItemDetailPanel({
             </div>
           )}
         </div>
-      </div>
-    </>
+      </DialogContent>
+    </Dialog>
   );
 }
 

@@ -15,16 +15,16 @@ import { useAuth } from "@/features/auth/AuthContext";
 import { ReportIssueDialog } from "@/features/reports/ReportIssueDialog";
 import { useApiKeys, useMcpTools } from "@/lib/queries";
 
+export const TOP_BAR_JUMP_PLACEHOLDER = "Jump to a page, item, or PRD…";
+
 export function TopBar({
   agentOpen,
   onToggleAgent,
-  search,
-  onSearch,
+  onOpenPalette,
 }: {
   agentOpen: boolean;
   onToggleAgent: () => void;
-  search: string;
-  onSearch: (v: string) => void;
+  onOpenPalette: () => void;
 }) {
   const { user, logout } = useAuth();
   const { data: keys } = useApiKeys();
@@ -50,14 +50,23 @@ export function TopBar({
       <div className="relative max-w-[340px] flex-1">
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted opacity-60" />
         <input
-          value={search}
-          onChange={(e) => onSearch(e.target.value)}
-          placeholder="Search items, memory…"
-          className="h-[34px] w-full rounded-[9px] border border-line-2 bg-surface-2 pl-9 pr-12 text-[13px] outline-none transition-colors focus:border-line-hover focus:bg-surface-3"
+          readOnly
+          aria-label="Jump to"
+          placeholder={TOP_BAR_JUMP_PLACEHOLDER}
+          onFocus={(e) => {
+            e.target.blur();
+            onOpenPalette();
+          }}
+          className="h-[34px] w-full cursor-pointer rounded-[9px] border border-line-2 bg-surface-2 pl-9 pr-12 text-[13px] outline-none transition-colors focus:border-line-hover focus:bg-surface-3"
         />
-        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-[5px] border border-line-2 px-1.5 py-0.5 font-mono text-[10px] text-faint-2">
+        <button
+          type="button"
+          aria-label="Open command palette"
+          onClick={onOpenPalette}
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-[5px] border border-line-2 px-1.5 py-0.5 font-mono text-[10px] text-faint-2 hover:border-line-hover hover:text-faint"
+        >
           ⌘K
-        </span>
+        </button>
       </div>
 
       <div className="flex-1" />
@@ -65,7 +74,7 @@ export function TopBar({
       <div className="flex items-center gap-1.5 rounded-lg border border-[#1c2620] bg-[rgba(95,208,122,0.05)] px-2.5 py-1.5 font-mono text-[10.5px] text-st-done">
         <span className="blink h-1.5 w-1.5 rounded-full bg-st-done shadow-[0_0_8px_#5fd07a]" />
         MCP · {liveTools} TOOLS LIVE
-        {keys && keys.length > 0 && <span className="text-faint">· {keys.length} KEYS</span>}
+        {keys && keys.length > 0 && <span className="text-muted-2">· {keys.length} KEYS</span>}
       </div>
 
       <Button variant="agent" size="sm" onClick={onToggleAgent} aria-pressed={agentOpen}>
@@ -78,7 +87,10 @@ export function TopBar({
       {user && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="flex h-9 items-center gap-2 rounded-full border border-line-2 bg-surface py-0.5 pl-0.5 pr-2 transition-colors hover:border-line-hover">
+            <button
+              aria-label={user.name}
+              className="flex h-9 items-center gap-2 rounded-full border border-line-2 bg-surface py-0.5 pl-0.5 pr-2 transition-colors hover:border-line-hover"
+            >
               <Avatar initials={user.initials} color={user.avatar} size={28} />
               <ChevronDown size={12} className="text-faint" />
             </button>

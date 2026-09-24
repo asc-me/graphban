@@ -1,4 +1,4 @@
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 
 import { Dot } from "@/components/ui/badge";
 import {
@@ -24,7 +24,9 @@ export function StatusMenu({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
+          type="button"
           onClick={(e) => e.stopPropagation()}
+          aria-label={`Status: ${meta.label}`}
           className="inline-flex items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 transition-colors hover:border-line-2 hover:bg-surface-3"
         >
           <Dot color={meta.color} glow={status === "in_progress"} />
@@ -47,6 +49,7 @@ export function StatusMenu({
             <span className="font-mono text-[11px] uppercase tracking-wide" style={{ color: STATUS_META[s].color }}>
               {STATUS_META[s].label}
             </span>
+            {s === status && <Check size={12} className="ml-auto text-fg" aria-hidden />}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
