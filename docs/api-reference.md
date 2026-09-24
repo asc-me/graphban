@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 156 of the 233 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 157 of the 234 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -288,6 +288,7 @@ whole difference between this graph and a guess. Nothing is inferred from simila
 | --- | --- | --- |
 | GET | `/api/orgs/{id}/galaxy` | Nodes (projects), edges (typed + evidenced), and name collisions |
 | GET | `/api/orgs/{id}/overview` | Every project in the org at once — item counts, open claims, graph size, last push (PRD-21 D2) |
+| POST | `/api/orgs/{id}/enable-all-feedback` | Turn on intake + form for every project in the org. Sets `feedback_default_on` so new projects inherit those two flags. Does NOT turn on issues/requests/roadmap (per-project opt-in). Per-project opt-out still 404s that project's public form (PRD-43 D4) |
 
 `overview` is the org's **only** cross-project read, and it is a new endpoint rather than a
 relaxed one. `authz.require_readable` fails closed on a null project by design, so
