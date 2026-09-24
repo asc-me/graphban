@@ -597,3 +597,117 @@ def validate_slug_endpoint(slug: str):
     if err:
         return {"valid": False, "error": err}
     return {"valid": True}
+
+
+# ---- PRD-43 D8: Root-level Host-header routed surfaces ----
+# Separate router without /public prefix for {org}.graphban.dev/{path}/{surface}
+
+from app.services.platform import resolve_org_from_host_db, resolve_project_by_path_id, resolve_redirect
+
+host_router = APIRouter(tags=["host-routing"])
+
+
+@host_router.get("/{path_id}/{surface}")
+def host_routed_surface_root(
+    path_id: str,
+    surface: str,
+    request: FastAPIRequest,
+    db: Session = Depends(get_db),
+):
+    """PRD-43 D8: Root-level Host-header routed public surfaces.
+    
+    In hosted mode: `{org_host}.graphban.dev/{path_id}/{surface}`
+    Surfaces: roadmap, issues, requests, t/{token}
+    
+    Unknown host/path/surface flag off → 404 identical to unknown.
+    Redirect aliases → 301.
+    """
+    # Self-host: no Host-header routing; surfaces stay on deployment origin.
+    if not settings.hosted_mode:
+        raise HTTPException(404, "not found")
+    
+    host = request.headers.get("host", "")
+    host = host.split(":")[0].lower()
+    
+    # Extract the org slug from the host (strip .graphban.dev).
+    org_slug = None
+    if host.endswith(".graphban.dev"):
+        org_slug = host[: -len(".graphban.dev")]
+    
+    # Try to resolve org from host.
+    org = resolve_org_from_host_db(db, host)
+    if org is None:
+        # Check if this is a redirect alias (use the slug, not the full host).
+        if org_slug:
+            new_host = resolve_redirect(db, org_slug)
+            if new_host:
+                return Response(
+                    status_code=301,
+                    headers={"Location": f"https://{new_host}.graphban.dev/{path_id}/{surface}"},
+                )
+        raise HTTPException(404, "not found")
+    
+    # Resolve project from path_id within org.
+    project = resolve_project_by_path_id(db, org.id, path_id)
+    if project is None:
+        raise HTTPException(404, "not found")
+    
+    cfg = get_config(db, project.id)
+    
+    # Route to surface.
+    if surface == "roadmap":
+        if not cfg.public_roadmap_enabled:
+            raise HTTPException(404, "not found")
+        _rate_or_429(db, request, project.id)
+        return roadmap_svc.list_roadmap(db, project_id=project.id)
+    
+    elif surface == "issues":
+        if not cfg.public_issues_enabled:
+            raise HTTPException(404, "not found")
+        _rate_or_429(db, request, project.id)
+        reqs = req_svc.public_board(db, project.id, types=["bug"])
+        rows = []
+        for r in reqs:
+            comments = req_svc.list_comments(db, r.id, visibility="public")
+            row = req_svc.serialize_public_row(r, comments)
+            if r.linked_to:
+                item = db.get(Item, r.linked_to)
+                if item:
+                    row["linked_status"] = item.status
+            rows.append(row)
+        return rows
+    
+    elif surface == "requests":
+        if not cfg.public_requests_enabled:
+            raise HTTPException(404, "not found")
+        _rate_or_429(db, request, project.id)
+        reqs = req_svc.public_board(db, project.id, types=["feature", "enhancement"])
+        rows = []
+        for r in reqs:
+            comments = req_svc.list_comments(db, r.id, visibility="public")
+            row = req_svc.serialize_public_row(r, comments)
+            if r.linked_to:
+                item = db.get(Item, r.linked_to)
+                if item:
+                    row["linked_status"] = item.status
+            rows.append(row)
+        return rows
+    
+    elif surface.startswith("t/"):
+        track_token = surface[2:]
+        if not track_token:
+            raise HTTPException(404, "not found")
+        _rate_or_429(db, request, project.id)
+        req = req_svc.resolve_track_token(db, track_token)
+        if req is None or req.project_id != project.id:
+            raise HTTPException(404, "not found")
+        comments = req_svc.list_comments(db, req.id, visibility="public")
+        data = req_svc.serialize_tracking(req, comments)
+        if req.linked_to:
+            item = db.get(Item, req.linked_to)
+            if item:
+                data["linked_status"] = item.status
+        return data
+    
+    else:
+        raise HTTPException(404, "not found")

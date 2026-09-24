@@ -1062,3 +1062,57 @@ def claim_project_path_id(db: Session, project_id: str, slug: str) -> dict:
     cfg.public_path_id = slug
     db.commit()
     return {"public_path_id": slug}
+
+
+# ---- PRD-43 D8: Host-header routing ----
+
+_HOSTED_DOMAIN = ".graphban.dev"
+
+
+def resolve_org_from_host(host: str) -> "Organization | None":
+    """PRD-43 D8: resolve an org from a Host header like `{org_host}.graphban.dev`.
+    Returns None if the host doesn't match the hosted domain or the org doesn't exist.
+    """
+    if not host or not host.endswith(_HOSTED_DOMAIN):
+        return None
+    org_slug = host[: -len(_HOSTED_DOMAIN)].lower()
+    if not org_slug:
+        return None
+    from app.models import Organization
+    # This is a read-only lookup; caller passes db via resolve_org_from_host_db.
+    # Kept as a two-step for testability without a db session.
+    return org_slug  # type: ignore[return-value]
+
+
+def resolve_org_from_host_db(db: Session, host: str) -> "Organization | None":
+    """PRD-43 D8: resolve an org from Host header, with db lookup."""
+    org_slug = resolve_org_from_host(host)
+    if org_slug is None or isinstance(org_slug, str) and not org_slug:
+        return None
+    from app.models import Organization
+    return db.scalar(
+        select(Organization).where(Organization.public_host == org_slug)
+    )
+
+
+def resolve_project_by_path_id(db: Session, org_id: str, path_id: str) -> "Project | None":
+    """PRD-43 D8: resolve a project by its public_path_id within an org."""
+    from app.models import Project
+    cfg = db.scalar(
+        select(PlatformConfig).where(PlatformConfig.public_path_id == path_id)
+    )
+    if cfg is None:
+        return None
+    project = db.get(Project, cfg.project_id)
+    if project is None or project.org_id != org_id:
+        return None
+    return project
+
+
+def resolve_redirect(db: Session, host: str) -> str | None:
+    """PRD-43 D8: resolve a slug redirect. Returns the new host if a redirect exists, else None."""
+    from app.models import SlugRedirect
+    redirect = db.scalar(
+        select(SlugRedirect).where(SlugRedirect.old_host == host)
+    )
+    return redirect.new_host if redirect else None

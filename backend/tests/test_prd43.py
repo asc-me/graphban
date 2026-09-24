@@ -381,3 +381,152 @@ def test_slug_claim_project_path(client, auth):
     resp = client.post("/api/public/slugs/project-path?project_id=core",
                        json={"slug": "api"}, headers=auth)
     assert resp.status_code == 409
+
+
+# ---- PRD-43 D8: Host-header routing tests ----
+
+
+def _enable_hosted_mode():
+    """Enable hosted_mode for Host-header routing tests."""
+    from app.config import settings
+    original = settings.hosted_mode
+    settings.hosted_mode = True
+    return original
+
+
+def _restore_hosted_mode(original):
+    """Restore hosted_mode after test."""
+    from app.config import settings
+    settings.hosted_mode = original
+
+
+def test_host_routing_roadmap(client, auth):
+    """D8: Host-header routing resolves org+project and serves roadmap."""
+    original = _enable_hosted_mode()
+    try:
+        db = _get_db()
+        try:
+            from app.models import Organization, Project, Membership
+            from app.services.platform import get_config
+            # Create org with public_host.
+            org = Organization(id="org_host_test", name="Host Test Org", plan="enterprise",
+                              public_host="acme")
+            db.add(org)
+            db.flush()
+            # Create project with public_path_id.
+            proj = Project(id="proj_host_test", name="Host Test Proj", tag="hijk",
+                          org_id=org.id)
+            db.add(proj)
+            db.flush()
+            db.add(Membership(user_id="u1", project_id=proj.id, role="owner", access="write"))
+            cfg = get_config(db, proj.id)
+            cfg.public_path_id = "myapp"
+            cfg.public_share_enabled = True
+            cfg.public_roadmap_enabled = True
+            db.commit()
+        finally:
+            db.close()
+        
+        # Request with Host header.
+        resp = client.get("/myapp/roadmap", headers={"host": "acme.graphban.dev"})
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+    finally:
+        _restore_hosted_mode(original)
+
+
+def test_host_routing_unknown_host_404(client, auth):
+    """D8: unknown Host header → 404."""
+    original = _enable_hosted_mode()
+    try:
+        resp = client.get("/myapp/roadmap", headers={"host": "unknown.graphban.dev"})
+        assert resp.status_code == 404
+    finally:
+        _restore_hosted_mode(original)
+
+
+def test_host_routing_unknown_path_404(client, auth):
+    """D8: unknown path_id → 404."""
+    original = _enable_hosted_mode()
+    try:
+        db = _get_db()
+        try:
+            from app.models import Organization
+            org = Organization(id="org_path_test", name="Path Test Org", plan="enterprise",
+                              public_host="beta")
+            db.add(org)
+            db.commit()
+        finally:
+            db.close()
+        
+        resp = client.get("/nonexistent/roadmap", headers={"host": "beta.graphban.dev"})
+        assert resp.status_code == 404
+    finally:
+        _restore_hosted_mode(original)
+
+
+def test_host_routing_surface_flag_off_404(client, auth):
+    """D8: surface flag off → 404 identical to unknown."""
+    original = _enable_hosted_mode()
+    try:
+        db = _get_db()
+        try:
+            from app.models import Organization, Project, Membership
+            from app.services.platform import get_config
+            org = Organization(id="org_flag_test", name="Flag Test Org", plan="enterprise",
+                              public_host="gamma")
+            db.add(org)
+            db.flush()
+            proj = Project(id="proj_flag_test", name="Flag Test Proj", tag="lmno",
+                          org_id=org.id)
+            db.add(proj)
+            db.flush()
+            db.add(Membership(user_id="u1", project_id=proj.id, role="owner", access="write"))
+            cfg = get_config(db, proj.id)
+            cfg.public_path_id = "testapp"
+            cfg.public_share_enabled = True
+            cfg.public_roadmap_enabled = False  # Flag off.
+            db.commit()
+        finally:
+            db.close()
+        
+        resp = client.get("/testapp/roadmap", headers={"host": "gamma.graphban.dev"})
+        assert resp.status_code == 404
+    finally:
+        _restore_hosted_mode(original)
+
+
+def test_host_routing_redirect_301(client, auth):
+    """D8: old host → 301 redirect to new host."""
+    original = _enable_hosted_mode()
+    try:
+        db = _get_db()
+        try:
+            from app.models import Organization, SlugRedirect
+            org = Organization(id="org_redir_host", name="Redir Host Org", plan="enterprise",
+                              public_host="newhost")
+            db.add(org)
+            db.flush()
+            db.add(SlugRedirect(org_id=org.id, old_host="oldhost", new_host="newhost"))
+            db.commit()
+        finally:
+            db.close()
+        
+        resp = client.get("/myapp/roadmap", headers={"host": "oldhost.graphban.dev"},
+                         follow_redirects=False)
+        assert resp.status_code == 301
+        assert "newhost" in resp.headers.get("location", "")
+    finally:
+        _restore_hosted_mode(original)
+
+
+def test_host_routing_self_host_disabled(client, auth):
+    """D8: self-host mode → Host-header routing disabled (404)."""
+    original = _enable_hosted_mode()
+    _restore_hosted_mode(False)  # Self-host mode.
+    try:
+        resp = client.get("/myapp/roadmap", headers={"host": "acme.graphban.dev"})
+        assert resp.status_code == 404
+    finally:
+        _restore_hosted_mode(original)
+

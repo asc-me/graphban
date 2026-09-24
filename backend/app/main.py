@@ -276,6 +276,8 @@ app.include_router(prds.router, prefix=API)
 app.include_router(analytics.router, prefix=API)
 app.include_router(platform.router, prefix=API)
 app.include_router(public.router, prefix=API)
+# PRD-43 D8: Host-header routed surfaces at root level (no /api prefix).
+app.include_router(public.host_router)
 app.include_router(reports.router, prefix=API)
 app.include_router(sync.router, prefix=API)
 app.include_router(linear.router, prefix=API)
