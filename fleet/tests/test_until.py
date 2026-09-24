@@ -1286,3 +1286,108 @@ def test_a_blocked_items0_is_not_the_seed(tmp_path: Path):
     )
     assert seed == "READY" and code == "WORKER-X"
     assert planner.delegated == ["READY"]
+
+
+# --- GRPH-930: _already_in_base forge fallback for squash merges ---------------
+
+import subprocess as _sp
+
+
+def _git_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda *a: _sp.run(["git", *a], cwd=repo, capture_output=True, text=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@t.t")
+    run("config", "user.name", "t")
+    (repo / "a.txt").write_text("one\n")
+    run("add", "-A")
+    run("commit", "-qm", "one")
+    return repo
+
+
+def _branch_and_commit(repo: Path, name: str) -> str:
+    run = lambda *a: _sp.run(["git", *a], cwd=repo, capture_output=True, text=True)
+    run("checkout", "-q", "-b", name)
+    (repo / f"{name}.txt").write_text("work\n")
+    run("add", "-A")
+    run("commit", "-qm", name)
+    sha = _sp.run(["git", "rev-parse", "HEAD"], cwd=repo,
+                   capture_output=True, text=True).stdout.strip()
+    run("checkout", "-q", "main")
+    return sha
+
+
+def test_already_in_base_recognises_squash_merged_pr(tmp_path, monkeypatch):
+    """A squash-merged item's pre-squash SHA is not ancestral to main, but the forge says
+    the PR is MERGED. The work IS in base — the squash SHA carries it (GRPH-930)."""
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base
+
+    repo = _git_repo(tmp_path)
+    pre_squash = _branch_and_commit(repo, "feature")
+
+    monkeypatch.setattr(propose_mod, "view", lambda *a, **kw: (
+        {"state": "MERGED", "mergeCommit": {"oid": "c" * 40}}, ""))
+
+    details = {
+        "branch": "feature",
+        "evidence": [{"commit": pre_squash, "kind": "sabotage"}],
+        "pr": "https://github.com/o/r/pull/42",
+    }
+    assert _already_in_base(details, repo, "main") is True
+
+
+def test_already_in_base_open_pr_is_not_in_base(tmp_path, monkeypatch):
+    """An open PR with a non-ancestral SHA: the work is NOT in base yet."""
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base
+
+    repo = _git_repo(tmp_path)
+    pre_squash = _branch_and_commit(repo, "feature")
+
+    monkeypatch.setattr(propose_mod, "view", lambda *a, **kw: (
+        {"state": "OPEN"}, ""))
+
+    details = {
+        "branch": "feature",
+        "evidence": [{"commit": pre_squash}],
+        "pr": "https://github.com/o/r/pull/42",
+    }
+    assert _already_in_base(details, repo, "main") is False
+
+
+def test_already_in_base_unreachable_forge_is_not_in_base(tmp_path, monkeypatch):
+    """Forge unreachable: the PR might be merged but we cannot tell. Not True —
+    `_already_in_base` must not skip the cluster on an uncertain answer."""
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base
+
+    repo = _git_repo(tmp_path)
+    pre_squash = _branch_and_commit(repo, "feature")
+
+    monkeypatch.setattr(propose_mod, "view", lambda *a, **kw: (None, "gh could not run"))
+
+    details = {
+        "branch": "feature",
+        "evidence": [{"commit": pre_squash}],
+        "pr": "https://github.com/o/r/pull/42",
+    }
+    assert _already_in_base(details, repo, "main") is False
+
+
+def test_already_in_base_no_pr_with_unmerged_sha_is_not_in_base(tmp_path, monkeypatch):
+    """No PR info, SHA not ancestral. The forge has nothing to say — not in base."""
+    from gbfleet import propose as propose_mod
+    from gbfleet.until import _already_in_base
+
+    repo = _git_repo(tmp_path)
+    pre_squash = _branch_and_commit(repo, "feature")
+
+    monkeypatch.setattr(propose_mod, "view", lambda *a, **kw: (None, "no PR found"))
+
+    details = {
+        "branch": "feature",
+        "evidence": [{"commit": pre_squash}],
+    }
+    assert _already_in_base(details, repo, "main") is False

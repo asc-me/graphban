@@ -1095,6 +1095,11 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
 
     A git-merged item still `next` (waiting on sign-off) is not a new build. `reaches`
     returns None when this clone cannot tell; that is not "merged".
+
+    GRPH-930: a squash merge rewrites the SHA, so `reaches` returns False for a commit
+    whose work IS in the base via the squash. When the forge says the PR is MERGED, the
+    work is carried by the squash SHA — same fallback as `deps.check` (GRPH-868). Without
+    it, a squash-merged item still `next` would be re-delegated and rebuilt for nothing.
     """
     if not base or repo is None:
         return False
@@ -1113,7 +1118,11 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
         seen.append(commit)
         if wt_reaches(repo, base, commit) is True:
             return True
-    return False
+    # GRPH-930: SHA ancestry says "not in base", but a squash merge rewrites the SHA.
+    # Ask the forge whether this item's PR is MERGED — that fact survives the rewrite.
+    # Only a definitive MERGED counts; an open PR or an unreachable forge leaves the
+    # answer as False (the original git-only verdict), not True.
+    return deps._pr_is_merged(repo, details) is True
 
 
 def _delegate_next(
