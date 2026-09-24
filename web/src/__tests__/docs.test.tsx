@@ -61,6 +61,15 @@ describe("DocsReader", () => {
     expect(screen.getByRole("button", { name: "Gitops" })).toBeInTheDocument();
   });
 
+  it("hides the docs FAB while the agent rail is open (GRPH-923)", () => {
+    render(
+      <MemoryRouter initialEntries={["/tracker"]}>
+        <DocsReader agentOpen />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByLabelText("Open docs for this page")).not.toBeInTheDocument();
+  });
+
   it("toggles with the ? shortcut and records feedback locally", async () => {
     const user = userEvent.setup();
     renderAt("/dashboard");

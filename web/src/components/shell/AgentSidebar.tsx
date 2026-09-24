@@ -1,13 +1,22 @@
 import { ArrowUp, Brain, Plus, Search, Sparkles, X } from "lucide-react";
 import * as React from "react";
+import { useLocation } from "react-router-dom";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import type { InputModality } from "@/lib/input-modality";
-import { useAddShard, useShards } from "@/lib/queries";
-import type { ShardHit } from "@/lib/types";
+import { useAddShard, useCounts, useItems, useShards } from "@/lib/queries";
+import type { Shard, ShardHit } from "@/lib/types";
+
+const COOLDOWN_CAP = 3;
+
+/** Gate-refusal shards for finished items are stale on the rail — hide them, not every pr_cooldown. */
+function isStaleGateRefusal(shard: Shard, doneItemIds: ReadonlySet<string>): boolean {
+  if (!shard.item_id || !shard.source.startsWith("gate refusal:")) return false;
+  return doneItemIds.has(shard.item_id);
+}
 
 const SHARD_PAGE = 50;
 
@@ -64,10 +73,14 @@ export function AgentSidebar({
 
 function MemoryPanel() {
   const { activeId } = useProjectCtx();
+  const { pathname } = useLocation();
+  const onMemoryReview = /memory-review/.test(pathname);
   // A page, not the corpus. This panel renders a scrolling list and has its own search, and
   // it mounts OPEN by default (AppFrame) — so it was pulling every shard in the project on
   // every page load, 740 KB of it (GRPH-431). Search reaches everything the page does not.
-  const { data: shards = [] } = useShards(activeId, SHARD_PAGE);
+  const { data: shards, isLoading: shardsLoading, isError: shardsError } = useShards(activeId, SHARD_PAGE);
+  const { data: counts } = useCounts(activeId);
+  const { data: items } = useItems(activeId);
   const addShard = useAddShard(activeId);
   const [query, setQuery] = React.useState("");
   const [hits, setHits] = React.useState<ShardHit[] | null>(null);
@@ -99,9 +112,35 @@ function MemoryPanel() {
     setDraft("");
   }
 
+  const doneItemIds = React.useMemo(
+    () => new Set((items ?? []).filter((it) => it.status === "done").map((it) => it.id)),
+    [items],
+  );
+  const visibleShards = React.useMemo(() => {
+    const page = shards ?? [];
+    const fresh = page.filter((s) => !isStaleGateRefusal(s, doneItemIds));
+    let cooldownShown = 0;
+    return fresh.filter((s) => {
+      if (!s.source.includes("pr_cooldown")) return true;
+      if (cooldownShown >= COOLDOWN_CAP) return false;
+      cooldownShown += 1;
+      return true;
+    });
+  }, [shards, doneItemIds]);
+
   const list = hits
     ? hits.map((h) => ({ ...h.shard, score: h.score }))
-    : shards.map((s) => ({ ...s, score: undefined as number | undefined }));
+    : visibleShards.map((s) => ({ ...s, score: undefined as number | undefined }));
+
+  const countLabel = hits
+    ? `${hits.length} matches`
+    : shardsLoading
+      ? "loading shards…"
+      : shardsError
+        ? "shards unavailable"
+        : onMemoryReview && counts?.review != null
+          ? `${counts.review} waiting · ${visibleShards.length} shards shown`
+          : `${visibleShards.length} shards shown`;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -119,7 +158,7 @@ function MemoryPanel() {
       </form>
 
       <div className="flex items-center justify-between px-4 pb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">
-        <span>{hits ? `${hits.length} matches` : `${shards.length} shards`}</span>
+        <span>{countLabel}</span>
         {hits && (
           <button className="text-faint hover:text-fg" onClick={() => { setHits(null); setQuery(""); }}>
             clear
@@ -127,7 +166,7 @@ function MemoryPanel() {
         )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-28">
         {searching && <div className="py-6 text-center text-[12px] text-muted">Searching…</div>}
         <div className="flex flex-col gap-2">
           {list.map((s) => (

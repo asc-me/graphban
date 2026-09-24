@@ -103,7 +103,7 @@ function FrameBody({ hosted }: { hosted: boolean }) {
           modality={agentMotion}
         />
       </div>
-      <DocsReader />
+      <DocsReader agentOpen={agentOpen} />
     </div>
   );
 }
