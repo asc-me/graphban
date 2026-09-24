@@ -860,6 +860,31 @@ export function useLinkRequest() {
   });
 }
 
+export function usePublishRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.publishRequest(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.requests }),
+  });
+}
+
+export function useUnpublishRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.unpublishRequest(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.requests }),
+  });
+}
+
+export function useCreateRequestComment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body, visibility }: { id: string; body: string; visibility: "public" | "private" }) =>
+      api.createRequestComment(id, body, visibility),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.requests }),
+  });
+}
+
 export function useFleet(projectId?: string) {
   // Polled: presence is derived from last contact, so the roster only changes when time
   // passes. Without a refetch an agent that died stays green until somebody navigates away.

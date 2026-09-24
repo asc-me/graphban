@@ -27,7 +27,7 @@ const core: Project = {
 const req = (id: string, title: string, extra: Partial<TriageRow["request"]> = {}) => ({
   id, project_id: "prj_core", type: "bug" as const, title, detail: "", by: "dana",
   votes: 3, status: "new", linked_to: null, ago: "2h", source_url: "", meta: {},
-  attachment_ids: [], created_at: "", ...extra,
+  attachment_ids: [], created_at: "", published_at: null, ...extra,
 });
 
 const QUEUE: TriageRow[] = [

@@ -699,6 +699,7 @@ class RequestOut(ORMModel):
     meta: dict = {}
     attachment_ids: list[str] = []
     created_at: datetime
+    published_at: datetime | None = None
 
     # Rows created before these columns existed can hold NULL; coerce to the default.
     @field_validator("meta", mode="before")
