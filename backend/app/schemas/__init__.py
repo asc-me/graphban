@@ -811,6 +811,7 @@ class PlatformConfigOut(ORMModel):
     provider_config: dict = {}  # redacted per-provider config (api keys → key_set bool)
     public_share_enabled: bool = False
     share_token: str | None = None  # the share-link token (shown to authed members only)
+    ingest_token_prefix: str = ""  # PRD-43 D1: prefixed gbfb_… shown to members; the full token is mint-only
     sync_graph: bool = True  # AL-137 D8: whether this project's code graph pushes to the cloud
 
     @computed_field

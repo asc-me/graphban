@@ -474,6 +474,15 @@ export function usePlatform(projectId: string) {
   });
 }
 
+// PRD-43 D1: mint or rotate the ingest token. Invalidates platform so the prefix read updates.
+export function useMintIngestToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) => api.mintIngestToken(projectId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["platform"] }),
+  });
+}
+
 // Instance-wide cloud link + per-project sync state (AL-141). Not project-keyed — the link
 // is one per instance and the payload already carries every readable project's state.
 export function useSyncStatus() {

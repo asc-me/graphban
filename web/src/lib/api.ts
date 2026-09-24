@@ -830,6 +830,9 @@ export const api = {
   platform: (projectId: string) => request<PlatformConfig>(`/platform${projectQuery(projectId)}`),
   updatePlatform: (projectId: string, body: Partial<PlatformConfig>) =>
     request<PlatformConfig>(`/platform${projectQuery(projectId)}`, { method: "PATCH", body: JSON.stringify(body) }),
+  // PRD-43 D1: mint or rotate the ingest token. Returns the plaintext ONCE.
+  mintIngestToken: (projectId: string) =>
+    request<{ token: string; prefix: string }>(`/public/ingest-token${projectQuery(projectId)}`, { method: "POST" }),
   aiProviders: () => request<{ providers: AiProvider[] }>("/platform/providers"),
 
   // ---- Credentials (PRD-25). Deployment-scoped: the project id in the query resolves the

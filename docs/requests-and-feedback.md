@@ -27,10 +27,26 @@ An unauthenticated, themeable widget that drops submissions straight into the tr
 - **Theming** via URL params: `accent` (hex, no `#`), `radius` (px), `types` (comma list),
   `email` (`1`/`0`), `project`. Example:
   `…/embed/feedback?accent=a78bfa&radius=20&types=bug,feature,feedback`
-- **Backend:** `POST /api/public/requests` (ingest token or legacy share token, rate-limited)
-  creates the request and returns any duplicates it found. Native apps POST the same
-  contract; see the Feedback Kit. Exposing a self-host box to the public internet:
+- **Backend:** `POST /api/public/requests` accepts auth via `Authorization: Bearer gbfb_…`
+  (ingest token, preferred) or the legacy share token query param. Rate-limited. Creates
+  the request and returns any duplicates it found. Native apps POST the same contract;
+  see the Feedback Kit. Exposing a self-host box to the public internet:
   [self-host exposure](self-host-exposure.md).
+
+### Ingest token (PRD-43 D1)
+
+The ingest token is a rotatable Bearer credential for public feedback submission, minted
+in **Settings → Integrations → Ingest token**. Tokens are prefixed `gbfb_` so leaks are
+greppable.
+
+- **Mint:** generates a new token; the plaintext is shown **once** — copy it immediately.
+- **Rotate:** generates a new token and immediately invalidates the previous one. Any
+  widget or API client using the old token starts failing.
+- **Use:** pass `Authorization: Bearer gbfb_…` on `POST /api/public/requests`. The token
+  resolves to the project that minted it — no `project_id` body field needed.
+- **Feedback Kit:** paste the token into the Kit's "Ingest token" field; the generated
+  snippet embeds it in the widget, which sends it as Bearer auth on every submit.
+- **Legacy:** the old `?token=` share-token path continues to work (G9).
 
 ### Auto-duplicate detection
 
@@ -101,7 +117,8 @@ A GitHub issues webhook can feed the tracker directly — see
 | POST | `/api/requests` | JWT | Create |
 | POST | `/api/requests/{id}/vote` | JWT | Upvote (`{delta}`) |
 | POST | `/api/requests/{id}/link` | JWT | Link to an item (`{item_id}`) |
-| POST | `/api/public/requests` | **public** | Submit + return duplicates |
+| POST | `/api/public/requests` | **public** | Submit + return duplicates (Bearer `gbfb_…` or legacy share token) |
+| POST | `/api/public/ingest-token` | JWT | Mint / rotate the ingest token for a project |
 | GET | `/api/public/duplicates` | **public** | Live duplicate check (`?q=&project_id=`) |
 
 ## Related
