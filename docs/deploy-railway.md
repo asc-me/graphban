@@ -177,6 +177,61 @@ that reason too. Everything else is in Postgres.
 of GRPH-33 that cannot be committed. Set them against a measured baseline (Railway's own
 HTTP error-rate and response-time panels) rather than a guess.
 
+## Wildcard `*.graphban.dev` (PRD-43 D8)
+
+Hosted org subdomains (`{org}.graphban.dev/{path}/{surface}`) need a wildcard domain on the
+**web** service. The backend stays unexposed — nginx proxies `*.graphban.dev` to the backend,
+which resolves the org from the Host header and 404s unknown labels.
+
+### Attach the domain
+
+1. In the Railway dashboard, open the **web** service → **Domains** tab.
+2. Add `*.graphban.dev` as a wildcard domain (same place `cloud.graphban.dev` lives).
+3. Railway returns a target (e.g. `proxy-production-xxx.up.railway.app`). Wait until
+   `domain-status` shows the TLS cert is issued — attaching the domain is not the same as
+   TLS working.
+
+### DNS records at the registrar
+
+Add a wildcard CNAME pointing to the Railway target:
+
+```
+*.graphban.dev.  CNAME  <railway-target>.up.railway.app.
+```
+
+If the registrar does not support CNAME at the apex, use an ALIAS/ANAME record. The existing
+`cloud.graphban.dev` CNAME is a sibling record — the wildcard does not replace it.
+
+### Verify
+
+```bash
+# TLS: cert covers the wildcard (any unclaimed label should get a valid cert)
+echo | openssl s_client -servername random.graphban.dev -connect random.graphban.dev:443 2>/dev/null \
+  | openssl x509 -noout -subject -dates
+
+# HTTP: unknown org label → 404 from the backend (not the SPA)
+curl -sI https://random.graphban.dev/anything | head -1
+# Expected: HTTP/2 404
+
+# Known org: returns the surface
+curl -sI https://acme.graphban.dev/mobile/feedback | head -1
+# Expected: HTTP/2 200 (if acme org exists and feedback is enabled)
+```
+
+### nginx behavior
+
+The `web/nginx.conf.template` has a `server_name *.graphban.dev` block that proxies all
+requests to the backend with the original Host header. The backend's `host_router` (mounted
+at root level) resolves the org and returns 404 for unknown orgs, paths, or disabled
+surfaces. The catch-all `server_name _` block continues to serve the SPA for
+`cloud.graphban.dev` and other hosts. Unknown org labels do **not** fall through to the SPA.
+
+### Not this section
+
+- Attaching the domain to Railway (needs the Railway project owner)
+- Configuring DNS at the registrar (needs the domain owner)
+- BYO customer domains (later PRD)
+
 ## `/data/sync`
 
 Drive/filesystem sync is a self-host convenience. On Railway either leave it
