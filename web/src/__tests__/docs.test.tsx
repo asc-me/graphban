@@ -71,7 +71,6 @@ describe("DocsReader", () => {
   });
 
   it("toggles with the ? shortcut and records feedback locally", async () => {
-    const user = userEvent.setup();
     renderAt("/dashboard");
     fireEvent.keyDown(window, { key: "?" });
     const dialog = await screen.findByRole("dialog", { name: "Docs" });
