@@ -31,5 +31,6 @@ def test_proxy_pass_has_no_uri_part():
 
 
 def test_both_proxied_locations_are_pinned():
-    """/api/ and /health are the two hops this change most plausibly breaks."""
-    assert TEMPLATE.count("proxy_pass ${API_SCHEME}://$api_upstream;") == 2
+    """/api/ and /health in the catch-all server, plus the *.graphban.dev wildcard
+    server block (PRD-43 D8) — three proxy_pass directives, all without a URI part."""
+    assert TEMPLATE.count("proxy_pass ${API_SCHEME}://$api_upstream;") == 3

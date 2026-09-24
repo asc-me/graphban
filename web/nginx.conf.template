@@ -28,6 +28,40 @@ log_format json_access escape=json
     '"upstream_status":"$upstream_status","upstream_time":"$upstream_response_time",'
     '"bytes":$body_bytes_sent}';
 
+# PRD-43 D8: Wildcard *.graphban.dev server block.
+# Org subdomains (e.g. acme.graphban.dev) serve public surfaces only — feedback, roadmap,
+# issues, requests, tracking. The backend's host_router resolves the org from the Host header
+# and returns 404 for unknown orgs/paths/surfaces. We proxy everything to the backend here;
+# the catch-all server below serves the SPA for cloud.graphban.dev and other hosts.
+# Unknown org labels (e.g. random.graphban.dev) reach the backend, which 404s them — they
+# do NOT fall through to the SPA.
+server {
+    listen ${PORT};
+    access_log /dev/stdout json_access;
+    server_name *.graphban.dev;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+
+    location / {
+        set $api_upstream ${API_UPSTREAM};
+        proxy_pass ${API_SCHEME}://$api_upstream;
+        proxy_http_version 1.1;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+        proxy_ssl_server_name on;
+        # Pass the original Host header so the backend can resolve the org from it.
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Request-ID $request_id;
+    }
+}
+
 server {
     listen ${PORT};
     access_log /dev/stdout json_access;
