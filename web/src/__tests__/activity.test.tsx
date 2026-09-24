@@ -54,4 +54,48 @@ describe("Activity ledger", () => {
     expect(screen.getByText("AL-42")).toBeInTheDocument();
     expect(screen.getByText("revoke_api_key")).toBeInTheDocument();
   });
+
+  it("renders evidence receipts as kind — detail, not [object Object]", async () => {
+    const evidencePage: EventPage = {
+      results: [
+        {
+          id: 3,
+          ts: new Date().toISOString(),
+          actor_type: "apikey",
+          actor_id: "k2",
+          actor_label: "worker",
+          surface: "mcp",
+          action: "update_item",
+          target_type: "item",
+          target_id: "GRPH-920",
+          project_id: "core",
+          meta: {
+            status: "review",
+            evidence: [{ kind: "test", detail: "pnpm test 774 pass" }],
+          },
+        },
+      ],
+      total: 1,
+      limit: 100,
+      offset: 0,
+      has_more: false,
+    };
+
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.events).mockResolvedValueOnce(evidencePage);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/activity"]}>
+          <ProjectProvider>
+            <ActivityView />
+          </ProjectProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/evidence: test — pnpm test 774 pass/)).toBeInTheDocument();
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
+  });
 });
