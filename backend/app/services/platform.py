@@ -1164,3 +1164,46 @@ def resolve_redirect(db: Session, host: str) -> str | None:
         select(SlugRedirect).where(SlugRedirect.old_host == host)
     )
     return redirect.new_host if redirect else None
+
+
+def resolve_org_from_host_db(db: Session, host: str) -> "Organization | None":
+    """PRD-43 D8: resolve an org from a Host header like 'acme.graphban.dev'.
+
+    Returns the Organization row whose public_host matches the subdomain, or None.
+    """
+    from app.models import Organization
+    from app.config import settings as app_settings
+
+    if not app_settings.hosted_mode:
+        return None
+
+    suffix = ".graphban.dev"
+    if not host.endswith(suffix):
+        return None
+    subdomain = host[: -len(suffix)]
+    if not subdomain:
+        return None
+
+    org = db.scalar(
+        select(Organization).where(Organization.public_host == subdomain)
+    )
+    return org
+
+
+def resolve_project_by_path_id(db: Session, org_id: str, path_id: str) -> "str | None":
+    """PRD-43 D8: resolve a project_id within an org by its public_path_id.
+
+    Returns the project_id or None if no match.
+    """
+    cfg = db.scalar(
+        select(PlatformConfig).where(
+            PlatformConfig.public_path_id == path_id,
+        )
+    )
+    if cfg is None:
+        return None
+    from app.models import Project
+    project = db.get(Project, cfg.project_id)
+    if project is None or project.org_id != org_id:
+        return None
+    return cfg.project_id

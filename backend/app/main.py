@@ -291,6 +291,11 @@ app.include_router(tracker_links.router, prefix=API)
 # Operator plane (AL-91): hosted + platform-admin gated at the router level; every
 # route 404s for tenants, so the surface is invisible outside the operator allowlist.
 app.include_router(admin.router, prefix=API)
+# PRD-43 D8: Host-header routing for public surfaces ({org}.graphban.dev/{path}/{surface}).
+# Mounted at root level (no prefix), BEFORE the SPA catch-all. Only activates when
+# hosted_mode is on and the Host header matches a known org subdomain.
+from app.routers.public import host_router
+app.include_router(host_router)
 
 
 @app.get("/api/config")

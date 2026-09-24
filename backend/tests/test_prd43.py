@@ -697,3 +697,152 @@ def test_no_inherit_when_org_default_off(client, auth, monkeypatch):
         assert cfg.public_form_enabled is False, "form should not be on without org default"
     finally:
         db.close()
+
+
+# ---- Host-header routing tests (PRD-43 D8) ----
+
+def _setup_host_routing(client, auth, org_id="org_host_test", host_slug="acme",
+                        path_id="mobile", project_id="proj_host_test"):
+    """Helper: create org+project with public_host and public_path_id."""
+    from secrets import token_urlsafe
+    db = _get_db()
+    try:
+        from app.models import Organization, Project, Membership
+        org = Organization(id=org_id, name="Host Test Org", plan="enterprise",
+                           public_host=host_slug)
+        db.add(org)
+        db.flush()
+        proj = Project(id=project_id, name="Host Test Proj", tag="htst", org_id=org.id)
+        db.add(proj)
+        db.flush()
+        db.add(Membership(user_id="u1", project_id=proj.id, role="owner", access="write"))
+        from app.services.platform import get_config
+        cfg = get_config(db, proj.id)
+        cfg.public_path_id = path_id
+        cfg.public_form_enabled = True
+        cfg.public_roadmap_enabled = True
+        cfg.public_issues_enabled = True
+        cfg.public_requests_enabled = True
+        cfg.public_share_enabled = True
+        cfg.intake_enabled = True
+        if not cfg.share_token:
+            cfg.share_token = token_urlsafe(24)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_host_feedback_surface(client, auth, monkeypatch):
+    """D8: GET /{path_id}/feedback on {org}.graphban.dev returns feedback config."""
+    monkeypatch.setattr("app.config.settings.hosted_mode", True)
+    _setup_host_routing(client, auth)
+
+    resp = client.get("/mobile/feedback", headers={"host": "acme.graphban.dev"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["surface"] == "feedback"
+    assert data["project_id"] == "proj_host_test"
+
+
+def test_host_roadmap_surface(client, auth, monkeypatch):
+    """D8: GET /{path_id}/roadmap on {org}.graphban.dev returns roadmap data."""
+    monkeypatch.setattr("app.config.settings.hosted_mode", True)
+    _setup_host_routing(client, auth)
+
+    resp = client.get("/mobile/roadmap", headers={"host": "acme.graphban.dev"})
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+def test_host_issues_surface(client, auth, monkeypatch):
+    """D8: GET /{path_id}/issues on {org}.graphban.dev returns issues board."""
+    monkeypatch.setattr("app.config.settings.hosted_mode", True)
+    _setup_host_routing(client, auth)
+
+    resp = client.get("/mobile/issues", headers={"host": "acme.graphban.dev"})
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+def test_host_requests_surface(client, auth, monkeypatch):
+    """D8: GET /{path_id}/requests on {org}.graphban.dev returns requests board."""
+    monkeypatch.setattr("app.config.settings.hosted_mode", True)
+    _setup_host_routing(client, auth)
+
+    resp = client.get("/mobile/requests", headers={"host": "acme.graphban.dev"})
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
+
+
+def test_host_tracking_surface(client, auth, monkeypatch):
+    """D8: GET /{path_id}/t/{token} on {org}.graphban.dev returns tracking data."""
+    monkeypatch.setattr("app.config.settings.hosted_mode", True)
+    _setup_host_routing(client, auth)
+
+    # First create a submittable request to get a track token.
+    db = _get_db()
+    try:
+        from app.services.platform import get_config
+        cfg = get_config(db, "proj_host_test")
+        token = cfg.share_token
+    finally:
+        db.close()
+
+    resp = client.post("/api/public/requests", json={
+        "type": "bug",
+        "title": "Trackable via host",
+        "token": token or "",
+    })
+    assert resp.status_code == 201
+    track_url = resp.json()["track_url"]
+    track_token = track_url.split("/track/")[-1]
+
+    resp = client.get(f"/mobile/t/{track_token}", headers={"host": "acme.graphban.dev"})
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "Trackable via host"
+
+
+def test_host_unknown_org_returns_404(client, auth, monkeypatch):
+    """D8: unknown Host subdomain → 404."""
+    monkeypatch.setattr("app.config.settings.hosted_mode", True)
+    _setup_host_routing(client, auth)
+
+    resp = client.get("/mobile/feedback", headers={"host": "unknown.graphban.dev"})
+    assert resp.status_code == 404
+
+
+def test_host_unknown_path_returns_404(client, auth, monkeypatch):
+    """D8: unknown path_id → 404."""
+    monkeypatch.setattr("app.config.settings.hosted_mode", True)
+    _setup_host_routing(client, auth)
+
+    resp = client.get("/nonexistent/feedback", headers={"host": "acme.graphban.dev"})
+    assert resp.status_code == 404
+
+
+def test_host_surface_flag_off_returns_404(client, auth, monkeypatch):
+    """D8: surface flag off → 404."""
+    monkeypatch.setattr("app.config.settings.hosted_mode", True)
+    _setup_host_routing(client, auth)
+
+    # Disable feedback surface.
+    db = _get_db()
+    try:
+        from app.services.platform import get_config
+        cfg = get_config(db, "proj_host_test")
+        cfg.public_form_enabled = False
+        db.commit()
+    finally:
+        db.close()
+
+    resp = client.get("/mobile/feedback", headers={"host": "acme.graphban.dev"})
+    assert resp.status_code == 404
+
+
+def test_host_self_host_mode_disabled(client, auth, monkeypatch):
+    """D8: self-host mode (hosted_mode=False) → 404 for host routing."""
+    monkeypatch.setattr("app.config.settings.hosted_mode", False)
+    _setup_host_routing(client, auth)
+
+    resp = client.get("/mobile/feedback", headers={"host": "acme.graphban.dev"})
+    assert resp.status_code == 404
