@@ -1,6 +1,7 @@
 import { Check, Link2 } from "lucide-react";
 import * as React from "react";
 
+import { PlannerEmpty, RoadmapBoardSkeleton } from "@/components/planner/PlannerStates";
 import { Button } from "@/components/ui/button";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { copyText } from "@/lib/clipboard";
@@ -34,7 +35,12 @@ export function RoadmapView() {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         {isLoading ? (
-          <div className="p-8 text-center text-[13px] text-muted">Loading…</div>
+          <RoadmapBoardSkeleton />
+        ) : phases.length === 0 ? (
+          <PlannerEmpty
+            title="No milestones in this project"
+            description="PRDs still live under PRDs."
+          />
         ) : (
           <RoadmapBoard phases={phases} />
         )}

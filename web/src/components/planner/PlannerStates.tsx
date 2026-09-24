@@ -111,6 +111,36 @@ export function MemoryReviewSkeleton({ cards = 4 }: { cards?: number }) {
   );
 }
 
+/** Roadmap board skeleton: 3 phase columns with milestone placeholders. */
+export function RoadmapBoardSkeleton({ columns = 3 }: { columns?: number }) {
+  return (
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-3" aria-busy="true" aria-label="Loading roadmap">
+      {Array.from({ length: columns }, (_, i) => (
+        <div key={i} className="flex flex-col rounded-[14px] border border-line-2 bg-surface/40 p-4">
+          <div className="mb-1 flex items-center gap-2">
+            <Pulse className="h-2.5 w-2.5 rounded-[3px]" />
+            <Pulse className="h-3.5 w-24" />
+            <Pulse className="ml-auto h-3 w-12" />
+          </div>
+          <Pulse className="mb-3 h-3 w-20" />
+          <Pulse className="mb-4 h-1.5 w-full rounded-full" />
+          <div className="space-y-2">
+            {Array.from({ length: 3 }, (_, j) => (
+              <div key={j} className="flex items-start gap-2.5">
+                <Pulse className="h-4 w-4 rounded-[5px]" />
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <Pulse className="h-3.5 w-full" />
+                  <Pulse className="h-2.5 w-16" />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** Requests queue skeleton. */
 export function RequestsListSkeleton({ rows = 6 }: { rows?: number }) {
   return (
