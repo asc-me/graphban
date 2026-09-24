@@ -9,7 +9,7 @@ import { GLOBAL_SHORTCUTS, docFor } from "./content";
 
 /** Inline, context-aware docs reader: a floating trigger + right slide-over whose
  *  content follows the page you're on. Mounted once inside the app shell. */
-export function DocsReader() {
+export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
   const [open, setOpen] = React.useState(false);
   const [rendered, setRendered] = React.useState(false);
   const [thanks, setThanks] = React.useState(false);
@@ -80,7 +80,9 @@ export function DocsReader() {
 
   return (
     <>
-      {/* Floating trigger — hover lift only on fine pointers */}
+      {/* Floating trigger — hover lift only on fine pointers. Hidden while the agent rail
+          is open so the last shard card stays readable (GRPH-923). */}
+      {!agentOpen && (
       <button
         onClick={() => openDocs("pointer")}
         title="Docs for this page"
@@ -97,6 +99,7 @@ export function DocsReader() {
       >
         <Info size={22} className="text-bg" />
       </button>
+      )}
 
       {rendered && (
         <>
