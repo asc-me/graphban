@@ -85,10 +85,37 @@ function EventRow({ event: e }: { event: Event }) {
   );
 }
 
+const META_DETAIL_MAX = 120;
+
+function truncateMeta(s: string): string {
+  return s.length <= META_DETAIL_MAX ? s : `${s.slice(0, META_DETAIL_MAX - 1)}…`;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Evidence receipts and other nested meta values — never `String(object)`. */
+function formatMetaValue(v: unknown): string {
+  if (Array.isArray(v)) return v.map(formatMetaValue).join(", ");
+  if (isRecord(v)) {
+    const kind = typeof v.kind === "string" ? v.kind : "";
+    const detail = typeof v.detail === "string" ? v.detail : "";
+    if (kind || detail) {
+      if (kind && detail) return `${kind} — ${truncateMeta(detail)}`;
+      return truncateMeta(kind || detail);
+    }
+    return Object.entries(v)
+      .map(([k, val]) => `${k}: ${formatMetaValue(val)}`)
+      .join(", ");
+  }
+  return String(v);
+}
+
 function summarizeMeta(meta: Record<string, unknown>): string {
   return Object.entries(meta)
     .filter(([k]) => k !== "principal" && k !== "origin") // shown in the header (AL-197)
-    .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : String(v)}`)
+    .map(([k, v]) => `${k}: ${formatMetaValue(v)}`)
     .join(" · ");
 }
 
