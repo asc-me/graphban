@@ -93,7 +93,7 @@ def create_prd(
     # See items.create_item: the id is frozen identity, `number` renders the key.
     prd_id, number = keys.mint(db, project_id, "prd")
     prd = Prd(id=prd_id, number=number, project_id=project_id, title=title, status="draft",
-              version="v0.1", body=content, linked=[], updated="just now")
+              version="v0.1", body=content, linked=[])
     db.add(prd)
     db.flush()
     db.add(PrdVersion(prd_id=prd.id, version="v0.1", date="just now", note=note, body=content))
@@ -187,7 +187,6 @@ def update_prd(db: Session, prd_id: str, **fields) -> Prd | None:
     for key in ("title", "status", "body"):
         if fields.get(key) is not None:
             setattr(prd, key, fields[key])
-    prd.updated = "just now"
     db.commit()
     db.refresh(prd)
     return prd
@@ -201,7 +200,6 @@ def create_version(db: Session, prd_id: str, note: str = "") -> Prd | None:
     prd.version = _bump(prd.version)
     db.add(PrdVersion(prd_id=prd.id, version=prd.version, date="just now",
                       note=note or "Version snapshot.", body=prd.body))
-    prd.updated = "just now"
     db.commit()
     db.refresh(prd)
     return prd
@@ -1994,7 +1992,6 @@ def close_prd(
         "dispositions": recorded,
     }
     prd.status = "closed"
-    prd.updated = "just now"
     db.commit()
     db.refresh(prd)
     events_svc.record(
@@ -2554,7 +2551,6 @@ def freeze_baseline(db: Session, prd: Prd) -> PrdVersion:
     )
     db.add(row)
     prd.pending_rebaseline = None
-    prd.updated = "just now"
     db.commit()
     db.refresh(row)
     # Every classification was made against the intent this just superseded (GRPH-249).
@@ -2592,7 +2588,6 @@ def invalidate_approval(db: Session, prd: Prd, *, reason: str) -> Prd:
         db.delete(row)
     prd.status = "review" if grill_state(db, prd.id)["answers"] else "draft"
     prd.version = "v0.1"
-    prd.updated = "just now"
     db.commit()
     db.refresh(prd)
     events_svc.record(
@@ -2687,7 +2682,6 @@ def request_rebaseline(
         select(func.count()).select_from(GrillTurn).where(GrillTurn.prd_id == prd.id)
     ) or 0
     prd.status = "review"
-    prd.updated = "just now"
     db.commit()
     db.refresh(prd)
     events_svc.record(
@@ -2744,7 +2738,6 @@ def sync_status(db: Session, prd: Prd) -> Prd:
             target = "review"
     if target != prd.status:
         prd.status = target
-        prd.updated = "just now"
         db.commit()
         db.refresh(prd)
         # Approval is the moment the spec was agreed, so the baseline freezes HERE

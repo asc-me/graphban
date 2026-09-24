@@ -1039,7 +1039,7 @@ class PrdSummary(ORMModel):
     status: str
     version: str
     linked: list[str] = _key("linked_keys", default_factory=list)
-    updated: str
+    updated_at: datetime
 
 
 class PrdCreate(BaseModel):

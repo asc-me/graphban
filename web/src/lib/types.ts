@@ -883,7 +883,7 @@ export interface PrdSummary {
   status: PrdStatus;
   version: string;
   linked: string[];
-  updated: string;
+  updated_at: string;
 }
 
 export interface Prd extends PrdSummary {
