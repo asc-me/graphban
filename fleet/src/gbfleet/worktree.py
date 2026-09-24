@@ -685,6 +685,16 @@ def salvage_message(adapter: str, item_ids: list[str] | tuple[str, ...] = ()) ->
     return msg
 
 
+def is_salvage_subject(subject: str) -> bool:
+    """True when `subject` is a salvage commit, not shipped work.
+
+    Used so a salvage HEAD is never opened as a PR: those drafts were getting merged
+    under a `WIP: salvaged by gbfleet` title. The prefix is the whole contract —
+    `salvage_message` is the only writer.
+    """
+    return (subject or "").startswith("WIP: salvaged by gbfleet")
+
+
 def is_ancestor(repo: Path, ancestor: str, commit: str) -> bool:
     """True when `ancestor` is `commit` or an ancestor of it."""
     proc = subprocess.run(

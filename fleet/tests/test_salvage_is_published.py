@@ -1,4 +1,4 @@
-"""Salvaged work is published and named on the item it belongs to (GRPH-830).
+"""Salvaged work is published and named on the item it belongs to (GRPH-830, GRPH-926).
 
 Adopting a stranded worktree already worked, and the field report says so — it reaped a tree
 left by an OOM kill after confirming the only uncommitted file was the seat. The case that
@@ -10,8 +10,8 @@ was local-only, never pushed, and nothing linked it to the item. That item was r
 minutes later, branched from `main`, and rebuilt all 614 lines. The work was recovered and lost
 in the same move, and only somebody reading local refs could have known.
 
-Everything needed was already here: `_publish` pushes, `_propose` opens a draft PR and writes
-the receipt on the item. The salvage path simply did not call them.
+Push is still the step that matters. A draft PR is not: those salvage subjects were landing
+as mergeable `WIP: salvaged by gbfleet` titles. The item gets a note naming branch + commit.
 """
 from __future__ import annotations
 
@@ -108,9 +108,14 @@ def test_a_record_from_an_older_supervisor_still_salvages(
     assert got.salvaged[0].items == [], "invented an item the record never carried"
 
 
-def test_publishing_pushes_then_proposes_and_writes_the_receipt(monkeypatch, tmp_path: Path):
-    """The two steps a finished child gets, in that order. A PR for a branch that is not on
-    the remote is a PR for nothing, and the push is the step that can actually fail."""
+def test_publishing_pushes_and_does_not_propose_a_pr(monkeypatch, tmp_path: Path):
+    """THE CALL (GRPH-926). Salvage is a commit on a pushed branch, not a mergeable PR.
+
+    Sabotage: restore `propose_branch(...)` inside `publish_salvaged` and this fails.
+    A PR for a salvage subject is how `WIP: salvaged by gbfleet` drafts got merged.
+    """
+    import inspect
+
     calls: list[tuple] = []
 
     class _Pushed:
@@ -119,14 +124,30 @@ def test_publishing_pushes_then_proposes_and_writes_the_receipt(monkeypatch, tmp
     monkeypatch.setattr(sup.wt_mod, "push_branch",
                         lambda repo, branch, base: calls.append(("push", branch)) or _Pushed())
     monkeypatch.setattr(sup, "propose_branch",
-                        lambda wave, repo, branch, items, *, client, base_override="":
-                        calls.append(("propose", branch, items)))
+                        lambda *a, **k: calls.append(("propose",)))
+    monkeypatch.setattr(sup, "_branch_head", lambda repo, branch: "abc123def456")
+
+    class _Client:
+        def __init__(self):
+            self.calls = []
+        def call(self, tool, **kwargs):
+            self.calls.append((tool, kwargs))
+            return {}
 
     wave = Wave()
+    client = _Client()
     sup.publish_salvaged(wave, tmp_path, [adopt.Salvaged("gb/w-1", "main", ["SA-412"])],
-                         client=None)
+                         client=client)
 
-    assert calls == [("push", "gb/w-1"), ("propose", "gb/w-1", ["SA-412"])]
+    assert calls == [("push", "gb/w-1")], calls
+    assert "propose_branch" not in inspect.getsource(sup.publish_salvaged)
+    assert client.calls, "the item was not named"
+    tool, kwargs = client.calls[0]
+    assert tool == "update_item" and kwargs["id"] == "SA-412"
+    ev = kwargs["evidence"][0]
+    assert ev["kind"] == "note"
+    assert "gb/w-1" in ev["detail"] and "not proposed as a PR" in ev["detail"]
+    assert "/pull/" not in ev["detail"]
 
 
 def test_a_failed_push_is_reported_and_never_fatal(monkeypatch, tmp_path: Path):
