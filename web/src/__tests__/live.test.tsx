@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LiveView } from "@/features/live/LiveView";
 import { ProjectProvider } from "@/features/ProjectContext";
@@ -114,6 +114,12 @@ describe("Live board", () => {
     board = emptyBoard();
     livePending = false;
     releaseLive = null;
+  });
+
+  afterEach(() => {
+    releaseLive?.(emptyBoard());
+    releaseLive = null;
+    livePending = false;
   });
 
   it("shows a loading skeleton with the page header instead of centred Loading text (GRPH-919)", async () => {

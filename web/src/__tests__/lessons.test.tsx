@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { docFor } from "@/features/docs/content";
 import { LessonsView } from "@/features/lessons/LessonsView";
@@ -159,6 +159,12 @@ describe("Lessons catalog", () => {
     lessonSpy.mockResolvedValue(detail());
     promoteSpy.mockResolvedValue(detail({ reach: "org" }));
     recordSpy.mockResolvedValue(detail());
+  });
+
+  afterEach(() => {
+    releaseLessons?.(emptyList());
+    releaseLessons = null;
+    lessonsPending = false;
   });
 
   it("shows a loading skeleton with the page header instead of centred Loading text (GRPH-919)", async () => {

@@ -75,7 +75,7 @@ describe("DocsReader", () => {
     renderAt("/dashboard");
     fireEvent.keyDown(window, { key: "?" });
     expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
-    await user.click(screen.getByLabelText("Helpful"));
-    expect(screen.getByText(/Thanks for the feedback/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Helpful" }));
+    expect(await screen.findByText(/Thanks for the feedback/)).toBeInTheDocument();
   });
 });
