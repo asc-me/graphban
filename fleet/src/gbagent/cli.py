@@ -297,12 +297,24 @@ def _run(args: argparse.Namespace) -> int:
             args.item = str(assigned["item"])
             print(f"gbagent: this seat handed me {args.item}", file=sys.stderr)
         elif assigned["state"] == "taken":
-            print(
-                f"gbagent: this seat was bound to {assigned['item']} but it is {assigned['reason']}"
-                + (f" by {assigned['held_by']}" if assigned.get("held_by") else "")
-                + " — nothing to do, exiting",
-                file=sys.stderr,
-            )
+            # GRPH-931: "ghost" means the holder row exists but the agent is offline (no
+            # heartbeat within presence TTL). Name the ghost so fleet_status/release_item can
+            # point at it, but say "no live holder" so the child does not look like it exited
+            # without knowing why.
+            if assigned.get("reason") == "ghost":
+                ghost = assigned.get("held_by") or "unknown"
+                print(
+                    f"gbagent: this seat was bound to {assigned['item']} but it is a ghost "
+                    f"lease (held by {ghost}, no live holder) — not claiming, exiting",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"gbagent: this seat was bound to {assigned['item']} but it is {assigned['reason']}"
+                    + (f" by {assigned['held_by']}" if assigned.get("held_by") else "")
+                    + " — nothing to do, exiting",
+                    file=sys.stderr,
+                )
             return 0
     assignment = assignment_for(args.item, role=role)
     # S6 (PRD-39 D-h): merged worker gets both build and review tools.

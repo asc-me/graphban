@@ -280,6 +280,36 @@ def test_a_dead_child_leaves_the_item_to_lapse_on_its_lease(client, key, db):
     assert items_svc.claim_item(db, item, other) is not None
 
 
+def test_a_ghost_lease_names_the_dead_holder(client, key, db):
+    """GRPH-931: a holder that exists in the row but is offline (no heartbeat within presence
+    TTL) is a ghost lease. The child must say "ghost lease, no live holder" and name the
+    ghost, not exit silently with no holder named.
+
+    Sabotage: set the holder's last_seen_at to before the presence TTL cutoff, then register
+    a bound seat — the reply must read reason="ghost" with held_by set to the dead agent.
+    """
+    planner = _agent(client, key, "planner")
+    item = _item(client, key)
+    out = _ok(_delegate(client, key, item, planner))
+    # Claim the item as a holder, then make that holder offline by aging its last_seen_at
+    # past the presence TTL (lease_seconds // 4).
+    holder = _agent(client, key, "holder")
+    assert items_svc.claim_item(db, item, holder) is not None
+    holder_agent = db.get(Agent, holder)
+    holder_agent.last_seen_at = datetime.now(timezone.utc) - timedelta(
+        seconds=fleet_svc.presence_ttl_seconds() + 10
+    )
+    db.commit()
+    # Now register a bound seat on the same item — it should see a ghost lease.
+    reg = _ok(_mcp(client, key, "register_agent", {"label": "late child",
+                                                    "enrolment_code": out["enrolment_code"]}))
+    assert reg["assigned"]["state"] == "taken"
+    assert reg["assigned"]["reason"] == "ghost", reg["assigned"]
+    assert reg["assigned"]["held_by"] == holder, (
+        f"ghost lease must name the dead holder, got {reg['assigned']['held_by']!r}"
+    )
+
+
 # ---- 16: the delegator may not review its child's work -------------------------------------
 
 def _delegated_and_in_review(client, key, db, planner, title="work"):
