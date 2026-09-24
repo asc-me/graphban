@@ -613,10 +613,32 @@ export function useAddShard(projectId: string) {
   });
 }
 
+const CANDIDATE_FETCH_MS = 30_000;
+
+function withFetchTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(
+      () => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)),
+      ms,
+    );
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 export function useCandidateShards(projectId?: string) {
   return useQuery({
     queryKey: ["shard-candidates", projectId],
-    queryFn: () => api.candidateShards(projectId),
+    queryFn: () =>
+      withFetchTimeout(api.candidateShards(projectId), CANDIDATE_FETCH_MS, "Memory review queue"),
     enabled: !!projectId,
   });
 }

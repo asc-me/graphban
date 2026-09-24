@@ -8,6 +8,7 @@ import {
   useAutoActions,
   useCandidateClusters,
   useCandidateShards,
+  useCounts,
   useJudgeShard,
   usePromoteCluster,
   useReviewShard,
@@ -23,7 +24,16 @@ import type { CandidateJudge, ReviewSuggestion, ScoredCandidate, Shard, ShardClu
 export function MemoryReviewView() {
   const { activeId, active } = useProjectCtx();
   const judgeOn = Boolean(active?.memory_llm_judge);
-  const { data: candidates, isLoading, isError, refetch } = useCandidateShards(activeId);
+  const { data: counts } = useCounts(activeId);
+  const {
+    data: candidates,
+    isPending,
+    isFetching,
+    isError,
+    isSuccess,
+    refetch,
+    error,
+  } = useCandidateShards(activeId);
   const { data: clusters } = useCandidateClusters(activeId);
   const { data: scored } = useScoredCandidates(activeId);
   const { data: autoActions } = useAutoActions(activeId);
@@ -32,17 +42,47 @@ export function MemoryReviewView() {
   const undoAuto = useUndoAutoShard();
   const [unvettedOnly, setUnvettedOnly] = React.useState(false);
 
-  if (isLoading || !candidates) {
+  const awaitingFirstPayload = isPending || (isFetching && candidates === undefined);
+  const queueCount = counts?.review;
+  const loadFailed = isError || (isSuccess && candidates === undefined);
+  const loadErrorMessage =
+    error instanceof Error && error.message.includes("timed out")
+      ? "Memory review is taking too long to load — the queue may be very large. Retry, or check the server."
+      : "Memory review unavailable";
+
+  const header = (
+    <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
+      <div>
+        <h1 className="text-[18px] font-semibold tracking-tight">Memory review</h1>
+        <p className="mt-0.5 text-[12.5px] text-muted">
+          Agent-written memory is a candidate until you publish it. Only published shards surface in
+          search — so an unverified note never becomes ground truth for the next agent.
+        </p>
+      </div>
+      <div className="ml-auto flex items-center gap-3 font-mono text-[10.5px] text-faint">
+        {awaitingFirstPayload ? (
+          <>
+            {queueCount != null && <span>{queueCount} WAITING</span>}
+            <span className="text-muted">loading queue…</span>
+          </>
+        ) : candidates ? (
+          <>
+            <span>{candidates.length} PENDING</span>
+            {queueCount != null && queueCount !== candidates.length && (
+              <span className="text-st-review" title="Nav badge includes auto-published shards nobody reviewed yet">
+                {queueCount} in nav count
+              </span>
+            )}
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  if (awaitingFirstPayload) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
-          <div>
-            <h1 className="text-[18px] font-semibold tracking-tight">Memory review</h1>
-            <p className="mt-0.5 text-[12.5px] text-muted">
-              Agent-written memory is a candidate until you publish it.
-            </p>
-          </div>
-        </div>
+        {header}
         <div className="min-h-0 flex-1 overflow-y-auto">
           <MemoryReviewSkeleton />
         </div>
@@ -50,13 +90,11 @@ export function MemoryReviewView() {
     );
   }
 
-  if (isError) {
+  if (loadFailed || !candidates) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-        <div className="flex flex-none border-b border-line px-5 py-4">
-          <h1 className="text-[18px] font-semibold tracking-tight">Memory review</h1>
-        </div>
-        <PlannerError message="Memory review unavailable" onRetry={() => refetch()} />
+        {header}
+        <PlannerError message={loadErrorMessage} onRetry={() => refetch()} />
       </div>
     );
   }
@@ -85,6 +123,11 @@ export function MemoryReviewView() {
         </div>
         <div className="ml-auto flex items-center gap-3 font-mono text-[10.5px] text-faint">
           <span>{candidates.length} PENDING</span>
+          {queueCount != null && queueCount !== candidates.length + unvettedTotal && (
+            <span className="text-st-review" title="Nav badge includes auto-published shards nobody reviewed yet">
+              {queueCount} in nav count
+            </span>
+          )}
           {unvettedTotal > 0 && (
             <span className="text-[#a78bfa]">{unvettedTotal} UNREVIEWED</span>
           )}

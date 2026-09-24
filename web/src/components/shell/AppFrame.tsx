@@ -8,6 +8,7 @@ import { CreateFirstProject } from "@/features/onboarding/CreateFirstProject";
 import { useConfig, useOrgs } from "@/lib/queries";
 import { ORG_BASE, clearOrgStateForSelfHost } from "@/lib/routes";
 
+import { cn } from "@/lib/cn";
 import { useInputModality } from "@/lib/input-modality";
 
 import { ProjectBar } from "./ProjectBar";
@@ -17,10 +18,48 @@ import { CommandPalette } from "./CommandPalette";
 import { LeftNav } from "./LeftNav";
 import { TopBar } from "./TopBar";
 
+function Pulse({ className }: { className?: string }) {
+  return <div className={cn("animate-pulse rounded-md bg-surface-3", className)} />;
+}
+
 function Loading() {
   return (
     <div className="flex h-full items-center justify-center font-mono text-[12px] text-faint">
       loading…
+    </div>
+  );
+}
+
+/** Auth/config rehydrate — chrome stays, main pane pulses (GRPH-917). */
+export function ShellBootSkeleton() {
+  return (
+    <div className="flex h-full flex-col" aria-busy="true" aria-label="Loading session">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:border focus:border-line-hover focus:bg-surface-3 focus:px-3 focus:py-2 focus:text-[13px] focus:text-fg"
+      >
+        Skip to main content
+      </a>
+      <div className="flex h-12 flex-none items-center gap-3 border-b border-line px-4">
+        <Pulse className="h-6 w-28" />
+        <Pulse className="ml-auto h-6 w-20" />
+      </div>
+      <div className="flex min-h-0 flex-1">
+        <div className="flex w-[216px] flex-none flex-col gap-1.5 border-r border-line px-3 py-4">
+          {Array.from({ length: 9 }, (_, i) => (
+            <Pulse key={i} className="h-8 w-full rounded-[10px]" />
+          ))}
+        </div>
+        <main id="main-content" className="flex min-w-0 flex-1 flex-col p-5">
+          <Pulse className="mb-2 h-7 w-40" />
+          <Pulse className="mb-6 h-4 w-72 max-w-full" />
+          <div className="space-y-2">
+            {Array.from({ length: 6 }, (_, i) => (
+              <Pulse key={i} className="h-12 w-full rounded-[12px]" />
+            ))}
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LiveView } from "@/features/live/LiveView";
 import { ProjectProvider } from "@/features/ProjectContext";
@@ -74,13 +74,22 @@ function emptyBoard(over: Partial<LiveBoard> = {}): LiveBoard {
 
 let board: LiveBoard = emptyBoard();
 let feed: LiveFeed = { served_at: "2026-09-02T12:00:10Z", retention_days: 7, state: "never", rows: [] };
+let livePending = false;
+let releaseLive: ((value: LiveBoard) => void) | null = null;
 
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
     projects: vi.fn(async () => [project]),
     config: vi.fn(async () => ({ hosted_mode: false, signup_mode: "closed" })),
-    live: vi.fn(async () => board),
+    live: vi.fn(async () => {
+      if (livePending) {
+        return new Promise<LiveBoard>((resolve) => {
+          releaseLive = resolve;
+        });
+      }
+      return board;
+    }),
     liveFeed: vi.fn(async () => feed),
   },
 }));
@@ -103,12 +112,30 @@ function renderLive(path = "/live") {
 describe("Live board", () => {
   beforeEach(() => {
     board = emptyBoard();
+    livePending = false;
+    releaseLive = null;
+  });
+
+  afterEach(() => {
+    releaseLive?.(emptyBoard());
+    releaseLive = null;
+    livePending = false;
+  });
+
+  it("shows a loading skeleton with the page header instead of centred Loading text (GRPH-919)", async () => {
+    livePending = true;
+    renderLive();
+    expect(screen.getByRole("heading", { name: "Live" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Loading live board")).toBeInTheDocument());
+    expect(screen.queryByText(/^Loading/)).not.toBeInTheDocument();
+    releaseLive?.(emptyBoard());
+    expect(await screen.findByText("No agents have registered on this project.")).toBeInTheDocument();
   });
 
   it("names an empty project as unregistered, not idle", async () => {
     renderLive();
     expect(await screen.findByRole("heading", { name: "Live" })).toBeInTheDocument();
-    expect(screen.getByText("No agents have registered on this project.")).toBeInTheDocument();
+    expect(await screen.findByText("No agents have registered on this project.")).toBeInTheDocument();
     expect(screen.queryByText(/idle/i)).not.toBeInTheDocument();
   });
 

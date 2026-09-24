@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useLocation, useSearchParams, Link } from "react-router-dom";
 
+import { LiveBoardSkeleton, PlannerError } from "@/components/planner/PlannerStates";
 import { Avatar } from "@/components/ui/avatar";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
@@ -36,30 +37,15 @@ export function LiveView() {
   const { pathname } = useLocation();
   const [params] = useSearchParams();
   const user = params.get("user");
-  const { data, isLoading, isError } = useLive(activeId, user);
+  const { data, isLoading, isError, refetch } = useLive(activeId, user);
   const fleetTo = config?.hosted_mode && active?.tag
     ? projectPath(active.tag, "fleet.v1")
     : "/fleet.v1";
 
-  if (isError) {
-    return (
-      <div className="flex h-full items-center justify-center text-[13px] text-muted">
-        The live board could not be loaded.
-      </div>
-    );
-  }
-  if (isLoading || !data) {
-    return (
-      <div className="flex h-full items-center justify-center text-[13px] text-muted">
-        Loading…
-      </div>
-    );
-  }
-
-  const payloadAgents = data.users.reduce((n, u) => n + u.agents.length, 0);
-  const censusTotal = data.user_counts.reduce((n, c) => n + c.total, 0);
-  const emptyProject = data.users.length === 0 && !user;
-  const emptyFilter = data.users.length === 0 && !!user;
+  const payloadAgents = data?.users.reduce((n, u) => n + u.agents.length, 0) ?? 0;
+  const censusTotal = data?.user_counts.reduce((n, c) => n + c.total, 0) ?? 0;
+  const emptyProject = !!data && data.users.length === 0 && !user;
+  const emptyFilter = !!data && data.users.length === 0 && !!user;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -71,14 +57,18 @@ export function LiveView() {
           </p>
         </div>
         <div className="ml-auto flex items-center gap-3">
-          <RoleCounts byRole={data.by_role ?? {}} roles={data.roles ?? []} />
+          {data ? (
+            <RoleCounts byRole={data.by_role ?? {}} roles={data.roles ?? []} />
+          ) : (
+            <div className="h-5 w-24 animate-pulse rounded-md bg-surface-3" aria-hidden />
+          )}
           <Link to={fleetTo} className="text-[12.5px] text-muted hover:text-fg-2">
             Fleet.v1
           </Link>
         </div>
       </div>
 
-      {data.truncated && (
+      {data?.truncated && (
         <div
           role="status"
           className="flex-none border-b border-st-review/30 bg-st-review/[0.06] px-5 py-2 font-mono text-[11px] text-st-review"
@@ -88,37 +78,50 @@ export function LiveView() {
       )}
 
       <div className="flex flex-none flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
-        <Chip
-          to={pathname}
-          active={!user}
-          label="All"
-          count={censusTotal}
-        />
-        {data.user_counts.map((c) => {
-          const id = c.user_id ?? "unattributed";
-          return (
+        {isLoading || !data ? (
+          <>
+            <div className="h-7 w-16 animate-pulse rounded-lg bg-surface-3" />
+            <div className="h-7 w-20 animate-pulse rounded-lg bg-surface-3" />
+          </>
+        ) : (
+          <>
             <Chip
-              key={id}
-              to={`${pathname}?user=${encodeURIComponent(id)}`}
-              active={user === id}
-              label={c.label}
-              count={c.total}
+              to={pathname}
+              active={!user}
+              label="All"
+              count={censusTotal}
             />
-          );
-        })}
+            {data.user_counts.map((c) => {
+              const id = c.user_id ?? "unattributed";
+              return (
+                <Chip
+                  key={id}
+                  to={`${pathname}?user=${encodeURIComponent(id)}`}
+                  active={user === id}
+                  label={c.label}
+                  count={c.total}
+                />
+              );
+            })}
+          </>
+        )}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        {emptyProject ? (
-          <div className="mt-16 text-center text-[13px] text-muted">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {isLoading ? (
+          <LiveBoardSkeleton />
+        ) : isError || !data ? (
+          <PlannerError message="The live board could not be loaded." onRetry={() => refetch()} />
+        ) : emptyProject ? (
+          <div className="mt-16 px-5 text-center text-[13px] text-muted">
             No agents have registered on this project.
           </div>
         ) : emptyFilter ? (
-          <div className="mt-16 text-center text-[13px] text-muted">
+          <div className="mt-16 px-5 text-center text-[13px] text-muted">
             No agents for this person on this project.
           </div>
         ) : (
-          <div className="mx-auto flex max-w-3xl flex-col gap-5">
+          <div className="mx-auto flex max-w-3xl flex-col gap-5 p-5">
             {data.users.map((u) => (
               <UserBlock key={u.user_id ?? "unattributed"} user={u} board={data} projectId={activeId} />
             ))}

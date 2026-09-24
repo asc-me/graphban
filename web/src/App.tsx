@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
-import { AppFrame } from "@/components/shell/AppFrame";
+import { AppFrame, ShellBootSkeleton } from "@/components/shell/AppFrame";
 import { useAuth } from "@/features/auth/AuthContext";
 import { LoginPage } from "@/features/auth/LoginPage";
 import { ResetPasswordPage } from "@/features/auth/ResetPasswordPage";
@@ -103,11 +103,7 @@ function AuthedApp() {
   const { data: config, isLoading: configLoading } = useConfig();
 
   if (loading || configLoading) {
-    return (
-      <div className="flex h-full items-center justify-center font-mono text-[12px] text-faint">
-        loading…
-      </div>
-    );
+    return <ShellBootSkeleton />;
   }
   if (!user) return <LoginPage />;
   const hosted = config?.hosted_mode ?? false;
