@@ -18,15 +18,23 @@ export const DialogContent = React.forwardRef<
       ref={ref}
       className={cn(
         "gb-dialog-content fixed left-1/2 top-1/2 z-50 w-full max-w-md",
-        "rounded-[14px] border border-line-hover bg-surface-3 p-5 shadow-[0_24px_60px_rgba(0,0,0,0.6)]",
+        "rounded-(--radius-overlay) border border-line-hover bg-surface-3 p-5 shadow-[0_24px_60px_rgba(0,0,0,0.6)]",
         "focus:outline-none",
         className,
       )}
       {...props}
     >
       {children}
-      <DialogPrimitive.Close className="absolute right-4 top-4 text-faint hover:text-fg">
-        <X size={16} />
+      <DialogPrimitive.Close
+        aria-label="Close"
+        className={cn(
+          "absolute right-4 top-4 flex size-6 items-center justify-center rounded-(--radius-control)",
+          "text-faint outline-none",
+          "[@media(hover:hover)_and_(pointer:fine)]:hover:text-fg",
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
+        )}
+      >
+        <X size={16} aria-hidden />
       </DialogPrimitive.Close>
     </DialogPrimitive.Content>
   </DialogPrimitive.Portal>

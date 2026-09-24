@@ -27,6 +27,11 @@
 
   --color-accent: #c6f24e;
   --color-accent-hi: #d8ff74;
+  --color-focus: #c6f24e;
+
+  /* Radius — control step for buttons, inputs, chips (GRPH-908 / GRPH-910) */
+  --radius-control: 0.5625rem; /* 9px — matches prior primitive rounding */
+  --radius-overlay: 0.875rem; /* 14px — dialogs */
   --color-purple: #a78bfa;
   --color-purple-2: #c9b8ff;
 
@@ -180,6 +185,7 @@ body {
 }
 /* Dropdown / popover: opacity + scale from ≥0.95; origin set by the trigger box. */
 .gb-popover {
+  transform-origin: var(--radix-dropdown-menu-content-transform-origin);
   animation: alEnter var(--duration-ui) var(--ease-out) both;
 }
 .gb-popover[data-motion="instant"] {

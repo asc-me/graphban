@@ -1,10 +1,11 @@
 import * as React from "react";
-import { useOutletContext } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 
 import { Dot } from "@/components/ui/badge";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { STATUS_META, STATUS_ORDER } from "@/lib/meta";
+import { PALETTE_ITEM_PARAM } from "@/lib/palette-nav";
 import { useItems, useReorderItems, useUpdateItem } from "@/lib/queries";
 import type { Item, Status } from "@/lib/types";
 
@@ -13,7 +14,7 @@ import { ItemRow } from "./ItemRow";
 import { NewItemDialog } from "./NewItemDialog";
 
 export function TrackerView() {
-  const search = useOutletContext<string>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { activeId } = useProjectCtx();
   const { data: items = [], isLoading } = useItems(activeId);
   const update = useUpdateItem();
@@ -24,19 +25,21 @@ export function TrackerView() {
   const [dragId, setDragId] = React.useState<string | null>(null);
   const [overId, setOverId] = React.useState<string | null>(null);
 
+  React.useEffect(() => {
+    const id = searchParams.get(PALETTE_ITEM_PARAM);
+    if (!id) return;
+    setSelectedId(id);
+    const next = new URLSearchParams(searchParams);
+    next.delete(PALETTE_ITEM_PARAM);
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
   const ordered = React.useMemo(
     () => [...items].sort((a, b) => a.sort_order - b.sort_order),
     [items],
   );
 
-  const visible = ordered.filter((it) => {
-    if (filter !== "all" && it.status !== filter) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      return it.title.toLowerCase().includes(q) || it.id.toLowerCase().includes(q);
-    }
-    return true;
-  });
+  const visible = ordered.filter((it) => filter === "all" || it.status === filter);
 
   const counts = React.useMemo(() => {
     const c: Record<string, number> = {};

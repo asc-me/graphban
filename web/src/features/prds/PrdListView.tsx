@@ -1,6 +1,6 @@
 import { FileText, Plus, Upload, X } from "lucide-react";
 import * as React from "react";
-import { useNavigate, useOutletContext } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -20,14 +20,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { prdStatusMeta } from "./meta";
 
 export function PrdListView() {
-  const search = useOutletContext<string>();
   const { activeId } = useProjectCtx();
   const { data: prds = [], isLoading } = usePrds(activeId);
   const navigate = useNavigate();
-
-  const visible = prds.filter((p) =>
-    search ? p.title.toLowerCase().includes(search.toLowerCase()) : true,
-  );
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -48,7 +43,7 @@ export function PrdListView() {
           <div className="p-8 text-center text-[13px] text-muted">Loading…</div>
         ) : (
           <div className="space-y-2">
-            {visible.map((p) => {
+            {prds.map((p) => {
               const meta = prdStatusMeta(p.status);
               return (
                 <button
