@@ -452,6 +452,9 @@ export const api = {
     }),
   setOrgPlan: (orgId: string, plan: string) =>
     request<Org>(`/orgs/${orgId}/plan`, { method: "PUT", body: JSON.stringify({ plan }) }),
+  // PRD-43 D4: turn on intake + form for every project in the org.
+  enableAllFeedback: (orgId: string) =>
+    request<{ projects_updated: number }>(`/orgs/${orgId}/enable-all-feedback`, { method: "POST" }),
   requestAdditionalOrg: (body: { reason: string; company?: string }) =>
     request<OrgRequest>("/orgs/requests", { method: "POST", body: JSON.stringify(body) }),
 
@@ -833,6 +836,9 @@ export const api = {
   // PRD-43 D1: mint or rotate the ingest token. Returns the plaintext ONCE.
   mintIngestToken: (projectId: string) =>
     request<{ token: string; prefix: string }>(`/public/ingest-token${projectQuery(projectId)}`, { method: "POST" }),
+  // PRD-43 D4: set per-surface flags (intake/form/roadmap/issues/requests + capture_identity).
+  updateSurfaceFlags: (projectId: string, flags: Record<string, boolean>) =>
+    request<Record<string, boolean>>(`/public/surface-flags${projectQuery(projectId)}`, { method: "PUT", body: JSON.stringify(flags) }),
   aiProviders: () => request<{ providers: AiProvider[] }>("/platform/providers"),
 
   // ---- Credentials (PRD-25). Deployment-scoped: the project id in the query resolves the

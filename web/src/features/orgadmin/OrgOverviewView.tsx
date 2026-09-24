@@ -1,6 +1,9 @@
 import { Boxes, Network, Server, Users } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 
+import { Button } from "@/components/ui/button";
+import { api } from "@/lib/api";
 import { useOrgOverview, useOrgs } from "@/lib/queries";
 import { adminPath, projectPath } from "@/lib/routes";
 import type { OrgOverviewProject } from "@/lib/types";
@@ -66,6 +69,8 @@ export function OrgOverviewView() {
   const { data: orgs = [] } = useOrgs();
   const org = orgs[0] ?? null;
   const { data, isLoading } = useOrgOverview(org?.id);
+  const [enabling, setEnabling] = useState(false);
+  const [enabled, setEnabled] = useState(false);
 
   if (isLoading || !data) {
     return <div className="p-8 text-[13px] text-muted">Loading the organization…</div>;
@@ -74,6 +79,17 @@ export function OrgOverviewView() {
   const { projects, totals, usage, limits } = data;
   const callCap = limits.max_calls_per_month ?? 0;
   const calls = usage.calls_this_month ?? 0;
+
+  async function handleEnableAll() {
+    if (!org?.id) return;
+    setEnabling(true);
+    try {
+      await api.enableAllFeedback(org.id);
+      setEnabled(true);
+    } finally {
+      setEnabling(false);
+    }
+  }
 
   // A brand-new org has exactly one useful thing to say, and it is not a table of zeroes.
   if (projects.length === 0) {
@@ -118,6 +134,22 @@ export function OrgOverviewView() {
         <Stat icon={<Network size={12} />} label="Graph nodes" value={totals.nodes} />
         <Stat icon={<Server size={12} />} label="MCP calls" value={calls}
               sub={callCap ? `of ${callCap.toLocaleString()} this month` : undefined} />
+      </div>
+
+      {/* PRD-43 D4: org-wide feedback enable-all */}
+      <div className="mt-5 rounded-[13px] border border-line bg-surface p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-[13px] font-semibold">Feedback defaults</div>
+            <p className="mt-1 max-w-[60ch] text-[12px] text-muted">
+              Turn on intake + feedback form for every project in this org. New projects will
+              inherit these two flags automatically. Does not enable boards, roadmap, or requests.
+            </p>
+          </div>
+          <Button size="sm" disabled={enabling} onClick={handleEnableAll}>
+            {enabling ? "Enabling…" : enabled ? "Enabled ✓" : "Turn on feedback for all projects"}
+          </Button>
+        </div>
       </div>
 
       <h2 className="mb-2.5 mt-8 font-mono text-[11px] uppercase tracking-wide text-faint">

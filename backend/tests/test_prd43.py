@@ -381,3 +381,150 @@ def test_slug_claim_project_path(client, auth):
     resp = client.post("/api/public/slugs/project-path?project_id=core",
                        json={"slug": "api"}, headers=auth)
     assert resp.status_code == 409
+
+
+# ---- PRD-43 D4: org enable-all + project inherit (sabotage-proof) ------------
+
+SEED_PW = "graphban"
+
+
+def _login(client, email, password=SEED_PW):
+    r = client.post("/api/auth/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+@pytest.fixture()
+def hosted(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "hosted_mode", True)
+    return settings
+
+
+def _make_org(client, headers, name="Acme"):
+    r = client.post("/api/orgs", json={"name": name}, headers=headers)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_org_enable_all_feedback_route_exists(client, hosted, auth):
+    """D4 sabotage: the enable-all endpoint is reachable on the orgs router.
+
+    Deleting the router branch would make this 404 — the service function would
+    exist but nothing would call it, which is the exact defect this item guards.
+    """
+    org = _make_org(client, auth)
+    # Create a project under the org so there is something to enable.
+    r = client.post("/api/projects", json={"name": "Rocket", "org_id": org["id"]}, headers=auth)
+    assert r.status_code == 201, r.text
+
+    resp = client.post(f"/api/orgs/{org['id']}/enable-all-feedback", headers=auth)
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["projects_updated"] >= 1
+
+    # Verify the project's flags were actually set.
+    pid = r.json()["id"]
+    db = _get_db()
+    try:
+        from app.services.platform import get_config
+        cfg = get_config(db, pid)
+        assert cfg.intake_enabled is True
+        assert cfg.public_form_enabled is True
+        assert cfg.public_share_enabled is True
+    finally:
+        db.close()
+
+
+def test_org_enable_all_sets_feedback_default_on(client, hosted, auth):
+    """D4: enable-all sets feedback_default_on so new projects inherit."""
+    org = _make_org(client, auth)
+    resp = client.post(f"/api/orgs/{org['id']}/enable-all-feedback", headers=auth)
+    assert resp.status_code == 200
+
+    db = _get_db()
+    try:
+        from app.models import Organization
+        org_row = db.get(Organization, org["id"])
+        assert org_row.feedback_default_on is True
+    finally:
+        db.close()
+
+
+def test_project_inherits_feedback_default_on(client, hosted, auth):
+    """D4 sabotage: a project created after enable-all starts with intake + form on.
+
+    Skipping the inherit on create would leave this test failing — the project
+    would have intake_enabled=False even though the org default is on.
+    """
+    org = _make_org(client, auth)
+    # Enable-all first to set the org default.
+    resp = client.post(f"/api/orgs/{org['id']}/enable-all-feedback", headers=auth)
+    assert resp.status_code == 200
+
+    # Now create a NEW project — it should inherit the default.
+    r = client.post("/api/projects", json={"name": "NewProject", "org_id": org["id"]}, headers=auth)
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+
+    db = _get_db()
+    try:
+        from app.services.platform import get_config
+        cfg = get_config(db, pid)
+        assert cfg.intake_enabled is True, "new project did not inherit intake_enabled from org default"
+        assert cfg.public_form_enabled is True, "new project did not inherit public_form_enabled from org default"
+    finally:
+        db.close()
+
+
+def test_project_without_org_default_does_not_inherit(client, hosted, auth):
+    """D4: a project created before enable-all (or in an org that never used it)
+    starts with flags off — the inherit is conditional, not unconditional."""
+    org = _make_org(client, auth)
+    # Create project BEFORE enable-all.
+    r = client.post("/api/projects", json={"name": "EarlyProject", "org_id": org["id"]}, headers=auth)
+    assert r.status_code == 201, r.text
+    pid = r.json()["id"]
+
+    db = _get_db()
+    try:
+        from app.services.platform import get_config
+        cfg = get_config(db, pid)
+        assert cfg.intake_enabled is False
+        assert cfg.public_form_enabled is False
+    finally:
+        db.close()
+
+
+def test_org_enable_all_requires_admin(client, hosted, auth):
+    """D4: only an org admin can call enable-all."""
+    org = _make_org(client, auth)
+    # dana is not a member of alex's org.
+    dana = _login(client, "dana@ascme-labs.com")
+    resp = client.post(f"/api/orgs/{org['id']}/enable-all-feedback", headers=dana)
+    assert resp.status_code in (403, 404)
+
+
+def test_surface_flags_returned_in_platform_config(client, auth):
+    """D4 sabotage: the platform GET endpoint returns per-surface flags.
+
+    If the schema fields were removed, the UI would have no way to read the
+    current state of each flag — the checkboxes would all render unchecked.
+    """
+    # Set some flags first.
+    client.put("/api/public/surface-flags?project_id=core", json={
+        "intake_enabled": True,
+        "public_issues_enabled": True,
+    }, headers=auth)
+
+    resp = client.get("/api/platform?project_id=core", headers=auth)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["intake_enabled"] is True
+    assert data["public_form_enabled"] is False
+    assert data["public_issues_enabled"] is True
+    assert data["public_roadmap_enabled"] is False
+    assert data["public_requests_enabled"] is False
+    assert data["capture_identity"] is False
+    # Derived compatibility read should be true since intake + issues are on.
+    assert data["public_share_enabled"] is True

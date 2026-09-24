@@ -16,6 +16,7 @@ from app.models import (
     Item,
     LegacyEntityKey,
     Membership,
+    Organization,
     Project,
     ProjectTagHistory,
     Request,
@@ -81,6 +82,20 @@ def create_project(
     db.add(Membership(user_id=owner_user_id, project_id=project.id, role="owner", access="write"))
     db.commit()
     db.refresh(project)
+
+    # PRD-43 D4: inherit the org's feedback default when one is set. A project created
+    # under an org that has used "Turn on feedback for all" starts with intake + form on,
+    # so the org default is not a write that only reaches existing projects.
+    if org_id:
+        org = db.get(Organization, org_id)
+        if org is not None and org.feedback_default_on:
+            from app.services.platform import get_config
+            cfg = get_config(db, project.id)
+            cfg.intake_enabled = True
+            cfg.public_form_enabled = True
+            cfg.public_share_enabled = True
+            db.commit()
+
     return project
 
 

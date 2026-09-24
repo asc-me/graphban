@@ -664,6 +664,13 @@ export interface PlatformConfig {
   ingest_token_prefix: string;
   /** AL-137 D8: whether this project's code graph pushes to the linked cloud. */
   sync_graph: boolean;
+  // PRD-43 D4: per-surface flags (public_share_enabled is derived from these).
+  intake_enabled: boolean;
+  public_form_enabled: boolean;
+  public_roadmap_enabled: boolean;
+  public_issues_enabled: boolean;
+  public_requests_enabled: boolean;
+  capture_identity: boolean;
 }
 
 export type SyncProjectStatus = "live" | "stale" | "paused" | "unsynced" | "empty";

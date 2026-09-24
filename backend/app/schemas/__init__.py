@@ -813,6 +813,13 @@ class PlatformConfigOut(ORMModel):
     share_token: str | None = None  # the share-link token (shown to authed members only)
     ingest_token_prefix: str = ""  # PRD-43 D1: prefixed gbfb_… shown to members; the full token is mint-only
     sync_graph: bool = True  # AL-137 D8: whether this project's code graph pushes to the cloud
+    # PRD-43 D4: per-surface flags (the single public_share_enabled is derived from these).
+    intake_enabled: bool = False
+    public_form_enabled: bool = False
+    public_roadmap_enabled: bool = False
+    public_issues_enabled: bool = False
+    public_requests_enabled: bool = False
+    capture_identity: bool = False
 
     @computed_field
     @property
