@@ -70,6 +70,27 @@ describe("design token foundation (GRPH-908)", () => {
     }
   });
 
+  it("login surfaces meet contrast floors (tagline, labels, input border, focus ring)", () => {
+    const faint = TOKENS["color-faint"]!;
+    const bg = TOKENS["color-bg"]!;
+    const s3 = TOKENS["color-surface-3"]!;
+    const s2 = TOKENS["color-surface-2"]!;
+    const focus = TOKENS["color-focus"]!;
+
+    // Tagline: font-mono text-faint on page bg
+    expect(contrastRatio(faint, bg)).toBeGreaterThanOrEqual(4.5);
+    // Field labels: uppercase mono text-faint on form surface-3
+    expect(contrastRatio(faint, s3)).toBeGreaterThanOrEqual(4.5);
+    // Input default border: border-line-2 on bg-surface-2
+    expect(contrastRatio(TOKENS["color-line-2"]!, s2)).toBeGreaterThanOrEqual(3);
+    // Input hover border: border-line-hover on bg-surface-2
+    expect(contrastRatio(TOKENS["color-line-hover"]!, s2)).toBeGreaterThanOrEqual(3);
+    // Focus ring: outline color-focus on surfaces behind inputs
+    for (const surface of [bg, s2, s3] as const) {
+      expect(contrastRatio(focus, surface)).toBeGreaterThanOrEqual(3);
+    }
+  });
+
   it("does not reuse line-hover as the focus token", () => {
     expect(TOKENS["color-focus"]).not.toBe(TOKENS["color-line-hover"]);
   });
