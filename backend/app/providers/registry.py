@@ -21,26 +21,35 @@ from __future__ import annotations
 
 PROVIDERS: list[dict] = [
     {"id": "stub", "label": "Offline stub", "kind": "stub", "embeds": True,
+     "serves": ["chat", "embed"],
      "base_url": "", "chat_model": "", "embed_model": "", "auth": False},
     {"id": "anthropic", "label": "Anthropic", "kind": "anthropic", "embeds": False,
+     "serves": ["chat"],
      "base_url": "", "chat_model": "claude-opus-4-8", "embed_model": "", "auth": True},
     {"id": "openai", "label": "OpenAI", "kind": "openai", "embeds": True,
+     "serves": ["chat", "embed"],
      "base_url": "https://api.openai.com/v1", "chat_model": "gpt-4o-mini",
      "embed_model": "text-embedding-3-small", "auth": True},
     {"id": "gemini", "label": "Google Gemini", "kind": "openai", "embeds": True,
+     "serves": ["chat", "embed"],
      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
      "chat_model": "gemini-2.0-flash", "embed_model": "text-embedding-004", "auth": True},
     {"id": "xai", "label": "xAI Grok", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      "base_url": "https://api.x.ai/v1", "chat_model": "grok-4.5",
      "models": ["grok-4.5", "grok-build-0.1"], "embed_model": "", "auth": True},
     {"id": "groq", "label": "Groq", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      "base_url": "https://api.groq.com/openai/v1", "chat_model": "llama-3.3-70b-versatile",
      "embed_model": "", "auth": True},
     {"id": "deepseek", "label": "DeepSeek", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      "base_url": "https://api.deepseek.com/v1", "chat_model": "deepseek-chat", "embed_model": "", "auth": True},
     {"id": "mistral", "label": "Mistral", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      "base_url": "https://api.mistral.ai/v1", "chat_model": "mistral-large-latest", "embed_model": "", "auth": True},
     {"id": "ollama", "label": "Ollama", "kind": "ollama", "embeds": True,
+     "serves": ["chat", "embed"],
      "base_url": "http://localhost:11434", "chat_model": "qwen2.5-coder",
      "embed_model": "nomic-embed-text", "auth": True},
     # GRPH-625. The CN labs and the hosted open-weights providers, all OpenAI-compat wire —
@@ -50,19 +59,24 @@ PROVIDERS: list[dict] = [
     # that lists what the provider actually offers. That is why the list errs toward
     # long-lived aliases (qwen-plus, kimi-latest) over dated snapshot names.
     {"id": "qwen", "label": "Qwen (DashScope)", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
      "chat_model": "qwen-plus", "models": ["qwen-plus", "qwen-max", "qwen-turbo"],
      "embed_model": "", "auth": True},
     {"id": "kimi", "label": "Kimi (Moonshot)", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      "base_url": "https://api.moonshot.ai/v1", "chat_model": "kimi-latest",
      "embed_model": "", "auth": True},
     {"id": "glm", "label": "GLM (Z.ai)", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      "base_url": "https://api.z.ai/api/paas/v4", "chat_model": "glm-4.5",
      "models": ["glm-4.5", "glm-4.5-air"], "embed_model": "", "auth": True},
     {"id": "minimax", "label": "MiniMax", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      "base_url": "https://api.minimax.io/v1", "chat_model": "MiniMax-M2",
      "embed_model": "", "auth": True},
     {"id": "openrouter", "label": "OpenRouter", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      "base_url": "https://openrouter.ai/api/v1", "chat_model": "anthropic/claude-sonnet-5",
      # Verified live against openrouter.ai/api/v1/models on 2026-09-01 (its listing is
      # public, so these are the only defaults here checked by evidence and not by memory).
@@ -70,20 +84,24 @@ PROVIDERS: list[dict] = [
                 "z-ai/glm-5.3", "deepseek/deepseek-v4-pro-0813"],
      "embed_model": "", "auth": True},
     {"id": "together", "label": "Together AI", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      "base_url": "https://api.together.xyz/v1", "chat_model": "deepseek-ai/DeepSeek-V3",
      "embed_model": "", "auth": True},
     {"id": "fireworks", "label": "Fireworks AI", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      # No default model: Fireworks serves per-account endpoints, so guessing a public id
      # here would be a wrong guess on half the deployments. The form requires the operator
      # to name one and the probe checks it.
      "base_url": "https://api.fireworks.ai/inference/v1", "chat_model": "",
      "embed_model": "", "auth": True},
     {"id": "perplexity", "label": "Perplexity", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      # /v1 was 401 (routed) where bare /models was 404 (unknown), and the quickstart
      # documents /router/v1/chat/completions — probed 2026-09-01.
      "base_url": "https://api.perplexity.ai/router/v1", "chat_model": "sonar-pro",
      "models": ["sonar-pro", "sonar"], "embed_model": "", "auth": True},
     {"id": "cohere", "label": "Cohere", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
      "base_url": "https://api.cohere.com/v2", "chat_model": "command-a-03-2025",
      "models": ["command-a-03-2025", "command-r-plus"], "embed_model": "", "auth": True},
     # The generic shape of the `openai` kind finally gets an entry: vLLM, LM Studio,
@@ -91,6 +109,16 @@ PROVIDERS: list[dict] = [
     # has no business being in a shipped catalogue. Empty base_url + the visible endpoint
     # field IS the feature; adding a provider per local server is what this replaces.
     {"id": "custom", "label": "Custom (OpenAI-compat)", "kind": "openai", "embeds": False,
+     "serves": ["chat"],
+     "base_url": "", "chat_model": "", "embed_model": "", "auth": True},
+    # PRD-45 S2: Decider providers — System One model type for calibrated decisions.
+    # These are NOT chat providers; they answer in probabilities over a declared answer
+    # space, not in prose. The credential's `model` field names the head/algorithm.
+    {"id": "systemone", "label": "System One (TypeSafe Jev)", "kind": "systemone",
+     "embeds": False, "serves": ["decide"],
+     "base_url": "", "chat_model": "", "embed_model": "", "auth": True},
+    {"id": "typesafe", "label": "TypeSafe Cloud", "kind": "typesafe",
+     "embeds": False, "serves": ["decide"],
      "base_url": "", "chat_model": "", "embed_model": "", "auth": True},
 ]
 
@@ -120,3 +148,22 @@ def kind(pid: str) -> str:
 # because refusing every model on a provider that simply cannot enumerate would make the
 # check worse than its absence.
 LISTS_MODELS = {p["id"] for p in PROVIDERS if p["kind"] in ("ollama", "openai")}
+
+
+# ---- PRD-45 S2: Can this provider serve decisions? -------------------------------------
+#
+# Decider providers answer in calibrated probabilities over a declared answer space, not
+# in prose. The `serves` field on each registry entry names what model types it supports;
+# a provider that lists "decide" can be pointed at as a decider credential.
+DECIDERS = {p["id"] for p in PROVIDERS if "decide" in p.get("serves", [])}
+
+
+def serves_decide(provider_id: str) -> bool:
+    """Whether a provider kind can serve decisions (PRD-45 S2).
+
+    A decider credential must point at a provider whose `serves` includes "decide".
+    Chat providers answer in prose; a decider answers in probabilities over a declared
+    answer space. Using a chat credential as a decider would parse JSON from prose,
+    which is the defect the decider type exists to prevent.
+    """
+    return provider_id in DECIDERS

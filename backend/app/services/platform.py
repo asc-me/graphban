@@ -680,6 +680,17 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
     for credential_id, pid in rows:
         used.setdefault(credential_id, []).append(pid)
 
+    # Decider pointers are a separate column on Project (PRD-45 S2). Merge them into the
+    # same used_by map so the operator sees every reason a credential is referenced.
+    decider_rows = (
+        db.query(Project.decider_credential_id, Project.id)
+        .filter(Project.decider_credential_id.isnot(None))
+        .all()
+    )
+    decider_used: dict[str, list[str]] = {}
+    for credential_id, pid in decider_rows:
+        decider_used.setdefault(credential_id, []).append(pid)
+
     # Which of those pointers are being fallen past, computed from rows ALREADY LOADED.
     #
     # The first version called `resolve_chat` once per pointing project, which was correct and
@@ -691,11 +702,19 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
     for credential_id, pids in used.items():
         if not usable(in_scope.get(credential_id)):
             fallen[credential_id] = sorted(pids)
+    # Decider pointers that are unreachable — the project is falling past its decider.
+    decider_fallen: dict[str, list[str]] = {}
+    for credential_id, pids in decider_used.items():
+        if not usable(in_scope.get(credential_id)):
+            decider_fallen[credential_id] = sorted(pids)
 
     row = db.get(DeploymentConfig, scope or "")
     default_id = row.default_credential_id if row else None
     fallback_id = row.fallback_credential_id if row else None
     embed_id = row.embed_credential_id if row else None
+    decider_id = getattr(row, "decider_credential_id", None) if row else None
+
+    from app.providers import registry as _reg
 
     return [
         {
@@ -707,15 +726,17 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
             "key_set": c.key_set,
             "state": c.state,
             "last_error": c.last_error,
-            "used_by": sorted(used.get(c.id, [])),
+            "serves": _reg.get(c.kind)["serves"] if _reg.get(c.kind) else ["chat"],
+            "used_by": sorted(set(used.get(c.id, [])) | set(decider_used.get(c.id, []))),
             # Projects pointing here that are NOT actually getting it (GRPH-525). §4 says a
             # warning nobody is shown is the same defect as no warning one layer along, and
             # the console is the only surface an operator sees without reading logs. Derived
             # from live resolution rather than stored, for the same reason `used_by` is.
-            "falling_back": sorted(fallen.get(c.id, [])),
+            "falling_back": sorted(set(fallen.get(c.id, [])) | set(decider_fallen.get(c.id, []))),
             "is_default": c.id == default_id,
             "is_fallback": c.id == fallback_id,
             "is_embed": c.id == embed_id,
+            "is_decider": c.id == decider_id,
         }
         for c in creds
     ]
@@ -946,9 +967,9 @@ def set_scope_defaults(db: Session, scope: str, *, default_credential_id: str | 
                     "decider credential. Use Test connection, or correct and resave it, first."
                 )
             from app.providers import registry
-            if not registry.serves_decide(cred.provider):
+            if not registry.serves_decide(cred.kind):
                 raise ValueError(
-                    f"{decider_credential_id} is a {cred.provider} credential, which does not "
+                    f"{decider_credential_id} is a {cred.kind} credential, which does not "
                     "serve decisions. Use a System One or TypeSafe credential."
                 )
             row.decider_credential_id = decider_credential_id
@@ -1007,10 +1028,15 @@ def set_project_decider(db: Session, project_id: str, *,
         cred = credential_in_scope(db, decider_credential_id, (project.org_id or ""))
         if cred is None:
             raise LookupError(decider_credential_id)
-        from app.providers import registry
-        if not registry.serves_decide(cred.provider):
+        if cred.state == UNPROVEN:
             raise ValueError(
-                f"{decider_credential_id} is a {cred.provider} credential, which does not "
+                f"{decider_credential_id} has never been validated, so it cannot be the "
+                "decider credential. Use Test connection, or correct and resave it, first."
+            )
+        from app.providers import registry
+        if not registry.serves_decide(cred.kind):
+            raise ValueError(
+                f"{decider_credential_id} is a {cred.kind} credential, which does not "
                 "serve decisions. Use a System One or TypeSafe credential."
             )
         project.decider_credential_id = decider_credential_id
