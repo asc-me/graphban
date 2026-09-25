@@ -170,6 +170,90 @@ def test_a_refusal_is_printed_in_the_servers_own_words_with_its_hint(home, monke
     assert "mint a role-narrowed credential" in err
 
 
+# ---- GRPH-928: whoami names the project mismatch ---------------------------------------------
+
+class _WhoamiClient:
+    """A fake authenticated client that answers /api/auth/me and /api/projects."""
+    def __init__(self, projects):
+        self._projects = projects
+
+    def call(self, method, path, body=None):
+        if path == "/api/auth/me":
+            return {"email": "agent@test.com", "id": "GRPH-A1"}
+        if path == "/api/projects":
+            return self._projects
+        return {}
+
+
+def test_whoami_warns_when_cwd_resolves_to_a_different_project(
+        home, tmp_path, monkeypatch, capsys):
+    """Sabotage: skip the comparison and this fails — the mismatch would go silent."""
+    config.save_settings(url="http://gb.invalid", project="agentledger")
+    cwd = tmp_path / "super-arc"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr("gban.cli.authenticated",
+                        lambda url: _WhoamiClient([
+                            {"id": "agentledger", "name": "Agent Ledger"},
+                            {"id": "super-arc", "name": "Super Arc"},
+                        ]))
+    assert main(["whoami"]) == 0
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "super-arc" in out
+    assert "agentledger" in out
+
+
+def test_whoami_is_silent_when_cwd_matches_configured_project(
+        home, tmp_path, monkeypatch, capsys):
+    """The control: cwd and configured project agree — no warning."""
+    config.save_settings(url="http://gb.invalid", project="agentledger")
+    cwd = tmp_path / "agentledger"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr("gban.cli.authenticated",
+                        lambda url: _WhoamiClient([
+                            {"id": "agentledger", "name": "Agent Ledger"},
+                        ]))
+    assert main(["whoami"]) == 0
+    out = capsys.readouterr().out
+    assert "WARNING" not in out
+
+
+def test_whoami_is_silent_when_cwd_does_not_match_any_project(
+        home, tmp_path, monkeypatch, capsys):
+    """The directory names nothing known — the check is skipped, not an error."""
+    config.save_settings(url="http://gb.invalid", project="agentledger")
+    cwd = tmp_path / "somewhere-else"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr("gban.cli.authenticated",
+                        lambda url: _WhoamiClient([
+                            {"id": "agentledger", "name": "Agent Ledger"},
+                        ]))
+    assert main(["whoami"]) == 0
+    out = capsys.readouterr().out
+    assert "WARNING" not in out
+
+
+def test_whoami_json_includes_cwd_project_on_mismatch(
+        home, tmp_path, monkeypatch, capsys):
+    """The machine path carries the same signal."""
+    config.save_settings(url="http://gb.invalid", project="agentledger")
+    cwd = tmp_path / "super-arc"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr("gban.cli.authenticated",
+                        lambda url: _WhoamiClient([
+                            {"id": "agentledger", "name": "Agent Ledger"},
+                            {"id": "super-arc", "name": "Super Arc"},
+                        ]))
+    assert main(["--json", "whoami"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["cwd_project"] == "super-arc"
+    assert payload["project"] == "agentledger"
+
+
 # ---- 10: --json is the machine-readable path -------------------------------------------------
 
 def test_json_output_is_parsed_and_carries_no_human_rendering(home, tty, monkeypatch, capsys):
