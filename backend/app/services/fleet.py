@@ -441,7 +441,18 @@ def _claim_bound_seat(db: Session, agent: Agent, seat: "Enrolment | None", *,
         return out
     if not items_svc.claimable(item, lease_seconds=lease_seconds, now=now):
         holder = item.claimed_by if item.claimed_by else None
-        out["reason"] = "held" if holder else f"status:{item.status}"
+        if holder:
+            # GRPH-931: a holder that exists in the row but is offline (no heartbeat within
+            # presence TTL) is a ghost lease. Name it so the child can say "ghost lease, no
+            # live holder" instead of exiting silently. The holder id stays set so fleet_status
+            # and release_item can point at it.
+            holder_agent = db.get(Agent, holder)
+            if holder_agent is None or presence_state(holder_agent, lease_seconds=lease_seconds, now=now) == "offline":
+                out["reason"] = "ghost"
+            else:
+                out["reason"] = "held"
+        else:
+            out["reason"] = f"status:{item.status}"
         out["held_by"] = holder
         return out
     pin = bounce_pin_holder(item, now=now)
