@@ -11,11 +11,13 @@ the shadowing rationale does not apply — it is intentionally not guarded.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from unittest.mock import patch
 
 from gbfleet import cli
 from gbfleet.state import repo_root
+from gbfleet.until import Report
 
 
 def _make_mcp_args(repo: str | Path, **overrides) -> argparse.Namespace:
@@ -92,5 +94,48 @@ def test_mcp_allows_non_repo_cwd(
         except RuntimeError as exc:
             assert "stop here" in str(exc)
 
+    captured = capsys.readouterr()
+    assert "does not match" not in captured.err
+
+
+def test_until_runs_when_repo_differs_from_cwd(
+    git_repo: Path, other_repo: Path, monkeypatch, capsys,
+):
+    """`until` is an operator command, not a harness-spawned server. Running
+    `gbfleet until --repo X` from inside repo Y is a legitimate operator action
+    (e.g. the clone-launch recipe). The cwd-mismatch guard applies to `mcp` only.
+
+    Sabotage: re-add a cwd-mismatch guard to cli._until → this test fails because
+    until refuses with exit 2 instead of reaching run_until.
+    """
+    monkeypatch.setenv(cli.API_KEY_ENV, "gb_sk_test_key")
+    monkeypatch.chdir(other_repo)
+
+    reached: dict = {}
+
+    class FakeGB:
+        def __init__(self, base_url, api_key, allowed=None, **_kw):
+            self.allowed = allowed
+            self.base_url = base_url
+            self.api_key = api_key
+
+        def close(self):
+            pass
+
+    def fake_run(repo, factory, planner, supervisor, **kw):
+        reached["called"] = True
+        return Report(ok=True, reason="idle", exit=0, waits=[])
+
+    monkeypatch.setattr(cli, "Graphban", FakeGB)
+    monkeypatch.setattr(cli, "run_until", fake_run)
+    monkeypatch.setattr(cli, "make_adapter_factory", lambda *a, **k: object())
+
+    code = cli.main([
+        "until", "--repo", str(git_repo),
+        "--server", "http://gb.invalid", "--adapter", "gbagent",
+    ])
+
+    assert reached.get("called"), "until never reached run_until — cwd guard refused it"
+    assert code == 0
     captured = capsys.readouterr()
     assert "does not match" not in captured.err
