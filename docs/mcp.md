@@ -355,7 +355,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `close_prd` | `prd_id`, `dispositions`, `verdict` | **Close a PRD** — terminal, irreversible. Gates on **disposition**, never on delivery: every section with nothing delivered must be promoted or deferred with a reason. Post-close work becomes a new PRD |
 | `learning_loop` | `view`, `id`, `project_id` | **The learning loop, read-only** — `recommendations` (pending artifact proposals), `artifact` (one, with its draft and install plan), `usage` (population + uses; **null**, never 0, for a tier whose use cannot be observed), `stale` (only observable tiers — zero uses elsewhere is not evidence of disuse) |
 | `review_recommendation` | `id`, `decision` | **Approve or reject a proposed artifact** — the human boundary. Approving writes nothing: a `shared_surgery` artifact is only ever proposed, with its contents returned for a human to apply |
-| `report_graphban_issue` | `type`, `title`, `detail` | Report a bug/idea about **Graphban itself** (not your project) upstream; deduped on arrival. The retired name `report_agentledger_issue` still dispatches but is not advertised |
+| `report_graphban_issue` | `type`, `title`, `detail` | Report a bug/idea about **Graphban itself** (not your project) upstream; deduped on arrival. A 404 names the missing piece (`UPSTREAM_FEEDBACK_TOKEN` unset, or the project has not enabled public sharing), not both, and says retrying will not help. The retired name `report_agentledger_issue` still dispatches but is not advertised |
 
 Arguments are validated against each tool's `inputSchema` **before dispatch**, so a
 missing required field or a bad enum comes back as an actionable error rather than a

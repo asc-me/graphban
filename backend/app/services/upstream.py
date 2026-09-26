@@ -26,6 +26,22 @@ def target_host() -> str:
     return urlparse(settings.upstream_feedback_url).netloc if settings.upstream_feedback_url else ""
 
 
+def explain_upstream_404() -> str:
+    """Name the missing piece after a hosted intake 404 (GRPH-927).
+
+    The intake returns one 404 for both "no share token" and "project not shared" on
+    purpose, so the surface cannot be probed. The sender already knows whether it
+    sent a token, so that half needs no upstream disclosure: unset → the token is
+    the missing piece; set → sharing is off for the frozen upstream project. Does
+    not skip the POST — a self-hosted intake still accepts a report with no token.
+    """
+    if not settings.upstream_feedback_token:
+        return "UPSTREAM_FEEDBACK_TOKEN unset on this server"
+    return (
+        f"project {settings.upstream_feedback_project} has not enabled public sharing"
+    )
+
+
 def submit_upstream(*, type_: str, title: str, detail: str = "", source: str = "in-app") -> dict:
     """POST the report to the configured upstream intake. Returns the upstream's response
     ({request, duplicates}). Raises ValueError on config/validation problems and lets

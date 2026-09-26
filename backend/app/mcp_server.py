@@ -3340,10 +3340,7 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             if code == 404:
                 raise errors.Conflict(
                     "upstream accepted the connection but could not resolve its project "
-                    "(404). A hosted intake honours only the share token — set "
-                    "UPSTREAM_FEEDBACK_TOKEN. The same 404 also covers a project that has "
-                    "not enabled public sharing; the intake makes the two "
-                    "indistinguishable on purpose.",
+                    f"(404). {up_svc.explain_upstream_404()}.",
                     hint="configuration, not transient — retrying will not help",
                 )
             raise errors.Conflict(
