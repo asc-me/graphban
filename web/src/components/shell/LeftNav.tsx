@@ -22,25 +22,29 @@ import {
 } from "@/lib/queries";
 import { ORG_BASE, adminPath, orgPath, projectPath, settingsPath, usableHttpUrl } from "@/lib/routes";
 
-/** The project-scoped views, in rail order. */
-const WORKSPACE = [
-  { to: "tracker", icon: <ListChecks size={16} />, label: "Tracker", count: "items" },
-  { to: "requests", icon: <Star size={16} />, label: "Requests", count: "requests" },
+/** Hosted workspace views grouped into Plan / Build / Observe (GRPH-940). Same 16 items the flat list had — collapsed into sections, not lengthened. */
+const HOSTED_PLAN = [
+  { to: "tracker", icon: <ListChecks size={16} />, label: "Tracker", count: "items" as const },
+  { to: "requests", icon: <Star size={16} />, label: "Requests", count: "requests" as const },
   { to: "triage", icon: <Radar size={16} />, label: "Triage" },
   { to: "dashboard", icon: <LayoutGrid size={16} />, label: "Dashboard" },
+  { to: "prds", icon: <BarChart3 size={16} />, label: "PRDs" },
+  { to: "roadmap", icon: <Map size={16} />, label: "Roadmap" },
+];
+const HOSTED_BUILD = [
   { to: "links", icon: <GitFork size={16} />, label: "Links" },
   { to: "code", icon: <Network size={16} />, label: "Code graph" },
-  { to: "roadmap", icon: <Map size={16} />, label: "Roadmap" },
   { to: "mcp-tools", icon: <Plug size={16} />, label: "MCP Tools" },
   { to: "fleet.v2", icon: <Users size={16} />, label: "Fleet.v2" },
   { to: "fleet.v1", icon: <Users size={16} />, label: "Fleet.v1" },
   { to: "outposts", icon: <Server size={16} />, label: "Outposts" },
-  { to: "memory-review", icon: <Inbox size={16} />, label: "Memory review", count: "review" },
+];
+const HOSTED_OBSERVE = [
+  { to: "memory-review", icon: <Inbox size={16} />, label: "Memory review", count: "review" as const },
   { to: "lessons", icon: <BookMarked size={16} />, label: "Lessons" },
   { to: "activity", icon: <ScrollText size={16} />, label: "Activity" },
   { to: "live", icon: <Activity size={16} />, label: "Live" },
-  { to: "prds", icon: <BarChart3 size={16} />, label: "PRDs" },
-] as const;
+];
 
 /**
  * The rail, split into what you use and what you administer (PRD-21 rev2).
@@ -78,6 +82,15 @@ function HostedLeftNav() {
   const { data: adminMe } = useIsPlatformAdmin();
   const isPlatformAdmin = !!adminMe?.is_platform_admin;
   const [newProjectOpen, setNewProjectOpen] = React.useState(false);
+  const { pathname } = useLocation();
+  const routeSection = hostedSectionFromPath(pathname);
+  const [section, setSection] = React.useState<Section | null>(routeSection);
+  const lastRoute = React.useRef(routeSection);
+  if (lastRoute.current !== routeSection) {
+    lastRoute.current = routeSection;
+    if (routeSection) setSection(routeSection);
+  }
+  const toggle = (s: Section) => setSection((cur) => (cur === s ? null : s));
 
   const badges: Record<string, number | undefined> = {
     items: counts?.items,
@@ -150,17 +163,65 @@ function HostedLeftNav() {
 
       <NewProjectDialog open={newProjectOpen} onOpenChange={setNewProjectOpen} />
 
-      <RailHeading>Workspace</RailHeading>
-      <nav className="flex flex-col gap-0.5">
-        {WORKSPACE.map((n) => (
-          <NavItem
-            key={n.to}
-            to={viewPath(n.to)}
-            icon={n.icon}
-            label={n.label}
-            count={"count" in n && n.count ? badges[n.count] : undefined}
-          />
-        ))}
+      <nav className="mt-4 flex flex-col gap-0.5">
+        <SectionHeader
+          label="Plan"
+          expanded={section === "plan"}
+          controls="hosted-nav-plan"
+          onToggle={() => toggle("plan")}
+        />
+        {section === "plan" && (
+          <div id="hosted-nav-plan" className="flex flex-col gap-0.5 pl-2">
+            {HOSTED_PLAN.map((n) => (
+              <NavItem
+                key={n.to}
+                to={viewPath(n.to)}
+                icon={n.icon}
+                label={n.label}
+                count={"count" in n && n.count ? badges[n.count] : undefined}
+              />
+            ))}
+          </div>
+        )}
+
+        <SectionHeader
+          label="Build"
+          expanded={section === "build"}
+          controls="hosted-nav-build"
+          onToggle={() => toggle("build")}
+        />
+        {section === "build" && (
+          <div id="hosted-nav-build" className="flex flex-col gap-0.5 pl-2">
+            {HOSTED_BUILD.map((n) => (
+              <NavItem
+                key={n.to}
+                to={viewPath(n.to)}
+                icon={n.icon}
+                label={n.label}
+              />
+            ))}
+          </div>
+        )}
+
+        <SectionHeader
+          label="Observe"
+          expanded={section === "observe"}
+          controls="hosted-nav-observe"
+          onToggle={() => toggle("observe")}
+        />
+        {section === "observe" && (
+          <div id="hosted-nav-observe" className="flex flex-col gap-0.5 pl-2">
+            {HOSTED_OBSERVE.map((n) => (
+              <NavItem
+                key={n.to}
+                to={viewPath(n.to)}
+                icon={n.icon}
+                label={n.label}
+                count={"count" in n && n.count ? badges[n.count] : undefined}
+              />
+            ))}
+          </div>
+        )}
       </nav>
 
       {hosted && canAdminister && (
@@ -240,6 +301,17 @@ function sectionFromPath(pathname: string): Section | "home" | null {
   if (PLAN.some((n) => ownsPath(pathname, n.to))) return "plan";
   if (BUILD.some((n) => ownsPath(pathname, n.to))) return "build";
   if (OBSERVE.some((n) => ownsPath(pathname, n.to))) return "observe";
+  return null;
+}
+
+/** Hosted paths are `/p/:tag/:view` — extract the view and match it to a section. */
+function hostedSectionFromPath(pathname: string): Section | null {
+  const m = pathname.match(/^\/p\/[^/]+\/(.+)$/);
+  const view = m?.[1];
+  if (!view) return null;
+  if (HOSTED_PLAN.some((n) => n.to === view)) return "plan";
+  if (HOSTED_BUILD.some((n) => n.to === view)) return "build";
+  if (HOSTED_OBSERVE.some((n) => n.to === view)) return "observe";
   return null;
 }
 
