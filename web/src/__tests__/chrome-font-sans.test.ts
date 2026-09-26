@@ -14,7 +14,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-const SHELL = import.meta.glob("../components/shell/{TopBar,LeftNav,AppFrame,AgentSidebar}.tsx", {
+const SHELL = import.meta.glob("../components/shell/{TopBar,LeftNav,AppFrame,AgentSidebar,PlaceHeader}.tsx", {
   query: "?raw",
   import: "default",
   eager: true,
@@ -102,6 +102,11 @@ describe("shell chrome uses Sans, not Mono (GRPH-938)", () => {
   it("AgentSidebar thinking indicator is not font-mono", () => {
     const src = readShell("AgentSidebar.tsx");
     assertLineNoMono(src, "thinking…", "AgentSidebar thinking");
+  });
+
+  it("PlaceHeader project name is not font-mono", () => {
+    const src = readShell("PlaceHeader.tsx");
+    assertLineNoMono(src, "{projectName}", "PlaceHeader project name");
   });
 
   it("identifiers still use font-mono (sabotage guard)", () => {

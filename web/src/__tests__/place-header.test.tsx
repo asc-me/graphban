@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -45,36 +45,33 @@ function renderTracker() {
 describe("PlaceHeader", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("shows the view name in the Tracker (GRPH-941)", async () => {
+  it("shows the project name and view name in the Tracker (GRPH-941)", async () => {
     renderTracker();
 
     const header = await screen.findByTestId("place-header");
-    expect(header).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Tracker");
+    expect(await within(header).findByText("Graphban")).toBeInTheDocument();
+    expect(within(header).getByRole("heading", { level: 1 })).toHaveTextContent("Tracker");
   });
 
   it("renders the purpose line", async () => {
     renderTracker();
 
-    await screen.findByTestId("place-header");
-    expect(screen.getByText(/One linear stream/)).toBeInTheDocument();
+    const header = await screen.findByTestId("place-header");
+    expect(within(header).getByText(/One linear stream/)).toBeInTheDocument();
   });
 
   it("renders the primary action when provided", async () => {
     renderTracker();
 
-    await screen.findByTestId("place-header");
-    // The NewItemDialog button is rendered inside the place header's action slot.
-    const header = screen.getByTestId("place-header");
+    const header = await screen.findByTestId("place-header");
     expect(header.querySelector("button")).toBeInTheDocument();
   });
 
-  it("sabotage: the place header element is present on the Tracker", async () => {
+  it("sabotage: dropping the project name from the header fails", async () => {
     renderTracker();
 
-    // The place header must be present — removing it is the sabotage this test guards.
     const header = await screen.findByTestId("place-header");
-    expect(header).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Tracker");
+    // Drop `{projectName}` from PlaceHeader — this assertion is the gate.
+    expect(await within(header).findByText("Graphban")).toBeInTheDocument();
   });
 });

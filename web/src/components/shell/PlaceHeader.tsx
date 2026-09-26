@@ -29,9 +29,7 @@ export function PlaceHeader({
       <div className="flex items-baseline gap-2">
         {projectName && (
           <>
-            <span className="font-mono text-[10px] uppercase tracking-wide text-faint">
-              {projectName}
-            </span>
+            <span className="text-[12.5px] text-muted">{projectName}</span>
             <span className="text-faint-2">·</span>
           </>
         )}
