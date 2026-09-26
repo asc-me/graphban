@@ -31,8 +31,11 @@ log_format json_access escape=json
 # PRD-43 D8: Wildcard *.graphban.dev server block.
 # Org subdomains (e.g. acme.graphban.dev) serve public surfaces only — feedback, roadmap,
 # issues, requests, tracking. The backend's host_router resolves the org from the Host header
-# and returns 404 for unknown orgs/paths/surfaces. We proxy everything to the backend here;
-# the catch-all server below serves the SPA for cloud.graphban.dev and other hosts.
+# and returns 404 for unknown orgs/paths/surfaces. We proxy everything to the backend here.
+# `cloud.graphban.dev` is an EXACT name on the SPA server below, which beats this wildcard.
+# LAN hosts (ubuntu-srv) match neither; they must hit the SPA via `default_server` on the
+# catch-all. Without that, nginx uses THIS block as the implicit default (it is first) and
+# `/` 404s as FastAPI JSON.
 # Unknown org labels (e.g. random.graphban.dev) reach the backend, which 404s them — they
 # do NOT fall through to the SPA.
 server {
@@ -63,9 +66,11 @@ server {
 }
 
 server {
-    listen ${PORT};
+    listen ${PORT} default_server;
     access_log /dev/stdout json_access;
-    server_name _;
+    # `_` is the unmatched-Host catch-all (LAN: ubuntu-srv). `cloud.graphban.dev` is
+    # exact so it wins over `*.graphban.dev` — hosted SPA must not be proxied to the API.
+    server_name _ cloud.graphban.dev;
     root /usr/share/nginx/html;
     index index.html;
 

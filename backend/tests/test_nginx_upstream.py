@@ -34,3 +34,22 @@ def test_both_proxied_locations_are_pinned():
     """/api/ and /health in the catch-all server, plus the *.graphban.dev wildcard
     server block (PRD-43 D8) — three proxy_pass directives, all without a URI part."""
     assert TEMPLATE.count("proxy_pass ${API_SCHEME}://$api_upstream;") == 3
+
+
+def test_spa_catch_all_is_the_default_server():
+    """LAN Hosts (ubuntu-srv) match neither `*.graphban.dev` nor an exact name.
+
+    nginx's default is the FIRST `listen` block unless `default_server` is set.
+    The wildcard was first, so `/` was proxied to FastAPI and 404'd as JSON.
+    """
+    assert "listen ${PORT} default_server;" in TEMPLATE
+    assert TEMPLATE.count("listen ${PORT} default_server;") == 1
+    # wildcard must NOT be the default
+    wild = TEMPLATE.split("server_name *.graphban.dev;")[0]
+    assert "default_server" not in wild.split("server {")[-1]
+
+
+def test_cloud_apex_is_exact_on_the_spa_server():
+    """`*.graphban.dev` matches `cloud.graphban.dev`. Exact name on the SPA
+    server beats the wildcard so hosted Install is not FastAPI 404."""
+    assert "server_name _ cloud.graphban.dev;" in TEMPLATE
