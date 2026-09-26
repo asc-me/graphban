@@ -873,8 +873,8 @@ export const api = {
     request<ScopeDefaults & { scope: string }>(`/platform/credentials/defaults${projectQuery(projectId)}`, {
       method: "PUT", body: JSON.stringify(body),
     }),
-  setProjectCredential: (projectId: string, body: { credential_id?: string | null; model_override?: string }) =>
-    request<{ project_id: string; credential_id: string | null; model_override: string }>(
+  setProjectCredential: (projectId: string, body: { credential_id?: string | null; model_override?: string; decider_credential_id?: string | null }) =>
+    request<{ project_id: string; credential_id: string | null; model_override: string; decider_credential_id?: string | null }>(
       `/platform/credentials/project${projectQuery(projectId)}`, {
         method: "PUT", body: JSON.stringify(body),
       }),
