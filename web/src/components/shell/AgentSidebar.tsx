@@ -157,7 +157,7 @@ function MemoryPanel() {
         />
       </form>
 
-      <div className="flex items-center justify-between px-4 pb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">
+      <div className="flex items-center justify-between px-4 pb-1.5 text-[10px] font-medium text-faint">
         <span>{countLabel}</span>
         {hits && (
           <button className="text-faint hover:text-fg" onClick={() => { setHits(null); setQuery(""); }}>
@@ -284,7 +284,7 @@ function AgentChat() {
             </div>
           </div>
         ))}
-        {busy && <div className="pl-9 font-mono text-[11px] text-faint">thinking…</div>}
+        {busy && <div className="pl-9 text-[11px] text-faint">thinking…</div>}
       </div>
       <form onSubmit={send} className="flex-none border-t border-line p-3">
         <div className="flex items-center gap-2 rounded-[10px] border border-line-2 bg-surface-2 px-2.5 focus-within:border-line-hover">

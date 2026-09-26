@@ -24,7 +24,7 @@ function Pulse({ className }: { className?: string }) {
 
 function Loading() {
   return (
-    <div className="flex h-full items-center justify-center font-mono text-[12px] text-faint">
+    <div className="flex h-full items-center justify-center text-[12px] text-faint">
       loading…
     </div>
   );
