@@ -147,14 +147,44 @@ def test_a_rejected_report_is_not_reported_as_an_unreachable_host(client, auth, 
     assert "UPSTREAM_FEEDBACK_TOKEN" in r.json()["detail"]
 
 
-def test_a_404_says_the_same_answer_covers_two_causes(client, auth, monkeypatch):
-    """A project that has not enabled public sharing returns the same 404 as one that does
-    not exist — deliberately, so the surface cannot be probed. Saying so stops an operator
-    concluding their token is wrong when sharing is simply off."""
+def test_explain_upstream_404_names_the_unset_token(monkeypatch):
+    """Local check: no upstream disclosure needed to name a missing token."""
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
+    assert up_svc.explain_upstream_404() == "UPSTREAM_FEEDBACK_TOKEN unset on this server"
+    assert "public sharing" not in up_svc.explain_upstream_404()
+
+
+def test_explain_upstream_404_names_the_unshared_project(monkeypatch):
+    """Token was sent, so the missing piece is sharing on the frozen upstream project."""
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "tok_live_123")
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_project", "super-arc")
+    assert up_svc.explain_upstream_404() == (
+        "project super-arc has not enabled public sharing"
+    )
+    assert "UPSTREAM_FEEDBACK_TOKEN unset" not in up_svc.explain_upstream_404()
+
+
+def test_a_404_without_a_token_names_the_unset_token(client, auth, monkeypatch):
+    """THE bug this guards. One 404 used to name BOTH causes, so an operator with no
+    token still read 'public sharing' and went looking at the wrong knob."""
     monkeypatch.setattr(up_svc.httpx, "post", _Status(404))
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
 
     detail = client.post("/api/reports/upstream", json={"title": "x"}, headers=auth).json()["detail"]
-    assert "public sharing" in detail
+    assert "UPSTREAM_FEEDBACK_TOKEN unset on this server" in detail
+    assert "public sharing" not in detail
+
+
+def test_a_404_with_a_token_names_the_unshared_project(client, auth, monkeypatch):
+    """The other half of the split: a token was sent, so sharing is the missing piece.
+    REST has no caller project, so the frozen upstream id is what gets named."""
+    monkeypatch.setattr(up_svc.httpx, "post", _Status(404))
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "tok_live_123")
+
+    detail = client.post("/api/reports/upstream", json={"title": "x"}, headers=auth).json()["detail"]
+    assert "has not enabled public sharing" in detail
+    assert "UPSTREAM_FEEDBACK_TOKEN unset" not in detail
+    assert up_svc.settings.upstream_feedback_project in detail
 
 
 @pytest.mark.parametrize("code,status", [(400, 500), (403, 500), (500, 502), (503, 502)])
@@ -178,17 +208,40 @@ def test_a_genuinely_unreachable_host_still_reads_as_unreachable(client, auth, m
     assert r.status_code == 502 and "unreachable" in r.json()["detail"]
 
 
-def test_the_mcp_tool_says_retrying_will_not_help(client, auth, monkeypatch):
-    """An agent branches on the hint. "Retry later" against a config error is an infinite
-    loop that never fixes itself."""
-    monkeypatch.setattr(up_svc.httpx, "post", _Status(404))
-    key = client.post("/api/api-keys", json={"name": "reporter"}, headers=auth).json()["plaintext"]
-
+def _mcp_report_error(client, key):
     r = client.post("/api/mcp", headers={"X-API-Key": key}, json={
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {"name": "report_graphban_issue", "arguments": {"title": "x"}}})
-    err = r.json()["result"]["structuredContent"]["error"]
+    return r.json()["result"]["structuredContent"]["error"]
+
+
+def test_the_mcp_tool_says_retrying_will_not_help(client, auth, monkeypatch):
+    """An agent branches on the hint. "Retry later" against a config error is an infinite
+    loop that never fixes itself. Token-unset is the SuperArc field case (GRPH-927)."""
+    monkeypatch.setattr(up_svc.httpx, "post", _Status(404))
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "")
+    key = client.post("/api/api-keys", json={"name": "reporter"}, headers=auth).json()["plaintext"]
+
+    err = _mcp_report_error(client, key)
 
     assert err["code"] == "conflict"
-    assert "UPSTREAM_FEEDBACK_TOKEN" in err["message"]
+    assert "UPSTREAM_FEEDBACK_TOKEN unset on this server" in err["message"]
+    assert "public sharing" not in err["message"]
+    assert "will not help" in err.get("hint", "")
+
+
+def test_the_mcp_tool_names_the_unshared_project_when_the_token_is_set(
+        client, auth, monkeypatch):
+    """THE CALL this guards. A token was sent, so the missing piece is sharing on
+    the frozen upstream project — the SuperArc field string, not the token."""
+    monkeypatch.setattr(up_svc.httpx, "post", _Status(404))
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_token", "tok_live_123")
+    monkeypatch.setattr(up_svc.settings, "upstream_feedback_project", "super-arc")
+    key = client.post("/api/api-keys", json={"name": "reporter"}, headers=auth).json()["plaintext"]
+
+    err = _mcp_report_error(client, key)
+
+    assert err["code"] == "conflict"
+    assert "project super-arc has not enabled public sharing" in err["message"]
+    assert "UPSTREAM_FEEDBACK_TOKEN unset" not in err["message"]
     assert "will not help" in err.get("hint", "")

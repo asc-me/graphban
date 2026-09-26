@@ -34,11 +34,7 @@ def upstream_report(body: UpstreamReportIn, _: User = Depends(get_current_user))
         code = e.response.status_code
         detail = f"upstream rejected the report (HTTP {code})"
         if code == 404:
-            detail += (
-                " — a hosted intake honours only the share token; set "
-                "UPSTREAM_FEEDBACK_TOKEN. A project without public sharing enabled "
-                "returns the same 404 by design."
-            )
+            detail += f" — {up_svc.explain_upstream_404()}."
         # 502 says the upstream is at fault. A 4xx means ours is: our own config is wrong.
         raise HTTPException(502 if code >= 500 else 500, detail)
     except httpx.HTTPError as e:
