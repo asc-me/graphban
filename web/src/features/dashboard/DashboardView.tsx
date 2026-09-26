@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Bot, Boxes, Brain, CircleDot, FileText, Plug, TriangleAlert, X } from "lucide-react";
 
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { STATUS_META, STATUS_ORDER, TYPE_META } from "@/lib/meta";
 import { useDashboard } from "@/lib/queries";
@@ -17,10 +18,10 @@ export function DashboardView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex-none border-b border-line px-5 py-4">
-        <h1 className="text-[18px] font-semibold tracking-tight">Dashboard</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted">Project health at a glance — items, memory, requests, and MCP activity.</p>
-      </div>
+      <PlaceHeader
+        viewName="Dashboard"
+        purpose="Project health at a glance — items, memory, requests, and MCP activity."
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         <AgentLoopInfo />

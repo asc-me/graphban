@@ -2,6 +2,7 @@ import { Boxes, Network, Radar, Users } from "lucide-react";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useCounts, useDashboard, useFleet } from "@/lib/queries";
 
@@ -23,10 +24,9 @@ export function HomeView() {
 
   if (firstLoad) {
     return (
-      <div className="p-6">
-        <h1 className="text-[18px] font-semibold tracking-tight">Home</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted">Project health at a glance.</p>
-        <div className="mt-6 space-y-4" aria-busy="true">
+      <div className="flex h-full min-h-0 flex-col">
+        <PlaceHeader viewName="Home" purpose="Project health at a glance." />
+        <div className="min-h-0 flex-1 overflow-y-auto p-6" aria-busy="true">
           <div className="h-[108px] animate-pulse rounded-[14px] border border-line-2 bg-surface-2" />
           <div className="space-y-2">
             {Array.from({ length: 3 }).map((_, i) => (
@@ -45,11 +45,13 @@ export function HomeView() {
 
   if (firstFailed) {
     return (
-      <div className="p-6">
-        <h1 className="text-[18px] font-semibold tracking-tight">Home</h1>
-        <p className="mt-4 rounded-[12px] border border-st-blocked/30 bg-st-blocked/[0.06] px-3.5 py-3 text-[13px] text-st-blocked">
-          counts unavailable
-        </p>
+      <div className="flex h-full min-h-0 flex-col">
+        <PlaceHeader viewName="Home" purpose="Project health at a glance." />
+        <div className="min-h-0 flex-1 overflow-y-auto p-6">
+          <p className="rounded-[12px] border border-st-blocked/30 bg-st-blocked/[0.06] px-3.5 py-3 text-[13px] text-st-blocked">
+            counts unavailable
+          </p>
+        </div>
       </div>
     );
   }
@@ -68,12 +70,10 @@ export function HomeView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex-none border-b border-line px-5 py-4">
-        <h1 className="text-[18px] font-semibold tracking-tight">Home</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted">
-          Project health at a glance — items, memory, and who is in flight.
-        </p>
-      </div>
+      <PlaceHeader
+        viewName="Home"
+        purpose="Project health at a glance — items, memory, and who is in flight."
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         {stale && (

@@ -7,6 +7,7 @@ import {
   PlannerFilteredEmpty,
   RequestsListSkeleton,
 } from "@/components/planner/PlannerStates";
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { LinkedCode } from "@/features/code/LinkedCode";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
@@ -40,12 +41,10 @@ export function RequestsView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex-none border-b border-line px-5 py-4">
-        <h1 className="text-[18px] font-semibold tracking-tight">Requests</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted">
-          Triage queue from the public form. Auto-duplicate detection links submissions to existing items & memory.
-        </p>
-      </div>
+      <PlaceHeader
+        viewName="Requests"
+        purpose="Triage queue from the public form. Auto-duplicate detection links submissions to existing items & memory."
+      />
 
       <div className="flex flex-none flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
         <Chip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={requests.length} />

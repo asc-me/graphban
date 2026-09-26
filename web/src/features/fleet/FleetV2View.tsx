@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useConfig, useFleet } from "@/lib/queries";
 import { projectPath } from "@/lib/routes";
@@ -22,27 +23,23 @@ export function FleetV2View() {
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="fleet-v2">
-      <div className="flex flex-none items-center justify-between border-b border-line px-5 py-4">
-        <div>
-          <h1 className="text-[18px] font-semibold tracking-tight">
-            Fleet.v2 <span className="font-mono text-[13px] font-normal text-muted">{scope}</span>
-          </h1>
-          <p className="mt-0.5 text-[12.5px] text-muted">
-            What can run, and how you allocate it. Roster and waves are Fleet.v1.
-          </p>
-        </div>
-        <div className="flex items-center gap-3 text-[12px]">
-          <Link to={viewHref("harness")} className="text-muted transition-colors hover:text-fg-2">
-            Harness
-          </Link>
-          <Link to={viewHref("outposts")} className="text-muted transition-colors hover:text-fg-2">
-            Outposts
-          </Link>
-          <Link to={viewHref("fleet.v1")} className="text-muted transition-colors hover:text-fg-2">
-            Fleet.v1
-          </Link>
-        </div>
-      </div>
+      <PlaceHeader
+        viewName={`Fleet.v2 ${scope}`}
+        purpose="What can run, and how you allocate it. Roster and waves are Fleet.v1."
+        action={
+          <div className="flex items-center gap-3 text-[12px]">
+            <Link to={viewHref("harness")} className="text-muted transition-colors hover:text-fg-2">
+              Harness
+            </Link>
+            <Link to={viewHref("outposts")} className="text-muted transition-colors hover:text-fg-2">
+              Outposts
+            </Link>
+            <Link to={viewHref("fleet.v1")} className="text-muted transition-colors hover:text-fg-2">
+              Fleet.v1
+            </Link>
+          </div>
+        }
+      />
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         <MatrixTable
           rows={data?.matrix?.rows ?? []}

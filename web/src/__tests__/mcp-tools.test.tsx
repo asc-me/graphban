@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
+import { ProjectProvider } from "@/features/ProjectContext";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { settingsPath } from "@/lib/routes";
 
@@ -15,6 +16,14 @@ vi.mock("@/lib/queries", () => ({
     isLoading: false,
     isError: false,
   }),
+  useProjects: () => ({ data: [{ id: "core", name: "Core", accent: "#a78bfa", tag: "core" }], isLoading: false }),
+}));
+
+vi.mock("@/lib/api", () => ({
+  setActiveProjectId: vi.fn(),
+  api: {
+    projects: vi.fn(async () => [{ id: "core", name: "Core", accent: "#a78bfa", tag: "core" }]),
+  },
 }));
 
 describe("MCP Tools", () => {
@@ -22,8 +31,14 @@ describe("MCP Tools", () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
       <QueryClientProvider client={qc}>
-        <MemoryRouter>
-          <McpToolsView />
+        <MemoryRouter initialEntries={["/mcp-tools"]}>
+          <ProjectProvider>
+            <Routes>
+              <Route element={<Outlet context={""} />}>
+                <Route path="/mcp-tools" element={<McpToolsView />} />
+              </Route>
+            </Routes>
+          </ProjectProvider>
         </MemoryRouter>
       </QueryClientProvider>,
     );

@@ -1,4 +1,6 @@
 import { ArrowUp, Check, Copy, Inbox, MessageSquare, Radar } from "lucide-react";
+
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { TYPE_META } from "@/lib/meta";
 import { useAcceptRequest, useFleet, useTriageQueue, useVoteRequest } from "@/lib/queries";
@@ -21,21 +23,26 @@ export function TriageView() {
   const clusters = fleet?.clusters ?? [];
 
   return (
-    <div className="max-w-[1300px] px-6 pb-16 pt-6">
-      <div className="flex flex-wrap items-center gap-2.5">
-        <h1 className="text-[19px] font-semibold tracking-[-0.3px]">Triage</h1>
-        <span className="rounded-full border border-st-next/30 bg-st-next/[0.07] px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.06em] text-st-next">
-          per-project · {active?.tag ?? "—"}
-        </span>
-      </div>
-      <p className="mb-5 mt-1.5 max-w-[78ch] text-[12.5px] leading-relaxed text-muted">
-        Clustering reasons over this project's code graph only. Overlaps across repos are
-        not computed — a shared package name is a galaxy edge, not a collision.
-      </p>
+    <div className="flex h-full min-h-0 flex-col">
+      <PlaceHeader
+        viewName="Triage"
+        purpose={
+          <span className="flex items-center gap-2.5">
+            Clustering reasons over this project's code graph only. Overlaps across repos are not computed — a shared package name is a galaxy edge, not a collision.
+            <span className="rounded-full border border-st-next/30 bg-st-next/[0.07] px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.06em] text-st-next">
+              per-project · {active?.tag ?? "—"}
+            </span>
+          </span>
+        }
+      />
 
-      <div className="grid gap-4 lg:grid-cols-[320px_1fr] lg:items-start">
-        <IncomingQueue rows={queue} loading={isLoading} projectId={projectId} />
-        <Clusters clusters={clusters} />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-[1300px] px-6 pb-16 pt-6">
+          <div className="grid gap-4 lg:grid-cols-[320px_1fr] lg:items-start">
+            <IncomingQueue rows={queue} loading={isLoading} projectId={projectId} />
+            <Clusters clusters={clusters} />
+          </div>
+        </div>
       </div>
     </div>
   );

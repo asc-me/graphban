@@ -2,6 +2,7 @@ import * as React from "react";
 import { useLocation, useSearchParams, Link } from "react-router-dom";
 
 import { LiveBoardSkeleton, PlannerError } from "@/components/planner/PlannerStates";
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Avatar } from "@/components/ui/avatar";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
@@ -49,24 +50,22 @@ export function LiveView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
-        <div>
-          <h1 className="text-[18px] font-semibold tracking-tight">Live</h1>
-          <p className="mt-0.5 text-[12.5px] text-muted">
-            Who is on this project right now, what they hold, and whether a PR was recorded.
-          </p>
-        </div>
-        <div className="ml-auto flex items-center gap-3">
-          {data ? (
-            <RoleCounts byRole={data.by_role ?? {}} roles={data.roles ?? []} />
-          ) : (
-            <div className="h-5 w-24 animate-pulse rounded-md bg-surface-3" aria-hidden />
-          )}
-          <Link to={fleetTo} className="text-[12.5px] text-muted hover:text-fg-2">
-            Fleet.v1
-          </Link>
-        </div>
-      </div>
+      <PlaceHeader
+        viewName="Live"
+        purpose="Who is on this project right now, what they hold, and whether a PR was recorded."
+        action={
+          <div className="flex items-center gap-3">
+            {data ? (
+              <RoleCounts byRole={data.by_role ?? {}} roles={data.roles ?? []} />
+            ) : (
+              <div className="h-5 w-24 animate-pulse rounded-md bg-surface-3" aria-hidden />
+            )}
+            <Link to={fleetTo} className="text-[12.5px] text-muted hover:text-fg-2">
+              Fleet.v1
+            </Link>
+          </div>
+        }
+      />
 
       {data?.truncated && (
         <div

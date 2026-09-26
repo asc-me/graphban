@@ -1,6 +1,7 @@
 import { Server } from "lucide-react";
 import { Link } from "react-router-dom";
 
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useConfig, useFleet } from "@/lib/queries";
 import { projectPath } from "@/lib/routes";
@@ -27,20 +28,15 @@ export function OutpostsView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="outposts-view">
-      <div className="flex flex-none items-center justify-between border-b border-line px-5 py-4">
-        <div>
-          <h1 className="text-[18px] font-semibold tracking-tight">
-            Outposts <span className="font-mono text-[13px] font-normal text-muted">{scope}</span>
-          </h1>
-          <p className="mt-0.5 text-[12.5px] text-muted">
-            Machines that have registered a gban/gbfleet agent on this project, and the
-            harness they declared.
-          </p>
-        </div>
-        <Link to={fleetHref} className="text-[12px] text-muted transition-colors hover:text-fg-2">
-          Fleet catalog
-        </Link>
-      </div>
+      <PlaceHeader
+        viewName={`Outposts ${scope}`}
+        purpose="Machines that have registered a gban/gbfleet agent on this project, and the harness they declared."
+        action={
+          <Link to={fleetHref} className="text-[12px] text-muted transition-colors hover:text-fg-2">
+            Fleet catalog
+          </Link>
+        }
+      />
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
         {isLoading || !data ? (
           <p className="text-[13px] text-muted">Loading…</p>
