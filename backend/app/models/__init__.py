@@ -149,6 +149,11 @@ class Project(Base):
     # key inherits the project's credential. Stored as JSON so a new role is not a
     # migration. Empty dict means every task uses the project pointer.
     chat_roles: Mapped[dict] = mapped_column(JSON, default=dict)
+    # The decider credential for this project (PRD-45 S2). Overrides the scope default.
+    # A System One model that returns calibrated probabilities; used for memory adjudication.
+    decider_credential_id: Mapped[str | None] = mapped_column(
+        ForeignKey("credentials.id"), nullable=True, index=True
+    )
     # Memory auto-triage (AL-227): let the AL-151 scorer ACT on agent candidates
     # instead of only advising, so the review queue stays small. Every auto-action
     # is audited and undoable.
@@ -2717,6 +2722,12 @@ class DeploymentConfig(Base):
     #: neither, because switching embedders rewrites every vector and a silent failover between
     #: two embedding spaces would return neighbours computed in a space nobody chose.
     embed_credential_id: Mapped[str | None] = mapped_column(
+        ForeignKey("credentials.id"), nullable=True
+    )
+    #: The decider credential (PRD-45 S2). A System One model that returns calibrated
+    #: probabilities over a declared answer space; used for memory adjudication when configured.
+    #: No fallback: a decider that does not answer degrades to similarity, which is the fallback.
+    decider_credential_id: Mapped[str | None] = mapped_column(
         ForeignKey("credentials.id"), nullable=True
     )
     updated_at: Mapped[datetime] = mapped_column(
