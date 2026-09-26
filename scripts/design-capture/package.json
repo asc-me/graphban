@@ -1,0 +1,7 @@
+{
+  "name": "gb-design-capture",
+  "private": true,
+  "type": "module",
+  "description": "Capture the running web app into graphban-local Claude Design cards (see README.md).",
+  "devDependencies": { "playwright": "1.49.0" }
+}
