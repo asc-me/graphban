@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Preferences } from "@/features/harness/Preferences";
 import { McpInstall } from "@/features/settings/McpInstall";
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
@@ -639,58 +640,46 @@ export function FleetView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="fleet-v1">
-      <div className="flex flex-none items-center justify-between border-b border-line px-5 py-4">
-        <div>
-          <h1 className="text-[18px] font-semibold tracking-tight">
-            Fleet.v1 <span className="font-mono text-[13px] font-normal text-muted">{scope}</span>
-          </h1>
-          <p className="mt-0.5 text-[12.5px] text-muted">
-            {data
-              ? `${data.online} of ${data.total} online · heartbeat every ${data.heartbeat_interval_seconds}s`
-              : "Agents working this project, and what they hold."}
-          </p>
-          {data && data.online > 0 && (
-            <div className="mt-1.5 flex items-center gap-2">
-              <RoleCounts byRole={data.by_role ?? {}} roles={data.roles ?? []} />
-              {/* The posture is NAMED, because both are first-class and a reader should know
-                  which they are looking at. A single-agent deployment is not a fleet that has
-                  gone wrong — it is the default, where the human is the reviewer. */}
-              <span className="text-[11px] text-faint">
-                {data.posture === "fleet"
-                  ? "specialised roles — the fleet reviews itself"
-                  : "single-agent — you are the reviewer"}
-              </span>
-              {/* The supervision mode is NAMED (PRD-39 G4). `deterministic` is the default —
-                  no LLM in the loop, the operator decided the count. `driven` is the
-                  escalation for bounce adjudication and resume. */}
-              <span className="text-[11px] text-faint">
-                · deterministic
-              </span>
-            </div>
-          )}
+      <PlaceHeader
+        viewName={`Fleet.v1 ${scope}`}
+        purpose={data
+          ? `${data.online} of ${data.total} online · heartbeat every ${data.heartbeat_interval_seconds}s`
+          : "Agents working this project, and what they hold."}
+        action={
+          <div className="flex items-center gap-3">
+            <Link
+              to={viewHref("fleet.v2")}
+              className="text-[12px] text-muted transition-colors hover:text-fg-2"
+            >
+              Fleet.v2
+            </Link>
+            <Link
+              to={settingsPath("project/api-keys")}
+              className="text-[12px] text-muted transition-colors hover:text-fg-2"
+            >
+              Looking for MCP?
+            </Link>
+            {waves.length > 0 && (
+              <Button onClick={askEndWave}>End wave</Button>
+            )}
+          </div>
+        }
+      />
+      {data && data.online > 0 && (
+        <div className="flex-none border-b border-line px-5 py-2">
+          <div className="flex items-center gap-2">
+            <RoleCounts byRole={data.by_role ?? {}} roles={data.roles ?? []} />
+            <span className="text-[11px] text-faint">
+              {data.posture === "fleet"
+                ? "specialised roles — the fleet reviews itself"
+                : "single-agent — you are the reviewer"}
+            </span>
+            <span className="text-[11px] text-faint">
+              · deterministic
+            </span>
+          </div>
         </div>
-        <div className="flex items-center gap-3">
-          <Link
-            to={viewHref("fleet.v2")}
-            className="text-[12px] text-muted transition-colors hover:text-fg-2"
-          >
-            Fleet.v2
-          </Link>
-          {/* Fleet issues seats and watches the roster. The MCP config and the key that
-              goes in it live on Settings → API keys — the page people open this one
-              looking for. Named as a question because the destination is the answer. */}
-          <Link
-            to={settingsPath("project/api-keys")}
-            className="text-[12px] text-muted transition-colors hover:text-fg-2"
-          >
-            Looking for MCP?
-          </Link>
-          {/* Nothing live means nothing to end. */}
-          {waves.length > 0 && (
-            <Button onClick={askEndWave}>End wave</Button>
-          )}
-        </div>
-      </div>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         {error && <p className="mb-3 text-[12px] text-red-400">{error}</p>}

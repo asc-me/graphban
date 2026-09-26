@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AlertTriangle, Play, Scale } from "lucide-react";
 
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Preferences } from "@/features/harness/Preferences";
 import { Recommendations } from "@/features/harness/Recommendations";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -37,33 +38,28 @@ export function HarnessView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="harness-view">
-      <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
-        <div>
-          <h1 className="text-[18px] font-semibold tracking-tight">Harness</h1>
-          <p className="mt-0.5 text-[12.5px] text-muted">
-            How each model has turned out, per capability and size band, over the last{" "}
-            {data.window_days} days. A rate under {data.floor} finished attempts is shown grey
-            because it is not yet a measurement. Family rollups speak until a leaf clears the
-            floor.
-          </p>
-        </div>
-        <div className="ml-auto flex items-center gap-2">
-          <label className="font-mono text-[10.5px] text-faint" htmlFor="harness-versions">
-            VERSIONS
-          </label>
-          <select
-            id="harness-versions"
-            aria-label="Binary versions"
-            data-testid="harness-versions"
-            className="rounded-[8px] border border-line-2 bg-surface-2 px-2 py-1 text-[12px]"
-            value={versions}
-            onChange={(e) => setVersions(e.target.value as "current" | "all")}
-          >
-            <option value="current">Current only</option>
-            <option value="all">Every version</option>
-          </select>
-        </div>
-      </div>
+      <PlaceHeader
+        viewName="Harness"
+        purpose={`How each model has turned out, per capability and size band, over the last ${data.window_days} days. A rate under ${data.floor} finished attempts is shown grey because it is not yet a measurement. Family rollups speak until a leaf clears the floor.`}
+        action={
+          <div className="flex items-center gap-2">
+            <label className="font-mono text-[10.5px] text-faint" htmlFor="harness-versions">
+              VERSIONS
+            </label>
+            <select
+              id="harness-versions"
+              aria-label="Binary versions"
+              data-testid="harness-versions"
+              className="rounded-[8px] border border-line-2 bg-surface-2 px-2 py-1 text-[12px]"
+              value={versions}
+              onChange={(e) => setVersions(e.target.value as "current" | "all")}
+            >
+              <option value="current">Current only</option>
+              <option value="all">Every version</option>
+            </select>
+          </div>
+        }
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
         {data.cells.length === 0 && !(data.unavailable ?? []).length ? (

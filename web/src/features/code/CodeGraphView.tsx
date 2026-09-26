@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/cn";
@@ -385,50 +386,47 @@ export function CodeGraphView() {
 
   const empty = !isLoading && nodes.length === 0;
 
+  const purpose = entered ? (
+    <span className="flex items-center gap-1.5">
+      <button
+        onClick={() => setEntered(null)}
+        className="rounded border border-line-2 px-1.5 py-px font-mono text-[10.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+      >
+        ← all components
+      </button>
+      <span className="font-mono text-[11px] text-fg-2">{label(entered, "")}</span>
+      <span className="text-faint">· {ids.length} nodes</span>
+    </span>
+  ) : (
+    galaxyMode
+      ? `${counts.drawn} nodes in ${galaxy.superNodes.length} components — too many to draw at once. Click a component to enter it.`
+      : `The codebase as agents described it — modules, files, and symbols with typed relations. ${map ? `${counts.drawn} nodes · ${counts.edges} edges${counts.undescribed ? ` · ${counts.undescribed} referenced but not yet described` : ""}.` : ""}`
+  );
+
   return (
     <div className="flex h-full min-h-0">
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex flex-none flex-wrap items-center gap-3 border-b border-line px-5 py-4">
-          <div>
-            <h1 className="text-[18px] font-semibold tracking-tight">Code graph</h1>
-            {/* "You are here". Semantic zoom without a way back is how a user gets lost, so the
-                breadcrumb is always present once the view is not the whole map. */}
-            {entered ? (
-              <p className="mt-0.5 flex items-center gap-1.5 text-[12.5px] text-muted">
-                <button
-                  onClick={() => setEntered(null)}
-                  className="rounded border border-line-2 px-1.5 py-px font-mono text-[10.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
-                >
-                  ← all components
-                </button>
-                <span className="font-mono text-[11px] text-fg-2">{label(entered, "")}</span>
-                <span className="text-faint">· {ids.length} nodes</span>
-              </p>
-            ) : (
-              <p className="mt-0.5 text-[12.5px] text-muted">
-                {galaxyMode
-                  ? `${counts.drawn} nodes in ${galaxy.superNodes.length} components — too many to draw at once. Click a component to enter it.`
-                  : `The codebase as agents described it — modules, files, and symbols with typed relations. ${map ? `${counts.drawn} nodes · ${counts.edges} edges${counts.undescribed ? ` · ${counts.undescribed} referenced but not yet described` : ""}.` : ""}`}
-              </p>
-            )}
-          </div>
-          <div className="ml-auto flex flex-wrap items-center gap-1.5">
-            <div className="relative mr-1">
-              <input
-                ref={find.inputRef}
-                value={find.query}
-                onChange={(e) => find.setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Escape" && find.clear()}
-                placeholder="Find  /"
-                aria-label="Find a node"
-                className="w-[168px] rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-line-hover focus:outline-none"
-              />
-              {find.active && (
-                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-faint">
-                  {find.matches.size}
-                </span>
-              )}
-            </div>
+        <PlaceHeader
+          viewName="Code graph"
+          purpose={purpose}
+          action={
+            <div className="flex flex-wrap items-center gap-1.5">
+              <div className="relative mr-1">
+                <input
+                  ref={find.inputRef}
+                  value={find.query}
+                  onChange={(e) => find.setQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === "Escape" && find.clear()}
+                  placeholder="Find  /"
+                  aria-label="Find a node"
+                  className="w-[168px] rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-line-hover focus:outline-none"
+                />
+                {find.active && (
+                  <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-faint">
+                    {find.matches.size}
+                  </span>
+                )}
+              </div>
             {(view.viewport.k !== 1 || view.viewport.x !== 0 || view.viewport.y !== 0) && (
               <button
                 onClick={view.reset}
@@ -503,8 +501,9 @@ export function CodeGraphView() {
                 {EDGE_META[t].label}
               </button>
             ))}
-          </div>
-        </div>
+            </div>
+          }
+        />
 
         <div className="relative min-h-0 flex-1 overflow-hidden">
           {isLoading ? (

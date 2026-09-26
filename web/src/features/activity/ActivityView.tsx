@@ -1,5 +1,6 @@
 import { KeyRound, User as UserIcon } from "lucide-react";
 
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useEvents } from "@/lib/queries";
 import type { Event } from "@/lib/types";
@@ -15,15 +16,11 @@ export function ActivityView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
-        <div>
-          <h1 className="text-[18px] font-semibold tracking-tight">Activity</h1>
-          <p className="mt-0.5 text-[12.5px] text-muted">
-            Every accepted mutation, attributed to the agent key or user that made it.
-          </p>
-        </div>
-        <div className="ml-auto font-mono text-[10.5px] text-faint">{data.total} EVENTS</div>
-      </div>
+      <PlaceHeader
+        viewName="Activity"
+        purpose="Every accepted mutation, attributed to the agent key or user that made it."
+        action={<div className="font-mono text-[10.5px] text-faint">{data.total} EVENTS</div>}
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
         {data.results.length === 0 ? (

@@ -7,6 +7,7 @@ import {
   PlannerFilteredEmpty,
   TrackerListSkeleton,
 } from "@/components/planner/PlannerStates";
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Dot } from "@/components/ui/badge";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
@@ -121,17 +122,11 @@ export function TrackerView() {
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
-        <div>
-          <h1 className="text-[18px] font-semibold tracking-tight">Tracker</h1>
-          <p className="mt-0.5 text-[12.5px] text-muted">
-            One linear stream. Priority + recency. Drag to reorder, click a status to advance it.
-          </p>
-        </div>
-        <div className="ml-auto">
-          <NewItemDialog />
-        </div>
-      </div>
+      <PlaceHeader
+        viewName="Tracker"
+        purpose="One linear stream. Priority + recency. Drag to reorder, click a status to advance it."
+        action={<NewItemDialog />}
+      />
 
       <div className="flex flex-none flex-wrap items-center gap-1.5 border-b border-line px-5 py-2.5">
         <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" count={ordered.length} />

@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { cn } from "@/lib/cn";
 import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
@@ -134,30 +135,27 @@ export function LinksGraphView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-none flex-wrap items-center gap-3 border-b border-line px-5 py-4">
-        <div>
-          <h1 className="text-[18px] font-semibold tracking-tight">Links</h1>
-          <p className="mt-0.5 text-[12.5px] text-muted">
-            Typed relationships between items and requests. Click a node or edge to inspect.
-          </p>
-        </div>
-        <div className="ml-auto flex flex-wrap items-center gap-1.5">
-          <div className="relative mr-1">
-            <input
-              ref={find.inputRef}
-              value={find.query}
-              onChange={(e) => find.setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Escape" && find.clear()}
-              placeholder="Find  /"
-              aria-label="Find a node"
-              className="w-[168px] rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-line-hover focus:outline-none"
-            />
-            {find.active && (
-              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-faint">
-                {find.matches.size}
-              </span>
-            )}
-          </div>
+      <PlaceHeader
+        viewName="Links"
+        purpose="Typed relationships between items and requests. Click a node or edge to inspect."
+        action={
+          <div className="flex flex-wrap items-center gap-1.5">
+            <div className="relative mr-1">
+              <input
+                ref={find.inputRef}
+                value={find.query}
+                onChange={(e) => find.setQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Escape" && find.clear()}
+                placeholder="Find  /"
+                aria-label="Find a node"
+                className="w-[168px] rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-line-hover focus:outline-none"
+              />
+              {find.active && (
+                <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-faint">
+                  {find.matches.size}
+                </span>
+              )}
+            </div>
           {(view.viewport.k !== 1 || view.viewport.x !== 0 || view.viewport.y !== 0) && (
             <button
               onClick={view.reset}
@@ -201,8 +199,9 @@ export function LinksGraphView() {
               {LINK_META[t].label}
             </button>
           ))}
-        </div>
-      </div>
+          </div>
+        }
+      />
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
         {isLoading ? (

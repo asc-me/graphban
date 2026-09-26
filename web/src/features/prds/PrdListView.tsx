@@ -7,6 +7,7 @@ import {
   PlannerError,
   PrdListSkeleton,
 } from "@/components/planner/PlannerStates";
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -33,17 +34,11 @@ export function PrdListView() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
-        <div>
-          <h1 className="text-[18px] font-semibold tracking-tight">PRDs</h1>
-          <p className="mt-0.5 text-[12.5px] text-muted">
-            Product specs with version history, linked items, and AI drafting commands.
-          </p>
-        </div>
-        <div className="ml-auto">
-          <NewPrdDialog onCreated={(id) => navigate(`/prds/${id}`)} />
-        </div>
-      </div>
+      <PlaceHeader
+        viewName="PRDs"
+        purpose="Product specs with version history, linked items, and AI drafting commands."
+        action={<NewPrdDialog onCreated={(id) => navigate(`/prds/${id}`)} />}
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading ? (

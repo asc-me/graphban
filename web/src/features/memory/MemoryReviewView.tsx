@@ -2,6 +2,7 @@ import { Check, Layers, RotateCcw, Sparkles, X } from "lucide-react";
 import * as React from "react";
 
 import { MemoryReviewSkeleton, PlannerError } from "@/components/planner/PlannerStates";
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { cn } from "@/lib/cn";
 import { useProjectCtx } from "@/features/ProjectContext";
 import {
@@ -51,32 +52,29 @@ export function MemoryReviewView() {
       : "Memory review unavailable";
 
   const header = (
-    <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
-      <div>
-        <h1 className="text-[18px] font-semibold tracking-tight">Memory review</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted">
-          Agent-written memory is a candidate until you publish it. Only published shards surface in
-          search — so an unverified note never becomes ground truth for the next agent.
-        </p>
-      </div>
-      <div className="ml-auto flex items-center gap-3 font-mono text-[10.5px] text-faint">
-        {awaitingFirstPayload ? (
-          <>
-            {queueCount != null && <span>{queueCount} WAITING</span>}
-            <span className="text-muted">loading queue…</span>
-          </>
-        ) : candidates ? (
-          <>
-            <span>{candidates.length} PENDING</span>
-            {queueCount != null && queueCount !== candidates.length && (
-              <span className="text-st-review" title="Nav badge includes auto-published shards nobody reviewed yet">
-                {queueCount} in nav count
-              </span>
-            )}
-          </>
-        ) : null}
-      </div>
-    </div>
+    <PlaceHeader
+      viewName="Memory review"
+      purpose="Agent-written memory is a candidate until you publish it. Only published shards surface in search — so an unverified note never becomes ground truth for the next agent."
+      action={
+        <div className="flex items-center gap-3 font-mono text-[10.5px] text-faint">
+          {awaitingFirstPayload ? (
+            <>
+              {queueCount != null && <span>{queueCount} WAITING</span>}
+              <span className="text-muted">loading queue…</span>
+            </>
+          ) : candidates ? (
+            <>
+              <span>{candidates.length} PENDING</span>
+              {queueCount != null && queueCount !== candidates.length && (
+                <span className="text-st-review" title="Nav badge includes auto-published shards nobody reviewed yet">
+                  {queueCount} in nav count
+                </span>
+              )}
+            </>
+          ) : null}
+        </div>
+      }
+    />
   );
 
   if (awaitingFirstPayload) {

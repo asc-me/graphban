@@ -6,6 +6,7 @@ import {
   LessonsListSkeleton,
   PlannerError,
 } from "@/components/planner/PlannerStates";
+import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { cn } from "@/lib/cn";
 import { errorDetail } from "@/lib/errors";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -56,33 +57,30 @@ function LessonListPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
-        <div>
-          <h1 className="text-[18px] font-semibold tracking-tight">Lessons</h1>
-          <p className="mt-0.5 text-[12.5px] text-muted">
-            Published memory, scored against whether it is still catching anything. Candidates stay in
-            Memory until you publish them.
-          </p>
-        </div>
-        <div className="ml-auto flex items-center gap-3 font-mono text-[10.5px] text-faint">
-          {loading ? (
-            <>
-              <span className="h-3 w-16 animate-pulse rounded bg-surface-3" />
-              <span className="h-3 w-20 animate-pulse rounded bg-surface-3" />
-            </>
-          ) : (
-            <>
-              <span>{published} PUBLISHED</span>
-              <span>
-                {unmeasured} UNMEASURED{hasMore ? " THIS PAGE" : ""}
-              </span>
-              <span>
-                {dropping} DROPPING{hasMore ? " THIS PAGE" : ""}
-              </span>
-            </>
-          )}
-        </div>
-      </div>
+      <PlaceHeader
+        viewName="Lessons"
+        purpose="Published memory, scored against whether it is still catching anything. Candidates stay in Memory until you publish them."
+        action={
+          <div className="flex items-center gap-3 font-mono text-[10.5px] text-faint">
+            {loading ? (
+              <>
+                <span className="h-3 w-16 animate-pulse rounded bg-surface-3" />
+                <span className="h-3 w-20 animate-pulse rounded bg-surface-3" />
+              </>
+            ) : (
+              <>
+                <span>{published} PUBLISHED</span>
+                <span>
+                  {unmeasured} UNMEASURED{hasMore ? " THIS PAGE" : ""}
+                </span>
+                <span>
+                  {dropping} DROPPING{hasMore ? " THIS PAGE" : ""}
+                </span>
+              </>
+            )}
+          </div>
+        }
+      />
 
       {enums && (
         <FilterBar enums={enums} filters={compact} onChange={setFilters} />
