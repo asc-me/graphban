@@ -35,22 +35,22 @@
 
 
   --shadow-elev-1:
-    0 1px 2px rgb(0 0 0 / 0.32),
-    0 0 0 1px var(--color-line);
+    0 1px 3px rgb(0 0 0 / 0.5),
+    0 0 0 1px rgb(255 255 255 / 0.04);
   --shadow-elev-2:
-    0 4px 14px rgb(0 0 0 / 0.38),
-    0 1px 2px rgb(0 0 0 / 0.24),
-    0 0 0 1px var(--color-line);
+    0 4px 14px rgb(0 0 0 / 0.55),
+    0 1px 3px rgb(0 0 0 / 0.35),
+    0 0 0 1px rgb(255 255 255 / 0.05);
   --shadow-elev-3:
-    0 16px 48px rgb(0 0 0 / 0.48),
-    0 4px 12px rgb(0 0 0 / 0.32),
-    0 0 0 1px var(--color-line);
+    0 16px 48px rgb(0 0 0 / 0.65),
+    0 4px 16px rgb(0 0 0 / 0.45),
+    0 0 0 1px rgb(255 255 255 / 0.06);
 
-  --color-bg: #0a0c0e;
-  --color-surface: #0d1114;
-  --color-surface-2: #101418;
-  --color-surface-3: #12171b;
-  --color-surface-4: #14181d;
+  --color-bg: #0a0b0d;
+  --color-surface: #0e0e11;
+  --color-surface-2: #121215;
+  --color-surface-3: #151418;
+  --color-surface-4: #18171b;
   --color-header: rgba(12, 15, 17, 0.72);
 
   --color-line: #5a636c;
@@ -174,6 +174,18 @@ body {
   color: var(--color-fg);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+}
+/* Film grain — SVG noise overlay on the page, not on individual cards. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 256px 256px;
 }
 
 ::selection { background: var(--color-accent); color: var(--color-bg); }

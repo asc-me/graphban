@@ -3,10 +3,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+const CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../index.css"), "utf8");
+
 /** Parsed from index.css @theme — sabotage reverts there must fail these assertions. */
-export const TOKENS = parseThemeTokens(
-  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../index.css"), "utf8"),
-);
+export const TOKENS = parseThemeTokens(CSS);
 
 export function parseThemeTokens(css: string): Record<string, string> {
   const tokens: Record<string, string> = {};
@@ -115,5 +115,21 @@ describe("design token foundation (GRPH-908)", () => {
     expect(TOKENS["radius-control"]).toBeTruthy();
     expect(TOKENS["radius-card"]).toBeTruthy();
     expect(TOKENS["radius-overlay"]).toBeTruthy();
+  });
+
+  it("elevation shadows do not draw a 1px stroke via --color-line (GRPH-937)", () => {
+    for (const key of ["shadow-elev-1", "shadow-elev-2", "shadow-elev-3"] as const) {
+      expect(TOKENS[key]).not.toContain("--color-line");
+    }
+  });
+
+  it("sabotage: restoring 0 0 0 1px var(--color-line) on shadow-elev-1 must fail", () => {
+    const shadow = TOKENS["shadow-elev-1"]!;
+    expect(shadow).not.toContain("0 0 0 1px var(--color-line)");
+    expect(shadow).not.toContain("--color-line");
+  });
+
+  it("page has a film-grain overlay (SVG noise on body) (GRPH-937)", () => {
+    expect(CSS).toMatch(/body::before\s*\{[^}]*url\(/s);
   });
 });
