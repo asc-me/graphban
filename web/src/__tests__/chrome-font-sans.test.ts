@@ -5,54 +5,58 @@
  * in the chrome (subtitle, rail labels, loading text, sidebar labels) must be Sans so the
  * product does not read as a terminal. This test reads the source files directly so a
  * regression that re-adds `font-mono` to a chrome call site fails immediately.
+ *
+ * Bounce: walking FORWARD from the text line never sees `className=` on the parent
+ * (it is on the line ABOVE). The enclosing element's className is found by walking
+ * BACKWARD to the nearest `className=`.
+ *
+ * Source reads go through Vite `?raw` — `node:fs` is not in the web tsconfig.
  */
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const SHELL_DIR = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "../components/shell",
-);
+const SHELL = import.meta.glob("../components/shell/{TopBar,LeftNav,AppFrame,AgentSidebar}.tsx", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+}) as Record<string, string>;
 
 function readShell(name: string): string {
-  return readFileSync(join(SHELL_DIR, name), "utf8");
+  const hit = Object.entries(SHELL).find(([k]) => k.endsWith(`/${name}`))?.[1];
+  expect(hit, `${name} must be readable or these assertions mean nothing`).toBeTruthy();
+  return hit as string;
 }
 
-/**
- * Extract the className string on the line containing `marker`, then check it does NOT
- * include `font-mono`. Returns the className for assertion messages.
- */
-function assertLineNoMono(src: string, marker: string, label: string): void {
+/** className of the element that contains `marker` — parent line, not the text line. */
+function enclosingClassName(src: string, marker: string, label: string): string {
   const lines = src.split("\n");
   const idx = lines.findIndex((l) => l.includes(marker));
   expect(idx, `${label}: marker "${marker}" not found in source`).toBeGreaterThanOrEqual(0);
 
-  // Collect the full className by joining lines from the className= line until the closing
-  // quote. A single-line className is the common case; multi-line JSX strings are handled
-  // by concatenating until we see the closing `"`.
-  let line = lines[idx]!;
-  const classStart = line.indexOf("className=");
-  if (classStart === -1) {
-    // The marker is on a line before className=; walk forward to find it.
-    for (let j = idx; j < Math.min(idx + 5, lines.length); j++) {
-      if (lines[j]!.includes("className=")) {
-        line = lines[j]!;
-        break;
-      }
+  let classIdx = -1;
+  for (let j = idx; j >= Math.max(0, idx - 8); j--) {
+    if (lines[j]!.includes("className=")) {
+      classIdx = j;
+      break;
     }
   }
-  // Walk forward to close the string if it spans multiple lines.
-  let classText = line;
+  expect(classIdx, `${label}: no className= above "${marker}"`).toBeGreaterThanOrEqual(0);
+
+  let classText = lines[classIdx]!;
   let quoteCount = (classText.match(/"/g) || []).length;
-  let walkIdx = lines.indexOf(line);
+  let walkIdx = classIdx;
   while (quoteCount % 2 !== 0 && walkIdx < lines.length - 1) {
     walkIdx++;
     classText += " " + lines[walkIdx]!;
     quoteCount = (classText.match(/"/g) || []).length;
   }
-  expect(classText, `${label}: chrome must not use font-mono (GRPH-938)`).not.toContain("font-mono");
+  return classText;
+}
+
+function assertLineNoMono(src: string, marker: string, label: string): void {
+  expect(
+    enclosingClassName(src, marker, label),
+    `${label}: chrome must not use font-mono (GRPH-938)`,
+  ).not.toContain("font-mono");
 }
 
 describe("shell chrome uses Sans, not Mono (GRPH-938)", () => {
@@ -91,7 +95,8 @@ describe("shell chrome uses Sans, not Mono (GRPH-938)", () => {
 
   it("AgentSidebar memory count label is not font-mono", () => {
     const src = readShell("AgentSidebar.tsx");
-    assertLineNoMono(src, "countLabel", "AgentSidebar count label");
+    // `{countLabel}` is the render; `const countLabel` is the declaration and has no className.
+    assertLineNoMono(src, "{countLabel}", "AgentSidebar count label");
   });
 
   it("AgentSidebar thinking indicator is not font-mono", () => {
