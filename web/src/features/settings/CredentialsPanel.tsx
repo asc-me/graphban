@@ -54,10 +54,19 @@ export function selectable(c: Credential): boolean {
  *  wrong default. What it did block is the one case the catalogue cannot cover: pointing a
  *  compat credential at YOUR url — a LiteLLM gateway, a corporate proxy, a local vLLM. The
  *  field pre-fills with the registry default, so api.openai.com stays zero-typing.
- *  Anthropic stays without one: its adapter is the native SDK, not a base_url. */
+ *  Anthropic stays without one: its adapter is the native SDK, not a base_url.
+ *  System One deciders also need an endpoint (PRD-45 S2). */
 export function needsOf(p: AiProvider): { endpoint: boolean; key: boolean } {
-  return { endpoint: p.kind === "ollama" || p.kind === "openai", key: p.auth };
+  return { endpoint: p.kind === "ollama" || p.kind === "openai" || p.kind === "systemone", key: p.auth };
 }
+
+/** What model type(s) a credential serves, from its `serves` field (PRD-45 S2). */
+function servesSet(c: Credential): Set<string> {
+  return new Set((c.serves || "").split(",").map((s) => s.trim()).filter(Boolean));
+}
+export function servesChat(c: Credential): boolean { return servesSet(c).has("chat"); }
+export function servesEmbed(c: Credential): boolean { return servesSet(c).has("embed"); }
+export function servesDecide(c: Credential): boolean { return servesSet(c).has("decide"); }
 
 const chip =
   "rounded border border-line-2 px-1.5 py-px font-mono text-[9px] uppercase tracking-wide";
@@ -403,6 +412,10 @@ function TaskRoles({
 }) {
   const project = projects.find((p) => p.id === projectId);
   const roles = project?.chat_roles ?? {};
+  // Only credentials that serve the decider role are selectable for memory.decide (PRD-45 S2).
+  // A chat credential pointed at memory adjudication would answer in prose — the exact
+  // defect the decider type exists to prevent.
+  const deciderCredentials = credentials.filter(servesDecide);
   const save = useMutation({
     mutationFn: (next: Record<string, { credential_id?: string; model_override?: string }>) =>
       api.setProjectRoles(projectId, next),
@@ -448,6 +461,32 @@ function TaskRoles({
           </li>
         ))}
       </ul>
+
+      {/* memory.decide is separate because only decider credentials are selectable (PRD-45 S2).
+          Mixing it into the chat roles list would offer chat credentials for a role that
+          cannot use them — the same defect the decider type prevents at the protocol level. */}
+      <div className="flex flex-col gap-2 border-t border-line pt-3" data-testid="decider-roles">
+        <h4 className="text-[12px] font-medium text-fg">Memory adjudication</h4>
+        <p className="text-[10.5px] text-faint">
+          Only decider credentials. Unset degrades to similarity, then the chat judge.
+        </p>
+        <div className="flex items-center gap-2">
+          <span className="w-44 flex-none text-[12px] text-fg-2">memory.decide</span>
+          <select
+            aria-label="memory.decide"
+            value={roles["memory.decide"]?.credential_id ?? ""}
+            onChange={(e) => setRole("memory.decide", e.target.value)}
+            className="min-w-0 flex-1 rounded border border-line-2 bg-transparent px-2 py-1 text-[12px]"
+          >
+            <option value="">No decider configured</option>
+            {deciderCredentials.map((c) => (
+              <option key={c.id} value={c.id}>
+                {(c.label || c.id)} — {c.kind} · {c.model}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
     </section>
   );
 }
@@ -467,10 +506,15 @@ function OverrideRules({
       api.setProjectCredential(pid, { credential_id: null, model_override: "" }),
     onSuccess: onChanged, onError,
   });
+  const clearDecider = useMutation({
+    mutationFn: (pid: string) =>
+      api.setProjectCredential(pid, { decider_credential_id: null }),
+    onSuccess: onChanged, onError,
+  });
 
-  // Only projects that HAVE a rule. Listing every project made the common case — most projects
-  // inherit — into a wall of rows saying nothing.
-  const rules = projects.filter((p) => p.credential_id);
+  // Only projects that HAVE a rule (chat or decider). Listing every project made the common
+  // case — most projects inherit — into a wall of rows saying nothing.
+  const rules = projects.filter((p) => p.credential_id || p.decider_credential_id);
   const byId = new Map(credentials.map((c) => [c.id, c]));
 
   return (
@@ -495,28 +539,42 @@ function OverrideRules({
       ) : (
         <ul className="flex flex-col gap-2">
           {rules.map((p) => {
-            const c = byId.get(p.credential_id!);
+            const chatCred = p.credential_id ? byId.get(p.credential_id) : null;
+            const deciderCred = p.decider_credential_id ? byId.get(p.decider_credential_id) : null;
             return (
               <li key={p.id} data-testid={`rule-${p.id}`}
-                  className="flex items-center gap-3 rounded border border-line bg-surface-2/40 px-4 py-3">
-                <span className={cn(chip, "border-transparent")}
-                  style={{ color: p.accent, boxShadow: `0 0 0 1px ${p.accent}55, 0 0 6px ${p.accent}66`,
-                           background: `${p.accent}14` }}>
-                  {p.id}
-                </span>
-                <span className="text-[12px] text-muted">uses</span>
-                {/* Provider AND model. A rule naming only the provider hides the thing most
-                    often overridden — two projects sharing a key and wanting different
-                    models is exactly what `model_override` is for. */}
-                <span className="text-[13px] text-fg">{c?.label || p.credential_id}</span>
-                <span className={cn(chip, "text-faint")}>{c?.kind ?? "unknown"}</span>
-                <span className="font-mono text-[10.5px] text-muted-2">
-                  {p.model_override || c?.model || ""}
-                </span>
-                {p.model_override && (
-                  <span className={cn(chip, "border-amber-400/40 text-amber-300")}>model override</span>
+                  className="flex flex-col gap-2 rounded border border-line bg-surface-2/40 px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <span className={cn(chip, "border-transparent")}
+                    style={{ color: p.accent, boxShadow: `0 0 0 1px ${p.accent}55, 0 0 6px ${p.accent}66`,
+                             background: `${p.accent}14` }}>
+                    {p.id}
+                  </span>
+                  {chatCred && (
+                    <>
+                      <span className="text-[12px] text-muted">chat</span>
+                      <span className="text-[13px] text-fg">{chatCred.label || p.credential_id}</span>
+                      <span className={cn(chip, "text-faint")}>{chatCred.kind}</span>
+                      <span className="font-mono text-[10.5px] text-muted-2">
+                        {p.model_override || chatCred.model || ""}
+                      </span>
+                      {p.model_override && (
+                        <span className={cn(chip, "border-amber-400/40 text-amber-300")}>model override</span>
+                      )}
+                      <TinyButton className="ml-auto" onClick={() => clear.mutate(p.id)}>Remove chat</TinyButton>
+                    </>
+                  )}
+                  {!chatCred && <span className="ml-auto" />}
+                </div>
+                {deciderCred && (
+                  <div className="flex items-center gap-3 pl-4" data-testid={`rule-decider-${p.id}`}>
+                    <span className="text-[12px] text-muted">decider</span>
+                    <span className="text-[13px] text-fg">{deciderCred.label || p.decider_credential_id}</span>
+                    <span className={cn(chip, "text-faint")}>{deciderCred.kind}</span>
+                    <span className="font-mono text-[10.5px] text-muted-2">{deciderCred.model}</span>
+                    <TinyButton className="ml-auto" onClick={() => clearDecider.mutate(p.id)}>Remove decider</TinyButton>
+                  </div>
                 )}
-                <TinyButton className="ml-auto" onClick={() => clear.mutate(p.id)}>Remove</TinyButton>
               </li>
             );
           })}
@@ -577,6 +635,15 @@ export function CredentialsPanel() {
     mutationFn: (body: Parameters<typeof api.setScopeDefaults>[1]) => api.setScopeDefaults(projectId, body),
     onSuccess: refresh, onError,
   });
+  // Set embedding is its own mutation because a 409 from the embedder probe (dimension
+  // mismatch, vectors already indexed in another space, column width) must surface the
+  // refusal text AND offer Re-index — not just join the generic failure banner.
+  const [embedError, setEmbedError] = React.useState("");
+  const setEmbedding = useMutation({
+    mutationFn: (id: string) => api.setScopeDefaults(projectId, { embed_credential_id: id }),
+    onSuccess: () => { setEmbedError(""); refresh(); },
+    onError: (e: Error) => setEmbedError(e.message),
+  });
   const retry = useMutation({
     mutationFn: (id: string) => api.retryCredential(projectId, id), onSuccess: refresh, onError,
   });
@@ -614,6 +681,14 @@ export function CredentialsPanel() {
         </header>
 
         <ReindexBanner projectId={projectId} />
+        {embedError && (
+          <div className="rounded border border-rose-500/30 bg-rose-500/10 px-3.5 py-2.5 text-[12px]" role="alert" data-testid="embed-error">
+            <p className="text-rose-300">{embedError}</p>
+            <p className="mt-1 text-[10.5px] text-rose-200/70">
+              The embedding space may need re-indexing to match this credential.
+            </p>
+          </div>
+        )}
         <AddCredentialDialog projectId={projectId} open={adding} onOpenChange={setAdding} onAdded={refresh} />
         <EditCredentialDialog projectId={projectId} credential={editing}
           onOpenChange={(v) => !v && setEditing(null)} onSaved={refresh} />
@@ -657,6 +732,7 @@ export function CredentialsPanel() {
                     {c.is_default && <span className={cn(chip, "border-sky-400/40 text-sky-300")}>default</span>}
                     {c.is_fallback && <span className={cn(chip, "border-violet-400/40 text-violet-300")}>fallback</span>}
                     {c.is_embed && <span className={cn(chip, "border-teal-400/40 text-teal-300")}>embedding</span>}
+                    {c.is_decider && <span className={cn(chip, "border-amber-400/40 text-amber-300")}>decider</span>}
                     {c.used_by.map((p) => (
                       <ProjectTag key={p} id={p} accent={accents[p] ?? "#8b8b8b"}
                         fallingBack={c.falling_back.includes(p)} />
@@ -672,12 +748,26 @@ export function CredentialsPanel() {
 
                 {open && (
                   <div className="flex flex-wrap gap-2 border-t border-line px-4 py-2.5 animate-fade">
-                    <TinyButton disabled={c.is_default || !selectable(c)}
-                      title={!selectable(c) ? "not validated yet — test the connection first" : undefined}
-                      onClick={() => setDefaults.mutate({ default_credential_id: c.id })}>Set default</TinyButton>
-                    <TinyButton disabled={c.is_fallback || !selectable(c)}
-                      title={!selectable(c) ? "not validated yet — test the connection first" : undefined}
-                      onClick={() => setDefaults.mutate({ fallback_credential_id: c.id })}>Set fallback</TinyButton>
+                    {servesChat(c) && (
+                      <>
+                        <TinyButton disabled={c.is_default || !selectable(c)}
+                          title={!selectable(c) ? "not validated yet — test the connection first" : undefined}
+                          onClick={() => setDefaults.mutate({ default_credential_id: c.id })}>Set default</TinyButton>
+                        <TinyButton disabled={c.is_fallback || !selectable(c)}
+                          title={!selectable(c) ? "not validated yet — test the connection first" : undefined}
+                          onClick={() => setDefaults.mutate({ fallback_credential_id: c.id })}>Set fallback</TinyButton>
+                      </>
+                    )}
+                    {servesEmbed(c) && (
+                      <TinyButton disabled={c.is_embed || !selectable(c)}
+                        title={!selectable(c) ? "not validated yet — test the connection first" : undefined}
+                        onClick={() => setEmbedding.mutate(c.id)}>Set embedding</TinyButton>
+                    )}
+                    {servesDecide(c) && (
+                      <TinyButton disabled={c.is_decider || !selectable(c)}
+                        title={!selectable(c) ? "not validated yet — test the connection first" : undefined}
+                        onClick={() => setDefaults.mutate({ decider_credential_id: c.id })}>Set decider</TinyButton>
+                    )}
                     <TinyButton onClick={() => setEditing(c)}>Edit</TinyButton>
                     <TinyButton onClick={() => retry.mutate(c.id)}>Test connection</TinyButton>
                     <TinyButton onClick={() => remove.mutate(c.id)}>Delete</TinyButton>

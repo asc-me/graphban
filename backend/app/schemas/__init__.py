@@ -383,6 +383,8 @@ class ProjectOut(ORMModel):
     model_override: str = ""
     # Per-task overrides (GRPH-316). Missing key = inherit the project credential.
     chat_roles: dict = {}
+    # Decider credential pointer (PRD-45 S2). Null = no decider for this project.
+    decider_credential_id: str | None = None
     # Memory auto-triage (AL-227); write mode replaced `memory_auto_accept` (AL-280).
     memory_write_mode: str = "review"
     memory_auto_reject: bool = True

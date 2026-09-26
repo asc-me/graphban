@@ -42,6 +42,8 @@ export interface Project {
   model_override: string;
   /** Per-task overrides (GRPH-316). Missing key = inherit the project credential. */
   chat_roles?: Record<string, { credential_id?: string; model_override?: string }>;
+  /** The project's decider credential pointer (PRD-45 S2). Null = no decider. */
+  decider_credential_id?: string | null;
 }
 
 // ── Deploy config + Organizations (hosted-only, AL-74b) ────────────────────
@@ -780,13 +782,15 @@ export type GitopsPatch = {
   model?: string | null;
 };
 
-export type ProviderKind = "stub" | "anthropic" | "openai" | "ollama";
+export type ProviderKind = "stub" | "anthropic" | "openai" | "ollama" | "systemone";
 
 export interface AiProvider {
   id: string;
   label: string;
   kind: ProviderKind;
   embeds: boolean;
+  /** What model type(s) this provider serves: "chat", "embed", "decide", or comma-combo. */
+  serves: string;
   base_url: string;
   chat_model: string;
   /** Selectable models the catalogue offers for this provider; absent = just `chat_model`. */
@@ -1553,6 +1557,8 @@ export type Credential = {
   key_set: boolean;
   state: "valid" | "pending_validation" | "unreachable";
   last_error: string;
+  /** What model type(s) this credential serves: "chat", "embed", "decide", or combo. */
+  serves: string;
   /** Projects pointing at this credential. */
   used_by: string[];
   /**
@@ -1564,6 +1570,8 @@ export type Credential = {
   is_default: boolean;
   is_fallback: boolean;
   is_embed: boolean;
+  /** Whether this credential is the scope's or project's decider (PRD-45 S2). */
+  is_decider: boolean;
 };
 
 export type CredentialIn = {
@@ -1578,6 +1586,7 @@ export type ScopeDefaults = {
   default_credential_id?: string | null;
   fallback_credential_id?: string | null;
   embed_credential_id?: string | null;
+  decider_credential_id?: string | null;
 };
 
 /** Per-table, not one counter — see `ReindexProgress` for why (PRD-25 S4b). */

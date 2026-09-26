@@ -29,8 +29,9 @@ import type { Credential, Project } from "@/lib/types";
 
 const cred = (over: Partial<Credential> = {}): Credential => ({
   id: "cred_a", kind: "anthropic", label: "Primary", base_url: "", model: "claude-x",
-  key_set: true, state: "valid", last_error: "", used_by: [], falling_back: [],
-  is_default: false, is_fallback: false, is_embed: false, ...over,
+  key_set: true, state: "valid", last_error: "", serves: "chat",
+  used_by: [], falling_back: [],
+  is_default: false, is_fallback: false, is_embed: false, is_decider: false, ...over,
 });
 
 const state: { credentials: Credential[] } = { credentials: [] };
@@ -94,17 +95,19 @@ vi.mock("@/lib/api", () => ({
     credentials: vi.fn(async () => ({ credentials: [...state.credentials] })),
     aiProviders: vi.fn(async () => ({
       providers: [
-        { id: "anthropic", label: "Anthropic", kind: "anthropic", embeds: false,
+        { id: "anthropic", label: "Anthropic", kind: "anthropic", embeds: false, serves: "chat",
           base_url: "", chat_model: "claude-x", embed_model: "", auth: true },
-        { id: "ollama", label: "Ollama", kind: "ollama", embeds: true,
+        { id: "ollama", label: "Ollama", kind: "ollama", embeds: true, serves: "chat,embed",
           base_url: "http://localhost:11434", chat_model: "llama3.1:8b", embed_model: "bge-m3", auth: false },
-        { id: "openai", label: "OpenAI", kind: "openai", embeds: true,
+        { id: "openai", label: "OpenAI", kind: "openai", embeds: true, serves: "chat,embed",
           base_url: "https://api.openai.com/v1", chat_model: "gpt-4o-mini",
           embed_model: "text-embedding-3-small", auth: true },
-        { id: "custom", label: "Custom (OpenAI-compat)", kind: "openai", embeds: false,
+        { id: "custom", label: "Custom (OpenAI-compat)", kind: "openai", embeds: false, serves: "chat",
           base_url: "", chat_model: "", embed_model: "", auth: true },
-        { id: "stub", label: "Offline stub", kind: "stub", embeds: true,
+        { id: "stub", label: "Offline stub", kind: "stub", embeds: true, serves: "chat,embed",
           base_url: "", chat_model: "", embed_model: "", auth: false },
+        { id: "systemone", label: "System One (self-host)", kind: "systemone", embeds: false, serves: "decide",
+          base_url: "http://ms-s1-ubt:8090", chat_model: "", embed_model: "", auth: false },
       ],
     })),
     reindexStatus: vi.fn(async () => ({ running: false, tables: [] })),
@@ -412,6 +415,71 @@ describe("CredentialsPanel", () => {
     await userEvent.click(within(row).getByRole("button", { name: /delete/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("used by core, web");
+  });
+
+  // ---- type-aware controls (PRD-45 S2) --------------------------------------------------
+
+  it("a chat-only credential has no Set decider button", async () => {
+    // A credential that serves only "chat" must not offer a decider control — pointing a
+    // chat model at memory adjudication would answer in prose, the exact defect the
+    // decider type exists to prevent.
+    state.credentials = [cred({ serves: "chat" })];
+    show();
+
+    const row = await openRow();
+    expect(within(row).getByRole("button", { name: /set default/i })).toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /set decider/i })).not.toBeInTheDocument();
+  });
+
+  it("a decider credential has no Set default button", async () => {
+    // A decider credential serves "decide" only — it cannot serve chat, so offering
+    // "Set default" would assert something the provider cannot fulfil.
+    state.credentials = [cred({ kind: "systemone", serves: "decide", is_decider: false })];
+    show();
+
+    const row = await openRow();
+    expect(within(row).queryByRole("button", { name: /set default/i })).not.toBeInTheDocument();
+    expect(within(row).queryByRole("button", { name: /set fallback/i })).not.toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: /set decider/i })).toBeInTheDocument();
+  });
+
+  it("shows the decider chip on a credential that is the scope decider", async () => {
+    state.credentials = [cred({ kind: "systemone", serves: "decide", is_decider: true })];
+    show();
+
+    const row = await screen.findByTestId("credential-cred_a");
+    expect(within(row).getByText("decider")).toBeInTheDocument();
+  });
+
+  it("Set embedding renders the 409 text when the probe refuses", async () => {
+    // The 409 from the embedder probe (dimension mismatch, vectors in another space) must
+    // reach the operator verbatim — not join the generic failure banner.
+    setDefaults.mockRejectedValueOnce(new Error("dimension mismatch: expected 384, got 1536"));
+    state.credentials = [cred({ kind: "ollama", serves: "chat,embed" })];
+    show();
+
+    const row = await openRow();
+    await userEvent.click(within(row).getByRole("button", { name: /set embedding/i }));
+
+    expect(await screen.findByTestId("embed-error")).toHaveTextContent(/dimension mismatch/);
+  });
+
+  it("memory.decide only lists decider credentials", async () => {
+    // The decider role selector must not offer chat credentials — a chat model pointed at
+    // memory adjudication would answer in prose, which is the defect the decider prevents.
+    state.credentials = [
+      cred({ id: "chat_cred", label: "Chat only", serves: "chat" }),
+      cred({ id: "decider_cred", label: "Decider", kind: "systemone", serves: "decide" }),
+    ];
+    show();
+
+    const panel = await screen.findByTestId("decider-roles");
+    const select = within(panel).getByLabelText("memory.decide");
+    const options = within(select).getAllByRole("option");
+    // "No decider configured" + the one decider credential. The chat credential is absent.
+    expect(options).toHaveLength(2);
+    expect(within(select).getByRole("option", { name: /^decider/i })).toBeInTheDocument();
+    expect(within(select).queryByRole("option", { name: /chat only/i })).not.toBeInTheDocument();
   });
 });
 
