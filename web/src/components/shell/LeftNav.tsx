@@ -101,7 +101,7 @@ function HostedLeftNav() {
             <span className="block truncate text-[12.5px] font-semibold leading-tight">
               {org?.name ?? "—"}
             </span>
-            <span className="mt-0.5 block font-mono text-[9px] uppercase tracking-[0.05em] text-faint">
+            <span className="mt-0.5 block text-[9.5px] text-faint">
               {org?.plan ?? ""} plan
             </span>
           </span>
@@ -183,7 +183,7 @@ function HostedLeftNav() {
       <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-3">
         {hosted && !canAdminister && (
           <div className="mb-2 rounded-[9px] border border-dashed border-line-2 px-2.5 py-2">
-            <div className="font-mono text-[9px] uppercase tracking-[0.07em] text-faint-2">
+            <div className="text-[9.5px] font-medium text-faint-2">
               no admin group
             </div>
             <p className="mt-1.5 text-[11px] leading-relaxed text-muted">
@@ -447,7 +447,7 @@ function OrgRailItem() {
 
 function RailHeading({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mb-2 mt-5 px-2 font-mono text-[10px] uppercase tracking-wide text-faint">
+    <div className="mb-2 mt-5 px-2 text-[10px] font-medium text-faint">
       {children}
     </div>
   );
@@ -479,7 +479,7 @@ function NavItem({
       >
         {icon}
         <span className="flex-1">{label}</span>
-        <span className="rounded border border-line-2 px-1.5 py-px font-mono text-[9px] uppercase text-faint-2">
+        <span className="rounded border border-line-2 px-1.5 py-px text-[9px] text-faint-2">
           soon
         </span>
       </div>
