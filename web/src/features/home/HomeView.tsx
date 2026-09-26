@@ -95,21 +95,25 @@ export function HomeView() {
             label="In progress"
             value={inFlight}
             empty="No items in progress right now."
+            to="/tracker"
           />
           <Attention
             label="In review"
             value={itemReview}
             empty="No items waiting for review."
+            to="/tracker"
           />
           <Attention
             label="Blocked"
             value={blocked}
             empty="No blocked items — that is a looked-at zero, not an unread queue."
+            to="/tracker"
           />
           <Attention
             label="Memory waiting for review"
             value={memoryQueue}
             empty="No shards waiting for review."
+            to="/memory-review"
           />
         </div>
 
@@ -147,14 +151,29 @@ function Inventory({
   );
 }
 
-function Attention({ label, value, empty }: { label: string; value: number; empty: string }) {
-  return (
-    <div className="rounded-[12px] border border-line-2 bg-surface-2 px-3.5 py-2.5">
+function Attention({ label, value, empty, to }: { label: string; value: number; empty: string; to?: string }) {
+  const inner = (
+    <>
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-[13px] font-semibold">{label}</span>
         <span className="font-mono text-[12px] text-fg-2">{value}</span>
       </div>
       {value === 0 && <p className="mt-1 text-[12px] text-muted">{empty}</p>}
+    </>
+  );
+  if (to) {
+    return (
+      <Link
+        to={to}
+        className="block rounded-[12px] border border-line-2 bg-surface-2 px-3.5 py-2.5 transition-colors hover:border-line-hover"
+      >
+        {inner}
+      </Link>
+    );
+  }
+  return (
+    <div className="rounded-[12px] border border-line-2 bg-surface-2 px-3.5 py-2.5">
+      {inner}
     </div>
   );
 }

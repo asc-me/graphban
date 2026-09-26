@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useLocation, useSearchParams, Link } from "react-router-dom";
 
-import { LiveBoardSkeleton, PlannerError } from "@/components/planner/PlannerStates";
+import { LiveBoardSkeleton, PlannerEmpty, PlannerError } from "@/components/planner/PlannerStates";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Avatar } from "@/components/ui/avatar";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -112,13 +112,23 @@ export function LiveView() {
         ) : isError || !data ? (
           <PlannerError message="The live board could not be loaded." onRetry={() => refetch()} />
         ) : emptyProject ? (
-          <div className="mt-16 px-5 text-center text-[13px] text-muted">
-            No agents have registered on this project.
-          </div>
+          <PlannerEmpty
+            title="No agents on this project yet"
+            description="Live shows who is working here right now — what they hold, what they called, and whether a PR was recorded. An agent appears here the moment it registers."
+            action={
+              <Link
+                to={fleetTo}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-line-hover hover:text-fg-2"
+              >
+                Open Fleet.v1
+              </Link>
+            }
+          />
         ) : emptyFilter ? (
-          <div className="mt-16 px-5 text-center text-[13px] text-muted">
-            No agents for this person on this project.
-          </div>
+          <PlannerEmpty
+            title="No agents for this person"
+            description="This person has credentials on the project but no agent has registered under their name yet."
+          />
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col gap-5 p-5">
             {data.users.map((u) => (

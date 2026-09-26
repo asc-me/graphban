@@ -129,14 +129,21 @@ describe("Live board", () => {
     await waitFor(() => expect(screen.getByLabelText("Loading live board")).toBeInTheDocument());
     expect(screen.queryByText(/^Loading/)).not.toBeInTheDocument();
     releaseLive?.(emptyBoard());
-    expect(await screen.findByText("No agents have registered on this project.")).toBeInTheDocument();
+    expect(await screen.findByText("No agents on this project yet")).toBeInTheDocument();
   });
 
   it("names an empty project as unregistered, not idle", async () => {
     renderLive();
     expect(await screen.findByRole("heading", { name: "Live" })).toBeInTheDocument();
-    expect(await screen.findByText("No agents have registered on this project.")).toBeInTheDocument();
+    expect(await screen.findByText("No agents on this project yet")).toBeInTheDocument();
     expect(screen.queryByText(/idle/i)).not.toBeInTheDocument();
+  });
+
+  it("empty state names what the view is for and offers a next move (GRPH-939)", async () => {
+    renderLive();
+    expect(await screen.findByText("No agents on this project yet")).toBeInTheDocument();
+    expect(screen.getByText(/Live shows who is working here right now/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Open Fleet\.v1/ })).toBeInTheDocument();
   });
 
   it("renders a row unchanged whether the delegations field is absent, null or present (PRD-35 PR 1)", async () => {
@@ -259,8 +266,8 @@ describe("Live board", () => {
       total_agents: 2,
     });
     renderLive("/live?user=missing");
-    expect(await screen.findByText("No agents for this person on this project.")).toBeInTheDocument();
-    expect(screen.queryByText("No agents have registered on this project.")).not.toBeInTheDocument();
+    expect(await screen.findByText("No agents for this person")).toBeInTheDocument();
+    expect(screen.queryByText("No agents on this project yet")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Unattributed/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Blair/ })).toBeInTheDocument();
   });
