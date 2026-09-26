@@ -172,11 +172,13 @@ class ScopeDefaultsIn(BaseModel):
     default_credential_id: str | None = None
     fallback_credential_id: str | None = None
     embed_credential_id: str | None = None
+    decider_credential_id: str | None = None
 
 
 class ProjectCredentialIn(BaseModel):
     credential_id: str | None = None
     model_override: str | None = None
+    decider_credential_id: str | None = None
 
 
 class ProjectRolesIn(BaseModel):
@@ -307,7 +309,8 @@ def set_defaults(body: ScopeDefaultsIn, project_id: str = "core",
         raise HTTPException(409, str(e)) from None
     return {"scope": row.scope, "default_credential_id": row.default_credential_id,
             "fallback_credential_id": row.fallback_credential_id,
-            "embed_credential_id": row.embed_credential_id}
+            "embed_credential_id": row.embed_credential_id,
+            "decider_credential_id": row.decider_credential_id}
 
 
 @router.put("/credentials/project")
@@ -317,12 +320,29 @@ def set_project_credential(body: ProjectCredentialIn, project_id: str = "core",
     _scope(db, user, project_id)
     sent = body.model_dump(exclude_unset=True)
     try:
-        project = platform_svc.set_project_credential(
-            db, project_id, **{k: sent.get(k) for k in sent})
+        # Handle decider_credential_id separately if present
+        if "decider_credential_id" in sent:
+            decider_id = sent.pop("decider_credential_id")
+            project = platform_svc.set_project_decider(
+                db, project_id, decider_credential_id=decider_id)
+            # Also handle chat credential if present
+            if sent:
+                project = platform_svc.set_project_credential(
+                    db, project_id, **{k: sent.get(k) for k in sent})
+        elif sent:
+            project = platform_svc.set_project_credential(
+                db, project_id, **{k: sent.get(k) for k in sent})
+        else:
+            project = db.get(Project, project_id)
+            if project is None:
+                raise LookupError(project_id)
     except LookupError:
         raise HTTPException(404, "no such credential or project") from None
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from None
     return {"project_id": project.id, "credential_id": project.credential_id,
-            "model_override": project.model_override}
+            "model_override": project.model_override,
+            "decider_credential_id": project.decider_credential_id}
 
 
 @router.put("/credentials/roles")

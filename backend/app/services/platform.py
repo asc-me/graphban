@@ -254,6 +254,13 @@ CHAT_ROLES = (
     "spec.critique",
 )
 
+# Named tasks that may point at a decider credential (PRD-45 S2). Unset = inherit
+# the project's decider pointer. The decider is a System One model that returns
+# calibrated probabilities over a declared answer space; used for memory adjudication.
+DECIDER_ROLES = (
+    "memory.adjudicate",
+)
+
 
 def resolve_chat(db: Session, project_id: str) -> Resolved:
     """Which chat provider a project gets, in the transitional order of PRD-25 S1.
@@ -405,6 +412,85 @@ def set_project_roles(db: Session, project_id: str, roles: dict) -> Project:
             entry["model_override"] = str(model_over)
         cleaned[name] = entry
     project.chat_roles = cleaned
+    db.commit()
+    db.refresh(project)
+    return project
+
+
+def resolve_decider(db: Session, project_id: str) -> Resolved:
+    """Which decider provider a project gets (PRD-45 S2).
+
+    ```
+    1. the project's `decider_credential_id`
+    2. the scope's default decider credential
+    3. None (no decider; caller degrades to similarity or chat judge)
+    ```
+
+    Unlike chat, there is no stub fallback. A decider that does not answer degrades to
+    similarity, which is the fallback. The caller checks for None and handles it.
+    """
+    scope = scope_for(db, project_id)
+    project = db.get(Project, project_id)
+    pointer = getattr(project, "decider_credential_id", None) if project is not None else None
+
+    cred = credential_in_scope(db, pointer, scope)
+    if usable(cred):
+        return _from_credential(cred, "project", "", db=db, scope=scope, project_id=project_id)
+
+    # The project asked for something it is not getting.
+    wanted = pointer or ""
+    if wanted:
+        why = ("is unreachable" if cred is not None
+               else "does not resolve in this scope")
+        logger.warning(
+            "project %s asked for decider credential %s, which %s; no decider available",
+            project_id, wanted, why,
+        )
+
+    row = db.get(DeploymentConfig, scope)
+    default = credential_in_scope(db, row.decider_credential_id if row else None, scope)
+    # **An unreachable DEFAULT is still returned** — deliberately asymmetric with the
+    # project credential above. There is nothing below the default but None, so
+    # routing around it would hide a broken default forever; a project credential has
+    # somewhere to fall to, so it falls.
+    if default is not None:
+        return _from_credential(default, "deployment", fell_back_from=wanted,
+                                db=db, scope=scope, project_id=project_id)
+
+    # No decider resolved. Return None-like Resolved so the caller can check.
+    return Resolved(provider_id="",
+                    chat=None,
+                    source="dangling" if pointer else "none",
+                    fell_back_from=wanted)
+
+
+def set_project_decider(db: Session, project_id: str, *,
+                        decider_credential_id: str | None) -> Project:
+    """Point one project at a decider credential.
+
+    The credential must belong to the project's own scope AND must serve the decider role.
+    An UNPROVEN credential is refused (same gate as set_scope_defaults).
+    """
+    project = db.get(Project, project_id)
+    if project is None:
+        raise LookupError(project_id)
+    if decider_credential_id is None:
+        project.decider_credential_id = None
+    else:
+        cred = credential_in_scope(db, decider_credential_id, (project.org_id or ""))
+        if cred is None:
+            raise LookupError(decider_credential_id)
+        if not provider_registry.serves_decide(cred.kind):
+            raise ValueError(
+                f"{decider_credential_id} is a {cred.kind} credential, which does not serve "
+                "the decider role. A decider credential must have serves containing 'decide'."
+            )
+        if cred.state == UNPROVEN:
+            raise ValueError(
+                f"{decider_credential_id} has never been validated, so it cannot be the "
+                "decider. Use Test connection, or correct and resave it, first."
+            )
+        project.decider_credential_id = decider_credential_id
     db.commit()
     db.refresh(project)
     return project
@@ -625,6 +711,7 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
     if not creds:
         return []
 
+    # Chat credential usage
     used: dict[str, list[str]] = {}
     rows = (
         db.query(Project.credential_id, Project.id)
@@ -633,6 +720,16 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
     )
     for credential_id, pid in rows:
         used.setdefault(credential_id, []).append(pid)
+
+    # Decider credential usage (PRD-45 S2)
+    decider_used: dict[str, list[str]] = {}
+    rows = (
+        db.query(Project.decider_credential_id, Project.id)
+        .filter(Project.decider_credential_id.isnot(None))
+        .all()
+    )
+    for credential_id, pid in rows:
+        decider_used.setdefault(credential_id, []).append(pid)
 
     # Which of those pointers are being fallen past, computed from rows ALREADY LOADED.
     #
@@ -646,10 +743,17 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
         if not usable(in_scope.get(credential_id)):
             fallen[credential_id] = sorted(pids)
 
+    # Decider falling_back (PRD-45 S2)
+    decider_fallen: dict[str, list[str]] = {}
+    for credential_id, pids in decider_used.items():
+        if not usable(in_scope.get(credential_id)):
+            decider_fallen[credential_id] = sorted(pids)
+
     row = db.get(DeploymentConfig, scope or "")
     default_id = row.default_credential_id if row else None
     fallback_id = row.fallback_credential_id if row else None
     embed_id = row.embed_credential_id if row else None
+    decider_id = row.decider_credential_id if row else None
 
     return [
         {
@@ -661,15 +765,18 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
             "key_set": c.key_set,
             "state": c.state,
             "last_error": c.last_error,
-            "used_by": sorted(used.get(c.id, [])),
+            # PRD-45 S2: what model type(s) this credential serves
+            "serves": provider_registry.serves(c.kind),
+            "used_by": sorted(set(used.get(c.id, [])) | set(decider_used.get(c.id, []))),
             # Projects pointing here that are NOT actually getting it (GRPH-525). §4 says a
             # warning nobody is shown is the same defect as no warning one layer along, and
             # the console is the only surface an operator sees without reading logs. Derived
             # from live resolution rather than stored, for the same reason `used_by` is.
-            "falling_back": sorted(fallen.get(c.id, [])),
+            "falling_back": sorted(set(fallen.get(c.id, [])) | set(decider_fallen.get(c.id, []))),
             "is_default": c.id == default_id,
             "is_fallback": c.id == fallback_id,
             "is_embed": c.id == embed_id,
+            "is_decider": c.id == decider_id,
         }
         for c in creds
     ]
@@ -826,8 +933,9 @@ def delete_credential(db: Session, credential_id: str, scope: str) -> None:
 
 def set_scope_defaults(db: Session, scope: str, *, default_credential_id: str | None = ...,
                        fallback_credential_id: str | None = ...,
-                       embed_credential_id: str | None = ...) -> DeploymentConfig:
-    """Point a scope's default / fallback / embedding at credentials it owns.
+                       embed_credential_id: str | None = ...,
+                       decider_credential_id: str | None = ...) -> DeploymentConfig:
+    """Point a scope's default / fallback / embedding / decider at credentials it owns.
 
     `...` means "leave alone" and `None` means "clear", which are different intentions and
     would be indistinguishable if absence meant clear.
@@ -882,6 +990,27 @@ def set_scope_defaults(db: Session, scope: str, *, default_credential_id: str | 
             )
         db.commit()
         return emb_svc.set_embed_credential(db, scope, embed_credential_id)
+
+    # The decider gate: must serve the decide role (PRD-45 S2).
+    if decider_credential_id is not ...:
+        if decider_credential_id is None:
+            row.decider_credential_id = None
+        else:
+            cred = credential_in_scope(db, decider_credential_id, scope)
+            if cred is None:
+                raise LookupError(decider_credential_id)
+            if not provider_registry.serves_decide(cred.kind):
+                raise ValueError(
+                    f"{decider_credential_id} is a {cred.kind} credential, which does not "
+                    "serve the decider role. A decider credential must have serves containing "
+                    "'decide'."
+                )
+            if cred.state == UNPROVEN:
+                raise ValueError(
+                    f"{decider_credential_id} has never been validated, so it cannot be the "
+                    "decider. Use Test connection, or correct and resave it, first."
+                )
+            row.decider_credential_id = decider_credential_id
 
     db.commit()
     db.refresh(row)
