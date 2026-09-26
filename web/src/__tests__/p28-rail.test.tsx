@@ -262,6 +262,19 @@ describe("P28 Home", () => {
     expect(screen.getByText("Triage")).toBeInTheDocument();
     expect(screen.getByText("Memory waiting for review")).toBeInTheDocument();
   });
+
+  it("wires each attention count to the view that acts on it (GRPH-939)", async () => {
+    wrap(<HomeView />, "/home");
+    expect(await screen.findByText("Needs attention")).toBeInTheDocument();
+    // In progress, In review, Blocked link to the tracker; Memory links to memory-review.
+    const trackerLinks = screen.getAllByRole("link", { name: /In progress|In review|Blocked/ });
+    expect(trackerLinks.length).toBe(3);
+    for (const link of trackerLinks) {
+      expect(link).toHaveAttribute("href", "/tracker");
+    }
+    const memLink = screen.getByRole("link", { name: /Memory waiting for review/ });
+    expect(memLink).toHaveAttribute("href", "/memory-review");
+  });
 });
 
 describe("P28 Settings (self-host)", () => {

@@ -187,6 +187,12 @@ describe("planner surfaces (GRPH-913)", () => {
     expect(trackerSrc).toMatch(/No items yet/);
     expect(trackerSrc).not.toMatch(/No items match\./);
   });
+
+  it("sabotage: empty state must name the view's purpose and offer the header action (GRPH-939)", () => {
+    expect(trackerSrc).toMatch(/PlannerEmpty/);
+    expect(trackerSrc).toMatch(/description=/);
+    expect(trackerSrc).toMatch(/action=\{<NewItemDialog/);
+  });
 });
 
 describe("PRD list recency (GRPH-922)", () => {
