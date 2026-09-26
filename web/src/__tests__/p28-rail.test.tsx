@@ -155,19 +155,18 @@ describe("P28 self-host rail", () => {
     expect(observe).toContain('to: "/live"');
     expect(observe).toContain('to: "/activity"');
 
-    const hostedStart = src.indexOf("const WORKSPACE");
-    const hosted = src.slice(hostedStart, src.indexOf("as const", hostedStart));
-    const mem = hosted.indexOf('to: "memory-review"');
-    const les = hosted.indexOf('to: "lessons"');
+    const hostedObserve = src.match(/const HOSTED_OBSERVE = \[[\s\S]*?\];/)?.[0] ?? "";
+    const mem = hostedObserve.indexOf('to: "memory-review"');
+    const les = hostedObserve.indexOf('to: "lessons"');
     expect(mem).toBeGreaterThan(-1);
     expect(les).toBeGreaterThan(mem);
-    expect(hosted.slice(mem, les).match(/to:/g)?.length).toBe(1);
+    expect(hostedObserve.slice(mem, les).match(/to:/g)?.length).toBe(1);
 
-    const act = hosted.indexOf('to: "activity"');
-    const live = hosted.indexOf('to: "live"');
+    const act = hostedObserve.indexOf('to: "activity"');
+    const live = hostedObserve.indexOf('to: "live"');
     expect(act).toBeGreaterThan(-1);
     expect(live).toBeGreaterThan(act);
-    expect(hosted.slice(act, live).match(/to:/g)?.length).toBe(1);
+    expect(hostedObserve.slice(act, live).match(/to:/g)?.length).toBe(1);
 
     // A section header expands; it never navigates. No default landing page may creep back in.
     const header = src.match(/function SectionHeader\(\{[\s\S]*?\n\}/)?.[0] ?? "";
@@ -177,19 +176,46 @@ describe("P28 self-host rail", () => {
   });
 });
 
-describe("P28 hosted rail is untouched", () => {
-  it("still shows Admin, Galaxy, Feedback Kit and the flat workspace list", async () => {
+describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
+  it("opens Plan on /p/CORE/tracker and shows Admin, Galaxy, Feedback Kit", async () => {
     wrap(<LeftNav hosted />, "/p/CORE/tracker");
     expect(await screen.findByText("Tracker")).toBeInTheDocument();
-    expect(await screen.findByText("Users & access")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Plan" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Requests")).toBeInTheDocument();
+    expect(screen.getByText("Triage")).toBeInTheDocument();
     expect(screen.getByText("Dashboard")).toBeInTheDocument();
-    expect(screen.getByText("MCP Tools")).toBeInTheDocument();
+    expect(screen.getByText("PRDs")).toBeInTheDocument();
+    expect(screen.getByText("Roadmap")).toBeInTheDocument();
+    expect(await screen.findByText("Users & access")).toBeInTheDocument();
     expect(screen.getByText("Feedback Kit")).toBeInTheDocument();
     expect(screen.getByText("Galaxy")).toBeInTheDocument();
-    expect(screen.getByText("Lessons")).toBeInTheDocument();
-    expect(screen.getByText("Memory review")).toBeInTheDocument();
+    // Build and Observe are collapsed — their children are not in the document.
+    expect(screen.queryByText("Code graph")).not.toBeInTheDocument();
+    expect(screen.queryByText("Memory review")).not.toBeInTheDocument();
+  });
+
+  it("expands Build on click without changing the route", async () => {
+    const user = userEvent.setup();
+    wrap(<LeftNav hosted />, "/p/CORE/tracker");
+    await screen.findByText("Tracker");
+    await user.click(screen.getByRole("button", { name: "Build" }));
+    expect(await screen.findByText("Code graph")).toBeInTheDocument();
+    expect(screen.getByText("MCP Tools")).toBeInTheDocument();
+    expect(screen.getByText("Fleet.v2")).toBeInTheDocument();
+    // Plan collapsed, Build expanded.
+    expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Build" })).toHaveAttribute("aria-expanded", "true");
+    // Header click must not navigate — same trap as self-host (GRPH-P28 rev2).
+    expect(screen.getByTestId("here")).toHaveTextContent("/p/CORE/tracker");
+  });
+
+  it("opens the owning section when the route is in another group", async () => {
+    wrap(<LeftNav hosted />, "/p/CORE/activity");
+    expect(await screen.findByText("Activity")).toBeInTheDocument();
     expect(screen.getByText("Live")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Plan" })).not.toBeInTheDocument();
+    expect(screen.getByText("Memory review")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Observe" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
   });
 
   it("keeps Admin and Galaxy in the hosted source (sabotage: deleting those rows must fail)", async () => {
@@ -202,6 +228,24 @@ describe("P28 hosted rail is untouched", () => {
     expect(src).toContain('label="Galaxy"');
     expect(src).toContain('label="Users & access"');
     expect(src).toContain("function HostedLeftNav");
+  });
+
+  it("sabotage: Plan, Build and Observe must exist in the hosted tree", async () => {
+    const sources = import.meta.glob("../components/shell/LeftNav.tsx", {
+      query: "?raw",
+      import: "default",
+      eager: true,
+    }) as Record<string, string>;
+    const src = Object.values(sources)[0] ?? "";
+    // The hosted render must use SectionHeader with all three labels — removing a group
+    // must fail these assertions, not silently produce a flat list.
+    const hostedFn = src.slice(src.indexOf("function HostedLeftNav"), src.indexOf("function SelfHostLeftNav"));
+    expect(hostedFn).toContain('label="Plan"');
+    expect(hostedFn).toContain('label="Build"');
+    expect(hostedFn).toContain('label="Observe"');
+    expect(hostedFn).toContain("HOSTED_PLAN");
+    expect(hostedFn).toContain("HOSTED_BUILD");
+    expect(hostedFn).toContain("HOSTED_OBSERVE");
   });
 });
 
