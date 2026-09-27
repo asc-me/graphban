@@ -7,7 +7,7 @@ import { PlannerError, TableSkeleton } from "@/components/planner/PlannerStates"
 import { Recommendations } from "@/features/harness/Recommendations";
 import { GuidanceTab } from "@/features/harness/GuidanceTab";
 import { useProjectCtx } from "@/features/ProjectContext";
-import { useFleet, useHarness, useHarnessProbeCandidates, useStartHarnessProbeRun } from "@/lib/queries";
+import { useFleet, useHarness, useHarnessGuidance, useHarnessProbeCandidates, useStartHarnessProbeRun } from "@/lib/queries";
 import type {
   HarnessCell,
   HarnessCost,
@@ -37,6 +37,7 @@ export function HarnessView() {
   const [tab, setTab] = useState<TabId>("performance");
   const harnessQ = useHarness(activeId, { versions });
   const { data, isLoading } = harnessQ;
+  const { data: guidance } = useHarnessGuidance(activeId);
   const { data: fleetData, refetch: refetchFleet } = useFleet(activeId);
 
   if (harnessQ.isError && !data) {
@@ -118,7 +119,7 @@ export function HarnessView() {
           />
         )}
         {tab === "guidance" && (
-          <GuidanceTab fleetData={fleetData} harnessReport={data} />
+          <GuidanceTab guidance={guidance} />
         )}
         {tab === "changes" && (
           <ChangesTab activeId={activeId} data={data} />

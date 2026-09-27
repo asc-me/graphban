@@ -51,11 +51,38 @@ const harnessRecommendations = vi.fn(async () => ({
   lessons_drafted: [], window_days: 90, floor: 5,
 }));
 
+function guidanceData(over: Partial<import("@/lib/types").HarnessGuidance> = {}): import("@/lib/types").HarnessGuidance {
+  return {
+    project_id: "core",
+    grading_rules: [
+      { id: "R1", title: "Promote a cell", detail: "promote", thresholds: { min_finished: 10, min_rate: 0.8 } },
+      { id: "R2", title: "Demote a cell", detail: "demote", thresholds: { min_finished: 6, max_rate: 0.25 } },
+      { id: "R3", title: "Reorder profile defaults", detail: "reweight", thresholds: { min_n: 8, margin: 0.3, min_families: 2 } },
+      { id: "R4", title: "Adjust policy constraint", detail: "policy", thresholds: { min_n: 6, bounce_rate: 0.7, keep_rate: 0.7 } },
+      { id: "R5", title: "Reprior", detail: "reprior", thresholds: { min_n: 5, margin: 0.3 } },
+      { id: "R6", title: "Install", detail: "install", thresholds: { min_drops: 6, margin: 0.3 } },
+    ],
+    routing: [{
+      function: "B5", effort_band: "M", verdict: "measured", confidence: 10,
+      pick: "gbagent:qwen3.6", evidence: "8/10 @ 0.8", fallback: null,
+    }],
+    generation_stamp: {
+      window_days: 90, floor: 5, attempts: 12, supervisors_served: 1,
+      generated_at: new Date().toISOString(),
+    },
+    fleet_status_text: '{"agents":[],"measured":[]}',
+    ...over,
+  };
+}
+
+const harnessGuidance = vi.fn(async () => guidanceData());
+
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
   api: {
     projects: vi.fn(async () => [{ id: "core", name: "Core", tag: "GRPH" }]),
     harness: (...args: unknown[]) => harness(...(args as [])),
+    harnessGuidance: (...args: unknown[]) => harnessGuidance(...(args as [])),
     harnessProbeCandidates: (...args: unknown[]) => probeCandidates(...(args as [])),
     startHarnessProbeRun: (...args: unknown[]) => startProbeRun(...(args as [])),
     harnessRecommendations: (...args: unknown[]) => harnessRecommendations(...(args as [])),
@@ -435,7 +462,33 @@ describe("Harness tabs", () => {
     const tabs = screen.getAllByTestId("harness-tab");
     await user.click(tabs[1]);
     expect(await screen.findByTestId("guidance-as-served")).toBeInTheDocument();
-    expect(screen.getByTestId("guidance-fleet-status")).toBeInTheDocument();
+    expect(screen.getByTestId("guidance-fleet-status")).toHaveTextContent('{"agents":[],"measured":[]}');
+    expect(screen.getByTestId("guidance-generation-stamp")).toHaveTextContent("window 90d");
+  });
+
+  it("renders grading rule thresholds from the fetched payload", async () => {
+    harnessGuidance.mockResolvedValueOnce(guidanceData({
+      grading_rules: [
+        { id: "R2", title: "Demote a cell", detail: "demote", thresholds: { min_finished: 6, max_rate: 0.25 } },
+      ],
+    }));
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    await user.click(screen.getAllByTestId("harness-tab")[1]);
+    const rule = await screen.findByTestId("guidance-rule");
+    expect(rule).toHaveAttribute("data-rule", "R2");
+    expect(screen.getByTestId("guidance-rule-thresholds")).toHaveTextContent("max_rate: 0.25");
+  });
+
+  it("CALL sabotage: empty grading_rules leaves the rules section empty", async () => {
+    harnessGuidance.mockResolvedValueOnce(guidanceData({ grading_rules: [] }));
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    await user.click(screen.getAllByTestId("harness-tab")[1]);
+    expect(await screen.findByTestId("guidance-grading-rules")).toBeInTheDocument();
+    expect(screen.queryAllByTestId("guidance-rule")).toHaveLength(0);
   });
 });
 

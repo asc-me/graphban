@@ -544,6 +544,11 @@ export const api = {
     if (opts.versions) q.set("versions", opts.versions);
     return request<HarnessReport>(`/harness?${q.toString()}`);
   },
+  harnessGuidance: (projectId: string, opts: { windowDays?: number } = {}) => {
+    const q = new URLSearchParams({ project_id: projectId });
+    if (opts.windowDays) q.set("window_days", String(opts.windowDays));
+    return request<import("@/lib/types").HarnessGuidance>(`/harness/guidance?${q.toString()}`);
+  },
   harnessRecommendations: (projectId: string, opts: { windowDays?: number; orgId?: string } = {}) => {
     const q = new URLSearchParams();
     if (opts.orgId) q.set("org_id", opts.orgId);

@@ -2692,3 +2692,78 @@ def start_probe_run(db: Session, *, project_id: str, user_id: str, vendor: str, 
         "sampled": "probe",
     }
 
+
+def guidance(db: Session, project_id: str, *, caller_user_id: str | None = None,
+             window_days: int | None = None) -> dict:
+    """PRD-47 S12 — what gbfleet is actually served: routing per function and band, the
+    grading rules, the generation stamp, and the verbatim `fleet_status` text."""
+    import json
+
+    from app.services import delegation as delegation_svc
+    from app.services import fleet as fleet_svc
+    from app.services import harness_rules
+
+    window = WINDOW_DAYS if window_days is None else window_days
+    harness_report = report(db, project_id, window_days=window, versions="all", overlay=False)
+    measured = delegation_svc.measured(db, project_id, window_days=window)
+    status = fleet_svc.fleet_status(db, project_id, caller_user_id=caller_user_id)
+    supervisors = sum(1 for a in status.get("agents") or []
+                        if a.get("active_role") in ("planner", fleet_svc.ALL_IN_ONE))
+    return {
+        "project_id": project_id,
+        "grading_rules": harness_rules.rule_catalog(),
+        "routing": _routing_from_measured(measured, floor=FLOOR),
+        "generation_stamp": {
+            "window_days": window,
+            "floor": FLOOR,
+            "attempts": (harness_report.get("coverage") or {}).get("attempts") or 0,
+            "supervisors_served": supervisors,
+            "generated_at": _now().isoformat(),
+        },
+        "fleet_status_text": json.dumps(status, indent=2, default=str),
+    }
+
+
+def _routing_from_measured(measured: list[dict], *, floor: int) -> list[dict]:
+    """Per capability × effort band: the pick the measured layers support."""
+    buckets: dict[tuple[str, str], list[dict]] = {}
+    for cell in measured:
+        if cell.get("layer") != "project":
+            continue
+        cap = cell.get("capability") or "other"
+        pick = f"{cell.get('vendor') or ''}:{cell.get('model') or ''}"
+        for band, stats in (cell.get("bands") or {}).items():
+            n = int(stats.get("n") or 0)
+            if n <= 0:
+                continue
+            rate = stats.get("value")
+            signed = round(float(rate or 0) * n) if rate is not None else None
+            buckets.setdefault((cap, band), []).append({
+                "pick": pick,
+                "rate": rate,
+                "n": n,
+                "signed_off": signed,
+                "layer": cell.get("layer"),
+                "below_floor": n < floor,
+            })
+    rows: list[dict] = []
+    for (cap, band), candidates in sorted(buckets.items()):
+        ranked = sorted(candidates, key=lambda c: (-(c.get("rate") or 0), -c["n"]))
+        top = ranked[0]
+        fallback = ranked[1]["pick"] if len(ranked) > 1 else None
+        rate = top.get("rate")
+        signed = top.get("signed_off")
+        evidence = (f"{signed}/{top['n']} @ {rate}" if rate is not None and signed is not None
+                    else "not measured")
+        rows.append({
+            "function": cap,
+            "effort_band": band,
+            "verdict": "below_floor" if top["below_floor"] else "measured",
+            "confidence": top["n"],
+            "pick": top["pick"],
+            "evidence": evidence,
+            "fallback": fallback,
+            "layer": top.get("layer"),
+        })
+    return rows
+

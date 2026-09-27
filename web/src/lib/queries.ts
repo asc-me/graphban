@@ -18,6 +18,8 @@ export const keys = {
   harness: (projectId: string, versions: string, windowDays?: number) =>
     ["harness", projectId, versions, windowDays ?? null] as const,
   harnessCards: (projectId: string) => ["harness-cards", projectId] as const,
+  harnessGuidance: (projectId: string, windowDays?: number) =>
+    ["harness-guidance", projectId, windowDays ?? null] as const,
   harnessProbes: (projectId: string) => ["harness-probes", projectId] as const,
   lessons: (projectId: string, filters?: LessonFilters) =>
     ["lessons", projectId, filters ?? {}] as const,
@@ -728,6 +730,15 @@ export function useHarnessCards(projectId?: string) {
   return useQuery({
     queryKey: keys.harnessCards(projectId ?? ""),
     queryFn: () => api.harnessRecommendations(projectId!),
+    enabled: !!projectId,
+  });
+}
+
+/** PRD-47 S12: routing, grading rules, generation stamp, and verbatim fleet_status. */
+export function useHarnessGuidance(projectId?: string, opts: { windowDays?: number } = {}) {
+  return useQuery({
+    queryKey: keys.harnessGuidance(projectId ?? "", opts.windowDays),
+    queryFn: () => api.harnessGuidance(projectId!, { windowDays: opts.windowDays }),
     enabled: !!projectId,
   });
 }

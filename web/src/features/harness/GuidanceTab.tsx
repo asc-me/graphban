@@ -1,92 +1,70 @@
-import type { FleetMatrixRow, FleetOverview, HarnessReport } from "@/lib/types";
+import type { HarnessGuidance } from "@/lib/types";
 
-const GRADING_RULES = [
-  { id: "R1", title: "Promote a cell", detail: "A cell above the floor signed off at or above the threshold and its matrix row is still unverified." },
-  { id: "R2", title: "Demote a cell", detail: "A cell above the floor signed off below the threshold and its matrix row is still verified." },
-  { id: "R3", title: "Adjust profile weight", detail: "A measured axis diverges from the profile weight by more than the threshold." },
-  { id: "R4", title: "Adjust policy constraint", detail: "A policy cap is consistently hit or never hit across the window." },
-  { id: "R5", title: "Flag a skew", detail: "A cell above the floor is sampled overwhelmingly by one path." },
-  { id: "R6", title: "Flag a thin cell", detail: "A cell is above the floor but its replay considered too few resolutions to speak for." },
-];
-
-const RULE_THRESHOLDS: Record<string, string> = {
-  R1: "min_finished: 10, min_rate: 0.8",
-  R2: "min_finished: 10, max_rate: 0.5",
-  R3: "weight_delta: 0.2, min_n: 5",
-  R4: "hit_share: 0.8 | 0.05, min_n: 10",
-  R5: "skew_share: 0.8, min_finished: 5",
-  R6: "min_finished: 5, max_replay: 3",
-};
-
-function statusLabel(row: FleetMatrixRow): string {
-  return row.status === "verified" ? "verified" : row.status;
+function formatThresholds(thresholds: Record<string, number>): string {
+  return Object.entries(thresholds)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(", ");
 }
 
 /**
- * PRD-47 S12 — what the supervisor was actually served: the routing matrix, the grading
- * rules that produce recommendations, and the raw fleet_status text. Nothing here is
- * interpreted — it is the input, not the output.
+ * PRD-47 S12 — what the supervisor was actually served: routing per function and band,
+ * the grading rules that produce recommendations, and the raw fleet_status text.
  */
-export function GuidanceTab({
-  fleetData,
-  harnessReport,
-}: {
-  fleetData?: FleetOverview;
-  harnessReport?: HarnessReport;
-}) {
-  const matrixRows = fleetData?.matrix?.rows ?? [];
-  const generatedAt = harnessReport?.generated_at;
+export function GuidanceTab({ guidance }: { guidance?: HarnessGuidance }) {
+  const rules = guidance?.grading_rules ?? [];
+  const routingRows = guidance?.routing ?? [];
+  const stamp = guidance?.generation_stamp;
+  const fleetStatusText = guidance?.fleet_status_text ?? "no fleet_status served";
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4">
       <section data-testid="guidance-routing-table">
         <h3 className="mb-2 text-[13px] font-semibold">Routing table</h3>
         <p className="mb-3 text-[12px] text-muted">
-          The matrix the supervisor resolves against. Each row is a harness, model, lane and
-          tier the supervisor may pick. A row that is not verified is still considered — the
-          supervisor scores on measured axes and says so.
+          Per function and effort band — the pick, evidence and fallback the supervisor scores
+          from <span className="font-mono">fleet_status.measured</span>. A column with no server
+          field reads as not measured rather than being dropped.
         </p>
-        {matrixRows.length === 0 ? (
+        {routingRows.length === 0 ? (
           <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted">
-            No routing matrix served. The supervisor resolves on the harness catalog alone.
+            No measured routing served yet. A row appears once a delegation finishes in this
+            window.
           </div>
         ) : (
           <div className="overflow-x-auto rounded-[10px] border border-line-2">
             <table className="w-full text-left font-mono text-[11.5px]">
               <thead>
                 <tr className="border-b border-line-2 bg-surface-2">
-                  <th className="px-3 py-2 text-faint">harness</th>
-                  <th className="px-3 py-2 text-faint">model</th>
-                  <th className="px-3 py-2 text-faint">vendor</th>
-                  <th className="px-3 py-2 text-faint">lane</th>
-                  <th className="px-3 py-2 text-faint">tier</th>
+                  <th className="px-3 py-2 text-faint">function</th>
+                  <th className="px-3 py-2 text-faint">effort band</th>
                   <th className="px-3 py-2 text-faint">verdict</th>
-                  <th className="px-3 py-2 text-faint">cost</th>
-                  <th className="px-3 py-2 text-faint">local</th>
+                  <th className="px-3 py-2 text-faint">confidence</th>
+                  <th className="px-3 py-2 text-faint">pick</th>
+                  <th className="px-3 py-2 text-faint">evidence</th>
+                  <th className="px-3 py-2 text-faint">fallback</th>
                 </tr>
               </thead>
               <tbody>
-                {matrixRows.map((row, i) => (
+                {routingRows.map((row, i) => (
                   <tr
-                    key={`${row.harness}:${row.model}:${row.lane}:${row.tier}`}
+                    key={`${row.function}:${row.effort_band}`}
                     data-testid="guidance-routing-row"
                     className={i % 2 === 0 ? "bg-surface" : "bg-surface-2"}
                   >
-                    <td className="px-3 py-1.5 text-muted">{row.harness}</td>
-                    <td className="px-3 py-1.5 text-muted">{row.model}</td>
-                    <td className="px-3 py-1.5 text-faint">{row.vendor}</td>
-                    <td className="px-3 py-1.5 text-faint">{row.lane}</td>
-                    <td className="px-3 py-1.5 text-faint">{row.tier}</td>
+                    <td className="px-3 py-1.5 text-muted">{row.function}</td>
+                    <td className="px-3 py-1.5 text-faint">{row.effort_band}</td>
                     <td className="px-3 py-1.5">
                       <span
                         data-testid="guidance-routing-verdict"
-                        className={row.status === "verified" ? "text-st-done" : "text-faint"}
+                        className={row.verdict === "measured" ? "text-st-done" : "text-faint"}
                       >
-                        {statusLabel(row)}
+                        {row.verdict}
                       </span>
                     </td>
-                    <td className="px-3 py-1.5 text-faint">{row.cost_class}</td>
-                    <td className="px-3 py-1.5 text-faint">{row.local ? "yes" : "no"}</td>
+                    <td className="px-3 py-1.5 text-faint">{row.confidence}</td>
+                    <td className="px-3 py-1.5 text-muted">{row.pick}</td>
+                    <td className="px-3 py-1.5 text-faint">{row.evidence}</td>
+                    <td className="px-3 py-1.5 text-faint">{row.fallback ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -102,7 +80,7 @@ export function GuidanceTab({
           above the floor; nothing fires on a cell that has not earned its count.
         </p>
         <div className="flex flex-col gap-2">
-          {GRADING_RULES.map((rule) => (
+          {rules.map((rule) => (
             <div
               key={rule.id}
               data-testid="guidance-rule"
@@ -116,19 +94,23 @@ export function GuidanceTab({
                 <span className="text-[12.5px] font-medium">{rule.title}</span>
               </div>
               <p className="mt-1 text-[12px] text-muted">{rule.detail}</p>
-              <div className="mt-1 font-mono text-[10.5px] text-faint">
-                {RULE_THRESHOLDS[rule.id]}
+              <div
+                data-testid="guidance-rule-thresholds"
+                className="mt-1 font-mono text-[10.5px] text-faint"
+              >
+                {formatThresholds(rule.thresholds)}
               </div>
             </div>
           ))}
         </div>
       </section>
 
-      {generatedAt && (
+      {stamp && (
         <section data-testid="guidance-generation-stamp">
           <h3 className="mb-1 text-[13px] font-semibold">Generation stamp</h3>
           <p className="font-mono text-[11.5px] text-faint">
-            Report generated at {new Date(generatedAt).toLocaleString()}
+            window {stamp.window_days}d · floor {stamp.floor} · attempts {stamp.attempts} ·
+            supervisors served {stamp.supervisors_served}
           </p>
         </section>
       )}
@@ -143,22 +125,9 @@ export function GuidanceTab({
           data-testid="guidance-fleet-status"
           className="max-h-80 overflow-auto rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 font-mono text-[11px] text-muted"
         >
-          {fleetData ? JSON.stringify(fleetStatusSummary(fleetData), null, 2) : "no fleet_status served"}
+          {fleetStatusText}
         </pre>
       </section>
     </div>
   );
-}
-
-function fleetStatusSummary(fleet: FleetOverview): Record<string, unknown> {
-  return {
-    posture: fleet.posture,
-    online: fleet.online,
-    total: fleet.total,
-    by_role: fleet.by_role,
-    roles: fleet.roles,
-    measured: fleet.measured,
-    matrix: fleet.matrix ?? null,
-    mix: fleet.mix ?? null,
-  };
 }
