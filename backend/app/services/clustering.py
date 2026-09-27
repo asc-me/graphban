@@ -35,12 +35,34 @@ def why_match(x: str, y: str) -> str:
     if ("*" in x and fnmatch.fnmatch(y, x)) or ("*" in y and fnmatch.fnmatch(x, y)):
         return "glob"
     if "/" in x and "/" in y and x.rsplit("/", 1)[0] == y.rsplit("/", 1)[0]:
+        # GRPH-951: two NAMED files are a statement about exactly which files the work
+        # touches. `NeedsYou.tsx` and `CueQueue.tsx` declared by two items are two claims that
+        # do not overlap, and reading "same folder" as "same code" serialised nine
+        # independent screens. The rule stays for the vague side — a glob or a directory
+        # says "somewhere around here", and a neighbour is a fair guess at what that means.
+        if is_file(x) and is_file(y):
+            return ""
         return "directory"
     return ""
 
 
+def is_file(path: str) -> bool:
+    """Does this touchpoint name one concrete file, rather than a glob or a directory?
+
+    Judged from the text alone, because a touchpoint is a declaration and not a path on disk:
+    no glob character, no trailing slash, and a last segment with an extension (a leading dot
+    counts: `.gitignore`). A bare name like `Makefile` reads as a directory, which errs toward
+    clustering — the cheap direction, since a wrong split lets two workers into one file.
+    """
+    p = (path or "").strip()
+    if not p or p.endswith("/") or any(c in p for c in "*?["):
+        return False
+    return "." in p.rsplit("/", 1)[-1]
+
+
 def _match(x: str, y: str) -> bool:
-    """Two touchpoints relate if equal, one glob-matches the other, or they share a directory.
+    """Two touchpoints relate if equal, one glob-matches the other, or they share a directory
+    and at least one of them is not a concrete file (GRPH-951).
 
     One definition, expressed through `why_match`: two functions answering "do these relate?"
     is how the reservation check and the partition came to disagree in the first place.

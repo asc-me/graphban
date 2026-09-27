@@ -43,8 +43,10 @@ def _cluster_with(clusters, item_id):
 def test_a_directory_merge_says_it_was_a_directory(client, auth, db):
     """THE ONE THAT MATTERS. An operator seeing two unrelated files serialise can now read
     that it was the directory rule and judge whether that is true of the work."""
+    # A directory beside a file: GRPH-951 keeps the rule for the vague side. Two named files
+    # no longer merge on it at all (`test_disjoint_touchpoints.py`).
     a = _item(client, auth, "one", ["svc/alpha.py"])
-    _item(client, auth, "two", ["svc/beta.py"])
+    _item(client, auth, "two", ["svc/beta"])
 
     got = _cluster_with(collision_svc.clusters_for_project(db, "core"), a)
 
@@ -77,9 +79,9 @@ def test_transitive_members_are_not_given_a_false_reason(client, auth, db):
     """A and C do not touch each other. They are together because B matched both, and the
     explanation must be those two merges — not a fabricated A-C pair, which would send
     somebody looking for an overlap that does not exist."""
-    a = _item(client, auth, "a", ["x/a.py"])
+    a = _item(client, auth, "a", ["x/a"])
     b = _item(client, auth, "b", ["x/b.py", "y/b.py"])
-    c = _item(client, auth, "c", ["y/c.py"])
+    c = _item(client, auth, "c", ["y/c"])
 
     got = _cluster_with(collision_svc.clusters_for_project(db, "core"), a)
 
@@ -104,7 +106,7 @@ def test_the_reasons_are_bounded(client, auth, db):
 def test_the_merge_count_is_bounded_by_the_cluster(client, auth, db):
     """At most n-1 merges build a cluster of n, and storing the quadratic comparisons instead
     would be a wall of text nobody reads."""
-    ids = [_item(client, auth, f"i{n}", [f"one-dir/f{n}.py"]) for n in range(5)]
+    ids = [_item(client, auth, f"i{n}", [f"one-dir/f{n}"]) for n in range(5)]
 
     got = _cluster_with(collision_svc.clusters_for_project(db, "core"), ids[0])
 

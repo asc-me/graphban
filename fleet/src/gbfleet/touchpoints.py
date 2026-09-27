@@ -99,6 +99,55 @@ def covers(area: str, path: str) -> bool:
     return posixpath.dirname(path) == area
 
 
+def is_file(path: str) -> bool:
+    """Does this touchpoint name one concrete file, rather than a glob or a directory?
+
+    The server's `clustering.is_file`, mirrored (GRPH-951): no glob character, no trailing
+    slash, and a last segment with an extension. A bare name reads as a directory.
+    """
+    p = (path or "").strip()
+    if not p or p.endswith("/") or any(c in p for c in "*?["):
+        return False
+    return "." in p.rsplit("/", 1)[-1]
+
+
+def collide(a: list[str], b: list[str]) -> list[str]:
+    """The areas of `a` that overlap `b` — the server's `areas_collide`, mirrored (GRPH-951).
+
+    Used by `until` to decide which siblings a merged-but-unsigned member holds. The server
+    cannot see that case (it does not know the base), so the loop has to judge it, and it
+    judges it by the server's rule: equal, one under the other, a glob match, or a shared
+    parent directory when at least one side is not a named file. Either side EMPTY collides
+    with everything: "declared nothing" is not "disjoint".
+    """
+    import fnmatch
+    import posixpath
+
+    def norm(x: str) -> str:
+        return (x or "").strip().rstrip("/")
+
+    if not [x for x in a or [] if norm(x)] or not [y for y in b or [] if norm(y)]:
+        return list(a or []) or ["*"]
+    out = []
+    for x in a:
+        nx = norm(x)
+        if not nx:
+            continue
+        for y in b:
+            ny = norm(y)
+            if not ny:
+                continue
+            if (nx == ny or nx.startswith(ny + "/") or ny.startswith(nx + "/")
+                    or ("*" in nx and fnmatch.fnmatch(ny, nx))
+                    or ("*" in ny and fnmatch.fnmatch(nx, ny))
+                    or ("/" in nx and "/" in ny
+                        and posixpath.dirname(nx) == posixpath.dirname(ny)
+                        and not (is_file(x) and is_file(y)))):
+                out.append(x)
+                break
+    return out
+
+
 def undeclared(measured: list[str], declared: list[str]) -> list[str]:
     """Measured paths that no declared touch-area covers (GRPH-785).
 
