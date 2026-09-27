@@ -76,10 +76,11 @@ const publishedShard: Shard = {
   created_at: "2026-08-01T10:00:00Z",
 };
 
-const { publishSpy, rejectSpy, undoSpy } = vi.hoisted(() => ({
+const { publishSpy, rejectSpy, undoSpy, promoteSpy } = vi.hoisted(() => ({
   publishSpy: vi.fn(async () => ({})),
   rejectSpy: vi.fn(async () => ({})),
   undoSpy: vi.fn(async () => ({})),
+  promoteSpy: vi.fn(async () => ({ published: "", rejected: [] })),
 }));
 
 const project = {
@@ -101,7 +102,7 @@ vi.mock("@/lib/api", () => ({
     shards: vi.fn(async () => [publishedShard]),
     publishShard: publishSpy,
     rejectShard: rejectSpy,
-    promoteCluster: vi.fn(async () => ({ published: "", rejected: [] })),
+    promoteCluster: promoteSpy,
     undoAutoShard: undoSpy,
     judgeShard: vi.fn(async () => ({ shard_id: "", verdict: null, cause: "no_provider", cause_detail: "" })),
   },
@@ -171,6 +172,20 @@ describe("Memory triage — queue routing", () => {
     await user.click(await screen.findByText("Duplicates"));
     expect(screen.getByText(/Use retry with backoff for HTTP/)).toBeInTheDocument();
   });
+
+  it("routes an auto-acted shard older than 7 days to Stale, not Unvetted", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText("Stale");
+
+    await user.click(screen.getByText("Stale"));
+    expect(screen.getByText(/prefer composition over inheritance/)).toBeInTheDocument();
+    expect(screen.queryByText(/Auto-published by agent on write/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByText("Unvetted"));
+    expect(screen.getByText(/Auto-published by agent on write/)).toBeInTheDocument();
+    expect(screen.queryByText(/prefer composition over inheritance/)).not.toBeInTheDocument();
+  });
 });
 
 describe("Memory triage — sweep preview", () => {
@@ -183,7 +198,7 @@ describe("Memory triage — sweep preview", () => {
     await user.click(sweepBtn);
     const modal = await screen.findByText(/This will reject/);
     expect(modal).toBeInTheDocument();
-    const modalContainer = modal.closest(".fixed")!;
+    const modalContainer = modal.closest(".fixed") as HTMLElement;
     expect(within(modalContainer).getByText(/Weak signal: maybe use a cache layer/)).toBeInTheDocument();
     expect(within(modalContainer).getByRole("button", { name: /Reject 1/ })).toBeInTheDocument();
 
@@ -206,6 +221,30 @@ describe("Memory triage — bulk actions", () => {
     await user.click(publishAll);
 
     expect(publishSpy).toHaveBeenCalled();
+  });
+});
+
+describe("Memory triage — canonical wording", () => {
+  it("calls promoteCluster with the picked variant and rejects the rest", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.candidateClusters).mockResolvedValue([
+      {
+        size: 2,
+        representative: dupeCandidate,
+        members: [candidate],
+      },
+    ]);
+
+    const user = userEvent.setup();
+    renderView();
+    await user.click(await screen.findByText("Duplicates"));
+    await user.click(screen.getByText(/Use retry with backoff for HTTP/));
+
+    expect(screen.getByText("Pick the canonical wording")).toBeInTheDocument();
+    await user.click(screen.getByText(/Use retry with exponential backoff/));
+    await user.click(screen.getByRole("button", { name: /Publish as principle/ }));
+
+    expect(promoteSpy).toHaveBeenCalledWith("c1", ["c3"]);
   });
 });
 

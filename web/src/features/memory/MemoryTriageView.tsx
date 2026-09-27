@@ -595,15 +595,10 @@ function DetailPanel({
       </div>
 
       <div>
-        <label className="mb-1 block text-[11px] text-faint">Class</label>
-        <select
-          defaultValue={shard.scope}
-          className="w-full rounded-md border border-line-2 bg-surface px-2 py-1 text-[12px] text-ink focus:border-line-hover focus:outline-none"
-        >
-          <option value="global">Global</option>
-          <option value="item">Item-scoped</option>
-          <option value="org">Org-wide</option>
-        </select>
+        <span className="mb-1 block text-[11px] text-faint">Class</span>
+        <span className="text-[12px] text-ink">
+          {shard.scope === "global" ? "Global" : shard.scope === "item" ? "Item-scoped" : shard.scope}
+        </span>
       </div>
 
       {conflictTexts.length > 0 && (
@@ -619,9 +614,7 @@ function DetailPanel({
 
       {cluster && (
         <div>
-          <span className="mb-1 block text-[11px] text-faint">
-            Canonical wording ({cluster.members.length + 1} variants)
-          </span>
+          <span className="mb-1 block text-[11px] text-faint">Pick the canonical wording</span>
           <div className="flex flex-col gap-1">
             {[cluster.representative, ...cluster.members].map((m) => (
               <button
