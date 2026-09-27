@@ -985,8 +985,7 @@ def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = No
             # the supervisor must report that rather than die inside its own watch loop.
             tree = Worktree(path=child.worktree, branch=child.branch, repo=_repo_of(child),
                             base=child.base)
-            reaped = wt_mod.reap(tree, message=wt_mod.salvage_message(
-                child.adapter, list(child.held_items)))
+            reaped = wt_mod.reap_held(tree, child.adapter, list(child.held_items))
         except Exception as exc:  # noqa: BLE001 — a failed reap is reported, never fatal
             wave.failures.append(f"{child.branch}: reap failed ({exc})")
             continue
@@ -1213,7 +1212,15 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
         wave.proposed[branch] = propose_mod.Proposed(
             branch=branch, skipped=True,
             reason="salvage commit is not proposed as a PR")
-        _record_salvage_receipt(wave, client, items, branch, _branch_head(repo, branch))
+        for n, item in enumerate(items):
+            # GRPH-948: every item after the first was salvaged onto a branch of its own by
+            # `reap_held`, and that is the branch its receipt names and its resume reads.
+            own = wt_mod.item_branch(branch, item)
+            if n and wt_mod.branch_exists(repo, own):
+                _publish_item_branch(wave, repo, own, base)
+            else:
+                own = branch
+            _record_salvage_receipt(wave, client, [item], own, _branch_head(repo, own))
         return
     refused = _refuse_proposal(wave, branch)
     if refused:
@@ -1222,6 +1229,15 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
         wave.unproposed[branch] = refused
         wave.failures.append(f"{branch}: not proposed — {refused}")
         return
+    if len(items) > 1:
+        _propose_per_item(wave, repo, branch, items, base, client=client)
+        return
+    _open_pr(wave, repo, branch, items, base, subj, client=client)
+
+
+def _open_pr(wave: Wave, repo: Path, branch: str, items: list[str], base: str, subj: str, *,
+             client: Graphban | None) -> None:
+    """One draft PR for one branch carrying at most one item, and the receipt on that item."""
     title, body = propose_mod.describe(branch, items, subj)
     got = propose_mod.propose(repo, branch, base, title=title, body=body)
     wave.proposed[branch] = got
@@ -1243,6 +1259,68 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
             }])
         except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
             wave.failures.append(f"{item_id}: PR opened but not recorded ({exc})")
+
+
+def _publish_item_branch(wave: Wave, repo: Path, name: str, base: str) -> bool:
+    try:
+        pushed = wt_mod.push_branch(repo, name, base)
+    except Exception as exc:  # noqa: BLE001 — reported, never fatal
+        wave.failures.append(f"{name}: publish failed ({exc})")
+        return False
+    wave.published[name] = pushed
+    if not pushed.ok and not pushed.skipped:
+        wave.failures.append(f"{name}: {pushed.reason}")
+    return pushed.ok
+
+
+def _propose_per_item(wave: Wave, repo: Path, branch: str, items: list[str], base: str, *,
+                      client: Graphban | None) -> None:
+    """One branch and one PR per item, for a branch that carries several (GRPH-948).
+
+    A cluster claim is a scheduling unit, not a delivery unit. The reported child built four
+    items on one branch and the one PR it became — titled with three of them — was 19 files
+    and ~2,500 lines, merged before review, and needed four fix PRs.
+
+    Each item's work ends at a commit on the branch (`split_by_item`); a branch is cut there
+    per item and the PRs are STACKED, each against the previous item's branch, so each diff is
+    that item's alone. A branch whose commits do not separate its items is not proposed at
+    all: a PR carrying two items is the defect, and the person splits it.
+    """
+    blocks, why = propose_mod.split_by_item(repo, branch, base, items)
+    if why:
+        reason = (f"carries {len(items)} items ({', '.join(items)}) and {why}; "
+                  "one PR per item, so split it by hand")
+        wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=reason)
+        wave.unproposed[branch] = reason
+        wave.failures.append(f"{branch}: not proposed — {reason}")
+        return
+    wave.proposed[branch] = propose_mod.Proposed(
+        branch=branch, skipped=True,
+        reason=f"split into {len(blocks)} per-item branches, one PR each")
+    remote = wt_mod.remote_for(repo)
+    prev = base
+    for item, sha in blocks:
+        name = wt_mod.item_branch(branch, item)
+        if wt_mod.branch_exists(repo, name):
+            if _branch_head(repo, name) != sha:
+                # Never moved: an existing branch at another commit is somebody's work.
+                wave.failures.append(f"{name}: exists at another commit; {item} not proposed")
+                return
+        else:
+            try:
+                wt_mod._git(repo, "branch", name, sha)
+            except wt_mod.GitError as exc:
+                wave.failures.append(f"{name}: could not be cut ({exc}); {item} not proposed")
+                return
+        if not _publish_item_branch(wave, repo, name, prev):
+            wave.failures.append(f"{name}: not published, so {item} and every item stacked "
+                                 "on it were not proposed")
+            return
+        _open_pr(wave, repo, name, [item], prev, propose_mod.subject(repo, name, prev),
+                 client=client)
+        # `propose` passes the part after the remote to `gh --base`, so the next item's base
+        # is named as a remote-tracking ref, which the push has just written.
+        prev = f"{remote}/{name}"
 
 
 def publish_salvaged(wave: Wave, repo: Path, salvaged: list, *,
@@ -1811,9 +1889,7 @@ def _reap_all(wave: Wave, children: list[Child], *, client: Graphban | None = No
         held = list(child.held_items) or [
             i for i in (wave.partition.held.get(child.agent_id) or []) if i
         ]
-        reaped = wt_mod.reap(
-            tree, message=wt_mod.salvage_message(child.adapter, held),
-        )
+        reaped = wt_mod.reap_held(tree, child.adapter, held)
         wave.reaped.append(reaped)
         child.diff_shape = reaped.diff_shape
 

@@ -17,7 +17,14 @@ from sqlalchemy.orm import Session
 from app.models import FleetProfile, Project, utcnow
 
 AXES: tuple[str, ...] = ("cost", "quality", "latency", "locality")
-POLICY_KEYS: tuple[str, ...] = ("local_only", "reviewer_cross_vendor", "allowed_harnesses", "caps")
+POLICY_KEYS: tuple[str, ...] = ("local_only", "reviewer_cross_vendor", "allowed_harnesses", "caps",
+                                 "cluster_ceiling")
+#: Lanes a `cluster_ceiling` may name — `delegation.lane_for`'s values.
+CEILING_LANES: tuple[str, ...] = ("frontend", "backend", "mixed")
+#: The ceiling a project that set none still gets (GRPH-948). One web item per claim: the
+#: reported branch that carried four web items was 19 files and ~2,500 lines, merged before
+#: review, and needed four fix PRs.
+DEFAULT_CLUSTER_CEILING: dict[str, int] = {"frontend": 1}
 CAP_KEYS: tuple[str, ...] = (
     "per_attempt_tokens", "per_item_tokens", "per_period_tokens", "period",
 )
@@ -161,12 +168,44 @@ def normalise_policy(raw: Any) -> dict | None:
         raise ProfileInvalid("local_only and reviewer_cross_vendor must be booleans")
     allowed = _names(raw.get("allowed_harnesses"), "allowed_harnesses")
     caps = _caps(raw.get("caps"))
-    if not local_only and not cross and not allowed and not caps:
+    ceiling = _ceiling(raw.get("cluster_ceiling"))
+    if not local_only and not cross and not allowed and not caps and not ceiling:
         return None
     out = {"local_only": local_only, "reviewer_cross_vendor": cross, "allowed_harnesses": allowed}
     if caps:
         out["caps"] = caps
+    if ceiling:
+        out["cluster_ceiling"] = ceiling
     return out
+
+
+def _ceiling(value: Any) -> dict | None:
+    """GRPH-948: the most items one `claim_cluster` may lease, per lane. A CEILING on the
+    caller's `max_items`, never a floor. Null / empty keeps `DEFAULT_CLUSTER_CEILING`."""
+    if value is None or value == {}:
+        return None
+    if not isinstance(value, dict):
+        raise ProfileInvalid("cluster_ceiling must be an object")
+    out: dict = {}
+    for lane, raw in value.items():
+        if lane not in CEILING_LANES:
+            raise ProfileInvalid(f"unknown cluster_ceiling lane {lane!r}; lanes are {list(CEILING_LANES)}")
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+            raise ProfileInvalid(f"cluster_ceiling.{lane} must be a positive integer")
+        out[lane] = raw
+    return out
+
+
+def cluster_ceiling(db: Session, project_id: str | None, lane: str) -> int | None:
+    """How many items one cluster claim may lease in `lane` on this project, or None for no
+    ceiling. The project's policy overrides the default lane by lane; nothing the CALLER
+    passes is consulted, which is the point."""
+    policy = policy_of(db, project_id) or {}
+    ceilings = dict(DEFAULT_CLUSTER_CEILING)
+    set_ = policy.get("cluster_ceiling") if isinstance(policy, dict) else None
+    if isinstance(set_, dict):
+        ceilings.update({k: v for k, v in set_.items() if isinstance(v, int) and v >= 1})
+    return ceilings.get(lane)
 
 
 # ---- profiles ----------------------------------------------------------------------------

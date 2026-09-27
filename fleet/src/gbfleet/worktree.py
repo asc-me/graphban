@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
@@ -467,6 +467,12 @@ class Reaped:
     #: PRD-41 S1. Always a dict; an empty one means "nothing against the base", which is
     #: a real measurement, not a missing post.
     diff_shape: dict = field(default_factory=_empty_diff_shape)
+    #: GRPH-948: `(item, branch)` for every held item after the first, each salvaged onto a
+    #: branch of its own. Empty when one item (or none) was held, or nothing was salvaged.
+    siblings: tuple[tuple[str, str], ...] = ()
+    #: Why a sibling could not be written, or "". Never silent: an item with no salvage
+    #: branch of its own is an item `choose_resume` cannot find.
+    split_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -606,7 +612,8 @@ def reap(wt: Worktree, message: str | None = None) -> Reaped:
 
 
 #: Salvage commits name the items they held, so the next spawn can resume the
-#: right branch (P30 D9). `WIP: salvaged by gbfleet (fake) items=GRPH-1,GRPH-2`
+#: right branch (P30 D9). `WIP: salvaged by gbfleet (fake) items=GRPH-1` — one item since
+#: GRPH-948; the comma form is still parsed, because older salvage branches carry it.
 _ITEMS_IN_SUBJECT = re.compile(r"\bitems=([A-Za-z0-9][A-Za-z0-9_,-]*)")
 
 
@@ -678,11 +685,59 @@ def _item_keys(subject: str) -> tuple[str, ...]:
 
 
 def salvage_message(adapter: str, item_ids: list[str] | tuple[str, ...] = ()) -> str:
-    """The salvage commit subject. Item keys make D9 resume possible."""
+    """The salvage commit subject. Item keys make D9 resume possible.
+
+    ONE item at most (GRPH-948). The reported salvage named three items in one commit and
+    became one PR carrying all of them; `reap_held` writes one commit per item instead, and
+    this refuses rather than quietly joining a list again.
+    """
+    if len(item_ids) > 1:
+        raise ValueError(f"a salvage commit names one item, not {len(item_ids)}: {list(item_ids)}")
     msg = f"WIP: salvaged by gbfleet ({adapter})"
     if item_ids:
-        msg += " items=" + ",".join(item_ids)
+        msg += " items=" + item_ids[0]
     return msg
+
+
+#: `gb/w-1` held GRPH-1 and GRPH-2: GRPH-2's work goes on `gb/w-1--GRPH-2`. Under the same
+#: prefix, so `orphans` lists it and `choose_resume` can pick it for its own item.
+ITEM_BRANCH_SEP = "--"
+
+
+def item_branch(branch: str, item: str) -> str:
+    """The branch that carries `item` alone, split off `branch` (GRPH-948)."""
+    return f"{branch}{ITEM_BRANCH_SEP}{item}"
+
+
+def reap_held(wt: Worktree, adapter: str, items: list[str] | tuple[str, ...] = ()) -> Reaped:
+    """`reap`, writing one salvage commit per held item and never one naming several (GRPH-948).
+
+    The first item's commit lands on the worker's own branch, as before. Every other item gets
+    the SAME tree committed onto the same parent, under its own subject, on
+    `item_branch(branch, item)`. The tree is not divided: which uncommitted file belonged to
+    which item is not something the supervisor can know, and guessing is how work is lost.
+    Each item resumes from all of it; what it no longer does is share a commit, and so a PR,
+    with the others.
+    """
+    held = [i for i in dict.fromkeys(items) if i]
+    reaped = reap(wt, message=salvage_message(adapter, held[:1]))
+    commit = reaped.salvage.commit if reaped.salvage and reaped.salvage.committed else None
+    if not commit or len(held) < 2:
+        return reaped
+    siblings: list[tuple[str, str]] = []
+    failed: list[str] = []
+    for item in held[1:]:
+        name = item_branch(wt.branch, item)
+        try:
+            sha = _git(wt.repo, "commit-tree", f"{commit}^{{tree}}", "-p", f"{commit}^",
+                       "-m", salvage_message(adapter, [item])).strip()
+            # Never forced: a branch already there is somebody's work.
+            _git(wt.repo, "branch", name, sha)
+        except GitError as exc:
+            failed.append(f"{item}: {str(exc)[:160]}")
+            continue
+        siblings.append((item, name))
+    return replace(reaped, siblings=tuple(siblings), split_reason="; ".join(failed))
 
 
 def is_salvage_subject(subject: str) -> bool:

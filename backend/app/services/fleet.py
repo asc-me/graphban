@@ -2693,6 +2693,24 @@ def _holds_bound_item(db: Session, agent_id: str) -> str | None:
     return None
 
 
+def _capped(db: Session, project_id: str | None, cluster: dict, max_items: int) -> int:
+    """`max_items`, lowered to the project's ceiling for the cluster's lane (GRPH-948).
+
+    A cluster claim is a scheduling unit, not a delivery unit: one child took four web items
+    in one call, built them on one branch, and the PR carried all four. The caller chose
+    `max_items` and nothing above it said no. A `mixed` cluster touches web, so the web
+    ceiling binds it too.
+    """
+    from app.services import delegation as delegation_svc
+    from app.services import fleet_profiles as profiles_svc
+
+    lane = delegation_svc.lane_for(list(cluster.get("areas") or []))["value"]
+    lanes = [lane] + (["frontend"] if lane == "mixed" else [])
+    ceilings = [c for c in (profiles_svc.cluster_ceiling(db, project_id, ln) for ln in lanes)
+                if c is not None]
+    return min([max_items, *ceilings])
+
+
 def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                   max_items: int = 3,
                   lease_seconds: int = DEFAULT_LEASE_SECONDS) -> dict:
@@ -2723,6 +2741,16 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
                 f"claim_cluster is refused for agents on bound seats",
                 "scope": items_svc.seat_scope(db, agent_id)}
 
+    # GRPH-948: a bound seat whose item is released, blocked or taken is not "holding" it, so
+    # the check above lets it through — and `claim_item` would then refuse each member.
+    # Refused once, here, with the sentence, instead of as a 500 from inside the loop.
+    open_bound = items_svc.open_bound_item(db, agent_id)
+    if open_bound:
+        return {"claimed": False, "items": [], "areas": [], "predicted": False,
+                "held_by": [], "reason": f"this seat is bound to {open_bound}, which is not in "
+                f"review or done: finish it before claiming more",
+                "scope": items_svc.seat_scope(db, agent_id)}
+
     now = datetime.now(timezone.utc)
     taken = active_reservations(db, project_id, now=now)
     # Somebody else's areas. An agent's own reservations do not block it: a worker asking for
@@ -2741,7 +2769,7 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
         overlap = areas_collide(cluster.get("areas") or [], blocked)
         if overlap:
             continue
-        ids = (cluster.get("items") or [])[:max_items]
+        ids = (cluster.get("items") or [])[:_capped(db, project_id, cluster, max_items)]
         claimed = [it for it in (items_svc.claim_item(db, i, agent_id, lease_seconds=lease_seconds)
                                  for i in ids) if it is not None]
         if not claimed:

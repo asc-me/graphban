@@ -181,7 +181,8 @@ class Project(Base):
     # The fleet's hard constraints (PRD-37 D4): `{local_only, reviewer_cross_vendor,
     # allowed_harnesses}`. A FILTER the supervisor applies before any preference is scored, so
     # a strong taste cannot outvote a rule. NULL is no constraint — the resolver reads absence
-    # as "nothing removed", and says so. Never read by the server itself: it travels in
+    # as "nothing removed", and says so. Read by the server for one key only —
+    # `cluster_ceiling`, which caps `claim_cluster` (GRPH-948); the rest travels in
     # `fleet_status` and the brief for the supervisor that holds the matrix.
     fleet_policy: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # May an agent operate this project's QUALITY gates (AL-282 / PRD-14 D2)? Off by
