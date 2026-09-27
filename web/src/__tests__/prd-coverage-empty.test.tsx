@@ -121,7 +121,7 @@ describe("Coverage panel occupancy (GRPH-651)", () => {
       }],
     });
     expect(await screen.findByText("empty")).toBeInTheDocument();
-    expect(screen.getByText("no tasks")).toBeInTheDocument();
+    expect(screen.getByText("uncovered")).toBeInTheDocument();
     expect(screen.getByText(/1 empty — not a task gap/)).toBeInTheDocument();
   });
 });

@@ -17,7 +17,7 @@ import { cn } from "@/lib/cn";
 import { lineDiff } from "@/lib/diff";
 import { Markdown } from "@/lib/markdown";
 import { publicApi } from "@/lib/publicApi";
-import { keys, useGrillState, useIntentDiff, useItems, usePrd, usePrdVersions, useUpdateItem } from "@/lib/queries";
+import { keys, useCloseReport, useGrillState, useIntentDiff, useItems, usePrd, usePrdVersions, useUpdateItem } from "@/lib/queries";
 import type { Item, PrdStatus, PrdVersion, PrototypeVerdictOut } from "@/lib/types";
 
 import { AssistantPanel } from "@/features/assistant/AssistantPanel";
@@ -374,10 +374,21 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
     queryKey: ["prd-coverage", prdId],
     queryFn: () => api.prdCoverage(prdId),
   });
+  const { data: closeReport } = useCloseReport(prdId);
   // The nudge names a count; the handoff acts on items. Coverage carries per-section
   // `item_ids`, and the tracker's list is already cached — no new endpoint needed to
   // know WHICH items in this section are still prototype-first.
   const { data: items = [] } = useItems(projectId);
+
+  const deliveryBySection = React.useMemo(() => {
+    const map = new Map<string, { planned: number; delivered: number; fate: string }>();
+    if (closeReport?.governed) {
+      for (const s of closeReport.sections) {
+        map.set(s.section, { planned: s.planned_items.length, delivered: s.delivered_items.length, fate: s.fate });
+      }
+    }
+    return map;
+  }, [closeReport]);
 
   async function fillGaps() {
     setBusy(true);
@@ -399,6 +410,9 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
         <div>
           <div className="text-[13px] text-fg-2">
             {cov.sections_with_tasks}/{cov.section_count} sections covered · {cov.percent_done}% done
+            {cov.gaps.length > 0 && (
+              <span className="ml-2 text-[#e0b34a]">· {cov.gaps.length} uncovered</span>
+            )}
           </div>
           <div className="mt-1 h-1.5 w-48 overflow-hidden rounded-full bg-surface-4">
             <div className="h-full rounded-full bg-accent" style={{ width: `${cov.percent_done}%` }} />
@@ -438,6 +452,7 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
             (it) => s.item_ids.includes(it.id) && it.fidelity === "high" && it.status !== "done",
           );
           const open = protoOpen === s.section;
+          const delivery = deliveryBySection.get(s.section);
           return (
             <React.Fragment key={s.section}>
               <div
@@ -463,9 +478,14 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
                     empty
                   </span>
                 )}
+                {delivery && (
+                  <span className="font-mono text-[10px] text-faint" title={`${delivery.delivered} delivered of ${delivery.planned} planned`}>
+                    {delivery.delivered}/{delivery.planned} delivered
+                  </span>
+                )}
                 {s.gap ? (
                   <span className="rounded border border-[rgba(224,179,74,0.3)] px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-[#e0b34a]">
-                    no tasks
+                    uncovered
                   </span>
                 ) : (
                   <span className="font-mono text-[10.5px] text-muted">
