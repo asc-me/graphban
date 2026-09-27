@@ -349,14 +349,12 @@ describe("Harness page", () => {
     expect(screen.getByTestId("harness-review-below-floor")).toHaveTextContent("3 of 5");
   });
 
-  it("composes the profile and policy editors on the same screen as the grid and cards", async () => {
-    // D14: the grid, the probe panel, R1–R6 cards, and the profile/policy editor belong on
-    // one screen. The Preferences component is composed, not reimplemented.
-    // Sabotage: drop the ProbePanel import and render old text suggestions — this fails.
-    probeCandidates.mockResolvedValueOnce(probeData());
+  it("composes the profile and policy editors on the same screen as the grid", async () => {
+    // PRD-47 S12: the grid and the profile/policy editor are on the Performance tab;
+    // the probe panel and R1–R6 cards moved to the Changes & probes tab.
+    // The Preferences component is composed, not reimplemented.
     show();
     expect(await screen.findByTestId("harness-cell")).toBeInTheDocument();
-    expect(await screen.findByTestId("harness-probe-panel")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-profile")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-policy")).toBeInTheDocument();
     expect(screen.getByLabelText("Per-period token cap")).toBeInTheDocument();
@@ -387,10 +385,19 @@ function probeData(over: Record<string, unknown> = {}): Record<string, unknown> 
   };
 }
 
+async function switchToChangesTab(user: ReturnType<typeof userEvent.setup>) {
+  // Wait for the Performance tab to render its content before switching.
+  await screen.findByTestId("harness-cell");
+  const tab = screen.getByRole("tab", { name: /Changes & probes/i });
+  await user.click(tab);
+}
+
 describe("Harness probe panel", () => {
   it("shows the estimated token cost before start", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
     show();
+    const user = userEvent.setup();
+    await switchToChangesTab(user);
     const estimate = await screen.findByTestId("harness-probe-estimate");
     expect(estimate).toHaveTextContent("12,000 tokens per attempt");
     expect(estimate).toHaveTextContent("3 reported");
@@ -399,6 +406,8 @@ describe("Harness probe panel", () => {
   it("renders candidates grouped by leaf with checkboxes", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
     show();
+    const user = userEvent.setup();
+    await switchToChangesTab(user);
     const group = await screen.findByTestId("harness-probe-group");
     expect(group).toHaveTextContent("B5");
     expect(group).toHaveTextContent("4 candidates");
@@ -410,6 +419,7 @@ describe("Harness probe panel", () => {
     probeCandidates.mockResolvedValueOnce(probeData());
     show();
     const user = userEvent.setup();
+    await switchToChangesTab(user);
     await screen.findByTestId("harness-probe-panel");
     const checkboxes = screen.getAllByRole("checkbox");
     await user.click(checkboxes[0]);
@@ -425,6 +435,7 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
+    await switchToChangesTab(user);
     await screen.findByTestId("harness-probe-panel");
     expect(screen.queryByTestId("harness-probe-start")).not.toBeInTheDocument();
     const suggestionBtns = screen.getAllByTestId("harness-probe-suggestion");
@@ -443,6 +454,7 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
+    await switchToChangesTab(user);
     await screen.findByTestId("harness-probe-panel");
     await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
     const checkboxes = screen.getAllByRole("checkbox");
@@ -468,6 +480,7 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
+    await switchToChangesTab(user);
     await screen.findByTestId("harness-probe-panel");
     await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
     await user.click(screen.getAllByRole("checkbox")[0]);
@@ -480,6 +493,8 @@ describe("Harness probe panel", () => {
     probeCandidates.mockResolvedValueOnce(probeData({ by_leaf: {}, by_family: {}, suggestions: [] }));
     harness.mockResolvedValueOnce(report({ probe_suggestions: [] }));
     show();
+    const user = userEvent.setup();
+    await switchToChangesTab(user);
     await screen.findByTestId("harness-view");
     expect(screen.queryByTestId("harness-probe-panel")).not.toBeInTheDocument();
   });
@@ -491,6 +506,8 @@ describe("Harness probe panel", () => {
       },
     }));
     show();
+    const user = userEvent.setup();
+    await switchToChangesTab(user);
     const group = await screen.findByTestId("harness-probe-group");
     expect(group).toHaveTextContent("family");
   });
