@@ -184,8 +184,10 @@ def test_it_asks_the_same_question_the_loop_asks():
 
     until_mod.plan(planner, "SA-P11", 4)
 
-    assert [tool for tool, _ in planner.calls] == ["collision_clusters"]
-    (_, args), = planner.calls
+    # GRPH-950 adds reads beside it (the dependency holds already written); the clusters are
+    # still asked for exactly once, with the loop's filter.
+    clusters = [(t, a) for t, a in planner.calls if t == "collision_clusters"]
+    (_, args), = clusters
     assert args["prd_id"] == "SA-P11", "the dry run scoped differently from the loop"
     assert set(args) - {"holds"} == set(until_mod._scope("SA-P11")), (
         "the dry run sent a filter the loop does not")
@@ -197,4 +199,7 @@ def test_it_writes_nothing():
 
     until_mod.plan(planner, None, 4)
 
-    assert [t for t, _ in planner.calls] == ["collision_clusters"]
+    # Reads only — GRPH-950 added `search_items` for the dependency holds, never a write.
+    assert {t for t, _ in planner.calls} <= {"collision_clusters", "search_items",
+                                             "get_item_details", "related_work"}
+    assert "collision_clusters" in [t for t, _ in planner.calls]

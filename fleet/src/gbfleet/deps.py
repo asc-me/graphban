@@ -40,6 +40,32 @@ def _is_dependency(row: dict) -> bool:
     return "dependency" in [str(t) for t in (row.get("link_types") or [])]
 
 
+def _pr_state(repo: Path | str, dep_row: dict) -> tuple[bool | None, str]:
+    """`(merged, label)` for this dependency's PR — what the forge said, and how to name it.
+
+    `merged` has three answers: True (MERGED), False (the forge returned the PR and it is open
+    or closed), None (there is no PR to ask about, or `gh` could not say). `label` is "#397" when
+    the forge told us a number, else the selector we asked with, else "".
+
+    GRPH-950: "no PR to ask about" is None, not False. It used to be False, and that was
+    harmless only because the caller then ignored False when the commit was unseen — the same
+    rule that let an OPEN PR with an unfetched commit through. A dependency with no PR is
+    judged by ancestry alone; one the forge says is unmerged is absent, full stop.
+    """
+    selector = propose_mod.pr_selector(dep_row)
+    if not selector:
+        return None, ""
+    pr, err = propose_mod.view(Path(repo) if not isinstance(repo, Path) else repo, selector)
+    if pr is None:
+        # `view` answers None both when `gh` could not run and when `gh pr view` exited non-zero
+        # — which is also what an unauthenticated or offline `gh` does. Neither is the forge
+        # saying "not merged", so neither may hold a wave.
+        return None, selector
+    number = pr.get("number")
+    label = f"#{number}" if number else selector
+    return str(pr.get("state") or "").upper() == "MERGED", label
+
+
 def _pr_is_merged(repo: Path | str, dep_row: dict) -> bool | None:
     """Did the forge say this dependency's PR is MERGED? (GRPH-868)
 
@@ -47,16 +73,11 @@ def _pr_is_merged(repo: Path | str, dep_row: dict) -> bool | None:
     The PR state is the fact that survives the rewrite: a MERGED PR means the work is in
     the base, regardless of which SHA carries it.
 
-    Three answers: True (MERGED), False (open/closed/not found), None (gh could not say).
-    None is not False — a forge we cannot reach is not evidence the PR is unmerged.
+    Three answers: True (MERGED), False (the forge said not merged), None (no PR to ask about,
+    or gh could not say). None is not False — a forge we cannot reach is not evidence the PR
+    is unmerged.
     """
-    selector = propose_mod.pr_selector(dep_row)
-    if not selector:
-        return False
-    pr, err = propose_mod.view(Path(repo) if not isinstance(repo, Path) else repo, selector)
-    if pr is None:
-        return None
-    return str(pr.get("state") or "").upper() == "MERGED"
+    return _pr_state(repo, dep_row)[0]
 
 
 def check(planner: Any, item_id: str, repo: Path | str, base: str) -> tuple[list[dict], list[dict]]:
@@ -70,8 +91,17 @@ def check(planner: Any, item_id: str, repo: Path | str, base: str) -> tuple[list
 
     GRPH-868: a squash-merging repo rewrites the SHA, so the attested commit is never an
     ancestor of trunk. When the dependency's PR is MERGED at the forge, the work IS in the
-    base — the squash SHA carries it, not the reviewed one. A forge we cannot reach is
-    `unknown`, not `absent`.
+    base — the squash SHA carries it, not the reviewed one.
+
+    GRPH-950: when the forge says the PR is NOT merged, the dependency is `absent` whether or
+    not this clone has the commit. That is a definite answer about the base, and "I have never
+    seen the commit" does not soften it — SA-558's PR #397 was open, its commit unfetched, and
+    reading that as `unknown` is how SA-556 spawned and copied it in. Only an unreachable
+    forge stays `unknown` (the PR may be squash-merged), and so does a dependency with no PR
+    whose commit this clone has never seen.
+
+    Each entry carries `pr` — "#397" when the forge named one — so a hold can say what it is
+    waiting on.
     """
     absent: list[dict] = []
     unknown: list[dict] = []
@@ -96,24 +126,57 @@ def check(planner: Any, item_id: str, repo: Path | str, base: str) -> tuple[list
         # GRPH-868: SHA ancestry says "not in base", but a squash merge rewrites the SHA.
         # Ask the forge whether the PR for this dependency is MERGED — that is the fact
         # that survives the rewrite.
-        merged = _pr_is_merged(repo, row)
+        merged, label = _pr_state(repo, row)
         if merged is True:
             continue
-        if merged is None:
-            # Forge unreachable. The PR might be merged; we cannot tell. Unknown, not absent.
-            unknown.append({"id": str(row.get("id") or ""),
-                            "title": str(row.get("title") or ""),
-                            "commits": commits})
-            continue
         entry = {"id": str(row.get("id") or ""), "title": str(row.get("title") or ""),
-                 "commits": commits}
+                 "commits": commits, "pr": label}
+        if merged is False:
+            # GRPH-950: the forge answered. Not merged is absent, seen commit or not.
+            absent.append(entry)
+            continue
+        if label:
+            # A PR exists and the forge could not be asked. It might be squash-merged, which no
+            # ancestry answer can see, so this is unknown however the SHA reads (GRPH-868).
+            unknown.append(entry)
+            continue
+        # No PR to ask about at all. Ancestry decides: provably not in the base is absent; a
+        # commit this clone has never seen is unknown.
         (absent if any(a is False for a in answers) else unknown).append(entry)
     return absent, unknown
+
+
+def waiting_on(absent: list[dict], base: str) -> str:
+    """"waiting on #397 to merge" — the short form a person reads on a board (GRPH-950)."""
+    parts = []
+    for d in absent:
+        pr = str(d.get("pr") or "")
+        if pr.startswith("#"):
+            parts.append(f"{pr} ({d['id']}) to merge")
+        else:
+            commit = (d.get("commits") or [""])[0][:9]
+            parts.append(f"{d['id']} ({commit}) to reach {base}")
+    return "waiting on " + ", ".join(parts)
+
+
+#: The tail every blocker this module writes ends with. `lift` clears only blockers carrying it,
+#: so a blocker a person set is never touched.
+HOLD_MARK = "[gbfleet dependency hold]"
+
+
+def hold_text(item_id: str, absent: list[dict], base: str) -> str:
+    return (f"{waiting_on(absent, base)} — {item_id} depends on finished work that is not in "
+            f"{base}. Do not copy that work in; it lands when the PR merges. {HOLD_MARK}")
+
+
+def is_hold(blocker: str) -> bool:
+    return HOLD_MARK in str(blocker or "")
 
 
 def explain(item_id: str, absent: list[dict], base: str) -> str:
     """One line a person can act on: what is missing, and that the remedy is a merge."""
     who = ", ".join(f"{d['id']} ({d['commits'][0][:9]})" for d in absent)
-    return (f"{item_id} depends on finished work that is not in {base}: {who}. "
+    return (f"{item_id} is {waiting_on(absent, base)}. "
+            f"It depends on finished work that is not in {base}: {who}. "
             f"A child would branch from {base} and not have it — merge first, or delegate "
             f"{item_id} by hand if you know better")

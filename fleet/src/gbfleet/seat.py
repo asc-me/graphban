@@ -176,13 +176,25 @@ BOUNDARY = (
 )
 
 
+#: GRPH-950. SA-556's child found its dependency SA-558 missing from the base it branched from,
+#: and cherry-picked SA-558's commit in: three copies of one item, COLLIDED on seven files, a
+#: manual `rebase --onto`. `until` now holds such items before they are handed out, but a child
+#: can still meet the gap — a dependency nobody linked, a hold written after its claim. Like
+#: BOUNDARY, a sentence and not a control.
+DEPENDENCY = (
+    "If your item needs work that is not in your branch — another item's commit, file or "
+    "function — that is a blocker to report, never code to copy in. Do not cherry-pick, merge "
+    "or re-type another item's work. Block the item with a one-line reason naming what is "
+    "missing, and carry on with the rest.\n"
+)
+
 INSTRUCTION = (
     "Register with `register_agent` using enrolment_code={code!r}, worktree={worktree!r} "
     "and branch={branch!r}.\n"
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY +
+    + BOUNDARY + DEPENDENCY +
     "Call claim_review with wait_seconds=0. If there is nothing to review, call "
     "claim_cluster with wait_seconds=0 to take the next ready non-colliding cluster. "
     "EXIT when both are empty — exiting on an empty queue is the normal end of your "
@@ -200,7 +212,7 @@ BOUND_INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY +
+    + BOUNDARY + DEPENDENCY +
     "This seat is BOUND to {item}: registering on it claims that item for you. Read the "
     "reply's `assigned`. If `assigned.state` is `claimed`, you HOLD {item} — read it with "
     "get_item_details, build it, move it to review with evidence. Then, still in this "
