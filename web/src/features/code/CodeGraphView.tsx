@@ -12,6 +12,7 @@ import {
   hullPath,
   superRadius,
   worthCollapsing,
+  type SuperNode,
 } from "@/lib/graph/galaxy";
 import { degrees, topByDegree, withinHops } from "@/lib/graph/metrics";
 import {
@@ -94,6 +95,11 @@ export function CodeGraphView() {
   // How many rings the selection lights. Shift-click (or Shift+Enter) widens it; a fresh
   // selection resets it, so depth never quietly persists into the next thing you click.
   const [depth, setDepth] = React.useState(1);
+  // Trail breadcrumb: the last N nodes the user selected, most-recent last. Clicking one
+  // re-selects it without losing the rest — a back button that does not erase history.
+  const [trail, setTrail] = React.useState<string[]>([]);
+  // Interaction hint: shown once until dismissed, teaches the discoverable gestures.
+  const [hintDismissed, setHintDismissed] = React.useState(false);
 
   const nodes = map?.nodes ?? [];
   // The UNFILTERED set drives layout; the filtered one only decides what is drawn. That split
@@ -289,6 +295,10 @@ export function CodeGraphView() {
       setSelPath(id);
       setDepth(1);
       setPathTo(null);
+      setTrail((prev) => {
+        const deduped = prev.filter((p) => p !== id);
+        return [...deduped.slice(-7), id];
+      });
     },
     [armed, selPath],
   );
@@ -913,6 +923,31 @@ export function CodeGraphView() {
               onClose={() => setSelPath(null)}
             />
           )}
+
+          {trail.length > 1 && (
+            <TrailBreadcrumb
+              trail={trail}
+              nodeByPath={nodeByPath}
+              onPick={(p) => {
+                setSelPath(p);
+                setDepth(1);
+                setPathTo(null);
+              }}
+              onClear={() => setTrail([])}
+            />
+          )}
+
+          {!hintDismissed && !isLoading && !empty && !failed && (
+            <InteractionHint
+              galaxyMode={galaxyMode}
+              superNodes={galaxy.superNodes}
+              onJump={(id) => {
+                setEntered(id);
+                setHintDismissed(true);
+              }}
+              onDismiss={() => setHintDismissed(true)}
+            />
+          )}
         </div>
       </div>
 
@@ -1219,6 +1254,135 @@ function StubEvidence({ stub }: { stub: ProjectStub }) {
           The manifest names that file, but nothing here has described it — so the arrow is
           real and has nowhere to attach. Describing the file gives it an anchor.
         </p>
+      )}
+    </div>
+  );
+}
+
+// ── Trail breadcrumb ──────────────────────────────────────────────────────────
+// The last N nodes the user selected, most-recent last. Clicking one re-selects
+// it. A back button that does not erase history — the trail persists until the
+// user clears it or starts a new path through the graph.
+
+function TrailBreadcrumb({
+  trail,
+  nodeByPath,
+  onPick,
+  onClear,
+}: {
+  trail: string[];
+  nodeByPath: Record<string, { name: string; kind: string }>;
+  onPick: (path: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="pointer-events-auto absolute bottom-3 left-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-1 rounded-lg border border-line-2 bg-surface-3/90 px-2 py-1.5 shadow-lg backdrop-blur-sm">
+      <span className="flex-none font-mono text-[9px] uppercase tracking-wide text-faint">Trail</span>
+      {trail.map((p, i) => {
+        const node = nodeByPath[p];
+        const isLast = i === trail.length - 1;
+        return (
+          <React.Fragment key={p}>
+            {i > 0 && <span className="flex-none text-faint-2">›</span>}
+            <button
+              onClick={() => onPick(p)}
+              className={cn(
+                "max-w-[140px] truncate rounded px-1.5 py-0.5 font-mono text-[10.5px] transition-colors",
+                isLast
+                  ? "bg-accent/10 text-accent"
+                  : "text-muted hover:bg-surface-4 hover:text-fg",
+              )}
+              title={p}
+            >
+              {node ? label(p, node.name) : label(p, "")}
+            </button>
+          </React.Fragment>
+        );
+      })}
+      <button
+        onClick={onClear}
+        className="ml-1 flex-none text-faint hover:text-fg"
+        aria-label="Clear trail"
+        title="Clear trail"
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+// ── Interaction hint ──────────────────────────────────────────────────────────
+// Teaches the discoverable gestures: hover to preview, click to pin, alt-click
+// for path, shift-click to expand. When the graph is in galaxy mode, shows area
+// jump cards for the largest components. Dismissed once, stays dismissed.
+
+function InteractionHint({
+  galaxyMode,
+  superNodes,
+  onJump,
+  onDismiss,
+}: {
+  galaxyMode: boolean;
+  superNodes: SuperNode[];
+  onJump: (id: string) => void;
+  onDismiss: () => void;
+}) {
+  const areas = galaxyMode ? superNodes.slice(0, 4) : [];
+  return (
+    <div className="pointer-events-auto absolute bottom-3 right-3 z-10 w-[280px] rounded-xl border border-line-2 bg-surface-3/95 p-3 shadow-lg backdrop-blur-sm">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-mono text-[10px] uppercase tracking-wide text-faint">
+          Gestures
+        </span>
+        <button
+          onClick={onDismiss}
+          className="text-faint hover:text-fg"
+          aria-label="Dismiss hint"
+        >
+          ×
+        </button>
+      </div>
+      <ul className="space-y-1 text-[11px] text-muted">
+        <li>
+          <span className="font-mono text-[9.5px] text-fg-2">Hover</span>{" "}
+          previews the 1-hop neighbourhood
+        </li>
+        <li>
+          <span className="font-mono text-[9.5px] text-fg-2">Click</span>{" "}
+          selects and pins the inspector
+        </li>
+        <li>
+          <span className="font-mono text-[9.5px] text-fg-2">Shift+click</span>{" "}
+          widens the highlight by one ring
+        </li>
+        <li>
+          <span className="font-mono text-[9.5px] text-fg-2">Alt+click</span>{" "}
+          traces a path from the selection
+        </li>
+        <li>
+          <span className="font-mono text-[9.5px] text-fg-2">Drag</span>{" "}
+          pans the view · nodes can be pinned
+        </li>
+      </ul>
+      {areas.length > 0 && (
+        <div className="mt-2.5 border-t border-line pt-2">
+          <div className="mb-1.5 font-mono text-[9px] uppercase tracking-wide text-faint">
+            Jump to area
+          </div>
+          <div className="grid grid-cols-2 gap-1">
+            {areas.map((sn) => (
+              <button
+                key={sn.id}
+                onClick={() => onJump(sn.id)}
+                className="rounded border border-line-2 bg-surface px-2 py-1 text-left font-mono text-[10px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+                title={`${sn.size} nodes`}
+              >
+                <span className="block truncate">{label(sn.anchor, "")}</span>
+                <span className="text-[8px] text-faint">{sn.size} nodes</span>
+              </button>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );
