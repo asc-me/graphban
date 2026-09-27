@@ -51,6 +51,19 @@ def harness_report(project_id: str | None = None, org_id: str | None = None,
                               overlay=True)
 
 
+@router.get("/guidance")
+def harness_guidance(project_id: str | None = None, window_days: int | None = None,
+                     db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """PRD-47 S12 — routing per function and band, grading rules, generation stamp, and the
+    verbatim `fleet_status` text the supervisor receives. Nothing here is invented on the client."""
+    if window_days is not None and (window_days < 1 or window_days > 1000):
+        raise HTTPException(422, "window_days must be between 1 and 1000")
+    if not project_id:
+        raise HTTPException(422, "name a project_id")
+    authz.require_readable(db, user.id, project_id)
+    return harness_svc.guidance(db, project_id, caller_user_id=user.id, window_days=window_days)
+
+
 @router.get("/recommendations")
 def recommendations(project_id: str | None = None, org_id: str | None = None,
                     window_days: int | None = None,

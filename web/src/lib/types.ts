@@ -1951,3 +1951,35 @@ export interface HarnessRecommendations {
   window_days: number;
   floor: number;
 }
+
+export interface HarnessGradingRule {
+  id: string;
+  title: string;
+  detail: string;
+  thresholds: Record<string, number>;
+}
+
+export interface HarnessRoutingRow {
+  function: string;
+  effort_band: string;
+  verdict: string;
+  attempts: number;
+  pick: string;
+  evidence: string;
+  fallback: string | null;
+  layer?: string;
+}
+
+export interface HarnessGuidance {
+  project_id: string;
+  grading_rules: HarnessGradingRule[];
+  routing: HarnessRoutingRow[];
+  generation_stamp: {
+    window_days: number;
+    floor: number;
+    attempts: number;
+    supervisors_served: number;
+    generated_at: string;
+  };
+  fleet_status_text: string;
+}

@@ -49,6 +49,37 @@ INSTALL_MIN_DROPS, INSTALL_MARGIN = 6, 0.3
 RULES = ("R1", "R2", "R3", "R4", "R5", "R6")
 
 
+def rule_catalog() -> list[dict]:
+    """R1–R6 with the thresholds the cards fire on. One place — the page reads this, not a copy."""
+    return [
+        {"id": "R1", "title": "Promote a cell",
+         "detail": ("An unverified matrix row signed off at or above the threshold, often enough, "
+                    "in a cell above the floor."),
+         "thresholds": {"min_finished": PROMOTE_MIN_FINISHED, "min_rate": PROMOTE_MIN_RATE}},
+        {"id": "R2", "title": "Demote a cell",
+         "detail": ("A verified matrix row signed off below the threshold, often enough, "
+                    "in a cell above the floor."),
+         "thresholds": {"min_finished": DEMOTE_MIN_FINISHED, "max_rate": DEMOTE_MAX_RATE}},
+        {"id": "R3", "title": "Reorder profile defaults",
+         "detail": ("A rival harness beats the profile's top default at the family level across "
+                    f"≥{REWEIGHT_MIN_FAMILIES} families."),
+         "thresholds": {"min_n": REWEIGHT_MIN_N, "margin": REWEIGHT_MARGIN,
+                        "min_families": REWEIGHT_MIN_FAMILIES}},
+        {"id": "R4", "title": "Adjust policy constraint",
+         "detail": ("A `local_only` project whose local rows bounce or succeed often enough "
+                    "that the policy should be reconsidered."),
+         "thresholds": {"min_n": POLICY_MIN_N, "bounce_rate": POLICY_BOUNCE_RATE,
+                        "keep_rate": POLICY_KEEP_RATE}},
+        {"id": "R5", "title": "Reprior",
+         "detail": ("A cell at the floor disagrees with the row's per-capability prior by "
+                    "≥ the margin."),
+         "thresholds": {"min_n": REPRIOR_MIN_N, "margin": REPRIOR_MARGIN}},
+        {"id": "R6", "title": "Install",
+         "detail": ("Enough resolutions dropped a better measured row as not installed."),
+         "thresholds": {"min_drops": INSTALL_MIN_DROPS, "margin": INSTALL_MARGIN}},
+    ]
+
+
 @dataclass
 class Card:
     """One drafted recommendation. `evidence_hash` is what makes accept and dismiss expire."""
