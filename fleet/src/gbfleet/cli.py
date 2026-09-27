@@ -504,6 +504,8 @@ def report(wave: Wave, out=None) -> None:
         print(f"BEHIND {branch}: cut from a base {behind} commit(s) behind {ref}", file=out)
     if wave.stale_unmeasured:
         print(f"BEHIND unmeasured: {wave.stale_unmeasured}", file=out)
+    for line in wave.lease_moved:
+        print(f"LEASE MOVED {line}", file=out)
     for key, seconds in sorted(wave.silent.items()):
         print(f"QUIET {key}: wrote nothing for {seconds:.0f}s (local)", file=out)
     for key, seconds in sorted(wave.quiet.items()):

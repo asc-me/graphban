@@ -153,6 +153,10 @@ class Report:
             # `undeclared`: measured paths that no DECLARED touchpoint covers (GRPH-785).
             # The partition's input was wrong; a worker changed a file nobody declared.
             "undeclared": dict(self.wave.undeclared) if self.wave else {},
+            # GRPH-949: branches pushed but refused a PR (undeclared files / behind trunk),
+            # and leases a reaped child no longer held (info, not failures).
+            "unproposed": dict(self.wave.unproposed) if self.wave else {},
+            "lease_moved": list(self.wave.lease_moved) if self.wave else [],
         }
         if self.detail:
             payload["detail"] = self.detail
@@ -625,7 +629,7 @@ def _loop(
                 # GRPH-732: the child is told what it is, because only this side knows.
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
-                _cap_children(wave, limits)
+                _cap_children(wave, limits, item=seed)
                 _spawn_one(
                     wave, children, occupied, persist, seat, factory,
                     repo, workspace, wave_name, supervisor, limits, planner, debug,
@@ -686,7 +690,7 @@ def _loop(
                 # GRPH-732: the child is told what it is, because only this side knows.
                 if chosen[0]:
                     seat = replace(seat, declare=matrix_mod.declaration(chosen[0], chosen[1], want or None, matrix))
-                _cap_children(wave, limits)
+                _cap_children(wave, limits, item=seed)
                 _spawn_one(
                     wave, children, occupied, persist, seat, factory,
                     repo, workspace, wave_name, supervisor, limits, planner, debug,
@@ -1416,7 +1420,7 @@ def _no_room(wave: Wave, room: Headroom, live_n: int) -> bool:
     return True
 
 
-def _cap_children(wave, limits) -> None:
+def _cap_children(wave, limits, item: str | None = None) -> None:
     """`--max-children` is the TOTAL this loop may spawn, not a per-tick cap.
 
     `up` applies it once at its single spawn; `until` spawns for the life of the wave and
@@ -1424,12 +1428,53 @@ def _cap_children(wave, limits) -> None:
     ceiling at all. A wave that reaches the cap with work still open ends `cap`, exit 1 —
     the operator raised the number knowingly or the loop was spawning wrong, and both are
     theirs to look at.
+
+    **It counts distinct ITEMS, not processes** (GRPH-949). One wave at `--max-children 4`
+    ended `cap` having spawned four processes for fewer items, because a child that exited
+    without delivering was respawned for the same item and both counted. A child's items
+    are what it held on the roster; one that held nothing counts on its own, so a loop
+    spawning into nothing (GRPH-803) is still bounded. A respawn for an item an EXITED
+    child already held is free — but never unbounded: the process count is still held to
+    twice the cap, so an item that kills every child it gets cannot spin the wave forever.
     """
-    if len(wave.spawned) >= limits.max_children:
+    counted, seen, exited_for = _children_counted(wave)
+    spawned = len(wave.spawned)
+    if spawned >= RESPAWN_CEILING * limits.max_children:
         raise CapError(
             "cap",
-            f"max_children {limits.max_children} reached: {len(wave.spawned)} spawned this wave",
+            f"max_children {limits.max_children} reached: {spawned} processes spawned this "
+            f"wave for {counted} item(s) (respawn ceiling {RESPAWN_CEILING}x)",
         )
+    if item and item in exited_for:
+        return
+    if counted >= limits.max_children:
+        raise CapError(
+            "cap",
+            f"max_children {limits.max_children} reached: {counted} item(s) across "
+            f"{spawned} process(es) spawned this wave",
+        )
+
+
+#: How many processes per `--max-children` a wave may spend on respawns (GRPH-949).
+RESPAWN_CEILING = 2
+
+
+def _children_counted(wave) -> tuple[int, set[str], set[str]]:
+    """(slots counted against the cap, items seen, items whose child has exited)."""
+    counted = 0
+    seen: set[str] = set()
+    exited_for: set[str] = set()
+    for child in wave.spawned:
+        items = [i for i in (getattr(child, "held_items", None) or []) if i]
+        if not items:
+            counted += 1
+            continue
+        if not any(i in seen for i in items):
+            counted += 1
+        seen.update(items)
+        if not child.running:
+            exited_for.update(items)
+    return counted, seen, exited_for
 
 
 def _wanted_workers(
