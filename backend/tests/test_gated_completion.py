@@ -335,10 +335,12 @@ def test_sign_off_with_a_commit_mints_a_valid_attestation(db):
     # lost a predicate would change what a past `done` means, and every reader of this record
     # would be wrong about which checks stood behind it. `commit_is_not_the_base` joined in
     # GRPH-970 — the first predicate to look at WHICH revision is being vouched for, after a
-    # wave signed an item off on the base commit of its own branch.
+    # wave signed an item off on the base commit of its own branch. `reviewer_diversity`
+    # joined in GRPH-971: it REPORTS rather than refuses, because same-vendor review is
+    # not worthless, but a reader could not see it from the receipt.
     assert {p["name"] for p in att["predicates"]} == {
         "independent_review", "adversarial_evidence", "acceptance_coverage",
-        "commit_is_not_the_base"}
+        "commit_is_not_the_base", "reviewer_diversity"}
 
 
 def test_sign_off_without_a_commit_attests_nothing_and_adds_nothing(db):

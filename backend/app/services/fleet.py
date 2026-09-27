@@ -1894,12 +1894,16 @@ def needs_reviewer_visual(clause: str) -> bool:
     return "screenshot" in clause.lower()
 
 
-def reviewer_capabilities(db: Session, agent_id: str) -> dict:
-    """The reviewer's declared tier, vendor and model, for the receipt and the item (GRPH-945).
+def declared_capabilities(db: Session, agent_id: str | None) -> dict:
+    """One agent's declared tier, vendor and model, for the receipt and the item (GRPH-945).
 
     A cheap-on-cheap sign-off has to be visibly different from a frontier or human one, so
     each missing value reads `undeclared` rather than dropping out — an absent tier would
     read as no different from any other.
+
+    Named for the agent rather than the role since GRPH-971, which asks it about the BUILDER
+    as well. `reviewer_capabilities(db, item.built_by)` would have read as a mistake at every
+    call site that used it honestly.
     """
     agent = db.get(Agent, agent_id) if agent_id else None
     caps = (agent.capabilities or {}) if agent is not None else {}
@@ -1908,6 +1912,56 @@ def reviewer_capabilities(db: Session, agent_id: str) -> dict:
         v = caps.get(field)
         out[field] = v if isinstance(v, str) and v else "undeclared"
     return out
+
+
+#: The declared value that means "nothing was said". `declared_capabilities` substitutes it
+#: for every missing field, so it is what a comparison has to treat as an unknown.
+UNDECLARED = "undeclared"
+
+
+def review_diversity(reviewer: dict, builder: dict, *, built_by: str | None) -> tuple[bool, str]:
+    """Whether reviewer and builder are different vendors, and a sentence saying so.
+
+    A separate question from `independent`, and the distinction is the point. Independence
+    asks "are these two separate sessions", and on the p47-ui wave the answer was correctly
+    yes: two children, two bound seats, arbitrated by the server exactly as PRD-19 intends.
+    They were also the same cheap model reviewing itself, which independence neither asks nor
+    should. Conflating the two — as the finding that produced this first did — sends a reader
+    looking for a hole in the self-review ban, where there is none.
+
+    **Vendor, not model.** One vendor's two models share a family, a tokenizer and most of
+    their failure modes, so vendor is the weaker and therefore the safer boundary to report.
+    The sentence still names both models, because "same vendor, different model" and "the same
+    model twice" are not the same observation.
+
+    **Two `undeclared` vendors are not the same vendor.** They are two unknowns, and calling
+    them one would manufacture a finding out of an absence — the polarity this repo has had
+    wrong in both directions. The sentence names which side was missing, so a reader is never
+    told a comparison happened that did not.
+
+    Returns `(differs, detail)`. `differs` is True only when both vendors are declared and
+    differ; every other case is False with a sentence saying why. The caller RECORDS this and
+    does not gate on it: a default refusal of same-vendor review would leave a single-vendor
+    shop unable to review anything, which is how a gate earns being routed around (GRPH-321).
+    """
+    who = f"{reviewer['vendor']}:{reviewer['model']} (tier {reviewer['tier']})"
+    if not built_by:
+        return False, (f"reviewer {who}; author unrecorded, so nothing was compared — the item "
+                       "reached review with no built_by")
+    by = f"{builder['vendor']}:{builder['model']} (tier {builder['tier']})"
+    missing = [side for side, caps in (("reviewer", reviewer), ("builder", builder))
+               if caps["vendor"] == UNDECLARED]
+    if missing:
+        return False, (f"reviewer {who} against builder {by}; not comparable — "
+                       f"{' and '.join(missing)} declared no vendor, and two undeclared "
+                       "vendors are two unknowns rather than one vendor")
+    if reviewer["vendor"] != builder["vendor"]:
+        return True, f"reviewer {who} reviewed builder {by} — different vendors"
+    return False, (f"reviewer {who} reviewed builder {by} — the SAME vendor"
+                   + (" and the same model"
+                      if reviewer["model"] == builder["model"]
+                      else " on a different model"))
+
 
 
 class NotInReview(Exception):
@@ -2109,7 +2163,10 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             "back with its builder via bounce."
         )
 
-    reviewer = reviewer_capabilities(db, agent_id)
+    reviewer = declared_capabilities(db, agent_id)
+    builder = declared_capabilities(db, item.built_by)
+    diverse, diversity_detail = review_diversity(
+        reviewer, builder, built_by=item.built_by)
 
     # THE FIRST ATTESTATION ADAPTER (GRPH-544). The gates above already decided this item is
     # finished; this records WHAT WAS CHECKED in a form the completion gate can read, so the
@@ -2156,6 +2213,16 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                             if needs_adversarial_evidence(item)
                             else f"effort {item.effort} is below the threshold of "
                                  f"{ADVERSARIAL_EFFORT_THRESHOLD}; not required")},
+                {"name": "reviewer_diversity",
+                 # Reports, never refuses. `passed` is True in both directions on purpose:
+                 # same-vendor review is not worthless — the sharpest review of the p47-ui
+                 # wave was a cheap child bouncing an item for tests that did not assert the
+                 # copy they claimed to — and a predicate that failed on it would make this a
+                 # gate nobody could satisfy without two vendors installed. What was missing
+                 # was that a reader could not SEE it: the receipt named the reviewer's vendor
+                 # beside the builder's bare agent id (GRPH-971).
+                 "passed": True,
+                 "detail": diversity_detail},
                 {"name": "commit_is_not_the_base",
                  "passed": True,
                  "detail": (f"{commit[:12]} is not among the {len(cut_from)} base commit(s) "
