@@ -380,15 +380,12 @@ export function CoveragePanel({ prdId, projectId, onDecomposed }: { prdId: strin
   // know WHICH items in this section are still prototype-first.
   const { data: items = [] } = useItems(projectId);
 
-  const deliveryBySection = React.useMemo(() => {
-    const map = new Map<string, { planned: number; delivered: number; fate: string }>();
-    if (closeReport?.governed) {
-      for (const s of closeReport.sections) {
-        map.set(s.section, { planned: s.planned_items.length, delivered: s.delivered_items.length, fate: s.fate });
-      }
+  const deliveryBySection = new Map<string, { planned: number; delivered: number }>();
+  if (closeReport?.governed) {
+    for (const s of closeReport.sections) {
+      deliveryBySection.set(s.section, { planned: s.planned_items.length, delivered: s.delivered_items.length });
     }
-    return map;
-  }, [closeReport]);
+  }
 
   async function fillGaps() {
     setBusy(true);
