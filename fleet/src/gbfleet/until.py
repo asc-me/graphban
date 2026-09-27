@@ -31,6 +31,7 @@ from .tiers import TierTable
 from . import matrix as matrix_mod
 from .spawn import Child
 from . import spend as spend_mod
+from . import touchpoints as tp_mod
 from .spawn import VendorLimit
 from .headroom import Headroom
 from .supervisor import (
@@ -994,6 +995,7 @@ def _waiting(blocked: list[dict], *, repeat: int = 0) -> str:
             + (f"; the earliest frees in {soonest}s" if soonest is not None
                else "; no expiry reported")
             + _merged_on(blocked)
+            + "".join(f"; {h}" for c in blocked for h in _held_files(c))
             + ". Not spawning into work that cannot be claimed")
 
 
@@ -1014,6 +1016,30 @@ def _merged_on(blocked: list[dict]) -> str:
         return (", and they are one cluster only because their files share a directory "
                 "(GRPH-810)")
     return ""
+
+
+def _held_files(cluster: dict) -> list[str]:
+    """The files a held cluster's review members keep out of reach, one sentence each
+    (GRPH-951). The server writes `holds` on each review hold; a reservation hold names its
+    area already."""
+    out = []
+    for h in cluster.get("held_because") or []:
+        if isinstance(h, dict) and "holds" in h:
+            out.append(_holds_sentence(str(h.get("by") or "?"), list(h.get("holds") or [])))
+    return out
+
+
+def _joined(cluster: dict) -> list[str]:
+    """Which rule joined which two items (GRPH-951): "A + B: directory (svc/a.py ~ svc/b)"."""
+    out = []
+    for m in cluster.get("because") or []:
+        if not isinstance(m, dict):
+            continue
+        pair = " + ".join(str(i) for i in m.get("items") or [])
+        on = ", ".join(f"{r.get('rule')} ({r.get('a')} ~ {r.get('b')})"
+                       for r in m.get("on") or [] if isinstance(r, dict))
+        out.append(f"{pair}: {on}")
+    return out
 
 
 def plan(planner: Graphban, prd: str | None, max_workers: int,
@@ -1045,13 +1071,18 @@ def plan(planner: Graphban, prd: str | None, max_workers: int,
         # Named, because "10 free" and "10 free, and here they are" are different amounts of
         # help when the question is whether the scope is right.
         "free": [{"seed": (c.get("items") or [None])[0], "items": c.get("items") or [],
-                  "areas": c.get("areas") or []} for c in free],
+                  "areas": c.get("areas") or [],
+                  # GRPH-951: the rule that joined each pair, so "one cluster" can be judged.
+                  "joined": _joined(c)} for c in free],
         "held": [{"items": c.get("items") or [], "held_by": c.get("held_by") or [],
                   "free_in": c.get("free_in"),
                   # WHICH area the hold covers and by which rule (GRPH-833). "Held by SA-A39"
                   # sends the reader looking for SA-A39; this says what the collision actually
                   # is, which is the half an operator was left to infer — and inferred wrong.
-                  "because": c.get("held_because") or []} for c in blocked],
+                  "because": c.get("held_because") or [],
+                  # GRPH-951: "SA-576 holds CueQueue.tsx, styles/queue.css".
+                  "holds": _held_files(c),
+                  "joined": _joined(c)} for c in blocked],
         # The reservation table itself, keyed on the HOLD rather than on the cluster. A
         # cluster leaves the partition the moment its item is claimed, taking its reservation
         # off every read while that reservation goes on blocking everyone — so a wave with no
@@ -1252,6 +1283,17 @@ def _recheck_holds(planner: Graphban, held: dict[str, list[str]], delegated: set
 HOLD_RECHECK_SECONDS = 60
 
 
+def _touchpoints_of(details: dict) -> list[str]:
+    return [str(t) for t in (details.get("touchpoints") or []) if str(t).strip()]
+
+
+def _holds_sentence(item_id: str, areas: list[str]) -> str:
+    """"SA-576 holds CueQueue.tsx, styles/queue.css" (GRPH-951) — the files, named."""
+    if not areas:
+        return f"{item_id} declares no touchpoints, so it holds its whole cluster"
+    return f"{item_id} holds {', '.join(areas)}"
+
+
 def _delegate_next(
     planner: Graphban,
     agent_id: str,
@@ -1291,12 +1333,16 @@ def _delegate_next(
         if not items:
             continue
         # GRPH-886: seeds are DAG-ready members, not items[0]. A review member, or an
-        # unsigned next/backlog member already in `--base`, occupies the whole glob.
-        # Do not walk to the sibling, and do not mark anyone delegated — hiding the
-        # merged id would make the sibling the seed on the next tick (SA-467/470).
+        # unsigned next/backlog member already in `--base`, occupies what it touches. Do not
+        # mark it delegated — hiding the merged id would make a colliding sibling the seed on
+        # the next tick (SA-467/470).
+        #
+        # GRPH-951: ITS files, not the whole cluster. A cluster is joined by transitivity, and
+        # SA-576 in review idled a wave of screens whose files it never named. A sibling whose
+        # touchpoints collide with no occupier's (by the server's rule, mirrored in
+        # `touchpoints.collide`) is still buildable.
         details_for: dict[str, dict] = {}
-        review_occupies = False
-        base_occupies = False
+        occupiers: dict[str, list[str]] = {}
         for item_id in items:
             if item_id in delegated:
                 continue
@@ -1310,17 +1356,23 @@ def _delegate_next(
             details_for[item_id] = got
             status = str(got.get("status") or "")
             if status == "review":
-                review_occupies = True
+                occupiers[item_id] = _touchpoints_of(got)
             elif status in ("next", "backlog") and _already_in_base(got, repo, base):
-                base_occupies = True
-        if review_occupies or base_occupies:
-            if base_occupies:
+                occupiers[item_id] = _touchpoints_of(got)
                 observe.emit(
-                    "delegate_held",
-                    detail=f"a member is already in {base} (unsigned, git-merged); "
-                           "the glob stays occupied",
+                    "delegate_held", item=item_id,
+                    detail=f"already in {base} (unsigned, git-merged); "
+                           + _holds_sentence(item_id, occupiers[item_id]),
                 )
-            continue
+        for item_id in occupiers:
+            details_for.pop(item_id, None)
+        for item_id in list(details_for):
+            by = [o for o, mine in occupiers.items()
+                  if tp_mod.collide(_touchpoints_of(details_for[item_id]), mine)]
+            if by:
+                observe.emit("delegate_held", item=item_id,
+                             detail="; ".join(_holds_sentence(o, occupiers[o]) for o in by))
+                details_for.pop(item_id)
         # GRPH-950: EVERY ready member is dependency-checked, not only the seed. A bound child
         # may `claim_cluster` its seed's neighbours, and `claim_next` hands out whatever the
         # server calls ready — which a done-but-unmerged dependency is. A held member gets a
