@@ -69,7 +69,7 @@ function wrap(ui: ReactNode, path = "/tracker") {
 }
 
 describe("P28 self-host rail", () => {
-  it("shows Plan children on /tracker and hides Dashboard, MCP Tools, Feedback Kit", async () => {
+  it("shows Plan children on /tracker and hides Dashboard, MCP Tools", async () => {
     wrap(<LeftNav />);
     expect(await screen.findByText("Tracker")).toBeInTheDocument();
     expect(screen.getByText("Plan")).toBeInTheDocument();
@@ -78,7 +78,7 @@ describe("P28 self-host rail", () => {
     expect(screen.getByText("Home")).toBeInTheDocument();
     expect(screen.queryByText("Dashboard")).not.toBeInTheDocument();
     expect(screen.queryByText("MCP Tools")).not.toBeInTheDocument();
-    expect(screen.queryByText("Feedback Kit")).not.toBeInTheDocument();
+    expect(screen.getByText("Feedback Kit")).toBeInTheDocument();
     expect(screen.queryByText("Galaxy")).not.toBeInTheDocument();
     expect(screen.queryByText("Users & access")).not.toBeInTheDocument();
     expect(await screen.findByText("41")).toBeInTheDocument();

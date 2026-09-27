@@ -78,9 +78,9 @@ describe("the app shell", () => {
     }
   });
 
-  it("renders the project bar's stats from counts, never from collections", async () => {
+  it("renders the breadcrumb section, never collection data", async () => {
     renderShell(<ProjectBar />);
-    expect(await screen.findByText("41")).toBeInTheDocument();
+    expect(await screen.findByText("Tracker")).toBeInTheDocument();
 
     for (const [name, fn] of Object.entries(collections)) {
       expect(fn, `the project bar fetched the whole ${name} collection (GRPH-431)`)

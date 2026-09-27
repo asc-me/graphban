@@ -44,6 +44,7 @@ const HOSTED_OBSERVE = [
   { to: "lessons", icon: <BookMarked size={16} />, label: "Lessons" },
   { to: "activity", icon: <ScrollText size={16} />, label: "Activity" },
   { to: "live", icon: <Activity size={16} />, label: "Live" },
+  { to: "harness", icon: <Gauge size={16} />, label: "Harness" },
 ];
 
 /**
@@ -260,6 +261,7 @@ function HostedLeftNav() {
           </>
         )}
         {!hosted && <NavItem to="/organization" icon={<Building2 size={16} />} label="Organization" />}
+        <NavItem icon={<BarChart3 size={16} />} label="Usage" soon />
         {isPlatformAdmin && <NavItem to="/admin" icon={<ShieldCheck size={16} />} label="Operator" />}
         <NavItem to={viewPath("feedback-kit")} icon={<Sparkles size={16} />} label="Feedback Kit" />
         <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
@@ -450,6 +452,8 @@ function SelfHostLeftNav() {
 
       <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-3">
         <OrgRailItem />
+        <NavItem icon={<BarChart3 size={16} />} label="Usage" soon />
+        <NavItem to="/feedback-kit" icon={<Sparkles size={16} />} label="Feedback Kit" />
         {isPlatformAdmin && <NavItem to="/admin" icon={<ShieldCheck size={16} />} label="Operator" />}
         <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
       </div>
