@@ -38,9 +38,7 @@ export function HarnessView() {
   if (harnessQ.isError && !data) {
     return (
       <div className="flex h-full min-h-0 flex-col" data-testid="harness-error">
-        <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
-          <h1 className="text-[18px] font-semibold tracking-tight">Harness</h1>
-        </div>
+        <PlaceHeader viewName="Harness" purpose="How each model has turned out, per capability and size band." />
         <PlannerError
           message="The catalog has not been served. That is not an empty matrix."
           onRetry={() => void harnessQ.refetch()}
@@ -52,9 +50,7 @@ export function HarnessView() {
   if (isLoading || !data) {
     return (
       <div className="flex h-full min-h-0 flex-col" data-testid="harness-loading">
-        <div className="flex flex-none items-center gap-4 border-b border-line px-5 py-4">
-          <h1 className="text-[18px] font-semibold tracking-tight">Harness</h1>
-        </div>
+        <PlaceHeader viewName="Harness" purpose="How each model has turned out, per capability and size band." />
         <div className="min-h-0 flex-1 overflow-y-auto p-5">
           <TableSkeleton rows={8} columns={5} />
         </div>
