@@ -9,6 +9,7 @@ import { LeftNav } from "@/components/shell/LeftNav";
 import { HomeView } from "@/features/home/HomeView";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { SettingsView } from "@/features/settings/SettingsView";
+import { api } from "@/lib/api";
 
 const project = {
   id: "core", tag: "CORE", name: "Core", accent: "#c6f24e", visibility: "private",
