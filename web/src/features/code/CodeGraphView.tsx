@@ -94,6 +94,9 @@ export function CodeGraphView() {
   // How many rings the selection lights. Shift-click (or Shift+Enter) widens it; a fresh
   // selection resets it, so depth never quietly persists into the next thing you click.
   const [depth, setDepth] = React.useState(1);
+  // Trail: the last 8 selections, newest first. Lets you retrace where you have been without
+  // re-finding each node — a breadcrumb, not a history stack you push/pop.
+  const [trail, setTrail] = React.useState<string[]>([]);
 
   const nodes = map?.nodes ?? [];
   // The UNFILTERED set drives layout; the filtered one only decides what is drawn. That split
@@ -289,6 +292,10 @@ export function CodeGraphView() {
       setSelPath(id);
       setDepth(1);
       setPathTo(null);
+      setTrail((prev) => {
+        const next = [id, ...prev.filter((p) => p !== id)];
+        return next.slice(0, 8);
+      });
     },
     [armed, selPath],
   );
@@ -901,6 +908,26 @@ export function CodeGraphView() {
             <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
           )}
 
+          {trail.length > 1 && (
+            <TrailBreadcrumb
+              trail={trail}
+              selPath={selPath}
+              onPick={(p) => {
+                setSelPath(p);
+                setDepth(1);
+                setPathTo(null);
+              }}
+              nodeByPath={nodeByPath}
+            />
+          )}
+
+          {galaxyMode && !entered && (
+            <InteractionHint
+              superNodes={galaxy.superNodes}
+              onJump={(id) => setEntered(id)}
+            />
+          )}
+
           {selPath && (
             <NodeInspector
               path={selPath}
@@ -1220,6 +1247,86 @@ function StubEvidence({ stub }: { stub: ProjectStub }) {
           real and has nowhere to attach. Describing the file gives it an anchor.
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * Trail breadcrumb: the last 8 selections, newest first. A breadcrumb, not a history stack —
+ * clicking one re-selects it without disturbing the rest of the trail.
+ */
+function TrailBreadcrumb({
+  trail,
+  selPath,
+  onPick,
+  nodeByPath,
+}: {
+  trail: string[];
+  selPath: string | null;
+  onPick: (path: string) => void;
+  nodeByPath: Record<string, { name: string; kind: string }>;
+}) {
+  return (
+    <div className="pointer-events-auto absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full border border-line-2 bg-surface-3/90 px-2.5 py-1 shadow-lg backdrop-blur-sm">
+      {trail.map((p, i) => {
+        const meta = nodeByPath[p];
+        const isCurrent = p === selPath;
+        return (
+          <React.Fragment key={p}>
+            {i > 0 && <span className="text-faint">›</span>}
+            <button
+              onClick={() => onPick(p)}
+              className={cn(
+                "max-w-[120px] truncate rounded-full px-2 py-0.5 font-mono text-[10px] transition-colors",
+                isCurrent
+                  ? "bg-accent/15 text-accent"
+                  : "text-muted hover:bg-surface-2 hover:text-fg",
+              )}
+              title={p}
+            >
+              {meta ? label(p, meta.name) : label(p, "")}
+            </button>
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * Interaction hint for galaxy mode: area jump cards that let you enter a component directly.
+ * Shown only when collapsed — once inside a component the flat view takes over.
+ */
+function InteractionHint({
+  superNodes,
+  onJump,
+}: {
+  superNodes: { id: string; anchor: string; size: number }[];
+  onJump: (id: string) => void;
+}) {
+  const top = [...superNodes].sort((a, b) => b.size - a.size).slice(0, 6);
+  if (top.length === 0) return null;
+  return (
+    <div className="pointer-events-auto absolute bottom-14 right-3 z-10 w-[220px] rounded-[11px] border border-line-2 bg-surface-3/90 p-2.5 shadow-lg backdrop-blur-sm">
+      <div className="mb-1.5 font-mono text-[9.5px] uppercase tracking-wide text-faint">
+        Jump to area
+      </div>
+      <div className="space-y-1">
+        {top.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => onJump(s.id)}
+            className="flex w-full items-center gap-2 rounded-lg border border-line-2 bg-surface-2 px-2 py-1.5 text-left transition-colors hover:border-line-hover"
+          >
+            <span className="flex h-5 w-5 flex-none items-center justify-center rounded-full bg-surface-3 font-mono text-[9px] text-fg-2">
+              {s.size}
+            </span>
+            <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted">
+              {label(s.anchor, "")}
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
