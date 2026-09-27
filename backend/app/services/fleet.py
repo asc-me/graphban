@@ -1733,6 +1733,10 @@ class MissingAdversarialEvidence(Exception):
     """Above-threshold work signed off with nothing that tried to break it."""
 
 
+class AttestedTheBase(Exception):
+    """The reviewer attested the commit its branch was cut FROM (GRPH-970)."""
+
+
 class MissingAcceptanceCoverage(Exception):
     """Work signed off while an acceptance clause has no named test (GRPH-884)."""
 
@@ -2081,6 +2085,30 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             f"{item.key} is not covered: " + " | ".join(problems)
             + " — add a `{kind: test}` evidence entry whose detail names each clause"
         )
+    # THE COMMIT MUST NOT BE THE ONE THE BRANCH WAS CUT FROM (GRPH-970).
+    #
+    # Every predicate below reports `passed: True`, because the raises above are the gate and
+    # the attestation records what they enforced. None of them looked at WHICH revision was
+    # being vouched for, so a reviewer could name the base of its own branch and satisfy all
+    # three: independence compares two agent ids, adversarial evidence counts receipts, and
+    # coverage reads the description. Measured on the p47-ui wave: GRPH-954 went to `done` on
+    # a sign_off naming `7ea90ebe`, the base its worktree was cut from, with no commit for the
+    # item anywhere on any ref and three sabotage receipts describing runs that never happened.
+    #
+    # The base is the one fact a child cannot report honestly about itself, so it comes from
+    # the supervisor that cut the tree, as a `fleet.worktree` receipt. Absence of that receipt
+    # is NOT a pass: it is said so in the predicate, because an unrecorded base looking
+    # identical to a checked one is how this class of defect survives.
+    cut_from = items_svc.cut_from_commits(item.evidence)
+    if commit and any(items_svc.same_commit(commit, base) for base in cut_from):
+        raise AttestedTheBase(
+            f"{item.key}: {commit[:12]} is the commit this branch was cut from, so it carries "
+            "none of this item's work — a sign_off naming it vouches for the base rather than "
+            "for what was built. Attest the commit your review actually read; if the branch "
+            "has no commits beyond its base, there is nothing to sign off and the item belongs "
+            "back with its builder via bounce."
+        )
+
     reviewer = reviewer_capabilities(db, agent_id)
 
     # THE FIRST ATTESTATION ADAPTER (GRPH-544). The gates above already decided this item is
@@ -2128,6 +2156,13 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                             if needs_adversarial_evidence(item)
                             else f"effort {item.effort} is below the threshold of "
                                  f"{ADVERSARIAL_EFFORT_THRESHOLD}; not required")},
+                {"name": "commit_is_not_the_base",
+                 "passed": True,
+                 "detail": (f"{commit[:12]} is not among the {len(cut_from)} base commit(s) "
+                            "this item's branches were cut from"
+                            if cut_from
+                            else "no supervisor recorded a base for this item, so the attested "
+                                 "commit was NOT compared against one")},
                 {"name": "acceptance_coverage",
                  "passed": True,
                  "detail": (f"all {len(clauses)} acceptance clause(s) have a named test "

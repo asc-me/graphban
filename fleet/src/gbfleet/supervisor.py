@@ -780,6 +780,9 @@ def _start(
             debug_file = (
                 _logs(workspace, f"{wave_name}-{slot}") / "debug.log" if debug else None
             )
+            # BEFORE the child starts, so the base is on the record before anything it does
+            # can attest against it (GRPH-970).
+            _record_cut_from(wave, client, seat.item, tree.branch, tree.base)
             start_one(
                 tree, seat, launch_factory, client, limits, wave.partition,
                 workspace=workspace, wave_name=wave_name, slot=slot,
@@ -1165,6 +1168,40 @@ def _record_salvage_receipt(wave: Wave, client: Graphban | None, items: list[str
             }])
         except Exception as exc:  # noqa: BLE001 — a wave is not broken by a missing receipt
             wave.failures.append(f"{item_id}: salvage not recorded ({exc})")
+
+
+def _record_cut_from(wave: Wave, client, item_id: str | None, branch: str, base: str) -> None:
+    """Tell the ledger which commit this branch started at (GRPH-970).
+
+    The one fact about a child that the child is the worst possible source for. A reviewer
+    that attests the base of its own branch has vouched for a tree containing none of the
+    item's work, and on the p47-ui wave one did exactly that: GRPH-954 reached `done` on a
+    sign_off naming `7ea90ebe`, its own base, with every gate predicate passing and no commit
+    for the item on any ref. `sign_off` refuses that now — but only if somebody recorded the
+    base, and only the supervisor that cut the tree knows it.
+
+    A NOTE, and not the attestation it wants to be. Writing `kind: attestation` needs the
+    `gate` scope, and a supervisor runs on whatever `GBFLEET_API_KEY` holds — `["read",
+    "write"]` on every wave measured here. The attestation would have been refused, this
+    `except` would have logged a wave failure nobody reads, and the gate would have found no
+    base and reported "not compared" for ever. A guard that does nothing is the defect being
+    fixed, so the carrier is the one a wave's own key can actually write.
+    `items.CUT_FROM_MARKER` is the other half of the pair.
+
+    Never fatal. A wave is not broken by a missing receipt — but unlike the salvage note, the
+    absence is visible: `sign_off` reports that no base was compared rather than passing
+    silently, so a lost receipt degrades to the old behaviour and says so.
+    """
+    if client is None or not item_id or not base:
+        return
+    try:
+        client.call("update_item", id=item_id, evidence=[{
+            "kind": "note",
+            "detail": f"gbfleet: branch cut from {base} (`{branch}`) — the base, which "
+                      "carries none of this item's work",
+        }])
+    except Exception as exc:  # noqa: BLE001 — see the docstring: never fatal
+        wave.failures.append(f"{item_id}: base not recorded ({exc})")
 
 
 def _refuse_proposal(wave: Wave, branch: str) -> str:
