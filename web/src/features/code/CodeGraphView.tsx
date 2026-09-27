@@ -901,6 +901,15 @@ export function CodeGraphView() {
             <FleetLegend presence={presence} soloUser={soloUser} onSolo={setSoloUser} />
           )}
 
+          {/* PRD-47 S5: interaction hint — the discoverable gesture guide. Shown until dismissed,
+              never when a selection already proves the user knows how this works. */}
+          {!isLoading && !empty && !selPath && (
+            <InteractionHint
+              galaxy={galaxyMode ? galaxy : null}
+              pickHub={pickHub}
+            />
+          )}
+
           {selPath && (
             <NodeInspector
               path={selPath}
@@ -1219,6 +1228,88 @@ function StubEvidence({ stub }: { stub: ProjectStub }) {
           The manifest names that file, but nothing here has described it — so the arrow is
           real and has nowhere to attach. Describing the file gives it an anchor.
         </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * PRD-47 S5: the interaction hint.
+ *
+ * A discoverable gesture guide shown at the bottom of the graph canvas. Lists the gestures
+ * a new user needs and — when in galaxy mode — area jump cards to enter components directly.
+ * Dismissed once; a selection proves the user already knows, so it hides on its own too.
+ */
+function InteractionHint({
+  galaxy,
+  pickHub,
+}: {
+  galaxy: ReturnType<typeof collapse> | null;
+  pickHub: (path: string) => void;
+}) {
+  const [dismissed, setDismissed] = React.useState(false);
+  if (dismissed) return null;
+
+  const areaCards = galaxy
+    ? galaxy.superNodes
+        .filter((s) => s.size >= 3)
+        .sort((a, b) => b.size - a.size)
+        .slice(0, 6)
+    : [];
+
+  return (
+    <div className="absolute bottom-3 right-3 z-10 max-w-[320px] animate-fade rounded-[11px] border border-line-2 bg-surface-2/95 p-3 shadow-lg backdrop-blur-sm">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-mono text-[10px] uppercase tracking-wide text-faint">
+          Interactions
+        </span>
+        <button
+          onClick={() => setDismissed(true)}
+          className="text-[13px] leading-none text-faint hover:text-fg"
+          aria-label="Dismiss hint"
+        >
+          ×
+        </button>
+      </div>
+      <ul className="space-y-1 text-[11px] text-muted">
+        <li>
+          <span className="font-medium text-fg-2">Hover</span> — preview neighbours
+        </li>
+        <li>
+          <span className="font-medium text-fg-2">Click</span> — select a node
+        </li>
+        <li>
+          <span className="font-medium text-fg-2">Shift-click</span> — widen the ring
+        </li>
+        <li>
+          <span className="font-medium text-fg-2">Alt-click</span> — trace a path
+        </li>
+        <li>
+          <span className="font-medium text-fg-2">Double-click bg</span> — reset view
+        </li>
+        <li>
+          <span className="font-medium text-fg-2">Drag</span> — pin a node in place
+        </li>
+      </ul>
+
+      {areaCards.length > 0 && (
+        <div className="mt-2.5 border-t border-line pt-2.5">
+          <div className="mb-1.5 font-mono text-[9.5px] uppercase tracking-wide text-faint">
+            Jump to area
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {areaCards.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => pickHub(s.id)}
+                className="rounded border border-line-2 bg-surface px-2 py-0.5 font-mono text-[10px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+              >
+                {label(s.anchor, "")}
+                <span className="ml-1 text-faint">{s.size}</span>
+              </button>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );

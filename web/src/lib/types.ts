@@ -1164,10 +1164,19 @@ export interface CodeForRefRow {
   node: CodeNode | null;
 }
 
+export interface McpParamDetail {
+  name: string;
+  type: string;
+  description: string;
+  required: boolean;
+  enum: string[] | null;
+}
+
 export interface McpToolInfo {
   name: string;
   description: string;
   params: string[];
+  param_details: McpParamDetail[];
   calls: number;
   status: string;
 }
