@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { HarnessView } from "@/features/harness/HarnessView";
 import { ProjectProvider } from "@/features/ProjectContext";
-import type { HarnessCell, HarnessReport } from "@/lib/types";
+import type { FleetMatrixRow, HarnessCell, HarnessReport } from "@/lib/types";
 
 function cell(over: Partial<HarnessCell> = {}): HarnessCell {
   return {
@@ -54,14 +54,20 @@ vi.mock("@/lib/api", () => ({
     harness: (...args: unknown[]) => harness(...(args as [])),
     harnessProbeCandidates: (...args: unknown[]) => probeCandidates(...(args as [])),
     startHarnessProbeRun: (...args: unknown[]) => startProbeRun(...(args as [])),
+    harnessRecommendations: vi.fn(async () => ({
+      project_id: "core", cards: [], rules: ["R1", "R2", "R3", "R4", "R5", "R6"],
+      lessons_drafted: [], window_days: 90, floor: 5,
+    })),
   },
 }));
+
+const useFleetMock = vi.fn(() => ({ data: { profile: null, policy: null, matrix: { rows: [] as FleetMatrixRow[] } }, refetch: vi.fn() }));
 
 vi.mock("@/lib/queries", async () => {
   const actual = await vi.importActual<typeof import("@/lib/queries")>("@/lib/queries");
   return {
     ...actual,
-    useFleet: vi.fn(() => ({ data: { profile: null, policy: null }, refetch: vi.fn() })),
+    useFleet: (...args: unknown[]) => useFleetMock(...(args as [])),
   };
 });
 
@@ -349,9 +355,9 @@ describe("Harness page", () => {
     expect(screen.getByTestId("harness-review-below-floor")).toHaveTextContent("3 of 5");
   });
 
-  it("composes the profile and policy editors on the same screen as the grid and cards", async () => {
-    // D14: the grid, the probe panel, R1–R6 cards, and the profile/policy editor belong on
-    // one screen. The Preferences component is composed, not reimplemented.
+  it("composes the profile and policy editors on the same screen as the grid and probe panel", async () => {
+    // D14: the grid, the probe panel, and the profile/policy editor belong on one screen.
+    // The Preferences component is composed, not reimplemented.
     // Sabotage: drop the ProbePanel import and render old text suggestions — this fails.
     probeCandidates.mockResolvedValueOnce(probeData());
     show();
@@ -361,6 +367,94 @@ describe("Harness page", () => {
     expect(screen.getByTestId("fleet-policy")).toBeInTheDocument();
     expect(screen.getByLabelText("Per-period token cap")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-policy-period")).toBeInTheDocument();
+  });
+
+  it("renders three tabs: Performance, Guidance, and Changes & probes", async () => {
+    show();
+    await screen.findByTestId("harness-view");
+    expect(screen.getByRole("tab", { name: "Performance" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Guidance" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Changes & probes/ })).toBeInTheDocument();
+  });
+
+  it("shows the effort curve on the Performance tab for above-floor cells", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        cells: [
+          cell({ key: { ...cell().key, size_band: "S" }, finished: 10, signed_off: 8, below_floor: false }),
+          cell({ key: { ...cell().key, size_band: "L" }, finished: 8, signed_off: 4, below_floor: false }),
+          cell({ key: { ...cell().key, size_band: "M" }, finished: 3, signed_off: 2, below_floor: true }),
+        ],
+      }),
+    );
+    show();
+    const curve = await screen.findByTestId("harness-effort-curve");
+    expect(curve).toBeInTheDocument();
+    const bars = within(curve).getAllByTestId("harness-effort-bar");
+    expect(bars).toHaveLength(2);
+    expect(bars[0]).toHaveAttribute("data-band", "S");
+    expect(bars[1]).toHaveAttribute("data-band", "L");
+  });
+
+  it("excludes family rollups from the effort curve", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        cells: [
+          cell({ kind: "family", family: "B", finished: 20, signed_off: 15, below_floor: false }),
+          cell({ key: { ...cell().key, size_band: "M" }, finished: 10, signed_off: 7, below_floor: false }),
+        ],
+      }),
+    );
+    show();
+    const curve = await screen.findByTestId("harness-effort-curve");
+    const bars = within(curve).getAllByTestId("harness-effort-bar");
+    expect(bars).toHaveLength(1);
+    expect(bars[0]).toHaveAttribute("data-band", "M");
+  });
+
+  it("shows the guidance tab with routing table and grading rules when switched to", async () => {
+    const user = userEvent.setup();
+    show();
+    await screen.findByTestId("harness-view");
+    await user.click(screen.getByRole("tab", { name: "Guidance" }));
+    expect(await screen.findByTestId("guidance-grading-rules")).toBeInTheDocument();
+    const rules = within(screen.getByTestId("guidance-grading-rules")).getAllByTestId("guidance-rule");
+    expect(rules).toHaveLength(6);
+    expect(rules[0]).toHaveAttribute("data-rule", "R1");
+    expect(screen.getByTestId("guidance-generation-stamp")).toBeInTheDocument();
+    expect(screen.getByTestId("guidance-as-served")).toBeInTheDocument();
+  });
+
+  it("shows the routing table on the guidance tab from the fleet matrix", async () => {
+    const matrixRow: FleetMatrixRow = {
+      harness: "gbagent", model: "qwen3.6", vendor: "alibaba", lane: "backend",
+      tier: "cheap", status: "verified", cost_class: "cheap", local: false,
+    };
+    useFleetMock.mockReturnValue({
+      data: {
+        profile: null, policy: null,
+        matrix: { rows: [matrixRow] },
+      },
+      refetch: vi.fn(),
+    });
+    const user = userEvent.setup();
+    show();
+    await screen.findByTestId("harness-view");
+    await user.click(screen.getByRole("tab", { name: "Guidance" }));
+    expect(await screen.findByTestId("guidance-routing-table")).toBeInTheDocument();
+    expect(screen.getByTestId("guidance-routing-table")).toHaveTextContent("gbagent:qwen3.6");
+    useFleetMock.mockReturnValue({ data: { profile: null, policy: null, matrix: { rows: [] as FleetMatrixRow[] } }, refetch: vi.fn() });
+  });
+
+  it("shows recommendations on the Changes & probes tab, not on Performance", async () => {
+    const user = userEvent.setup();
+    show();
+    await screen.findByTestId("harness-view");
+    // Recommendations are NOT on the default Performance tab
+    expect(screen.queryByTestId("harness-no-cards")).not.toBeInTheDocument();
+    // Switch to Changes & probes
+    await user.click(screen.getByRole("tab", { name: /Changes & probes/ }));
+    expect(await screen.findByTestId("harness-no-cards")).toBeInTheDocument();
   });
 });
 

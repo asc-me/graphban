@@ -5,6 +5,8 @@ import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Preferences } from "@/features/harness/Preferences";
 import { PlannerError, TableSkeleton } from "@/components/planner/PlannerStates";
 import { Recommendations } from "@/features/harness/Recommendations";
+import { GuidanceTab, SIZE_BAND_ORDER } from "@/features/harness/GuidanceTab";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useFleet, useHarness, useHarnessProbeCandidates, useStartHarnessProbeRun } from "@/lib/queries";
 import type {
@@ -83,89 +85,169 @@ export function HarnessView() {
         }
       />
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        {data.cells.length === 0 && !(data.unavailable ?? []).length ? (
-          <div className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted">
-            Nothing measured yet. A cell appears here once a delegation finishes — one row per
-            vendor, model, capability and size band.
+      <Tabs defaultValue="performance" className="min-h-0 flex-1 flex flex-col">
+        <div className="border-b border-line-2 px-5 pt-3">
+          <TabsList>
+            <TabsTrigger value="performance">Performance</TabsTrigger>
+            <TabsTrigger value="guidance">Guidance</TabsTrigger>
+            <TabsTrigger value="changes">Changes &amp; probes</TabsTrigger>
+          </TabsList>
+        </div>
+
+        <TabsContent value="performance" className="min-h-0 flex-1 overflow-y-auto p-5 focus:outline-none">
+          {data.cells.length === 0 && !(data.unavailable ?? []).length ? (
+            <div className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted">
+              Nothing measured yet. A cell appears here once a delegation finishes — one row per
+              vendor, model, capability and size band.
+            </div>
+          ) : (
+            <div className="mx-auto flex max-w-4xl flex-col gap-3">
+              <EffortCurve cells={data.cells} />
+              {data.coverage && data.coverage.attempts > 0 && (
+                <div
+                  data-testid="harness-coverage"
+                  className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+                >
+                  Coverage {data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}
+                  {" — "}
+                  {data.coverage.with_leaf}/{data.coverage.attempts} attempts tagged a leaf.
+                  Attempts that match none land in <span className="font-mono">other</span>.
+                </div>
+              )}
+              {data.platform === null && data.platform_reason && (
+                <div
+                  data-testid="harness-no-platform"
+                  className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+                >
+                  {data.platform_reason}
+                </div>
+              )}
+              {data.below_floor_count > 0 && (
+                <div
+                  data-testid="harness-floor-note"
+                  className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+                >
+                  {data.below_floor_count} of {data.cells.length} cells are below the{" "}
+                  {data.floor}-attempt floor. Their rates are shown because hiding them would read
+                  as having none, not as having too few.
+                </div>
+              )}
+              <ProbePanel
+                projectId={activeId}
+                suggestions={data.probe_suggestions ?? []}
+                labels={data.capability_set?.labels}
+              />
+              {(data.review_cells ?? []).map((cell) => (
+                <ReviewRow key={`f:${cell.key.vendor}:${cell.key.model}:${cell.key.capability}`} cell={cell} floor={data.floor} />
+              ))}
+              {(data.unavailable ?? []).map((row) => (
+                <div
+                  key={`${row.vendor}:${row.model}:${row.capability}:${row.reason}`}
+                  data-testid="harness-unavailable"
+                  className="rounded-[10px] border border-dashed border-line-2 bg-surface-2 px-3.5 py-3 text-faint"
+                >
+                  <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                    <span className="font-mono text-[12.5px]">
+                      {row.vendor}{row.model ? `:${row.model}` : ""}
+                    </span>
+                    <span className="font-mono text-[10.5px]">{row.capability}</span>
+                    <span data-testid="harness-unavailable-reason" className="font-mono text-[10.5px]">
+                      {row.label || row.reason}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[12px]">
+                    Greyed because it is {row.reason}, not because it is unmeasured.
+                    Control: <span className="font-mono">{row.control}</span>
+                    {row.drops ? ` · dropped ${row.drops} times` : ""}
+                  </p>
+                </div>
+              ))}
+              {data.cells.map((cell) => (
+                <CellRow key={cellId(cell)} cell={cell} floor={data.floor} />
+              ))}
+            </div>
+          )}
+
+          <div className="mx-auto mt-6 max-w-4xl">
+            <Preferences
+              projectId={activeId}
+              scope={scope}
+              profile={fleetData?.profile ?? null}
+              policy={fleetData?.policy ?? null}
+              onSaved={() => { void refetchFleet(); }}
+            />
           </div>
-        ) : (
+        </TabsContent>
+
+        <TabsContent value="guidance" className="min-h-0 flex-1 overflow-y-auto p-5 focus:outline-none">
+          <GuidanceTab
+            matrix={fleetData?.matrix?.rows}
+            generatedAt={data.generated_at}
+            fleetStatus={fleetData}
+          />
+        </TabsContent>
+
+        <TabsContent value="changes" className="min-h-0 flex-1 overflow-y-auto p-5 focus:outline-none">
           <div className="mx-auto flex max-w-4xl flex-col gap-3">
             <Recommendations projectId={activeId} />
-            {data.coverage && data.coverage.attempts > 0 && (
-              <div
-                data-testid="harness-coverage"
-                className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
-              >
-                Coverage {data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}
-                {" — "}
-                {data.coverage.with_leaf}/{data.coverage.attempts} attempts tagged a leaf.
-                Attempts that match none land in <span className="font-mono">other</span>.
-              </div>
-            )}
-            {data.platform === null && data.platform_reason && (
-              <div
-                data-testid="harness-no-platform"
-                className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
-              >
-                {data.platform_reason}
-              </div>
-            )}
-            {data.below_floor_count > 0 && (
-              <div
-                data-testid="harness-floor-note"
-                className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
-              >
-                {data.below_floor_count} of {data.cells.length} cells are below the{" "}
-                {data.floor}-attempt floor. Their rates are shown because hiding them would read
-                as having none, not as having too few.
-              </div>
-            )}
-            <ProbePanel
-              projectId={activeId}
-              suggestions={data.probe_suggestions ?? []}
-              labels={data.capability_set?.labels}
-            />
-            {(data.review_cells ?? []).map((cell) => (
-              <ReviewRow key={`f:${cell.key.vendor}:${cell.key.model}:${cell.key.capability}`} cell={cell} floor={data.floor} />
-            ))}
-            {(data.unavailable ?? []).map((row) => (
-              <div
-                key={`${row.vendor}:${row.model}:${row.capability}:${row.reason}`}
-                data-testid="harness-unavailable"
-                className="rounded-[10px] border border-dashed border-line-2 bg-surface-2 px-3.5 py-3 text-faint"
-              >
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <span className="font-mono text-[12.5px]">
-                    {row.vendor}{row.model ? `:${row.model}` : ""}
-                  </span>
-                  <span className="font-mono text-[10.5px]">{row.capability}</span>
-                  <span data-testid="harness-unavailable-reason" className="font-mono text-[10.5px]">
-                    {row.label || row.reason}
-                  </span>
-                </div>
-                <p className="mt-1 text-[12px]">
-                  Greyed because it is {row.reason}, not because it is unmeasured.
-                  Control: <span className="font-mono">{row.control}</span>
-                  {row.drops ? ` · dropped ${row.drops} times` : ""}
-                </p>
-              </div>
-            ))}
-            {data.cells.map((cell) => (
-              <CellRow key={cellId(cell)} cell={cell} floor={data.floor} />
-            ))}
           </div>
-        )}
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
 
-        <div className="mx-auto mt-6 max-w-4xl">
-          <Preferences
-            projectId={activeId}
-            scope={scope}
-            profile={fleetData?.profile ?? null}
-            policy={fleetData?.policy ?? null}
-            onSaved={() => { void refetchFleet(); }}
-          />
-        </div>
+/**
+ * PRD-47 S12: signed-off rate by size band, above-floor non-family cells only. A family
+ * rollup would double-count its leaves; a below-floor cell is not yet a measurement.
+ * The curve answers one question: do bigger items clear less often?
+ */
+function EffortCurve({ cells }: { cells: HarnessCell[] }) {
+  const bands = new Map<string, { finished: number; signed_off: number }>();
+  for (const cell of cells) {
+    if (cell.kind === "family" || cell.below_floor) continue;
+    const band = cell.key.size_band;
+    const agg = bands.get(band) ?? { finished: 0, signed_off: 0 };
+    agg.finished += cell.finished;
+    agg.signed_off += cell.signed_off;
+    bands.set(band, agg);
+  }
+  const ordered = SIZE_BAND_ORDER.filter((b) => bands.has(b));
+  if (ordered.length === 0) return null;
+  const maxRate = 1;
+  return (
+    <div
+      data-testid="harness-effort-curve"
+      className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3"
+    >
+      <div className="mb-2 text-[13px] font-semibold">Effort curve</div>
+      <div className="mb-1 font-mono text-[10.5px] text-faint">
+        Signed-off rate by size band — above-floor cells only
+      </div>
+      <div className="flex items-end gap-3" data-testid="harness-effort-bars">
+        {ordered.map((band) => {
+          const agg = bands.get(band)!;
+          const rate = agg.finished > 0 ? agg.signed_off / agg.finished : 0;
+          const barHeight = 4 + Math.round((rate / maxRate) * 28);
+          return (
+            <div key={band} className="flex flex-1 flex-col items-center gap-1">
+              <div
+                data-testid="harness-effort-bar"
+                data-band={band}
+                title={`${band}: ${agg.signed_off}/${agg.finished} signed off (${Math.round(rate * 100)}%)`}
+                className="w-full rounded-[2px] bg-st-done"
+                style={{ height: `${barHeight}px` }}
+              />
+              <span className="font-mono text-[10px] text-muted">
+                {Math.round(rate * 100)}%
+              </span>
+              <span className="font-mono text-[9px] text-faint">{band}</span>
+              <span className="font-mono text-[9px] text-faint">
+                {agg.signed_off}/{agg.finished}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
