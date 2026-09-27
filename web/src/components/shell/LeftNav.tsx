@@ -1,6 +1,6 @@
 import { Activity, BarChart3, BookMarked, Building2, Check, ChevronDown, CreditCard, GitBranch, GitFork, Gauge, Inbox, LayoutGrid, ListChecks, Map, Network, Orbit, Palette, Plug, Plus, Radar, ScrollText, Server, Settings, ShieldCheck, Sparkles, Star, Users, UsersRound } from "lucide-react";
 import * as React from "react";
-import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 
 import {
   DropdownMenu,
@@ -13,6 +13,7 @@ import {
 import { useProjectCtx } from "@/features/ProjectContext";
 import { NewProjectDialog } from "@/features/onboarding/NewProjectDialog";
 import { SPECULATIVE_ENABLED } from "@/features/orgadmin/Speculative";
+import { CloudOrgLinkDialog } from "@/features/settings/CloudOrgLinkDialog";
 import { cn } from "@/lib/cn";
 import {
   useCounts,
@@ -321,6 +322,7 @@ function SelfHostLeftNav() {
   const { data: adminMe } = useIsPlatformAdmin();
   const isPlatformAdmin = !!adminMe?.is_platform_admin;
   const [newProjectOpen, setNewProjectOpen] = React.useState(false);
+  const [orgDialogOpen, setOrgDialogOpen] = React.useState(false);
   const { pathname } = useLocation();
   // A header expands its section and stops there — it is a disclosure, not a link. Clicking
   // "Observe" used to navigate to whichever child the rail guessed at, which lands you on a
@@ -449,10 +451,11 @@ function SelfHostLeftNav() {
       </nav>
 
       <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-3">
-        <OrgRailItem />
+        <OrgRailItem onOpenDialog={() => setOrgDialogOpen(true)} />
         {isPlatformAdmin && <NavItem to="/admin" icon={<ShieldCheck size={16} />} label="Operator" />}
         <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
       </div>
+      <CloudOrgLinkDialog open={orgDialogOpen} onOpenChange={setOrgDialogOpen} />
     </aside>
   );
 }
@@ -484,9 +487,8 @@ function SectionHeader({
   );
 }
 
-function OrgRailItem() {
+function OrgRailItem({ onOpenDialog }: { onOpenDialog: () => void }) {
   const { data: status, isLoading } = useSyncStatus();
-  const navigate = useNavigate();
   const url = usableHttpUrl(status?.cloud_url);
   if (isLoading && !status) {
     return <NavItem to={settingsPath("deployment/sync")} icon={<Building2 size={16} />} label="Organization" />;
@@ -504,15 +506,15 @@ function OrgRailItem() {
       </a>
     );
   }
-  const reason = status && status.cloud_url.trim() ? "malformed" : "missing";
   return (
     <button
       type="button"
-      onClick={() => navigate(`${settingsPath("deployment/sync")}?reason=${reason}`)}
+      onClick={onOpenDialog}
       className="flex items-center gap-2.5 rounded-[9px] px-2.5 py-2 text-left text-[13px] text-muted transition-colors hover:bg-surface-3 hover:text-fg-2"
     >
       <Building2 size={16} />
       <span className="flex-1">Organization</span>
+      <span className="h-2 w-2 flex-none rounded-full bg-st-review" title="Not linked" />
     </button>
   );
 }
