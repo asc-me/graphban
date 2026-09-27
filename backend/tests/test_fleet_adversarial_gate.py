@@ -589,7 +589,7 @@ def test_builder_only_coverage_is_refused_until_the_reviewer_names_it(client, ke
     tests; the reviewer passing none is refused naming the clauses, and passing its own
     tests signs off."""
     worker = _ok(client, key, "register_agent",
-                 {"label": "w", "capabilities": {"instance": "w"}})
+                 {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
     _ok(client, key, "create_item", {"title": "w", "status": "next", "effort": 5,
                                      "description": DESC_TWO_CLAUSES})
     c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
@@ -643,7 +643,7 @@ def test_receipt_and_item_carry_the_reviewers_tier(client, key):
     """A cheap-on-cheap sign-off must read differently from a frontier one: the predicate
     names tier, vendor and model, and every item read surfaces them as `reviewer`."""
     worker = _ok(client, key, "register_agent",
-                 {"label": "w", "capabilities": {"instance": "w"}})
+                 {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
     _ok(client, key, "create_item", {"title": "w", "status": "next", "effort": 1})
     c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
     item = c["item"]["id"]
