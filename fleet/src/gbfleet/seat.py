@@ -188,13 +188,38 @@ DEPENDENCY = (
     "missing, and carry on with the rest.\n"
 )
 
+#: GRPH-974. Neither template said "commit", and four of four productive children on the
+#: PRD-47 waves did not — they built, moved the item to review with evidence, and exited on a
+#: dirty tree. What follows is automatic and was invisible to everybody: `reap` salvages the
+#: tree as `WIP: salvaged by gbfleet`, a salvage subject is DELIBERATELY never proposed as a PR
+#: (GRPH-926 — those drafts were landing as mergeable `WIP:` PRs, which was the wrong
+#: receipt), and nothing else opens one. So the work existed, no CI ran, nobody reviewed it, and
+#: the item still reached `done`. GRPH-959 stranded a 891-line `MemoryTriageView.tsx` that way.
+#:
+#: The one child that DID get a PR that week (#865) committed of its own accord. So this is not
+#: a model failing to follow an instruction; it is an instruction that was never given.
+#:
+#: Unlike BOUNDARY and DEPENDENCY this is not a "sentence, not a control" — it is a missing step
+#: in the loop the child is told to run. The reciprocal gate, refusing `done` when no commit a
+#: reviewer could read exists, is GRPH-973 and is not built: until it is, this sentence is the
+#: only thing between real work and a stranded branch.
+COMMIT = (
+    "Commit your work in the worktree BEFORE you move the item to review. The commit is part "
+    "of the deliverable, not bookkeeping: the supervisor pushes your branch and opens the pull "
+    "request from what you committed, and it opens nothing at all for an uncommitted tree — "
+    "that gets salvaged as a `WIP: salvaged by gbfleet` draft which is never proposed, so your "
+    "work would exist with nothing reviewing it. Leave the tree clean apart from your "
+    "credential file.\n"
+)
+
+
 INSTRUCTION = (
     "Register with `register_agent` using enrolment_code={code!r}, worktree={worktree!r} "
     "and branch={branch!r}.\n"
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY +
+    + BOUNDARY + DEPENDENCY + COMMIT +
     "Call claim_review with wait_seconds=0. If there is nothing to review, call "
     "claim_cluster with wait_seconds=0 to take the next ready non-colliding cluster. "
     "EXIT when both are empty — exiting on an empty queue is the normal end of your "
@@ -212,10 +237,11 @@ BOUND_INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY +
+    + BOUNDARY + DEPENDENCY + COMMIT +
     "This seat is BOUND to {item}: registering on it claims that item for you. Read the "
     "reply's `assigned`. If `assigned.state` is `claimed`, you HOLD {item} — read it with "
-    "get_item_details, build it, move it to review with evidence. Then, still in this "
+    "get_item_details, build it, COMMIT it, then move it to review with evidence. Then, "
+    "still in this "
     "process, call claim_review with wait_seconds=0 and review what you did NOT build — "
     "sign_off, or bounce with a reason — and call it again until it answers claimed=false; "
     "then EXIT. Do NOT call claim_cluster or claim_next; you have your build work, and "
