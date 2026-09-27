@@ -2814,6 +2814,19 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             raise errors.Conflict(str(e), hint=(
                 "dispatch two opposing-lens critics, or run the passes yourself, and record "
                 "each as evidence {kind: sabotage, claim, mutation, tests_failed}"))
+        except fleet_svc.AttestedTheBase as e:
+            # Audited on the refusal path with the others: a gate nobody can see being routed
+            # around is a gate on paper (GRPH-970).
+            events_svc.record_key(
+                db, key, action="sign_off_refused", target_type="item",
+                target_id=args.get("id", ""), project_id=pid,
+                meta={"reason": str(e), "agent_id": args.get("agent_id")})
+            # Conflict, like its neighbours: the caller may sign this off, but the revision it
+            # named is not the work.
+            raise errors.Conflict(str(e), hint=(
+                "attest the head of the branch you reviewed — `git rev-parse HEAD` in the "
+                "worktree — not the commit it was cut from; if `git log base..HEAD` is empty "
+                "there is nothing to review and this belongs in a bounce"))
         except fleet_svc.MissingAcceptanceCoverage as e:
             events_svc.record_key(
                 db, key, action="sign_off_refused", target_type="item",

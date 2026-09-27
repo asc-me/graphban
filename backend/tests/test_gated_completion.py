@@ -331,8 +331,14 @@ def test_sign_off_with_a_commit_mints_a_valid_attestation(db):
         f"sign_off completed an item without attesting it: {out.evidence}"
     [att] = items_svc.valid_attestations(out.evidence)
     assert att["adapter"] == "fleet.sign_off"
+    # Pinned as an exact set, not a subset, and kept that way: a receipt that silently grew or
+    # lost a predicate would change what a past `done` means, and every reader of this record
+    # would be wrong about which checks stood behind it. `commit_is_not_the_base` joined in
+    # GRPH-970 — the first predicate to look at WHICH revision is being vouched for, after a
+    # wave signed an item off on the base commit of its own branch.
     assert {p["name"] for p in att["predicates"]} == {
-        "independent_review", "adversarial_evidence", "acceptance_coverage"}
+        "independent_review", "adversarial_evidence", "acceptance_coverage",
+        "commit_is_not_the_base"}
 
 
 def test_sign_off_without_a_commit_attests_nothing_and_adds_nothing(db):

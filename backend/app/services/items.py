@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from datetime import timedelta, timezone
 
@@ -545,6 +546,79 @@ def attestation_receipts(evidence) -> list[dict]:
     """Every well-formed attestation on an item (GRPH-542)."""
     return [e for e in (evidence or [])
             if isinstance(e, dict) and e.get("kind") == "attestation"]
+
+
+WORKTREE_ADAPTER = "fleet.worktree"
+
+#: How a supervisor says which commit it cut a branch from, in a `note`'s prose (GRPH-970).
+#:
+#: A note, and not the attestation it wants to be, because writing `kind: attestation`
+#: needs the `gate` scope (mcp_server, GRPH-544) and a supervisor runs on whatever
+#: `GBFLEET_API_KEY` holds — `["read", "write"]` on every wave measured. An attestation
+#: receipt would have been REFUSED, the supervisor's `except` would have logged a wave
+#: failure nobody reads, and the gate below would have found no base and reported "not
+#: compared" for ever: a guard that does nothing, which is the defect it exists to fix.
+#:
+#: Prose is a worse carrier than a field and is used anyway, because `normalize_evidence`
+#: keeps only `kind`/`detail`/`url` on a note and inventing a field for this would change
+#: the evidence schema for one caller. It is written in exactly one place
+#: (`gbfleet.supervisor._record_cut_from`) and read in exactly one place (below), and the
+#: pair is pinned by test_fleet_base_commit_gate.
+CUT_FROM_MARKER = "gbfleet: branch cut from "
+
+_SHA = re.compile(r"\b([0-9a-f]{7,40})\b")
+
+
+def cut_from_commits(evidence) -> list[str]:
+    """Every commit a supervisor recorded as the base a branch was CUT FROM (GRPH-970).
+
+    The one fact about a child that the child is the worst possible source for, so it comes
+    from the supervisor that cut the tree. Two carriers are read: the `fleet.worktree`
+    attestation a `gate`-scoped supervisor can post, and the `CUT_FROM_MARKER` note any
+    supervisor can. Neither is a verdict — the attestation form carries no predicates, so
+    `valid_attestations` will not let it satisfy completion.
+
+    Measured on the p47-ui wave, 2026-09-27: GRPH-954 reached `done` on a `fleet.sign_off`
+    naming the base commit of its own branch, with three fabricated sabotage receipts and no
+    commit for the item anywhere on any ref. Every predicate passed. This is the fact that
+    was missing.
+
+    Why evidence rather than a column: evidence APPENDS and never removes
+    (`append_evidence`), so a child cannot delete the receipt that convicts it. A child CAN
+    add one, and that buys it nothing — another recorded base only narrows which commits it
+    may attest, and it can never remove the real one.
+    """
+    out = []
+    for e in (evidence or []):
+        if not isinstance(e, dict):
+            continue
+        if e.get("kind") == "attestation" and e.get("adapter") == WORKTREE_ADAPTER:
+            sha = str(e.get("commit") or "").strip()
+            if sha:
+                out.append(sha)
+            continue
+        detail = str(e.get("detail") or "")
+        if CUT_FROM_MARKER in detail:
+            found = _SHA.search(detail[detail.index(CUT_FROM_MARKER) + len(CUT_FROM_MARKER):])
+            if found:
+                out.append(found.group(1))
+    return out
+
+
+def same_commit(a: str | None, b: str | None) -> bool:
+    """Do two revisions name the same commit, allowing for abbreviation?
+
+    Git abbreviates, and the two sides of this comparison come from different places: the
+    supervisor records what `rev-parse` gave it, a reviewer types or pastes whatever it has.
+    Comparing full strings would let `7ea90ebe` slip past a recorded `7ea90ebebe2b...` — the
+    exact pair from the wave this guard was written for. Prefix comparison in the shorter
+    direction, with a floor, because a 4-character "match" is a collision, not an identity.
+    """
+    x = (a or "").strip().lower()
+    y = (b or "").strip().lower()
+    if len(x) < 7 or len(y) < 7:
+        return bool(x) and x == y
+    return x.startswith(y) or y.startswith(x)
 
 
 def valid_attestations(evidence, *, commit: str | None = None) -> list[dict]:
