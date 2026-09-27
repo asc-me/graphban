@@ -350,3 +350,22 @@ def test_an_all_in_one_agent_can_be_specialised_later(db, proj, key):
 
     assert a.active_role == "planner"
     assert fleet.role_for_call(db, api_key=key, agent_id=a.id)[0] == "planner", "now bound"
+
+
+def test_the_roster_shows_what_a_blocker_holds_back(db, proj, key):
+    """GRPH-950. `gbfleet until` holds a dependent whose dependency's PR is unmerged by writing
+    a blocker every claim path refuses. The roster showed who was working and nothing about
+    what was waiting, so a held dependent looked exactly like one nobody wanted."""
+    held = Item(id="i_held", number=1, project_id=proj, title="SA-556", status="next",
+                blocker="waiting on #397 (SA-558) to merge")
+    free = Item(id="i_free", number=2, project_id=proj, title="free", status="next")
+    done = Item(id="i_done", number=3, project_id=proj, title="finished", status="done",
+                blocker="stale text on finished work")
+    db.add_all([held, free, done])
+    db.commit()
+
+    out = fleet.fleet_status(db, proj)
+
+    assert out["held"] == [{"id": held.key, "title": "SA-556",
+                            "waiting_on": "waiting on #397 (SA-558) to merge"}]
+    assert free.key not in [h["id"] for h in out["held"]]

@@ -854,7 +854,22 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         # key is always present.
         "measured": delegation_svc.measured(db, project_id),
         "probe_suggestions": delegation_svc.probe_suggestions(db, project_id),
+        # GRPH-950: unstarted work that a blocker keeps out of every claim path — above all
+        # the dependents `gbfleet until` holds while their dependency's PR is unmerged
+        # ("waiting on #397 to merge"). The roster showed who is working; it could not show
+        # what is waiting, so a held dependent was indistinguishable from one nobody wanted.
+        # Always present: empty means nothing is held, not that nobody looked.
+        "held": held_items(db, project_id),
     }
+
+
+def held_items(db: Session, project_id: str | None) -> list[dict]:
+    """Backlog/next items carrying a `blocker`, with the blocker as the reason."""
+    return [
+        {"id": it.key, "title": it.title, "waiting_on": it.blocker}
+        for it in items_svc.list_items(db, project_id=project_id)
+        if it.status in ("backlog", "next") and (it.blocker or "").strip()
+    ]
 
 
 # ---- D2: the call gate ---------------------------------------------------------------------

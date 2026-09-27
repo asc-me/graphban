@@ -578,7 +578,21 @@ def _until(args) -> int:
         from . import until as until_mod
 
         try:
-            got = until_mod.plan(planner, args.prd or None, args.max_workers)
+            # GRPH-950: the base the loop would measure dependencies against, resolved the way
+            # the loop resolves it but without the fetch — a dry run changes nothing, refs too.
+            repo = Path(args.repo)
+            remote = remote_for(repo)
+            dry_base = ""
+            if args.base and remote:
+                from .worktree import resolve_base, BaseBranchNotFound
+                try:
+                    dry_base = resolve_base(repo, remote, args.base)
+                except BaseBranchNotFound:
+                    dry_base = ""
+            elif remote:
+                dry_base = default_ref(repo, remote)
+            got = until_mod.plan(planner, args.prd or None, args.max_workers,
+                                 repo=repo, base=dry_base)
         except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
             print(f"gbfleet until --dry-run: {exc}", file=sys.stderr)
             return 2
@@ -589,6 +603,8 @@ def _until(args) -> int:
         if got["clusters_held"]:
             print(f"{got['clusters_held']} cluster(s) held by another agent and not counted",
                   file=sys.stderr)
+        for row in got.get("dependency_holds") or []:
+            print(f"{row['item']} held: {row['waiting_on']}", file=sys.stderr)
         if got["capped_by_max_workers"]:
             print(f"capped at --max-workers {args.max_workers}; "
                   f"{got['clusters_free']} clusters are free", file=sys.stderr)

@@ -439,6 +439,9 @@ def _loop(
     # Items the GRPH-798 check HELD, with the finished dependencies they wait on. A merge
     # changes the answer, so these are lifted out of `delegated` when one lands.
     held: dict[str, list[str]] = {}
+    # GRPH-950: holds are blockers on the server, so they outlive the wave that wrote them.
+    _adopt_holds(planner, held, delegated)
+    rechecked = 0.0
 
     while True:
         # GRPH-869: planner, not supervisor. `watch_tick` → `_reap_exited` → `_publish`
@@ -517,10 +520,17 @@ def _loop(
             # offered again — the check re-runs against the freshly fetched ref and either
             # lets it through or holds it on whatever is still missing.
             for item_id in list(held):
+                # The blocker goes too (GRPH-950), or the server keeps refusing an item this
+                # loop has stopped refusing. The re-check below writes it back if still missing.
+                _lift(planner, item_id)
                 delegated.discard(item_id)
                 observe.emit("hold_lifted", item=item_id,
                              detail=f"{item_id}: a merge landed; re-checking its dependencies")
             held.clear()
+        elif held and time.monotonic() - rechecked >= HOLD_RECHECK_SECONDS:
+            # Merged by somebody other than this loop — a person, or a wave without `--merge`.
+            rechecked = time.monotonic()
+            _recheck_holds(planner, held, delegated, repo, base)
 
         try:
             need = _wanted_workers(planner, supervisor, live_n=len(live),
@@ -1002,7 +1012,8 @@ def _merged_on(blocked: list[dict]) -> str:
     return ""
 
 
-def plan(planner: Graphban, prd: str | None, max_workers: int) -> dict:
+def plan(planner: Graphban, prd: str | None, max_workers: int,
+         repo: Path | None = None, base: str = "") -> dict:
     """What this wave WOULD delegate, without delegating it (GRPH-819).
 
     Reported after a real wave: "you cannot ask what a wave would delegate before it does —
@@ -1042,8 +1053,47 @@ def plan(planner: Graphban, prd: str | None, max_workers: int) -> dict:
         # off every read while that reservation goes on blocking everyone — so a wave with no
         # free clusters and no `held` rows had nothing to show for itself at all.
         "holds": clusters.get("holds") or [],
+        # GRPH-950: what the loop would hold on an unmerged dependency — "SA-556 waiting on
+        # #397 to merge" — and what an earlier wave already holds. Empty without a repository
+        # and a base to measure against, which is the one case the check cannot run.
+        "dependency_holds": _dependency_holds(planner, free, repo, base),
         "capped_by_max_workers": len(free) > max_workers,
     }
+
+
+def _dependency_holds(planner: Graphban, free: list[dict], repo: Path | None,
+                      base: str) -> list[dict]:
+    """The GRPH-950 holds a wave would write now, and the ones already written. READS ONLY."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    try:
+        got = planner.call("search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
+    except (ToolFailed, NotPermitted, ServerUnreachable):
+        got = {}
+    for row in (got.get("results") if isinstance(got, dict) else None) or []:
+        if isinstance(row, dict) and deps.is_hold(str(row.get("blocker") or "")):
+            item_id = str(row.get("id") or "")
+            seen.add(item_id)
+            out.append({"item": item_id, "waiting_on": str(row.get("blocker") or ""),
+                        "already_held": True})
+    if repo is None or not base:
+        return out
+    for cluster in free:
+        for item_id in cluster.get("items") or []:
+            if not isinstance(item_id, str) or item_id in seen:
+                continue
+            seen.add(item_id)
+            try:
+                details = planner.call("get_item_details", id=item_id) or {}
+            except (ToolFailed, NotPermitted, ServerUnreachable):
+                continue
+            if not isinstance(details, dict) or not _seed_ready(details):
+                continue
+            absent, _ = deps.check(planner, item_id, repo, base)
+            if absent:
+                out.append({"item": item_id, "waiting_on": deps.waiting_on(absent, base),
+                            "already_held": False})
+    return out
 
 
 def _scope(prd: str | None) -> dict:
@@ -1125,6 +1175,79 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
     return deps._pr_is_merged(repo, details) is True
 
 
+def _hold(planner: Graphban, item_id: str, details: dict, absent: list[dict], base: str) -> bool:
+    """Write the GRPH-950 hold onto the item: a blocker every claim path refuses.
+
+    `delegated` only stops THIS loop offering the item. A child that `claim_cluster`s or
+    `claim_next`s asks the server, and the server calls a done dependency met — so without a
+    blocker the item this loop just held is the item a sibling child takes (SA-556). A blocker
+    somebody else wrote is left alone: it already keeps the item out of reach, and it is theirs.
+    """
+    current = str(details.get("blocker") or "")
+    if current and not deps.is_hold(current):
+        return False
+    text = deps.hold_text(item_id, absent, base)
+    if current == text:
+        return True
+    try:
+        planner.call("update_item", id=item_id, blocker=text)
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("hold_unrecorded", item=item_id, detail=str(exc))
+        return False
+    return True
+
+
+def _lift(planner: Graphban, item_id: str) -> None:
+    """Clear a GRPH-950 hold. Only ever called for items this module held."""
+    try:
+        got = planner.call("get_item_details", id=item_id) or {}
+        if isinstance(got, dict) and deps.is_hold(str(got.get("blocker") or "")):
+            planner.call("update_item", id=item_id, blocker="")
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("hold_unlifted", item=item_id, detail=str(exc))
+
+
+def _adopt_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str]) -> None:
+    """Holds an earlier wave wrote, taken over so this wave lifts them when their PR merges.
+
+    A blocker nobody re-checks strands its item after the merge it waits on — worse than the
+    duplicate it prevented, because it looks deliberate.
+    """
+    try:
+        got = planner.call("search_items", query=deps.HOLD_MARK, limit=200, fields="full") or {}
+    except (ToolFailed, NotPermitted, ServerUnreachable):
+        return
+    for row in (got.get("results") if isinstance(got, dict) else None) or []:
+        if not isinstance(row, dict) or not deps.is_hold(str(row.get("blocker") or "")):
+            continue
+        item_id = str(row.get("id") or "")
+        if item_id and item_id not in held:
+            held[item_id] = []
+            delegated.add(item_id)
+
+
+def _recheck_holds(planner: Graphban, held: dict[str, list[str]], delegated: set[str],
+                   repo: Path | None, base: str) -> None:
+    """Lift every hold whose dependency is now in `base` — merged by `--merge`, by a person,
+    or by a squash the forge reports (GRPH-950). Still missing stays held."""
+    if not base or repo is None:
+        return
+    for item_id in list(held):
+        absent, _ = deps.check(planner, item_id, repo, base)
+        if absent:
+            continue
+        _lift(planner, item_id)
+        held.pop(item_id, None)
+        delegated.discard(item_id)
+        observe.emit("hold_lifted", item=item_id,
+                     detail=f"{item_id}: its dependencies are in {base}; offered again")
+
+
+#: How often a running wave re-asks whether a held item's dependency has merged. The check is
+#: a `related_work` read and, for an unmerged commit, one `gh pr view` per held item.
+HOLD_RECHECK_SECONDS = 60
+
+
 def _delegate_next(
     planner: Graphban,
     agent_id: str,
@@ -1194,6 +1317,12 @@ def _delegate_next(
                            "the glob stays occupied",
                 )
             continue
+        # GRPH-950: EVERY ready member is dependency-checked, not only the seed. A bound child
+        # may `claim_cluster` its seed's neighbours, and `claim_next` hands out whatever the
+        # server calls ready — which a done-but-unmerged dependency is. A held member gets a
+        # blocker, which every claim path refuses, so the check binds on all of them rather
+        # than on the one item this loop happens to delegate.
+        clean: list[str] = []
         for candidate in items:
             if candidate in delegated or candidate not in details_for:
                 continue
@@ -1207,6 +1336,7 @@ def _delegate_next(
             if absent:
                 observe.emit("delegate_held", item=candidate,
                              detail=deps.explain(candidate, absent, base))
+                _hold(planner, candidate, details, absent, base)
                 # Marked delegated so the next tick does not re-offer it and spin. It is held for
                 # this wave, not refused forever — a merge changes the answer, and under
                 # `--merge` (GRPH-846) the dependency it names is the next merge to finish.
@@ -1221,6 +1351,9 @@ def _delegate_next(
                 # the work is missing, and refusing on it would stop every wave on a fresh clone.
                 observe.emit("dependency_unresolved", item=candidate,
                              detail=f"{row['id']}'s commit is not in this clone; not checked")
+            clean.append(candidate)
+        for candidate in clean:
+            details = details_for[candidate]
             brief = details.get("brief") if isinstance(details.get("brief"), dict) else {}
             lane = str(((brief.get("lane") or {}).get("value")) or "backend")
             want = str(request or ((brief.get("tier") or {}).get("value")) or "cheap")
