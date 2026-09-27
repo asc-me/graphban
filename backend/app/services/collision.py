@@ -99,14 +99,29 @@ def collision_clusters(db: Session, items: list[Item], project_id: str | None) -
     `predicted` marks a cluster whose grouping leaned on inferred (not actual) areas —
     lower confidence, a candidate for human tag-correction.
     """
+    areas, predicted = _areas_for(db, items, project_id)
+    return _partition([it.id for it in items], areas, predicted)
+
+
+def _areas_for(db: Session, items: list[Item],
+               project_id: str | None) -> tuple[dict[str, list[str]], dict[str, bool]]:
+    """(areas, predicted) per item id — the partition's input, computed once."""
     areas: dict[str, list[str]] = {}
     predicted: dict[str, bool] = {}
     for it in items:
         a, src = touch_areas(db, it, project_id)
         areas[it.id] = a
         predicted[it.id] = src == "predicted"
+    return areas, predicted
 
-    ids = [it.id for it in items]
+
+def _partition(ids: list[str], areas: dict[str, list[str]],
+               predicted: dict[str, bool]) -> list[dict]:
+    """The union-find behind `collision_clusters`, over areas already computed.
+
+    Separate so a cluster split by a review hold (GRPH-951) is re-partitioned by the same rule
+    that built it, not by a second definition of "collides".
+    """
     parent = {i: i for i in ids}
 
     def find(x: str) -> str:
@@ -149,7 +164,7 @@ def collision_clusters(db: Session, items: list[Item], project_id: str | None) -
             "items": members,
             "areas": sorted({a for m in members for a in areas[m]}),
             "collides": len(members) > 1,
-            "predicted": any(predicted[m] for m in members),
+            "predicted": any(predicted.get(m, False) for m in members),
             # Empty for a single-item cluster, which merged with nothing.
             "because": [m for m in merges if set(m["items"]) <= set(members)],
         }
@@ -205,22 +220,38 @@ def clusters_for_project(db: Session, project_id: str | None, status: str | None
     # the pool means the partition only contains work that can actually be delegated.
     ctx = prio.context(db, project_id)
     pool = [it for it in pool if it.status in ("in_progress", "review") or prio.ready(ctx, it)]
-    clusters = _with_reservations(db, collision_clusters(db, pool, project_id), project_id,
-                                  lease_seconds=lease_seconds)
-    return _occupy_review_globs(clusters, pool)
+    areas, predicted = _areas_for(db, pool, project_id)
+    clusters = _partition([it.id for it in pool], areas, predicted)
+    # Review holds BEFORE reservations: splitting a cluster changes its areas, and a
+    # reservation check run on the unsplit cluster would hold the freed siblings anyway.
+    clusters = _occupy_review_globs(clusters, pool, areas, predicted)
+    return _with_reservations(db, clusters, project_id, lease_seconds=lease_seconds)
 
 
-def _occupy_review_globs(clusters: list[dict], pool: list[Item]) -> list[dict]:
-    """A member in `review` occupies the glob after its reservation is gone (GRPH-886).
+def _occupy_review_globs(clusters: list[dict], pool: list[Item],
+                         areas: dict[str, list[str]] | None = None,
+                         predicted: dict[str, bool] | None = None) -> list[dict]:
+    """A member in `review` occupies ITS OWN areas after its reservation is gone (GRPH-886,
+    GRPH-951).
 
     `sign_off` / `release_item` / `bounce` drop area reservations, and moving to `review`
     does not keep one. Co-clustering the review row with its siblings is not a hold:
     `_with_reservations` only sets `held_by` from live reservations, so with none the
-    sibling is a free seed and `claim_cluster` takes it. Strip those siblings out of the
-    cluster (so they are not claimable) and mark what remains held (so `until` does not
-    seed the review id itself).
+    sibling is a free seed and `claim_cluster` takes it. So a sibling whose areas collide with
+    a review member's is stripped (not claimable), and the review members are marked held (so
+    `until` does not seed the review id itself).
+
+    Only THOSE siblings. The hold used to take the whole cluster, and a cluster can be joined
+    by transitivity through members that share nothing with the one in review: SA-576 in
+    review, held by a reviewer that had exited, idled a wave of screens whose files it never
+    named. A sibling disjoint from every review member goes back into the pool, re-partitioned
+    by the same rule as everything else.
     """
+    from app.services import fleet as fleet_svc
+
     by_id = {it.id: it for it in pool}
+    areas = areas if areas is not None else {it.id: list(it.touchpoints or []) for it in pool}
+    predicted = predicted if predicted is not None else {}
     out: list[dict] = []
     for cluster in clusters:
         ids = [i for i in (cluster.get("items") or []) if isinstance(i, str)]
@@ -228,20 +259,46 @@ def _occupy_review_globs(clusters: list[dict], pool: list[Item]) -> list[dict]:
         if not review_ids:
             out.append(cluster)
             continue
+        held_areas = sorted({a for r in review_ids for a in areas.get(r, [])})
+        siblings = [i for i in ids if i not in review_ids]
+        # A sibling with no areas at all collides with nothing we can name, and freeing it on
+        # that basis would read "nobody looked" as "disjoint". Held, like one that overlaps.
+        # A review member with no areas names nothing to hold by, so it holds all of them.
+        stuck = [i for i in siblings
+                 if not held_areas or not areas.get(i)
+                 or fleet_svc.areas_collide(areas.get(i, []), held_areas)]
+        free = [i for i in siblings if i not in stuck]
+
         occupied = dict(cluster)
         occupied["items"] = review_ids
+        occupied["areas"] = held_areas
+        occupied["because"] = [m for m in (cluster.get("because") or [])
+                               if set(m.get("items") or []) <= set(review_ids)]
         holders = set(occupied.get("held_by") or [])
         holders.add("review")
         occupied["held_by"] = sorted(holders)
-        because = list(occupied.get("held_because") or [])
-        because.append({
-            "area": "",
-            "reserved": "review",
-            "by": "review",
-            "rule": "a member is in review; the glob stays occupied after reservations drop",
-        })
-        occupied["held_because"] = because
+        held_because = list(occupied.get("held_because") or [])
+        for r in review_ids:
+            mine = areas.get(r, [])
+            key = by_id[r].key
+            held_because.append({
+                "area": "",
+                "reserved": "review",
+                "by": key,
+                # The files, named (GRPH-951). "A member is in review" left the reader to
+                # work out which files that meant; this is the sentence they needed.
+                "holds": mine,
+                "held": sorted(by_id[i].key for i in stuck
+                               if not mine or not areas.get(i)
+                               or fleet_svc.areas_collide(areas.get(i, []), mine)),
+                "rule": (f"{key} is in review and holds {', '.join(mine)}" if mine else
+                         f"{key} is in review and declares no areas, so it holds its cluster"),
+            })
+        occupied["held_because"] = held_because
         out.append(occupied)
+        if free:
+            out.extend(_partition(free, areas, predicted))
+    out.sort(key=lambda c: (-len(c["items"]), c["items"][0]))
     return out
 
 
@@ -294,10 +351,11 @@ def _with_reservations(db: Session, clusters: list[dict], project_id: str | None
                 expires = expires if expires.tzinfo else expires.replace(tzinfo=timezone.utc)
                 soonest = expires if soonest is None else min(soonest, expires)
         if holders:
-            cluster["held_by"] = sorted(holders)
+            # Merged, not replaced: a review hold (`_occupy_review_globs`) may already be here.
+            cluster["held_by"] = sorted(holders | set(cluster.get("held_by") or []))
             cluster["free_in"] = (max(0, int((soonest - now).total_seconds()))
                                   if soonest is not None else None)
-            cluster["held_because"] = blocking
+            cluster["held_because"] = list(cluster.get("held_because") or []) + blocking
     return clusters
 
 

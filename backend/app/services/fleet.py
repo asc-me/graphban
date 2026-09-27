@@ -860,7 +860,29 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         # what is waiting, so a held dependent was indistinguishable from one nobody wanted.
         # Always present: empty means nothing is held, not that nobody looked.
         "held": held_items(db, project_id),
+        # GRPH-951: what each item in review keeps out of reach, by file. A review member
+        # holds its own touchpoints and nothing else; "SA-576 holds CueQueue.tsx,
+        # styles/queue.css" is the sentence an operator watching an idle wave needed and
+        # could not read anywhere. Always present: empty means nothing is in review.
+        "review_holds": review_holds(db, project_id),
     }
+
+
+def review_holds(db: Session, project_id: str | None) -> list[dict]:
+    """Items in `review` and the declared areas each holds while it waits (GRPH-951).
+
+    Declared only. Predicting areas embeds the item's text, and the roster is read every
+    supervisor tick; an item with none says so rather than listing a guess.
+    """
+    out = []
+    for it in items_svc.list_items(db, project_id=project_id, status="review"):
+        areas = list(it.touchpoints or [])
+        out.append({
+            "id": it.key, "holds": areas,
+            "detail": (f"{it.key} holds {', '.join(areas)}" if areas
+                       else f"{it.key} declares no touchpoints; its hold is predicted"),
+        })
+    return out
 
 
 def held_items(db: Session, project_id: str | None) -> list[dict]:

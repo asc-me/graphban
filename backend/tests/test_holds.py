@@ -204,12 +204,13 @@ def test_a_held_cluster_names_the_area_and_the_rule(client, key, db, proj):
     from app.services import items as items_svc
 
     holder = _agent(client, key, "builder")
-    held = _item(client, key, "theirs", ["platform-models/list.ts"])
+    held = _item(client, key, "theirs", ["platform-models/lib"])
     stored = _reserve(db, agent_id=holder, item_id=held,
-                      areas=["platform-models/list.ts"])
+                      areas=["platform-models/lib"])
     # Claimed, so their item leaves the partition and mine forms its own cluster. What is left
     # relating the two is the DIRECTORY rule — the broad one, and the one the operator
-    # inferred and then talked themselves out of.
+    # inferred and then talked themselves out of. A directory on one side, because two named
+    # files no longer relate by directory at all (GRPH-951).
     items_svc.claim_item(db, stored, holder)
     db.commit()
     mine = _item(client, key, "mine", ["platform-models/route.ts"])
