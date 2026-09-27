@@ -157,10 +157,12 @@ describe("P28 self-host rail", () => {
 
     const hostedObserve = src.match(/const HOSTED_OBSERVE = \[[\s\S]*?\];/)?.[0] ?? "";
     const mem = hostedObserve.indexOf('to: "memory-review"');
+    const tri = hostedObserve.indexOf('to: "memory-triage"');
     const les = hostedObserve.indexOf('to: "lessons"');
     expect(mem).toBeGreaterThan(-1);
-    expect(les).toBeGreaterThan(mem);
-    expect(hostedObserve.slice(mem, les).match(/to:/g)?.length).toBe(1);
+    expect(tri).toBeGreaterThan(mem);
+    expect(les).toBeGreaterThan(tri);
+    expect(hostedObserve.slice(mem, les).match(/to:/g)?.length).toBe(2);
 
     const act = hostedObserve.indexOf('to: "activity"');
     const live = hostedObserve.indexOf('to: "live"');
