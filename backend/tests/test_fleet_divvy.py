@@ -76,7 +76,7 @@ def _worker(client, key, label):
     # These share one credential, so each declares a distinct `instance` — on a shared key an
     # agent must show something that differs to count as independent.
     return _ok(client, key, "register_agent",
-               {"label": label, "role_hint": "worker", "capabilities": {"instance": label}})
+               {"branch": "gb/test", "label": label, "role_hint": "worker", "capabilities": {"instance": label}})
 
 
 # ---- areas overlap by prefix, not by string equality ---------------------------------------
@@ -326,7 +326,7 @@ def test_signing_off_frees_the_areas(client, key, db):
     _ok(client, key, "update_item",
         {"id": got["items"][0]["id"], "status": "review", "agent_id": w1["agent_id"]})
     rev = _ok(client, key, "register_agent",
-               {"label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
+               {"branch": "gb/test", "label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
 
     _ok(client, key, "sign_off", {"id": got["items"][0]["id"], "agent_id": rev["agent_id"]})
 
@@ -369,7 +369,7 @@ def test_clusters_are_returned_as_rendered_keys(client, key):
 
 def test_a_planner_may_read_the_partition_but_not_claim_it(client, key):
     """The orchestrator allocates; it does not quietly take the work."""
-    planner = _ok(client, key, "register_agent", {"label": "p", "role_hint": "planner"})
+    planner = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "p", "role_hint": "planner"})
     _item(client, key, "A", ["backend/app/services/items.py"])
 
     assert _ok(client, key, "collision_clusters", {"agent_id": planner["agent_id"]})["total"] >= 1
@@ -520,7 +520,7 @@ def test_claim_cluster_refuses_when_agent_holds_bound_item(client, key, db, proj
 
     # Register a planner agent (no role_hint, shared key has planner scope)
     planner_res = _ok(client, key, "register_agent",
-                      {"label": "planner", "capabilities": {"instance": "planner"}})
+                      {"branch": "gb/test", "label": "planner", "capabilities": {"instance": "planner"}})
     planner_id = planner_res["agent_id"]
 
     # Delegate item1 with a bound seat (seat=True) via MCP
@@ -532,7 +532,7 @@ def test_claim_cluster_refuses_when_agent_holds_bound_item(client, key, db, proj
 
     # Now register a worker on that bound seat
     worker_res = _ok(client, key, "register_agent",
-                     {"label": "bound-worker", "enrolment_code": enrolment_code,
+                     {"branch": "gb/test", "label": "bound-worker", "enrolment_code": enrolment_code,
                       "worktree": "/tmp/test-wt", "branch": "gb/test"})
     worker_id = worker_res["agent_id"]
     assert worker_res.get("assigned", {}).get("state") == "claimed", (

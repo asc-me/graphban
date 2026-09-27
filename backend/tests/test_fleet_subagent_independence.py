@@ -84,9 +84,9 @@ def _built_by(client, key, agent):
 def test_a_declared_subagent_cannot_review_its_parent(client, key, db):
     """THE case. Before this, `SA-A2` claimed and signed `SA-A1`'s item."""
     parent = _ok(client, key, "register_agent",
-                 {"label": "orchestrator", "capabilities": {"vendor": "anthropic"}})
+                 {"branch": "gb/test", "label": "orchestrator", "capabilities": {"vendor": "anthropic"}})
     child = _ok(client, key, "register_agent",
-                {"label": "verifier subagent", "role_hint": "reviewer",
+                {"branch": "gb/test", "label": "verifier subagent", "role_hint": "reviewer",
                  "parent_agent_id": parent["agent_id"],
                  "capabilities": {"vendor": "anthropic"}})
     item = _built_by(client, key, parent)
@@ -103,9 +103,9 @@ def test_an_undeclared_subagent_is_caught_by_credential_and_host(client, key, db
     """The common case: a subagent inherits its parent's key and runs in its process, and
     nobody remembers to declare anything. Identity cannot see it; co-location can."""
     caps = {"vendor": "anthropic", "host": "macbook"}
-    parent = _ok(client, key, "register_agent", {"label": "parent", "capabilities": caps})
+    parent = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "parent", "capabilities": caps})
     child = _ok(client, key, "register_agent",
-                {"label": "child", "role_hint": "reviewer", "capabilities": caps})
+                {"branch": "gb/test", "label": "child", "role_hint": "reviewer", "capabilities": caps})
     _built_by(client, key, parent)
 
     got = _ok(client, key, "claim_review", {"agent_id": child["agent_id"]})
@@ -121,9 +121,9 @@ def test_two_windows_of_one_model_on_one_machine_are_not_two_opinions(client, ke
     """Something the ORIGINAL ban missed entirely. These are two agents by D1's definition —
     correctly, for arbitration — and they are still one perspective for review."""
     caps = {"vendor": "anthropic", "host": "macbook"}
-    a = _ok(client, key, "register_agent", {"label": "window 1", "capabilities": caps})
+    a = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "window 1", "capabilities": caps})
     b = _ok(client, key, "register_agent",
-            {"label": "window 2", "role_hint": "reviewer", "capabilities": caps})
+            {"branch": "gb/test", "label": "window 2", "role_hint": "reviewer", "capabilities": caps})
     assert a["agent_id"] != b["agent_id"], "still two agents — D1 is untouched"
     _built_by(client, key, a)
 
@@ -133,11 +133,11 @@ def test_two_windows_of_one_model_on_one_machine_are_not_two_opinions(client, ke
 def test_siblings_under_one_parent_cannot_review_each_other(client, key, db):
     """One call tree, two children. Neither built the other's work, but neither is a second
     opinion on it either."""
-    parent = _ok(client, key, "register_agent", {"label": "parent"})
+    parent = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "parent"})
     a = _ok(client, key, "register_agent",
-            {"label": "child a", "parent_agent_id": parent["agent_id"]})
+            {"branch": "gb/test", "label": "child a", "parent_agent_id": parent["agent_id"]})
     b = _ok(client, key, "register_agent",
-            {"label": "child b", "role_hint": "reviewer",
+            {"branch": "gb/test", "label": "child b", "role_hint": "reviewer",
              "parent_agent_id": parent["agent_id"]})
     _built_by(client, key, a)
 
@@ -156,8 +156,8 @@ def test_a_real_fleet_still_reviews_itself(client, auth, proj, db):
                                json={"project_id": proj, "role": "worker", "wave": "w1"},
                                headers=auth).json()["plaintext"]
     caps = {"vendor": "anthropic", "host": "macbook"}
-    w = _ok(client, worker_key, "register_agent", {"label": "w", "capabilities": caps})
-    r = _ok(client, reviewer_key, "register_agent", {"label": "r", "capabilities": caps})
+    w = _ok(client, worker_key, "register_agent", {"branch": "gb/test", "label": "w", "capabilities": caps})
+    r = _ok(client, reviewer_key, "register_agent", {"branch": "gb/test", "label": "r", "capabilities": caps})
     item = _built_by(client, worker_key, w)
 
     got = _ok(client, reviewer_key, "claim_review", {"agent_id": r["agent_id"]})
@@ -169,9 +169,9 @@ def test_one_key_across_two_machines_stays_independent(client, key, db):
     """Different hosts are genuinely separate processes on separate machines. Refusing there
     would block a real fleet for no gain."""
     a = _ok(client, key, "register_agent",
-            {"label": "a", "capabilities": {"vendor": "anthropic", "host": "macbook"}})
+            {"branch": "gb/test", "label": "a", "capabilities": {"vendor": "anthropic", "host": "macbook"}})
     b = _ok(client, key, "register_agent",
-            {"label": "b", "role_hint": "reviewer",
+            {"branch": "gb/test", "label": "b", "role_hint": "reviewer",
              "capabilities": {"vendor": "anthropic", "host": "lan-box"}})
     _built_by(client, key, a)
 
@@ -186,9 +186,9 @@ def test_a_declared_difference_other_than_host_still_earns_independence(client, 
     This test previously passed for the opposite reason: absence was read as a difference, so
     two agents declaring nothing at all could review each other. That made the honest agent
     the restricted one, since declaring a matching host was the only way to be refused."""
-    a = _ok(client, key, "register_agent", {"label": "a", "capabilities": {"vendor": "x"}})
+    a = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "a", "capabilities": {"vendor": "x"}})
     b = _ok(client, key, "register_agent",
-            {"label": "b", "role_hint": "reviewer", "capabilities": {"vendor": "y"}})
+            {"branch": "gb/test", "label": "b", "role_hint": "reviewer", "capabilities": {"vendor": "y"}})
     _built_by(client, key, a)
 
     assert _ok(client, key, "claim_review", {"agent_id": b["agent_id"]})["claimed"] is True
@@ -221,8 +221,8 @@ def test_two_agents_that_declare_nothing_cannot_review_each_other(client, key, d
     The remedy has to be reachable, which is why the refusal names it. `instance` exists for
     clients that cannot hold two credentials at once (Cursor stores one MCP config and reuses
     it), so "declare who you are" is something an agent can always do."""
-    a = _ok(client, key, "register_agent", {"label": "a"})
-    b = _ok(client, key, "register_agent", {"label": "b", "role_hint": "reviewer"})
+    a = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "a"})
+    b = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "b", "role_hint": "reviewer"})
     _built_by(client, key, a)
 
     out = _ok(client, key, "claim_review", {"agent_id": b["agent_id"]})
@@ -236,9 +236,9 @@ def test_an_instance_tag_is_enough_to_separate_two_agents_on_one_credential(clie
     it buys coordination, not an adversarial boundary. An agent that wants to review its own
     work can claim a different instance; what this stops is the accident."""
     a = _ok(client, key, "register_agent",
-            {"label": "a", "capabilities": {"instance": "cursor-worker-1"}})
+            {"branch": "gb/test", "label": "a", "capabilities": {"instance": "cursor-worker-1"}})
     b = _ok(client, key, "register_agent",
-            {"label": "b", "role_hint": "reviewer",
+            {"branch": "gb/test", "label": "b", "role_hint": "reviewer",
              "capabilities": {"instance": "cursor-reviewer-1"}})
     _built_by(client, key, a)
 
@@ -249,9 +249,9 @@ def test_the_same_instance_tag_is_not_two_opinions(client, key, db):
     """A tag that never varies is a tag that means nothing — and copy-pasting one prompt into
     four Cursor chats is the likeliest way to end up here."""
     a = _ok(client, key, "register_agent",
-            {"label": "a", "capabilities": {"instance": "cursor"}})
+            {"branch": "gb/test", "label": "a", "capabilities": {"instance": "cursor"}})
     b = _ok(client, key, "register_agent",
-            {"label": "b", "role_hint": "reviewer", "capabilities": {"instance": "cursor"}})
+            {"branch": "gb/test", "label": "b", "role_hint": "reviewer", "capabilities": {"instance": "cursor"}})
     _built_by(client, key, a)
 
     assert _ok(client, key, "claim_review", {"agent_id": b["agent_id"]})["claimed"] is False
@@ -267,9 +267,9 @@ def test_declaring_nothing_does_not_make_you_different_from_someone_who_did(clie
     both-absent behaving correctly (None != None is false) and only breaks THIS case, so the
     two-agents-declare-nothing test alone cannot see it."""
     a = _ok(client, key, "register_agent",
-            {"label": "honest", "capabilities": {"host": "macbook"}})
+            {"branch": "gb/test", "label": "honest", "capabilities": {"host": "macbook"}})
     b = _ok(client, key, "register_agent",
-            {"label": "silent", "role_hint": "reviewer", "capabilities": {}})
+            {"branch": "gb/test", "label": "silent", "role_hint": "reviewer", "capabilities": {}})
     _built_by(client, key, a)
 
     assert _ok(client, key, "claim_review", {"agent_id": b["agent_id"]})["claimed"] is False
@@ -382,9 +382,9 @@ def test_a_subagent_with_its_own_seat_is_refused_through_the_surface(client, aut
                         json={"project_id": proj, "roles": ["worker", "worker"],
                               "wave": "w1"}, headers=auth).json()["seats"]
     parent = _ok(client, plaintext, "register_agent",
-                 {"label": "orchestrator", "enrolment_code": codes[0]["code"]})
+                 {"branch": "gb/test", "label": "orchestrator", "enrolment_code": codes[0]["code"]})
     child = _ok(client, plaintext, "register_agent",
-                {"label": "verifier", "enrolment_code": codes[1]["code"],
+                {"branch": "gb/test", "label": "verifier", "enrolment_code": codes[1]["code"],
                  "parent_agent_id": parent["agent_id"]})
     assert child["active_role"] == "worker" and child["enrolled"] is True
 

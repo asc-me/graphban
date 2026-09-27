@@ -136,7 +136,7 @@ def test_a_seat_grants_its_role_on_a_shared_credential(client, key, proj, db):
     issued the grant rather than the agent asserting it."""
     _, code = _seat(db, proj, "worker")
 
-    me = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": code})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "r", "enrolment_code": code})
 
     assert me["active_role"] == "worker"
     assert me["enrolled"] is True
@@ -148,7 +148,7 @@ def test_the_seat_beats_a_conflicting_role_hint(client, key, proj, db):
     _, code = _seat(db, proj, "worker")
 
     me = _ok(client, key, "register_agent",
-             {"label": "r", "role_hint": "planner", "enrolment_code": code})
+             {"branch": "gb/test", "label": "r", "role_hint": "planner", "enrolment_code": code})
 
     assert me["active_role"] == "worker"
 
@@ -157,7 +157,7 @@ def test_registering_without_a_seat_is_all_in_one_and_says_so(client, key):
     """G5/D-c: the default costs nothing, and `enrolled` is STATED rather than inferred —
     `all-in-one` is both a grantable seat role and what an un-enrolled agent gets, so a client
     cannot tell the deliberate case from the forgotten one without being told."""
-    me = _ok(client, key, "register_agent", {"label": "solo"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "solo"})
 
     assert me["active_role"] == fleet.ALL_IN_ONE
     assert me["enrolled"] is False
@@ -167,9 +167,9 @@ def test_a_seat_cannot_be_redeemed_twice(client, key, proj, db):
     """Single use is correctness, not caution: two agents on one enrolment cannot review each
     other, so a reused code disables review inside a wave that looks correctly provisioned."""
     _, code = _seat(db, proj, "worker")
-    _ok(client, key, "register_agent", {"label": "first", "enrolment_code": code})
+    _ok(client, key, "register_agent", {"branch": "gb/test", "label": "first", "enrolment_code": code})
 
-    res = _rpc(client, key, "register_agent", {"label": "second", "enrolment_code": code})
+    res = _rpc(client, key, "register_agent", {"branch": "gb/test", "label": "second", "enrolment_code": code})
 
     assert res.get("isError") is True
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
@@ -181,7 +181,7 @@ def test_an_expired_seat_is_refused(client, key, proj, db):
     row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
     db.commit()
 
-    res = _rpc(client, key, "register_agent", {"label": "late", "enrolment_code": code})
+    res = _rpc(client, key, "register_agent", {"branch": "gb/test", "label": "late", "enrolment_code": code})
 
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
     assert "expired" in res["structuredContent"]["error"]["message"]
@@ -189,7 +189,7 @@ def test_an_expired_seat_is_refused(client, key, proj, db):
 
 def test_an_unknown_code_is_refused(client, key):
     res = _rpc(client, key, "register_agent",
-               {"label": "x", "enrolment_code": "WORKER-ZZZZZZ"})
+               {"branch": "gb/test", "label": "x", "enrolment_code": "WORKER-ZZZZZZ"})
 
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
 
@@ -200,7 +200,7 @@ def test_a_seat_from_another_project_is_refused(client, auth, key, proj, db):
     other = client.post("/api/projects", json={"name": "Elsewhere"}, headers=auth).json()["id"]
     _, code = _seat(db, other, "worker")
 
-    res = _rpc(client, key, "register_agent", {"label": "x", "enrolment_code": code})
+    res = _rpc(client, key, "register_agent", {"branch": "gb/test", "label": "x", "enrolment_code": code})
 
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
     assert "different project" in res["structuredContent"]["error"]["message"]
@@ -216,7 +216,7 @@ def test_a_seat_cannot_grant_a_role_the_credential_forbids(client, auth, proj, d
                          headers=auth).json()["plaintext"]
     _, code = _seat(db, proj, "planner")
 
-    res = _rpc(client, narrow, "register_agent", {"label": "x", "enrolment_code": code})
+    res = _rpc(client, narrow, "register_agent", {"branch": "gb/test", "label": "x", "enrolment_code": code})
 
     assert res["structuredContent"]["error"]["code"] == "unauthorized"
     msg = res["structuredContent"]["error"]["message"]
@@ -231,7 +231,7 @@ def test_a_refused_ceiling_does_not_burn_the_seat(client, auth, proj, db):
                          json={"project_id": proj, "role": "worker", "wave": "w1"},
                          headers=auth).json()["plaintext"]
     row, code = _seat(db, proj, "planner")
-    _rpc(client, narrow, "register_agent", {"label": "x", "enrolment_code": code})
+    _rpc(client, narrow, "register_agent", {"branch": "gb/test", "label": "x", "enrolment_code": code})
 
     db.refresh(row)
     assert fleet.enrolment_state(row) == "unused", "the refused seat is still redeemable"
@@ -240,7 +240,7 @@ def test_a_refused_ceiling_does_not_burn_the_seat(client, auth, proj, db):
     # against a seat marked unused but rejected for some other reason on the retry.
     wide = client.post("/api/api-keys", json={"name": "wide", "project_id": proj},
                        headers=auth).json()["plaintext"]
-    me = _ok(client, wide, "register_agent", {"label": "retry", "enrolment_code": code})
+    me = _ok(client, wide, "register_agent", {"branch": "gb/test", "label": "retry", "enrolment_code": code})
     assert me["active_role"] == "planner"
 
 
@@ -251,7 +251,7 @@ def test_a_refused_registration_mints_no_agent(client, key, proj, db):
     from app.models import Agent
 
     before = db.query(Agent).count()
-    _rpc(client, key, "register_agent", {"label": "x", "enrolment_code": "WORKER-ZZZZZZ"})
+    _rpc(client, key, "register_agent", {"branch": "gb/test", "label": "x", "enrolment_code": "WORKER-ZZZZZZ"})
 
     assert db.query(Agent).count() == before
 
@@ -262,7 +262,7 @@ def test_the_agent_records_which_seat_it_consumed(client, key, proj, db):
     from app.models import Agent
 
     row, code = _seat(db, proj, "worker")
-    me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": code})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": code})
 
     db.refresh(row)
     assert db.get(Agent, me["agent_id"]).enrolment_id == row.id
@@ -289,8 +289,8 @@ def test_two_seats_on_one_credential_can_review_each_other(client, key, proj, db
     sessions, and the SERVER decided that rather than an agent claiming it."""
     _, wcode = _seat(db, proj, "worker")
     _, rcode = _seat(db, proj, "worker")
-    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": wcode})
-    r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": rcode})
+    w = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": wcode})
+    r = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "r", "enrolment_code": rcode})
     _built_by(client, key, w["agent_id"])
 
     out = _ok(client, key, "claim_review", {"agent_id": r["agent_id"]})
@@ -304,8 +304,8 @@ def test_the_same_seat_twice_is_not_two_opinions(client, key, proj, db):
     from app.models import Agent
 
     _, code = _seat(db, proj, "worker")
-    a = _ok(client, key, "register_agent", {"label": "a", "enrolment_code": code})
-    b = _ok(client, key, "register_agent", {"label": "b", "role_hint": "reviewer"})
+    a = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "a", "enrolment_code": code})
+    b = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "b", "role_hint": "reviewer"})
     row = db.get(Agent, b["agent_id"])
     row.enrolment_id = db.get(Agent, a["agent_id"]).enrolment_id
     db.commit()
@@ -319,8 +319,8 @@ def test_an_enrolled_agent_beside_an_unenrolled_one_falls_back(client, key, proj
     be anything, including the same one twice. So the rule falls through to the declared
     discriminators, exactly as strict as before: neither declared anything, so no."""
     _, code = _seat(db, proj, "worker")
-    w = _ok(client, key, "register_agent", {"label": "w"})
-    r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": code})
+    w = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w"})
+    r = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "r", "enrolment_code": code})
     _built_by(client, key, w["agent_id"])
 
     out = _ok(client, key, "claim_review", {"agent_id": r["agent_id"]})
@@ -333,9 +333,9 @@ def test_the_fallback_still_works_when_only_one_is_enrolled(client, key, proj, d
     independence when one side happens to hold a seat."""
     _, code = _seat(db, proj, "worker")
     w = _ok(client, key, "register_agent",
-            {"label": "w", "capabilities": {"instance": "solo-1"}})
+            {"branch": "gb/test", "label": "w", "capabilities": {"instance": "solo-1"}})
     r = _ok(client, key, "register_agent",
-            {"label": "r", "enrolment_code": code, "capabilities": {"instance": "solo-2"}})
+            {"branch": "gb/test", "label": "r", "enrolment_code": code, "capabilities": {"instance": "solo-2"}})
     _built_by(client, key, w["agent_id"])
 
     assert _ok(client, key, "claim_review", {"agent_id": r["agent_id"]})["claimed"] is True
@@ -347,9 +347,9 @@ def test_a_seat_does_not_launder_a_call_tree(client, key, proj, db):
     setting itself as parent on seats it mints, which would collapse the opposite way."""
     _, pcode = _seat(db, proj, "worker")
     _, ccode = _seat(db, proj, "worker")
-    parent = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": pcode})
+    parent = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "p", "enrolment_code": pcode})
     child = _ok(client, key, "register_agent",
-                {"label": "c", "enrolment_code": ccode,
+                {"branch": "gb/test", "label": "c", "enrolment_code": ccode,
                  "parent_agent_id": parent["agent_id"]})
     _built_by(client, key, parent["agent_id"])
 
@@ -380,7 +380,7 @@ def test_the_roster_call_reports_seat_state(client, auth, proj, key, db):
     codes = client.post("/api/fleet/seats",
                         json={"project_id": proj, "wave": "w1", "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
-    _ok(client, key, "register_agent", {"label": "w", "enrolment_code": codes[0]["code"]})
+    _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": codes[0]["code"]})
 
     seats = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["seats"]
 
@@ -419,7 +419,7 @@ def test_reissue_gives_a_fresh_code_and_keeps_the_dead_seat(client, auth, proj, 
     first = client.post("/api/fleet/seats",
                         json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
                         headers=auth).json()["seats"][0]
-    _ok(client, key, "register_agent", {"label": "w", "enrolment_code": first["code"]})
+    _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": first["code"]})
 
     fresh = client.post(f"/api/fleet/seats/{first['id']}/reissue", headers=auth).json()
 
@@ -438,7 +438,7 @@ def test_a_reissued_seat_actually_works(client, auth, proj, key, db):
                         headers=auth).json()["seats"][0]
     fresh = client.post(f"/api/fleet/seats/{first['id']}/reissue", headers=auth).json()
 
-    me = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": fresh["code"]})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "r", "enrolment_code": fresh["code"]})
 
     assert me["active_role"] == "worker" and me["enrolled"] is True
 
@@ -464,7 +464,7 @@ def test_ending_a_wave_leaves_the_credential_authenticating(client, auth, proj, 
     seats = client.post("/api/fleet/seats",
                         json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
                         headers=auth).json()["seats"]
-    _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": seats[0]["code"]})
 
     _end_wave(client, auth, proj)
 
@@ -472,7 +472,7 @@ def test_ending_a_wave_leaves_the_credential_authenticating(client, auth, proj, 
     fresh = client.post("/api/fleet/seats",
                         json={"project_id": proj, "wave": "w2", "roles": ["worker"]},
                         headers=auth).json()["seats"][0]
-    me = _ok(client, key, "register_agent", {"label": "w2", "enrolment_code": fresh["code"]})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w2", "enrolment_code": fresh["code"]})
     assert me["active_role"] == "worker"
 
 
@@ -485,7 +485,7 @@ def test_an_expired_session_loses_its_role_without_losing_its_identity(client, a
     seats = client.post("/api/fleet/seats",
                         json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
                         headers=auth).json()["seats"]
-    me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": seats[0]["code"]})
     _ok(client, key, "create_item", {"title": "x", "status": "next"})
 
     _end_wave(client, auth, proj)
@@ -502,7 +502,7 @@ def test_the_agent_hears_about_it_on_its_next_poll(client, auth, proj, key, db):
     seats = client.post("/api/fleet/seats",
                         json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
                         headers=auth).json()["seats"]
-    me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": seats[0]["code"]})
 
     _end_wave(client, auth, proj)
 
@@ -519,7 +519,7 @@ def test_the_expiry_directive_repeats_because_it_is_a_state(client, auth, proj, 
     seats = client.post("/api/fleet/seats",
                         json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
                         headers=auth).json()["seats"]
-    me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": seats[0]["code"]})
     _end_wave(client, auth, proj)
 
     first = _ok(client, key, "fleet_status", {"agent_id": me["agent_id"]})
@@ -535,7 +535,7 @@ def test_ending_a_wave_releases_what_the_seats_held(client, auth, proj, key, db)
     seats = client.post("/api/fleet/seats",
                         json={"project_id": proj, "wave": "w1", "roles": ["worker"]},
                         headers=auth).json()["seats"]
-    me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": seats[0]["code"]})
     _ok(client, key, "create_item", {"title": "held", "status": "next"})
     got = _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
 
@@ -563,7 +563,7 @@ def test_the_preview_names_the_seats_it_will_revoke(client, auth, proj, key, db)
 def test_an_unenrolled_agent_is_untouched_by_ending_a_wave(client, auth, proj, key, db):
     """The single-agent posture is not part of any wave. Stopping it would make End wave a
     button that halts the developer's own agent, which it never promised."""
-    me = _ok(client, key, "register_agent", {"label": "solo"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "solo"})
     _ok(client, key, "create_item", {"title": "mine", "status": "next"})
 
     _end_wave(client, auth, proj)
@@ -578,14 +578,14 @@ def test_a_planner_can_mint_a_seat_for_an_agent_it_spawns(client, key, proj, db)
     """An orchestrator cannot paste a code out of a UI, so without this an autonomous fleet is
     impossible — every seat would need a human at the Fleet view."""
     _, pcode = _seat(db, proj, "planner")
-    boss = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": pcode})
+    boss = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "p", "enrolment_code": pcode})
 
     out = _ok(client, key, "mint_enrolment",
               {"agent_id": boss["agent_id"], "role": "worker"})
 
     assert out["role"] == "worker" and out["enrolment_code"].startswith("WORKER-")
     hand = _ok(client, key, "register_agent",
-               {"label": "w", "enrolment_code": out["enrolment_code"]})
+               {"branch": "gb/test", "label": "w", "enrolment_code": out["enrolment_code"]})
     assert hand["active_role"] == "worker" and hand["enrolled"] is True
 
 
@@ -595,7 +595,7 @@ def test_a_worker_cannot_mint(client, key, proj, db):
     fresh agent — new id, new enrolment, therefore independent — and sign off its own work,
     invisibly to an authorship ban keyed on agent id."""
     _, wcode = _seat(db, proj, "worker")
-    me = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": wcode})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": wcode})
 
     res = _rpc(client, key, "mint_enrolment", {"agent_id": me["agent_id"], "role": "planner"})
 
@@ -620,13 +620,13 @@ def test_a_minted_seat_records_its_minter_and_sets_no_parentage(client, key, pro
     from app.models import Agent, Enrolment as E
 
     _, pcode = _seat(db, proj, "planner")
-    boss = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": pcode})
+    boss = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "p", "enrolment_code": pcode})
     out = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
 
     seat = db.get(E, out["seat_id"])
     assert seat.minted_by == boss["agent_id"]
     hand = _ok(client, key, "register_agent",
-               {"label": "w", "enrolment_code": out["enrolment_code"]})
+               {"branch": "gb/test", "label": "w", "enrolment_code": out["enrolment_code"]})
     assert db.get(Agent, hand["agent_id"]).parent_agent_id is None
 
 
@@ -635,14 +635,14 @@ def test_two_agents_a_planner_seated_can_review_each_other(client, key, proj, db
     recorded on minted seats, this is the test that would fail — and the fleet would be unable
     to review anything it built."""
     _, pcode = _seat(db, proj, "planner")
-    boss = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": pcode})
+    boss = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "p", "enrolment_code": pcode})
     w = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
     r = _ok(client, key, "mint_enrolment", {"agent_id": boss["agent_id"], "role": "worker"})
 
     worker = _ok(client, key, "register_agent",
-                 {"label": "w", "enrolment_code": w["enrolment_code"]})
+                 {"branch": "gb/test", "label": "w", "enrolment_code": w["enrolment_code"]})
     reviewer = _ok(client, key, "register_agent",
-                   {"label": "r", "enrolment_code": r["enrolment_code"]})
+                   {"branch": "gb/test", "label": "r", "enrolment_code": r["enrolment_code"]})
     _built_by(client, key, worker["agent_id"])
 
     assert _ok(client, key, "claim_review",
@@ -655,7 +655,7 @@ def test_a_planner_cannot_mint_past_its_own_credential(client, auth, proj, db):
     narrow = client.post("/api/fleet/keys",
                          json={"project_id": proj, "role": "planner", "wave": "w1"},
                          headers=auth).json()["plaintext"]
-    me = _ok(client, narrow, "register_agent", {"label": "p", "role_hint": "planner"})
+    me = _ok(client, narrow, "register_agent", {"branch": "gb/test", "label": "p", "role_hint": "planner"})
 
     res = _rpc(client, narrow, "mint_enrolment",
                {"agent_id": me["agent_id"], "role": "worker"})
@@ -685,7 +685,7 @@ def test_a_worker_cannot_write_done_by_omitting_its_own_id(client, key, proj, db
     standing between a worker and `done` — absence has to read as "unknown", never as
     "unrestricted"."""
     _, wcode = _seat(db, proj, "worker")
-    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": wcode})
+    w = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": wcode})
     _ok(client, key, "create_item", {"title": "x", "status": "next"})
     got = _ok(client, key, "claim_next", {"agent_id": w["agent_id"]})
 
@@ -720,7 +720,7 @@ def test_every_role_can_keep_itself_alive(client, key, proj, db):
     terminals open — observed on the walk as `role_refused ... heartbeat` for each."""
     for role in ("planner", "worker"):
         _, code = _seat(db, proj, role)
-        me = _ok(client, key, "register_agent", {"label": role, "enrolment_code": code})
+        me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": role, "enrolment_code": code})
 
         out = _ok(client, key, "heartbeat", {"agent_id": me["agent_id"]})
 
@@ -736,7 +736,7 @@ def test_heartbeat_needs_no_item(client, key, proj, db):
     schema = next(t for t in TOOLS if t["name"] == "heartbeat")["inputSchema"]
     assert "id" not in schema.get("required", [])
     _, code = _seat(db, proj, "planner")
-    me = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": code})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "p", "enrolment_code": code})
 
     out = _ok(client, key, "heartbeat", {"agent_id": me["agent_id"]})
 
@@ -787,7 +787,7 @@ def test_revoking_unused_seats_leaves_the_consumed_ones(client, auth, proj, key,
                          json={"project_id": proj, "roles": ["worker", "worker", "worker"]},
                          headers=auth).json()["seats"]
     me = _ok(client, key, "register_agent",
-             {"label": "w", "enrolment_code": issued[0]["code"]})
+             {"branch": "gb/test", "label": "w", "enrolment_code": issued[0]["code"]})
 
     out = client.post("/api/fleet/seats/revoke-unused",
                       json={"project_id": proj}, headers=auth).json()
@@ -836,7 +836,7 @@ def test_a_consumed_seat_keeps_its_wave_live(client, auth, proj, key, db):
     most likely to want to end."""
     issued = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["worker"]},
                          headers=auth).json()
-    _ok(client, key, "register_agent", {"label": "w", "enrolment_code": issued["seats"][0]["code"]})
+    _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": issued["seats"][0]["code"]})
 
     assert issued["wave"] in client.get(f"/api/fleet?project_id={proj}",
                                         headers=auth).json()["waves"]
@@ -879,7 +879,7 @@ def test_ending_a_wave_does_not_let_an_agent_review_its_own_work(client, auth, p
     seats = client.post("/api/fleet/seats",
                         json={"project_id": proj, "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
-    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    w = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": seats[0]["code"]})
     _ok(client, key, "create_item", {"title": "mine", "status": "next"})
     got = _ok(client, key, "claim_next", {"agent_id": w["agent_id"]})
     item_id = got["item"]["id"]
@@ -916,8 +916,8 @@ def test_signing_off_keeps_the_record_of_who_built_it(client, auth, proj, key, d
     seats = client.post("/api/fleet/seats",
                         json={"project_id": proj, "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
-    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
-    r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": seats[1]["code"]})
+    w = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": seats[0]["code"]})
+    r = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "r", "enrolment_code": seats[1]["code"]})
     _ok(client, key, "create_item", {"title": "work", "status": "next"})
     got = _ok(client, key, "claim_next", {"agent_id": w["agent_id"]})
     _ok(client, key, "update_item",
@@ -941,8 +941,8 @@ def test_a_bounce_pins_to_the_author_not_the_lease(client, auth, proj, key, db):
     seats = client.post("/api/fleet/seats",
                         json={"project_id": proj, "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
-    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
-    r = _ok(client, key, "register_agent", {"label": "r", "enrolment_code": seats[1]["code"]})
+    w = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": seats[0]["code"]})
+    r = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "r", "enrolment_code": seats[1]["code"]})
     _ok(client, key, "create_item", {"title": "bounce me", "status": "next"})
     got = _ok(client, key, "claim_next", {"agent_id": w["agent_id"]})
     _ok(client, key, "update_item",
@@ -967,7 +967,7 @@ def test_a_subagent_cannot_sign_its_parents_work_after_a_wave_ends(client, auth,
     seats = client.post("/api/fleet/seats",
                         json={"project_id": proj, "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
-    parent = _ok(client, key, "register_agent", {"label": "p", "enrolment_code": seats[0]["code"]})
+    parent = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "p", "enrolment_code": seats[0]["code"]})
     _ok(client, key, "create_item", {"title": "parent work", "status": "next"})
     got = _ok(client, key, "claim_next", {"agent_id": parent["agent_id"]})
     _ok(client, key, "update_item",
@@ -981,7 +981,7 @@ def test_a_subagent_cannot_sign_its_parents_work_after_a_wave_ends(client, auth,
     fresh = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["worker"]},
                         headers=auth).json()["seats"][0]
     child = _ok(client, key, "register_agent",
-                {"label": "c", "enrolment_code": fresh["code"],
+                {"branch": "gb/test", "label": "c", "enrolment_code": fresh["code"],
                  "parent_agent_id": parent["agent_id"]})
 
     res = _rpc(client, key, "sign_off",
@@ -999,7 +999,7 @@ def test_a_bounce_after_a_wave_ends_still_pins_to_the_author(client, auth, proj,
     seats = client.post("/api/fleet/seats",
                         json={"project_id": proj, "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
-    w = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": seats[0]["code"]})
+    w = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": seats[0]["code"]})
     _ok(client, key, "create_item", {"title": "bounce after wave", "status": "next"})
     got = _ok(client, key, "claim_next", {"agent_id": w["agent_id"]})
     _ok(client, key, "update_item",
@@ -1008,7 +1008,7 @@ def test_a_bounce_after_a_wave_ends_still_pins_to_the_author(client, auth, proj,
 
     fresh = client.post("/api/fleet/seats", json={"project_id": proj, "roles": ["worker"]},
                         headers=auth).json()["seats"][0]
-    r = _ok(client, key, "register_agent", {"label": "r2", "enrolment_code": fresh["code"]})
+    r = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "r2", "enrolment_code": fresh["code"]})
     _ok(client, key, "bounce", {"id": got["item"]["id"], "agent_id": r["agent_id"],
                                 "reason": "still needs a test"})
 
@@ -1028,7 +1028,7 @@ def test_dismissing_hides_an_agent_without_deleting_it(client, auth, proj, key, 
     times. Everything that made authorship worth preserving in 0067 makes deletion wrong here."""
     from app.models import Agent
 
-    me = _ok(client, key, "register_agent", {"label": "spent"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "spent"})
 
     out = client.post(f"/api/fleet/agents/{me['agent_id']}/dismiss",
                       json={}, headers=auth).json()
@@ -1043,7 +1043,7 @@ def test_an_agent_still_holding_work_refuses_to_be_dismissed(client, auth, proj,
     """The one case where hiding costs something. An agent holding a lease is unfinished
     business — the exact thing the roster exists to surface — and dismissing it would take the
     work out of view along with it."""
-    me = _ok(client, key, "register_agent", {"label": "busy"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "busy"})
     _ok(client, key, "create_item", {"title": "held", "status": "next"})
     _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
 
@@ -1064,7 +1064,7 @@ def test_an_orphaned_branch_also_refuses(client, auth, proj, key, db):
     # to be set by hand here because it was a column; deriving it means this test now has to
     # produce the actual SITUATION — which is the whole point of GRPH-396, since the situation
     # is common and the column was only ever written for a different one.
-    me = _ok(client, key, "register_agent", {"label": "orphan", "branch": "feat/abandoned"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "orphan", "branch": "feat/abandoned"})
     row = db.get(Agent, me["agent_id"])
     row.last_seen_at = datetime.now(timezone.utc) - timedelta(hours=1)
     db.commit()
@@ -1078,7 +1078,7 @@ def test_an_orphaned_branch_also_refuses(client, auth, proj, key, db):
 def test_a_dismissal_can_be_undone(client, auth, proj, key, db):
     """Hiding is a view decision, not a verdict — and a mis-click on a roster of two dozen
     should not be permanent."""
-    me = _ok(client, key, "register_agent", {"label": "oops"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "oops"})
     client.post(f"/api/fleet/agents/{me['agent_id']}/dismiss", json={}, headers=auth)
 
     out = client.post(f"/api/fleet/agents/{me['agent_id']}/dismiss",
@@ -1091,8 +1091,8 @@ def test_the_roster_reports_enrolment_and_dismissal(client, auth, proj, key, db)
     """The view groups un-enrolled agents apart — they are the single-agent posture, which is
     legitimate but is not a fleet — so it has to be told which is which."""
     _, code = _seat(db, proj, "worker")
-    seated = _ok(client, key, "register_agent", {"label": "w", "enrolment_code": code})
-    solo = _ok(client, key, "register_agent", {"label": "solo"})
+    seated = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w", "enrolment_code": code})
+    solo = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "solo"})
 
     rows = {a["id"]: a for a in fleet.list_agents(db, proj)}
 
@@ -1114,7 +1114,7 @@ def test_a_dismissed_agent_that_takes_work_comes_back(client, auth, proj, key, d
     the act that has to be visible."""
     from app.models import Agent
 
-    me = _ok(client, key, "register_agent", {"label": "idle-then-busy"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "idle-then-busy"})
     client.post(f"/api/fleet/agents/{me['agent_id']}/dismiss", json={}, headers=auth)
     assert db.get(Agent, me["agent_id"]).dismissed_at is not None
 

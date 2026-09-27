@@ -66,14 +66,14 @@ SABOTAGE = {"kind": "sabotage", "claim": "the veto holds back an accept",
 def _ready_for_review(client, key, effort):
     """An item built by one agent and waiting for another — the state a reviewer acts on."""
     worker = _ok(client, key, "register_agent",
-                 {"label": "w", "capabilities": {"instance": "w"}})
+                 {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
     made = _ok(client, key, "create_item",
                {"title": "some work", "status": "next", "effort": effort})
     c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
     _ok(client, key, "update_item",
         {"id": c["item"]["id"], "status": "review", "agent_id": worker["agent_id"]})
     reviewer = _ok(client, key, "register_agent",
-                   {"label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
+                   {"branch": "gb/test", "label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
     return c["item"]["id"], reviewer
 
 
@@ -279,7 +279,7 @@ DESC_ONE_CLAUSE = """\
 def _ready_with_description(client, key, *, effort, description):
     """Like `_ready_for_review` but stamps a description on the item at creation."""
     worker = _ok(client, key, "register_agent",
-                 {"label": "w", "capabilities": {"instance": "w"}})
+                 {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
     made = _ok(client, key, "create_item",
                {"title": "some work", "status": "next", "effort": effort,
                 "description": description})
@@ -287,7 +287,7 @@ def _ready_with_description(client, key, *, effort, description):
     _ok(client, key, "update_item",
         {"id": c["item"]["id"], "status": "review", "agent_id": worker["agent_id"]})
     reviewer = _ok(client, key, "register_agent",
-                   {"label": "r", "role_hint": "reviewer",
+                   {"branch": "gb/test", "label": "r", "role_hint": "reviewer",
                     "capabilities": {"instance": "r"}})
     return c["item"]["id"], reviewer
 
@@ -589,7 +589,7 @@ def test_builder_only_coverage_is_refused_until_the_reviewer_names_it(client, ke
     tests; the reviewer passing none is refused naming the clauses, and passing its own
     tests signs off."""
     worker = _ok(client, key, "register_agent",
-                 {"label": "w", "capabilities": {"instance": "w"}})
+                 {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
     _ok(client, key, "create_item", {"title": "w", "status": "next", "effort": 5,
                                      "description": DESC_TWO_CLAUSES})
     c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
@@ -643,7 +643,7 @@ def test_receipt_and_item_carry_the_reviewers_tier(client, key):
     """A cheap-on-cheap sign-off must read differently from a frontier one: the predicate
     names tier, vendor and model, and every item read surfaces them as `reviewer`."""
     worker = _ok(client, key, "register_agent",
-                 {"label": "w", "capabilities": {"instance": "w"}})
+                 {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
     _ok(client, key, "create_item", {"title": "w", "status": "next", "effort": 1})
     c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
     item = c["item"]["id"]

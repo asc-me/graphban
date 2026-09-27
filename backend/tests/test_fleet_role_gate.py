@@ -58,7 +58,7 @@ def agent_key(client, auth):
 
 
 def _register(client, key, role="worker"):
-    return _ok(client, key, "register_agent", {"label": f"{role} term", "role_hint": role})
+    return _ok(client, key, "register_agent", {"branch": "gb/test", "label": f"{role} term", "role_hint": role})
 
 
 # ---- the acceptance criterion ------------------------------------------------------------

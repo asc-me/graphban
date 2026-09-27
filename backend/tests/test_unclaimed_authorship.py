@@ -36,6 +36,12 @@ def _row(db, item_key: str) -> Item:
 def _sent_unclaimed(client, key, title="inline work", agent_id=None):
     """The defect's path: created, never claimed, pushed to `review` by whoever is calling."""
     item_id = _new_item(client, key, title)["id"]
+    # A bare credential has no registered branch to derive one from; record where the work
+    # is, or `review` is refused as having nothing to read (GRPH-946).
+    from app.db import SessionLocal
+    with SessionLocal() as s:
+        _row(s, item_id).branch = "gb/inline"
+        s.commit()
     args = {"id": item_id, "status": "review"}
     if agent_id:
         args["agent_id"] = agent_id
@@ -161,7 +167,7 @@ def test_a_seated_reviewer_on_the_same_credential_is_independent(client, agent_k
     _, code = fleet.issue_enrolment(db, project_id=proj, role="worker")
     db.commit()
     seated = _ok(client, agent_key, "register_agent",
-                 {"label": "seated", "enrolment_code": code})
+                 {"branch": "gb/test", "label": "seated", "enrolment_code": code})
     assert seated["enrolled"] is True
 
     out = _ok(client, agent_key, "claim_review", {"agent_id": seated["agent_id"]})

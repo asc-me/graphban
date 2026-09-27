@@ -753,6 +753,27 @@ def is_pr_url(url: str) -> bool:
     return any(marker in (url or "").lower() for marker in _PR_URL_MARKERS)
 
 
+def reviewable_handoff(item: Item, incoming_evidence=None) -> bool:
+    """Can a reviewer reach this item's work? (GRPH-946)
+
+    A recorded `branch`, or a PR url in its evidence (stored, or arriving in this call). An
+    item with neither went to review on SA-575 before its branch was pushed; the reviewer
+    bounced it for "no remote branch" and the real defects went unreviewed.
+    """
+    if (item.branch or "").strip():
+        return True
+    rows = list(item.evidence or []) + list(incoming_evidence or [])
+    return any(is_pr_url(e.get("url", "")) for e in rows if isinstance(e, dict))
+
+
+def _submitter_branch(db: Session, item: Item, submitted_by: str) -> str:
+    """The branch the calling agent registered, when the item has none of its own yet."""
+    if (item.branch or "").strip():
+        return ""
+    agent = db.get(Agent, submitted_by)
+    return ((agent.branch if agent is not None else "") or "").strip()
+
+
 def pr_linked_at(evidence, existing=None):
     """When this item's PR was FIRST linked, or None.
 
@@ -869,6 +890,18 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
             raise ValueError(
                 f"{item.key} is a typed human wait. Mark it done when the human has "
                 "acted; do not send it to review as if it were built work"
+            )
+        # GRPH-946: review is a handoff, and a handoff needs somewhere to look. Asked of an
+        # agent or credential (`submitted_by` set — the MCP path), not of a person moving a
+        # card on the board, whose item may have no branch at all. A typed wait is exempt:
+        # it carries no built work, so there is no branch to point at.
+        if (fields["status"] == "review" and submitted_by and not wait_tags_on(item)
+                and not _submitter_branch(db, item, submitted_by)
+                and not reviewable_handoff(item, fields.get("evidence"))):
+            raise ValueError(
+                f"{item.key} has no `branch` recorded and no PR url in `evidence`, so a "
+                "reviewer has nothing to read. Claim it from a registered agent with a "
+                "branch, or attach the PR url as evidence, then move it to review"
             )
     # THE COMPLETION GATE (GRPH-543). Before this, `update_item` validated a status
     # transition for MEMBERSHIP IN A LIST and nothing else, so an agent working without a
@@ -1042,6 +1075,13 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
     if (fields.get("status") == "review" and prev_status != "review"
             and not item.built_by and submitted_by):
         item.built_by = submitted_by
+    # The branch, derived the way `claim_item` derives it (GRPH-752): an item built inline
+    # and sent to review by an agent that registered a branch lands on THAT branch. Never
+    # over an existing one, for the same reason `claim_item` never clears it (GRPH-946).
+    if fields.get("status") == "review" and prev_status != "review" and submitted_by:
+        derived = _submitter_branch(db, item, submitted_by)
+        if derived:
+            item.branch = derived
     pending_lesson_applies: list[str] = []
     if fields.get("touchpoints") is not None:
         # Unions. See `union_touchpoints` — a write here must never remove a declared or

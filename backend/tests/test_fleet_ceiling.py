@@ -21,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.models import Agent, ApiKey, Enrolment, Item
-from app.services import fleet
+from app.services import fleet, keys
 
 
 # ---- helpers ------------------------------------------------------------------------------
@@ -74,7 +74,7 @@ def _register(client, key, role="worker", label=None, instance=None):
     label = label or f"{role}-term"
     caps = {"instance": instance or label}
     return _ok(client, key, "register_agent",
-               {"label": label, "role_hint": role, "capabilities": caps})
+               {"branch": "gb/test", "label": label, "role_hint": role, "capabilities": caps})
 
 
 def _built_by(client, key, agent, title="work"):
@@ -200,7 +200,7 @@ def test_a_legacy_reviewer_seat_is_caught_by_the_ceiling(client, auth, proj, db)
     db.commit()
 
     me = _ok(client, plaintext, "register_agent",
-             {"label": "pre-merge-s4", "enrolment_code": code})
+             {"branch": "gb/test", "label": "pre-merge-s4", "enrolment_code": code})
     assert me["active_role"] == "worker", (
         f"legacy reviewer should resolve to worker, got {me['active_role']}")
 
@@ -251,7 +251,7 @@ def test_a_second_agent_can_sign_off_the_firsts_work(client, agent_key, auth, pr
     assert done["status"] == "done"
 
 
-def test_an_all_in_one_agent_can_write_done(client, auth, proj):
+def test_an_all_in_one_agent_can_write_done(client, auth, proj, db):
     """An all-in-one agent is unrestricted by the ceiling — the solo posture must still
     work.  The sign_off assert still applies, but writing `done` on your own item via
     `update_item` is allowed (the credential is `*`)."""
@@ -262,6 +262,9 @@ def test_an_all_in_one_agent_can_write_done(client, auth, proj):
     _ok(client, key, "create_item", {"title": "work", "status": "next"})
     claimed = _ok(client, key, "claim_next", {})
     item_key = claimed["item"]["id"]
+    # A bare key claims with no registered agent, so nothing records a branch (GRPH-946).
+    db.get(Item, keys.resolve_item(db, item_key)).branch = "gb/solo"
+    db.commit()
     _ok(client, key, "update_item",
         {"id": item_key, "status": "review"})
 

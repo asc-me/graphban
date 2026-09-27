@@ -114,7 +114,7 @@ def test_sign_off_still_passes_the_gate_after_a_third_party_write(client, auth):
                       headers=auth).json()["plaintext"]
 
     worker = _ok(client, key, "register_agent",
-                 {"label": "w", "capabilities": {"instance": "w"}})
+                 {"branch": "gb/test", "label": "w", "capabilities": {"instance": "w"}})
     made = _ok(client, key, "create_item",
                {"title": "some work", "status": "next", "effort": 4})
     claimed = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
@@ -128,7 +128,7 @@ def test_sign_off_still_passes_the_gate_after_a_third_party_write(client, auth):
         {"kind": "note", "detail": "INDEPENDENT REVIEW — reads correct to me"}]})
 
     reviewer = _ok(client, key, "register_agent",
-                   {"label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
+                   {"branch": "gb/test", "label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
     claimed_review = _ok(client, key, "claim_review", {"agent_id": reviewer["agent_id"]})
     assert claimed_review["item"]["id"] == item_id, "the reviewer claimed a different item"
     res = _rpc(client, key, "sign_off", {"id": item_id, "agent_id": reviewer["agent_id"],

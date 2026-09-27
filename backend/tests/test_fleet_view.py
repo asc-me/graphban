@@ -81,7 +81,7 @@ def test_the_role_ceiling_actually_binds_the_agent(client, auth, proj):
                       json={"project_id": proj, "role": "worker", "wave": "w1"},
                       headers=auth).json()["plaintext"]
 
-    me = _mcp(client, raw, "register_agent", {"label": "r", "role_hint": "planner"})
+    me = _mcp(client, raw, "register_agent", {"branch": "gb/test", "label": "r", "role_hint": "planner"})
 
     assert me["active_role"] == "worker", "the hint cannot climb past the credential"
 
@@ -97,7 +97,7 @@ def test_a_registered_agent_appears_on_the_roster(client, auth, proj):
     raw = client.post("/api/fleet/keys",
                       json={"project_id": proj, "role": "worker", "wave": "w1"},
                       headers=auth).json()["plaintext"]
-    me = _mcp(client, raw, "register_agent", {"label": "opus @ macbook:wt-2"})
+    me = _mcp(client, raw, "register_agent", {"branch": "gb/test", "label": "opus @ macbook:wt-2"})
 
     view = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()
 
@@ -136,7 +136,7 @@ def test_end_wave_releases_leases_and_reservations(client, auth, proj, db):
     raw = client.post("/api/fleet/keys",
                       json={"project_id": proj, "role": "worker", "wave": "w1"},
                       headers=auth).json()["plaintext"]
-    me = _mcp(client, raw, "register_agent", {"label": "w"})
+    me = _mcp(client, raw, "register_agent", {"branch": "gb/test", "label": "w"})
     _mcp(client, raw, "create_item",
          {"title": "A", "status": "next", "touchpoints": ["backend/app/services"]})
     got = _mcp(client, raw, "claim_cluster", {"agent_id": me["agent_id"]})
@@ -158,7 +158,7 @@ def test_an_agent_on_a_revoked_key_reads_offline_at_once(client, auth, proj, db)
     raw = client.post("/api/fleet/keys",
                       json={"project_id": proj, "role": "worker", "wave": "w1"},
                       headers=auth).json()["plaintext"]
-    me = _mcp(client, raw, "register_agent", {"label": "w"})
+    me = _mcp(client, raw, "register_agent", {"branch": "gb/test", "label": "w"})
     seen_before = db.get(Agent, me["agent_id"]).last_seen_at
 
     client.post("/api/fleet/end-wave", json={"project_id": proj, "wave": "w1"}, headers=auth)
@@ -174,7 +174,7 @@ def test_the_confirm_can_name_the_damage_before_acting(client, auth, proj):
     raw = client.post("/api/fleet/keys",
                       json={"project_id": proj, "role": "worker", "wave": "w1"},
                       headers=auth).json()["plaintext"]
-    me = _mcp(client, raw, "register_agent", {"label": "w"})
+    me = _mcp(client, raw, "register_agent", {"branch": "gb/test", "label": "w"})
     _mcp(client, raw, "create_item", {"title": "A", "status": "next"})
     _mcp(client, raw, "claim_next", {"agent_id": me["agent_id"]})
 
@@ -207,7 +207,7 @@ def test_the_review_queue_says_who_built_each_item(client, auth, proj):
     raw = client.post("/api/fleet/keys",
                       json={"project_id": proj, "role": "worker", "wave": "w1"},
                       headers=auth).json()["plaintext"]
-    me = _mcp(client, raw, "register_agent", {"label": "opus @ macbook"})
+    me = _mcp(client, raw, "register_agent", {"branch": "gb/test", "label": "opus @ macbook"})
     _mcp(client, raw, "create_item", {"title": "A", "status": "next"})
     c = _mcp(client, raw, "claim_next", {"agent_id": me["agent_id"]})
     _mcp(client, raw, "update_item",
@@ -228,7 +228,7 @@ def test_a_held_back_cluster_says_what_it_is_waiting_for(client, auth, proj):
     raw = client.post("/api/fleet/keys",
                       json={"project_id": proj, "role": "worker", "wave": "w1"},
                       headers=auth).json()["plaintext"]
-    me = _mcp(client, raw, "register_agent", {"label": "w"})
+    me = _mcp(client, raw, "register_agent", {"branch": "gb/test", "label": "w"})
     _mcp(client, raw, "create_item",
          {"title": "A", "status": "next", "touchpoints": ["backend/app/models"]})
     _mcp(client, raw, "create_item",
@@ -272,7 +272,7 @@ def test_an_agent_on_that_credential_registers_all_in_one(client, auth, proj):
                       json={"project_id": proj, "role": "all-in-one", "wave": "w1"},
                       headers=auth).json()["plaintext"]
 
-    me = _mcp(client, raw, "register_agent", {"label": "solo"})
+    me = _mcp(client, raw, "register_agent", {"branch": "gb/test", "label": "solo"})
 
     assert me["active_role"] == fleet.ALL_IN_ONE
     view = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()

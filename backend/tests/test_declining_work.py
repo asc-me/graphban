@@ -60,7 +60,7 @@ def test_a_worker_can_pass_over_the_item_it_cannot_take(client, auth, proj, key)
     """Measured before the fix: claim, release, claim returned the SAME item eight times out of
     eight, because releasing puts it back at the top. An agent that cannot take the head of the
     queue could reach nothing behind it."""
-    me = _ok(client, key, "register_agent", {"label": "w"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w"})
     first = _ok(client, key, "create_item", {"title": "needs production access", "status": "next"})
     second = _ok(client, key, "create_item", {"title": "the one I can do", "status": "next"})
 
@@ -72,7 +72,7 @@ def test_a_worker_can_pass_over_the_item_it_cannot_take(client, auth, proj, key)
 def test_skipping_everything_is_an_empty_answer_not_a_wrong_one(client, auth, proj, key):
     """Declining the whole queue must read as "nothing for you", not hand back something you
     already refused."""
-    me = _ok(client, key, "register_agent", {"label": "w"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w"})
     only = _ok(client, key, "create_item", {"title": "the only work", "status": "next"})
 
     got = _ok(client, key, "claim_next", {"agent_id": me["agent_id"], "skip": [only["id"]]})
@@ -84,9 +84,9 @@ def test_a_reviewing_worker_can_pass_over_its_own_work(client, auth, proj, key):
     """THE case. `claim_review` handed a reviewer the item it had built, and the server could
     not refuse it because `built_by` was null — nothing recorded an author, so `independent`
     returns True. The discipline is the reviewer's, so the surface has to let it act on one."""
-    worker = _ok(client, key, "register_agent", {"label": "w",
+    worker = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w",
                                                  "enrolment_code": _seat(client, auth, proj, "worker")})
-    rev = _ok(client, key, "register_agent", {"label": "r",
+    rev = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "r",
                                               "enrolment_code": _seat(client, auth, proj, "worker")})
     mine = _ok(client, key, "create_item", {"title": "the reviewer's own", "status": "review"})
     theirs = _ok(client, key, "create_item", {"title": "somebody else's", "status": "next"})
@@ -104,9 +104,9 @@ def test_a_reviewing_worker_can_pass_over_its_own_work(client, auth, proj, key):
 def test_a_reviewing_worker_can_hand_back_a_review_claim(client, auth, proj, key, db):
     """`release_item` was worker-only, so a reviewer holding an item it would not judge had no
     exit at all — it waited out a 600s lease while the queue handed it the same item."""
-    worker = _ok(client, key, "register_agent", {"label": "w",
+    worker = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w",
                                                  "enrolment_code": _seat(client, auth, proj, "worker")})
-    rev = _ok(client, key, "register_agent", {"label": "r",
+    rev = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "r",
                                               "enrolment_code": _seat(client, auth, proj, "worker")})
     item = _ok(client, key, "create_item", {"title": "work", "status": "next"})
     _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
@@ -130,7 +130,7 @@ def test_declining_an_item_does_not_make_you_its_author(client, auth, proj, key,
     lease must not destroy the record of who made the thing (GRPH-376/377). But an agent that
     claimed, wrote nothing and handed it back made nothing, and the stamp then barred it from
     ever REVIEWING the item it declined."""
-    me = _ok(client, key, "register_agent", {"label": "w"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w"})
     item = _ok(client, key, "create_item", {"title": "not for me", "status": "next"})
     _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
     row = db.query(Item).filter(Item.number == int(item["id"].split("-")[-1])).one()
@@ -147,7 +147,7 @@ def test_working_an_item_and_then_releasing_it_keeps_the_authorship(client, auth
     """The half that must not regress. GRPH-377 was exactly this: a lease released while work
     existed, and the authorship going with it — which made the self-review ban unprovable after
     the fact. One substantive write is the line."""
-    me = _ok(client, key, "register_agent", {"label": "w"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w"})
     item = _ok(client, key, "create_item", {"title": "half done", "status": "next"})
     _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
     _ok(client, key, "update_item", {"id": item["id"], "touchpoints": ["backend/app/x.py"],
@@ -162,8 +162,8 @@ def test_working_an_item_and_then_releasing_it_keeps_the_authorship(client, auth
 def test_a_second_claimant_still_becomes_the_author(client, auth, proj, key, db):
     """Clearing on release must not leave a hole: the next agent to claim is the author, exactly
     as before."""
-    a = _ok(client, key, "register_agent", {"label": "a"})
-    b = _ok(client, key, "register_agent", {"label": "b"})
+    a = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "a"})
+    b = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "b"})
     item = _ok(client, key, "create_item", {"title": "passed along", "status": "next"})
     _ok(client, key, "claim_next", {"agent_id": a["agent_id"]})
     _ok(client, key, "release_item", {"id": item["id"], "agent_id": a["agent_id"]})
@@ -187,7 +187,7 @@ def test_claiming_a_cluster_and_releasing_it_keeps_the_authorship(client, auth, 
     This is the primary claim path, not a corner: GRPH-380 made the all-in-one posture claim
     through the divvy, and claim-a-cluster-then-decline is an ordinary move.
     """
-    me = _ok(client, key, "register_agent", {"label": "w"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w"})
     item = _ok(client, key, "create_item", {"title": "clustered", "status": "next",
                                             "touchpoints": ["backend/app/services/items.py"]})
     got = _ok(client, key, "claim_cluster", {"agent_id": me["agent_id"]})
@@ -209,7 +209,7 @@ def test_that_agent_is_then_refused_by_sign_off(client, auth, proj, key, db):
     ban is the gate the whole review model rests on, and this walked around it through the
     normal claim path.
     """
-    me = _ok(client, key, "register_agent", {"label": "w"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w"})
     item = _ok(client, key, "create_item", {"title": "clustered", "status": "next",
                                             "touchpoints": ["backend/app/services/items.py"]})
     _ok(client, key, "claim_cluster", {"agent_id": me["agent_id"]})
@@ -232,7 +232,7 @@ def test_claiming_and_writing_nothing_at_all_still_loses_it(client, auth, proj, 
     """GRPH-434's fix must survive. An agent that claimed, reserved NOTHING and released
     wrote nothing anywhere, and barring it from ever reviewing what it declined is the cost
     that fix exists to remove."""
-    me = _ok(client, key, "register_agent", {"label": "w"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w"})
     item = _ok(client, key, "create_item", {"title": "untouched", "status": "next"})
     _ok(client, key, "claim_next", {"agent_id": me["agent_id"]})
     _ok(client, key, "release_item", {"id": item["id"], "agent_id": me["agent_id"]})
@@ -266,7 +266,7 @@ def test_a_reservation_on_a_DIFFERENT_item_does_not_save_the_authorship(client, 
     An agent working on one item would then keep authorship on every unrelated item it
     claimed and abandoned, which is the GRPH-434 defect back again by a different route.
     """
-    me = _ok(client, key, "register_agent", {"label": "w"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "w"})
     busy = _ok(client, key, "create_item", {"title": "elsewhere", "status": "backlog"})
     idle = _ok(client, key, "create_item", {"title": "untouched", "status": "next"})
     _reserve(db, me["agent_id"], _row(db, busy))
@@ -283,8 +283,8 @@ def test_ANOTHER_agents_reservation_does_not_save_your_authorship(client, auth, 
     """And it must name the agent. The same one-agent blind spot: a lookup that asked only
     "is this item reserved by anyone" also passed both tests above, and would let an agent
     keep authorship on the strength of somebody else's work."""
-    me = _ok(client, key, "register_agent", {"label": "me"})
-    other = _ok(client, key, "register_agent", {"label": "other"})
+    me = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "me"})
+    other = _ok(client, key, "register_agent", {"branch": "gb/test", "label": "other"})
     item = _ok(client, key, "create_item", {"title": "untouched", "status": "next"})
     _reserve(db, other["agent_id"], _row(db, item))
 

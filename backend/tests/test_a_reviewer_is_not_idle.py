@@ -66,7 +66,7 @@ def _agent(client, key, label, role) -> str:
     was independent of nobody. Now the sender is stamped, and two undeclared agents on one
     key are, correctly, not distinguishable."""
     return _ok(_mcp(client, key, "register_agent",
-                    {"label": label, "role_hint": role,
+                    {"branch": "gb/test", "label": label, "role_hint": role,
                      "capabilities": {"instance": label}}))["agent_id"]
 
 

@@ -121,7 +121,8 @@ def test_digest_is_a_decision_packet(client, auth):
     pid = client.post("/api/projects", json={"name": "Packet"}, headers=auth).json()["id"]
     key = client.post("/api/api-keys", json={"name": "d", "project_id": pid}, headers=auth).json()["plaintext"]
     rev = _call(client, key, "create_item", {"title": "Ship the API"})["id"]
-    _call(client, key, "update_item", {"id": rev, "status": "review"})
+    _call(client, key, "update_item", {"id": rev, "status": "review", "evidence": [
+        {"kind": "url", "url": "https://github.com/o/r/pull/1", "detail": "PR"}]})
     wip = _call(client, key, "create_item", {"title": "Fix the parser"})["id"]
     _call(client, key, "update_item", {"id": wip, "status": "in_progress"})
 

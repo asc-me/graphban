@@ -53,7 +53,7 @@ def db(_clean_database):
 
 
 def _agent(client, key, label, **kw) -> str:
-    return _ok(_mcp(client, key, "register_agent", {"label": label, **kw}))["agent_id"]
+    return _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": label, **kw}))["agent_id"]
 
 
 def _attempt(client, key, db, planner, label, *, outcome="signed_off", vendor="gbagent",
