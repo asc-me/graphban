@@ -24,6 +24,7 @@ DATABASE_URL="postgresql+psycopg://postgres:postgres@localhost:5544/graphban_tes
   ./.venv/bin/python -m pytest -q        # also proves the Alembic chain from empty
 
 # Frontend (from web/):
+pnpm install --frozen-lockfile           # a fresh worktree/clone has no node_modules
 pnpm test && pnpm typecheck              # build with `pnpm build`
 
 # Fleet supervisor (from fleet/) — a SEPARATE distribution with its own venv (PRD-22 D-e).

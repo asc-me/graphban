@@ -21,4 +21,11 @@ cwd = "backend"
 commands = [
     "uv venv --python 3.12 backend/.venv",
     "uv pip install --python backend/.venv/bin/python -e backend[dev]",
+    # A fresh `git worktree` has no `web/node_modules`, and the frontend half of the
+    # operating loop is `pnpm test && pnpm typecheck` with no install step in front of it.
+    # Without this a frontend child either fails its own verification or — the outcome
+    # GRPH-870 added this hook to prevent — skips it and reports green from an unbuilt
+    # tree. `--frozen-lockfile` because web/ is pnpm-locked and a plain install drifts
+    # transitives. Measured 1s: pnpm hardlinks from its content-addressable store.
+    "pnpm --dir web install --frozen-lockfile",
 ]
