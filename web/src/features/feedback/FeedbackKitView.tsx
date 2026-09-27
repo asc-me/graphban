@@ -1,6 +1,7 @@
 import { Check, Copy } from "lucide-react";
 import * as React from "react";
 
+import { FETCH_FAILED } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
@@ -29,7 +30,8 @@ const MODES: FeedbackMode[] = ["inline", "launcher"];
  *  and copy the embed snippet (inline iframe or floating launcher). */
 export function FeedbackKitView() {
   const { activeId } = useProjectCtx();
-  const { data: platform } = usePlatform(activeId);
+  const platformQ = usePlatform(activeId);
+  const platform = platformQ.data;
   const [cfg, setCfg] = React.useState<FeedbackConfig>(() => ({ ...DEFAULT_CONFIG, projectId: activeId }));
   const [copied, setCopied] = React.useState(false);
   const set = <K extends keyof FeedbackConfig>(k: K, v: FeedbackConfig[K]) =>
@@ -41,6 +43,9 @@ export function FeedbackKitView() {
 
   // Spam protection is configured per-project in Settings; reflect the Turnstile sitekey
   // (if any) into the generated snippet.
+  // PRD-47 S1. This view rendered the snippet regardless of whether the platform read
+  // answered, so a failed request silently produced a snippet with no Turnstile sitekey
+  // and no ingest token — indistinguishable from a project that has neither configured.
   const sitekey = platform?.turnstile_sitekey ?? "";
   React.useEffect(() => {
     setCfg((c) => (c.turnstileSitekey === sitekey ? c : { ...c, turnstileSitekey: sitekey }));
@@ -71,6 +76,13 @@ export function FeedbackKitView() {
           A themeable, embeddable feedback widget with built-in duplicate detection. Configure, preview, and copy the snippet.
         </p>
       </div>
+
+      {platformQ.isError && !platform && (
+        <p role="alert" className="flex-none border-b border-line px-5 py-2.5 text-[12px] text-st-blocked">
+          {FETCH_FAILED} The snippet below is missing this project's spam-protection and
+          ingest settings — it is not a project that has none.
+        </p>
+      )}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto p-6 lg:grid-cols-[340px_1fr]">
         {/* Config panel */}

@@ -1,6 +1,12 @@
 import { KeyRound, User as UserIcon } from "lucide-react";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
+import {
+  EventListSkeleton,
+  FETCH_FAILED,
+  PlannerEmpty,
+  PlannerError,
+} from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useEvents } from "@/lib/queries";
 import type { Event } from "@/lib/types";
@@ -8,25 +14,32 @@ import type { Event } from "@/lib/types";
 /** The audit ledger (AL-43): who did what, most-recent-first. */
 export function ActivityView() {
   const { activeId } = useProjectCtx();
-  const { data, isLoading } = useEvents(activeId);
+  const { data, isLoading, isError, refetch } = useEvents(activeId);
 
-  if (isLoading || !data) {
-    return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
-  }
-
+  // PRD-47 S1: the count and the header stay put through every state. This view used to
+  // have one branch — `isLoading || !data` — which meant a failed fetch fell through to
+  // "No activity yet", i.e. a request that never answered read as a project where nothing
+  // has happened. The empty state is now reachable only when the server said zero.
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PlaceHeader
         viewName="Activity"
         purpose="Every accepted mutation, attributed to the agent key or user that made it."
-        action={<div className="font-mono text-[10.5px] text-faint">{data.total} EVENTS</div>}
+        action={data ? <div className="font-mono text-[10.5px] text-faint">{data.total} EVENTS</div> : undefined}
       />
 
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        {data.results.length === 0 ? (
-          <div className="mt-16 text-center text-[13px] text-muted">
-            No activity yet. Agent and user mutations will appear here.
+        {isError && !data ? (
+          <PlannerError message={FETCH_FAILED} onRetry={() => void refetch()} />
+        ) : isLoading || !data ? (
+          <div className="mx-auto max-w-3xl">
+            <EventListSkeleton />
           </div>
+        ) : data.results.length === 0 ? (
+          <PlannerEmpty
+            title="No activity yet"
+            description="Every accepted or rejected mutation lands here, attributed to the person, key and agent behind it. Nothing has been recorded for this project."
+          />
         ) : (
           <div className="mx-auto flex max-w-3xl flex-col gap-1.5">
             {data.results.map((e) => (

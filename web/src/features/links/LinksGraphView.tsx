@@ -9,6 +9,7 @@ import { NODE_TAB_INDEX, useGraphKeyboard } from "@/lib/graph/useGraphKeyboard";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
 import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
+import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useLinks } from "@/lib/queries";
 import type { LinkType } from "@/lib/types";
 
@@ -27,7 +28,12 @@ const LOD_TOP_N = 12;
 
 export function LinksGraphView() {
   const { activeId } = useProjectCtx();
-  const { data: links = [], isLoading } = useLinks(activeId);
+  const linksQ = useLinks(activeId);
+  const links = linksQ.data ?? [];
+  const isLoading = linksQ.isLoading;
+  // An empty canvas is how this view draws "no links". On a failure it drew the same
+  // empty canvas with no way to tell (PRD-47 S1).
+  const failed = linksQ.isError && linksQ.data === undefined;
   const [enabled, setEnabled] = React.useState<Record<LinkType, boolean>>({
     dependency: true, code: true, semantic: true, tag: true,
   });
@@ -204,7 +210,9 @@ export function LinksGraphView() {
       />
 
       <div className="relative min-h-0 flex-1 overflow-hidden">
-        {isLoading ? (
+        {failed ? (
+          <PlannerError message={FETCH_FAILED} onRetry={() => void linksQ.refetch()} />
+        ) : isLoading ? (
           <div className="p-8 text-center text-[13px] text-muted">Loading graph…</div>
         ) : (
           <svg

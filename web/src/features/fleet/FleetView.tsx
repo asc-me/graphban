@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Preferences } from "@/features/harness/Preferences";
 import { McpInstall } from "@/features/settings/McpInstall";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
+import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { api } from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
@@ -418,7 +419,11 @@ export function FleetView() {
   const { activeId, active } = useProjectCtx();
   const scope = active?.tag || active?.name || activeId;
   const { data: config } = useConfig();
-  const { data, refetch } = useFleet(activeId);
+  const fleetQ = useFleet(activeId);
+  const { data, refetch } = fleetQ;
+  // PRD-47 S1: "No agents yet" is a claim about the roster. A failed read used to
+  // reach it, so an unreachable server said the fleet was empty.
+  const fleetFailed = fleetQ.isError && data === undefined;
   const viewHref = (view: string) =>
     config?.hosted_mode && active?.tag ? projectPath(active.tag, view) : `/${view}`;
   const [role, setRole] = React.useState("worker");
@@ -790,7 +795,9 @@ export function FleetView() {
         {tab === "connections" && (
           <>
         <Section title="Roster" desc="Offline agents fade rather than vanish — one that died holding a branch is what you need to see.">
-          {agents.length === 0 ? (
+          {fleetFailed ? (
+            <PlannerError message={FETCH_FAILED} onRetry={() => void refetch()} />
+          ) : agents.length === 0 ? (
             <Empty>
               No agents yet. One agent needs an API key in Settings and no seat.
               A fleet issues seats on Wave — a seat is the role, not a second key.

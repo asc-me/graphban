@@ -5,6 +5,11 @@ import { Link } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import {
+  FETCH_FAILED,
+  KpiGridSkeleton,
+  PlannerError,
+} from "@/components/planner/PlannerStates";
 import { useOrgOverview, useOrgs } from "@/lib/queries";
 import { adminPath, projectPath } from "@/lib/routes";
 import type { OrgOverviewProject } from "@/lib/types";
@@ -69,7 +74,7 @@ function SyncPill({ project }: { project: OrgOverviewProject }) {
 export function OrgOverviewView() {
   const { data: orgs = [] } = useOrgs();
   const org = orgs[0] ?? null;
-  const { data, isLoading } = useOrgOverview(org?.id);
+  const { data, isLoading, isError, refetch } = useOrgOverview(org?.id);
   const qc = useQueryClient();
   const [enableResult, setEnableResult] = useState<string | null>(null);
   const [enabling, setEnabling] = useState(false);
@@ -87,8 +92,28 @@ export function OrgOverviewView() {
     }
   }
 
+  // PRD-47 S1. The zero-projects branch below is an invitation to link a deployment. A
+  // failed overview request used to reach it, so a server that never answered told the
+  // operator their org was empty. Error is checked first and says which one this is.
+  if (isError && !data) {
+    return (
+      <div className="max-w-[720px] px-6 pb-16 pt-5">
+        <h1 className="text-[17px] font-semibold">{org?.name ?? "Organization"}</h1>
+        <div className="mt-5 rounded-[13px] border border-line bg-surface">
+          <PlannerError message={FETCH_FAILED} onRetry={() => void refetch()} />
+        </div>
+      </div>
+    );
+  }
   if (isLoading || !data) {
-    return <div className="p-8 text-[13px] text-muted">Loading the organization…</div>;
+    return (
+      <div className="max-w-[1180px] px-6 pb-16 pt-5">
+        <h1 className="text-[17px] font-semibold">{org?.name ?? "Organization"}</h1>
+        <div className="mt-5">
+          <KpiGridSkeleton tiles={4} />
+        </div>
+      </div>
+    );
   }
 
   const { projects, totals, usage, limits } = data;

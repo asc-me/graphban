@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
+import { FETCH_FAILED } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import {
   useCodeMap,
@@ -39,18 +40,31 @@ export function ProjectHome() {
   const { active } = useProjectCtx();
   const { data: orgs = [] } = useOrgs();
   const projectId = active?.id ?? "";
-  const { data: items = [] } = useItems(projectId);
-  const { data: shards = [] } = useShards(projectId);
-  const { data: map } = useCodeMap(projectId);
-  const { data: prds = [] } = usePrds(projectId);
-  const { data: fleet } = useFleet(projectId);
+  const itemsQ = useItems(projectId);
+  const shardsQ = useShards(projectId);
+  const mapQ = useCodeMap(projectId);
+  const prdsQ = usePrds(projectId);
+  const fleetQ = useFleet(projectId);
   const { data: galaxy } = useGalaxy(orgs[0]?.id);
 
   if (!active) return null;
 
+  const items = itemsQ.data ?? [];
+  const shards = shardsQ.data ?? [];
+  const prds = prdsQ.data ?? [];
+  const fleet = fleetQ.data;
+  const map = mapQ.data;
+
+  // PRD-47 S1. Every count here used to default to an empty array, so a failed request
+  // rendered a confident `0`. A count whose read failed shows `—`; the strip below says
+  // that at least one number is missing, and the no-code-graph panel — which asserts
+  // nothing has been *pushed* — is gated on the map read having actually answered.
   const nodeCount = map?.node_count ?? 0;
   const inFlight = items.filter((i) => i.status === "in_progress").length;
   const liveAgents = (fleet?.agents ?? []).filter((a) => a.state !== "offline").length;
+  const failed = (q: { isError: boolean; data: unknown }) => q.isError && q.data === undefined;
+  const anyFailed = [itemsQ, shardsQ, mapQ, prdsQ, fleetQ].some(failed);
+  const mapAnswered = mapQ.data !== undefined;
 
   const edges = galaxy?.edges ?? [];
   const nameOf = (id: string) =>
@@ -74,19 +88,31 @@ export function ProjectHome() {
       )}
 
       <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 font-mono text-[10px] uppercase tracking-[0.05em]">
-        <Count label="items" value={items.length} />
-        <Count label="in flight" value={inFlight} tone={inFlight ? "text-accent" : undefined} />
-        <Count label="prds" value={prds.length} />
-        <Count label="memory shards" value={shards.length} />
-        <Count label="graph nodes" value={nodeCount} />
+        <Count label="items" value={items.length} unknown={failed(itemsQ)} />
+        <Count
+          label="in flight"
+          value={inFlight}
+          unknown={failed(itemsQ)}
+          tone={inFlight ? "text-accent" : undefined}
+        />
+        <Count label="prds" value={prds.length} unknown={failed(prdsQ)} />
+        <Count label="memory shards" value={shards.length} unknown={failed(shardsQ)} />
+        <Count label="graph nodes" value={nodeCount} unknown={failed(mapQ)} />
         <Count
           label="agents live"
           value={liveAgents}
+          unknown={failed(fleetQ)}
           tone={liveAgents ? "text-st-done" : undefined}
         />
       </div>
 
-      {nodeCount === 0 && <NoGraphYet tag={active.tag} />}
+      {anyFailed && (
+        <p role="alert" className="mt-2 text-[11.5px] text-st-blocked">
+          {FETCH_FAILED} A count showing — was not read, and is not a zero.
+        </p>
+      )}
+
+      {mapAnswered && nodeCount === 0 && <NoGraphYet tag={active.tag} />}
 
       <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {SURFACES.map((s) => (
@@ -133,11 +159,27 @@ const SURFACES = [
     desc: "Who is on this project right now, what they hold, and whether a PR was recorded." },
 ];
 
-function Count({ label, value, tone }: { label: string; value: number; tone?: string }) {
+function Count({
+  label,
+  value,
+  tone,
+  unknown,
+}: {
+  label: string;
+  value: number;
+  tone?: string;
+  /** The read failed. `—` rather than `0`, because those are different facts. */
+  unknown?: boolean;
+}) {
   return (
     <span className="inline-flex items-baseline gap-1.5">
       <span className="text-faint-2">{label}</span>
-      <span className={`text-[12.5px] ${tone ?? "text-fg-2"}`}>{value.toLocaleString()}</span>
+      <span
+        className={`text-[12.5px] ${unknown ? "text-faint" : (tone ?? "text-fg-2")}`}
+        title={unknown ? "Not read — the request failed" : undefined}
+      >
+        {unknown ? "—" : value.toLocaleString()}
+      </span>
     </span>
   );
 }

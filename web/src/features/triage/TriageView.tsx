@@ -1,6 +1,11 @@
 import { ArrowUp, Check, Copy, Inbox, MessageSquare, Radar } from "lucide-react";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
+import {
+  FETCH_FAILED,
+  PlannerError,
+  TriageQueueSkeleton,
+} from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { TYPE_META } from "@/lib/meta";
 import { useAcceptRequest, useFleet, useTriageQueue, useVoteRequest } from "@/lib/queries";
@@ -18,9 +23,10 @@ import type { RequestType, TriageRow } from "@/lib/types";
 export function TriageView() {
   const { active } = useProjectCtx();
   const projectId = active?.id ?? "";
-  const { data: queue = [], isLoading } = useTriageQueue(projectId);
-  const { data: fleet } = useFleet(projectId);
-  const clusters = fleet?.clusters ?? [];
+  const queueQ = useTriageQueue(projectId);
+  const fleetQ = useFleet(projectId);
+  const queue = queueQ.data ?? [];
+  const clusters = fleetQ.data?.clusters ?? [];
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -39,8 +45,18 @@ export function TriageView() {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[1300px] px-6 pb-16 pt-6">
           <div className="grid gap-4 lg:grid-cols-[320px_1fr] lg:items-start">
-            <IncomingQueue rows={queue} loading={isLoading} projectId={projectId} />
-            <Clusters clusters={clusters} />
+            <IncomingQueue
+              rows={queue}
+              loading={queueQ.isLoading}
+              failed={queueQ.isError && !queueQ.data}
+              onRetry={() => void queueQ.refetch()}
+              projectId={projectId}
+            />
+            <Clusters
+              clusters={clusters}
+              failed={fleetQ.isError && !fleetQ.data}
+              onRetry={() => void fleetQ.refetch()}
+            />
           </div>
         </div>
       </div>
@@ -51,10 +67,15 @@ export function TriageView() {
 function IncomingQueue({
   rows,
   loading,
+  failed,
+  onRetry,
   projectId,
 }: {
   rows: TriageRow[];
   loading: boolean;
+  /** The request failed. Distinct from `rows.length === 0`, which means the queue is clear. */
+  failed: boolean;
+  onRetry: () => void;
   projectId: string;
 }) {
   return (
@@ -65,8 +86,12 @@ function IncomingQueue({
         <span className="font-mono text-[9.5px] text-faint-2">{rows.length}</span>
       </div>
 
-      {loading ? (
-        <div className="px-3.5 py-6 text-center font-mono text-[11px] text-faint-2">loading…</div>
+      {failed ? (
+        <PlannerError message={FETCH_FAILED} onRetry={onRetry} />
+      ) : loading ? (
+        <div className="p-3.5">
+          <TriageQueueSkeleton />
+        </div>
       ) : rows.length === 0 ? (
         <div className="px-3.5 py-7 text-center">
           <div className="text-[13px] font-semibold text-fg-2">Queue is empty</div>
@@ -142,23 +167,45 @@ type Cluster = NonNullable<ReturnType<typeof useFleet>["data"]>["clusters"][numb
  * overlaps" has two very different causes, and the empty state names which one it is
  * rather than showing a calm green tick over an idle project.
  */
-function Clusters({ clusters }: { clusters: Cluster[] }) {
+function Clusters({
+  clusters,
+  failed,
+  onRetry,
+}: {
+  clusters: Cluster[];
+  /**
+   * The fleet read failed. Without this the calm green "Nothing in flight" panel — which
+   * asserts the check ran and found no conflict — would be shown for a check that never
+   * ran at all (PRD-47 S1).
+   */
+  failed: boolean;
+  onRetry: () => void;
+}) {
   const overlapping = clusters.filter((c) => c.items.length > 1);
   const anyInFlight = clusters.length > 0;
 
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-2.5">
-        <Radar size={15} className={overlapping.length ? "text-st-review" : "text-st-done"} />
+        <Radar
+          size={15}
+          className={failed ? "text-muted" : overlapping.length ? "text-st-review" : "text-st-done"}
+        />
         <h2 className="text-[14px] font-semibold">Collision clusters</h2>
         <span className="font-mono text-[9.5px] uppercase tracking-[0.05em] text-faint-2">
-          {overlapping.length
-            ? `${overlapping.length} overlapping`
-            : `${clusters.length} in flight`}
+          {failed
+            ? "unavailable"
+            : overlapping.length
+              ? `${overlapping.length} overlapping`
+              : `${clusters.length} in flight`}
         </span>
       </div>
 
-      {overlapping.length === 0 ? (
+      {failed ? (
+        <div className="rounded-[13px] border border-line bg-surface-2">
+          <PlannerError message={FETCH_FAILED} onRetry={onRetry} />
+        </div>
+      ) : overlapping.length === 0 ? (
         <div className="flex gap-3 rounded-[13px] border border-st-done/25 bg-st-done/[0.05] px-4 py-5">
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border border-st-done/30 bg-st-done/[0.12]">
             {anyInFlight ? (

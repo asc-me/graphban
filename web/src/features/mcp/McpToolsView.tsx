@@ -1,21 +1,24 @@
 import { Link } from "react-router-dom";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
+import { PlannerError } from "@/components/planner/PlannerStates";
 import { useMcpTools } from "@/lib/queries";
 import { settingsPath } from "@/lib/routes";
 import type { McpToolInfo } from "@/lib/types";
 
 export function McpToolsView() {
-  const { data, isLoading, isError } = useMcpTools();
+  const { data, isLoading, isError, refetch } = useMcpTools();
 
   if (isLoading && !data) {
     return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
   }
   if (isError && !data) {
+    // The copy already said which state this is; PRD-47 S1 adds the way out of it.
     return (
-      <div className="p-6 text-[13px] text-st-blocked">
-        MCP catalog unavailable — the tool list could not be fetched.
-      </div>
+      <PlannerError
+        message="MCP catalog unavailable — the tool list could not be fetched."
+        onRetry={() => void refetch()}
+      />
     );
   }
   if (!data) {
