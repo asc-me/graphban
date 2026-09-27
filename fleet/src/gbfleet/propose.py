@@ -20,6 +20,7 @@ the wave — which is also the honest attribution.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -115,8 +116,54 @@ def subject(repo: Path, branch: str, base: str) -> str:
     return (done.stdout or "").strip().splitlines()[0].strip() if done.returncode == 0 and done.stdout.strip() else ""
 
 
+def _names(subject: str, item: str) -> bool:
+    return re.search(rf"(?<![A-Za-z0-9_-]){re.escape(item)}(?![A-Za-z0-9_])", subject or "") is not None
+
+
+def split_by_item(repo: Path, branch: str, base: str,
+                  items: list[str]) -> tuple[list[tuple[str, str]], str]:
+    """Where each item's work ends on a branch that carries several: `[(item, sha)]` in
+    branch order, or `([], why)` when the commits do not separate them (GRPH-948).
+
+    Read from the worker's own commit subjects, oldest first. A commit naming one item belongs
+    to it; one naming none belongs to the item before it (or, before any, the first); one
+    naming two cannot be divided. An item's commits must be CONTIGUOUS, because the per-item
+    branches are stacked — each PR's base is the previous item's branch, so its diff is only
+    its own item — and interleaved commits cannot be stacked without rewriting them. Rewriting
+    a worker's history is not the supervisor's call, so that is refused and the person splits
+    it.
+    """
+    if not base:
+        return [], "there is no base to split it against"
+    done = subprocess.run(["git", "log", "--reverse", "--format=%H%x09%s", f"{base}..{branch}"],
+                          cwd=str(repo), capture_output=True, text=True)
+    if done.returncode != 0:
+        return [], "its commits could not be read"
+    blocks: list[list] = []  # [item, last sha]
+    for line in (done.stdout or "").splitlines():
+        sha, _, subj = line.partition("\t")
+        named = [i for i in items if _names(subj, i)]
+        if len(named) > 1:
+            return [], f"commit {sha[:12]} names {', '.join(named)}"
+        if not named:
+            if blocks:
+                blocks[-1][1] = sha
+            continue
+        item = named[0]
+        if blocks and blocks[-1][0] == item:
+            blocks[-1][1] = sha
+        elif any(b[0] == item for b in blocks):
+            return [], f"{item}'s commits are interleaved with {blocks[-1][0]}'s"
+        else:
+            blocks.append([item, sha])
+    missing = [i for i in items if not any(b[0] == i for b in blocks)]
+    if missing:
+        return [], f"no commit names {', '.join(missing)}"
+    return [(b[0], b[1]) for b in blocks], ""
+
+
 def describe(branch: str, items: list[str], commit_subject: str = "") -> tuple[str, str]:
-    """Title and body for work a wave produced.
+    """Title and body for work a wave produced — for ONE item, or none (GRPH-948).
 
     THE WORKER'S OWN SUBJECT LEADS (GRPH-817). The first version always composed
     `<items> (from <branch>)`, which put a branch name in front of a reviewer where a
@@ -131,8 +178,16 @@ def describe(branch: str, items: list[str], commit_subject: str = "") -> tuple[s
     generated paragraph claiming to is the kind of confident filler a reviewer learns to skip,
     and then skips on the PR that needed reading.
     """
-    named = ", ".join(items)
-    if commit_subject and named:
+    if len(items) > 1:
+        # GRPH-948. A title naming several items is a PR carrying several items — the reported
+        # one was "SA-583, SA-581, SA-580: …", 19 files, merged before review. The caller
+        # splits the branch first (`split_by_item`) or does not propose it.
+        raise ValueError(f"a PR carries one item, not {len(items)}: {list(items)}")
+    named = items[0] if items else ""
+    if commit_subject and named and _names(commit_subject, named):
+        # Already named by the worker; prefixing it again read `SA-580: SA-580: …`.
+        title = commit_subject
+    elif commit_subject and named:
         title = f"{named}: {commit_subject}"
     elif commit_subject:
         title = commit_subject

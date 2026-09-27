@@ -312,7 +312,7 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `mint_enrolment` | `agent_id`, `role`, `wave` | PLANNER ONLY. Mint a seat for an agent you are spawning, bounded by your credential — the code is returned once and grants that role for one session |
 | `retire_wave` | `agent_id`, `wave` | PLANNER ONLY. Revoke the seats YOU minted and release what agents on them hold, in one step — it does NOT stop processes, and `agents_still_running` names the ones still building against dead seats |
 | `collision_clusters` | `project_id`, `status` | Partition ready work into clusters that provably share no touch-areas; `predicted` marks lower-confidence grouping |
-| `claim_cluster` | `agent_id`, `max_items`, `lease_seconds`, `wait_seconds` | Claim a whole non-colliding cluster and reserve its areas, checked against in-flight work |
+| `claim_cluster` | `agent_id`, `max_items`, `lease_seconds`, `wait_seconds` | Claim a whole non-colliding cluster and reserve its areas, checked against in-flight work. `max_items` is lowered to the project's `cluster_ceiling` for the cluster's lane (web: 1 by default); a bound seat is refused while its item is open (GRPH-948) |
 | `claim_review` | `agent_id`, `project_id`, `wait_seconds` | Lease an item in review you did **not** build, and are independent of — not your own call tree, and not the same credential on the same host |
 | `sign_off` | `id`, `agent_id`, `evidence`, `commit` | Take a reviewed item to `done`. Refused if you built it — and, above effort 3, refused without a `sabotage` receipt. With `commit`, mints an `attestation` |
 | `bounce` | `id`, `agent_id`, `reason` | Send it back to `next` with a reason, reserved for its author for one lease period |

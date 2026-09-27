@@ -144,10 +144,10 @@ def test_success_without_a_url_is_not_success(gh):
 def test_the_description_names_the_items_and_claims_nothing_else():
     """The supervisor did not do the work and cannot summarise it. Generated filler is what a
     reviewer learns to skip — and then skips on the PR that needed reading."""
-    title, body = propose_mod.describe("gb/w-1", ["SA-417", "SA-420"])
+    title, body = propose_mod.describe("gb/w-1", ["SA-417"])
 
     assert "SA-417" in title and "gb/w-1" in title
-    assert "SA-417" in body and "SA-420" in body
+    assert "SA-417" in body
     assert "draft" in body.lower()
     assert "knows nothing" in body, "did not warn that the description is generated"
 

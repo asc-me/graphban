@@ -1656,6 +1656,32 @@ class OutOfScope(Exception):
     """
 
 
+class BoundSeatBusy(OutOfScope):
+    """A bound seat asked for a second item while its own is still open (GRPH-948).
+
+    A subclass of `OutOfScope` so every path that already skips an out-of-scope neighbour
+    (`next_cluster`, the bound registration) skips this one the same way; the message says
+    which remedy applies.
+    """
+
+
+def open_bound_item(db: Session, agent_id: str | None) -> str | None:
+    """The key of the item this agent's seat is BOUND to, while it is not yet in review or
+    done — else None (GRPH-948). An unbound seat, or none, has no bound item."""
+    if not agent_id:
+        return None
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return None
+    seat = db.get(Enrolment, agent.enrolment_id)
+    if seat is None or not seat.item_id:
+        return None
+    bound = db.get(Item, seat.item_id)
+    if bound is None or bound.status in ("review", "done"):
+        return None
+    return bound.key
+
+
 def seat_scope(db: Session, agent_id: str | None) -> str:
     """The PRD this agent's seat was minted for, or "" for an unscoped seat (GRPH-827).
 
@@ -1926,6 +1952,14 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
             f"{it.key} is declared `reach=deploy` — it acts on a running system, and you are "
             "a spawned child with a worktree and a shell. Leave it; a person does this one."
         )
+    # GRPH-948. A seat bound to one item delivers that item on its own branch. A second claim
+    # while the first is open puts two items in one worktree, and from there into one salvage
+    # commit and one PR — the reported one carried four items and needed four fix PRs.
+    bound = open_bound_item(db, agent_id)
+    if bound and bound != it.key:
+        raise BoundSeatBusy(
+            f"this seat is bound to {bound}, which is not in review or done. One branch "
+            f"carries one item: move {bound} to review before claiming {it.key}.")
     scope = seat_scope(db, agent_id)
     if not in_scope(it, scope):
         raise OutOfScope(
