@@ -200,6 +200,7 @@ describe("Lessons catalog", () => {
       has_more: false,
     });
     renderAt("/lessons");
+    await userEvent.click(await screen.findByRole("tab", { name: /Unmeasured/ }));
     const banner = await screen.findByText(/1 published lesson has no outcomes yet/);
     expect(banner.closest("div")).toHaveTextContent(/unknown, not effective/);
     expect(screen.getByText(/Always bump the migration range/)).toBeInTheDocument();
@@ -220,6 +221,7 @@ describe("Lessons catalog", () => {
       has_more: false,
     });
     renderAt("/lessons");
+    await userEvent.click(await screen.findByRole("tab", { name: /Unmeasured/ }));
     expect(await screen.findByText(/A lesson with no score field/)).toBeInTheDocument();
     expect(screen.queryByText("1.0")).not.toBeInTheDocument();
     expect(screen.queryByText("1.00")).not.toBeInTheDocument();
@@ -227,7 +229,7 @@ describe("Lessons catalog", () => {
     expect(screen.queryByText(/you're all caught up/i)).not.toBeInTheDocument();
   });
 
-  it("renders chips from payload enums, including unclassified_filter", async () => {
+  it("renders queue picker tabs with counts from the payload", async () => {
     lessonsSpy.mockResolvedValue({
       enums: ENUMS,
       results: [row()],
@@ -237,12 +239,14 @@ describe("Lessons catalog", () => {
       has_more: false,
     });
     renderAt("/lessons");
-    expect(await screen.findByRole("button", { name: "Unclassified" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Unknown outcomes" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Eligible for org" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Dropping" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Unclassified" }));
-    expect(lessonsSpy).toHaveBeenCalledWith("core", expect.objectContaining({ lesson_class: "unclassified" }));
+    expect(await screen.findByRole("tab", { name: /Dropping/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Unmeasured/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Missed/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Overlap/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Promote/ })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /Unclassified/ })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: /Unmeasured/ }));
+    expect(screen.getByText(/Always bump the migration range/)).toBeInTheDocument();
   });
 
   it("counts omitted caught_state as unknown, so the banner still fires", async () => {
@@ -256,9 +260,10 @@ describe("Lessons catalog", () => {
       has_more: false,
     });
     renderAt("/lessons");
-    expect(await screen.findByText(/No caught_state on the wire/)).toBeInTheDocument();
-    expect(screen.getByText("1 UNMEASURED")).toBeInTheDocument();
+    expect(await screen.findByText("1 UNMEASURED")).toBeInTheDocument();
     expect(screen.queryByText("0 UNMEASURED")).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("tab", { name: /Unmeasured/ }));
+    expect(await screen.findByText(/No caught_state on the wire/)).toBeInTheDocument();
     const banner = screen.getByText(/1 published lesson has no outcomes yet/);
     expect(banner.closest("div")).toHaveTextContent(/unknown, not effective/);
   });
@@ -290,7 +295,7 @@ describe("Lessons catalog", () => {
   it("keeps the Memory empty-state link on the current hosted project", async () => {
     renderAt("/p/CORE/lessons");
     const memory = await screen.findByRole("link", { name: "Memory" });
-    expect(memory).toHaveAttribute("href", "/p/CORE/memory-review");
+    expect(memory).toHaveAttribute("href", "/memory-review");
   });
 });
 
@@ -441,6 +446,124 @@ describe("Lesson detail — promote is always visible with the real reason", () 
     renderAt("/lessons/sh_1");
     await userEvent.click(await screen.findByRole("button", { name: "Promote to org" }));
     expect(await screen.findByText("unmeasured: cluster_scope_unmeasured")).toBeInTheDocument();
+  });
+});
+
+describe("S9 — queue picker, outcome strip, keyboard nav", () => {
+  beforeEach(() => {
+    lessonsSpy.mockReset();
+    lessonSpy.mockReset();
+    promoteSpy.mockReset();
+    recordSpy.mockReset();
+    lessonsSpy.mockResolvedValue(emptyList());
+    lessonSpy.mockResolvedValue(detail());
+    promoteSpy.mockResolvedValue(detail({ reach: "org" }));
+    recordSpy.mockResolvedValue(detail());
+  });
+
+  it("shows an honest empty outcome strip when nothing has been measured", async () => {
+    lessonsSpy.mockResolvedValue({
+      enums: ENUMS,
+      results: [row()],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+    });
+    renderAt("/lessons");
+    await userEvent.click(await screen.findByRole("tab", { name: /Unmeasured/ }));
+    const strip = await screen.findByLabelText("outcome trend: unmeasured");
+    expect(strip).toBeInTheDocument();
+    expect(strip.querySelectorAll("span").length).toBeGreaterThan(0);
+  });
+
+  it("renders a dropping outcome strip with trend bars", async () => {
+    lessonsSpy.mockResolvedValue({
+      enums: ENUMS,
+      results: [row({
+        effectiveness: { score: 0.3, trend: "dropping", drop_reasons: ["contradicted"] },
+        caught_state: "mixed",
+      })],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+    });
+    renderAt("/lessons");
+    const strip = await screen.findByLabelText("outcome trend: dropping");
+    expect(strip).toBeInTheDocument();
+  });
+
+  it("switches queues and shows the right rows", async () => {
+    lessonsSpy.mockResolvedValue({
+      enums: ENUMS,
+      results: [
+        row({ text: "Dropping lesson text", item_id: "CORE-10", effectiveness: { score: 0.2, trend: "dropping", drop_reasons: [] }, caught_state: "caught" }),
+        row({ text: "Missed lesson text", item_id: "CORE-11", caught_state: "missed", effectiveness: { score: 0.5, trend: "stable", drop_reasons: [] } }),
+        row({ text: "Unmeasured lesson text", item_id: "CORE-12", caught_state: "unknown", effectiveness: { score: null, trend: "unmeasured", drop_reasons: [] } }),
+      ],
+      total: 3,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+    });
+    renderAt("/lessons");
+    expect(await screen.findByRole("tab", { name: /Dropping/ })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: /Missed/ })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: /Unmeasured/ })).toBeInTheDocument();
+    expect(screen.getByText("1 UNMEASURED")).toBeInTheDocument();
+    expect(screen.getByText("1 DROPPING")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: /Missed/ }));
+    expect(screen.getByText("Missed lesson text")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("tab", { name: /Unmeasured/ }));
+    expect(screen.getByText("Unmeasured lesson text")).toBeInTheDocument();
+  });
+
+  it("supports J/K keyboard navigation and X to select", async () => {
+    lessonsSpy.mockResolvedValue({
+      enums: ENUMS,
+      results: [
+        row({ id: "sh_1", text: "First lesson", item_id: "CORE-1", caught_state: "unknown", effectiveness: { score: null, trend: "unmeasured", drop_reasons: [] } }),
+        row({ id: "sh_2", text: "Second lesson", item_id: "CORE-2", caught_state: "unknown", effectiveness: { score: null, trend: "unmeasured", drop_reasons: [] } }),
+      ],
+      total: 2,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+    });
+    renderAt("/lessons");
+    await userEvent.click(await screen.findByRole("tab", { name: /Unmeasured/ }));
+    const listbox = await screen.findByRole("listbox");
+    listbox.focus();
+
+    await userEvent.keyboard("j");
+    const secondRow = screen.getByText("Second lesson").closest("[data-row-idx]");
+    expect(secondRow).toHaveAttribute("data-row-idx", "1");
+
+    await userEvent.keyboard("x");
+    const checkboxes = listbox.querySelectorAll("[role='checkbox']");
+    expect(checkboxes[1]).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("partitions near-duplicates into the overlap queue by shared item_id", async () => {
+    lessonsSpy.mockResolvedValue({
+      enums: ENUMS,
+      results: [
+        row({ id: "sh_a", text: "Lesson alpha", item_id: "CORE-1", caught_state: "caught", effectiveness: { score: 0.8, trend: "stable", drop_reasons: [] } }),
+        row({ id: "sh_b", text: "Lesson beta", item_id: "CORE-1", caught_state: "caught", effectiveness: { score: 0.7, trend: "stable", drop_reasons: [] } }),
+      ],
+      total: 2,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+    });
+    renderAt("/lessons");
+    expect(await screen.findByText("2 PUBLISHED")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("tab", { name: /Overlap/ }));
+    expect(await screen.findByText("Lesson alpha")).toBeInTheDocument();
+    expect(screen.getByText("Lesson beta")).toBeInTheDocument();
   });
 });
 

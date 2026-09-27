@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowDown, ArrowRight, ArrowUp } from "lucide-react";
+import { ArrowLeft, ArrowDown, ArrowRight, ArrowUp, Check, ChevronRight } from "lucide-react";
 import * as React from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 
@@ -18,12 +18,22 @@ import {
 } from "@/lib/queries";
 import { projectPath, tagFromPath } from "@/lib/routes";
 import type {
-  Eligibility,
   LessonDetail,
-  LessonEnums,
-  LessonFilters,
   LessonListRow,
 } from "@/lib/types";
+
+type QueueId = "dropping" | "missed" | "unmeasured" | "overlap" | "promote" | "unclassified";
+
+const QUEUE_META: Record<QueueId, { label: string; hint: string }> = {
+  dropping: { label: "Dropping", hint: "Effectiveness is falling — what was catching issues is no longer" },
+  missed: { label: "Missed", hint: "Surfaced but the issue still happened — the lesson did not catch it" },
+  unmeasured: { label: "Unmeasured", hint: "No outcomes recorded — a hit cannot be told apart from noise" },
+  overlap: { label: "Overlap", hint: "Near-duplicates — keep one, the rest retire into it" },
+  promote: { label: "Promote", hint: "Eligible for org-wide reach but not yet promoted" },
+  unclassified: { label: "Unclassified", hint: "Does not fit the other queues — still published, still counted" },
+};
+
+const QUEUE_ORDER: QueueId[] = ["dropping", "missed", "unmeasured", "overlap", "promote", "unclassified"];
 
 /** Published catalog. Memory review is the candidate inbox — different empty, different job. */
 export function LessonsView() {
@@ -32,28 +42,122 @@ export function LessonsView() {
   return <LessonListPage />;
 }
 
+function partitionQueues(rows: LessonListRow[]): Map<QueueId, LessonListRow[]> {
+  const queues = new Map<QueueId, LessonListRow[]>();
+  for (const q of QUEUE_ORDER) queues.set(q, []);
+
+  const byOrigin = new Map<string, LessonListRow[]>();
+  for (const r of rows) {
+    const key = r.item_id
+      ? `item:${r.item_id}`
+      : r.source
+        ? `source:${r.source}`
+        : null;
+    if (key) {
+      const group = byOrigin.get(key) ?? [];
+      group.push(r);
+      byOrigin.set(key, group);
+    }
+  }
+  const overlapIds = new Set<string>();
+  for (const [, group] of byOrigin) {
+    if (group.length > 1) {
+      for (const r of group) overlapIds.add(r.id);
+    }
+  }
+
+  for (const r of rows) {
+    if (overlapIds.has(r.id)) {
+      queues.get("overlap")!.push(r);
+    } else if (r.effectiveness?.trend === "dropping") {
+      queues.get("dropping")!.push(r);
+    } else if (r.caught_state === "missed" || r.caught_state === "mixed") {
+      queues.get("missed")!.push(r);
+    } else if (!r.caught_state || r.caught_state === "unknown") {
+      queues.get("unmeasured")!.push(r);
+    } else if (r.eligibility?.state === "eligible" && r.reach !== "org") {
+      queues.get("promote")!.push(r);
+    } else {
+      queues.get("unclassified")!.push(r);
+    }
+  }
+  return queues;
+}
+
 function LessonListPage() {
   const { activeId } = useProjectCtx();
-  const [filters, setFilters] = React.useState<LessonFilters>({});
-  const compact = compactFilters(filters);
-  const filtered = Object.keys(compact).length > 0;
   const catalogQ = useLessons(activeId);
-  const listQ = useLessons(activeId, filtered ? compact : undefined);
-  const { data, isLoading, isError, refetch } = listQ;
-  const loading = isLoading || catalogQ.isLoading;
-  const failed = isError || catalogQ.isError;
+  const { isLoading, isError: catalogError, refetch } = catalogQ;
+  const failed = catalogQ.isError || catalogError;
 
-  const enums = data?.enums ?? catalogQ.data?.enums;
-  // Counts from the page we actually rendered. total is the catalog size; has_more
-  // means UNMEASURED/DROPPING of this page are not the rest of the catalog.
-  const page = catalogQ.data ?? data;
-  const all = page?.results ?? [];
-  const published = page?.total ?? 0;
-  const hasMore = page?.has_more ?? false;
-  const unmeasured = all.filter(rowIsUnmeasured).length;
-  const dropping = all.filter((r) => r.effectiveness?.trend === "dropping").length;
-  const empty = !loading && !failed && published === 0;
-  const allUnmeasured = !empty && all.length > 0 && unmeasured === all.length;
+  const allRows = catalogQ.data?.results ?? [];
+  const published = catalogQ.data?.total ?? 0;
+  const hasMore = catalogQ.data?.has_more ?? false;
+
+  const queues = React.useMemo(() => partitionQueues(allRows), [allRows]);
+  const [activeQueue, setActiveQueue] = React.useState<QueueId>("dropping");
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [focusIdx, setFocusIdx] = React.useState(0);
+  const queueRef = React.useRef<HTMLDivElement>(null);
+
+  const currentRows = queues.get(activeQueue) ?? [];
+  const empty = !isLoading && !failed && published === 0;
+
+  React.useEffect(() => {
+    setFocusIdx(0);
+  }, [activeQueue]);
+
+  const handleKeyDown = React.useCallback((e: React.KeyboardEvent) => {
+    if (e.key === "j" || e.key === "J") {
+      e.preventDefault();
+      setFocusIdx((i) => Math.min(i + 1, currentRows.length - 1));
+    } else if (e.key === "k" || e.key === "K") {
+      e.preventDefault();
+      setFocusIdx((i) => Math.max(i - 1, 0));
+    } else if (e.key === "x" || e.key === "X") {
+      e.preventDefault();
+      const row = currentRows[focusIdx];
+      if (row) {
+        setSelected((prev) => {
+          const next = new Set(prev);
+          if (next.has(row.id)) next.delete(row.id);
+          else next.add(row.id);
+          return next;
+        });
+      }
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const row = currentRows[focusIdx];
+      if (row) {
+        const tag = tagFromPath(window.location.pathname);
+        const base = tag ? `/p/${tag}/lessons/${row.id}` : `/lessons/${row.id}`;
+        window.location.href = base;
+      }
+    }
+  }, [currentRows, focusIdx]);
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    if (selected.size === currentRows.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(currentRows.map((r) => r.id)));
+    }
+  };
+
+  const queueCounts = React.useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const q of QUEUE_ORDER) m[q] = queues.get(q)?.length ?? 0;
+    return m;
+  }, [queues]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -62,7 +166,7 @@ function LessonListPage() {
         purpose="Published memory, scored against whether it is still catching anything. Candidates stay in Memory until you publish them."
         action={
           <div className="flex items-center gap-3 font-mono text-[10.5px] text-faint">
-            {loading ? (
+            {isLoading ? (
               <>
                 <span className="h-3 w-16 animate-pulse rounded bg-surface-3" />
                 <span className="h-3 w-20 animate-pulse rounded bg-surface-3" />
@@ -70,26 +174,24 @@ function LessonListPage() {
             ) : (
               <>
                 <span>{published} PUBLISHED</span>
-                <span>
-                  {unmeasured} UNMEASURED{hasMore ? " THIS PAGE" : ""}
-                </span>
-                <span>
-                  {dropping} DROPPING{hasMore ? " THIS PAGE" : ""}
-                </span>
+                <span>{queueCounts.unmeasured} UNMEASURED{hasMore ? " THIS PAGE" : ""}</span>
+                <span>{queueCounts.dropping} DROPPING{hasMore ? " THIS PAGE" : ""}</span>
               </>
             )}
           </div>
         }
       />
 
-      {enums && (
-        <FilterBar enums={enums} filters={compact} onChange={setFilters} />
-      )}
+      <QueuePicker
+        active={activeQueue}
+        counts={queueCounts}
+        onChange={setActiveQueue}
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading ? (
+        {isLoading ? (
           <LessonsListSkeleton />
-        ) : failed || !data ? (
+        ) : failed ? (
           <PlannerError message="The lesson catalog could not be loaded." onRetry={() => {
             void refetch();
             void catalogQ.refetch();
@@ -100,10 +202,10 @@ function LessonListPage() {
               <EmptyCatalog />
             ) : (
               <>
-                {allUnmeasured && (
+                {queueCounts.unmeasured > 0 && (
                   <div className="rounded-[10px] border border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-[#e0b34a]">
                     {hasMore
-                      ? `At least ${unmeasured} of this page of published lessons have no outcomes yet.`
+                      ? `At least ${queueCounts.unmeasured} of this page of published lessons have no outcomes yet.`
                       : `${published} published lesson${published === 1 ? " has" : "s have"} no outcomes yet.`}{" "}
                     That is <span className="font-semibold">unknown</span>, not effective — nothing has
                     caught or missed since they were published.
@@ -115,14 +217,40 @@ function LessonListPage() {
                     the catalog.
                   </p>
                 )}
-                {data.results.length === 0 ? (
-                  <div className="py-16 text-center text-[13px] text-muted">
-                    No lessons match these filters.
-                  </div>
+                {currentRows.length === 0 ? (
+                  <QueueEmpty queue={activeQueue} />
                 ) : (
-                  data.results.map((row) => (
-                    <LessonRow key={row.id} row={row} />
-                  ))
+                  <>
+                    <BulkBar
+                      count={selected.size}
+                      total={currentRows.length}
+                      onSelectAll={selectAll}
+                      allSelected={selected.size === currentRows.length}
+                    />
+                    <div
+                      ref={queueRef}
+                      tabIndex={0}
+                      className="flex flex-col gap-1.5 outline-none"
+                      onKeyDown={handleKeyDown}
+                      role="listbox"
+                      aria-label={`${QUEUE_META[activeQueue].label} queue`}
+                    >
+                      {currentRows.map((row, idx) => (
+                        <QueueRow
+                          key={row.id}
+                          row={row}
+                          idx={idx}
+                          focused={idx === focusIdx}
+                          selected={selected.has(row.id)}
+                          onToggleSelect={() => toggleSelect(row.id)}
+                          onFocus={() => setFocusIdx(idx)}
+                        />
+                      ))}
+                    </div>
+                    <p className="py-2 text-center font-mono text-[10.5px] text-faint">
+                      J/K move · X select · Enter open
+                    </p>
+                  </>
                 )}
               </>
             )}
@@ -133,11 +261,246 @@ function LessonListPage() {
   );
 }
 
+function QueuePicker({
+  active,
+  counts,
+  onChange,
+}: {
+  active: QueueId;
+  counts: Record<string, number>;
+  onChange: (q: QueueId) => void;
+}) {
+  return (
+    <div className="flex flex-none flex-wrap items-center gap-1 border-b border-line px-5 py-2">
+      {QUEUE_ORDER.map((q) => {
+        const count = counts[q] ?? 0;
+        const isActive = q === active;
+        return (
+          <button
+            key={q}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            title={QUEUE_META[q].hint}
+            onClick={() => onChange(q)}
+            className={cn(
+              "rounded-md border px-2 py-1 font-mono text-[10px] uppercase tracking-wide transition-colors",
+              isActive
+                ? "border-line-hover bg-surface-3 text-fg"
+                : "border-line-2 text-faint hover:border-line-hover hover:text-muted",
+            )}
+          >
+            {QUEUE_META[q].label}
+            <span className={cn("ml-1.5", count === 0 ? "text-faint" : "text-muted")}>
+              {count}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function BulkBar({
+  count,
+  total,
+  onSelectAll,
+  allSelected,
+}: {
+  count: number;
+  total: number;
+  onSelectAll: () => void;
+  allSelected: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-line-2 bg-surface-2 px-3 py-2">
+      <button
+        type="button"
+        onClick={onSelectAll}
+        className={cn(
+          "flex h-4 w-4 items-center justify-center rounded border transition-colors",
+          allSelected
+            ? "border-st-done bg-st-done/10 text-st-done"
+            : "border-line-2 hover:border-line-hover",
+        )}
+        aria-label={allSelected ? "Deselect all" : "Select all"}
+      >
+        {allSelected && <Check size={10} />}
+      </button>
+      <span className="font-mono text-[10.5px] text-faint">
+        {count === 0
+          ? `${total} in queue`
+          : `${count} of ${total} selected`}
+      </span>
+    </div>
+  );
+}
+
+function QueueRow({
+  row,
+  idx,
+  focused,
+  selected,
+  onToggleSelect,
+  onFocus,
+}: {
+  row: LessonListRow;
+  idx: number;
+  focused: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
+  onFocus: () => void;
+}) {
+  const { projects, activeId } = useProjectCtx();
+  const originTag =
+    row.project_id && row.project_id !== activeId
+      ? projects.find((p) => p.id === row.project_id)?.tag
+      : null;
+  return (
+    <Link
+      to={row.id}
+      data-row-idx={idx}
+      tabIndex={0}
+      onFocus={onFocus}
+      className={cn(
+        "flex items-start gap-2.5 rounded-[10px] border px-3.5 py-3 transition-colors outline-none",
+        focused
+          ? "border-line-hover bg-surface-2 ring-1 ring-line-hover"
+          : "border-line-2 bg-surface-2 hover:border-line-hover",
+      )}
+    >
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={selected}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onToggleSelect();
+        }}
+        className={cn(
+          "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors",
+          selected
+            ? "border-st-done bg-st-done/10 text-st-done"
+            : "border-line-2 hover:border-line-hover",
+        )}
+      >
+        {selected && <Check size={10} />}
+      </button>
+      <div className="min-w-0 flex-1">
+        <p className="line-clamp-2 text-[13px] leading-relaxed text-ink">{row.text}</p>
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <ClassChip lessonClass={row.lesson_class} suggested={row.suggested_class} />
+          <span className="font-mono text-[10.5px] text-faint">
+            {row.source || row.origin || "—"}
+            {row.item_id ? ` · ${row.item_id}` : ""}
+          </span>
+          {row.reach === "org" && (
+            <Chip tone="accent">
+              {row.transferability === "overridden"
+                ? "org (overridden)"
+                : originTag
+                  ? `org · from ${originTag}`
+                  : "org"}
+            </Chip>
+          )}
+          {originTag && row.reach !== "org" && (
+            <Chip tone="muted">from {originTag}</Chip>
+          )}
+          <CaughtChip state={row.caught_state} />
+          <ScoreChip row={row} />
+          <OutcomeStrip row={row} />
+        </div>
+      </div>
+      <ChevronRight size={14} className="mt-1 shrink-0 text-faint" />
+    </Link>
+  );
+}
+
+function OutcomeStrip({ row }: { row: LessonListRow }) {
+  const score = row.effectiveness?.score;
+  const trend = row.effectiveness?.trend ?? "unmeasured";
+  const caught = row.caught_state;
+  const hasOutcomes = caught && caught !== "unknown";
+
+  if (!hasOutcomes && score == null && trend === "unmeasured") {
+    return (
+      <span
+        className="inline-flex items-center gap-0.5 font-mono text-[9px] text-faint"
+        aria-label="outcome trend: unmeasured"
+        title="No outcomes recorded. Nothing links this lesson to a check, so a hit can't be told apart from noise."
+      >
+        {Array.from({ length: 8 }, (_, i) => (
+          <span key={i} className="h-2.5 w-1 rounded-sm bg-line-2" />
+        ))}
+      </span>
+    );
+  }
+
+  const bars = 8;
+  const segments: { color: string }[] = [];
+  if (trend === "dropping") {
+    for (let i = 0; i < bars; i++) {
+      const ratio = i / (bars - 1);
+      segments.push({
+        color: ratio < 0.4
+          ? "bg-st-done/60"
+          : ratio < 0.7
+            ? "bg-[#e0b34a]/60"
+            : "bg-st-blocked/60",
+      });
+    }
+  } else if (trend === "rising") {
+    for (let i = 0; i < bars; i++) {
+      const ratio = i / (bars - 1);
+      segments.push({
+        color: ratio < 0.3
+          ? "bg-faint"
+          : ratio < 0.6
+            ? "bg-[#e0b34a]/60"
+            : "bg-st-done/60",
+      });
+    }
+  } else if (trend === "stable") {
+    const color = caught === "caught"
+      ? "bg-st-done/60"
+      : caught === "missed" || caught === "mixed"
+        ? "bg-st-blocked/60"
+        : "bg-faint";
+    for (let i = 0; i < bars; i++) segments.push({ color });
+  } else {
+    for (let i = 0; i < bars; i++) segments.push({ color: "bg-faint" });
+  }
+
+  return (
+    <span className="inline-flex items-center gap-px" aria-label={`outcome trend: ${trend}`}>
+      {segments.map((s, i) => (
+        <span key={i} className={cn("h-2.5 w-1 rounded-sm", s.color)} />
+      ))}
+    </span>
+  );
+}
+
+function QueueEmpty({ queue }: { queue: QueueId }) {
+  const messages: Record<QueueId, string> = {
+    dropping: "Nothing is dropping. Lessons with declining effectiveness would appear here.",
+    missed: "Nothing missed yet. Lessons that surfaced but failed to catch would appear here.",
+    unmeasured: "Every lesson has been measured. Unmeasured ones would appear here.",
+    overlap: "No near-duplicates detected. Overlapping lessons would appear here for retire-into resolution.",
+    promote: "Nothing is waiting for promotion. Eligible lessons not yet org-wide would appear here.",
+    unclassified: "Queue clear. Pick another queue above.",
+  };
+  return (
+    <div className="py-16 text-center text-[13px] leading-relaxed text-muted">
+      {messages[queue]}
+    </div>
+  );
+}
+
 function EmptyCatalog() {
   const { active } = useProjectCtx();
   const { pathname } = useLocation();
   const tag = tagFromPath(pathname);
-  // Flat /memory-review on hosted FlatRedirects via last-used, not this project's tag.
   const memoryTo = tag && active?.tag ? projectPath(active.tag, "memory-review") : "/memory-review";
   return (
     <div className="py-16 text-center text-[13px] leading-relaxed text-muted">
@@ -151,143 +514,7 @@ function EmptyCatalog() {
   );
 }
 
-function FilterBar({
-  enums,
-  filters,
-  onChange,
-}: {
-  enums: LessonEnums;
-  filters: LessonFilters;
-  onChange: (next: LessonFilters) => void;
-}) {
-  const toggle = (dim: keyof LessonFilters, value: string) => {
-    onChange({
-      ...filters,
-      [dim]: filters[dim] === value ? undefined : value,
-    });
-  };
-  const unclassified = enums.unclassified_filter || "unclassified";
-  return (
-    <div className="flex flex-none flex-col gap-1.5 border-b border-line px-5 py-2.5">
-      <ChipRow>
-        {(enums.trends ?? []).map((v) => (
-          <FilterChip
-            key={v}
-            label={trendLabel(v)}
-            active={filters.trend === v}
-            onClick={() => toggle("trend", v)}
-          />
-        ))}
-      </ChipRow>
-      <ChipRow>
-        {(enums.caught_states ?? []).map((v) => (
-          <FilterChip
-            key={v}
-            label={caughtLabel(v)}
-            active={filters.caught_state === v}
-            onClick={() => toggle("caught_state", v)}
-          />
-        ))}
-      </ChipRow>
-      <ChipRow>
-        {(enums.eligibilities ?? []).map((v) => (
-          <FilterChip
-            key={v}
-            label={eligLabel(v)}
-            active={filters.eligibility === v}
-            onClick={() => toggle("eligibility", v)}
-          />
-        ))}
-      </ChipRow>
-      <ChipRow>
-        <FilterChip
-          label="Unclassified"
-          active={filters.lesson_class === unclassified}
-          onClick={() => toggle("lesson_class", unclassified)}
-        />
-        {(enums.lesson_classes ?? []).map((v) => (
-          <FilterChip
-            key={v}
-            label={v}
-            active={filters.lesson_class === v}
-            onClick={() => toggle("lesson_class", v)}
-          />
-        ))}
-      </ChipRow>
-    </div>
-  );
-}
-
-function ChipRow({ children }: { children: React.ReactNode }) {
-  return <div className="flex flex-wrap items-center gap-1.5">{children}</div>;
-}
-
-function FilterChip({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        "rounded-md border px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide transition-colors",
-        active
-          ? "border-line-hover bg-surface-3 text-fg"
-          : "border-line-2 text-faint hover:border-line-hover hover:text-muted",
-      )}
-    >
-      {label}
-    </button>
-  );
-}
-
-function LessonRow({ row }: { row: LessonListRow }) {
-  const { projects, activeId } = useProjectCtx();
-  const originTag =
-    row.project_id && row.project_id !== activeId
-      ? projects.find((p) => p.id === row.project_id)?.tag
-      : null;
-  return (
-    <Link
-      to={row.id}
-      className="block rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3 transition-colors hover:border-line-hover"
-    >
-      <p className="line-clamp-2 text-[13px] leading-relaxed text-ink">{row.text}</p>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <ClassChip lessonClass={row.lesson_class} suggested={row.suggested_class} />
-        <span className="font-mono text-[10.5px] text-faint">
-          {row.source || row.origin || "—"}
-          {row.item_id ? ` · ${row.item_id}` : ""}
-        </span>
-        {row.reach === "org" && (
-          <Chip tone="accent">
-            {row.transferability === "overridden"
-              ? "org (overridden)"
-              : originTag
-                ? `org · from ${originTag}`
-                : "org"}
-          </Chip>
-        )}
-        {originTag && row.reach !== "org" && (
-          <Chip tone="muted">from {originTag}</Chip>
-        )}
-        <CaughtChip state={row.caught_state} />
-        <ScoreChip row={row} />
-        <EligChip eligibility={row.eligibility} />
-      </div>
-    </Link>
-  );
-}
-
 function ScoreChip({ row }: { row: LessonListRow }) {
-  // A missing effectiveness field is unmeasured, never a defaulted 1.0.
   const score = row.effectiveness?.score;
   const trend = row.effectiveness?.trend ?? "unmeasured";
   return (
@@ -327,17 +554,6 @@ function CaughtChip({ state }: { state: string | undefined }) {
   const tone =
     value === "caught" ? "done" : value === "missed" ? "blocked" : value === "mixed" ? "review" : "muted";
   return <Chip tone={tone}>{value}</Chip>;
-}
-
-function EligChip({ eligibility }: { eligibility: Eligibility | undefined }) {
-  const state = eligibility?.state || "unverifiable";
-  const tone =
-    state === "eligible" ? "done" : state === "promoted" ? "accent" : state === "unverifiable" ? "review" : "muted";
-  return (
-    <Chip tone={tone} title={eligibility?.reason}>
-      {state}
-    </Chip>
-  );
 }
 
 function Chip({
@@ -396,7 +612,6 @@ function LessonDetailPage({ id }: { id: string }) {
 function LessonDetailBody({ lesson }: { lesson: LessonDetail }) {
   const navigate = useNavigate();
   const score = lesson.effectiveness?.score;
-  // gone + missing effectiveness is dropping, not the unmeasured default — quiet path is a miss.
   const trend =
     lesson.origin_path === "gone"
       ? (lesson.effectiveness?.trend ?? "dropping")
@@ -557,7 +772,6 @@ function ClusterSection({ lesson }: { lesson: LessonDetail }) {
   const scan = lesson.eligibility?.cluster_scan;
   const others = (lesson.cluster ?? []).filter((s) => s.id !== lesson.id);
   const unread = lesson.unread_cluster_tags ?? [];
-  // Anything other than a completed scan is "we did not look", not "we looked and found none".
   if (scan !== "scanned") {
     return (
       <p className="mt-2 text-[12.5px] text-muted">
@@ -571,6 +785,11 @@ function ClusterSection({ lesson }: { lesson: LessonDetail }) {
   }
   return (
     <div className="mt-2 flex flex-col gap-1.5">
+      {others.length > 0 && (
+        <p className="text-[11.5px] text-faint">
+          Keep one — the rest retire into it.
+        </p>
+      )}
       {others.map((s) => (
         <div key={s.id} className="rounded-md border border-line-2 px-2.5 py-1.5">
           <p className="line-clamp-2 text-[12.5px] text-fg-2">{s.text}</p>
@@ -679,6 +898,32 @@ function OutcomesSection({ lesson }: { lesson: LessonDetail }) {
   );
 }
 
+function FilterChip({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "rounded-md border px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide transition-colors",
+        active
+          ? "border-line-hover bg-surface-3 text-fg"
+          : "border-line-2 text-faint hover:border-line-hover hover:text-muted",
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
 function HistorySpark({ history }: { history: { at: string; score: number | null }[] }) {
   const scores = history.map((h) => h.score).filter((s): s is number => s != null);
   if (scores.length === 0) {
@@ -758,7 +1003,7 @@ function PromotePanel({ lesson }: { lesson: LessonDetail }) {
           Cannot tell whether this can be an org lesson: <span className="font-medium text-fg-2">distinct_users</span>{" "}
           and/or <span className="font-medium text-fg-2">distinct_projects</span> are unmeasured, or the published
           cluster was not scanned across sibling projects. Ingest still writes every transcript to one project. That
-          is not "ineligible."
+          is not &quot;ineligible.&quot;
         </p>
       )}
       <div className="mt-3 flex flex-wrap items-end gap-2">
@@ -797,7 +1042,6 @@ function PromotePanel({ lesson }: { lesson: LessonDetail }) {
   );
 }
 
-/** Spreading a known miss needs a written acknowledgement — unmeasured does not. */
 function isFailing(lesson: LessonDetail): boolean {
   if (lesson.origin_path === "gone") return true;
   const trend = lesson.effectiveness?.trend;
@@ -812,11 +1056,6 @@ function MutationError({ err, fallback }: { err: unknown; fallback: string }) {
   return <p className="mt-2 text-[12.5px] text-st-blocked">{errorDetail(err, fallback)}</p>;
 }
 
-/** Missing caught_state is unknown — omitting it must not make the catalog look measured. */
-function rowIsUnmeasured(r: LessonListRow): boolean {
-  return !r.caught_state || r.caught_state === "unknown";
-}
-
 function dropReasonCopy(reason: string): string {
   if (reason === "contradicted") return "contradicted by a later incident of the same class";
   if (reason === "applied_and_recurred") return "applied and the issue still happened";
@@ -825,29 +1064,4 @@ function dropReasonCopy(reason: string): string {
     return "corroboration went quiet while similar defects continued";
   }
   return reason.replace(/_/g, " ");
-}
-
-function trendLabel(v: string): string {
-  if (v === "dropping") return "Dropping";
-  if (v === "unmeasured") return "Unmeasured";
-  return v;
-}
-
-function caughtLabel(v: string): string {
-  if (v === "unknown") return "Unknown outcomes";
-  return v;
-}
-
-function eligLabel(v: string): string {
-  if (v === "eligible") return "Eligible for org";
-  return v;
-}
-
-function compactFilters(f: LessonFilters): LessonFilters {
-  const out: LessonFilters = {};
-  if (f.trend) out.trend = f.trend;
-  if (f.caught_state) out.caught_state = f.caught_state;
-  if (f.eligibility) out.eligibility = f.eligibility;
-  if (f.lesson_class) out.lesson_class = f.lesson_class;
-  return out;
 }
