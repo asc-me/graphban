@@ -43,8 +43,10 @@ def test_next_cluster_claims_neighbourhood(client, auth):
     db = SessionLocal()
     for title, tp in [
         ("seed", "backend/app/routers/auth.py"),
-        ("near", "backend/app/routers/items.py"),   # same dir
-        ("near2", "backend/app/routers/memory.py"),  # same dir
+        # A directory beside the seed: two NAMED files in one folder no longer relate
+        # (GRPH-951), so the neighbourhood is declared the vague way.
+        ("near", "backend/app/routers/items"),   # same dir
+        ("near2", "backend/app/routers/auth.py"),  # same file
     ]:
         items_svc.create_item(db, title=title, project_id="cluster", status="next", touchpoints=[tp])
     batch = cluster_svc.next_cluster(db, "agent-c", project_id="cluster", max_items=3)
