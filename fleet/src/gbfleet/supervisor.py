@@ -246,8 +246,8 @@ class Wave:
     #: a worker changing a file nobody declared means the partition's input was wrong, and
     #: nothing noticed before, because the server unions measured paths into the
     #: declaration and the two stop being distinguishable the moment they are stored.
-    #: REPORTED, never acted on: the supervisor holds two read tools and no authority to
-    #: decide what collides.
+    #: The supervisor still decides nothing on the ledger with it, but it does refuse to
+    #: open a PR for such a branch (GRPH-949, `_refuse_proposal`).
     undeclared: dict[str, list[str]] = field(default_factory=dict)
     #: id -> declared touchpoints, as they stood when work was handed out.
     declared: dict[str, list[str]] = field(default_factory=dict)
@@ -304,6 +304,13 @@ class Wave:
     resumed: list[str] = field(default_factory=list)
     #: Resume attempted and abandoned — spawn from HEAD, leftover ref stays listed.
     resume_misses: list[str] = field(default_factory=list)
+    #: Items a reaped child no longer held, so reap did not release them (GRPH-949). INFO,
+    #: not `failures`: the child delivered to review, or its lease lapsed and moved on, and
+    #: the server would rightly refuse the release. One line per item.
+    lease_moved: list[str] = field(default_factory=list)
+    #: Branches pushed but NOT proposed as a PR, with why (GRPH-949): a change outside every
+    #: declared touchpoint, or a base the trunk has moved past. Also in `proposed` as skipped.
+    unproposed: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -907,10 +914,48 @@ def _release_held_items(wave: Wave, child: Child, client: Graphban | None) -> No
     if not agent_id:
         return
     for item_id in child.held_items:
+        # GRPH-949: read the lease BEFORE releasing it. `held_items` is what the roster said
+        # at registration; by reap the child may have handed the item to review, or the
+        # lease lapsed and a sibling claimed it. Releasing someone else's lease is refused by
+        # the server, and one wave logged seven FAILED lines for leases that had simply
+        # moved on — noise that buried the real failures beside them.
+        holder = _lease_holder(client, item_id)
+        if holder is not None and holder != agent_id:
+            _note_lease_moved(wave, item_id, agent_id, holder)
+            continue
         try:
             client.call("release_item", id=item_id, agent_id=agent_id)
-        except (NotPermitted, ToolFailed, ServerUnreachable) as exc:
+        except ToolFailed as exc:
+            # The read above can be unavailable (no `get_item_details` on this client) or
+            # stale by a heartbeat. The server's own refusal says the same thing it would
+            # have: the lease is not ours, which is information, not a failure.
+            if "not the lease holder" in str(exc):
+                _note_lease_moved(wave, item_id, agent_id, "")
+            else:
+                wave.failures.append(f"{child.branch}: release_item {item_id} failed ({exc})")
+        except (NotPermitted, ServerUnreachable) as exc:
             wave.failures.append(f"{child.branch}: release_item {item_id} failed ({exc})")
+
+
+def _lease_holder(client: Graphban, item_id: str) -> str | None:
+    """Who holds `item_id` now: an agent id, "" for nobody, None when this client cannot say."""
+    if "get_item_details" not in client.allowed:
+        return None
+    try:
+        got = client.call("get_item_details", id=item_id)
+    except (NotPermitted, ToolFailed, ServerUnreachable):
+        return None
+    if not isinstance(got, dict):
+        return None
+    return str(got.get("claimed_by") or "")
+
+
+def _note_lease_moved(wave: Wave, item_id: str, agent_id: str, holder: str) -> None:
+    """Record, once per item, that a reaped child no longer held what it registered with."""
+    if any(line.startswith(f"{item_id}:") for line in wave.lease_moved):
+        return
+    where = f"held by {holder}" if holder else "no longer held by it"
+    wave.lease_moved.append(f"{item_id}: not released for {agent_id}; lease {where}")
 
 
 def _reap_exited(wave: Wave, children: list[Child], client: Graphban | None = None,
@@ -996,7 +1041,8 @@ def _note_staleness(wave: Wave, tree: Worktree) -> None:
 
     Fetches the trunk once per wave before measuring, because a remote-tracking ref is only
     as fresh as the last fetch and a check that never fetched would report every branch as
-    current. REPORTED, never acted on: rebasing somebody's work is not the supervisor's call.
+    current. Rebasing somebody's work is not the supervisor's call; since GRPH-949 a BEHIND
+    branch is still pushed but not proposed as a PR (`_refuse_proposal`).
     """
     if wave.stale_unmeasured or not tree.base:
         return
@@ -1020,9 +1066,9 @@ def _note_touchpoints(wave: Wave, child: Child) -> None:
     `search_items(fields="full")` returns `touchpoints`, and it is a read the supervisor
     already makes. No new permission, no write, and no new call.
 
-    Both findings are recorded on the wave and printed by `report`. The supervisor decides
-    nothing with them: it holds `fleet_status` and `propose_allocation` and cannot call
-    `update_item`, and what "collides" means belongs to the server.
+    Both findings are recorded on the wave and printed by `report`. The supervisor writes
+    nothing to the ledger with them — what "collides" means belongs to the server — but an
+    UNDECLARED branch is not proposed as a PR (GRPH-949, `_refuse_proposal`).
     """
     measured = wave.touched.get(child.branch) or []
     if not measured:
@@ -1122,6 +1168,28 @@ def _record_salvage_receipt(wave: Wave, client: Graphban | None, items: list[str
             wave.failures.append(f"{item_id}: salvage not recorded ({exc})")
 
 
+def _refuse_proposal(wave: Wave, branch: str) -> str:
+    """Why this branch must not be proposed as a PR, or "" (GRPH-949).
+
+    UNDECLARED and BEHIND were recorded and printed and never acted on, so one wave proposed
+    a branch that changed nine undeclared files (App.tsx among them) and another three
+    commits behind the trunk. A PR is a request to merge; asking for one on a branch whose
+    partition was wrong, or whose diff is against a trunk that no longer exists, hands the
+    reviewer a question the supervisor already had the answer to. Rebasing is not the
+    supervisor's call, so the branch is refused and the person decides.
+    """
+    reasons = []
+    missing = wave.undeclared.get(branch) or []
+    if missing:
+        shown = ", ".join(missing[:5]) + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else "")
+        reasons.append(f"changed file(s) outside every declared touchpoint: {shown}")
+    stale = wave.stale.get(branch)
+    if stale:
+        behind, ref = stale
+        reasons.append(f"{behind} commit(s) behind {ref}; rebase before proposing")
+    return "; ".join(reasons)
+
+
 def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
                    client: Graphban | None,
                    base_override: str = "") -> None:
@@ -1146,6 +1214,13 @@ def propose_branch(wave: Wave, repo: Path, branch: str, items: list[str], *,
             branch=branch, skipped=True,
             reason="salvage commit is not proposed as a PR")
         _record_salvage_receipt(wave, client, items, branch, _branch_head(repo, branch))
+        return
+    refused = _refuse_proposal(wave, branch)
+    if refused:
+        # Pushed already, so the work is readable; only the merge request is withheld.
+        wave.proposed[branch] = propose_mod.Proposed(branch=branch, skipped=True, reason=refused)
+        wave.unproposed[branch] = refused
+        wave.failures.append(f"{branch}: not proposed — {refused}")
         return
     title, body = propose_mod.describe(branch, items, subj)
     got = propose_mod.propose(repo, branch, base, title=title, body=body)
