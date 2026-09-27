@@ -17,6 +17,8 @@ export const keys = {
   shards: ["shards"] as const,
   harness: (projectId: string, versions: string, windowDays?: number) =>
     ["harness", projectId, versions, windowDays ?? null] as const,
+  harnessGuidance: (projectId: string, windowDays?: number) =>
+    ["harness-guidance", projectId, windowDays ?? null] as const,
   harnessCards: (projectId: string) => ["harness-cards", projectId] as const,
   harnessProbes: (projectId: string) => ["harness-probes", projectId] as const,
   lessons: (projectId: string, filters?: LessonFilters) =>
@@ -719,6 +721,14 @@ export function useHarness(
   return useQuery({
     queryKey: keys.harness(projectId ?? "", versions, opts.windowDays),
     queryFn: () => api.harness(projectId!, { versions, windowDays: opts.windowDays }),
+    enabled: !!projectId,
+  });
+}
+
+export function useHarnessGuidance(projectId?: string, opts: { windowDays?: number } = {}) {
+  return useQuery({
+    queryKey: keys.harnessGuidance(projectId ?? "", opts.windowDays),
+    queryFn: () => api.harnessGuidance(projectId!, { windowDays: opts.windowDays }),
     enabled: !!projectId,
   });
 }
