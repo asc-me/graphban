@@ -11,6 +11,8 @@ export interface OutpostAgent {
   os: string;
   worktree: string;
   branch: string;
+  /** How this agent connected: "gbfleet" when enrolled in a wave, "gban" otherwise. */
+  via: string;
 }
 
 export interface Outpost {
@@ -46,6 +48,7 @@ export function outpostAgent(agent: FleetAgent): OutpostAgent {
     os: capString(caps, "os") || capString(caps, "platform"),
     worktree: agent.worktree || "",
     branch: agent.branch || "",
+    via: agent.enrolled ? "gbfleet" : "gban",
   };
 }
 
