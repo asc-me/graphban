@@ -41,6 +41,7 @@ const HOSTED_BUILD = [
 ];
 const HOSTED_OBSERVE = [
   { to: "memory-review", icon: <Inbox size={16} />, label: "Memory review", count: "review" as const },
+  { to: "memory-triage", icon: <Inbox size={16} />, label: "Memory triage" },
   { to: "lessons", icon: <BookMarked size={16} />, label: "Lessons" },
   { to: "activity", icon: <ScrollText size={16} />, label: "Activity" },
   { to: "live", icon: <Activity size={16} />, label: "Live" },
@@ -286,6 +287,7 @@ const OBSERVE = [
   { to: "/activity", icon: <ScrollText size={16} />, label: "Activity" },
   { to: "/live", icon: <Activity size={16} />, label: "Live" },
   { to: "/memory-review", icon: <Inbox size={16} />, label: "Memory", count: "review" as const },
+  { to: "/memory-triage", icon: <Inbox size={16} />, label: "Memory triage" },
   { to: "/lessons", icon: <BookMarked size={16} />, label: "Lessons" },
   { to: "/harness", icon: <Gauge size={16} />, label: "Harness" },
 ];
