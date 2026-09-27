@@ -63,7 +63,7 @@ def db(_clean_database):
 
 
 def _agent(client, key, label, **kw) -> str:
-    return _ok(_mcp(client, key, "register_agent", {"label": label, **kw}))["agent_id"]
+    return _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": label, **kw}))["agent_id"]
 
 
 def _item(client, key, title="bind me", touchpoints=None, **kw) -> str:
@@ -164,7 +164,7 @@ def test_registering_on_a_bound_seat_claims_links_and_reserves_in_one_request(cl
     planner = _agent(client, key, "planner")
     item = _item(client, key, touchpoints=["backend/app/services/x.py", "web/src/a.tsx"])
     out = _ok(_delegate(client, key, item, planner))
-    reg = _ok(_mcp(client, key, "register_agent", {
+    reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", 
         "label": "child", "enrolment_code": out["enrolment_code"],
         "capabilities": {"model": "qwen3.6:35b", "tier": "cheap", "vendor": "gbagent"}}))
     child = reg["agent_id"]
@@ -190,7 +190,7 @@ def test_a_taken_item_registers_the_child_and_says_who_holds_it(client, key, db)
     out = _ok(_delegate(client, key, item, planner))
     stranger = _agent(client, key, "stranger")
     assert items_svc.claim_item(db, item, stranger) is not None
-    reg = _ok(_mcp(client, key, "register_agent", {"label": "late child",
+    reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "late child",
                                                     "enrolment_code": out["enrolment_code"]}))
     assert reg["assigned"]["state"] == "taken"
     assert reg["assigned"]["reason"] == "held" and reg["assigned"]["held_by"] == stranger
@@ -210,7 +210,7 @@ def test_a_pinned_item_reads_taken_with_the_pin_holder(client, key, db):
     _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": author}))
     reviewer = _agent(client, key, "reviewer", capabilities={"instance": "rev"})
     _ok(_mcp(client, key, "bounce", {"id": item, "agent_id": reviewer, "reason": "no tests"}))
-    reg = _ok(_mcp(client, key, "register_agent", {"label": "child", "enrolment_code": out["enrolment_code"]}))
+    reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "child", "enrolment_code": out["enrolment_code"]}))
     assert reg["assigned"]["state"] == "taken"
     assert reg["assigned"]["reason"] == "pinned" and reg["assigned"]["held_by"] == author
 
@@ -231,9 +231,9 @@ def test_delegate_during_a_pin_is_refused_unless_the_author_is_your_child(client
 def test_an_unbound_seat_reads_assigned_none(client, key, proj, db):
     """7 / D4: a word, never a missing key."""
     _, code = fleet_svc.issue_enrolment(db, project_id=proj, role="worker")
-    reg = _ok(_mcp(client, key, "register_agent", {"label": "free", "enrolment_code": code}))
+    reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "free", "enrolment_code": code}))
     assert reg["assigned"] == {"item": None, "state": "none", "reason": None, "held_by": None}
-    reg2 = _ok(_mcp(client, key, "register_agent", {"label": "no seat at all"}))
+    reg2 = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "no seat at all"}))
     assert reg2["assigned"]["state"] == "none"
 
 
@@ -243,7 +243,7 @@ def test_a_blocked_item_reads_taken_blocked(client, key, db):
     item = _item(client, key)
     out = _ok(_delegate(client, key, item, planner))
     _ok(_mcp(client, key, "update_item", {"id": item, "blocker": "waiting on a decision"}))
-    reg = _ok(_mcp(client, key, "register_agent", {"label": "child", "enrolment_code": out["enrolment_code"]}))
+    reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "child", "enrolment_code": out["enrolment_code"]}))
     assert reg["assigned"]["state"] == "taken" and reg["assigned"]["reason"] == "blocked"
 
 
@@ -258,7 +258,7 @@ def test_reservation_failure_hands_the_claim_back(client, key, db, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("no areas today")
     monkeypatch.setattr(collision_svc, "touch_areas", boom)
-    reg = _ok(_mcp(client, key, "register_agent", {"label": "child", "enrolment_code": out["enrolment_code"]}))
+    reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "child", "enrolment_code": out["enrolment_code"]}))
     assert reg["assigned"]["state"] == "taken"
     assert reg["assigned"]["reason"].startswith("reservation failed")
     stored = _stored(db, item)
@@ -270,7 +270,7 @@ def test_a_dead_child_leaves_the_item_to_lapse_on_its_lease(client, key, db):
     planner = _agent(client, key, "planner")
     item = _item(client, key)
     out = _ok(_delegate(client, key, item, planner))
-    reg = _ok(_mcp(client, key, "register_agent", {"label": "child", "enrolment_code": out["enrolment_code"]}))
+    reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "child", "enrolment_code": out["enrolment_code"]}))
     stored = _stored(db, item)
     stored.claimed_at = datetime.now(timezone.utc) - timedelta(seconds=items_svc.DEFAULT_LEASE_SECONDS + 5)
     for r in db.scalars(select(AreaReservation).where(AreaReservation.agent_id == reg["agent_id"])).all():
@@ -301,7 +301,7 @@ def test_a_ghost_lease_names_the_dead_holder(client, key, db):
     )
     db.commit()
     # Now register a bound seat on the same item — it should see a ghost lease.
-    reg = _ok(_mcp(client, key, "register_agent", {"label": "late child",
+    reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "late child",
                                                     "enrolment_code": out["enrolment_code"]}))
     assert reg["assigned"]["state"] == "taken"
     assert reg["assigned"]["reason"] == "ghost", reg["assigned"]
@@ -315,7 +315,7 @@ def test_a_ghost_lease_names_the_dead_holder(client, key, db):
 def _delegated_and_in_review(client, key, db, planner, title="work"):
     item = _item(client, key, title)
     out = _ok(_delegate(client, key, item, planner))
-    reg = _ok(_mcp(client, key, "register_agent", {"label": f"child-{title}", "enrolment_code": out["enrolment_code"],
+    reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": f"child-{title}", "enrolment_code": out["enrolment_code"],
                                                     "capabilities": {"instance": f"c-{title}"}}))
     child = reg["agent_id"]
     _ok(_mcp(client, key, "update_item", {"id": item, "status": "review", "agent_id": child}))
@@ -362,7 +362,7 @@ def test_the_roster_reads_assigned_from_the_seat_and_the_item(client, key, proj,
     planner = _agent(client, key, "planner")
     item = _item(client, key)
     out = _ok(_delegate(client, key, item, planner))
-    reg = _ok(_mcp(client, key, "register_agent", {"label": "child", "enrolment_code": out["enrolment_code"]}))
+    reg = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": "child", "enrolment_code": out["enrolment_code"]}))
     child = reg["agent_id"]
     rows = {a["id"]: a for a in _ok(_mcp(client, key, "fleet_status", {}))["agents"]}
     assert rows[child]["assigned"] == {"item": item, "state": "claimed", "held_by": None}
@@ -392,18 +392,18 @@ def test_registering_on_a_seat_without_naming_a_project_lands_on_the_seats_proje
     item = _item(client, wide, project_id=proj)
     out = _ok(_delegate(client, wide, item, planner, project_id=proj))
     # No project_id on the registration — exactly what gbagent sends.
-    reg = _ok(_mcp(client, wide, "register_agent", {"label": "child", "enrolment_code": out["enrolment_code"]}))
+    reg = _ok(_mcp(client, wide, "register_agent", {"branch": "gb/test", "label": "child", "enrolment_code": out["enrolment_code"]}))
     child = db.get(Agent, reg["agent_id"])
     assert child.project_id == proj
     assert reg["assigned"]["state"] == "claimed" and reg["assigned"]["item"] == item
     # A project named explicitly still wins, and a seat from elsewhere is still refused there.
-    e = _mcp(client, wide, "register_agent", {"label": "x", "enrolment_code": out["enrolment_code"], "project_id": other})
+    e = _mcp(client, wide, "register_agent", {"branch": "gb/test", "label": "x", "enrolment_code": out["enrolment_code"], "project_id": other})
     assert e.get("isError")
 
 
 def test_the_registration_reply_names_the_project_the_agent_landed_on(client, auth, proj, db):
     """GRPH-719: the child's later calls need a project to name; the reply is where it learns it."""
-    reg = _ok(_mcp(client, key_for(client, auth, proj), "register_agent", {"label": "who-am-i"}))
+    reg = _ok(_mcp(client, key_for(client, auth, proj), "register_agent", {"branch": "gb/test", "label": "who-am-i"}))
     assert reg["project_id"] == proj
 
 

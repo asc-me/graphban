@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.models import Agent, AreaReservation, Enrolment, Item, Project
 from app.services import harness as harness_svc
@@ -1645,6 +1645,10 @@ def claim_review(db: Session, *, agent_id: str, project_id: str | None = None,
         # while a supervisor is known to be coming and only for a grace period; an unsupervised
         # item is never withheld, because nothing would ever arrive to release it.
         and not harness_svc.publish_pending(db, it)
+        # GRPH-946: and there is something to read at all. An item with no branch and no PR
+        # url cannot be reviewed, only bounced for being unreadable — which is how SA-575's
+        # real defects went unreviewed. Rows that predate the `update_item` gate land here.
+        and items_svc.reviewable_handoff(it)
         # GRPH-827: and inside the scope this seat was minted for. Review is scoped for the
         # same reason building is — a wave provisioned for one PRD reviewing another PRD's
         # work is the same escape wearing the reviewer's hat, and the reviewer is the half
@@ -2342,13 +2346,28 @@ def review_claim_holder(item: Item, *, now: datetime | None = None,
 
 
 def bounce_pin_holder(item: Item, *, now: datetime | None = None) -> str | None:
-    """Who this item is currently reserved for, or None once the pin has lapsed."""
+    """Who this item is currently reserved for, or None once the pin has lapsed.
+
+    The pin also lapses when its author is OFFLINE (GRPH-946). It reserves the item for the
+    agent that still holds the worktree; one that has stopped heartbeating holds nothing, and
+    pinning to it kept a bounced item unclaimable for the rest of a 600s lease while presence
+    had said "gone" after 150. Read through the item's own session so every caller — there
+    are six — gets the rule without threading a `db` through. A pin to an agent id with no
+    row (a human, or a key) is left to the clock: there is no presence to consult.
+    """
     if not item.bounce_pinned_to or not item.bounce_pinned_until:
         return None
+    now = now or datetime.now(timezone.utc)
     until = item.bounce_pinned_until
     if until.tzinfo is None:
         until = until.replace(tzinfo=timezone.utc)
-    return item.bounce_pinned_to if until > (now or datetime.now(timezone.utc)) else None
+    if until <= now:
+        return None
+    db = object_session(item)
+    author = db.get(Agent, item.bounce_pinned_to) if db is not None else None
+    if author is not None and presence_state(author, now=now) in ("offline", "quarantined"):
+        return None
+    return item.bounce_pinned_to
 
 
 # ---- D4: the divvy, and reservations over a moving partition -------------------------------

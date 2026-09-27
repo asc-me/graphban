@@ -87,7 +87,8 @@ def test_the_solo_posture_still_catches_its_own_work(client, agent_key, db):
     assert fleet.is_credential(_item(db, item_key).built_by), \
         "the claim did not stamp a marked credential — the two sides cannot be compared"
 
-    _ok(client, agent_key, "update_item", {"id": item_key, "status": "review"})
+    _ok(client, agent_key, "update_item", {"id": item_key, "status": "review",
+                                           "evidence": [{"kind": "url", "url": "https://github.com/o/r/pull/1", "detail": "PR"}]})
     err = _refused(client, agent_key, "sign_off", {"id": item_key})
 
     assert err["code"] == "unauthorized"

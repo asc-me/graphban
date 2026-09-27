@@ -92,7 +92,7 @@ def test_registered_agent_cannot_attest_own_work(client, plain_key, gate_key):
     # The first version of this test registered exactly that and was asserting the wrong
     # posture; CI's test_the_capability_the_hint_used_to_cost_is_kept is what caught it.
     w = _ok(client, gate_key, "register_agent",
-            {"label": "w", "role_hint": "worker",
+            {"branch": "gb/test", "label": "w", "role_hint": "worker",
              "capabilities": {"vendor": "test", "instance": "w"}})
     agent_id = w["agent_id"]
 
@@ -117,9 +117,9 @@ def test_registered_agent_may_attest_another_clients_work(client, plain_key, gat
     keyed on authorship, not on the caller's identity in the abstract.
     """
     builder = _ok(client, gate_key, "register_agent",
-                  {"label": "builder", "role_hint": "worker", "capabilities": {"vendor": "test", "instance": "b"}})
+                  {"branch": "gb/test", "label": "builder", "role_hint": "worker", "capabilities": {"vendor": "test", "instance": "b"}})
     attester = _ok(client, gate_key, "register_agent",
-                   {"label": "attester", "role_hint": "worker", "capabilities": {"vendor": "test", "instance": "a"}})
+                   {"branch": "gb/test", "label": "attester", "role_hint": "worker", "capabilities": {"vendor": "test", "instance": "a"}})
 
     made = _ok(client, plain_key, "create_item", {"title": "someone else"})
     _ok(client, plain_key, "update_item",
@@ -143,7 +143,7 @@ def test_unidentified_gate_caller_may_attest_either(client, plain_key, gate_key)
     to compare and the write proceeds exactly as today.
     """
     builder = _ok(client, gate_key, "register_agent",
-                  {"label": "builder", "capabilities": {"vendor": "test", "instance": "b"}})
+                  {"branch": "gb/test", "label": "builder", "capabilities": {"vendor": "test", "instance": "b"}})
 
     made = _ok(client, plain_key, "create_item", {"title": "adapter attest"})
     _ok(client, plain_key, "update_item",
@@ -170,7 +170,7 @@ def test_an_all_in_one_agent_may_still_attest_its_own_work(client, plain_key, ga
     how an agent becomes all-in-one, so this registration is the plain one.
     """
     me = _ok(client, gate_key, "register_agent",
-             {"label": "solo", "capabilities": {"vendor": "test", "instance": "solo"}})
+             {"branch": "gb/test", "label": "solo", "capabilities": {"vendor": "test", "instance": "solo"}})
     assert me["active_role"] == "all-in-one", me
     agent_id = me["agent_id"]
     made = _ok(client, plain_key, "create_item", {"title": "solo work"})

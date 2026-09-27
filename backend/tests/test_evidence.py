@@ -51,7 +51,15 @@ def mcp_key(client, auth):
 def item(client, mcp_key):
     """Made through the tool, and the session is CLOSED before any test runs: a `db` fixture
     left open holds the SQLite write lock, and `update_item` writes an llm span."""
-    return _ok(client, mcp_key, "create_item", {"title": "Built it"})["id"]
+    key = _ok(client, mcp_key, "create_item", {"title": "Built it"})["id"]
+    # Somewhere for a reviewer to look, or `status: review` below is refused (GRPH-946).
+    from app.db import SessionLocal
+    from app.models import Item
+    from app.services import keys
+    with SessionLocal() as s:
+        s.get(Item, keys.resolve_item(s, key)).branch = "gb/built-it"
+        s.commit()
+    return key
 
 
 # ---- the defect, through the tool that had it --------------------------------------------

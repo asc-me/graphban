@@ -57,7 +57,7 @@ def db(_clean_database):
 
 
 def _agent(client, key, label, **kw) -> str:
-    return _ok(_mcp(client, key, "register_agent", {"label": label, **kw}))["agent_id"]
+    return _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", "label": label, **kw}))["agent_id"]
 
 
 def _item(client, key, title="telemetry", touchpoints=None, **kw) -> str:
@@ -347,7 +347,7 @@ def test_a_launch_post_on_a_seat_is_carried_into_the_row(client, key, db):
                      expect=202)
     assert launched["delegation_id"] is None and launched["enrolment_id"]
 
-    child = _ok(_mcp(client, key, "register_agent", {
+    child = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", 
         "label": "seated-child", "enrolment_code": code,
         "capabilities": {"vendor": "gbagent", "model": "qwen3.6", "instance": "seated"}}))["agent_id"]
     _held(db, item, child)
@@ -379,7 +379,7 @@ def test_a_declared_vendor_that_differs_from_the_launched_one_is_flagged_and_sti
                                            "agent_id": planner, "seat": True}))
     _post(client, key, {"enrolment_code": d["enrolment_code"], "winner": "gbagent:qwen3.6",
                         "adapter": "gbagent"}, expect=202)
-    child = _ok(_mcp(client, key, "register_agent", {
+    child = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", 
         "label": "liar-child", "enrolment_code": d["enrolment_code"],
         "capabilities": {"vendor": "anthropic", "model": "sonnet", "instance": "liar"}}))["agent_id"]
     _held(db, item, child)
@@ -398,7 +398,7 @@ def test_an_undeclared_child_is_not_a_mismatch(client, key, db):
                                            "agent_id": planner, "seat": True}))
     _post(client, key, {"enrolment_code": d["enrolment_code"], "winner": "gbagent:qwen3.6"},
           expect=202)
-    child = _ok(_mcp(client, key, "register_agent", {
+    child = _ok(_mcp(client, key, "register_agent", {"branch": "gb/test", 
         "label": "mute", "enrolment_code": d["enrolment_code"],
         "capabilities": {"instance": "mute"}}))["agent_id"]
     _held(db, item, child)

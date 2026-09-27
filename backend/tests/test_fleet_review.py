@@ -104,7 +104,7 @@ def _register(client, key, role, label=None, vendor=None, instance=None):
     if vendor:
         caps["vendor"] = vendor
     return _ok(client, key, "register_agent",
-               {"label": label, "role_hint": role, "capabilities": caps})
+               {"branch": "gb/test", "label": label, "role_hint": role, "capabilities": caps})
 
 
 # ---- the invariant ------------------------------------------------------------------------
@@ -495,7 +495,7 @@ def _aio(client, key, label="solo"):
     posture actually is. Registering it as a `worker` instead would meet the ROLE gate first —
     `sign_off requires role reviewer` — and never reach the self-review question at all."""
     return _ok(client, key, "register_agent",
-               {"label": label, "capabilities": {"instance": label}})
+               {"branch": "gb/test", "label": label, "capabilities": {"instance": label}})
 
 
 def _built_by_aio(client, key, agent, title="work", effort=0):
@@ -802,7 +802,7 @@ def test_a_dead_agent_that_declared_a_branch_has_an_orphaned_one(client, agent_k
     from app.models import Agent
 
     me = _ok(client, agent_key, "register_agent",
-             {"label": "dies-holding-a-branch", "branch": "feat/left-behind"})
+             {"branch": "gb/test", "label": "dies-holding-a-branch", "branch": "feat/left-behind"})
     row = db.get(Agent, me["agent_id"])
     row.last_seen_at = utcnow() - timedelta(hours=1)
     db.commit()
@@ -817,7 +817,7 @@ def test_a_live_agent_with_a_branch_has_not_orphaned_it(client, agent_key, db):
     """It is working, not gone. Flagging it would put a permanent warning on every agent that
     ever declared a branch, which is every worker in a fleet."""
     me = _ok(client, agent_key, "register_agent",
-             {"label": "still-working", "branch": "feat/in-progress"})
+             {"branch": "gb/test", "label": "still-working", "branch": "feat/in-progress"})
 
     rows = {a["id"]: a for a in fleet.list_agents(db)}
 

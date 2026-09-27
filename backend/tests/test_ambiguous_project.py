@@ -134,9 +134,9 @@ def test_a_registered_agent_is_served_its_own_project_not_the_key_s_default(clie
                         json={"project_id": b, "wave": "w1", "roles": ["worker", "worker"]},
                         headers=auth).json()["seats"]
     builder = _call(client, spanning_key, "register_agent",
-                    {"label": "b", "enrolment_code": seats[0]["code"]})
+                    {"branch": "gb/test", "label": "b", "enrolment_code": seats[0]["code"]})
     reviewer = _call(client, spanning_key, "register_agent",
-                     {"label": "r", "enrolment_code": seats[1]["code"]})
+                     {"branch": "gb/test", "label": "r", "enrolment_code": seats[1]["code"]})
     assert builder["active_role"] == "worker" and reviewer["active_role"] == "worker"
 
     # Setup names the project explicitly; the assertion below is about calls that do not.
