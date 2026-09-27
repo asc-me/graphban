@@ -3,6 +3,11 @@ import { Link } from "react-router-dom";
 import { Bot, Boxes, Brain, CircleDot, FileText, Plug, TriangleAlert, X } from "lucide-react";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
+import {
+  FETCH_FAILED,
+  KpiGridSkeleton,
+  PlannerError,
+} from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { STATUS_META, STATUS_ORDER, TYPE_META } from "@/lib/meta";
 import { useDashboard } from "@/lib/queries";
@@ -10,12 +15,12 @@ import type { DashboardData, RequestType } from "@/lib/types";
 
 export function DashboardView() {
   const { activeId } = useProjectCtx();
-  const { data, isLoading } = useDashboard(activeId);
+  const { data, isLoading, isError, refetch } = useDashboard(activeId);
 
-  if (isLoading || !data) {
-    return <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>;
-  }
-
+  // The header is outside every branch on purpose. Before PRD-47 S1 this view replaced
+  // the whole page with "Loading…" and had no error branch at all, so a failed fetch and
+  // a project with nothing in it looked the same — and the design-capture render check
+  // flagged exactly that. Loading keeps the shell; a failure says a request failed.
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PlaceHeader
@@ -23,6 +28,22 @@ export function DashboardView() {
         purpose="Project health at a glance — items, memory, requests, and MCP activity."
       />
 
+      {isError && !data ? (
+        <PlannerError message={FETCH_FAILED} onRetry={() => void refetch()} />
+      ) : isLoading || !data ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-6">
+          <KpiGridSkeleton />
+        </div>
+      ) : (
+        <DashboardBody data={data} />
+      )}
+    </div>
+  );
+}
+
+function DashboardBody({ data }: { data: DashboardData }) {
+  return (
+    <>
       <div className="min-h-0 flex-1 overflow-y-auto p-6">
         <AgentLoopInfo />
 
@@ -60,7 +81,7 @@ export function DashboardView() {
           </Panel>
         </div>
       </div>
-    </div>
+    </>
   );
 }
 

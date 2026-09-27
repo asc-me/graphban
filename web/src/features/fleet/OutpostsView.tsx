@@ -2,6 +2,11 @@ import { Server } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
+import {
+  CardGridSkeleton,
+  FETCH_FAILED,
+  PlannerError,
+} from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useConfig, useFleet } from "@/lib/queries";
 import { projectPath } from "@/lib/routes";
@@ -19,7 +24,8 @@ export function OutpostsView() {
   const { activeId, active } = useProjectCtx();
   const scope = active?.tag || active?.name || activeId;
   const { data: config } = useConfig();
-  const { data, isLoading } = useFleet(activeId);
+  const fleetQ = useFleet(activeId);
+  const { data, isLoading } = fleetQ;
   const fleetHref = config?.hosted_mode && active?.tag
     ? projectPath(active.tag, "fleet.v2")
     : "/fleet.v2";
@@ -38,8 +44,10 @@ export function OutpostsView() {
         }
       />
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        {isLoading || !data ? (
-          <p className="text-[13px] text-muted">Loading…</p>
+        {fleetQ.isError && !data ? (
+          <PlannerError message={FETCH_FAILED} onRetry={() => void fleetQ.refetch()} />
+        ) : isLoading || !data ? (
+          <CardGridSkeleton cards={3} />
         ) : outposts.length === 0 ? (
           <div
             className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted"

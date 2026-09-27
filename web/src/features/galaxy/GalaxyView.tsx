@@ -2,6 +2,7 @@ import { AlertTriangle, Boxes, Search } from "lucide-react";
 import * as React from "react";
 import { Link } from "react-router-dom";
 
+import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useGalaxy, useOrgs } from "@/lib/queries";
 import { useGraphViewport } from "@/lib/graph/useGraphViewport";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
@@ -26,7 +27,7 @@ const H = 640;
 export function GalaxyView() {
   const { data: orgs = [] } = useOrgs();
   const org = orgs[0] ?? null;
-  const { data, isLoading } = useGalaxy(org?.id);
+  const { data, isLoading, isError, refetch } = useGalaxy(org?.id);
   const [showStale, setShowStale] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [hovered, setHovered] = React.useState<GalaxyEdge | null>(null);
@@ -60,6 +61,12 @@ export function GalaxyView() {
   // asserting "no projects" in the frame before it has looked — a confident claim made
   // from an absence, which is the exact failure this screen is built to name.
   const answered = data !== undefined;
+
+  // `answered` is false on a failure too, so without this branch the view sits on
+  // "loading…" for ever rather than saying the request failed (PRD-47 S1).
+  if (isError && !answered) {
+    return <PlannerError message={FETCH_FAILED} onRetry={() => void refetch()} />;
+  }
 
   if (isLoading || !answered) {
     return <div className="px-6 py-10 font-mono text-[11px] text-faint-2">loading…</div>;

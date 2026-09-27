@@ -3,6 +3,7 @@ import { AlertTriangle, Play, Scale } from "lucide-react";
 
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Preferences } from "@/features/harness/Preferences";
+import { PlannerError, TableSkeleton } from "@/components/planner/PlannerStates";
 import { Recommendations } from "@/features/harness/Recommendations";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useFleet, useHarness, useHarnessProbeCandidates, useStartHarnessProbeRun } from "@/lib/queries";
@@ -27,12 +28,33 @@ export function HarnessView() {
   const { activeId, active } = useProjectCtx();
   const scope = active?.tag || active?.name || activeId;
   const [versions, setVersions] = useState<"current" | "all">("current");
-  const { data, isLoading } = useHarness(activeId, { versions });
+  const harnessQ = useHarness(activeId, { versions });
+  const { data, isLoading } = harnessQ;
   const { data: fleetData, refetch: refetchFleet } = useFleet(activeId);
+
+  // PRD-47 S1. "Nothing measured yet" below is a claim that the matrix was served and is
+  // empty. On a failed request `data` is undefined, so that copy was never reached — but
+  // neither was anything else: the view sat on "Loading…". Error is its own branch now.
+  if (harnessQ.isError && !data) {
+    return (
+      <div className="flex h-full min-h-0 flex-col" data-testid="harness-error">
+        <PlaceHeader viewName="Harness" purpose="How each model has turned out, per capability and size band." />
+        <PlannerError
+          message="The catalog has not been served. That is not an empty matrix."
+          onRetry={() => void harnessQ.refetch()}
+        />
+      </div>
+    );
+  }
 
   if (isLoading || !data) {
     return (
-      <div className="flex h-full items-center justify-center text-[13px] text-muted">Loading…</div>
+      <div className="flex h-full min-h-0 flex-col" data-testid="harness-loading">
+        <PlaceHeader viewName="Harness" purpose="How each model has turned out, per capability and size band." />
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          <TableSkeleton rows={8} columns={5} />
+        </div>
+      </div>
     );
   }
 

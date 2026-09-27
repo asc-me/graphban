@@ -1,7 +1,7 @@
 {
   "scope": {
     "covers": "PRDs with a document in docs/ that names its ledger row",
-    "indexed": 14,
+    "indexed": 15,
     "note": "NOT the list of PRDs. A ledger-only PRD has no repo copy to compare and is absent here by construction; anything reading `prds` as complete is seeing a fraction of them."
   },
   "prds": {
@@ -290,6 +290,37 @@
         "S4 — Corrective and cross-user: R5, R6, the org re-key, contribution and the published prior",
         "11. Risks and open questions",
         "12. Prior art"
+      ]
+    },
+    "GRPH-P47": {
+      "file": "docs/prd-47-design-rework.md",
+      "status": "draft",
+      "sections": [
+        "1. Overview",
+        "2. Problem",
+        "3. Goals",
+        "4. Key decisions",
+        "5. The design file to surface map",
+        "S1 — The state floor on the thirteen surfaces P46 does not cover",
+        "S2 — The destinations the design adds",
+        "S3 — Plan: tracker rows, requests, triage clusters, dashboard",
+        "S4 — PRD editor: tabs, coverage, acceptance, history",
+        "S5 — Build: MCP tools and the graph inspector",
+        "S6 — Build: Fleet wave provisioning, review queue, clusters, catalog, allocation",
+        "S7 — Build: Outposts",
+        "S8 — Observe: Memory triage",
+        "S9 — Observe: Lessons upkeep",
+        "S10 — Observe: Activity, rebuilt",
+        "S11 — Observe: Live",
+        "S12 — Observe: Harness — three tabs",
+        "S13 — Feedback Kit: customize, and make the widget reachable",
+        "S14 — Usage: the deployment-wide page",
+        "S15 — Log export: OTLP settings",
+        "S16 — Org link: the cloud-org dialog",
+        "S17 — Project Home and Sync/Link scoping",
+        "Acceptance criteria",
+        "Phasing",
+        "Risks and open questions"
       ]
     }
   },

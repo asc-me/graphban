@@ -33,6 +33,7 @@ import { PathTrace } from "./PathTrace";
 import { useGraphLayout } from "@/lib/graph/useGraphLayout";
 import { useGraphPins } from "@/lib/graph/useGraphPins";
 import { LABEL_ZOOM, useGraphViewport } from "@/lib/graph/useGraphViewport";
+import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { useCodeAnalysis, useCodeMap, useFleetPresence } from "@/lib/queries";
 import type { CodeEdgeType, CodeNeighbors, HeldArea, ProjectStub } from "@/lib/types";
 
@@ -76,7 +77,8 @@ function label(path: string, name: string): string {
 
 export function CodeGraphView() {
   const { activeId } = useProjectCtx();
-  const { data: map, isLoading } = useCodeMap(activeId);
+  const mapQ = useCodeMap(activeId);
+  const { data: map, isLoading } = mapQ;
   const [enabled, setEnabled] = React.useState<Record<CodeEdgeType, boolean>>({
     imports: true, calls: true, owns: true, tested_by: true, references: true,
   });
@@ -384,7 +386,10 @@ export function CodeGraphView() {
     setPendingFocus(null);
   }, [pendingFocus, pos]);
 
-  const empty = !isLoading && nodes.length === 0;
+  // PRD-47 S1: a failure leaves `nodes` empty too, and the empty-state copy below is an
+  // assertion that nothing has been *described*. Only claim it once the read answered.
+  const failed = mapQ.isError && map === undefined;
+  const empty = !isLoading && !failed && nodes.length === 0;
 
   const purpose = entered ? (
     <span className="flex items-center gap-1.5">
@@ -506,7 +511,9 @@ export function CodeGraphView() {
         />
 
         <div className="relative min-h-0 flex-1 overflow-hidden">
-          {isLoading ? (
+          {failed ? (
+            <PlannerError message={FETCH_FAILED} onRetry={() => void mapQ.refetch()} />
+          ) : isLoading ? (
             <div className="p-8 text-center text-[13px] text-muted">Loading graph…</div>
           ) : empty ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
