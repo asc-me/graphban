@@ -57,11 +57,14 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
+const fleetData = { profile: null, policy: null, measured: [] as Record<string, unknown>[] };
+const useFleetMock = vi.fn(() => ({ data: fleetData, refetch: vi.fn() }));
+
 vi.mock("@/lib/queries", async () => {
   const actual = await vi.importActual<typeof import("@/lib/queries")>("@/lib/queries");
   return {
     ...actual,
-    useFleet: vi.fn(() => ({ data: { profile: null, policy: null }, refetch: vi.fn() })),
+    useFleet: (...args: unknown[]) => useFleetMock(...(args as [])),
   };
 });
 
@@ -349,14 +352,12 @@ describe("Harness page", () => {
     expect(screen.getByTestId("harness-review-below-floor")).toHaveTextContent("3 of 5");
   });
 
-  it("composes the profile and policy editors on the same screen as the grid and cards", async () => {
-    // D14: the grid, the probe panel, R1–R6 cards, and the profile/policy editor belong on
-    // one screen. The Preferences component is composed, not reimplemented.
-    // Sabotage: drop the ProbePanel import and render old text suggestions — this fails.
-    probeCandidates.mockResolvedValueOnce(probeData());
+  it("composes the profile and policy editors on the Performance tab with the grid", async () => {
+    // D14: the grid and the profile/policy editor belong on the Performance tab.
+    // The probe panel and recommendations are on the Changes & probes tab (PRD-47 S12).
+    // Sabotage: drop the Preferences import — this fails.
     show();
     expect(await screen.findByTestId("harness-cell")).toBeInTheDocument();
-    expect(await screen.findByTestId("harness-probe-panel")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-profile")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-policy")).toBeInTheDocument();
     expect(screen.getByLabelText("Per-period token cap")).toBeInTheDocument();
@@ -387,10 +388,18 @@ function probeData(over: Record<string, unknown> = {}): Record<string, unknown> 
   };
 }
 
+async function showChangesTab() {
+  show();
+  const user = userEvent.setup();
+  await screen.findByTestId("harness-view");
+  await user.click(screen.getByTestId("harness-tab-changes"));
+  return user;
+}
+
 describe("Harness probe panel", () => {
   it("shows the estimated token cost before start", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
-    show();
+    await showChangesTab();
     const estimate = await screen.findByTestId("harness-probe-estimate");
     expect(estimate).toHaveTextContent("12,000 tokens per attempt");
     expect(estimate).toHaveTextContent("3 reported");
@@ -398,7 +407,7 @@ describe("Harness probe panel", () => {
 
   it("renders candidates grouped by leaf with checkboxes", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
-    show();
+    await showChangesTab();
     const group = await screen.findByTestId("harness-probe-group");
     expect(group).toHaveTextContent("B5");
     expect(group).toHaveTextContent("4 candidates");
@@ -408,10 +417,10 @@ describe("Harness probe panel", () => {
 
   it("limits picks to three items across all groups", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
-    show();
-    const user = userEvent.setup();
+    await showChangesTab();
     await screen.findByTestId("harness-probe-panel");
     const checkboxes = screen.getAllByRole("checkbox");
+    const user = userEvent.setup();
     await user.click(checkboxes[0]);
     await user.click(checkboxes[1]);
     await user.click(checkboxes[2]);
@@ -423,8 +432,7 @@ describe("Harness probe panel", () => {
     harness.mockResolvedValueOnce(report({
       probe_suggestions: [{ trigger: "new_row", vendor: "anthropic", model: "sonnet", binary_version: "", estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no history" }, reason: "no natural cell" }],
     }));
-    show();
-    const user = userEvent.setup();
+    const user = await showChangesTab();
     await screen.findByTestId("harness-probe-panel");
     expect(screen.queryByTestId("harness-probe-start")).not.toBeInTheDocument();
     const suggestionBtns = screen.getAllByTestId("harness-probe-suggestion");
@@ -441,8 +449,7 @@ describe("Harness probe panel", () => {
     harness.mockResolvedValueOnce(report({
       probe_suggestions: [{ trigger: "new_row", vendor: "anthropic", model: "sonnet", binary_version: "", estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no history" }, reason: "no natural cell" }],
     }));
-    show();
-    const user = userEvent.setup();
+    const user = await showChangesTab();
     await screen.findByTestId("harness-probe-panel");
     await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
     const checkboxes = screen.getAllByRole("checkbox");
@@ -466,8 +473,7 @@ describe("Harness probe panel", () => {
     harness.mockResolvedValueOnce(report({
       probe_suggestions: [{ trigger: "new_row", vendor: "anthropic", model: "sonnet", binary_version: "", estimated_tokens: { comparable: false, reported: 0, finished: 0, reason: "no history" }, reason: "no natural cell" }],
     }));
-    show();
-    const user = userEvent.setup();
+    const user = await showChangesTab();
     await screen.findByTestId("harness-probe-panel");
     await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
     await user.click(screen.getAllByRole("checkbox")[0]);
@@ -479,8 +485,7 @@ describe("Harness probe panel", () => {
   it("renders nothing when there are no candidates and no suggestions", async () => {
     probeCandidates.mockResolvedValueOnce(probeData({ by_leaf: {}, by_family: {}, suggestions: [] }));
     harness.mockResolvedValueOnce(report({ probe_suggestions: [] }));
-    show();
-    await screen.findByTestId("harness-view");
+    await showChangesTab();
     expect(screen.queryByTestId("harness-probe-panel")).not.toBeInTheDocument();
   });
 
@@ -490,8 +495,133 @@ describe("Harness probe panel", () => {
         B: { leaf_ready: ["B5"], fallback: true, n: 4, items: probeItems, thin_leaves: ["B5"] },
       },
     }));
-    show();
+    await showChangesTab();
     const group = await screen.findByTestId("harness-probe-group");
     expect(group).toHaveTextContent("family");
+  });
+});
+
+describe("Harness tabs (PRD-47 S12)", () => {
+  it("renders three tabs with Performance active by default", async () => {
+    show();
+    await screen.findByTestId("harness-view");
+    expect(screen.getByTestId("harness-tab-performance")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("harness-tab-guidance")).toHaveAttribute("aria-selected", "false");
+    expect(screen.getByTestId("harness-tab-changes")).toHaveAttribute("aria-selected", "false");
+  });
+
+  it("switches to the Guidance tab and shows the generation stamp", async () => {
+    harness.mockResolvedValueOnce(report({
+      grading_rules: [
+        { rule: "R1", label: "promote", thresholds: { min_finished: 10, min_rate: 0.8 } },
+      ],
+    }));
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-view");
+    await user.click(screen.getByTestId("harness-tab-guidance"));
+    expect(await screen.findByTestId("guidance-generation-stamp")).toBeInTheDocument();
+    expect(screen.getByTestId("guidance-generation-stamp")).toHaveTextContent("window 90 days");
+  });
+
+  it("shows the effort curve on the Performance tab for above-floor non-family cells", async () => {
+    harness.mockResolvedValueOnce(report({
+      cells: [
+        cell({ key: { ...cell().key, size_band: "S" }, finished: 10, signed_off: 8, rate: 0.8, below_floor: false }),
+        cell({ key: { ...cell().key, size_band: "L" }, finished: 6, signed_off: 3, rate: 0.5, below_floor: false }),
+        cell({ key: { ...cell().key, size_band: "M" }, finished: 3, signed_off: 2, rate: 0.667, below_floor: true, kind: "leaf" }),
+      ],
+    }));
+    show();
+    const curve = await screen.findByTestId("harness-effort-curve");
+    expect(curve).toBeInTheDocument();
+    expect(screen.getByTestId("harness-effort-band-S")).toHaveTextContent("80%");
+    expect(screen.getByTestId("harness-effort-band-L")).toHaveTextContent("50%");
+    // Below-floor cell excluded from the curve
+    expect(screen.queryByTestId("harness-effort-band-M")).not.toBeInTheDocument();
+  });
+
+  it("shows recommendations on the Changes tab with the 'this page changes nothing' framing", async () => {
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-view");
+    await user.click(screen.getByTestId("harness-tab-changes"));
+    expect(await screen.findByText(/this page changes nothing/i)).toBeInTheDocument();
+  });
+});
+
+describe("Guidance tab — served from the backend (GRPH-963)", () => {
+  async function showGuidanceTab(over: Partial<HarnessReport> = {}) {
+    harness.mockResolvedValueOnce(report({
+      grading_rules: [
+        { rule: "R1", label: "promote", thresholds: { min_finished: 10, min_rate: 0.8 } },
+        { rule: "R2", label: "demote", thresholds: { min_finished: 6, max_rate: 0.25 } },
+        { rule: "R3", label: "reweight", thresholds: { min_n: 8, margin: 0.3, min_families: 2 } },
+        { rule: "R4", label: "policy", thresholds: { min_n: 6, bounce_rate: 0.7, keep_rate: 0.7 } },
+        { rule: "R5", label: "reprior", thresholds: { min_n: 5, margin: 0.3 } },
+        { rule: "R6", label: "install", thresholds: { min_drops: 6, margin: 0.3 } },
+      ],
+      ...over,
+    }));
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-view");
+    await user.click(screen.getByTestId("harness-tab-guidance"));
+    return user;
+  }
+
+  it("renders grading rules from the fetched payload, not hardcoded", async () => {
+    await showGuidanceTab();
+    const rules = await screen.findAllByTestId("guidance-rule");
+    expect(rules).toHaveLength(6);
+    // R2 from the payload: min_finished 6, max_rate 0.25
+    const r2 = screen.getByTestId("guidance-rule");
+    const r2El = rules.find((r) => r.getAttribute("data-rule") === "R2");
+    expect(r2El).toHaveTextContent("min_finished 6");
+    expect(r2El).toHaveTextContent("max_rate 0.25");
+  });
+
+  it("shows the routing table from fleet_status.measured", async () => {
+    useFleetMock.mockReturnValueOnce({
+      data: {
+        profile: null, policy: null,
+        measured: [
+          { vendor: "gbagent", model: "qwen3.6", capability: "B5", layer: "project",
+            quality: { value: 0.75, n: 12 },
+            latency: { value: 0.8, n: 10, median_seconds: 620 },
+            bands: { S: { value: 0.8, n: 6 }, M: { value: 0.7, n: 6 } } },
+        ],
+      },
+      refetch: vi.fn(),
+    });
+    await showGuidanceTab();
+    const rows = await screen.findAllByTestId("guidance-measured-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent("gbagent:qwen3.6");
+    expect(rows[0]).toHaveTextContent("B5");
+    expect(rows[0]).toHaveTextContent("75%");
+  });
+
+  it("shows 'As served' with the raw fleet_status JSON", async () => {
+    await showGuidanceTab();
+    const asServed = await screen.findByTestId("guidance-as-served");
+    expect(asServed).toBeInTheDocument();
+    const json = screen.getByTestId("guidance-as-served-json");
+    expect(json).toHaveTextContent("profile");
+  });
+
+  // CALL sabotage: if the grading rules were hardcoded instead of served from the payload,
+  // this test would pass with the wrong values. It mocks R2 with max_rate 0.25 and asserts
+  // the rendered value matches — a hardcoded 0.5 would fail.
+  it("CALL sabotage: rendered thresholds match the payload, not a hardcoded copy", async () => {
+    await showGuidanceTab({
+      grading_rules: [
+        { rule: "R2", label: "demote", thresholds: { min_finished: 6, max_rate: 0.25 } },
+      ],
+    });
+    const rules = await screen.findAllByTestId("guidance-rule");
+    expect(rules).toHaveLength(1);
+    expect(rules[0]).toHaveTextContent("max_rate 0.25");
+    expect(rules[0]).not.toHaveTextContent("max_rate 0.5");
   });
 });

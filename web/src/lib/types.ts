@@ -1869,6 +1869,12 @@ export type HarnessPlatformCell =
   | { rate: number; n: string; orgs: number }
   | { rate: null; reason: string };
 
+export interface HarnessGradingRule {
+  rule: string;
+  label: string;
+  thresholds: Record<string, number>;
+}
+
 export interface HarnessReport {
   project_id?: string;
   org_id?: string;
@@ -1894,6 +1900,8 @@ export interface HarnessReport {
   probe_suggestions?: HarnessProbeSuggestion[];
   snapshot_at?: string | null;
   unavailable?: HarnessUnavailable[];
+  /** R1–R6 thresholds served from the same constants the rules read (GRPH-963). */
+  grading_rules?: HarnessGradingRule[];
 }
 
 export interface HarnessUnavailable {

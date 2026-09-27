@@ -49,6 +49,30 @@ INSTALL_MIN_DROPS, INSTALL_MARGIN = 6, 0.3
 RULES = ("R1", "R2", "R3", "R4", "R5", "R6")
 
 
+def grading_rules() -> list[dict]:
+    """The thresholds R1–R6 fire on, as a list the page can render verbatim.
+
+    Served from the same constants the rules read so the Guidance tab shows what gbfleet
+    actually uses — never a copy that can drift.
+    """
+    return [
+        {"rule": "R1", "label": "promote",
+         "thresholds": {"min_finished": PROMOTE_MIN_FINISHED, "min_rate": PROMOTE_MIN_RATE}},
+        {"rule": "R2", "label": "demote",
+         "thresholds": {"min_finished": DEMOTE_MIN_FINISHED, "max_rate": DEMOTE_MAX_RATE}},
+        {"rule": "R3", "label": "reweight",
+         "thresholds": {"min_n": REWEIGHT_MIN_N, "margin": REWEIGHT_MARGIN,
+                        "min_families": REWEIGHT_MIN_FAMILIES}},
+        {"rule": "R4", "label": "policy",
+         "thresholds": {"min_n": POLICY_MIN_N, "bounce_rate": POLICY_BOUNCE_RATE,
+                        "keep_rate": POLICY_KEEP_RATE}},
+        {"rule": "R5", "label": "reprior",
+         "thresholds": {"min_n": REPRIOR_MIN_N, "margin": REPRIOR_MARGIN}},
+        {"rule": "R6", "label": "install",
+         "thresholds": {"min_drops": INSTALL_MIN_DROPS, "margin": INSTALL_MARGIN}},
+    ]
+
+
 @dataclass
 class Card:
     """One drafted recommendation. `evidence_hash` is what makes accept and dismiss expire."""

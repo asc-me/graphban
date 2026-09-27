@@ -5,15 +5,19 @@ import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import { Preferences } from "@/features/harness/Preferences";
 import { PlannerError, TableSkeleton } from "@/components/planner/PlannerStates";
 import { Recommendations } from "@/features/harness/Recommendations";
+import { GuidanceTab } from "@/features/harness/GuidanceTab";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useFleet, useHarness, useHarnessProbeCandidates, useStartHarnessProbeRun } from "@/lib/queries";
 import type {
   HarnessCell,
   HarnessCost,
   HarnessPoint,
+  HarnessReport,
   HarnessReviewCell,
   HarnessSampling,
 } from "@/lib/types";
+
+type Tab = "performance" | "guidance" | "changes";
 
 /**
  * PRD-38 PR 2 — how each harness has actually turned out, week by week.
@@ -28,6 +32,7 @@ export function HarnessView() {
   const { activeId, active } = useProjectCtx();
   const scope = active?.tag || active?.name || activeId;
   const [versions, setVersions] = useState<"current" | "all">("current");
+  const [tab, setTab] = useState<Tab>("performance");
   const harnessQ = useHarness(activeId, { versions });
   const { data, isLoading } = harnessQ;
   const { data: fleetData, refetch: refetchFleet } = useFleet(activeId);
@@ -83,89 +88,207 @@ export function HarnessView() {
         }
       />
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">
-        {data.cells.length === 0 && !(data.unavailable ?? []).length ? (
-          <div className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted">
-            Nothing measured yet. A cell appears here once a delegation finishes — one row per
-            vendor, model, capability and size band.
-          </div>
-        ) : (
-          <div className="mx-auto flex max-w-4xl flex-col gap-3">
-            <Recommendations projectId={activeId} />
-            {data.coverage && data.coverage.attempts > 0 && (
-              <div
-                data-testid="harness-coverage"
-                className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
-              >
-                Coverage {data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}
-                {" — "}
-                {data.coverage.with_leaf}/{data.coverage.attempts} attempts tagged a leaf.
-                Attempts that match none land in <span className="font-mono">other</span>.
-              </div>
-            )}
-            {data.platform === null && data.platform_reason && (
-              <div
-                data-testid="harness-no-platform"
-                className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
-              >
-                {data.platform_reason}
-              </div>
-            )}
-            {data.below_floor_count > 0 && (
-              <div
-                data-testid="harness-floor-note"
-                className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
-              >
-                {data.below_floor_count} of {data.cells.length} cells are below the{" "}
-                {data.floor}-attempt floor. Their rates are shown because hiding them would read
-                as having none, not as having too few.
-              </div>
-            )}
-            <ProbePanel
-              projectId={activeId}
-              suggestions={data.probe_suggestions ?? []}
-              labels={data.capability_set?.labels}
-            />
-            {(data.review_cells ?? []).map((cell) => (
-              <ReviewRow key={`f:${cell.key.vendor}:${cell.key.model}:${cell.key.capability}`} cell={cell} floor={data.floor} />
-            ))}
-            {(data.unavailable ?? []).map((row) => (
-              <div
-                key={`${row.vendor}:${row.model}:${row.capability}:${row.reason}`}
-                data-testid="harness-unavailable"
-                className="rounded-[10px] border border-dashed border-line-2 bg-surface-2 px-3.5 py-3 text-faint"
-              >
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <span className="font-mono text-[12.5px]">
-                    {row.vendor}{row.model ? `:${row.model}` : ""}
-                  </span>
-                  <span className="font-mono text-[10.5px]">{row.capability}</span>
-                  <span data-testid="harness-unavailable-reason" className="font-mono text-[10.5px]">
-                    {row.label || row.reason}
-                  </span>
-                </div>
-                <p className="mt-1 text-[12px]">
-                  Greyed because it is {row.reason}, not because it is unmeasured.
-                  Control: <span className="font-mono">{row.control}</span>
-                  {row.drops ? ` · dropped ${row.drops} times` : ""}
-                </p>
-              </div>
-            ))}
-            {data.cells.map((cell) => (
-              <CellRow key={cellId(cell)} cell={cell} floor={data.floor} />
-            ))}
-          </div>
-        )}
+      <TabBar tab={tab} onChange={setTab} />
 
-        <div className="mx-auto mt-6 max-w-4xl">
-          <Preferences
-            projectId={activeId}
-            scope={scope}
-            profile={fleetData?.profile ?? null}
-            policy={fleetData?.policy ?? null}
-            onSaved={() => { void refetchFleet(); }}
-          />
+      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        {tab === "performance" && (
+          <PerformanceTab data={data} activeId={activeId} scope={scope} fleetData={fleetData} refetchFleet={refetchFleet} />
+        )}
+        {tab === "guidance" && (
+          <GuidanceTab projectId={activeId} report={data} />
+        )}
+        {tab === "changes" && (
+          <ChangesTab data={data} activeId={activeId} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TabBar({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
+  const tabs: { id: Tab; label: string }[] = [
+    { id: "performance", label: "Performance" },
+    { id: "guidance", label: "Guidance" },
+    { id: "changes", label: "Changes & probes" },
+  ];
+  return (
+    <div className="flex border-b border-line-2 px-5" data-testid="harness-tab-bar" role="tablist">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          role="tab"
+          aria-selected={tab === t.id}
+          data-testid={`harness-tab-${t.id}`}
+          onClick={() => onChange(t.id)}
+          className={`border-b-2 px-3 py-2 text-[12.5px] transition-colors ${
+            tab === t.id
+              ? "border-st-done font-medium text-foreground"
+              : "border-transparent text-muted hover:text-foreground"
+          }`}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function PerformanceTab({
+  data,
+  activeId,
+  scope,
+  fleetData,
+  refetchFleet,
+}: {
+  data: HarnessReport;
+  activeId: string;
+  scope: string;
+  fleetData: ReturnType<typeof useFleet>["data"];
+  refetchFleet: () => void;
+}) {
+  if (data.cells.length === 0 && !(data.unavailable ?? []).length) {
+    return (
+      <div className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted">
+        Nothing measured yet. A cell appears here once a delegation finishes — one row per
+        vendor, model, capability and size band.
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto flex max-w-4xl flex-col gap-3">
+      {data.coverage && data.coverage.attempts > 0 && (
+        <div
+          data-testid="harness-coverage"
+          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+        >
+          Coverage {data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}
+          {" — "}
+          {data.coverage.with_leaf}/{data.coverage.attempts} attempts tagged a leaf.
+          Attempts that match none land in <span className="font-mono">other</span>.
         </div>
+      )}
+      {data.platform === null && data.platform_reason && (
+        <div
+          data-testid="harness-no-platform"
+          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+        >
+          {data.platform_reason}
+        </div>
+      )}
+      {data.below_floor_count > 0 && (
+        <div
+          data-testid="harness-floor-note"
+          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+        >
+          {data.below_floor_count} of {data.cells.length} cells are below the{" "}
+          {data.floor}-attempt floor. Their rates are shown because hiding them would read
+          as having none, not as having too few.
+        </div>
+      )}
+      <EffortCurve cells={data.cells} floor={data.floor} />
+      {(data.review_cells ?? []).map((cell) => (
+        <ReviewRow key={`f:${cell.key.vendor}:${cell.key.model}:${cell.key.capability}`} cell={cell} floor={data.floor} />
+      ))}
+      {(data.unavailable ?? []).map((row) => (
+        <div
+          key={`${row.vendor}:${row.model}:${row.capability}:${row.reason}`}
+          data-testid="harness-unavailable"
+          className="rounded-[10px] border border-dashed border-line-2 bg-surface-2 px-3.5 py-3 text-faint"
+        >
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="font-mono text-[12.5px]">
+              {row.vendor}{row.model ? `:${row.model}` : ""}
+            </span>
+            <span className="font-mono text-[10.5px]">{row.capability}</span>
+            <span data-testid="harness-unavailable-reason" className="font-mono text-[10.5px]">
+              {row.label || row.reason}
+            </span>
+          </div>
+          <p className="mt-1 text-[12px]">
+            Greyed because it is {row.reason}, not because it is unmeasured.
+            Control: <span className="font-mono">{row.control}</span>
+            {row.drops ? ` · dropped ${row.drops} times` : ""}
+          </p>
+        </div>
+      ))}
+      {data.cells.map((cell) => (
+        <CellRow key={cellId(cell)} cell={cell} floor={data.floor} />
+      ))}
+      <div className="mt-6">
+        <Preferences
+          projectId={activeId}
+          scope={scope}
+          profile={fleetData?.profile ?? null}
+          policy={fleetData?.policy ?? null}
+          onSaved={() => { void refetchFleet(); }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ChangesTab({ data, activeId }: { data: HarnessReport; activeId: string }) {
+  return (
+    <div className="mx-auto flex max-w-4xl flex-col gap-3">
+      <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted">
+        This page changes nothing. Accepting one records that you have seen the card — it
+        stays quiet until its numbers move. Applying a recommendation is a human act through
+        a surface that already exists.
+      </div>
+      <Recommendations projectId={activeId} />
+      <ProbePanel
+        projectId={activeId}
+        suggestions={data.probe_suggestions ?? []}
+        labels={data.capability_set?.labels}
+      />
+    </div>
+  );
+}
+
+/**
+ * Signed-off rate by size band for above-floor, non-family cells. Shows how each model
+ * turns out as items get bigger — the effort curve PRD-47 S12 specifies.
+ */
+function EffortCurve({ cells, floor }: { cells: HarnessCell[]; floor: number }) {
+  const bands = ["XS", "S", "M", "L", "XL"];
+  const bandStats: Record<string, { finished: number; signed_off: number }> = {};
+  for (const b of bands) bandStats[b] = { finished: 0, signed_off: 0 };
+
+  for (const cell of cells) {
+    if (cell.kind === "family" || cell.below_floor) continue;
+    const band = cell.key.size_band;
+    if (!bandStats[band]) continue;
+    bandStats[band].finished += cell.finished;
+    bandStats[band].signed_off += cell.signed_off;
+  }
+
+  const activeBands = bands.filter((b) => bandStats[b].finished > 0);
+  if (activeBands.length === 0) return null;
+
+  return (
+    <div data-testid="harness-effort-curve" className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3">
+      <div className="text-[12.5px] font-medium">Effort curve — signed-off rate by size band</div>
+      <div className="mt-1 text-[11px] text-faint">
+        Above-floor, non-family cells only. Shows how each model turns out as items get bigger.
+      </div>
+      <div className="mt-2 flex items-end gap-2" data-testid="harness-effort-curve-bars">
+        {activeBands.map((band) => {
+          const s = bandStats[band];
+          const rate = s.finished > 0 ? s.signed_off / s.finished : 0;
+          const pct = Math.round(rate * 100);
+          return (
+            <div key={band} className="flex flex-1 flex-col items-center gap-1" data-testid={`harness-effort-band-${band}`}>
+              <div className="text-[10px] font-mono text-muted">{pct}%</div>
+              <div
+                className="w-full rounded-[2px] bg-st-done"
+                style={{ height: `${4 + rate * 26}px` }}
+              />
+              <div className="text-[10px] font-mono text-faint">{band}</div>
+              <div className="text-[9px] font-mono text-faint">{s.signed_off}/{s.finished}</div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

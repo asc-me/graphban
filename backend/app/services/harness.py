@@ -1051,6 +1051,8 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
     out["probe_suggestions"] = probe_suggestions(db, project_id)
     out["unavailable"] = unavailable_rows(db, [project_id], cutoff)
     out["snapshot_at"] = latest_snapshot_at(db)
+    from app.services import harness_rules as _hr
+    out["grading_rules"] = _hr.grading_rules()
     if overlay:
         attach_platform(db, out)
     return out
@@ -1477,6 +1479,8 @@ def org_report(db: Session, org_id: str, *, window_days: int | None = None,
     out["probe_suggestions"] = []
     out["unavailable"] = unavailable_rows(db, projects, cutoff)
     out["snapshot_at"] = latest_snapshot_at(db)
+    from app.services import harness_rules as _hr
+    out["grading_rules"] = _hr.grading_rules()
     if overlay:
         attach_platform(db, out)
     return out
