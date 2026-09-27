@@ -46,6 +46,10 @@ const probeCandidates = vi.fn(async () => ({
   suggestions: [],
 })) as ReturnType<typeof vi.fn>;
 const startProbeRun = vi.fn(async () => ({ run_id: "run-1" }));
+const harnessRecommendations = vi.fn(async () => ({
+  project_id: "core", cards: [] as import("@/lib/types").HarnessCard[], rules: ["R1", "R2", "R3", "R4", "R5", "R6"],
+  lessons_drafted: [], window_days: 90, floor: 5,
+}));
 
 vi.mock("@/lib/api", () => ({
   setActiveProjectId: vi.fn(),
@@ -54,6 +58,7 @@ vi.mock("@/lib/api", () => ({
     harness: (...args: unknown[]) => harness(...(args as [])),
     harnessProbeCandidates: (...args: unknown[]) => probeCandidates(...(args as [])),
     startHarnessProbeRun: (...args: unknown[]) => startProbeRun(...(args as [])),
+    harnessRecommendations: (...args: unknown[]) => harnessRecommendations(...(args as [])),
   },
 }));
 
@@ -114,7 +119,6 @@ describe("Harness page", () => {
     expect(await screen.findByTestId("harness-skew")).toHaveTextContent(
       "sampled by preference — 90% first choice",
     );
-    // The badge is a warning about comparability, not a correction: ten attempts, nine wins.
     expect(screen.getByTestId("harness-rate")).toHaveTextContent("90%");
     expect(screen.getByText(/9\/10 signed off/)).toBeInTheDocument();
   });
@@ -145,7 +149,6 @@ describe("Harness page", () => {
     show();
     const series = await screen.findByTestId("harness-series");
     const points = within(series).getAllByTestId("harness-point");
-    // Two recorded weeks, and no third invented for the gap between them.
     expect(points).toHaveLength(2);
     expect(points[0]).toHaveAttribute("data-below-floor", "true");
     expect(points[1]).toHaveAttribute("data-below-floor", "false");
@@ -349,18 +352,90 @@ describe("Harness page", () => {
     expect(screen.getByTestId("harness-review-below-floor")).toHaveTextContent("3 of 5");
   });
 
-  it("composes the profile and policy editors on the same screen as the grid and cards", async () => {
-    // D14: the grid, the probe panel, R1–R6 cards, and the profile/policy editor belong on
-    // one screen. The Preferences component is composed, not reimplemented.
-    // Sabotage: drop the ProbePanel import and render old text suggestions — this fails.
-    probeCandidates.mockResolvedValueOnce(probeData());
+  it("composes the profile and policy editors on the performance tab", async () => {
     show();
     expect(await screen.findByTestId("harness-cell")).toBeInTheDocument();
-    expect(await screen.findByTestId("harness-probe-panel")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-profile")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-policy")).toBeInTheDocument();
     expect(screen.getByLabelText("Per-period token cap")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-policy-period")).toBeInTheDocument();
+  });
+});
+
+describe("Harness tabs", () => {
+  it("renders three tabs and defaults to Performance", async () => {
+    show();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    expect(tabs).toHaveLength(3);
+    expect(tabs[0]).toHaveAttribute("data-tab", "performance");
+    expect(tabs[0]).toHaveAttribute("aria-selected", "true");
+    expect(tabs[1]).toHaveAttribute("data-tab", "guidance");
+    expect(tabs[2]).toHaveAttribute("data-tab", "changes");
+  });
+
+  it("switches to the Guidance tab and shows the routing table and grading rules", async () => {
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    await user.click(tabs[1]);
+    expect(await screen.findByTestId("guidance-routing-table")).toBeInTheDocument();
+    expect(screen.getByTestId("guidance-grading-rules")).toBeInTheDocument();
+    expect(screen.getAllByTestId("guidance-rule")).toHaveLength(6);
+  });
+
+  it("switches to the Changes tab and shows recommendations and the probe panel", async () => {
+    probeCandidates.mockResolvedValueOnce(probeData());
+    harnessRecommendations.mockResolvedValueOnce({
+      project_id: "core",
+      cards: [{
+        rule: "R1", key: "R1:test", evidence_hash: "abc",
+        title: "test card", detail: "test detail",
+        cells: [], siblings: [],
+        draft: { where: "test" },
+        replay: { considered: 0, changed: 0, skipped_no_resolution: 0, truncated: false, moves: [], summary: "" },
+        thresholds: {}, state: "new" as const, previously: null,
+      }],
+      rules: ["R1"], lessons_drafted: [], window_days: 90, floor: 5,
+    });
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    await user.click(tabs[2]);
+    expect(await screen.findByTestId("harness-cards")).toBeInTheDocument();
+    expect(screen.getByTestId("harness-probe-panel")).toBeInTheDocument();
+    expect(screen.getByText(/This page changes nothing/)).toBeInTheDocument();
+  });
+
+  it("shows the effort curve on the Performance tab for above-floor non-family cells", async () => {
+    harness.mockResolvedValueOnce(
+      report({
+        cells: [
+          cell({ key: { ...cell().key, size_band: "S" }, finished: 10, signed_off: 8, rate: 0.8 }),
+          cell({ key: { ...cell().key, size_band: "M" }, finished: 10, signed_off: 6, rate: 0.6 }),
+          cell({ key: { ...cell().key, size_band: "L" }, finished: 10, signed_off: 4, rate: 0.4 }),
+          cell({ key: { ...cell().key, size_band: "S" }, finished: 3, signed_off: 2, rate: 0.667, below_floor: true }),
+          cell({ key: { ...cell().key, size_band: "M", capability: "B" }, kind: "family", family: "B", finished: 10, signed_off: 5, rate: 0.5 }),
+        ],
+      }),
+    );
+    show();
+    const curve = await screen.findByTestId("harness-effort-curve");
+    expect(curve).toBeInTheDocument();
+    const bands = within(curve).getAllByTestId("harness-effort-band");
+    expect(bands.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("shows the generation stamp and As served on the Guidance tab", async () => {
+    show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    await user.click(tabs[1]);
+    expect(await screen.findByTestId("guidance-as-served")).toBeInTheDocument();
+    expect(screen.getByTestId("guidance-fleet-status")).toBeInTheDocument();
   });
 });
 
@@ -390,7 +465,12 @@ function probeData(over: Record<string, unknown> = {}): Record<string, unknown> 
 describe("Harness probe panel", () => {
   it("shows the estimated token cost before start", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
+    harness.mockResolvedValueOnce(report({}));
     show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    await user.click(tabs[2]);
     const estimate = await screen.findByTestId("harness-probe-estimate");
     expect(estimate).toHaveTextContent("12,000 tokens per attempt");
     expect(estimate).toHaveTextContent("3 reported");
@@ -398,7 +478,12 @@ describe("Harness probe panel", () => {
 
   it("renders candidates grouped by leaf with checkboxes", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
+    harness.mockResolvedValueOnce(report({}));
     show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    await user.click(tabs[2]);
     const group = await screen.findByTestId("harness-probe-group");
     expect(group).toHaveTextContent("B5");
     expect(group).toHaveTextContent("4 candidates");
@@ -408,8 +493,12 @@ describe("Harness probe panel", () => {
 
   it("limits picks to three items across all groups", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
+    harness.mockResolvedValueOnce(report({}));
     show();
     const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    await user.click(tabs[2]);
     await screen.findByTestId("harness-probe-panel");
     const checkboxes = screen.getAllByRole("checkbox");
     await user.click(checkboxes[0]);
@@ -425,6 +514,9 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    await user.click(tabs[2]);
     await screen.findByTestId("harness-probe-panel");
     expect(screen.queryByTestId("harness-probe-start")).not.toBeInTheDocument();
     const suggestionBtns = screen.getAllByTestId("harness-probe-suggestion");
@@ -443,6 +535,9 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    await user.click(tabs[2]);
     await screen.findByTestId("harness-probe-panel");
     await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
     const checkboxes = screen.getAllByRole("checkbox");
@@ -468,6 +563,9 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    await user.click(tabs[2]);
     await screen.findByTestId("harness-probe-panel");
     await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
     await user.click(screen.getAllByRole("checkbox")[0]);
@@ -480,7 +578,11 @@ describe("Harness probe panel", () => {
     probeCandidates.mockResolvedValueOnce(probeData({ by_leaf: {}, by_family: {}, suggestions: [] }));
     harness.mockResolvedValueOnce(report({ probe_suggestions: [] }));
     show();
-    await screen.findByTestId("harness-view");
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    await user.click(tabs[2]);
+    await screen.findByTestId("harness-no-cards");
     expect(screen.queryByTestId("harness-probe-panel")).not.toBeInTheDocument();
   });
 
@@ -490,7 +592,12 @@ describe("Harness probe panel", () => {
         B: { leaf_ready: ["B5"], fallback: true, n: 4, items: probeItems, thin_leaves: ["B5"] },
       },
     }));
+    harness.mockResolvedValueOnce(report({}));
     show();
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-cell");
+    const tabs = screen.getAllByTestId("harness-tab");
+    await user.click(tabs[2]);
     const group = await screen.findByTestId("harness-probe-group");
     expect(group).toHaveTextContent("family");
   });
