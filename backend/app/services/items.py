@@ -1383,6 +1383,11 @@ def item_dict(item: Item) -> dict:
         "built_by": item.built_by,
         "reviewed_by": item.reviewed_by,
     }
+    if item.reviewed_by_capabilities:
+        # The reviewer's tier, vendor and model (GRPH-945), so a cheap-on-cheap sign-off reads
+        # differently from a frontier or human one. Present only once somebody signed it off,
+        # the same rule `reach` follows: nothing to say on an unreviewed row.
+        out["reviewer"] = item.reviewed_by_capabilities
     if (item.reach or "repo") != "repo":
         # PRESENT ONLY WHEN IT IS NOT THE DEFAULT (GRPH-832), the same rule the rebaseline
         # notice below follows: on the overwhelming majority of items this costs nothing, and

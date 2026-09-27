@@ -547,6 +547,10 @@ class Item(Base):
     # equal to `claimed_by` — an agent cannot pass its own work. Kept as data rather than
     # inferred from the event log so the assertion at sign-off is a column comparison.
     reviewed_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The signer's declared `{tier, vendor, model}` at sign-off (GRPH-945). Copied, not joined:
+    # an agent row's capabilities can change or the row can go, and what the item has to say is
+    # what reviewed it THEN — a cheap-on-cheap sign-off must stay distinguishable afterwards.
+    reviewed_by_capabilities: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # THE IN-FLIGHT HOLD, which is a different fact from the verdict above and now has its own
     # columns (GRPH-395). `claim_review` used to lease by writing `reviewed_by` — one column
     # meaning both "somebody is reviewing this" and "somebody signed this off" — and nothing

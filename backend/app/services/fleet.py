@@ -1778,28 +1778,91 @@ def extract_acceptance_clauses(description: str) -> list[str]:
     return parse_acceptance(description)[0]
 
 
-def acceptance_covered(clauses: list[str], evidence: list[dict]) -> tuple[bool, list[str]]:
-    """Whether every acceptance clause has a named test in the evidence.
+#: What an evidence line says when the clause it names was NOT done (GRPH-945). SA-556's
+#: receipt read "... NOT DELIVERED" and coverage passed, because the gate only asked whether
+#: the clause text appeared. `\b0 failed` is stripped first: "12 passed, 0 failed" is the
+#: commonest honest test summary there is.
+_NEGATIVE_EVIDENCE = re.compile(r"\b(not delivered|skipped|cannot|failed)\b")
+_ZERO_FAILED = re.compile(r"\b0 (?:tests? )?failed\b")
+
+
+def acceptance_contradicted(clauses: list[str], evidence: list[dict]) -> dict[str, str]:
+    """Each clause some evidence line names AND says was not done, mapped to that line.
+
+    Read line by line, and with the clause's own text cut out of the line before scanning, so
+    a clause that itself says "cannot" ("a builder cannot sign off its own work") is not
+    contradicted by every receipt that quotes it. Sabotage receipts are skipped: "2 test(s)
+    failed" is what a sabotage that WORKED says.
+
+    Any line, not the latest one. Evidence only grows, so a later "passed" beside an earlier
+    "NOT DELIVERED" is two claims that disagree, and the gate does not get to pick the
+    reassuring one.
+    """
+    out: dict[str, str] = {}
+    for e in evidence or []:
+        if not isinstance(e, dict) or e.get("kind") == "sabotage":
+            continue
+        for line in str(e.get("detail") or "").splitlines():
+            low = line.lower()
+            for c in clauses:
+                if c in out or c.lower() not in low:
+                    continue
+                residue = _ZERO_FAILED.sub(" ", low.replace(c.lower(), " "))
+                if _NEGATIVE_EVIDENCE.search(residue):
+                    out[c] = line.strip()
+    return out
+
+
+def acceptance_covered(clauses: list[str], evidence: list[dict]
+                       ) -> tuple[bool, list[str], dict[str, str]]:
+    """Whether every acceptance clause has a named test in the evidence, and none is denied.
 
     A clause is covered when at least one `{kind: test}` evidence entry's `detail` contains
     the clause text (case-insensitive). Sabotage receipts do NOT substitute — that is the
     defect this gate closes: a sabotage pass can only mutate code some test already reaches,
     so a function with no test is invisible to it.
 
-    Returns `(passed, uncovered)` where `uncovered` names the clauses with no test.
+    A clause some evidence line says was NOT done is uncovered whatever else names it
+    (GRPH-945) — see `acceptance_contradicted`.
+
+    Returns `(passed, uncovered, contradicted)`: `uncovered` names the clauses with no test,
+    `contradicted` maps each denied clause to the line that denies it, so the refusal can
+    quote it.
     """
     if not clauses:
-        return True, []
+        return True, [], {}
     test_details = [
         e.get("detail", "").lower()
         for e in (evidence or [])
         if isinstance(e, dict) and e.get("kind") == "test" and e.get("detail")
     ]
+    contradicted = acceptance_contradicted(clauses, evidence)
     uncovered = [
         c for c in clauses
-        if not any(c.lower() in d for d in test_details)
+        if c not in contradicted and not any(c.lower() in d for d in test_details)
     ]
-    return not uncovered, uncovered
+    return not uncovered and not contradicted, uncovered, contradicted
+
+
+def needs_reviewer_visual(clause: str) -> bool:
+    """A clause about a screenshot is about something a reviewer has to LOOK at (GRPH-945)."""
+    return "screenshot" in clause.lower()
+
+
+def reviewer_capabilities(db: Session, agent_id: str) -> dict:
+    """The reviewer's declared tier, vendor and model, for the receipt and the item (GRPH-945).
+
+    A cheap-on-cheap sign-off has to be visibly different from a frontier or human one, so
+    each missing value reads `undeclared` rather than dropping out — an absent tier would
+    read as no different from any other.
+    """
+    agent = db.get(Agent, agent_id) if agent_id else None
+    caps = (agent.capabilities or {}) if agent is not None else {}
+    out = {}
+    for field in ("tier", "vendor", "model"):
+        v = caps.get(field)
+        out[field] = v if isinstance(v, str) and v else "undeclared"
+    return out
 
 
 class NotInReview(Exception):
@@ -1942,13 +2005,42 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             + " — restate each clause as a list item under `## Acceptance` (or `## Tests`) "
               "so each one can be matched to a named test"
         )
-    covered, uncovered = acceptance_covered(clauses, merged)
-    if not covered:
+    covered, uncovered, contradicted = acceptance_covered(clauses, merged)
+    # THE REVIEWER'S OWN RECEIPTS (GRPH-945). Counted over the merged set alone, the builder's
+    # `kind:test` lines stood in for review: a reviewer could sign off without naming a single
+    # clause itself, and on SA-P21 cheap-tier cross-review passed five items that failed their
+    # acceptance that way. Reviewer-authored means THIS call's evidence — stored receipts carry
+    # no author, and one that cannot be attributed must not read as the reviewer's.
+    _, reviewer_uncovered, _ = acceptance_covered(clauses, fresh)
+    builder_only = [c for c in reviewer_uncovered if c not in uncovered and c not in contradicted]
+    has_visual = any(e.get("kind") in ("screenshot", "url") for e in fresh)
+    unseen = [c for c in clauses if needs_reviewer_visual(c) and not has_visual]
+    if not covered or builder_only or unseen:
+        problems = []
+        if contradicted:
+            problems.append(
+                f"{len(contradicted)} acceptance clause(s) the evidence says were not done: "
+                + "; ".join(f'"{c}" — evidence reads "{line}"'
+                            for c, line in contradicted.items()))
+        if uncovered:
+            problems.append(
+                f"{len(uncovered)} acceptance clause(s) with no named test: "
+                + "; ".join(f'"{c}"' for c in uncovered))
+        if builder_only:
+            problems.append(
+                f"{len(builder_only)} acceptance clause(s) named only by evidence the reviewer "
+                "did not post — pass your own `{kind: test}` for each in this sign_off: "
+                + "; ".join(f'"{c}"' for c in builder_only))
+        if unseen:
+            problems.append(
+                f"{len(unseen)} acceptance clause(s) need a screenshot, and this sign_off "
+                "carries no `{kind: screenshot}` or `{kind: url}` receipt of the reviewer's "
+                "own: " + "; ".join(f'"{c}"' for c in unseen))
         raise MissingAcceptanceCoverage(
-            f"{item.key} has {len(uncovered)} acceptance clause(s) with no named test: "
-            + "; ".join(f'"{c}"' for c in uncovered)
+            f"{item.key} is not covered: " + " | ".join(problems)
             + " — add a `{kind: test}` evidence entry whose detail names each clause"
         )
+    reviewer = reviewer_capabilities(db, agent_id)
 
     # THE FIRST ATTESTATION ADAPTER (GRPH-544). The gates above already decided this item is
     # finished; this records WHAT WAS CHECKED in a form the completion gate can read, so the
@@ -1978,7 +2070,8 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
             "predicates": [
                 {"name": "independent_review",
                  "passed": True,
-                 "detail": f"signed off by {agent_id}"
+                 "detail": f"signed off by {agent_id} (tier {reviewer['tier']}, vendor "
+                           f"{reviewer['vendor']}, model {reviewer['model']})"
                            + (" under danger mode — no independent agent was available"
                               if danger
                               else f", independent of {item.built_by}" if item.built_by
@@ -1996,7 +2089,8 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
                                  f"{ADVERSARIAL_EFFORT_THRESHOLD}; not required")},
                 {"name": "acceptance_coverage",
                  "passed": True,
-                 "detail": (f"all {len(clauses)} acceptance clause(s) have a named test"
+                 "detail": (f"all {len(clauses)} acceptance clause(s) have a named test "
+                            "from the reviewer and no evidence line denying them"
                             if clauses
                             # Only reachable when the description states NO acceptance —
                             # acceptance it cannot read refused above (GRPH-893).
@@ -2011,6 +2105,10 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     items_svc.refuse_if_pr_cooling_down(db, item, evidence or [])
     release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
+    # Who reviewed it, by tier (GRPH-945). Kept whether or not a commit was attested: the
+    # receipt above only exists when one was, and cheap-on-cheap review has to be visible on
+    # every signed-off item, not just the attested ones.
+    item.reviewed_by_capabilities = reviewer
     # The hold is spent by the verdict. Leaving it set would keep a `done` item looking like
     # something under review, which is the confusion these two columns were split to end.
     item.review_claimed_by = None
@@ -2072,6 +2170,7 @@ def bounce(db: Session, *, item_id: str, agent_id: str, reason: str,
     item.claimed_at = None
     item.assignee = ""
     item.reviewed_by = None
+    item.reviewed_by_capabilities = None
     item.review_claimed_by = None
     item.review_claimed_at = None
     # A verdict is what the count counts the absence of, so a decided item carries no arrears
