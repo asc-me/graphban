@@ -369,14 +369,14 @@ def test_attestation_records_acceptance_coverage(client, key, auth, proj):
     gate_key = client.post("/api/api-keys", json={"name": "gate", "project_id": proj,
                            "scopes": ["read", "write", "gate"]},
                            headers=auth).json()["plaintext"]
-    _ok(client, gate_key, "update_item", {"id": item, "evidence": [
-        {"kind": "test", "detail": "the veto blocks an accept"},
-        {"kind": "test", "detail": "the pin lapses after timeout"},
-        SABOTAGE,
-    ]})
+    _ok(client, gate_key, "update_item", {"id": item, "evidence": [SABOTAGE]})
 
     out = _ok(client, key, "sign_off", {
-        "id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA})
+        "id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA,
+        "evidence": [
+            {"kind": "test", "detail": "the veto blocks an accept"},
+            {"kind": "test", "detail": "the pin lapses after timeout"},
+        ]})
 
     from app.services import items as items_svc
     atts = items_svc.valid_attestations(out["evidence"], commit=PROBE_SHA)
@@ -531,3 +531,144 @@ def test_the_call_is_load_bearing():
         "sign_off no longer refuses acceptance it cannot read — unread clauses pass again "
         "(GRPH-893)"
     )
+
+
+# ---- evidence that denies the clause, and whose evidence it is (GRPH-945) ---------------------
+# SA-P21: cheap-tier cross-review signed off five items that failed their acceptance. SA-556's
+# evidence said a clause was "NOT DELIVERED" and coverage still passed, because the gate only
+# asked whether the clause text appeared in a test line.
+
+def test_evidence_saying_not_delivered_refuses_and_quotes_the_line(client, key):
+    """THE criterion. A `kind:test` line names the clause AND says it was not delivered: the
+    clause is uncovered, and the refusal quotes the line so the reviewer sees why."""
+    item, reviewer = _ready_with_description(
+        client, key, effort=5, description=DESC_TWO_CLAUSES)
+
+    res = _rpc(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [
+            {"kind": "test", "detail": "the veto blocks an accept"},
+            {"kind": "test", "detail": "the pin lapses after timeout — NOT DELIVERED, no clock"},
+            SABOTAGE,
+        ]})
+
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict", err
+    assert "the pin lapses after timeout — NOT DELIVERED, no clock" in err["message"], \
+        f"the refusal does not quote the denying line: {err['message']}"
+    assert _ok(client, key, "get_item_details", {"id": item})["status"] == "review"
+
+
+@pytest.mark.parametrize("word", ["skipped", "Cannot be tested here", "FAILED", "not delivered"])
+def test_each_negative_phrase_denies_the_clause(word):
+    ok, _, contradicted = fleet.acceptance_covered(
+        ["the veto blocks an accept"],
+        [{"kind": "test", "detail": "the veto blocks an accept"},
+         {"kind": "note", "detail": f"the veto blocks an accept: {word}"}])
+    assert not ok
+    assert "the veto blocks an accept" in contradicted
+
+
+def test_the_scan_does_not_trip_on_honest_evidence():
+    """The false positives the scan must not have: a clause whose own text says "cannot", a
+    summary reading "0 failed", a sabotage (whose job is to make tests fail), and a line on a
+    different clause."""
+    clause = "a builder cannot sign off its own work"
+    ok, uncovered, contradicted = fleet.acceptance_covered(
+        [clause, "the pin lapses"],
+        [{"kind": "test", "detail": f"test_self_review: {clause} — 14 passed, 0 failed"},
+         {"kind": "test", "detail": "the pin lapses"},
+         {"kind": "note", "detail": "the veto clause was skipped"},
+         {"kind": "sabotage", "claim": clause, "mutation": "drop the check",
+          "tests_failed": 3, "detail": f"broke {clause} — 3 test(s) failed"}])
+    assert (ok, uncovered, contradicted) == (True, [], {})
+
+
+def test_builder_only_coverage_is_refused_until_the_reviewer_names_it(client, key):
+    """A clause named only by the builder's receipts is not reviewed. The builder posts both
+    tests; the reviewer passing none is refused naming the clauses, and passing its own
+    tests signs off."""
+    worker = _ok(client, key, "register_agent",
+                 {"label": "w", "capabilities": {"instance": "w"}})
+    _ok(client, key, "create_item", {"title": "w", "status": "next", "effort": 5,
+                                     "description": DESC_TWO_CLAUSES})
+    c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
+    item = c["item"]["id"]
+    _ok(client, key, "update_item", {
+        "id": item, "status": "review", "agent_id": worker["agent_id"],
+        "evidence": [{"kind": "test", "detail": "the veto blocks an accept"},
+                     {"kind": "test", "detail": "the pin lapses after timeout"}, SABOTAGE]})
+    reviewer = _ok(client, key, "register_agent",
+                   {"label": "r", "role_hint": "reviewer", "capabilities": {"instance": "r"}})
+
+    res = _rpc(client, key, "sign_off", {"id": item, "agent_id": reviewer["agent_id"]})
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict", err
+    assert "did not post" in err["message"], err["message"]
+    assert "the pin lapses after timeout" in err["message"]
+
+    out = _ok(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [{"kind": "test", "detail": "reran: the veto blocks an accept"},
+                     {"kind": "test", "detail": "reran: the pin lapses after timeout"}]})
+    assert out["status"] == "done"
+
+
+DESC_SCREENSHOT = """\
+## Acceptance
+
+- the header shows the project name in a screenshot
+"""
+
+
+def test_screenshot_clause_needs_the_reviewers_own_screenshot(client, key):
+    item, reviewer = _ready_with_description(
+        client, key, effort=1, description=DESC_SCREENSHOT)
+    clause = {"kind": "test", "detail": "the header shows the project name in a screenshot"}
+
+    res = _rpc(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"], "evidence": [clause]})
+    err = res["structuredContent"]["error"]
+    assert err["code"] == "conflict", err
+    assert "screenshot" in err["message"] and "reviewer" in err["message"], err["message"]
+    assert _ok(client, key, "get_item_details", {"id": item})["status"] == "review"
+
+    out = _ok(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"],
+        "evidence": [clause, {"kind": "screenshot", "url": "https://example.test/h.png"}]})
+    assert out["status"] == "done"
+
+
+def test_receipt_and_item_carry_the_reviewers_tier(client, key):
+    """A cheap-on-cheap sign-off must read differently from a frontier one: the predicate
+    names tier, vendor and model, and every item read surfaces them as `reviewer`."""
+    worker = _ok(client, key, "register_agent",
+                 {"label": "w", "capabilities": {"instance": "w"}})
+    _ok(client, key, "create_item", {"title": "w", "status": "next", "effort": 1})
+    c = _ok(client, key, "claim_next", {"agent_id": worker["agent_id"]})
+    item = c["item"]["id"]
+    _ok(client, key, "update_item",
+        {"id": item, "status": "review", "agent_id": worker["agent_id"]})
+    reviewer = _ok(client, key, "register_agent", {
+        "label": "r", "role_hint": "reviewer",
+        "capabilities": {"instance": "r", "tier": "cheap", "vendor": "alibaba",
+                         "model": "qwen3-coder"}})
+
+    out = _ok(client, key, "sign_off", {
+        "id": item, "agent_id": reviewer["agent_id"], "commit": PROBE_SHA})
+
+    from app.services import items as items_svc
+    [att] = [a for a in items_svc.valid_attestations(out["evidence"], commit=PROBE_SHA)
+             if a.get("adapter") == "fleet.sign_off"]
+    ind = next(p for p in att["predicates"] if p["name"] == "independent_review")
+    assert "tier cheap" in ind["detail"] and "vendor alibaba" in ind["detail"] \
+        and "model qwen3-coder" in ind["detail"], ind["detail"]
+    got = _ok(client, key, "get_item_details", {"id": item})
+    assert got["reviewer"] == {"tier": "cheap", "vendor": "alibaba", "model": "qwen3-coder"}
+
+
+def test_an_undeclared_reviewer_reads_undeclared_not_absent(client, key):
+    item, reviewer = _ready_for_review(client, key, effort=1)
+    _ok(client, key, "sign_off", {"id": item, "agent_id": reviewer["agent_id"]})
+    got = _ok(client, key, "get_item_details", {"id": item})
+    assert got["reviewer"]["tier"] == "undeclared", got.get("reviewer")

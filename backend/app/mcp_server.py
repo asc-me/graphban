@@ -2824,8 +2824,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                     "bounce it, or update_item the description so each acceptance clause is a "
                     "list item under ## Acceptance, then name each in a {kind: test} entry"))
             raise errors.Conflict(str(e), hint=(
-                "add a {kind: test} evidence entry whose detail names each uncovered "
-                "acceptance clause from the item's ## Acceptance / ## Tests section"))
+                "pass, in this sign_off's evidence, a {kind: test} entry whose detail names "
+                "each acceptance clause from the item's ## Acceptance / ## Tests section; a "
+                "clause the evidence says was not delivered needs a bounce, not a test"))
         out = _item_dict(item)
         if fleet_svc.is_credential(agent):
             # Say it in the response, not only in the column. A caller that never registered
