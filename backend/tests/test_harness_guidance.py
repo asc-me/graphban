@@ -61,6 +61,22 @@ def test_routing_from_measured_picks_best_rate_per_band():
     assert m_row["verdict"] == "measured"
 
 
+def test_routing_from_measured_prefers_above_floor_over_high_rate():
+    measured = [{
+        "vendor": "gbagent", "model": "flash", "capability": "B5", "layer": "project",
+        "bands": {"M": {"value": 1.0, "n": 1}},
+    }, {
+        "vendor": "cursor", "model": "composer", "capability": "B5", "layer": "project",
+        "bands": {"M": {"value": 0.9, "n": 50}},
+    }]
+    rows = hsvc._routing_from_measured(measured, floor=5)
+    m_row = next(r for r in rows if r["effort_band"] == "M")
+    assert m_row["pick"] == "cursor:composer"
+    assert m_row["fallback"] == "gbagent:flash"
+    assert m_row["verdict"] == "measured"
+    assert m_row["n"] == 50
+
+
 def test_guidance_rules_come_from_server_not_client_copy(client, auth, proj):
     """CALL sabotage: if the handler stopped calling rule_catalog, thresholds would drift."""
     r = client.get(f"/api/harness/guidance?project_id={proj}", headers=auth)

@@ -1963,7 +1963,7 @@ export interface HarnessRoutingRow {
   function: string;
   effort_band: string;
   verdict: string;
-  confidence: number;
+  n: number;
   pick: string;
   evidence: string;
   fallback: string | null;

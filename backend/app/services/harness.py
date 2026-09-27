@@ -2748,7 +2748,9 @@ def _routing_from_measured(measured: list[dict], *, floor: int) -> list[dict]:
             })
     rows: list[dict] = []
     for (cap, band), candidates in sorted(buckets.items()):
-        ranked = sorted(candidates, key=lambda c: (-(c.get("rate") or 0), -c["n"]))
+        # Above-floor candidates outrank below-floor ones even at a lower rate — one attempt
+        # at 1/1 must not beat a measured 45/50 on the page gbfleet reads as guidance.
+        ranked = sorted(candidates, key=lambda c: (c["below_floor"], -(c.get("rate") or 0), -c["n"]))
         top = ranked[0]
         fallback = ranked[1]["pick"] if len(ranked) > 1 else None
         rate = top.get("rate")
@@ -2759,7 +2761,7 @@ def _routing_from_measured(measured: list[dict], *, floor: int) -> list[dict]:
             "function": cap,
             "effort_band": band,
             "verdict": "below_floor" if top["below_floor"] else "measured",
-            "confidence": top["n"],
+            "n": top["n"],
             "pick": top["pick"],
             "evidence": evidence,
             "fallback": fallback,

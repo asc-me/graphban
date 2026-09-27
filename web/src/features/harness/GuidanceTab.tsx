@@ -21,9 +21,9 @@ export function GuidanceTab({ guidance }: { guidance?: HarnessGuidance }) {
       <section data-testid="guidance-routing-table">
         <h3 className="mb-2 text-[13px] font-semibold">Routing table</h3>
         <p className="mb-3 text-[12px] text-muted">
-          Per function and effort band — the pick, evidence and fallback the supervisor scores
-          from <span className="font-mono">fleet_status.measured</span>. A column with no server
-          field reads as not measured rather than being dropped.
+          Per function and effort band — ranked here from the measured layers gbfleet is served,
+          not from what the supervisor resolved at launch. A column with no server field reads as
+          not measured rather than being dropped.
         </p>
         {routingRows.length === 0 ? (
           <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted">
@@ -38,7 +38,7 @@ export function GuidanceTab({ guidance }: { guidance?: HarnessGuidance }) {
                   <th className="px-3 py-2 text-faint">function</th>
                   <th className="px-3 py-2 text-faint">effort band</th>
                   <th className="px-3 py-2 text-faint">verdict</th>
-                  <th className="px-3 py-2 text-faint">confidence</th>
+                  <th className="px-3 py-2 text-faint">n (attempts)</th>
                   <th className="px-3 py-2 text-faint">pick</th>
                   <th className="px-3 py-2 text-faint">evidence</th>
                   <th className="px-3 py-2 text-faint">fallback</th>
@@ -61,7 +61,7 @@ export function GuidanceTab({ guidance }: { guidance?: HarnessGuidance }) {
                         {row.verdict}
                       </span>
                     </td>
-                    <td className="px-3 py-1.5 text-faint">{row.confidence}</td>
+                    <td className="px-3 py-1.5 text-faint">{row.n}</td>
                     <td className="px-3 py-1.5 text-muted">{row.pick}</td>
                     <td className="px-3 py-1.5 text-faint">{row.evidence}</td>
                     <td className="px-3 py-1.5 text-faint">{row.fallback ?? "—"}</td>

@@ -63,7 +63,7 @@ function guidanceData(over: Partial<import("@/lib/types").HarnessGuidance> = {})
       { id: "R6", title: "Install", detail: "install", thresholds: { min_drops: 6, margin: 0.3 } },
     ],
     routing: [{
-      function: "B5", effort_band: "M", verdict: "measured", confidence: 10,
+      function: "B5", effort_band: "M", verdict: "measured", n: 10,
       pick: "gbagent:qwen3.6", evidence: "8/10 @ 0.8", fallback: null,
     }],
     generation_stamp: {
