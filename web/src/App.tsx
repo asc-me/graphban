@@ -28,6 +28,7 @@ import { LessonsView } from "@/features/lessons/LessonsView";
 import { HarnessView } from "@/features/harness/HarnessView";
 import { LiveView } from "@/features/live/LiveView";
 import { MemoryReviewView } from "@/features/memory/MemoryReviewView";
+import { MemoryTriageView } from "@/features/memory/MemoryTriageView";
 import { InviteAcceptPage } from "@/features/onboarding/InviteAcceptPage";
 import { OrgAdminShell } from "@/features/orgadmin/OrgAdminShell";
 import { OrgOverviewView } from "@/features/orgadmin/OrgOverviewView";
@@ -102,6 +103,7 @@ const PROJECT_VIEWS: [string, React.ReactNode][] = [
   ["activity", <ActivityView />],
   ["live", <LiveView />],
   ["memory-review", <MemoryReviewView />],
+  ["memory-triage", <MemoryTriageView />],
   ["lessons", <LessonsView />],
   ["lessons/:id", <LessonsView />],
   ["prds", <PrdListView />],
