@@ -350,17 +350,18 @@ describe("Harness page", () => {
   });
 
   it("composes the profile and policy editors on the same screen as the grid and cards", async () => {
-    // D14: the grid, the probe panel, R1–R6 cards, and the profile/policy editor belong on
-    // one screen. The Preferences component is composed, not reimplemented.
-    // Sabotage: drop the ProbePanel import and render old text suggestions — this fails.
+    // S12: the grid and preferences live on the Performance tab; the probe panel and
+    // R1–R6 cards live on the Changes & probes tab. Each tab is reachable by clicking.
+    const user = userEvent.setup();
     probeCandidates.mockResolvedValueOnce(probeData());
     show();
     expect(await screen.findByTestId("harness-cell")).toBeInTheDocument();
-    expect(await screen.findByTestId("harness-probe-panel")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-profile")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-policy")).toBeInTheDocument();
     expect(screen.getByLabelText("Per-period token cap")).toBeInTheDocument();
     expect(screen.getByTestId("fleet-policy-period")).toBeInTheDocument();
+    await user.click(screen.getByTestId("harness-tab-changes"));
+    expect(await screen.findByTestId("harness-probe-panel")).toBeInTheDocument();
   });
 });
 
@@ -388,9 +389,16 @@ function probeData(over: Record<string, unknown> = {}): Record<string, unknown> 
 }
 
 describe("Harness probe panel", () => {
+  async function openChangesTab() {
+    const user = userEvent.setup();
+    await screen.findByTestId("harness-view");
+    await user.click(screen.getByTestId("harness-tab-changes"));
+  }
+
   it("shows the estimated token cost before start", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
     show();
+    await openChangesTab();
     const estimate = await screen.findByTestId("harness-probe-estimate");
     expect(estimate).toHaveTextContent("12,000 tokens per attempt");
     expect(estimate).toHaveTextContent("3 reported");
@@ -399,6 +407,7 @@ describe("Harness probe panel", () => {
   it("renders candidates grouped by leaf with checkboxes", async () => {
     probeCandidates.mockResolvedValueOnce(probeData());
     show();
+    await openChangesTab();
     const group = await screen.findByTestId("harness-probe-group");
     expect(group).toHaveTextContent("B5");
     expect(group).toHaveTextContent("4 candidates");
@@ -410,6 +419,7 @@ describe("Harness probe panel", () => {
     probeCandidates.mockResolvedValueOnce(probeData());
     show();
     const user = userEvent.setup();
+    await openChangesTab();
     await screen.findByTestId("harness-probe-panel");
     const checkboxes = screen.getAllByRole("checkbox");
     await user.click(checkboxes[0]);
@@ -425,6 +435,7 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
+    await openChangesTab();
     await screen.findByTestId("harness-probe-panel");
     expect(screen.queryByTestId("harness-probe-start")).not.toBeInTheDocument();
     const suggestionBtns = screen.getAllByTestId("harness-probe-suggestion");
@@ -443,6 +454,7 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
+    await openChangesTab();
     await screen.findByTestId("harness-probe-panel");
     await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
     const checkboxes = screen.getAllByRole("checkbox");
@@ -468,6 +480,7 @@ describe("Harness probe panel", () => {
     }));
     show();
     const user = userEvent.setup();
+    await openChangesTab();
     await screen.findByTestId("harness-probe-panel");
     await user.click(screen.getAllByTestId("harness-probe-suggestion")[0]);
     await user.click(screen.getAllByRole("checkbox")[0]);
@@ -480,6 +493,7 @@ describe("Harness probe panel", () => {
     probeCandidates.mockResolvedValueOnce(probeData({ by_leaf: {}, by_family: {}, suggestions: [] }));
     harness.mockResolvedValueOnce(report({ probe_suggestions: [] }));
     show();
+    await openChangesTab();
     await screen.findByTestId("harness-view");
     expect(screen.queryByTestId("harness-probe-panel")).not.toBeInTheDocument();
   });
@@ -491,6 +505,7 @@ describe("Harness probe panel", () => {
       },
     }));
     show();
+    await openChangesTab();
     const group = await screen.findByTestId("harness-probe-group");
     expect(group).toHaveTextContent("family");
   });
