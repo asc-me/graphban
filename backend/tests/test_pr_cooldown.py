@@ -176,8 +176,9 @@ def test_sign_off_of_a_just_linked_pr_is_refused(db, cooldown):
     item.built_by = "builder-agent"
     db.commit()
 
+    # Reviewed at a commit CI has NOT attested — the green receipt is for an older head.
     with pytest.raises(items_svc.PRCooldown):
-        fleet_svc.sign_off(db, item_id=item.id, agent_id="reviewer-1", commit="a" * 40)
+        fleet_svc.sign_off(db, item_id=item.id, agent_id="reviewer-1", commit="b" * 40)
 
     db.refresh(item)
     assert item.status == "review", "sign_off still completed it inside the cooldown"
@@ -218,6 +219,158 @@ def test_an_item_already_done_is_not_re_gated(db, cooldown):
 
     items_svc.update_item(db, item.id, evidence=[dict(PR, detail="relinked after done")])
     assert items_svc.update_item(db, item.id, status="done").status == "done"
+
+
+# ---- CI answering ends the wait, and the first link sticks (GRPH-947) ----------------------
+
+MERGE = "c" * 40
+MERGED_PR = dict(PR, commit=MERGE)
+CI_AT_MERGE = dict(ATTESTATION, commit=MERGE, run_ref="gha-run-42")
+
+
+def _reviewed_at(commit):
+    """A passing attestation that is NOT CI — it opens the completion gate at `commit` without
+    saying anything about whether the suite ran there."""
+    return {"kind": "attestation", "adapter": "fleet.sign_off", "commit": commit,
+            "predicates": [{"name": "independent_review", "passed": True, "detail": "ok"}]}
+
+
+def _in_review(db, item):
+    item.status = "review"
+    item.built_by = "builder-agent"
+    db.commit()
+
+
+def test_sign_off_of_a_merged_ci_attested_pr_is_not_delayed(db, cooldown):
+    """THE REPORTED DEFECT (SA-573). The PR merged days ago and CI attested its merge commit;
+    the reviewer links it and signs off. There is nothing left for the cooldown to wait for."""
+    from app.services import fleet as fleet_svc
+
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[CI_AT_MERGE])
+    _in_review(db, item)
+
+    out = fleet_svc.sign_off(db, item_id=item.id, agent_id="reviewer-1",
+                             evidence=[MERGED_PR], commit=MERGE)
+    assert out.status == "done"
+
+
+def test_sign_off_matches_ci_at_the_commit_it_reviewed(db, cooldown):
+    """THE CALL. Here only the reviewer's `commit` names the attested head — the PR link
+    carries none — so a sign_off that stopped passing it would be refused."""
+    from app.services import fleet as fleet_svc
+
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[ATTESTATION])
+    _in_review(db, item)
+
+    out = fleet_svc.sign_off(db, item_id=item.id, agent_id="reviewer-1",
+                             evidence=[PR], commit="a" * 40)
+    assert out.status == "done"
+
+
+def test_the_merge_commit_on_the_pr_link_is_enough_without_a_named_commit(db, cooldown):
+    """`update_item` names no commit here; the PR receipt does (the fleet's merge receipt)."""
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[CI_AT_MERGE, MERGED_PR])
+
+    assert items_svc.update_item(db, item.id, status="done").status == "done"
+
+
+def test_an_attested_head_commit_skips_the_cooldown(db, cooldown):
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[PR, ATTESTATION])
+
+    out = items_svc.update_item(db, item.id, status="done", head_commit="a" * 40)
+    assert out.status == "done"
+
+
+def test_a_green_receipt_at_another_commit_does_not_skip(db, cooldown):
+    """Bound to the commit. A pass at an older head says nothing about the one completing."""
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[PR, ATTESTATION, _reviewed_at("d" * 40)])
+
+    with pytest.raises(items_svc.PRCooldown):
+        items_svc.update_item(db, item.id, status="done", head_commit="d" * 40)
+
+
+def test_a_failing_suite_at_the_head_does_not_skip(db, cooldown):
+    item = _item(db)
+    failing = dict(ATTESTATION, predicates=[{"name": "suite_green", "passed": False}])
+    items_svc.update_item(db, item.id, evidence=[PR, failing, _reviewed_at("a" * 40)])
+
+    with pytest.raises(items_svc.PRCooldown) as exc:
+        items_svc.update_item(db, item.id, status="done", head_commit="a" * 40)
+    assert "did not pass suite_green" in str(exc.value)
+
+
+def test_a_first_link_arriving_with_done_is_stored_so_the_retry_passes(db, cooldown):
+    """Before, the refusal rolled the stamp away with it: every retry measured ~0s again and
+    the item could only complete after some OTHER write stored the link."""
+    item = _item(db)
+    with pytest.raises(items_svc.PRCooldown):
+        items_svc.update_item(db, item.id, status="done", evidence=[PR, ATTESTATION])
+
+    db.refresh(item)
+    assert item.pr_linked_at is not None, "the refusal did not keep the first link"
+    _backdate(db, item, 61)
+    assert items_svc.update_item(db, item.id, status="done",
+                                 evidence=[PR, ATTESTATION]).status == "done"
+
+
+def test_a_first_link_arriving_with_sign_off_is_stored_so_the_retry_passes(db, cooldown):
+    from app.services import fleet as fleet_svc
+
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[ATTESTATION])
+    _in_review(db, item)
+    with pytest.raises(items_svc.PRCooldown):
+        fleet_svc.sign_off(db, item_id=item.id, agent_id="reviewer-1",
+                           evidence=[PR], commit="b" * 40)
+
+    db.refresh(item)
+    assert item.pr_linked_at is not None, "sign_off's refusal did not keep the first link"
+    _backdate(db, item, 61)
+    out = fleet_svc.sign_off(db, item_id=item.id, agent_id="reviewer-1",
+                             evidence=[PR], commit="b" * 40)
+    assert out.status == "done"
+
+
+def test_a_refused_retry_does_not_move_the_stored_link(db, cooldown):
+    """First link wins on the refusal path too — a different URL on the retry is later."""
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[ATTESTATION])
+    with pytest.raises(items_svc.PRCooldown):
+        items_svc.update_item(db, item.id, status="done", evidence=[PR])
+    _backdate(db, item, 30)
+    db.refresh(item)
+    first = item.pr_linked_at
+
+    other = dict(PR, url="https://github.com/asc-me/graphban/pull/1000")
+    with pytest.raises(items_svc.PRCooldown):
+        items_svc.update_item(db, item.id, status="done", evidence=[other])
+    db.refresh(item)
+    assert item.pr_linked_at == first
+
+
+def test_the_refusal_names_the_commit_and_the_ci_run(db, cooldown):
+    item = _item(db)
+    items_svc.update_item(db, item.id, evidence=[PR, dict(ATTESTATION, run_ref="gha-run-7"),
+                                                 _reviewed_at("d" * 40)])
+
+    with pytest.raises(items_svc.PRCooldown) as exc:
+        items_svc.update_item(db, item.id, status="done", head_commit="d" * 40)
+    message = str(exc.value)
+    assert "d" * 12 in message, message
+    assert "gha-run-7" in message and "a" * 12 in message, message
+
+
+def test_the_refusal_says_when_no_commit_is_named(db, cooldown):
+    """No commit is not the same as nothing to wait for — the message says which it is."""
+    item = _item(db)
+    with pytest.raises(items_svc.PRCooldown) as exc:
+        items_svc.update_item(db, item.id, status="done", evidence=[PR, ATTESTATION])
+    assert "no commit is named" in str(exc.value)
 
 
 # ---- the detector --------------------------------------------------------------------------

@@ -2121,7 +2121,7 @@ def sign_off(db: Session, *, item_id: str, agent_id: str, evidence: list | None 
     # this path used to write the status directly, so a reviewer who linked a PR and
     # signed it off in the same minute — the defect the cooldown tests name — sailed
     # through. Same helper, same message.
-    items_svc.refuse_if_pr_cooling_down(db, item, evidence or [])
+    items_svc.refuse_if_pr_cooling_down(db, item, evidence or [], commit=commit)
     release_reservations(db, item_id=item.id)
     item.reviewed_by = agent_id
     # Who reviewed it, by tier (GRPH-945). Kept whether or not a commit was attested: the
