@@ -788,28 +788,93 @@ def pr_linked_at(evidence, existing=None):
     return None
 
 
-def refuse_if_pr_cooling_down(db, item, incoming_evidence=None) -> None:
+#: The predicate that says CI ran and passed. Its presence at the PR's head or merge commit
+#: is the thing the cooldown was waiting for, so once it is there the wait is over.
+CI_PREDICATE = "suite_green"
+
+
+def pr_commits(evidence, *named) -> list[str]:
+    """The commits this item's PR is known by, most specific first (GRPH-947).
+
+    `named` is what the caller says it is completing at — a reported head, or the SHA a
+    reviewer passes to sign_off — and comes first. After that, any commit a PR `url` receipt
+    names: the fleet's merge receipt carries the squash SHA there (GRPH-846), and that is the
+    merge commit CI attests after the PR lands. Empty means nobody named one, which is not
+    the same as "nothing to wait for" — see `refuse_if_pr_cooling_down`.
+    """
+    out: list[str] = []
+    for c in named:
+        c = (c or "").strip()
+        if c and c not in out:
+            out.append(c)
+    for e in evidence or []:
+        if not isinstance(e, dict) or e.get("kind") != "url" or not is_pr_url(e.get("url", "")):
+            continue
+        c = str(e.get("commit") or "").strip()
+        if c and c not in out:
+            out.append(c)
+    return out
+
+
+def refuse_if_pr_cooling_down(db, item, incoming_evidence=None, *,
+                              commit: str | None = None) -> None:
     """Raise PRCooldown when `done` is asked for too soon after a PR link (GRPH-567).
 
     One function, two writers. `update_item` is tested; `fleet.sign_off` is the other
     allowed writer of `done` and used to skip this entirely — a reviewer who linked a
     PR and signed it off in the same minute is the defect the test file names.
+
+    **The wait is for CI, so CI answering ends it (GRPH-947).** A `suite_green` attestation
+    at the PR's head or merge commit is the outcome the cooldown exists to give time for;
+    refusing an already-merged, already-attested PR for ten minutes protected nothing. Bound
+    to a COMMIT, never "any green receipt": a pass at an older head says nothing about the
+    code being completed. No commit named means no skip — the cooldown still clears itself.
+
+    **A first link that arrives WITH the verdict is stored before the refusal.** Before, the
+    stamp was written only by a successful `update_item`, so a `done`/`sign_off` carrying the
+    PR's first link measured ~0s, refused, and every retry measured ~0s again. The stamp is
+    kept even though the call fails; first link wins, so no later URL moves it.
     """
     cooldown = max(0, int(getattr(settings, "pr_cooldown_seconds", 0) or 0))
     linked = pr_linked_at(incoming_evidence or [], item.pr_linked_at)
     if not cooldown or linked is None:
         return
+    merged = append_evidence(item.evidence, incoming_evidence or [])
+    commits = pr_commits(merged, commit, item.head_commit)
+    if any(CI_PREDICATE in attested_predicates(merged, commit=c) for c in commits):
+        return
     waited = (utcnow() - _aware(linked)).total_seconds()
     if waited >= cooldown:
         return
+    if item.pr_linked_at is None:
+        # Persisted by `record_refusal`'s commit below. Nothing else on the item has been
+        # written by either caller at this point, so this is the only field that lands.
+        item.pr_linked_at = linked
     remaining = int(cooldown - waited)
+    target = commits[0][:12] if commits else None
+    runs = [a for a in attestation_receipts(merged)
+            if any(isinstance(q, dict) and q.get("name") == CI_PREDICATE
+                   for q in a.get("predicates") or [])]
+    if runs:
+        last = runs[-1]
+        ok = CI_PREDICATE in attested_predicates([last])
+        run = (f"the last CI run reported is {last.get('adapter')} "
+               + (f"run {last['run_ref']} " if last.get("run_ref") else "")
+               + f"at {str(last.get('commit'))[:12]}, which "
+               + ("passed there" if ok else f"did not pass {CI_PREDICATE}"))
+    else:
+        run = f"no CI run has reported {CI_PREDICATE} for it yet"
+    waiting_on = (f"waiting on CI for commit {target}: {run}" if target
+                  else f"no commit is named for its PR, so no {CI_PREDICATE} attestation can "
+                       f"end the wait early ({run})")
     record_refusal(db, item, predicate="pr_cooldown",
                    detail=f"its PR was linked {int(waited)}s ago; "
-                          f"{remaining}s of the cooldown remain.")
+                          f"{remaining}s of the cooldown remain; {waiting_on}.")
     raise PRCooldown(
         f"{item.key} cannot move to done yet: its PR was linked {int(waited)}s "
-        f"ago and the cooldown is {cooldown}s, so CI has not had time to run. "
-        f"Try again in {remaining}s — this refusal clears itself, and nothing "
+        f"ago and the cooldown is {cooldown}s, so CI has not had time to run — "
+        f"{waiting_on}. Try again in {remaining}s, or once {CI_PREDICATE} is attested at "
+        "the PR's head or merge commit — this refusal clears itself, and nothing "
         "needs changing"
     )
 
@@ -1035,7 +1100,8 @@ def update_item(db: Session, item_id: str, defer=None, submitted_by: str | None 
         # used to write `done` directly and skip this, which is the reviewer CALL the
         # bounce found. Incoming evidence is read as well as the stored stamp so linking
         # and completing in ONE call is the case this catches.
-        refuse_if_pr_cooling_down(db, item, fields.get("evidence") or [])
+        refuse_if_pr_cooling_down(db, item, fields.get("evidence") or [],
+                                  commit=fields.get("head_commit"))
     # Captured BEFORE the status moves. `intent_hold` is about work in flight and goes
     # quiet once an item is done, so asking after the transition always answers None —
     # which silently turned the completion receipt into dead code.
