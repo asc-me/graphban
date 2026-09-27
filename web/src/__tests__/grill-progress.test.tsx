@@ -68,8 +68,8 @@ describe("grill progress (AL-301)", () => {
 
   it("counts progress while the grill is unfinished", () => {
     show();
-    expect(screen.getByText("3/4")).toBeInTheDocument();
-    expect(screen.getByText(/approves itself/)).toBeInTheDocument();
+    expect(screen.getByText("3 / 4 answered")).toBeInTheDocument();
+    expect(screen.getByText(/Approval is earned/)).toBeInTheDocument();
   });
 
   it("says approval was reached, not set", () => {

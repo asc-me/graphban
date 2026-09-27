@@ -44,11 +44,11 @@ export function GrillProgress({ state, prdId }: { state: GrillState; prdId: stri
         <span className="font-mono text-[10px] uppercase tracking-wide text-faint">
           {state.complete ? "Approved by grilling" : "Grill progress"}
         </span>
-        {!state.complete && (
-          <span className="font-mono text-[10px] text-faint">
-            {names.length - state.outstanding.length}/{names.length}
-          </span>
-        )}
+        <span className="font-mono text-[10px] text-faint">
+          {state.complete
+            ? `${names.length} / ${names.length} answered`
+            : `${names.length - state.outstanding.length} / ${names.length} answered`}
+        </span>
       </div>
 
       {/* The round was not judged, so the rows below are the PREVIOUS round's verdicts
@@ -108,8 +108,8 @@ export function GrillProgress({ state, prdId }: { state: GrillState; prdId: stri
         </p>
       ) : (
         <p className="mt-2.5 text-[11px] leading-snug text-faint">
-          Answer the open dimensions in the grill — or defer one deliberately — and this
-          PRD approves itself.
+          Approval is earned, not picked — Approved unlocks when every question has an
+          answer the eval accepts.
         </p>
       )}
     </div>
