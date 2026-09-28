@@ -137,7 +137,7 @@ function AuthedApp() {
           ? PROJECT_VIEWS.map(([path, el]) => (
               <Route key={path} path={`/p/:tag/${path}`} element={el} />
             ))
-          : PROJECT_VIEWS.filter(([path]) => !["dashboard", "mcp-tools", "feedback-kit"].includes(path)).map(
+          : PROJECT_VIEWS.filter(([path]) => !["dashboard", "mcp-tools"].includes(path)).map(
               ([path, el]) => <Route key={path} path={`/${path}`} element={el} />,
             )}
         {/* /fleet is the old URL. The named pages are fleet.v1 (roster) and fleet.v2 (catalog). */}
@@ -150,7 +150,6 @@ function AuthedApp() {
             <Route path="/home" element={<HomeView />} />
             <Route path="/dashboard" element={<Navigate to="/home" replace />} />
             <Route path="/mcp-tools" element={<Navigate to="/settings/project/mcp" replace />} />
-            <Route path="/feedback-kit" element={<Navigate to="/settings/project/feedback-kit" replace />} />
           </>
         )}
 
@@ -186,6 +185,9 @@ function AuthedApp() {
 
         {!hosted && (
           <Route path="/organization" element={<Navigate to="/settings/deployment/sync" replace />} />
+        )}
+        {!hosted && (
+          <Route path="/settings/project/feedback-kit" element={<Navigate to="/feedback-kit" replace />} />
         )}
         <Route path="/settings/*" element={<SettingsView />} />
         <Route path="/profile" element={<ProfileView />} />
