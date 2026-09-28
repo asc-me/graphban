@@ -5,6 +5,15 @@ import { cn } from "@/lib/cn";
 import { settingsPath } from "@/lib/routes";
 import type { PlatformConfig } from "@/lib/types";
 
+import {
+  dnsRecordKey,
+  initialDnsResults,
+  measureDnsRecords,
+  type DnsRecord,
+  type DnsRecordResult,
+  type DnsRecordStatus,
+} from "./dnsCheck";
+
 type Route = "relay" | "custom-domain" | "none";
 
 const ROUTES: { value: Route; label: string; tag: string; description: string }[] = [
@@ -30,13 +39,6 @@ const ROUTES: { value: Route; label: string; tag: string; description: string }[
       "Your website and this deployment share a network. The widget posts directly to the ingest endpoint — no relay, no domain.",
   },
 ];
-
-interface DnsRecord {
-  type: "CNAME" | "TXT";
-  name: string;
-  value: string;
-  purpose: string;
-}
 
 export function SetupTab({ platform }: { platform: PlatformConfig | undefined }) {
   const [route, setRoute] = React.useState<Route>("relay");
@@ -152,11 +154,17 @@ export function SetupTab({ platform }: { platform: PlatformConfig | undefined })
 
 function CustomDomainSection({ records, origin }: { records: DnsRecord[]; origin: string }) {
   const [checking, setChecking] = React.useState(false);
+  const [results, setResults] = React.useState<Record<string, DnsRecordResult>>(() =>
+    initialDnsResults(records),
+  );
+
+  React.useEffect(() => {
+    setResults(initialDnsResults(records));
+  }, [records]);
 
   async function checkDns() {
     setChecking(true);
-    // No backend endpoint for DNS verification yet — simulate a brief check.
-    await new Promise((r) => setTimeout(r, 800));
+    setResults(measureDnsRecords(records));
     setChecking(false);
   }
 
@@ -207,20 +215,21 @@ function CustomDomainSection({ records, origin }: { records: DnsRecord[]; origin
               </tr>
             </thead>
             <tbody>
-              {records.map((r) => (
-                <tr key={`${r.type}-${r.name}`} className="border-b border-line-2 last:border-b-0">
-                  <td className="px-3 py-2 font-mono text-[11px] text-fg-2">{r.type}</td>
-                  <td className="px-3 py-2 font-mono text-[11px] text-muted">{r.name}</td>
-                  <td className="max-w-[200px] truncate px-3 py-2 font-mono text-[11px] text-muted-2" title={r.value}>
-                    {r.value}
-                  </td>
-                  <td className="px-3 py-2">
-                    <span className="rounded border border-line-2 px-1.5 py-px font-mono text-[10px] text-faint">
-                      pending
-                    </span>
-                  </td>
-                </tr>
-              ))}
+              {records.map((r) => {
+                const result = results[dnsRecordKey(r)] ?? { status: "unknown", detail: "Not checked yet" };
+                return (
+                  <tr key={dnsRecordKey(r)} className="border-b border-line-2 last:border-b-0">
+                    <td className="px-3 py-2 font-mono text-[11px] text-fg-2">{r.type}</td>
+                    <td className="px-3 py-2 font-mono text-[11px] text-muted">{r.name}</td>
+                    <td className="max-w-[200px] truncate px-3 py-2 font-mono text-[11px] text-muted-2" title={r.value}>
+                      {r.value}
+                    </td>
+                    <td className="px-3 py-2">
+                      <DnsStatusBadge status={result.status} detail={result.detail} />
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -279,6 +288,23 @@ function DirectSection({ origin }: { origin: string }) {
         </Step>
       </ol>
     </div>
+  );
+}
+
+function DnsStatusBadge({ status, detail }: { status: DnsRecordStatus; detail: string }) {
+  const tone =
+    status === "verified"
+      ? "border-st-done/30 text-st-done"
+      : status === "missing" || status === "mismatch"
+        ? "border-st-blocked/30 text-st-blocked"
+        : "border-line-2 text-faint";
+  return (
+    <span
+      className={cn("rounded border px-1.5 py-px font-mono text-[10px]", tone)}
+      title={detail}
+    >
+      {status}
+    </span>
   );
 }
 
