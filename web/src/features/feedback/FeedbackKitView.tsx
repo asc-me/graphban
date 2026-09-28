@@ -10,6 +10,7 @@ import { usePlatform } from "@/lib/queries";
 import type { RequestType } from "@/lib/types";
 
 import { FeedbackWidget } from "./FeedbackWidget";
+import { SetupTab } from "./SetupTab";
 import {
   ALL_TYPES,
   DEFAULT_CONFIG,
@@ -20,6 +21,8 @@ import {
   type LauncherPosition,
 } from "./config";
 import { inlineSnippet, launcherSnippet } from "./snippets";
+
+type KitTab = "customize" | "setup";
 
 const ACCENTS = ["#c6f24e", "#7ca2ff", "#a78bfa", "#5fd07a", "#ff8f8f", "#e0b34a"];
 const RADII = [4, 8, 12, 20];
@@ -32,6 +35,7 @@ export function FeedbackKitView() {
   const { activeId } = useProjectCtx();
   const platformQ = usePlatform(activeId);
   const platform = platformQ.data;
+  const [tab, setTab] = React.useState<KitTab>("customize");
   const [cfg, setCfg] = React.useState<FeedbackConfig>(() => ({ ...DEFAULT_CONFIG, projectId: activeId }));
   const [copied, setCopied] = React.useState(false);
   const set = <K extends keyof FeedbackConfig>(k: K, v: FeedbackConfig[K]) =>
@@ -75,6 +79,20 @@ export function FeedbackKitView() {
         <p className="mt-0.5 text-[12.5px] text-muted">
           A themeable, embeddable feedback widget with built-in duplicate detection. Configure, preview, and copy the snippet.
         </p>
+        <div className="mt-3 flex gap-1">
+          {(["customize", "setup"] as KitTab[]).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={cn(
+                "rounded-md px-2.5 py-1 text-[12px] capitalize transition-colors",
+                tab === t ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
+              )}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
       </div>
 
       {platformQ.isError && !platform && (
@@ -84,6 +102,11 @@ export function FeedbackKitView() {
         </p>
       )}
 
+      {tab === "setup" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-6">
+          <SetupTab platform={platform} />
+        </div>
+      ) : (
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto p-6 lg:grid-cols-[340px_1fr]">
         {/* Config panel */}
         <div className="flex flex-col gap-5">
@@ -253,6 +276,7 @@ export function FeedbackKitView() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
