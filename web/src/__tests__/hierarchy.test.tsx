@@ -5,7 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectProvider, useProjectCtx } from "@/features/ProjectContext";
-import { ORG_BASE, adminPath, orgPath, projectPath, settingsPath, tagFromPath, usableHttpUrl, viewFromPath } from "@/lib/routes";
+import { ORG_BASE, adminPath, orgPath, placeFromPath, projectPath, settingsPath, tagFromPath, usableHttpUrl, viewFromPath } from "@/lib/routes";
 import type { Project } from "@/lib/types";
 
 /**
@@ -120,6 +120,19 @@ describe("path helpers", () => {
   it("keeps the view when moving between projects", () => {
     expect(viewFromPath("/p/GRPH/prds/42")).toBe("prds/42");
     expect(viewFromPath("/p/GRPH")).toBe("");
+  });
+
+  it("names Settings · MCP Tools on a nested settings path, not the title-cased slug", () => {
+    expect(placeFromPath("/settings/project/mcp")).toEqual({
+      section: "Settings",
+      page: "MCP Tools",
+    });
+    expect(placeFromPath("/p/CORE/harness")).toEqual({
+      section: "Observe",
+      page: "Harness",
+    });
+    expect(placeFromPath("/tracker")).toEqual({ section: "Plan", page: "Tracker" });
+    expect(placeFromPath("/fleet.v1")).toEqual({ section: "Build", page: "Fleet.v1" });
   });
 });
 

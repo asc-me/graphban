@@ -78,13 +78,30 @@ describe("the app shell", () => {
     }
   });
 
-  it("renders the project bar's stats from counts, never from collections", async () => {
+  it("renders the breadcrumb section, never collection data", async () => {
     renderShell(<ProjectBar />);
-    expect(await screen.findByText("41")).toBeInTheDocument();
+    expect(await screen.findByText("Plan")).toBeInTheDocument();
+    expect(screen.getByText("Tracker")).toBeInTheDocument();
 
     for (const [name, fn] of Object.entries(collections)) {
       expect(fn, `the project bar fetched the whole ${name} collection (GRPH-431)`)
         .not.toHaveBeenCalled();
     }
+  });
+
+  it("shows Settings · MCP Tools on a nested settings path, not the title-cased slug", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/settings/project/mcp"]}>
+          <ProjectProvider>
+            <ProjectBar />
+          </ProjectProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Settings")).toBeInTheDocument();
+    expect(screen.getByText("MCP Tools")).toBeInTheDocument();
+    expect(screen.queryByText("Settings/Project/Mcp")).not.toBeInTheDocument();
   });
 });
