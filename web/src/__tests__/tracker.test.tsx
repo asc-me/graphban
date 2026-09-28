@@ -2,10 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectProvider } from "@/features/ProjectContext";
 import { TrackerView } from "@/features/tracker/TrackerView";
+import { CHECK_COLOR, PR_STATE_COLOR } from "@/lib/meta";
 import type { Item } from "@/lib/types";
 
 const items: Item[] = [
@@ -147,5 +148,107 @@ describe("a bounced item", () => {
     } finally {
       served = items;
     }
+  });
+});
+
+/**
+ * The row furniture PRD-47 §S3 names: the `PROTO` badge, tags, effort, the PR chip with
+ * its state and check colours, and the owner chip with a claim dot.
+ *
+ * Each chip is optional, so every case asserts both that it appears when its condition
+ * holds and that it does NOT appear when it doesn't. Only the second half catches the
+ * defect worth catching here — a badge that renders unconditionally still "shows the
+ * PROTO badge" on the item that has one.
+ *
+ * The colours are asserted against `PR_STATE_COLOR` / `CHECK_COLOR` rather than against
+ * hex literals, and through a second PR whose state and checks both differ: what §S3
+ * specifies is that the chip is coloured *from* those maps, so a hardcoded colour or a
+ * swapped pair has to fail.
+ */
+describe("the tracker row (PRD-47 S3)", () => {
+  const pr = {
+    number: 42, title: "Plan surface", branch: "gb/al-09", state: "open",
+    additions: 120, deletions: 8, checks: "passing", ago: "1h",
+  };
+
+  const dressed: Item = {
+    ...items[0],
+    id: "AL-09",
+    title: "Prototype the plan surface",
+    status: "in_progress",
+    tags: ["design", "frontend"],
+    effort: 13,
+    fidelity: "high",
+    claimed_by: "GRPH-A77",
+    assignee: "",
+    pr,
+  };
+
+  async function showRow(row: Item) {
+    served = [row];
+    renderTracker();
+    await screen.findByText(row.title);
+  }
+
+  afterEach(() => {
+    served = items;
+  });
+
+  it("badges a high-fidelity item as needing a prototype", async () => {
+    await showRow(dressed);
+    const badge = screen.getByText("proto");
+    expect(badge.getAttribute("title")).toMatch(/prototype/i);
+  });
+
+  it("shows no PROTO badge on a low-fidelity item", async () => {
+    await showRow({ ...dressed, fidelity: "low" });
+    expect(screen.queryByText("proto")).not.toBeInTheDocument();
+  });
+
+  it("shows the tags and the effort estimate", async () => {
+    await showRow(dressed);
+    expect(screen.getByText("design")).toBeInTheDocument();
+    expect(screen.getByText("frontend")).toBeInTheDocument();
+    expect(screen.getByTitle("effort")).toHaveTextContent("13");
+  });
+
+  it("shows the PR chip with its number and the tooltip §S3 specifies", async () => {
+    await showRow(dressed);
+    const chip = screen.getByTitle("PR #42 · open · checks passing");
+    expect(chip).toHaveTextContent("#42");
+    expect(chip).toHaveStyle({ color: PR_STATE_COLOR.open });
+    expect(chip.querySelector(".rounded-full")).toHaveStyle({
+      background: CHECK_COLOR.passing,
+    });
+  });
+
+  it("colours the PR chip from its state and its checks, not from a constant", async () => {
+    await showRow({ ...dressed, pr: { ...pr, state: "merged", checks: "failing" } });
+    const chip = screen.getByTitle("PR #42 · merged · checks failing");
+    expect(chip).toHaveStyle({ color: PR_STATE_COLOR.merged });
+    expect(chip.querySelector(".rounded-full")).toHaveStyle({
+      background: CHECK_COLOR.failing,
+    });
+  });
+
+  it("shows no PR chip on an item without a PR", async () => {
+    await showRow({ ...dressed, pr: null });
+    expect(screen.queryByTitle(/^PR #/)).not.toBeInTheDocument();
+  });
+
+  it("shows the claimant with a live claim dot", async () => {
+    await showRow(dressed);
+    const owner = screen.getByTitle("Claimed by GRPH-A77");
+    expect(owner).toHaveTextContent("GRPH-A77");
+    expect(owner.querySelector(".blink")).toBeInTheDocument();
+  });
+
+  it("shows an assignee without a claim dot once nobody holds the item", async () => {
+    await showRow({ ...dressed, claimed_by: null, assignee: "dana" });
+    const owner = screen.getByTitle("Assigned to dana");
+    expect(owner).toHaveTextContent("dana");
+    // A claim dot asserts somebody is on it right now. An assignment does not.
+    expect(owner.querySelector(".blink")).not.toBeInTheDocument();
+    expect(screen.queryByTitle(/^Claimed by/)).not.toBeInTheDocument();
   });
 });

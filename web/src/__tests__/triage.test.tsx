@@ -139,4 +139,68 @@ describe("Triage", () => {
     // recommendation, so the sentence names the file rather than saying "the same code".
     expect(screen.getAllByText("services/code_graph.py")).toHaveLength(2);
   });
+
+  /**
+   * §S3 gives each risk its own explain sentence, because the two risks ask for opposite
+   * reactions: `blocked` means stop, somebody holds it and a second claim is refused
+   * outright; `serialize` means go, but one at a time. A cluster that rendered the wrong
+   * sentence would still be coloured correctly, so the words are what the test pins.
+   */
+  it("reads an already-held overlap as blocked, and says the second claim is refused not queued", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.fleet).mockResolvedValue(
+      fleet([
+        {
+          items: ["CORE-4", "CORE-9"], areas: ["services/memory.py"],
+          predicted: false, held_by: "agent-a", blocked_on: "CORE-4",
+        },
+      ]) as never,
+    );
+    renderTriage();
+    expect(await screen.findByText("blocked")).toBeInTheDocument();
+    expect(screen.queryByText("serialize")).not.toBeInTheDocument();
+
+    const explain = screen.getByText(/the overlap is already held/);
+    expect(explain.textContent).toMatch(/^Blocked on CORE-4/);
+    expect(explain.textContent).toContain(
+      "the overlap is already held, so a second claim would be refused rather than queued",
+    );
+  });
+
+  it("explains serialize as the conflict the check exists to predict", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.fleet).mockResolvedValue(
+      fleet([
+        {
+          items: ["CORE-4", "CORE-9"], areas: ["services/items.py"],
+          predicted: false, held_by: "agent-a", blocked_on: null,
+        },
+      ]) as never,
+    );
+    renderTriage();
+    expect(await screen.findByText("serialize")).toBeInTheDocument();
+    expect(screen.queryByText("blocked")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Running them together is what produces the conflict this check exists to predict/,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("badges a predicted overlap and does not badge one that was measured", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.fleet).mockResolvedValue(
+      fleet([
+        {
+          items: ["CORE-4", "CORE-9"], areas: ["services/items.py"],
+          predicted: false, held_by: "agent-a", blocked_on: null,
+        },
+      ]) as never,
+    );
+    renderTriage();
+    // `PREDICTED` is a warning that the overlap was inferred rather than observed. On a
+    // measured overlap the same badge would understate a fact the server actually has.
+    expect(await screen.findByText("2 items overlap")).toBeInTheDocument();
+    expect(screen.queryByText("predicted")).not.toBeInTheDocument();
+  });
 });
