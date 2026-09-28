@@ -1,4 +1,4 @@
-import type { FleetOverview, LiveAgent, LiveBoard, LiveFeedRow, LiveUser } from "@/lib/types";
+import type { FleetOverview, LiveAgent, LiveBoard, LiveDelegationRow, LiveFeedRow, LiveFileKind, LiveFileState, LiveUser } from "@/lib/types";
 
 /** Same mapping as Fleet: role colour is the status that role produces. */
 export const ROLE_TONE: Record<string, string> = {
@@ -204,6 +204,56 @@ export function heldBackClusters(fleet: FleetOverview | undefined) {
 }
 
 export interface FeedRun { row: LiveFeedRow; count: number; last: LiveFeedRow }
+
+export function fileStateCopy(state: LiveFileState): string {
+  if (state === "unreserved") return "holds work with no area lease";
+  return state;
+}
+
+export function fileKindCopy(kind: LiveFileKind): string {
+  if (kind === "declared") return "declared on item, not reserved";
+  if (kind === "reported") return "reported by agent, not reserved";
+  return kind;
+}
+
+export function delegationCopy(r: LiveDelegationRow): string {
+  const age = r.age_seconds != null ? ` · ${durationLabel(r.age_seconds)} ago` : "";
+  switch (r.state) {
+    case "open":
+      return `open, requested ${r.requested_tier}${age}`;
+    case "expired":
+      return `expired, nothing claimed · requested ${r.requested_tier}${age}`;
+    case "claimed":
+      return `claimed by ${r.agent_id ?? "?"} (${tierCopy(r)})${age}`;
+    case "finished":
+      return `${outcomeCopy(r.outcome)} · ${r.agent_id ?? "?"} (${tierCopy(r)})`;
+    case "closed":
+      return r.closed_reason === "superseded"
+        ? `superseded by ${r.closed_by ?? "another agent"}`
+        : "withdrawn";
+  }
+}
+
+function tierCopy(r: LiveDelegationRow): string {
+  const model = r.declared_model ? `, ${r.declared_model}` : "";
+  if (r.declared_tier === "undeclared" || !r.declared_tier) {
+    return `requested ${r.requested_tier}, undeclared${model}`;
+  }
+  if (r.mismatch) {
+    return `requested ${r.requested_tier}, declared ${r.declared_tier}${model}`;
+  }
+  return `${r.declared_tier}${model}`;
+}
+
+function outcomeCopy(o: LiveDelegationRow["outcome"]): string {
+  switch (o) {
+    case "signed_off": return "signed off";
+    case "bounced": return "bounced";
+    case "blocked": return "blocked";
+    case "released": return "released";
+    default: return "finished";
+  }
+}
 
 export function collapseRuns(rows: LiveFeedRow[]): FeedRun[] {
   const out: FeedRun[] = [];

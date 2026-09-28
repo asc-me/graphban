@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 
 import { LiveBoardSkeleton, PlannerEmpty, PlannerError } from "@/components/planner/PlannerStates";
 import { PlaceHeader } from "@/components/shell/PlaceHeader";
@@ -8,20 +8,24 @@ import { useConfig, useFleet, useLive, useLiveFeed } from "@/lib/queries";
 import { projectPath } from "@/lib/routes";
 import type { LiveBoard } from "@/lib/types";
 
+import { AgentBoard } from "./AgentBoard";
+import { CensusChips } from "./CensusChips";
 import { KpiRow } from "./KpiRow";
 import { LiveStreamPanel } from "./LiveStream";
 import { PlannerDesk } from "./PlannerDesk";
 import { PresenceStrip } from "./PresenceStrip";
+import { RoleCounts } from "./RoleCounts";
 import { TicketLanes } from "./TicketLanes";
 import { buildTicketLanes, computeKpis, flattenAgents } from "./liveUtils";
 
 /**
  * Observe Live (PRD-47 S11): presence strip, planner desk, ticket lanes, and a stream
- * that honours the focused agent. Reads GET /live and GET /fleet; does not invent counts.
+ * that honours the focused agent — on top of the per-agent board shipped in PRD-33/34/35.
  */
 export function LiveView() {
   const { activeId, active } = useProjectCtx();
   const { data: config } = useConfig();
+  const { pathname } = useLocation();
   const [params] = useSearchParams();
   const user = params.get("user");
   const { data, isLoading, isError, refetch } = useLive(activeId, user);
@@ -68,6 +72,11 @@ export function LiveView() {
         purpose="Who is on this project right now, what they hold, and whether a PR was recorded."
         action={
           <div className="flex items-center gap-3">
+            {board ? (
+              <RoleCounts byRole={board.by_role ?? {}} roles={board.roles ?? []} />
+            ) : (
+              <div className="h-5 w-24 animate-pulse rounded-md bg-surface-3" aria-hidden />
+            )}
             <button
               type="button"
               onClick={togglePause}
@@ -91,67 +100,72 @@ export function LiveView() {
         </div>
       )}
 
-      {isLoading || !board ? (
-        <LiveBoardSkeleton />
-      ) : isError ? (
-        <PlannerError message="The live board could not be loaded." onRetry={() => refetch()} />
-      ) : emptyProject ? (
-        <PlannerEmpty
-          title="No agents on this project yet"
-          description="Live shows who is working here right now — what they hold, what they called, and whether a PR was recorded. An agent appears here the moment it registers."
-          action={
-            <Link
-              to={fleetTo}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-line-hover hover:text-fg-2"
-            >
-              Open Fleet.v1
-            </Link>
-          }
-        />
-      ) : emptyFilter ? (
-        <PlannerEmpty
-          title="No agents for this person"
-          description="This person has credentials on the project but no agent has registered under their name yet."
-        />
-      ) : (
-        <>
-          {kpis && <KpiRow kpis={kpis} />}
-          <PresenceStrip
-            agents={flat}
-            servedAt={board.served_at}
-            focusId={focusId}
-            onFocus={setFocusId}
+      <CensusChips board={board} pathname={pathname} user={user} loading={isLoading && !board} />
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {isLoading && !board ? (
+          <LiveBoardSkeleton />
+        ) : isError || !board ? (
+          <PlannerError message="The live board could not be loaded." onRetry={() => refetch()} />
+        ) : emptyProject ? (
+          <PlannerEmpty
+            title="No agents on this project yet"
+            description="Live shows who is working here right now — what they hold, what they called, and whether a PR was recorded. An agent appears here the moment it registers."
+            action={
+              <Link
+                to={fleetTo}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-line px-3 py-1.5 text-[12px] text-muted transition-colors hover:border-line-hover hover:text-fg-2"
+              >
+                Open Fleet.v1
+              </Link>
+            }
           />
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            <div className="mx-auto grid max-w-5xl gap-4 lg:grid-cols-2">
-              <PlannerDesk planners={planners} fleet={fleet} trackerTo={trackerTo} />
-              <TicketLanes lanes={lanes} servedAt={board.served_at} />
+        ) : emptyFilter ? (
+          <PlannerEmpty
+            title="No agents for this person"
+            description="This person has credentials on the project but no agent has registered under their name yet."
+          />
+        ) : (
+          <>
+            {kpis && <KpiRow kpis={kpis} />}
+            <PresenceStrip
+              agents={flat}
+              servedAt={board.served_at}
+              focusId={focusId}
+              onFocus={setFocusId}
+            />
+            <div className="p-5">
+              <div className="mx-auto grid max-w-5xl gap-4 lg:grid-cols-2">
+                <PlannerDesk planners={planners} fleet={fleet} trackerTo={trackerTo} />
+                <TicketLanes lanes={lanes} servedAt={board.served_at} />
+              </div>
+              <AgentBoard users={board.users} board={board} projectId={activeId} />
+              <section className="mx-auto mt-4 max-w-5xl rounded-[11px] border border-line-2 bg-surface-2 p-3.5">
+                <h2 className="text-[13px] font-semibold">Stream</h2>
+                <p className="mt-0.5 text-[11.5px] text-muted">
+                  {focusId
+                    ? "Filtered to the focused agent."
+                    : "Showing the first agent's feed — focus an agent above to switch."}
+                </p>
+                <div className="mt-2">
+                  <LiveStreamPanel
+                    feed={feed}
+                    servedAt={board.served_at}
+                    trackerTo={trackerTo}
+                    focusId={focusId}
+                    focusLabel={focusAgent?.label ?? focusId}
+                  />
+                </div>
+              </section>
+              {!user && censusTotal > 0 && (
+                <div className="mx-auto mt-3 max-w-5xl font-mono text-[10px] text-faint">
+                  {censusTotal} agents across {board.user_counts.length} people
+                </div>
+              )}
             </div>
-            <section className="mx-auto mt-4 max-w-5xl rounded-[11px] border border-line-2 bg-surface-2 p-3.5">
-              <h2 className="text-[13px] font-semibold">Stream</h2>
-              <p className="mt-0.5 text-[11.5px] text-muted">
-                {focusId
-                  ? "Filtered to the focused agent."
-                  : "Showing the first agent's feed — focus an agent above to switch."}
-              </p>
-              <div className="mt-2">
-                <LiveStreamPanel
-                  feed={feed}
-                  servedAt={board.served_at}
-                  trackerTo={trackerTo}
-                  focusId={focusId}
-                  focusLabel={focusAgent?.label ?? focusId}
-                />
-              </div>
-            </section>
-            {!user && censusTotal > 0 && (
-              <div className="mx-auto mt-3 max-w-5xl font-mono text-[10px] text-faint">
-                {censusTotal} agents across {board.user_counts.length} people
-              </div>
-            )}
-          </div>
-        </>
-      )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
