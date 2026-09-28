@@ -125,10 +125,14 @@ describe("the request row (PRD-47 S3)", () => {
 
   it("expands in place to the detail and the linked-code list", async () => {
     renderRequests();
+    // Wait for the row itself first. Asserting the detail is absent before the query
+    // resolves passes against a list with no rows in it at all, which says nothing about
+    // whether the row hides its detail — a sabotage that rendered the detail permanently
+    // walked straight through that version of this test.
+    await screen.findByText("Test request");
     expect(screen.queryByText("Some detail")).not.toBeInTheDocument();
 
-    const expandBtn = await screen.findByTitle(/show detail/i);
-    expandBtn.click();
+    await userEvent.click(screen.getByTitle(/show detail/i));
 
     expect(await screen.findByText("Some detail")).toBeInTheDocument();
     expect(screen.getByText("No code linked yet.")).toBeInTheDocument();
