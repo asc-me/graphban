@@ -186,9 +186,7 @@ function AuthedApp() {
         {!hosted && (
           <Route path="/organization" element={<Navigate to="/settings/deployment/sync" replace />} />
         )}
-        {!hosted && (
-          <Route path="/settings/project/feedback-kit" element={<Navigate to="/feedback-kit" replace />} />
-        )}
+        <Route path="/settings/project/feedback-kit" element={<Navigate to="/feedback-kit" replace />} />
         <Route path="/settings/*" element={<SettingsView />} />
         <Route path="/profile" element={<ProfileView />} />
         <Route index element={<HomeRedirect hosted={hosted} />} />

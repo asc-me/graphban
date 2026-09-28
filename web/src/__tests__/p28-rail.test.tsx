@@ -168,6 +168,10 @@ describe("P28 self-host rail", () => {
     expect(live).toBeGreaterThan(act);
     expect(hostedObserve.slice(act, live).match(/to:/g)?.length).toBe(1);
 
+    const harness = hostedObserve.indexOf('to: "harness"');
+    expect(harness).toBeGreaterThan(live);
+    expect(hostedObserve.slice(live, harness).match(/to:/g)?.length).toBe(1);
+
     // A section header expands; it never navigates. No default landing page may creep back in.
     const header = src.match(/function SectionHeader\(\{[\s\S]*?\n\}/)?.[0] ?? "";
     expect(header).toContain("onToggle");
@@ -213,9 +217,19 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     wrap(<LeftNav hosted />, "/p/CORE/activity");
     expect(await screen.findByText("Activity")).toBeInTheDocument();
     expect(screen.getByText("Live")).toBeInTheDocument();
+    expect(screen.getByText("Harness")).toBeInTheDocument();
     expect(screen.getByText("Memory review")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Observe" })).toHaveAttribute("aria-expanded", "true");
     expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
+  });
+
+  it("shows hosted Harness under Observe and Usage as soon in the footer", async () => {
+    wrap(<LeftNav hosted />, "/p/CORE/live");
+    expect(await screen.findByText("Harness")).toBeInTheDocument();
+    expect(screen.getByText("Live")).toBeInTheDocument();
+    expect(screen.getByText("Usage")).toBeInTheDocument();
+    expect(screen.getByText("soon")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Usage" })).not.toBeInTheDocument();
   });
 
   it("keeps Admin and Galaxy in the hosted source (sabotage: deleting those rows must fail)", async () => {
@@ -286,5 +300,6 @@ describe("P28 Settings (self-host)", () => {
     expect(screen.getByText("MCP Tools")).toBeInTheDocument();
     expect(screen.queryByText(/^MCP$/)).not.toBeInTheDocument();
     expect(screen.queryByText("Users & access")).not.toBeInTheDocument();
+    expect(screen.queryByText("Feedback Kit")).not.toBeInTheDocument();
   });
 });

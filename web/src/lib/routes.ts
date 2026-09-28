@@ -77,6 +77,65 @@ export function viewFromPath(pathname: string): string {
   return m ? m[1] : "";
 }
 
+/** Section · page for the project bar (GRPH-953). Never title-cases the whole path. */
+export type Place = { section: string; page: string };
+
+const VIEW_PLACE: Record<string, Place> = {
+  tracker: { section: "Plan", page: "Tracker" },
+  requests: { section: "Plan", page: "Requests" },
+  triage: { section: "Plan", page: "Triage" },
+  dashboard: { section: "Plan", page: "Dashboard" },
+  prds: { section: "Plan", page: "PRDs" },
+  roadmap: { section: "Plan", page: "Roadmap" },
+  links: { section: "Build", page: "Links" },
+  code: { section: "Build", page: "Code graph" },
+  "mcp-tools": { section: "Build", page: "MCP Tools" },
+  "fleet.v2": { section: "Build", page: "Fleet.v2" },
+  "fleet.v1": { section: "Build", page: "Fleet.v1" },
+  fleet: { section: "Build", page: "Fleet" },
+  outposts: { section: "Build", page: "Outposts" },
+  "memory-review": { section: "Observe", page: "Memory review" },
+  "memory-triage": { section: "Observe", page: "Memory triage" },
+  lessons: { section: "Observe", page: "Lessons" },
+  activity: { section: "Observe", page: "Activity" },
+  live: { section: "Observe", page: "Live" },
+  harness: { section: "Observe", page: "Harness" },
+  "feedback-kit": { section: "Project", page: "Feedback Kit" },
+  home: { section: "Home", page: "Home" },
+};
+
+const SETTINGS_PAGE: Record<string, string> = {
+  providers: "AI providers",
+  sync: "Cloud / Sync",
+  gitops: "Gitops",
+  updates: "Updates",
+  "api-keys": "API keys",
+  mcp: "MCP Tools",
+  integrations: "Integrations",
+  members: "Members",
+  project: "Project",
+  account: "Account",
+  "feedback-kit": "Feedback Kit",
+};
+
+/**
+ * The crumb after org / project. `/settings/project/mcp` is Settings · MCP Tools,
+ * not "Settings/Project/Mcp". Unknown first segments return null rather than a
+ * title-cased slug — a missing name is louder than a guessed one.
+ */
+export function placeFromPath(pathname: string): Place | null {
+  const hosted = viewFromPath(pathname);
+  const rest = hosted || (tagFromPath(pathname) ? "" : pathname.replace(/^\/+/, ""));
+  if (!rest) return null;
+  const segs = rest.split("/").filter(Boolean);
+  const first = segs[0] ?? "";
+  if (first === "settings") {
+    const last = segs[segs.length - 1] ?? "settings";
+    return { section: "Settings", page: SETTINGS_PAGE[last] ?? last };
+  }
+  return VIEW_PLACE[first] ?? null;
+}
+
 // ── last-used project ──────────────────────────────────────────────────────
 // Moves off the module-level variable it used to share with the API client. This is a
 // *hint* for resolving a flat path, never an input to a request: the route is what a

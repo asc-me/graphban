@@ -5,7 +5,6 @@ import * as React from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
-import { FeedbackKitView } from "@/features/feedback/FeedbackKitView";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
 import { GitopsPanel } from "@/features/settings/GitopsPanel";
@@ -53,7 +52,6 @@ const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: 
       // Not "MCP": Fleet's "Looking for MCP?" is the connect snippet, on API keys.
       { to: settingsPath("project/mcp"), label: "MCP Tools" },
       { to: settingsPath("project/integrations"), label: "Integrations" },
-      { to: settingsPath("project/feedback-kit"), label: "Feedback Kit" },
       { to: settingsPath("project/members"), label: "Members" },
     ],
   },
@@ -121,7 +119,6 @@ function SelfHostPane({ pathname }: { pathname: string }) {
   if (pathname.startsWith(settingsPath("deployment/updates"))) return <UpdatesPanel />;
   if (pathname.startsWith(settingsPath("deployment/sync"))) return <SyncLinkPanel />;
   if (pathname.startsWith(settingsPath("project/mcp"))) return <McpToolsView />;
-  if (pathname.startsWith(settingsPath("project/feedback-kit"))) return <FeedbackKitView />;
   if (pathname.startsWith(settingsPath("project/integrations"))) return <IntegrationsPanel />;
   if (pathname.startsWith(settingsPath("project/api-keys"))) return <ApiKeysPanel />;
   if (pathname.startsWith(settingsPath("deployment/providers"))) return <CredentialsPanel />;
@@ -207,7 +204,6 @@ function HostedPane({ pathname }: { pathname: string }) {
     return <Navigate to={settingsPath("deployment/providers")} replace />;
   }
   if (pathname.startsWith(settingsPath("project/mcp"))) return <McpToolsView />;
-  if (pathname.startsWith(settingsPath("project/feedback-kit"))) return <FeedbackKitView />;
   if (pathname.startsWith(settingsPath("project/integrations"))) return <IntegrationsPanel />;
   if (pathname.startsWith(settingsPath("project/api-keys"))) return <ApiKeysPanel />;
   if (pathname.startsWith(settingsPath("project/members"))) return <MembersPanel />;

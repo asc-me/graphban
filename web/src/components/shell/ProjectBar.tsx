@@ -3,7 +3,7 @@ import * as React from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { useProjectCtx } from "@/features/ProjectContext";
-import { ORG_BASE, projectPath, tagFromPath, viewFromPath } from "@/lib/routes";
+import { ORG_BASE, placeFromPath, projectPath, viewFromPath } from "@/lib/routes";
 
 /**
  * The project bar: which project you are in, and the way out of it.
@@ -24,9 +24,8 @@ export function ProjectBar() {
   const [open, setOpen] = React.useState(false);
 
   if (!active) return null;
-  const hostedView = viewFromPath(pathname);
-  const selfHostView = tagFromPath(pathname) ? "" : pathname.replace(/^\/+/, "");
-  const view = hostedView || selfHostView;
+  const view = viewFromPath(pathname);
+  const place = placeFromPath(pathname);
 
   return (
     <div className="relative z-30 flex flex-none items-center gap-3 border-b border-line bg-surface/60">
@@ -60,16 +59,18 @@ export function ProjectBar() {
         </button>
       </div>
 
-      <div className="min-w-0 flex-1" />
-
-      {view && (
+      {place && (
         <>
           <span className="text-[11px] text-faint-2">/</span>
-          <span className="text-[12px] text-muted">
-            {view.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+          <span className="flex items-baseline gap-1.5 text-[12px] text-muted">
+            <span>{place.section}</span>
+            <span className="text-faint-2">·</span>
+            <span>{place.page}</span>
           </span>
         </>
       )}
+
+      <div className="min-w-0 flex-1" />
 
       {open && (
         <>
