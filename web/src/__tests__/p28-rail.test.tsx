@@ -160,7 +160,7 @@ describe("P28 self-host rail", () => {
     const les = hostedObserve.indexOf('to: "lessons"');
     expect(mem).toBeGreaterThan(-1);
     expect(les).toBeGreaterThan(mem);
-    expect(hostedObserve.slice(mem, les).match(/to:/g)?.length).toBe(1);
+    expect(hostedObserve.slice(mem, les).match(/to:/g)?.length).toBe(2);
 
     const act = hostedObserve.indexOf('to: "activity"');
     const live = hostedObserve.indexOf('to: "live"');
