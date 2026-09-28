@@ -19,6 +19,7 @@ from .adapters import ADAPTERS, AdapterError, Tuning, checked_tuning, resolve
 from .client import ALLOWED_TOOLS, Graphban
 from . import doctor
 from . import service as service_mod
+from . import surface as surface_mod
 from .lock import RepoLocked
 from .seat import Seat, codes_from_text, parse_seat_line
 from dataclasses import replace
@@ -181,6 +182,21 @@ def build_parser() -> argparse.ArgumentParser:
     doc.add_argument("--project", default="", help="the Graphban project this fleet works; named on every call so a credential spanning several projects lands where the seats were minted (GRPH-718)")
     doc.add_argument("--matrix", default="", help="path to a preference matrix (PRD-37); default is the one shipped with gbfleet")
     doc.add_argument("--seats-file", default=None, help="seats file `up` would read")
+
+    surf = sub.add_parser(
+        "surface",
+        help="compare the skills and MCP servers each harness would hand a child",
+        description=(
+            "Reads what a child of each installed harness actually loads — skills and "
+            "MCP server names, never URLs or credentials — and prints where the lists "
+            "differ. With --server, --project and $GBFLEET_API_KEY, stores the report "
+            "for the Harness page. A harness that could not be read is 'not checked', "
+            "not an empty list. `gbfleet doctor` runs this same check."
+        ),
+    )
+    surf.add_argument("--repo", default=".", help="repository whose project skills count (default: cwd)")
+    surf.add_argument("--server", default="", help="Graphban base URL; with --project, store the report")
+    surf.add_argument("--project", default="", help="project the Harness page should show this on")
 
     stdio = sub.add_parser(
         "mcp",
@@ -914,6 +930,28 @@ def _service_status(state) -> None:
         print("  PATH:   EMPTY — this service cannot find any vendor CLI")
 
 
+def _surface(args) -> int:
+    """Print the discrepancy report, and store it when a project was named."""
+    inventory = surface_mod.scan(Path(args.repo))
+    print(surface_mod.render(inventory), end="")
+    api_key = os.environ.get(API_KEY_ENV)
+    if not (args.server and api_key and args.project):
+        print(
+            "\nnot stored. Pass --server, --project and set "
+            f"${API_KEY_ENV} to put this on the Harness page.",
+            file=sys.stderr,
+        )
+        return 0
+    posted = Graphban(args.server, api_key, project_id=args.project).post_surface(
+        project_id=args.project, host=surface_mod.host_name(), harnesses=inventory["harnesses"],
+    )
+    if posted is None:
+        print("\nnot stored: the ledger did not accept the report", file=sys.stderr)
+        return 1
+    print(f"\nstored for {args.project} from {surface_mod.host_name()}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -940,10 +978,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             seats_file=args.seats_file,
             project=args.project,
             matrix_path=args.matrix or None,
+            surface=True,
         )
         # FAIL only. An UNKNOWN is loud in the report and does not stop a run — refusing
         # on a check that could not be made would ground the fleet on a slow network.
         return 0 if findings.ok else 1
+
+    if args.command == "surface":
+        return _surface(args)
 
     if args.command == "service":
         return _service(args)

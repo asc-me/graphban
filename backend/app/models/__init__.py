@@ -2454,6 +2454,24 @@ class HarnessReviewCheck(Base):
     )
 
 
+class HarnessSurface(Base):
+    """What one machine's harnesses load, posted by `gbfleet surface`.
+
+    One row per project per host, replaced on the next report. The payload is names and
+    source types (`user`, `seat`, `claudeJson`) — never a URL, a header, or a path.
+    `skills_status` / `mcps_status` are `checked`, `partial` or `unknown`. An unknown
+    list is stored as unknown, not as empty: empty would read as a child that loads
+    nothing. Migration `0133`.
+    """
+
+    __tablename__ = "harness_surfaces"
+
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    host: Mapped[str] = mapped_column(String(128), primary_key=True)
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class CapabilityProbeRun(Base):
     """One operator-started probe panel (PRD-41 D7, D8).
 

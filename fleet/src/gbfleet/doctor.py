@@ -448,6 +448,49 @@ def check_seats(report: Report, seats_file: str | None) -> None:
     report.add("seats file", PASS, f"{len(codes)} seat(s) in {path}")
 
 
+def check_surface(
+    report: Report, *, repo: Path, server: str = "", api_key: str | None = None,
+    project: str = "", scan=None,
+) -> None:
+    """What each installed harness would hand a child, and where those lists differ.
+
+    A discrepancy is not a FAIL. The machine is allowed to have context7 on grok and not
+    on claude; the failure mode this exists to catch is a Harness page that compares the
+    two without saying so. The check is UNKNOWN when it could not be stored, because a
+    page that still shows last week's lists — or none — must not read as PASS.
+    """
+    from .client import Graphban
+    from .surface import host_name, scan as scan_surface, summary
+
+    try:
+        inventory = (scan or scan_surface)(Path(repo))
+    except Exception as exc:  # a probe that crashes must not take doctor down with it
+        report.add(
+            "harness surface", UNKNOWN, f"the check itself failed: {exc.__class__.__name__}",
+            "run `gbfleet surface` on its own to see which harness could not be read",
+        )
+        return
+    detail = summary(inventory)
+    if not (server and api_key and project):
+        report.add(
+            "harness surface", UNKNOWN, detail + "; not sent to the harness view",
+            "pass --server, --project and set $GBFLEET_API_KEY. `gban doctor` does this, "
+            "and the Harness page shows the report once it is stored",
+        )
+        return
+    posted = Graphban(server, api_key, project_id=project).post_surface(
+        project_id=project, host=host_name(), harnesses=inventory["harnesses"],
+    )
+    if posted is None:
+        report.add(
+            "harness surface", UNKNOWN, detail + "; the ledger did not store the report",
+            "the Harness page still shows the last report it has, or none. "
+            "`gbfleet surface` prints the same lists",
+        )
+        return
+    report.add("harness surface", PASS, detail + f"; posted from {host_name()}")
+
+
 def run(
     *,
     repo: Path,
@@ -459,6 +502,8 @@ def run(
     out=None,
     project: str = "",
     matrix_path: str | None = None,
+    surface: bool = False,
+    surface_scan=None,
 ) -> Report:
     """Every check that can be made without spawning anything.
 
@@ -466,6 +511,10 @@ def run(
     binds whatever stdout was when this module was imported, so anything that redirects
     it afterwards — a test harness, a caller capturing output, a log wrapper — gets
     nothing while the report goes somewhere nobody is looking.
+
+    `surface` is off here and on in the `doctor` command. The check shells out to
+    `grok inspect`; a caller that imported `run` to ask about the repo should not pay
+    for that, and should not post a report it did not ask for.
     """
     out = sys.stdout if out is None else out
     report = Report()
@@ -497,6 +546,10 @@ def run(
     check_supervision_mode(report)
     check_service(report)
     check_matrix(report, matrix_path, server=server, api_key=api_key, project=project)
+    if surface:
+        check_surface(
+            report, repo=repo, server=server, api_key=api_key, project=project, scan=surface_scan,
+        )
 
     report.render(out)
     return report

@@ -6,6 +6,7 @@ import { Preferences } from "@/features/harness/Preferences";
 import { PlannerError, TableSkeleton } from "@/components/planner/PlannerStates";
 import { Recommendations } from "@/features/harness/Recommendations";
 import { GuidanceTab } from "@/features/harness/GuidanceTab";
+import { SurfaceReport } from "@/features/harness/Surface";
 import { useProjectCtx } from "@/features/ProjectContext";
 import { useFleet, useHarness, useHarnessGuidance, useHarnessProbeCandidates, useStartHarnessProbeRun } from "@/lib/queries";
 import type {
@@ -144,15 +145,19 @@ function PerformanceTab({
 }) {
   if (data.cells.length === 0 && !(data.unavailable ?? []).length) {
     return (
-      <div className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted">
-        Nothing measured yet. A cell appears here once a delegation finishes — one row per
-        vendor, model, capability and size band.
+      <div className="mx-auto flex max-w-4xl flex-col gap-3">
+        <SurfaceReport surface={data.surface} />
+        <div className="mx-auto mt-16 max-w-md text-center text-[13px] text-muted">
+          Nothing measured yet. A cell appears here once a delegation finishes — one row per
+          vendor, model, capability and size band.
+        </div>
       </div>
     );
   }
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-3">
+      <SurfaceReport surface={data.surface} />
       {data.coverage && data.coverage.attempts > 0 && (
         <div
           data-testid="harness-coverage"

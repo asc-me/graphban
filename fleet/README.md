@@ -107,6 +107,12 @@ wave with **no LLM in the loop**. `driven` is the escalation: a planner holding 
 server beside the remote one, a frontier context polling and adjudicating bounces for the
 length of the wave. `doctor` prints which one you are set up for.
 
+`gbfleet surface` (and `doctor`, which runs the same check) reads the skills and MCP
+server names each installed harness would hand a child, and prints where the lists
+differ. With `--server`, `--project` and `$GBFLEET_API_KEY` it stores that report for
+the Harness page. A harness that could not be read is "not checked", not an empty list.
+`gban doctor` runs `gbfleet doctor`, so it posts the same report.
+
 ### Choosing what a wave works on
 
 **`until` drains the project unless you scope it.** `--prd <id>` is the lever:

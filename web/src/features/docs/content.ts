@@ -189,6 +189,7 @@ const CONTENT: Record<string, DocEntry> = {
     sections: [
       { num: 1, h: "Rates with their n", b: "Each cell is vendor × model × capability × size band. Under five finished attempts the rate is grey — not yet a measurement. Rankings here are history, not a chooser." },
       { num: 2, h: "Recommendations are drafts", b: "A card can suggest promoting, demoting, or reweighting. Accepting it writes through the same profile or matrix commit a person would make. Nothing here auto-routes." },
+      { num: 3, h: "What each harness loads", b: "Skills and MCP server names a child on one machine would actually see, posted by `gbfleet surface` or `gban doctor`. A name on one harness and absent from another is listed. A harness that was not checked is said so — an empty difference list is only shown once two lists were complete. No URLs or credentials." },
     ],
     related: [{ label: "Fleet.v2", to: "/fleet.v2" }],
   },

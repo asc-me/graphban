@@ -111,6 +111,61 @@ function show() {
 }
 
 describe("Harness page", () => {
+  it("does not treat a missing surface report as harnesses that match", async () => {
+    show();
+    expect(await screen.findByTestId("harness-surface-unreported")).toHaveTextContent(
+      /not a finding that the harnesses match/i,
+    );
+    expect(screen.queryByText(/no skills differ/i)).not.toBeInTheDocument();
+  });
+
+  it("names a skill one harness loads and another does not", async () => {
+    harness.mockResolvedValueOnce(report({
+      surface: {
+        reported: true,
+        reason: "",
+        host: "laptop",
+        reported_at: "2026-09-28T12:00:00+00:00",
+        harnesses: [
+          {
+            vendor: "grok", installed: true,
+            skills_status: "checked", skills_reason: "grok inspect",
+            skills: [{ name: "graphban-delegation", source: "project" }],
+            mcps_status: "checked", mcps_reason: "",
+            mcps: [{ name: "context7", source: "claudeJson" }, { name: "graphban", source: "seat" }],
+          },
+          {
+            vendor: "claude", installed: true,
+            skills_status: "checked", skills_reason: "",
+            skills: [],
+            mcps_status: "checked", mcps_reason: "seat only",
+            mcps: [{ name: "graphban", source: "seat" }],
+          },
+        ],
+        skills: {
+          compared: ["grok", "claude"], partial: [], reason: "",
+          rows: [{
+            name: "graphban-delegation", present: ["grok"], absent: ["claude"],
+            disabled_on: [], partial_present: [],
+          }],
+        },
+        mcps: {
+          compared: ["grok", "claude"], partial: [], reason: "",
+          rows: [{
+            name: "context7", present: ["grok"], absent: ["claude"],
+            disabled_on: [], partial_present: [],
+          }],
+        },
+        notes: [],
+      },
+    }));
+    show();
+    const gaps = await screen.findAllByTestId("harness-surface-gap");
+    expect(gaps[0]).toHaveTextContent("graphban-delegation");
+    expect(gaps[0]).toHaveTextContent(/absent from claude/i);
+    expect(gaps[1]).toHaveTextContent("context7");
+  });
+
   it("shows a rate with the sample count that earns it", async () => {
     show();
     expect(await screen.findByTestId("harness-rate")).toHaveTextContent("75%");
