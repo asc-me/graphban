@@ -110,6 +110,7 @@ const SETTINGS_PAGE: Record<string, string> = {
   sync: "Cloud / Sync",
   gitops: "Gitops",
   updates: "Updates",
+  "log-export": "Log export",
   "api-keys": "API keys",
   mcp: "MCP Tools",
   integrations: "Integrations",

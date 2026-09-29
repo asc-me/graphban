@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 161 of the 243 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 164 of the 246 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -281,6 +281,23 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | PUT | `/api/platform/credentials/roles` | JWT | Per-task chat overrides (GRPH-316). Unset inherits the project credential. A named unusable credential is ungraded, not a quieter model |
 | POST | `/api/platform/github/connect` · `/disconnect` · `/create-issue` | JWT |
 | POST | `/api/platform/gdrive/connect` · `/disconnect` | JWT |
+
+## Deployment settings (PRD-47 S15)
+
+Settings with no project to be scoped by. Log export is one collector, one exporter and one
+queue for the whole instance, so the config row has no `project_id` and none of these routes
+takes one — a second project cannot get its own. Gated the way the other "This box" panels are:
+a logged-in operator (JWT, never an API key), which is `/api/platform/update-check`'s gate and
+the only one available for a fact with no project to check a membership against. Every route
+403s on a hosted instance, where the operator configures the box and a tenant must not be able
+to move its telemetry.
+
+| Method | Path | Auth | Returns |
+| --- | --- | --- | --- |
+| GET | `/api/settings/log-export` | JWT | The whole panel in one response, so a config from one moment cannot sit beside counters from another: `config` (header values masked), `status`, a live `sample` record, the `protocols` this build can actually speak with the reason one cannot, and `event_type_options` measured from the ledger rather than typed. `status.state` is `exporting` / `paused` / `not_running` / `unknown` — on-but-nothing-draining is not off, and an unreadable config is not off either. `sent_24h`, `dropped_24h` and `queue_depth` are `null` when their read failed and `0` only when it measured nothing; `queue_depth` is always `null` while no exporter runs, because a zero beside a dead exporter reads as an empty queue |
+| PATCH | `/api/settings/log-export` | JWT | Save. `422` on a protocol or compression this deployment does not define — the config is wrong, not the server. Cannot move the export cursors. Turning export on for the first time starts from the current high-water mark rather than back-filling the ledger, and says so in `notes.catch_up` |
+| POST | `/api/settings/log-export/test-batch` | JWT | `Send test batch`. Always `200` with a result: a collector that cannot be reached is the ANSWER, not an error in this API. `ok` is true only when records were accepted, and then reports `records` and `latency_ms`. A portless endpoint is `error: "no_port"` with its own sentence rather than a generic connection failure; `grpc` is `unsupported` with the reason. Overrides let an unsaved endpoint be probed. Written as a `kind="test"` batch row, so it shows as `last_batch` but never counts toward `sent_24h` |
+| GET | `/api/settings/log-export/sample` | JWT | The sample record under redaction choices the caller has NOT saved (`redact_summaries`, `redact_client_ips`, `mask_api_keys`). A separate call rather than a client-side replay of the rules, so the redaction logic has one owner and the panel cannot disagree with the exporter |
 
 ## Galaxy (hosted only, PRD-21 D3)
 

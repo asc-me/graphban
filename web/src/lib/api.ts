@@ -39,6 +39,10 @@ import type {
   GraphLink,
   GitopsPatch,
   GitopsView,
+  LogExportPatch,
+  LogExportSampleResponse,
+  LogExportTestResult,
+  LogExportView,
   UpdateCheck,
   UsageAggregate,
   Invite,
@@ -426,6 +430,34 @@ export const api = {
       body: JSON.stringify(body),
     }),
   updateCheck: () => request<UpdateCheck>("/platform/update-check"),
+  // Log export is the deployment's, so none of these takes a project id (PRD-47 S15). One
+  // collector, one exporter, one queue for the box — see `LogExportConfig` in types.ts.
+  logExport: () => request<LogExportView>("/settings/log-export"),
+  updateLogExport: (body: LogExportPatch) =>
+    request<LogExportView & { notes?: Record<string, string> }>("/settings/log-export", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  logExportTestBatch: (body: {
+    endpoint?: string; protocol?: string; compression?: string;
+    headers?: Record<string, string>;
+  } = {}) =>
+    request<LogExportTestResult>("/settings/log-export/test-batch", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  /** The sample under redaction choices that are NOT saved yet. A round trip rather than a
+   *  client-side replay of the rules, so the panel and the exporter cannot disagree. */
+  logExportSample: (flags: {
+    redact_summaries?: boolean; redact_client_ips?: boolean; mask_api_keys?: boolean;
+  } = {}) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(flags)) {
+      if (v !== undefined) q.set(k, String(v));
+    }
+    const qs = q.toString();
+    return request<LogExportSampleResponse>(`/settings/log-export/sample${qs ? `?${qs}` : ""}`);
+  },
   usage: (rangeDays = 30) =>
     request<UsageAggregate>(`/usage?range_days=${rangeDays}`),
   usageCsv: (rangeDays = 30) =>

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { EventsQuery, GitopsPatch, Item, LessonFilters, RequestItem } from "./types";
+import type { EventsQuery, GitopsPatch, Item, LessonFilters, LogExportPatch, RequestItem } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -37,6 +37,8 @@ export const keys = {
   auditCoverage: (id: string) => ["audit-coverage", id] as const,
   gitops: (projectId: string) => ["gitops", projectId] as const,
   updateCheck: ["update-check"] as const,
+  /** No project id: log export is one config for the whole box (PRD-47 S15). */
+  logExport: ["log-export"] as const,
   orgGitops: (orgId: string) => ["org-gitops", orgId] as const,
 };
 
@@ -508,6 +510,54 @@ export function useUsage(rangeDays = 30) {
   return useQuery({
     queryKey: ["usage", rangeDays],
     queryFn: () => api.usage(rangeDays),
+  });
+}
+
+/** Deployment-wide, so there is no project id in the key (PRD-47 S15). */
+export function useLogExport() {
+  return useQuery({
+    queryKey: keys.logExport,
+    queryFn: () => api.logExport(),
+    // A cached `exporting` after the loop died, or a cached zero after a counter read failed,
+    // is the lie this panel exists to prevent. Same reason `useUpdateCheck` drops the cache.
+    staleTime: 0,
+    retry: false,
+  });
+}
+
+export function useUpdateLogExport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: LogExportPatch) => api.updateLogExport(body),
+    onSuccess: (data) => qc.setQueryData(keys.logExport, data),
+  });
+}
+
+/** The live sample under the redaction choices ON SCREEN, saved or not. The flags are in the
+ *  key so a toggle is a different query rather than a stale record with new chrome around it —
+ *  and so the panel never recomputes the redaction rules itself. */
+export function useLogExportSample(flags: {
+  redact_summaries: boolean; redact_client_ips: boolean; mask_api_keys: boolean;
+}) {
+  return useQuery({
+    queryKey: [...keys.logExport, "sample", flags],
+    queryFn: () => api.logExportSample(flags),
+    // A sample is a preview, not a fact about the box: keeping the last one while the next is
+    // fetched avoids blinking the record on every checkbox.
+    placeholderData: (previous) => previous,
+  });
+}
+
+export function useLogExportTestBatch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      endpoint?: string; protocol?: string; compression?: string;
+      headers?: Record<string, string>;
+    }) => api.logExportTestBatch(body),
+    // The probe writes a `kind="test"` batch row, so `last batch` moves even though the 24h
+    // counters must not. Re-read rather than patch one field of the status locally.
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.logExport }),
   });
 }
 

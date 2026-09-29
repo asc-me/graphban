@@ -142,6 +142,126 @@ export interface UsageAggregate {
   busiest_keys: UsageKeyRow[];
 }
 
+// ── Log export (PRD-47 S15 / GRPH-966) ─────────────────────────────────────
+
+/** One collector for the whole box.
+ *
+ *  There is no project id anywhere in these types, and that is the design rather than an
+ *  omission: one endpoint, one exporter, one queue for the instance, so a per-project config
+ *  would be N panels in front of a single shared thing. Records span projects, so each RECORD
+ *  names its project (`gb.project`) instead. See `LogExportConfig` in the backend models. */
+export interface LogExportConfig {
+  enabled: boolean;
+  endpoint: string;
+  protocol: string;
+  compression: string;
+  /** Values arrive masked. Sending a mask back means "unchanged"; an absent name deletes it. */
+  headers: { name: string; value: string }[];
+  send_events: boolean;
+  send_tool_calls: boolean;
+  send_heartbeats: boolean;
+  /** Empty means every action, and the panel says so — empty is not "nothing". */
+  event_types: string[];
+  redact_summaries: boolean;
+  redact_client_ips: boolean;
+  mask_api_keys: boolean;
+  updated_at: string | null;
+}
+
+/** `paused` is off. `not_running` is on with nothing draining. `unknown` is an unread config.
+ *  Three different facts, and only one of them is "off". */
+export type LogExportState = "exporting" | "paused" | "not_running" | "unknown";
+
+export interface LogExportBatch {
+  ts: string | null;
+  kind: "export" | "test";
+  ok: boolean;
+  sent: number;
+  dropped: number;
+  latency_ms: number | null;
+  error: string;
+  detail: string;
+  endpoint: string;
+}
+
+export interface LogExportStatus {
+  /** `null` when the config could not be read — which is NOT `false`. */
+  enabled: boolean | null;
+  state: LogExportState;
+  state_note: string;
+  exporter_running: boolean;
+  last_batch: LogExportBatch | null;
+  /** Three answers: nothing has ever run, a row was read, or the read failed. */
+  last_batch_state: "never" | "measured" | "unavailable";
+  /** `null` = the read failed. `0` = it ran and measured nothing. Never interchangeable. */
+  sent_24h: number | null;
+  dropped_24h: number | null;
+  /** `null` whenever no exporter is running: a backlog nobody drains is not an empty queue. */
+  queue_depth: number | null;
+  queue_state: "draining" | "exporter_not_running" | "unavailable";
+  coverage: "full" | "unavailable";
+  note: string;
+}
+
+export interface LogExportSample {
+  kind: string;
+  /** `synthetic` means the ledger is empty and these values are invented — and the note says
+   *  so, because an invented record shown as a real one is the panel fabricating data. */
+  source: "event" | "synthetic";
+  note: string;
+  timestamp: string;
+  severity: string;
+  body: string;
+  attributes: Record<string, string | number | boolean>;
+  redaction: { summaries: boolean; client_ips: boolean; api_keys: boolean };
+  event_id?: number;
+}
+
+export interface LogExportProtocol {
+  id: string;
+  label: string;
+  /** false = this build cannot speak it and `note` says why. Never a silent downgrade. */
+  supported: boolean;
+  note: string;
+}
+
+export interface LogExportView {
+  config: LogExportConfig;
+  status: LogExportStatus;
+  sample: LogExportSample;
+  protocols: LogExportProtocol[];
+  compressions: string[];
+  /** Measured from the ledger, so a filter never offers an action this box does not record. */
+  event_type_options: string[];
+  event_types_all: boolean;
+  retention_note: string;
+  catch_up_note: string;
+  endpoint_problem: { error: string; detail: string } | null;
+  hosted: boolean;
+  writable: boolean;
+}
+
+export type LogExportPatch = Partial<Omit<LogExportConfig, "headers" | "updated_at">> & {
+  headers?: Record<string, string>;
+};
+
+export interface LogExportTestResult {
+  ok: boolean;
+  ran: boolean;
+  error: string;
+  detail: string;
+  /** `null` on any failure: a failed probe reports no count rather than a zero. */
+  records: number | null;
+  attempted?: number;
+  latency_ms: number | null;
+  endpoint: string;
+}
+
+export interface LogExportSampleResponse {
+  sample: LogExportSample;
+  redaction: { summaries: boolean; client_ips: boolean; api_keys: boolean };
+}
+
 export type OrgRole = "owner" | "admin" | "member";
 
 export interface Org {

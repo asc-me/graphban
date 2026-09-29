@@ -2892,3 +2892,105 @@ class TrackerLink(Base):
         UniqueConstraint("org_id", "tracker_kind", "tracker_team_id",
                          name="uq_tracker_link_team"),
     )
+
+
+class LogExportConfig(Base):
+    """The deployment's OTLP log-export configuration (PRD-47 S15 / GRPH-966).
+
+    ONE row for the box, and **no `project_id` column** — that absence is the design, not an
+    omission. One collector endpoint, one exporter, one queue for the whole instance, so a
+    per-project row would put N panels in front of a single shared thing. This is the
+    GRPH-625 argument settled again by the item's 2026-09-29 decision: what this instance
+    RUNS ON is a "This box" fact. Exported records may span projects, so a record names its
+    project (`services/logexport.record_attributes`) instead of the config being scoped.
+
+    `id` is always `services/logexport.SINGLETON_ID`. The primary key exists because the
+    cursors below are rewritten on every drain, and a keyless singleton has nothing to
+    update.
+
+    Redaction defaults ON and `enabled` defaults OFF: export is opt-in, and the first thing
+    an operator who turns it on gets is the redacted form.
+
+    The cursors are runtime state that happens to live beside the config. They are not in the
+    PATCH schema, so saving the panel can neither rewind nor skip the export position.
+    """
+
+    __tablename__ = "log_export_config"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                          nullable=False)
+    endpoint: Mapped[str] = mapped_column(String(512), default="", server_default="")
+    #: `http/protobuf` | `grpc` — `services/logexport.PROTOCOLS` owns the set.
+    protocol: Mapped[str] = mapped_column(String(24), default="http/protobuf",
+                                          server_default="http/protobuf", nullable=False)
+    #: `none` | `gzip` — `services/logexport.COMPRESSIONS`.
+    compression: Mapped[str] = mapped_column(String(8), default="none", server_default="none",
+                                             nullable=False)
+    #: Extra headers on every batch. Values are operator-supplied and usually a token, so the
+    #: API returns them masked and a PATCH that omits one keeps it — platform.py's credential
+    #: rule: a redacted round-trip from the form must not wipe the stored value.
+    headers: Mapped[dict] = mapped_column(JSON, default=dict)
+    # What to send. Three signals, three OTLP kinds — the design's own mapping.
+    send_events: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(),
+                                              nullable=False)
+    send_tool_calls: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(),
+                                                  nullable=False)
+    send_heartbeats: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                                  nullable=False)
+    #: Event-action filter. Empty means every action, and the panel says so — not "nothing",
+    #: and not a silent default set.
+    event_types: Mapped[list] = mapped_column(JSON, default=list)
+    redact_summaries: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(),
+                                                   nullable=False)
+    redact_client_ips: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(),
+                                                    nullable=False)
+    mask_api_keys: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true(),
+                                                nullable=False)
+    #: Highest `events.id` already handed to the collector.
+    cursor_event_id: Mapped[int] = mapped_column(Integer, default=0, server_default="0",
+                                                 nullable=False)
+    #: Highest `agent_calls.id` already handed to the collector.
+    cursor_call_id: Mapped[int] = mapped_column(Integer, default=0, server_default="0",
+                                                nullable=False)
+    #: Latest `agents.last_seen_at` already sampled as a heartbeat metric.
+    cursor_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True),
+                                                                 nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)
+
+
+class LogExportBatch(Base):
+    """One batch handed to the collector — or one Send-test-batch probe.
+
+    This table IS the status strip's counters. `sent_24h` is a sum over it, so a zero means
+    "measured, and nothing was sent" while a failed read means `None` — an em dash, never a
+    zero. Deriving counts from rows rather than a running integer is what makes that
+    distinction available at all: a counter that was never incremented and a counter that
+    counted nothing are the same number.
+
+    `kind="test"` rows are the operator's probe. They still show as `last_batch` (pressing the
+    button and seeing nothing change is its own lie) but are excluded from `sent_24h` and
+    `dropped_24h`, because a test record is not this deployment's telemetry.
+    """
+
+    __tablename__ = "log_export_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    kind: Mapped[str] = mapped_column(String(8), default="export", server_default="export",
+                                      nullable=False)  # export | test
+    ok: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                     nullable=False)
+    sent: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    dropped: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: A machine-readable failure (`no_port`, `no_endpoint`, `unreachable`, `bad_status`,
+    #: `timeout`) so the panel says WHICH failure rather than "error".
+    error: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    detail: Mapped[str] = mapped_column(String(400), default="", server_default="")
+    endpoint: Mapped[str] = mapped_column(String(512), default="", server_default="")
+
+    __table_args__ = (
+        Index("ix_log_export_batches_kind_ts", "kind", "ts"),
+    )
