@@ -158,4 +158,38 @@ describe("SyncLinkPanel", () => {
     await waitFor(() => expect(api.syncSetGraph).toHaveBeenCalled());
     expect(qc.getQueryData(keys.gitops("core"))).toEqual({ keep: true });
   });
+
+  // ── PRD-47 S17: a read that failed is not a read still running ──────────────────────────
+
+  it("says loading while the status read is in flight, and offers no retry yet", () => {
+    // Never settles. Pending is its own answer, not the failure below and not the panel.
+    api.syncStatus.mockReturnValue(new Promise(() => {}));
+    renderPanel();
+
+    expect(screen.getByText(/Loading sync status/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/the request failed/i)).not.toBeInTheDocument();
+  });
+
+  it("names a failed status read instead of loading forever", async () => {
+    const user = userEvent.setup();
+    api.syncStatus.mockRejectedValue(new Error("boom"));
+    renderPanel();
+
+    // Half one: the failure is named and there is a way out.
+    expect(await screen.findByText(/the request failed/i)).toBeInTheDocument();
+    const retry = screen.getByRole("button", { name: /retry/i });
+
+    // Half two: neither of the two things this failure must not look like. "Loading"
+    // forever is a promise nobody intends to keep, and "not linked" would be a claim
+    // about the instance that nothing read.
+    expect(screen.queryByText(/Loading sync status/)).not.toBeInTheDocument();
+    expect(screen.queryByText("not linked")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Mint the link key there/)).not.toBeInTheDocument();
+
+    // The retry re-reads; the panel it was standing in for arrives.
+    api.syncStatus.mockResolvedValue(unlinked);
+    await user.click(retry);
+    expect(await screen.findByText("not linked")).toBeInTheDocument();
+  });
 });

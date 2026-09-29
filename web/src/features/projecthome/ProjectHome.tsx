@@ -8,9 +8,14 @@ import {
   Radar,
   Users,
 } from "lucide-react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { FETCH_FAILED } from "@/components/planner/PlannerStates";
+import {
+  FETCH_FAILED,
+  KpiGridSkeleton,
+  PlannerError,
+} from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
 import {
   useCodeMap,
@@ -45,7 +50,8 @@ export function ProjectHome() {
   const mapQ = useCodeMap(projectId);
   const prdsQ = usePrds(projectId);
   const fleetQ = useFleet(projectId);
-  const { data: galaxy } = useGalaxy(orgs[0]?.id);
+  const galaxyQ = useGalaxy(orgs[0]?.id);
+  const galaxy = galaxyQ.data;
 
   if (!active) return null;
 
@@ -63,7 +69,17 @@ export function ProjectHome() {
   const inFlight = items.filter((i) => i.status === "in_progress").length;
   const liveAgents = (fleet?.agents ?? []).filter((a) => a.state !== "offline").length;
   const failed = (q: { isError: boolean; data: unknown }) => q.isError && q.data === undefined;
-  const anyFailed = [itemsQ, shardsQ, mapQ, prdsQ, fleetQ].some(failed);
+  // PRD-47 S17. The same `0` was rendered while a read was still in flight, which is a
+  // third fact wearing the costume of the first two: not read *yet* is neither a zero nor
+  // a failure. Pending replaces the strip with the shared KPI skeleton.
+  const pending = (q: { isPending: boolean; data: unknown }) =>
+    q.isPending && q.data === undefined;
+  const counts = [itemsQ, shardsQ, mapQ, prdsQ, fleetQ];
+  const anyFailed = counts.some(failed);
+  const anyPending = counts.some(pending);
+  const retryFailed = () => {
+    counts.filter(failed).forEach((q) => void q.refetch());
+  };
   const mapAnswered = mapQ.data !== undefined;
 
   const edges = galaxy?.edges ?? [];
@@ -71,6 +87,9 @@ export function ProjectHome() {
     galaxy?.nodes.find((n) => n.id === id)?.tag ?? id;
   const dependsOn = edges.filter((e) => e.src === projectId);
   const dependedBy = edges.filter((e) => e.dst === projectId);
+  // Only the galaxy's own error. When the org read fails the query never runs, so there is
+  // no answer to name — and the counts' failure is already on the page saying so.
+  const galaxyFailed = galaxyQ.isError && galaxy === undefined;
 
   return (
     <div className="max-w-[1180px] px-6 pb-16 pt-6">
@@ -87,38 +106,118 @@ export function ProjectHome() {
         </p>
       )}
 
-      <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 font-mono text-[10px] uppercase tracking-[0.05em]">
-        <Count label="items" value={items.length} unknown={failed(itemsQ)} />
-        <Count
-          label="in flight"
-          value={inFlight}
-          unknown={failed(itemsQ)}
-          tone={inFlight ? "text-accent" : undefined}
-        />
-        <Count label="prds" value={prds.length} unknown={failed(prdsQ)} />
-        <Count label="memory shards" value={shards.length} unknown={failed(shardsQ)} />
-        <Count label="graph nodes" value={nodeCount} unknown={failed(mapQ)} />
-        <Count
-          label="agents live"
-          value={liveAgents}
-          unknown={failed(fleetQ)}
-          tone={liveAgents ? "text-st-done" : undefined}
-        />
-      </div>
+      {/* Only the counts are placeheld. The cards below are static links, so hiding them
+          behind a skeleton would take navigation away while a number is on its way. */}
+      {anyPending ? (
+        <div className="mt-4">
+          <KpiGridSkeleton />
+        </div>
+      ) : (
+        <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 font-mono text-[10px] uppercase tracking-[0.05em]">
+          <Count label="items" value={items.length} unknown={failed(itemsQ)} />
+          <Count
+            label="in flight"
+            value={inFlight}
+            unknown={failed(itemsQ)}
+            tone={inFlight ? "text-accent" : undefined}
+          />
+          <Count label="prds" value={prds.length} unknown={failed(prdsQ)} />
+          <Count label="memory shards" value={shards.length} unknown={failed(shardsQ)} />
+          <Count label="graph nodes" value={nodeCount} unknown={failed(mapQ)} />
+          <Count
+            label="agents live"
+            value={liveAgents}
+            unknown={failed(fleetQ)}
+            tone={liveAgents ? "text-st-done" : undefined}
+          />
+        </div>
+      )}
 
       {anyFailed && (
-        <p role="alert" className="mt-2 text-[11.5px] text-st-blocked">
-          {FETCH_FAILED} A count showing — was not read, and is not a zero.
-        </p>
+        <PlannerError
+          message={`${FETCH_FAILED} A count showing — was not read, and is not a zero.`}
+          onRetry={retryFailed}
+        />
       )}
 
       {mapAnswered && nodeCount === 0 && <NoGraphYet tag={active.tag} />}
 
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {SURFACES.map((s) => (
+      <SurfaceGroup
+        heading="Work"
+        hint="The stream, the specs, what came in, and the structure it touches."
+        surfaces={WORK_SURFACES}
+        tag={active.tag}
+      />
+      <SurfaceGroup
+        heading="Agents and memory"
+        hint="What agents write back — candidates, lessons, and who is running now."
+        surfaces={AGENTS_SURFACES}
+        tag={active.tag}
+      />
+
+      <Dependencies
+        dependsOn={dependsOn}
+        dependedBy={dependedBy}
+        nameOf={nameOf}
+        knowsGalaxy={galaxy !== undefined}
+        failed={galaxyFailed}
+        onRetry={() => void galaxyQ.refetch()}
+      />
+    </div>
+  );
+}
+
+type Surface = { to: string; label: string; icon: ReactNode; desc: string };
+
+const WORK_SURFACES: Surface[] = [
+  { to: "tracker", label: "Tracker", icon: <ListChecks size={15} />,
+    desc: "One linear stream of work, in priority order." },
+  { to: "prds", label: "PRDs", icon: <BarChart3 size={15} />,
+    desc: "Draft, grill until approval is earned, then decompose into tracked items." },
+  { to: "triage", label: "Triage", icon: <Radar size={15} />,
+    desc: "What came in, beside the in-flight work it would collide with." },
+  { to: "code", label: "Code graph", icon: <Network size={15} />,
+    desc: "The structure agents describe as they work, and the arrows that leave the repo." },
+];
+
+const AGENTS_SURFACES: Surface[] = [
+  { to: "memory-review", label: "Memory", icon: <Inbox size={15} />,
+    desc: "Candidates until you publish them." },
+  { to: "lessons", label: "Lessons", icon: <BookMarked size={15} />,
+    desc: "Published memory, scored against whether it is still catching anything." },
+  { to: "fleet.v1", label: "Fleet.v1", icon: <Users size={15} />,
+    desc: "Who is working here right now, what they hold, and for how long." },
+  { to: "live", label: "Live", icon: <Activity size={15} />,
+    desc: "Who is on this project right now, what they hold, and whether a PR was recorded." },
+];
+
+/**
+ * One labelled group of surface cards (PRD-47 S17).
+ *
+ * The eight surfaces used to be one flat grid, which reads as "everything this project
+ * has, equally". They are not equal: four are where work is written down and four are what
+ * agents leave behind, and a reader who wants the second group had to scan all eight.
+ */
+function SurfaceGroup({
+  heading,
+  hint,
+  surfaces,
+  tag,
+}: {
+  heading: string;
+  hint: string;
+  surfaces: Surface[];
+  tag: string;
+}) {
+  return (
+    <section className="mt-6">
+      <h2 className="text-[13.5px] font-semibold tracking-[-0.2px]">{heading}</h2>
+      <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted">{hint}</p>
+      <div className="mt-2.5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {surfaces.map((s) => (
           <Link
             key={s.to}
-            to={projectPath(active.tag, s.to)}
+            to={projectPath(tag, s.to)}
             className="rounded-[13px] border border-line bg-surface-2 p-4 transition-colors hover:border-line-hover"
           >
             <div className="flex items-center gap-2.5">
@@ -129,35 +228,9 @@ export function ProjectHome() {
           </Link>
         ))}
       </div>
-
-      <Dependencies
-        dependsOn={dependsOn}
-        dependedBy={dependedBy}
-        nameOf={nameOf}
-        knowsGalaxy={galaxy !== undefined}
-      />
-    </div>
+    </section>
   );
 }
-
-const SURFACES = [
-  { to: "tracker", label: "Tracker", icon: <ListChecks size={15} />,
-    desc: "One linear stream of work, in priority order." },
-  { to: "prds", label: "PRDs", icon: <BarChart3 size={15} />,
-    desc: "Draft, grill until approval is earned, then decompose into tracked items." },
-  { to: "triage", label: "Triage", icon: <Radar size={15} />,
-    desc: "What came in, beside the in-flight work it would collide with." },
-  { to: "code", label: "Code graph", icon: <Network size={15} />,
-    desc: "The structure agents describe as they work, and the arrows that leave the repo." },
-  { to: "memory-review", label: "Memory", icon: <Inbox size={15} />,
-    desc: "Candidates until you publish them." },
-  { to: "lessons", label: "Lessons", icon: <BookMarked size={15} />,
-    desc: "Published memory, scored against whether it is still catching anything." },
-  { to: "fleet.v1", label: "Fleet.v1", icon: <Users size={15} />,
-    desc: "Who is working here right now, what they hold, and for how long." },
-  { to: "live", label: "Live", icon: <Activity size={15} />,
-    desc: "Who is on this project right now, what they hold, and whether a PR was recorded." },
-];
 
 function Count({
   label,
@@ -213,19 +286,38 @@ function NoGraphYet({ tag }: { tag: string }) {
  * "What depends on me" is the half you cannot see from inside the repo, and it is the half
  * that decides whether a change here is safe. An org that has never pushed a manifest has
  * no answer to either question — which is different from the answer being "nothing", so
- * the two are not rendered alike.
+ * the two are not rendered alike. A read that FAILED is a third thing again, and the one
+ * that used to be missing: `galaxy === undefined` covered both, so a failed fetch hid the
+ * whole panel and left the reader with the reassuring reading — nothing depends on this.
  */
 function Dependencies({
   dependsOn,
   dependedBy,
   nameOf,
   knowsGalaxy,
+  failed,
+  onRetry,
 }: {
   dependsOn: GalaxyEdge[];
   dependedBy: GalaxyEdge[];
   nameOf: (id: string) => string;
   knowsGalaxy: boolean;
+  /** The galaxy read was attempted and failed — not the same as never having run. */
+  failed: boolean;
+  onRetry: () => void;
 }) {
+  if (failed) {
+    return (
+      <section className="mt-5 rounded-[13px] border border-line bg-surface-2 px-4 pb-1 pt-4">
+        <h2 className="text-[14px] font-semibold">Cross-project dependencies</h2>
+        <PlannerError
+          message={`${FETCH_FAILED} What depends on this project was not read, so this panel has no answer — not even "nothing".`}
+          onRetry={onRetry}
+        />
+      </section>
+    );
+  }
+
   if (!knowsGalaxy) return null;
 
   return (
