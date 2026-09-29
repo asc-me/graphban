@@ -50,6 +50,7 @@ import { EmbedRoadmapPage } from "@/features/roadmap/EmbedRoadmapPage";
 import { RoadmapView } from "@/features/roadmap/RoadmapView";
 import { HomeView } from "@/features/home/HomeView";
 import { SettingsView } from "@/features/settings/SettingsView";
+import { UsageView } from "@/features/usage/UsageView";
 import { RequestsView } from "@/features/requests/RequestsView";
 import { TrackerView } from "@/features/tracker/TrackerView";
 import { TriageView } from "@/features/triage/TriageView";
@@ -189,6 +190,7 @@ function AuthedApp() {
         <Route path="/settings/project/feedback-kit" element={<Navigate to="/feedback-kit" replace />} />
         <Route path="/settings/*" element={<SettingsView />} />
         <Route path="/profile" element={<ProfileView />} />
+        <Route path="/usage" element={<UsageView />} />
         <Route index element={<HomeRedirect hosted={hosted} />} />
         <Route path="*" element={<HomeRedirect hosted={hosted} />} />
       </Route>

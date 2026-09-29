@@ -1,6 +1,6 @@
 # API reference
 
-**This is a curated subset, not the full surface** (GRPH-468). It names 160 of the 242 paths
+**This is a curated subset, not the full surface** (GRPH-468). It names 161 of the 243 paths
 the app serves. The complete, authoritative list is the OpenAPI schema at **`/docs`** — this
 page exists for the endpoints whose *authority* needs explaining, which a schema has no field
 for: why `code/health` accepts an agent key and `fleet/presence` does not, why a share token
@@ -261,6 +261,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | GET | `/api/roadmap` | JWT | Phases + milestones + progress |
 | GET | `/api/links` | JWT | Typed links |
 | GET | `/api/mcp/tools` | JWT | Tool schemas + live call counts |
+| GET | `/api/usage` | JWT | The Usage page's one aggregate (PRD-47 S14) over every project the caller can read: KPIs with deltas and sparklines, a per-project stacked series, the by-project table, and plan limits (`declared: false` on self-host, never a fake zero). `coverage` is `partial` when agent-call retention is shorter than the range. `range_days` is 7, 30 or 90 (anything else falls back to 30); `format=csv` exports the by-project table only |
 
 ## Platform & integrations
 

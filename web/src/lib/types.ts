@@ -76,6 +76,72 @@ export interface UpdateCheck {
   note: string;
 }
 
+/** PRD-47 S14 — one aggregate for the deployment-wide Usage page. */
+export interface UsageBucket {
+  start: string;
+  end: string;
+  value: number;
+}
+
+export interface UsageKpi {
+  id: string;
+  label: string;
+  value: number | null;
+  delta: number | null;
+  sparkline: UsageBucket[];
+}
+
+export interface UsageLimitRow {
+  id: string;
+  label: string;
+  used: number | null;
+  limit: number | null;
+  declared: boolean;
+}
+
+export interface UsageProjectRow {
+  id: string;
+  tag: string;
+  name: string;
+  calls: number;
+  agents: number;
+  shards: number;
+  done: number;
+}
+
+export interface UsageKeyRow {
+  id: string;
+  name: string;
+  owner: string;
+  calls: number;
+  last_seen: string | null;
+}
+
+export interface UsageAggregate {
+  identity: {
+    mode: "hosted" | "self-host";
+    host: string;
+    version: string;
+    git_sha: string;
+    plan: string;
+    license: string;
+  };
+  range_days: number;
+  retention_days: number;
+  coverage: "full" | "partial";
+  kpis: UsageKpi[];
+  chart: {
+    buckets: UsageBucket[];
+    projects: { id: string; tag: string; name: string; series: UsageBucket[]; total: number }[];
+    coverage: string;
+    note: string | null;
+  };
+  by_project: UsageProjectRow[];
+  limits: UsageLimitRow[];
+  on_pace_note: string | null;
+  busiest_keys: UsageKeyRow[];
+}
+
 export type OrgRole = "owner" | "admin" | "member";
 
 export interface Org {

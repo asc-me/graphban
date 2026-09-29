@@ -504,6 +504,13 @@ export function useUpdateCheck() {
   });
 }
 
+export function useUsage(rangeDays = 30) {
+  return useQuery({
+    queryKey: ["usage", rangeDays],
+    queryFn: () => api.usage(rangeDays),
+  });
+}
+
 export function useGitops(projectId: string) {
   return useQuery({
     queryKey: keys.gitops(projectId),
