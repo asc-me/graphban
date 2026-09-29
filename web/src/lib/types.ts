@@ -1205,6 +1205,114 @@ export interface EventPage {
   limit: number;
   offset: number;
   has_more: boolean;
+  /**
+   * Every event in the readable projects, ignoring every filter including the range —
+   * what separates "this project has never recorded anything" from "nothing matches this
+   * selection", which would otherwise be the same empty list.
+   */
+  ledger_total: number;
+  /** The six Activity lenses with counts for the current selection (PRD-47 S10). */
+  lenses: ActivityLens[];
+  histogram: ActivityHistogram;
+  facets: ActivityFacets;
+  filters: ActivityFiltersEcho;
+}
+
+// ── Activity aggregates (PRD-47 S10 / GRPH-961) ──────────────────────────────
+//
+// Everything here is computed from columns that exist on the event record. The design
+// also asks for a field-level diff and a trace id; neither is stored, so there is no
+// type for them and the panel says so instead of rendering a plausible blank.
+
+export type ActivityLensId =
+  | "everything"
+  | "agent_writes"
+  | "human_decisions"
+  | "keys_access"
+  | "memory"
+  | "rejected";
+
+export type ActivityRange = "1h" | "24h" | "7d" | "30d";
+
+export interface ActivityLens {
+  id: ActivityLensId;
+  label: string;
+  hint: string;
+  count: number;
+  /** Only the `rejected` lens carries this: the refusal actions it actually reads. */
+  covers?: string[];
+}
+
+export interface HistogramBucket {
+  index: number;
+  start: string;
+  end: string;
+  agent: number;
+  human: number;
+  rejected: number;
+  /** Auto-triage and webhooks record `actor_type="system"` — not a person's decision. */
+  system: number;
+}
+
+export interface ActivityHistogram {
+  range: ActivityRange | null;
+  bucket_seconds: number | null;
+  origin: string | null;
+  buckets: HistogramBucket[];
+  /**
+   * `not_requested` (no range, so no bars) and `partial` (more events in the window than
+   * one read would scan) are both different answers from 48 zero bars.
+   */
+  coverage: "full" | "partial" | "not_requested";
+  scanned: number;
+  partial: boolean;
+}
+
+export interface ActivityFacetValue {
+  value: string;
+  label: string;
+  count: number;
+  /** Person facets only: `user` | `apikey` | `system`. */
+  kind?: string;
+}
+
+export interface ActivityFacet {
+  values: ActivityFacetValue[];
+  /** More distinct values exist than are listed — the list is a top-N, not the set. */
+  truncated: boolean;
+}
+
+export interface ActivityFacets {
+  person: ActivityFacet;
+  surface: ActivityFacet;
+  object: ActivityFacet;
+}
+
+export interface ActivityFiltersEcho {
+  lens: ActivityLensId;
+  actor: string | null;
+  surface: string | null;
+  target_type: string | null;
+  target_id: string | null;
+  bucket: number | null;
+  range: ActivityRange | null;
+  action: string | null;
+}
+
+/** What the Activity view asks for. `null`/`undefined` omits a param; `""` sends it
+ *  empty, which for `targetType` selects the untyped rows rather than no filter. */
+export interface EventsQuery {
+  projectId?: string;
+  limit?: number;
+  offset?: number;
+  action?: string;
+  lens?: ActivityLensId;
+  actor?: string | null;
+  surface?: string | null;
+  targetType?: string | null;
+  targetId?: string | null;
+  bucket?: number | null;
+  range?: ActivityRange | null;
 }
 
 export interface DashboardData {

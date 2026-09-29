@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 
 import { api } from "./api";
-import type { GitopsPatch, Item, LessonFilters, RequestItem } from "./types";
+import type { EventsQuery, GitopsPatch, Item, LessonFilters, RequestItem } from "./types";
 
 export const keys = {
   me: ["me"] as const,
@@ -24,6 +24,9 @@ export const keys = {
   lessons: (projectId: string, filters?: LessonFilters) =>
     ["lessons", projectId, filters ?? {}] as const,
   lesson: (projectId: string, id: string) => ["lesson", projectId, id] as const,
+  /** Activity (PRD-47 S10): the whole selection is the key, so a lens or bucket change
+   *  is a different query rather than a stale page with new chrome around it. */
+  events: (q: EventsQuery) => ["events", q.projectId ?? "", q] as const,
   requests: ["requests"] as const,
   apiKeys: ["api-keys"] as const,
   prds: ["prds"] as const,
@@ -412,8 +415,8 @@ export function useMcpTools() {
   return useQuery({ queryKey: ["mcp-tools"], queryFn: () => api.mcpTools() });
 }
 
-export function useEvents(projectId?: string) {
-  return useQuery({ queryKey: ["events", projectId], queryFn: () => api.events(projectId) });
+export function useEvents(q: EventsQuery = {}) {
+  return useQuery({ queryKey: keys.events(q), queryFn: () => api.events(q) });
 }
 
 export function useCodeMap(projectId?: string) {
