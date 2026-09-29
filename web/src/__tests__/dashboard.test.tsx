@@ -197,43 +197,31 @@ describe("an empty project is not a measured one", () => {
     expect(screen.queryByText("Recent activity")).not.toBeInTheDocument();
   });
 
-  it("still draws the tiles when one count is zero but the project is not empty", async () => {
+  /**
+   * Each clause in `nothingToSummarise` needs a case where THAT count alone is
+   * non-zero. A fixture that sets two counts at once (the previous "5 requests
+   * and 12 MCP calls") does not pin either clause: deleting
+   * `data.requests_total === 0` still passed because mcp_calls kept the project
+   * non-empty, so shards-only or PRDs-only read as an empty project.
+   */
+  it.each([
+    { field: "items_total" as const, value: 3 },
+    { field: "requests_total" as const, value: 5 },
+    { field: "shard_count" as const, value: 2 },
+    { field: "prd_count" as const, value: 1 },
+    { field: "mcp_calls" as const, value: 12 },
+  ])("still draws the tiles when only $field is non-zero", async ({ field, value }) => {
     const { api } = await import("@/lib/api");
-    // Items and nothing else: three of the six tiles would read zero, and that is a true
-    // measurement of a project in use. Only *everything* empty may say "empty project".
     vi.mocked(api.dashboard).mockResolvedValue({
       ...bare,
-      items_total: 3,
-      items_by_status: { ...bare.items_by_status, in_progress: 3 },
-      in_progress_count: 3,
-      recent_items: [
-        { id: "GRPH-1", title: "First item", status: "in_progress" as const, date: "Sep 28" },
-      ],
+      [field]: value,
     } as never);
     renderDashboard();
 
     await screen.findByText("Items");
     expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
-    expect(screen.getByText("Requests by type")).toBeInTheDocument();
     expect(screen.getByText("Memory shards")).toBeInTheDocument();
-  });
-
-  it("does not call a project empty because it has no items yet", async () => {
-    const { api } = await import("@/lib/api");
-    // The mirror of the case above, and the one that catches an emptiness test written as
-    // `items_total === 0`: requests have arrived, so there is something to summarise even
-    // though the tracker is bare. Reporting "empty project" here would hide five requests.
-    vi.mocked(api.dashboard).mockResolvedValue({
-      ...bare,
-      requests_total: 5,
-      requests_by_type: { bug: 2, feature: 3, enhancement: 0, feedback: 0 },
-      mcp_calls: 12,
-    } as never);
-    renderDashboard();
-
-    await screen.findByText("Requests by type");
-    expect(screen.queryByText("Nothing to summarise yet")).not.toBeInTheDocument();
-    expect(screen.getByText("Items")).toBeInTheDocument();
+    expect(screen.getByText("PRDs")).toBeInTheDocument();
   });
 
   it("names a failed fetch instead of reporting an empty project", async () => {
