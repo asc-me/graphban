@@ -306,6 +306,36 @@ def test_a_replay_of_no_change_reports_zero(client, key, db, proj, auth):
     assert out["considered"] == 3 and out["changed"] == 0 and out["moves"] == []
 
 
+def test_a_harness_model_default_replays_as_that_model_not_as_an_entry_naming_nothing(
+        client, key, db, proj, auth):
+    """GRPH-977. The resolver lets `claude:opus` in `defaults` admit claude:opus alone, and
+    ranks a row by the first entry that names it; a replay that matched the harness only
+    would filter every claude row out and report a move the resolver would never make."""
+    planner = _agent(client, key, "planner")
+    res = _resolution("claude:sonnet", "claude:opus", "gbagent:qwen3.6",
+                      scores={"claude:sonnet": 0.5, "claude:opus": 0.5, "gbagent:qwen3.6": 0.5},
+                      defaults=["claude"])
+    rows = [_attempt(client, key, db, planner, f"hm{i}", vendor="claude", model="sonnet",
+                     resolution=res) for i in range(2)]
+    out = rules.replay(rows, {"kind": "defaults", "defaults": ["claude:opus"]})
+    assert out["moves"] == [{"from": "claude:sonnet", "to": "claude:opus", "count": 2}]
+    out = rules.replay(rows, {"kind": "defaults", "defaults": ["gbagent", "claude:opus", "claude"]})
+    assert out["moves"] == [{"from": "claude:sonnet", "to": "gbagent:qwen3.6", "count": 2}]
+    out = rules.replay(rows, {"kind": "defaults", "defaults": ["claude:opus", "claude"]})
+    assert out["moves"] == [{"from": "claude:sonnet", "to": "claude:opus", "count": 2}], \
+        "a model entry ranks ahead of its own harness"
+
+
+def test_r3_promotes_the_entry_that_already_names_the_rival():
+    """GRPH-977. The reorder moves an existing entry; it never widens `claude:sonnet` to
+    `claude`, and never adds a whole harness to a profile that picks its models one by one."""
+    assert rules._promoted("gbagent:qwen3.6", ["claude", "gbagent"]) == "gbagent"
+    assert rules._promoted("claude:sonnet", ["gbagent", "claude:sonnet"]) == "claude:sonnet"
+    assert rules._promoted("claude:sonnet", ["claude:opus", "gbagent"]) == "claude:sonnet"
+    assert rules._promoted("grok:grok-4.5", ["claude"]) == "grok"
+    assert rules._promoted("qwen-code:", ["claude"]) == "qwen-code"
+
+
 def test_an_attempt_with_no_recorded_resolution_is_counted_as_unreplayable(
         client, key, db, proj, auth):
     """10. Sabotage: treat a missing resolution as "unchanged" and the card's denominator

@@ -107,6 +107,11 @@ def _mix(value: Any, *, defaults: list[str], excludes: list[str]) -> dict[str, f
         if not isinstance(key, str) or not key.strip():
             raise ProfileInvalid("mix keys must be non-empty harness names")
         name = key.strip()
+        if ":" in name:
+            # Launch counts are per harness, so a model key would name a share nothing can
+            # measure. Refused rather than read as its harness (GRPH-977).
+            raise ProfileInvalid(f"mix is per harness; {name!r} names a model — "
+                                 f"use {name.split(':')[0]!r}")
         if isinstance(raw, bool) or not isinstance(raw, (int, float)):
             raise ProfileInvalid(f"mix {name} must be a number")
         share = float(raw)
@@ -125,7 +130,8 @@ def _mix(value: Any, *, defaults: list[str], excludes: list[str]) -> dict[str, f
     if blocked:
         raise ProfileInvalid(f"{blocked} are in mix and excludes")
     if defaults:
-        outside = sorted(set(out) - set(defaults))
+        # A `harness:model` default admits its harness to the mix (GRPH-977).
+        outside = sorted(set(out) - {d.split(":")[0] for d in defaults})
         if outside:
             raise ProfileInvalid(f"mix names {outside} which are not in defaults")
     return out

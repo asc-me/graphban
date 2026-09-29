@@ -138,6 +138,20 @@ class Card:
 REPLAY_MAX_ROWS = 5000
 
 
+def _names_row(entry: str, harness: str, model: str) -> bool:
+    """A `defaults` entry names a row by its harness (every model) or its `harness:model` key
+    (that model only) — the resolver's `Profile.default_rank`, spelled for recorded rows."""
+    return entry == harness or bool(model) and entry == f"{harness}:{model}"
+
+
+def _default_rank(harness: str, model: str, defaults: list[str]) -> int | None:
+    """The index of the first `defaults` entry naming this row, or None (GRPH-977)."""
+    for i, entry in enumerate(defaults):
+        if _names_row(entry, harness, model):
+            return i
+    return None
+
+
 def _rank_key(entry: dict, defaults: list[str]) -> tuple:
     """PRD-37 D5's tie-break, over a RECORDED candidate rather than a live row.
 
@@ -146,8 +160,8 @@ def _rank_key(entry: dict, defaults: list[str]) -> tuple:
     resolver would be describing a system nobody runs.
     """
     verified = 1 if entry.get("status") == "verified" else 0
-    harness = entry.get("harness") or ""
-    pref = -defaults.index(harness) if harness in defaults else 0
+    at = _default_rank(entry.get("harness") or "", entry.get("model") or "", defaults)
+    pref = -at if at is not None else 0
     return (entry.get("score") or 0.0, verified, pref, -(entry.get("order") or 0))
 
 
@@ -208,7 +222,9 @@ def replay(rows: list[AttemptTelemetry], change: dict) -> dict:
         elif change["kind"] == "defaults":
             after_defaults = list(change["defaults"])
             after_list = [e for e in after_list
-                          if not after_defaults or (e.get("harness") in after_defaults)]
+                          if not after_defaults or _default_rank(
+                              e.get("harness") or "", e.get("model") or "",
+                              after_defaults) is not None]
         elif change["kind"] == "policy":
             dropped = [e for e in (res.get("dropped_rows") or [])
                        if e.get("stage") == "policy"]
@@ -495,12 +511,16 @@ def _reweight(db: Session, scope_id: str, report: dict,
         if not defaults:
             continue
         top = defaults[0]
+        # `top` may be a harness or a `harness:model` key (GRPH-977); either way it is the
+        # set of cells it names, and a rival is any cell it does not.
+        def top_names(name: str) -> bool:
+            harness, _, model = name.partition(":")
+            return _names_row(top, harness, model)
         top_families = {fam: seen for (name, fam), seen in family_rates.items()
-                        if name.split(":")[0] == top or name.startswith(f"{top}:")}
+                        if top_names(name)}
         rivals: dict[str, list[str]] = {}
         for (name, fam), seen in family_rates.items():
-            harness = name.split(":")[0]
-            if harness == top:
+            if top_names(name):
                 continue
             if seen["rate"] is None or seen["finished"] < REWEIGHT_MIN_N:
                 continue
@@ -513,13 +533,13 @@ def _reweight(db: Session, scope_id: str, report: dict,
         for rival_name, families in rivals.items():
             if len(set(families)) < REWEIGHT_MIN_FAMILIES:
                 continue
-            reordered = [rival_name.split(":")[0]] + [d for d in defaults
-                                                      if d != rival_name.split(":")[0]]
+            promoted = _promoted(rival_name, defaults)
+            reordered = [promoted] + [d for d in defaults if d != promoted]
             cells = []
             for fam in sorted(set(families)):
                 cells.extend(_cell_out(c) for c in family_rates[(rival_name, fam)]["cells"][:1])
                 top_key = next((k for k in family_rates if k[1] == fam
-                                and k[0].split(":")[0] == top), None)
+                                and top_names(k[0])), None)
                 if top_key:
                     cells.extend(_cell_out(c) for c in family_rates[top_key]["cells"][:1])
             out.append(Card(
@@ -542,6 +562,20 @@ def _reweight(db: Session, scope_id: str, report: dict,
                 thresholds={"min_n": REWEIGHT_MIN_N, "margin": REWEIGHT_MARGIN,
                             "min_families": REWEIGHT_MIN_FAMILIES}))
     return out
+
+
+def _promoted(rival_name: str, defaults: list[str]) -> str:
+    """The entry R3 moves to the front for a rival cell: the default that already names it,
+    so the reorder is a reorder. A rival no entry names goes in as its harness — unless the
+    profile already picks that harness's models one by one, where the harness would admit
+    every model at once, so it goes in as its own `harness:model` key."""
+    harness, _, model = rival_name.partition(":")
+    at = _default_rank(harness, model, defaults)
+    if at is not None:
+        return defaults[at]
+    if model and any(d.startswith(f"{harness}:") for d in defaults):
+        return rival_name
+    return harness
 
 
 def _policy(db: Session, project_ids: list[str], report: dict,

@@ -7,7 +7,8 @@ Three layers, three owners, and this module joins them at spawn time:
 - **Policy** — a project's hard constraints (`local_only`, `allowed_harnesses`).
   A constraint REMOVES rows and never adjusts a score, so a strong
   preference cannot outvote it (D4).
-- **Preferences** — a user's `defaults` (an ordered allowlist of harnesses), `weights` over
+- **Preferences** — a user's `defaults` (an ordered allowlist of harnesses or `harness:model`
+  keys), `weights` over
   four axes, `excludes`, and optional `mix` (harness → share of recent launches). Taste,
   scored last (D3, D6, GRPH-865).
 
@@ -188,6 +189,19 @@ class Profile:
             budget_tokens=budget_n if budget_n and budget_n > 0 else None,
             mix=mix,
         )
+
+    def default_rank(self, row: "Row") -> int | None:
+        """The index of the first `defaults` entry that names this row, or None.
+
+        An entry names a row by its harness (`claude`, every claude model) or by its key
+        (`claude:opus`, that model only) — the same two spellings `excludes` accepts. Matching
+        the harness alone turned `claude:opus` into an entry that named nothing, and an
+        allowlist of it dropped every claude row as "not in your defaults" (GRPH-977).
+        """
+        for i, entry in enumerate(self.defaults):
+            if entry == row.harness or entry == row.key:
+                return i
+        return None
 
     def normalised(self) -> dict:
         total = sum(v for v in self.weights.values() if v > 0)
@@ -485,7 +499,7 @@ class Matrix:
         if profile is not None:
             kept, dropped = [], []
             for r in rows:
-                if profile.defaults and r.harness not in profile.defaults:
+                if profile.defaults and profile.default_rank(r) is None:
                     dropped.append(f"{r.key} (not in your defaults)")
                     res.dropped_rows.append(_dropped_row(
                         r, "profile", "not in your defaults", would_score(r)))
@@ -571,7 +585,8 @@ class Matrix:
         def rank(entry):
             r, score, axes = entry
             verified = 1 if r.status == "verified" else 0
-            pref = -(profile.defaults.index(r.harness)) if profile and r.harness in profile.defaults else 0
+            at = profile.default_rank(r) if profile else None
+            pref = -at if at is not None else 0
             mix_axis = axes.get("mix") if isinstance(axes, dict) else None
             deficit = float(mix_axis["value"]) if isinstance(mix_axis, dict) and mix_axis.get("used") else 0.0
             return (deficit, score, verified, pref, -r.order)
