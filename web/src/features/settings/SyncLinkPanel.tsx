@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import * as React from "react";
 
+import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { noteGitopsUnlinked } from "@/features/settings/GitopsPanel";
@@ -46,7 +47,8 @@ function ago(iso: string | null): string {
 }
 
 export function SyncLinkPanel() {
-  const { data: status, isLoading } = useSyncStatus();
+  const statusQ = useSyncStatus();
+  const { data: status, isLoading } = statusQ;
   const [params] = useSearchParams();
   const reason = params.get("reason");
   const qc = useQueryClient();
@@ -57,6 +59,20 @@ export function SyncLinkPanel() {
   const [scopedId, setScopedId] = React.useState<string | null>(null);
 
   const scoped = status?.projects.find((p) => p.project_id === scopedId) ?? null;
+
+  // PRD-47 S17. `isLoading || !status` was the whole guard, so a failed read sat at
+  // "Loading sync status…" forever — the same absence-as-clean-result as Project Home's
+  // dependencies with the opposite polarity: a failure that reads as a promise still
+  // outstanding, and no way to retry it. Checked before the loading branch because
+  // `isLoading` is false once the query has errored, but `!status` never becomes false.
+  if (statusQ.isError && !status) {
+    return (
+      <PlannerError
+        message={`${FETCH_FAILED} Whether this instance is linked was not read — this is not an unlinked instance.`}
+        onRetry={() => void statusQ.refetch()}
+      />
+    );
+  }
 
   if (isLoading || !status) return <p className="text-[12.5px] text-faint">Loading sync status…</p>;
 
@@ -307,6 +323,16 @@ function CloudLinkCard({
   );
 }
 
+/**
+ * Local projects → the linked cloud org, one row each; selecting a row scopes the cards
+ * below it (PRD-47 S17).
+ *
+ * The design's row also carries **attach / detach**, and they are deliberately not here:
+ * the only primitive the backend exposes is `syncSetGraph` (`PATCH /platform`), which
+ * toggles graph push for a project that is ALREADY mapped. Nothing attaches a project to
+ * the org or detaches it, so a control here would be a button that cannot work. It belongs
+ * with the endpoint, not with this panel — GRPH-986.
+ */
 function ProjectsTable({
   projects,
   scopedId,
