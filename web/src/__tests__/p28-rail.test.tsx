@@ -236,13 +236,11 @@ describe("GRPH-940 hosted rail uses Plan / Build / Observe", () => {
     expect(screen.queryByText("Tracker")).not.toBeInTheDocument();
   });
 
-  it("shows hosted Harness under Observe and Usage as soon in the footer", async () => {
+  it("shows hosted Harness under Observe and Usage link in the footer", async () => {
     wrap(<LeftNav hosted />, "/p/CORE/live");
     expect(await screen.findByText("Harness")).toBeInTheDocument();
     expect(screen.getByText("Live")).toBeInTheDocument();
-    expect(screen.getByText("Usage")).toBeInTheDocument();
-    expect(screen.getByText("soon")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Usage" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Usage" })).toHaveAttribute("href", "/usage");
   });
 
   it("keeps Admin and Galaxy in the hosted source (sabotage: deleting those rows must fail)", async () => {

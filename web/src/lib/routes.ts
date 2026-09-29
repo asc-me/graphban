@@ -102,6 +102,7 @@ const VIEW_PLACE: Record<string, Place> = {
   harness: { section: "Observe", page: "Harness" },
   "feedback-kit": { section: "Project", page: "Feedback Kit" },
   home: { section: "Home", page: "Home" },
+  usage: { section: "Deployment", page: "Usage" },
 };
 
 const SETTINGS_PAGE: Record<string, string> = {
