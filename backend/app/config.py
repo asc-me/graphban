@@ -277,6 +277,13 @@ class Settings(BaseSettings):
     # reason `pending_validation` exists, and nothing else re-asks.
     credential_retry_seconds: int = 60
 
+    # How often the OTLP log-export drain wakes (PRD-47 S15 / GRPH-966). `0` disables the loop
+    # entirely — the value the TEST suite runs at, for the same reason as the retry loop above,
+    # and `services/logexport.status` then reports the exporter as NOT RUNNING, which makes
+    # `queue_depth` unknown rather than zero. That is the point of the setting being visible
+    # here: a disabled exporter must not read as an empty queue.
+    log_export_seconds: int = 60
+
     # LLM call spans (GRPH-225). How long `llm_call_spans` rows live; 0 or negative
     # keeps everything. The table is telemetry, not the ledger — unbounded growth of
     # per-call rows is the difference between a cost panel and an ops incident.

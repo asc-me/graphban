@@ -418,6 +418,23 @@ const CONTENT: Record<string, DocEntry> = {
     ],
   },
 
+  "/settings/deployment/log-export": {
+    badge: "LOG EXPORT",
+    title: "Log export",
+    tagline: "Where this box hands its telemetry to an OTLP collector — one collector for the deployment.",
+    sections: [
+      { num: 1, h: "This box, not this project", b: "One endpoint, one exporter, one queue for the whole instance, so there is one config and no project picker. Exported records span projects, which is why each record names its project (gb.project) rather than the config being scoped. A hosted instance is configured by its operator: every route here 403s for a tenant." },
+      { num: 2, h: "The strip has a third answer", b: "Sent 24h and dropped 24h are sums over the batch rows, so 0 means measured-and-nothing-sent while an em dash means the read failed. Queue depth is an em dash whenever no exporter is running: a backlog nobody is draining is not an empty queue. And a failed read is Unknown, not Paused — off and unknown are different states." },
+      { num: 3, h: "Send test batch", b: "Not run is its own state, and it does not look like a pass. A portless endpoint is reported as no_port with its own sentence, because that is the mistake and a generic connection error would send you looking at your network. Success reports records accepted and latency. gRPC is refused with the reason this build cannot speak it, rather than being quietly downgraded to HTTP." },
+      { num: 4, h: "What to send, and what leaves", b: "Activity events as logs, MCP tool calls as traces, agent heartbeats as metrics. An empty event-type list means every action, not none. The three redaction choices each do one thing and the sample record below them is recomputed by the server, so it shows what the exporter would send rather than what a second implementation guessed." },
+      { num: 5, h: "Exporting never deletes", b: "Pausing stops sending; it does not sweep anything. Activity events stay in this box's ledger indefinitely. MCP call records are swept at AGENT_CALL_RETENTION_DAYS on a write path that never consults the export cursor, so a trace not sent inside that window is lost AND NOT COUNTED — the dropped counter covers backlogs this exporter gave up on, never rows the sweep took first. The panel's own note says this in the same words." },
+    ],
+    related: [
+      { label: "Updates", to: settingsPath("deployment/updates") },
+      { label: "Activity", to: "/activity" },
+    ],
+  },
+
   "/settings/deployment/gitops": {
     badge: "GITOPS",
     title: "Gitops",
@@ -611,6 +628,7 @@ export function docFor(pathname: string): DocEntry {
   // Settings is path-per-item (GRPH-P28 D3). Match the page before the /settings catch-all
   // or API keys, Sync, Updates, Gitops all open as AI Providers.
   if (path.startsWith(settingsPath("deployment/updates"))) return CONTENT["/settings/deployment/updates"];
+  if (path.startsWith(settingsPath("deployment/log-export"))) return CONTENT["/settings/deployment/log-export"];
   if (path.startsWith(settingsPath("deployment/gitops"))) return CONTENT["/settings/deployment/gitops"];
   if (path.startsWith(settingsPath("deployment/sync"))) return CONTENT["/settings/deployment/sync"];
   if (path.startsWith(settingsPath("deployment/providers"))) return CONTENT["/settings/project/providers"];

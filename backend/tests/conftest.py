@@ -33,6 +33,11 @@ os.environ["SEED_ON_START"] = "true"
 # a whole class of intermittent failure is avoided. `test_credential_retry_loop.py` turns it
 # back on explicitly for the tests that are ABOUT the task.
 os.environ["CREDENTIAL_RETRY_SECONDS"] = "0"
+# The log-export drain is OFF for the suite, for the identical reason (PRD-47 S15). Its tests
+# drive `drain_once` directly and flip `mark_exporter_running()` when they are ABOUT the
+# running-exporter path — which is also what makes `queue_depth` report unknown here rather
+# than a reassuring zero.
+os.environ["LOG_EXPORT_SECONDS"] = "0"
 
 
 def _database_per_worker() -> None:

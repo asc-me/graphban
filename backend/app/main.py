@@ -166,13 +166,23 @@ async def lifespan(app: FastAPI):
     if settings.credential_retry_seconds > 0:
         retry_task = asyncio.create_task(_credential_retry_loop())
 
+    # The log-export drain (PRD-47 S15) gets its OWN task rather than becoming a third job in
+    # `_one_background_pass`: a collector POST can sit for its whole timeout, and that pass
+    # exists precisely so the credential retry is never blocked behind long work. Same three
+    # properties as the loop above, and `0` disables it for the same reason — the suite drives
+    # `logexport.drain_once` directly instead of waiting on a timer.
+    export_task = None
+    if settings.log_export_seconds > 0:
+        export_task = asyncio.create_task(_log_export_loop())
+
     try:
         yield
     finally:
-        if retry_task is not None:
-            retry_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await retry_task
+        for task in (retry_task, export_task):
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
 
 def _one_background_pass() -> int:
@@ -237,6 +247,54 @@ async def _credential_retry_loop() -> None:
             logger.warning("credential retry pass failed; continuing", exc_info=True)
 
 
+async def _log_export_loop() -> None:
+    """Hand records to the OTLP collector forever, without ever raising (PRD-47 S15).
+
+    The same three properties as `_credential_retry_loop`, for the same reasons: a collector
+    that is down must not take the API process with it, a broad `except` INSIDE the loop turns
+    an unanticipated fault into a repeated log line instead of a silent death, and
+    `CancelledError` is re-raised so shutdown is not hung by it.
+
+    `mark_exporter_running` / `mark_exporter_stopped` bracket the loop because the status strip
+    reports a queue depth ONLY while this is alive. The flag is set in the `finally`, so a
+    cancelled or crashed loop stops claiming to be draining — an exporter that died and left
+    `queue depth: 0` on the panel is the exact absence-reads-as-clean this item is about.
+    """
+    from app.services import logexport
+
+    interval = settings.log_export_seconds
+    logexport.mark_exporter_running()
+    try:
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                moved = await asyncio.to_thread(_one_log_export_pass)
+                if moved:
+                    logger.info("log export: %d record(s) sent", moved)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 — silence here is the failure
+                logger.warning("log export pass failed; continuing", exc_info=True)
+    finally:
+        logexport.mark_exporter_stopped()
+
+
+def _one_log_export_pass() -> int:
+    """One export drain, session included. Runs inside a worker thread.
+
+    Owns its session for the same reason `_one_background_pass` does: `asyncio.to_thread`
+    cannot cancel the thread it started, so a session held outside could be closed underneath a
+    drain that is still using it (GRPH-535).
+    """
+    from app.services import logexport
+
+    db = SessionLocal()
+    try:
+        return logexport.run_once(db)
+    finally:
+        db.close()
+
+
 app = FastAPI(title="Graphban API", version=__version__, lifespan=lifespan)
 
 @app.exception_handler(QuotaExceeded)
@@ -277,6 +335,11 @@ app.include_router(prds.router, prefix=API)
 app.include_router(analytics.router, prefix=API)
 app.include_router(usage.router, prefix=API)
 app.include_router(platform.router, prefix=API)
+# Deployment settings with no project to be scoped by (PRD-47 S15). Aliased because the
+# module name `settings` is already this process's configuration object, and shadowing it
+# here would turn every `settings.foo` below into an AttributeError at import time.
+from app.routers import settings as settings_routes
+app.include_router(settings_routes.router, prefix=API)
 app.include_router(public.router, prefix=API)
 app.include_router(reports.router, prefix=API)
 app.include_router(sync.router, prefix=API)

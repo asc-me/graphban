@@ -116,6 +116,7 @@ See [AI providers](ai-providers.md) for the details (and why embeddings are depl
 | Var | Default | Notes |
 | --- | --- | --- |
 | `CREDENTIAL_RETRY_SECONDS` | `60` | How often the credential retry loop re-asks providers that could not be reached (PRD-25). `0` disables the background task entirely — what the test suite runs at, so a timer never fires mid-test. |
+| `LOG_EXPORT_SECONDS` | `60` | How often the OTLP log-export drain hands records to the collector (PRD-47 S15). `0` disables the loop, and the Log export panel then reports the exporter as **not running**, which makes queue depth unknown rather than zero — a backlog nobody is working down must not read as an empty queue. The collector itself is configured in Settings → This box → Log export, not here. |
 | `LLM_SPAN_RETENTION_DAYS` | `90` | How long per-call LLM telemetry rows (`llm_call_spans`, GRPH-225) are kept. Purged once at startup, never fatal. `0` or negative keeps everything — the right answer for a self-host box with no dashboard pressure. |
 | `AGENT_CALL_RETENTION_DAYS` | `7` | How long the Observe Live feed keeps a row (`agent_calls`, PRD-34): every MCP call an agent made, attributed to it. Swept on the write path every ~200 inserts, never fatal; a failed sweep counts on `/health` as `agent_calls_sweep_failed`. `0` or negative keeps everything. |
 | `SEED_ON_START` | `false` | Load the demo dataset on an empty DB. Default off — the app starts empty and you sign up in the UI. Set `true` for a populated demo. |

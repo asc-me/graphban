@@ -8,6 +8,7 @@ import { Input, Textarea } from "@/components/ui/input";
 import { McpToolsView } from "@/features/mcp/McpToolsView";
 import { CredentialsPanel } from "@/features/settings/CredentialsPanel";
 import { GitopsPanel } from "@/features/settings/GitopsPanel";
+import { LogExportPanel } from "@/features/settings/LogExportPanel";
 import { UpdatesPanel } from "@/features/settings/UpdatesPanel";
 import { McpInstall, type KeyScope } from "@/features/settings/McpInstall";
 import { CloudOrgLinkPanel } from "@/features/settings/CloudOrgLinkPanel";
@@ -42,6 +43,11 @@ const SELF_HOST_NAV: { group: string; items: { to: string; label: string; end?: 
       { to: settingsPath("deployment/sync"), label: "Cloud / Sync" },
       { to: settingsPath("deployment/gitops"), label: "Gitops" },
       { to: settingsPath("deployment/updates"), label: "Updates" },
+      // Log export is here and NOT under "This project": one collector endpoint, one exporter
+      // and one queue for the whole instance, so a per-project panel would be N editors for a
+      // single shared thing — the same mismatch GRPH-625 fixed for credentials. Exported
+      // records span projects, so each record names its project instead (GRPH-966).
+      { to: settingsPath("deployment/log-export"), label: "Log export" },
     ],
   },
   {
@@ -117,6 +123,7 @@ function SelfHostSettings() {
 function SelfHostPane({ pathname }: { pathname: string }) {
   if (pathname.startsWith(settingsPath("deployment/gitops"))) return <GitopsPanel />;
   if (pathname.startsWith(settingsPath("deployment/updates"))) return <UpdatesPanel />;
+  if (pathname.startsWith(settingsPath("deployment/log-export"))) return <LogExportPanel />;
   if (pathname.startsWith(settingsPath("deployment/sync"))) return <SyncLinkPanel />;
   if (pathname.startsWith(settingsPath("project/mcp"))) return <McpToolsView />;
   if (pathname.startsWith(settingsPath("project/integrations"))) return <IntegrationsPanel />;
@@ -196,6 +203,12 @@ function HostedSettingsTabs() {
 function HostedPane({ pathname }: { pathname: string }) {
   if (pathname.startsWith(settingsPath("deployment/gitops"))) {
     return <Navigate to={adminPath("gitops")} replace />;
+  }
+  if (pathname.startsWith(settingsPath("deployment/log-export"))) {
+    // Redirect, not the panel: the API 403s every log-export route on a hosted instance, so a
+    // tenant who typed the URL would get a form that can only fail. Falling through to the
+    // catch-all below is worse — that is AI providers wearing a log-export URL.
+    return <Navigate to={settingsPath("deployment/providers")} replace />;
   }
   if (pathname.startsWith(settingsPath("deployment/sync"))) return <CloudOrgLinkPanel />;
   if (pathname.startsWith(settingsPath("deployment/updates"))) return <UpdatesPanel />;
