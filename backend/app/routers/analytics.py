@@ -1,5 +1,5 @@
 """Read-only aggregation endpoints for the Dashboard, Roadmap, Links, and MCP views."""
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.db import get_db
@@ -32,18 +32,42 @@ router = APIRouter(tags=["analytics"])
 def events(
     project_id: str | None = None,
     action: str | None = None,
+    lens: str | None = None,
+    actor: str | None = None,
+    surface: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    bucket: int | None = None,
+    time_range: str | None = Query(None, alias="range"),
     limit: int = 50,
     offset: int = 0,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """The audit ledger (AL-43): who did what, most-recent-first. Scoped to the
-    caller's readable projects; a `project_id` narrows to one (must be readable)."""
+    caller's readable projects; a `project_id` narrows to one (must be readable).
+
+    Also the Activity view's one read (PRD-47 S10): `lens` / `actor` / `surface` /
+    `target_type` / `target_id` / `bucket` / `range` filter the rows, and the response
+    carries the lens counts, the stacked histogram and the three facets for the same
+    selection. With no filters the payload is the ledger it always was and
+    `histogram.coverage` says `not_requested` rather than returning 48 empty bars.
+
+    A filter value this endpoint does not define is a 422, not a widening: an unknown
+    lens quietly read as "everything" would answer a question nobody asked.
+    """
     readable = authz.readable_project_ids(db, user.id)
     if project_id is not None:
         authz.require_readable(db, user.id, project_id)
         readable = [project_id]
-    return events_svc.list_events(db, project_ids=readable, limit=limit, offset=offset, action=action)
+    try:
+        return events_svc.list_events(
+            db, project_ids=readable, limit=limit, offset=offset, action=action,
+            lens=lens, actor=actor, surface=surface, target_type=target_type,
+            target_id=target_id, bucket=bucket, range_key=time_range,
+        )
+    except events_svc.BadFilter as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/dashboard")
