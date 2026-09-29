@@ -8,7 +8,7 @@
 Self-host Settings groups instance-wide items under **This box** (do not rename that
 group). AI providers is which model the box runs on (GRPH-625); Cloud / Sync is
 instance-wide; unlinked Gitops is this project's process; Updates is whether this box is
-on the published stable cut.
+on the published stable cut; Log export is where the box's telemetry goes (GRPH-966).
 
 ### Updates
 
@@ -72,12 +72,66 @@ and where the cut process is written (`release_defined_in`).
 
 Hosted orgs edit house process on the org-admin Gitops tab, not this page.
 
+### Log export
+
+`/settings/deployment/log-export`. Where this box hands telemetry to an OTLP collector
+(PRD-47 S15 / GRPH-966). **One config for the deployment, not one per project** — one
+collector, one exporter, one queue — so `log_export_config` has no `project_id` column and
+no route takes one. Records span projects, so each RECORD names its project (`gb.project`,
+`gb.project_id`, and `gb.scope` for the deployment-level ones).
+
+Gated the way the other This-box panels are: a logged-in operator (JWT, never an API key).
+Every route 403s on a hosted instance, where the operator configures the box; the web UI
+redirects the path away rather than showing a form that can only fail.
+
+**The status strip has a third answer for every number**, which is the point of the page:
+
+- `sent 24h` / `dropped 24h` are sums over `log_export_batches`. `0` means measured and
+  nothing was sent; `—` means the read failed. A counter column could not tell those apart.
+- `queue depth` is `—` whenever no exporter is running. A backlog nobody is draining is not
+  an empty queue, and the page says so rather than printing a zero.
+- `state` is **Exporting** / **Paused** (off) / **On, but nothing is draining** / **Unknown**
+  (the config could not be read). Off and unknown are different states.
+- A failed fetch is `PlannerError`, never a panel that reads as off.
+
+**Collector** — endpoint (the base, as `OTEL_EXPORTER_OTLP_ENDPOINT` defines it; records go
+to `/v1/logs`, `/v1/traces`, `/v1/metrics` under it, so it needs a port), protocol,
+compression, and headers. Header values are stored as typed and shown masked; saving a
+masked value back keeps the stored one, and removing a row deletes the header.
+
+**Send test batch** always answers — a collector that cannot be reached is the answer, not
+an API error. `ok` is true only when records were accepted, and then reports the count and
+latency. Failures carry a specific code: `no_port` ("No port in endpoint — collector
+unreachable"), `no_endpoint`, `unreachable`, `bad_status`, `timeout`, `unsupported`. Not-run
+is its own state and does not look like a pass. A probe is written as a `kind="test"` batch
+row, so it shows as *last batch* but never counts toward `sent 24h`.
+
+This build sends **OTLP/HTTP with the JSON encoding**. The protobuf encoding needs
+`opentelemetry-proto` and gRPC needs `grpcio`; neither is a dependency here
+(`providers/llm_meter.py` records the same call about OTel), so gRPC is published as
+unsupported *with the reason* rather than being silently downgraded.
+
+**What to send** — activity events as logs, MCP tool calls as traces, agent heartbeats as
+metrics, plus an event-type filter. An empty filter means every action, and the page says so;
+the options are measured from the ledger, so it never offers an action this box does not
+record. **Redaction** — drop free-text summaries, drop client IPs, mask API keys. The sample
+record below them is recomputed by the server on every toggle, so it shows what the exporter
+would send rather than what a second implementation guessed. Secrets, home paths and
+addresses inside free text are redacted whatever the toggles say: a collector is off-box.
+
+Enabling starts from the current high-water mark rather than back-filling the ledger, and
+says so. A failed batch keeps its records; after five consecutive failures the backlog is
+dropped **and counted**, and that give-up resets the streak so the exporter asks the
+collector again. The drain interval is `LOG_EXPORT_SECONDS`
+([configuration](configuration.md)); `0` disables it, which the page reports as *not
+running*.
+
 ## AI Providers tab
 
 **Where it lives:** hosted → the **AI Providers** tab. Self-host → **This box → AI
-providers** (`/settings/deployment/providers`), beside Cloud / Sync, Gitops and Updates — provider
-credentials are what the box runs on, not per-project config (GRPH-625). The old
-`/settings/project/providers` deep link redirects to the new path.
+providers** (`/settings/deployment/providers`), beside Cloud / Sync, Gitops, Updates and Log
+export — provider credentials are what the box runs on, not per-project config (GRPH-625).
+The old `/settings/project/providers` deep link redirects to the new path.
 
 Switches the **chat & extraction** provider — takes effect immediately.
 
@@ -192,11 +246,13 @@ Deployments cards — the sync credential is identity (PRD-21 D6), gitops is hou
 
 ## How it works
 
-- Config: the `platform_config` table (Alembic migration `0004`), one row per project.
+- Config: the `platform_config` table (Alembic migration `0004`), one row per project —
+  except log export, which is one row for the box (`log_export_config`, migration `0134`).
 - Service: `backend/app/services/platform.py` — `get_config`, `update_config` (applies LLM
-  settings to the live provider), and the GitHub/Drive connect/disconnect helpers.
+  settings to the live provider), and the GitHub/Drive connect/disconnect helpers. Log export
+  is `backend/app/services/logexport.py`, which also owns the exporter drain.
 - Routers: `backend/app/routers/platform.py`, plus project/member routes in
-  `projects.py` and `GET /api/auth/me/memberships`.
+  `projects.py`, deployment settings in `settings.py`, and `GET /api/auth/me/memberships`.
 
 ## API
 
@@ -208,6 +264,9 @@ Deployments cards — the sync credential is identity (PRD-21 D6), gitops is hou
 | POST | `/api/platform/gdrive/connect` · `/disconnect` | Drive connection state |
 | PATCH | `/api/projects/{id}` | Update project config |
 | GET / PATCH | `/api/projects/{id}/gitops` | This project's gitops contract (linked reads are org-live) |
+| GET / PATCH | `/api/settings/log-export` | The deployment's OTLP export config, status strip and sample (no project id — see [Log export](#log-export)) |
+| POST | `/api/settings/log-export/test-batch` | Send test batch; always 200 with a result, `error` names the failure |
+| GET | `/api/settings/log-export/sample` | The sample record under redaction flags the caller has not saved |
 | GET | `/api/projects/{id}/members` | List members |
 | GET / POST / DELETE | `/api/api-keys` … | Manage API keys |
 | GET | `/api/auth/me/memberships` | The current user's project access (Profile) |
