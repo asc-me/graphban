@@ -473,12 +473,46 @@ def test_paused_not_running_and_unknown_are_three_states(db):
 
 def test_the_paused_note_reports_retention_it_can_read(db):
     """The design says events are kept for 90 days. Nothing sweeps `events` and `agent_calls`
-    are swept at AGENT_CALL_RETENTION_DAYS, so the number is read, not typed."""
+    are swept at AGENT_CALL_RETENTION_DAYS, so the number is read, not typed.
+
+    And the note must not claim a count the code does not keep: the sweep runs on another
+    module's write path and never consults the export cursor, so what it takes is lost
+    UNCOUNTED. Saying so is the honest version; implying `dropped` covers it would be the
+    absence-reads-as-clean defect one level up, in prose.
+    """
     from app.config import settings
 
     note = logexport.retention_note()
     assert str(settings.agent_call_retention_days) in note
     assert "90 day" not in note
+    assert "NOT COUNTED" in note
+    assert "counts them as dropped" not in note
+
+
+def test_a_static_misconfiguration_is_recorded_once_not_every_tick(db):
+    """A portless endpoint is one fact, not 1440 events a day.
+
+    `log_export_batches` has no sweep, so a row per tick is unbounded growth in a table nobody
+    reads for anything but the last batch — for a problem the panel already states inline from
+    `endpoint_problem`. A DIFFERENT misconfiguration is a new fact and does get a row.
+    """
+    cfg = logexport.get_config(db)
+    cfg.enabled = True
+    cfg.endpoint = "http://collector.internal"
+    db.commit()
+    _event(db, "create_item", project_id=_project(db))
+
+    for _ in range(4):
+        assert logexport.drain_once(db)["reason"] == logexport.NO_PORT_ERROR
+    assert int(db.scalar(select(func.count(LogExportBatch.id)))) == 1
+    row = db.scalars(select(LogExportBatch)).first()
+    assert row.error == logexport.NO_PORT_ERROR
+    assert row.detail == logexport.NO_PORT_DETAIL
+
+    cfg.endpoint = ""
+    db.commit()
+    assert logexport.drain_once(db)["reason"] == "no_endpoint"
+    assert int(db.scalar(select(func.count(LogExportBatch.id)))) == 2
 
 
 # ── the exporter ─────────────────────────────────────────────────────────────

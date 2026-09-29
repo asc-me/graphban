@@ -122,9 +122,15 @@ addresses inside free text are redacted whatever the toggles say: a collector is
 Enabling starts from the current high-water mark rather than back-filling the ledger, and
 says so. A failed batch keeps its records; after five consecutive failures the backlog is
 dropped **and counted**, and that give-up resets the streak so the exporter asks the
-collector again. The drain interval is `LOG_EXPORT_SECONDS`
-([configuration](configuration.md)); `0` disables it, which the page reports as *not
-running*.
+collector again. A static misconfiguration (a portless endpoint, gRPC) is recorded once, not
+once per tick — the batch table has no sweep, and the panel already states the problem inline.
+The drain interval is `LOG_EXPORT_SECONDS` ([configuration](configuration.md)); `0` disables
+it, which the page reports as *not running*.
+
+One gap the page states rather than hides: `agent_calls` are swept at
+`AGENT_CALL_RETENTION_DAYS` on a write path that never consults the export cursor, so a trace
+not sent inside that window is lost **and not counted**. `dropped` covers backlogs the
+exporter gave up on, never rows the sweep took first.
 
 ## AI Providers tab
 

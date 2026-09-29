@@ -113,8 +113,9 @@ META_IP_KEYS = ("client_ip", "ip", "forwarded_for")
 RETENTION_NOTE = (
     "Exporting never removes anything: activity events stay in this box's ledger whether or "
     "not export is on. MCP call records are swept after {days} day(s) "
-    "(AGENT_CALL_RETENTION_DAYS), so an exporter off for longer than that loses traces it had "
-    "not sent yet — and counts them as dropped, never as zero."
+    "(AGENT_CALL_RETENTION_DAYS) on the write path, which knows nothing about the export "
+    "cursor — so a trace not sent inside that window is LOST AND NOT COUNTED. The dropped "
+    "counter covers backlogs this exporter gave up on, never rows the sweep took first."
 )
 
 CATCH_UP_NOTE = (
@@ -1116,9 +1117,23 @@ def drain_once(db: Session, *, transport: httpx.BaseTransport | None = None,
     if problem is None and cfg.protocol == "grpc":
         problem = ("unsupported", GRPC_UNSUPPORTED)
     if problem is not None:
-        _record_batch(db, kind="export", ok=False, sent=0, dropped=0, latency_ms=None,
-                      error=problem[0], detail=problem[1], endpoint=cfg.endpoint, now=now)
-        db.commit()
+        # A STATIC misconfiguration is not a new event every tick. Writing a row per pass would
+        # add ~1400 rows a day to a table nothing sweeps, for a fact the panel already states
+        # inline from `endpoint_problem` — so only a change is recorded. `last_batch` then shows
+        # when this particular misconfiguration was first hit, and the field below it says it is
+        # still wrong.
+        #
+        # KNOWN GAP, stated rather than papered over: while the endpoint is unusable the cursors
+        # never advance, and `agent_calls` rows past AGENT_CALL_RETENTION_DAYS are swept on the
+        # write path without anyone consulting the cursor. Those traces are lost UNCOUNTED —
+        # `dropped` covers backlogs this exporter gave up on, not rows the sweep took first.
+        # Counting them exactly would need the sweep to report the id range it removed, which is
+        # a change to another module's write path; `RETENTION_NOTE` tells the operator instead.
+        last = _last_batch(db)
+        if last is None or last.error != problem[0] or last.endpoint != cfg.endpoint:
+            _record_batch(db, kind="export", ok=False, sent=0, dropped=0, latency_ms=None,
+                          error=problem[0], detail=problem[1], endpoint=cfg.endpoint, now=now)
+            db.commit()
         return {"ran": True, "reason": problem[0], "detail": problem[1], "sent": 0,
                 "dropped": 0}
 
