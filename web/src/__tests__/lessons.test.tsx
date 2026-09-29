@@ -200,6 +200,8 @@ describe("Lessons catalog", () => {
       has_more: false,
     });
     renderAt("/lessons");
+    // Click the unmeasured queue to see the lesson and banner.
+    await userEvent.click(await screen.findByRole("button", { name: /Unmeasured/ }));
     const banner = await screen.findByText(/1 published lesson has no outcomes yet/);
     expect(banner.closest("div")).toHaveTextContent(/unknown, not effective/);
     expect(screen.getByText(/Always bump the migration range/)).toBeInTheDocument();
@@ -220,6 +222,8 @@ describe("Lessons catalog", () => {
       has_more: false,
     });
     renderAt("/lessons");
+    // The stripped row lands in the unmeasured queue.
+    await userEvent.click(await screen.findByRole("button", { name: /Unmeasured/ }));
     expect(await screen.findByText(/A lesson with no score field/)).toBeInTheDocument();
     expect(screen.queryByText("1.0")).not.toBeInTheDocument();
     expect(screen.queryByText("1.00")).not.toBeInTheDocument();
@@ -227,7 +231,7 @@ describe("Lessons catalog", () => {
     expect(screen.queryByText(/you're all caught up/i)).not.toBeInTheDocument();
   });
 
-  it("renders chips from payload enums, including unclassified_filter", async () => {
+  it("renders queue picker with all six queues and switches between them", async () => {
     lessonsSpy.mockResolvedValue({
       enums: ENUMS,
       results: [row()],
@@ -237,12 +241,16 @@ describe("Lessons catalog", () => {
       has_more: false,
     });
     renderAt("/lessons");
-    expect(await screen.findByRole("button", { name: "Unclassified" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Unknown outcomes" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Eligible for org" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Dropping" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Unclassified" }));
-    expect(lessonsSpy).toHaveBeenCalledWith("core", expect.objectContaining({ lesson_class: "unclassified" }));
+    // All six queues are present as buttons.
+    expect(await screen.findByRole("button", { name: /Dropping/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Missed/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Unmeasured/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Overlap/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Promote/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Unclassified/ })).toBeInTheDocument();
+    // The row is unclassified (no lesson_class), so it appears in that queue.
+    await userEvent.click(screen.getByRole("button", { name: /Unclassified/ }));
+    expect(screen.getByText(/Always bump the migration range/)).toBeInTheDocument();
   });
 
   it("counts omitted caught_state as unknown, so the banner still fires", async () => {
@@ -256,6 +264,8 @@ describe("Lessons catalog", () => {
       has_more: false,
     });
     renderAt("/lessons");
+    // Row with omitted caught_state lands in unmeasured queue.
+    await userEvent.click(await screen.findByRole("button", { name: /Unmeasured/ }));
     expect(await screen.findByText(/No caught_state on the wire/)).toBeInTheDocument();
     expect(screen.getByText("1 UNMEASURED")).toBeInTheDocument();
     expect(screen.queryByText("0 UNMEASURED")).not.toBeInTheDocument();
@@ -273,6 +283,7 @@ describe("Lessons catalog", () => {
       has_more: true,
     });
     renderAt("/lessons");
+    await userEvent.click(await screen.findByRole("button", { name: /Unmeasured/ }));
     expect(await screen.findByText(/At least 1 of this page/)).toBeInTheDocument();
     expect(screen.queryByText(/80 published lesson/)).not.toBeInTheDocument();
     expect(screen.getByText(/More lessons exist beyond this page/)).toBeInTheDocument();
@@ -441,6 +452,91 @@ describe("Lesson detail — promote is always visible with the real reason", () 
     renderAt("/lessons/sh_1");
     await userEvent.click(await screen.findByRole("button", { name: "Promote to org" }));
     expect(await screen.findByText("unmeasured: cluster_scope_unmeasured")).toBeInTheDocument();
+  });
+});
+
+describe("S9: outcome strip and queue machinery", () => {
+  beforeEach(() => {
+    lessonsSpy.mockReset();
+    lessonSpy.mockReset();
+    lessonsSpy.mockResolvedValue(emptyList());
+    lessonSpy.mockResolvedValue(detail());
+  });
+
+  it("shows the honest empty on the outcome strip when history is empty", async () => {
+    lessonSpy.mockResolvedValue(detail({
+      effectiveness: { score: null, trend: "unmeasured", drop_reasons: [], history: [] },
+    }));
+    renderAt("/lessons/sh_1");
+    expect(await screen.findByText(/No outcomes recorded. Nothing links this lesson to a check/)).toBeInTheDocument();
+  });
+
+  it("renders the last-16 outcome strip with caught/missed/no-outcome bars", async () => {
+    const history = Array.from({ length: 20 }, (_, i) => ({
+      at: `2026-08-${String(i + 1).padStart(2, "0")}T00:00:00Z`,
+      score: i % 3 === 0 ? 0.5 : null,
+      caught_state: i % 3 === 0 ? "caught" : i % 3 === 1 ? "missed" : "unknown",
+      outcome_id: i,
+    }));
+    lessonSpy.mockResolvedValue(detail({
+      effectiveness: { score: 0.5, trend: "stable", drop_reasons: [], history },
+    }));
+    renderAt("/lessons/sh_1");
+    // The strip section is labelled "Last surfaced".
+    expect(await screen.findByText(/Last surfaced/)).toBeInTheDocument();
+    // Legend items are present.
+    expect(screen.getByText(/caught/)).toBeInTheDocument();
+    expect(screen.getByText(/missed/)).toBeInTheDocument();
+    expect(screen.getByText(/no outcome/)).toBeInTheDocument();
+    // "16 of last 16" — the strip takes the last 16 of 20 history points.
+    expect(screen.getByText(/16 of last 16/)).toBeInTheDocument();
+  });
+
+  it("queue picker shows counts per queue and the active queue's hint", async () => {
+    const dropping = row({ id: "sh_drop", text: "Dropping lesson", effectiveness: { score: 0.2, trend: "dropping", drop_reasons: [] }, caught_state: "caught", lesson_class: "correction" });
+    const missed = row({ id: "sh_miss", text: "Missed lesson", caught_state: "missed", lesson_class: "correction" });
+    lessonsSpy.mockResolvedValue({
+      enums: ENUMS,
+      results: [dropping, missed],
+      total: 2,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+    });
+    renderAt("/lessons");
+    // Dropping queue is active by default — shows the dropping lesson.
+    expect(await screen.findByText(/Dropping lesson/)).toBeInTheDocument();
+    // The hint for the active queue is visible.
+    expect(screen.getByText(/Score is falling/)).toBeInTheDocument();
+    // Switch to missed queue.
+    await userEvent.click(screen.getByRole("button", { name: /Missed/ }));
+    expect(screen.getByText(/Missed lesson/)).toBeInTheDocument();
+    expect(screen.getByText(/Surfaced but did not catch/)).toBeInTheDocument();
+    // Dropping lesson is no longer visible.
+    expect(screen.queryByText(/Dropping lesson/)).not.toBeInTheDocument();
+  });
+
+  it("keyboard J/K moves focus and Enter opens the detail", async () => {
+    const r1 = row({ id: "sh_1", text: "First lesson", caught_state: "missed", lesson_class: "correction" });
+    const r2 = row({ id: "sh_2", text: "Second lesson", caught_state: "missed", lesson_class: "correction" });
+    lessonsSpy.mockResolvedValue({
+      enums: ENUMS,
+      results: [r1, r2],
+      total: 2,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+    });
+    renderAt("/lessons");
+    // Switch to missed queue where both rows live.
+    await userEvent.click(await screen.findByRole("button", { name: /Missed/ }));
+    expect(await screen.findByText(/First lesson/)).toBeInTheDocument();
+    // Press J to move focus down.
+    await userEvent.keyboard("j");
+    // Press Enter to open the focused row's detail.
+    await userEvent.keyboard("{Enter}");
+    // Navigation to the detail page — the back button appears.
+    expect(await screen.findByRole("button", { name: "Back to Lessons" })).toBeInTheDocument();
   });
 });
 
