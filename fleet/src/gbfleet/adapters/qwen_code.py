@@ -19,10 +19,26 @@ and exited 0 with `-o json`). Nothing carrying the seat touches argv.
 `--bare` is NOT the answer to (2): it also drops the model-provider config, and the child
 dies at once with `No auth type is selected` (exit 1, `error_during_execution`).
 
-**A named model is passed through UNCHECKED, and may be silently replaced.** There is no
-listing flag, and `-m bogus-model-name` ran `qwen3.7-plus` — the configured default — with no
-warning anywhere. So a matrix row for this vendor with a model name is a claim the binary
-will not enforce; the row ships with no model (the vendor default) until a walk proves one.
+**A named model is passed through UNCHECKED and may be silently replaced — but the
+substitution is not invisible.** There is still no listing flag, so nothing can be validated
+BEFORE a spawn: `-m bogus-model-name` starts a run and no warning is printed anywhere.
+
+What that paragraph used to conclude — that a matrix row naming a model is a claim nothing
+could ever check — was wrong, and wrong in the direction this repo keeps getting wrong: an
+absence of warning read as an absence of information. The init record already quoted above
+for the server allowlist carries `"model"`, and it reports the model that ANSWERED rather than
+an echo of argv. Measured 2026-09-28, same binary, two runs:
+
+    qwen -m qwen3.8-max                 ->  init.model = "qwen3.8-max"
+    qwen -m definitely-not-a-model-zzz  ->  init.model = "qwen3.7-plus"
+
+Children are already launched with `-o json` (see `launch`), and their stdout is already kept
+in `stdout.log` — so every qwen child in every wave has been announcing its effective model,
+and its `result.usage` token counts, into a file nothing parses. Reading it is GRPH-982.
+
+Until that lands the pre-spawn answer stays "unchecked": `known_models` returns None, a wrong
+name is not refused, and a matrix row for a named model stays `unverified` because no attempt
+has been ATTRIBUTED to a model even though every attempt recorded one.
 
 Exit codes measured: 0 normal; 55 `FatalBudgetExceededError` when `--max-wall-time` or
 `--max-tool-calls` is exceeded (the JSON tail names which); 1 when the run could not start.
@@ -72,8 +88,10 @@ class QwenCode(Adapter):
     def model_argv(self, model: str) -> list[str]:
         return ["-m", model] if model else []
 
-    # No listing flag; inherits known_models -> None ("cannot be asked"), and the docstring
-    # above records that even a wrong name is not refused by the binary.
+    # No listing flag, so `known_models` stays None ("cannot be asked") and a wrong name is
+    # not refused before the spawn. It is legible AFTER one: the child's `-o json` init event
+    # names the model that answered, and a substituted name shows up there as the default
+    # rather than as what was asked for. See the docstring; the reader is GRPH-982.
 
     def debug_argv(self, path: Path) -> list[str]:
         """`-d` exists but writes to stderr with no file flag; a path cannot be honoured, so
