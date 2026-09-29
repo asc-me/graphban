@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowDown, ArrowRight, ArrowUp } from "lucide-react";
+import { ArrowLeft, ArrowDown, ArrowRight, ArrowUp, ChevronRight } from "lucide-react";
 import * as React from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 
@@ -18,12 +18,55 @@ import {
 } from "@/lib/queries";
 import { projectPath, tagFromPath } from "@/lib/routes";
 import type {
-  Eligibility,
   LessonDetail,
-  LessonEnums,
-  LessonFilters,
   LessonListRow,
 } from "@/lib/types";
+
+// ── Queue definitions ────────────────────────────────────────────────────────
+
+type QueueKey = "dropping" | "missed" | "unmeasured" | "overlap" | "promote" | "unclassified";
+
+const QUEUE_META: Record<QueueKey, { label: string; hint: string }> = {
+  dropping: { label: "Dropping", hint: "Score is falling — the lesson is losing its grip." },
+  missed: { label: "Missed", hint: "Surfaced but did not catch — a known miss." },
+  unmeasured: { label: "Unmeasured", hint: "No outcomes recorded. Nothing links this lesson to a check." },
+  overlap: { label: "Overlap", hint: "Near-duplicates from the same source — keep one, retire the rest into it." },
+  promote: { label: "Promote", hint: "Eligible for org-wide reach — distinct projects and users back it." },
+  unclassified: { label: "Unclassified", hint: "No lesson class assigned yet." },
+};
+
+const QUEUE_ORDER: QueueKey[] = ["dropping", "missed", "unmeasured", "overlap", "promote", "unclassified"];
+
+function classifyRow(row: LessonListRow): QueueKey[] {
+  const queues: QueueKey[] = [];
+  if (row.effectiveness?.trend === "dropping") queues.push("dropping");
+  if (row.caught_state === "missed" || row.caught_state === "mixed") queues.push("missed");
+  if (!row.caught_state || row.caught_state === "unknown" || row.effectiveness?.trend === "unmeasured") {
+    queues.push("unmeasured");
+  }
+  if (row.eligibility?.state === "eligible" && row.reach !== "org") queues.push("promote");
+  if (!row.lesson_class || row.lesson_class === "unclassified") queues.push("unclassified");
+  return queues;
+}
+
+/** Overlap: lessons sharing the same originating item or source — a client-side heuristic. */
+function findOverlapIds(rows: LessonListRow[]): Set<string> {
+  const bySource = new Map<string, string[]>();
+  for (const r of rows) {
+    const key = r.item_id || r.source;
+    if (!key) continue;
+    const arr = bySource.get(key) ?? [];
+    arr.push(r.id);
+    bySource.set(key, arr);
+  }
+  const ids = new Set<string>();
+  for (const group of bySource.values()) {
+    if (group.length > 1) group.forEach((id) => ids.add(id));
+  }
+  return ids;
+}
+
+// ── Main export ──────────────────────────────────────────────────────────────
 
 /** Published catalog. Memory review is the candidate inbox — different empty, different job. */
 export function LessonsView() {
@@ -32,112 +75,313 @@ export function LessonsView() {
   return <LessonListPage />;
 }
 
+// ── List page (S9: queue-based upkeep) ───────────────────────────────────────
+
 function LessonListPage() {
   const { activeId } = useProjectCtx();
-  const [filters, setFilters] = React.useState<LessonFilters>({});
-  const compact = compactFilters(filters);
-  const filtered = Object.keys(compact).length > 0;
   const catalogQ = useLessons(activeId);
-  const listQ = useLessons(activeId, filtered ? compact : undefined);
-  const { data, isLoading, isError, refetch } = listQ;
-  const loading = isLoading || catalogQ.isLoading;
-  const failed = isError || catalogQ.isError;
+  const { data, isLoading, isError, refetch } = catalogQ;
+  const loading = isLoading;
+  const failed = isError;
+  const all = data?.results ?? [];
+  const published = data?.total ?? 0;
+  const hasMore = data?.has_more ?? false;
 
-  const enums = data?.enums ?? catalogQ.data?.enums;
-  // Counts from the page we actually rendered. total is the catalog size; has_more
-  // means UNMEASURED/DROPPING of this page are not the rest of the catalog.
-  const page = catalogQ.data ?? data;
-  const all = page?.results ?? [];
-  const published = page?.total ?? 0;
-  const hasMore = page?.has_more ?? false;
-  const unmeasured = all.filter(rowIsUnmeasured).length;
-  const dropping = all.filter((r) => r.effectiveness?.trend === "dropping").length;
+  const [activeQueue, setActiveQueue] = React.useState<QueueKey>("dropping");
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [focusedIdx, setFocusedIdx] = React.useState(0);
+
+  // Partition rows into queues.
+  const overlapIds = React.useMemo(() => findOverlapIds(all), [all]);
+  const queueRows = React.useMemo(() => {
+    const map: Record<QueueKey, LessonListRow[]> = {
+      dropping: [], missed: [], unmeasured: [], overlap: [], promote: [], unclassified: [],
+    };
+    for (const row of all) {
+      const qs = classifyRow(row);
+      for (const q of qs) map[q].push(row);
+      if (overlapIds.has(row.id) && !map.overlap.includes(row)) map.overlap.push(row);
+    }
+    return map;
+  }, [all, overlapIds]);
+
+  const rows = queueRows[activeQueue];
+  const queueCounts = React.useMemo(
+    () => QUEUE_ORDER.map((k) => ({ key: k, count: queueRows[k].length })),
+    [queueRows],
+  );
+
+  // Clamp focus when queue changes.
+  React.useEffect(() => { setFocusedIdx(0); }, [activeQueue]);
+
+  // Keyboard navigation: J/K move, X select, Enter open detail.
+  const navigate = useNavigate();
+  React.useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === "j" || e.key === "J") {
+        e.preventDefault();
+        setFocusedIdx((i) => Math.min(i + 1, rows.length - 1));
+      } else if (e.key === "k" || e.key === "K") {
+        e.preventDefault();
+        setFocusedIdx((i) => Math.max(i - 1, 0));
+      } else if (e.key === "x" || e.key === "X") {
+        e.preventDefault();
+        const id = rows[focusedIdx]?.id;
+        if (id) {
+          setSelected((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id); else next.add(id);
+            return next;
+          });
+        }
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const id = rows[focusedIdx]?.id;
+        if (id) navigate(id);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [rows, focusedIdx, navigate]);
+
   const empty = !loading && !failed && published === 0;
-  const allUnmeasured = !empty && all.length > 0 && unmeasured === all.length;
+  const allUnmeasured = !empty && all.length > 0 && queueRows.unmeasured.length === all.length;
+
+  const header = (
+    <PlaceHeader
+      viewName="Lessons"
+      purpose="Published memory, scored against whether it is still catching anything. Unpublished candidates live in Memory — this is the catalog of what you have already stood behind."
+      action={
+        <div className="flex items-center gap-3 font-mono text-[10.5px] text-faint">
+          {loading ? (
+            <>
+              <span className="h-3 w-16 animate-pulse rounded bg-surface-3" />
+              <span className="h-3 w-20 animate-pulse rounded bg-surface-3" />
+            </>
+          ) : (
+            <>
+              <span>{published} PUBLISHED</span>
+              <span>
+                {queueRows.unmeasured.length} UNMEASURED{hasMore ? " THIS PAGE" : ""}
+              </span>
+              <span>
+                {queueRows.dropping.length} DROPPING{hasMore ? " THIS PAGE" : ""}
+              </span>
+            </>
+          )}
+        </div>
+      }
+    />
+  );
+
+  if (loading) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        {header}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <LessonsListSkeleton />
+        </div>
+      </div>
+    );
+  }
+
+  if (failed || !data) {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        {header}
+        <PlannerError message="The lesson catalog could not be loaded." onRetry={() => refetch()} />
+      </div>
+    );
+  }
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    if (selected.size === rows.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(rows.map((r) => r.id)));
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PlaceHeader
-        viewName="Lessons"
-        purpose="Published memory, scored against whether it is still catching anything. Candidates stay in Memory until you publish them."
-        action={
-          <div className="flex items-center gap-3 font-mono text-[10.5px] text-faint">
-            {loading ? (
-              <>
-                <span className="h-3 w-16 animate-pulse rounded bg-surface-3" />
-                <span className="h-3 w-20 animate-pulse rounded bg-surface-3" />
-              </>
-            ) : (
-              <>
-                <span>{published} PUBLISHED</span>
-                <span>
-                  {unmeasured} UNMEASURED{hasMore ? " THIS PAGE" : ""}
-                </span>
-                <span>
-                  {dropping} DROPPING{hasMore ? " THIS PAGE" : ""}
-                </span>
-              </>
-            )}
-          </div>
-        }
-      />
+      {header}
 
-      {enums && (
-        <FilterBar enums={enums} filters={compact} onChange={setFilters} />
+      {/* Queue picker */}
+      <div className="flex flex-none flex-col gap-1.5 border-b border-line px-5 py-2.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {queueCounts.map(({ key, count }) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setActiveQueue(key)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-[10.5px] uppercase tracking-wide transition-colors",
+                activeQueue === key
+                  ? "border-line-hover bg-surface-3 text-fg"
+                  : "border-line-2 text-faint hover:border-line-hover hover:text-muted",
+              )}
+            >
+              {QUEUE_META[key].label}
+              <span className={cn(
+                "rounded px-1 py-0.5 text-[9px]",
+                activeQueue === key ? "bg-surface-2 text-muted" : "bg-surface-2/50 text-faint",
+              )}>
+                {count}{hasMore ? "+" : ""}
+              </span>
+            </button>
+          ))}
+        </div>
+        <p className="text-[11.5px] text-faint">{QUEUE_META[activeQueue].hint}</p>
+      </div>
+
+      {/* Bulk action bar */}
+      {selected.size > 0 && (
+        <div className="flex flex-none items-center gap-3 border-b border-line bg-surface-2 px-5 py-2">
+          <span className="font-mono text-[10.5px] text-muted">{selected.size} selected</span>
+          <button
+            type="button"
+            onClick={() => setSelected(new Set())}
+            className="rounded-md border border-line px-1.5 py-0.5 font-mono text-[9.5px] text-faint hover:text-muted"
+          >
+            Clear
+          </button>
+        </div>
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading ? (
-          <LessonsListSkeleton />
-        ) : failed || !data ? (
-          <PlannerError message="The lesson catalog could not be loaded." onRetry={() => {
-            void refetch();
-            void catalogQ.refetch();
-          }} />
-        ) : (
-          <div className="mx-auto flex max-w-3xl flex-col gap-2.5 p-5">
-            {empty ? (
-              <EmptyCatalog />
-            ) : (
-              <>
-                {allUnmeasured && (
-                  <div className="rounded-[10px] border border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-[#e0b34a]">
-                    {hasMore
-                      ? `At least ${unmeasured} of this page of published lessons have no outcomes yet.`
-                      : `${published} published lesson${published === 1 ? " has" : "s have"} no outcomes yet.`}{" "}
-                    That is <span className="font-semibold">unknown</span>, not effective — nothing has
-                    caught or missed since they were published.
-                  </div>
-                )}
-                {hasMore && (
-                  <p className="text-[12px] text-faint">
-                    More lessons exist beyond this page — counts above are this page, not the rest of
-                    the catalog.
-                  </p>
-                )}
-                {data.results.length === 0 ? (
-                  <div className="py-16 text-center text-[13px] text-muted">
-                    No lessons match these filters.
-                  </div>
-                ) : (
-                  data.results.map((row) => (
-                    <LessonRow key={row.id} row={row} />
-                  ))
-                )}
-              </>
-            )}
-          </div>
-        )}
+        <div className="mx-auto flex max-w-3xl flex-col gap-2.5 p-5">
+          {empty ? (
+            <EmptyCatalog />
+          ) : rows.length === 0 ? (
+            <div className="py-16 text-center text-[13px] text-muted">
+              Nothing in this queue. Pick another above, or search the full catalog.
+            </div>
+          ) : (
+            <>
+              {allUnmeasured && activeQueue === "unmeasured" && (
+                <div className="rounded-[10px] border border-[#3a2f1a] bg-[rgba(224,179,74,0.08)] px-3.5 py-2.5 text-[12.5px] leading-relaxed text-[#e0b34a]">
+                  {hasMore
+                    ? `At least ${queueRows.unmeasured.length} of this page of published lessons have no outcomes yet.`
+                    : `${published} published lesson${published === 1 ? " has" : "s have"} no outcomes yet.`}{" "}
+                  That is <span className="font-semibold">unknown</span>, not effective — nothing has
+                  caught or missed since they were published.
+                </div>
+              )}
+
+              {/* Select-all checkbox */}
+              <div className="flex items-center gap-2 px-1">
+                <input
+                  type="checkbox"
+                  checked={selected.size === rows.length && rows.length > 0}
+                  onChange={selectAll}
+                  className="h-3.5 w-3.5 rounded border-line-2 accent-accent"
+                  aria-label="Select all in this queue"
+                />
+                <span className="font-mono text-[10px] uppercase tracking-wide text-faint">
+                  {rows.length} lesson{rows.length !== 1 ? "s" : ""}
+                  {hasMore ? " on this page" : ""}
+                </span>
+                <span className="ml-auto font-mono text-[9.5px] text-faint">
+                  J/K move · X select · Enter open
+                </span>
+              </div>
+
+              {rows.map((row, i) => (
+                <LessonQueueRow
+                  key={row.id}
+                  row={row}
+                  focused={i === focusedIdx}
+                  selected={selected.has(row.id)}
+                  onToggleSelect={() => toggleSelect(row.id)}
+                  onOpen={() => navigate(row.id)}
+                />
+              ))}
+
+              {hasMore && (
+                <p className="py-2 text-center text-[12px] text-faint">
+                  More lessons exist beyond this page — counts above are this page, not the rest of
+                  the catalog.
+                </p>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
+// ── Queue row ────────────────────────────────────────────────────────────────
+
+function LessonQueueRow({
+  row,
+  focused,
+  selected,
+  onToggleSelect,
+  onOpen,
+}: {
+  row: LessonListRow;
+  focused: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
+  onOpen: () => void;
+}) {
+  const score = row.effectiveness?.score;
+  const trend = row.effectiveness?.trend ?? "unmeasured";
+
+  return (
+    <div
+      className={cn(
+        "flex items-start gap-2.5 rounded-[10px] border px-3 py-2.5 transition-colors",
+        focused ? "border-line-hover bg-surface-2" : "border-line-2 bg-surface-2/60",
+        selected && "border-[rgba(167,139,250,0.35)] bg-[rgba(167,139,250,0.04)]",
+      )}
+    >
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={(e) => { e.stopPropagation(); onToggleSelect(); }}
+        onClick={(e) => e.stopPropagation()}
+        className="mt-1 h-3.5 w-3.5 shrink-0 rounded border-line-2 accent-accent"
+        aria-label={`Select ${row.id}`}
+      />
+      <button
+        type="button"
+        onClick={onOpen}
+        className="min-w-0 flex-1 text-left"
+      >
+        <p className="line-clamp-2 text-[13px] leading-relaxed text-ink">{row.text}</p>
+        <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex items-center gap-1 font-mono text-[10.5px] text-faint">
+            <span>{score == null ? "—" : score.toFixed(1)}</span>
+            <TrendGlyph trend={trend} />
+          </span>
+          <CaughtChip state={row.caught_state} />
+          <ClassChip lessonClass={row.lesson_class} suggested={row.suggested_class} />
+          <span className="font-mono text-[9.5px] text-faint">{row.age_state}</span>
+          <span className="font-mono text-[9px] text-faint">{row.id}</span>
+        </div>
+      </button>
+      <ChevronRight size={14} className="mt-1 shrink-0 text-faint" />
+    </div>
+  );
+}
+
+// ── Empty state ──────────────────────────────────────────────────────────────
+
 function EmptyCatalog() {
   const { active } = useProjectCtx();
   const { pathname } = useLocation();
   const tag = tagFromPath(pathname);
-  // Flat /memory-review on hosted FlatRedirects via last-used, not this project's tag.
   const memoryTo = tag && active?.tag ? projectPath(active.tag, "memory-review") : "/memory-review";
   return (
     <div className="py-16 text-center text-[13px] leading-relaxed text-muted">
@@ -151,152 +395,7 @@ function EmptyCatalog() {
   );
 }
 
-function FilterBar({
-  enums,
-  filters,
-  onChange,
-}: {
-  enums: LessonEnums;
-  filters: LessonFilters;
-  onChange: (next: LessonFilters) => void;
-}) {
-  const toggle = (dim: keyof LessonFilters, value: string) => {
-    onChange({
-      ...filters,
-      [dim]: filters[dim] === value ? undefined : value,
-    });
-  };
-  const unclassified = enums.unclassified_filter || "unclassified";
-  return (
-    <div className="flex flex-none flex-col gap-1.5 border-b border-line px-5 py-2.5">
-      <ChipRow>
-        {(enums.trends ?? []).map((v) => (
-          <FilterChip
-            key={v}
-            label={trendLabel(v)}
-            active={filters.trend === v}
-            onClick={() => toggle("trend", v)}
-          />
-        ))}
-      </ChipRow>
-      <ChipRow>
-        {(enums.caught_states ?? []).map((v) => (
-          <FilterChip
-            key={v}
-            label={caughtLabel(v)}
-            active={filters.caught_state === v}
-            onClick={() => toggle("caught_state", v)}
-          />
-        ))}
-      </ChipRow>
-      <ChipRow>
-        {(enums.eligibilities ?? []).map((v) => (
-          <FilterChip
-            key={v}
-            label={eligLabel(v)}
-            active={filters.eligibility === v}
-            onClick={() => toggle("eligibility", v)}
-          />
-        ))}
-      </ChipRow>
-      <ChipRow>
-        <FilterChip
-          label="Unclassified"
-          active={filters.lesson_class === unclassified}
-          onClick={() => toggle("lesson_class", unclassified)}
-        />
-        {(enums.lesson_classes ?? []).map((v) => (
-          <FilterChip
-            key={v}
-            label={v}
-            active={filters.lesson_class === v}
-            onClick={() => toggle("lesson_class", v)}
-          />
-        ))}
-      </ChipRow>
-    </div>
-  );
-}
-
-function ChipRow({ children }: { children: React.ReactNode }) {
-  return <div className="flex flex-wrap items-center gap-1.5">{children}</div>;
-}
-
-function FilterChip({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        "rounded-md border px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide transition-colors",
-        active
-          ? "border-line-hover bg-surface-3 text-fg"
-          : "border-line-2 text-faint hover:border-line-hover hover:text-muted",
-      )}
-    >
-      {label}
-    </button>
-  );
-}
-
-function LessonRow({ row }: { row: LessonListRow }) {
-  const { projects, activeId } = useProjectCtx();
-  const originTag =
-    row.project_id && row.project_id !== activeId
-      ? projects.find((p) => p.id === row.project_id)?.tag
-      : null;
-  return (
-    <Link
-      to={row.id}
-      className="block rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3 transition-colors hover:border-line-hover"
-    >
-      <p className="line-clamp-2 text-[13px] leading-relaxed text-ink">{row.text}</p>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <ClassChip lessonClass={row.lesson_class} suggested={row.suggested_class} />
-        <span className="font-mono text-[10.5px] text-faint">
-          {row.source || row.origin || "—"}
-          {row.item_id ? ` · ${row.item_id}` : ""}
-        </span>
-        {row.reach === "org" && (
-          <Chip tone="accent">
-            {row.transferability === "overridden"
-              ? "org (overridden)"
-              : originTag
-                ? `org · from ${originTag}`
-                : "org"}
-          </Chip>
-        )}
-        {originTag && row.reach !== "org" && (
-          <Chip tone="muted">from {originTag}</Chip>
-        )}
-        <CaughtChip state={row.caught_state} />
-        <ScoreChip row={row} />
-        <EligChip eligibility={row.eligibility} />
-      </div>
-    </Link>
-  );
-}
-
-function ScoreChip({ row }: { row: LessonListRow }) {
-  // A missing effectiveness field is unmeasured, never a defaulted 1.0.
-  const score = row.effectiveness?.score;
-  const trend = row.effectiveness?.trend ?? "unmeasured";
-  return (
-    <span className="inline-flex items-center gap-1 font-mono text-[10.5px] text-faint">
-      <span>{score == null ? "—" : score.toFixed(1)}</span>
-      <TrendGlyph trend={trend} />
-    </span>
-  );
-}
+// ── Shared chips ─────────────────────────────────────────────────────────────
 
 function TrendGlyph({ trend }: { trend: string }) {
   if (trend === "dropping") return <ArrowDown size={11} className="text-st-blocked" aria-label="dropping" />;
@@ -329,17 +428,6 @@ function CaughtChip({ state }: { state: string | undefined }) {
   return <Chip tone={tone}>{value}</Chip>;
 }
 
-function EligChip({ eligibility }: { eligibility: Eligibility | undefined }) {
-  const state = eligibility?.state || "unverifiable";
-  const tone =
-    state === "eligible" ? "done" : state === "promoted" ? "accent" : state === "unverifiable" ? "review" : "muted";
-  return (
-    <Chip tone={tone} title={eligibility?.reason}>
-      {state}
-    </Chip>
-  );
-}
-
 function Chip({
   children,
   tone,
@@ -362,6 +450,8 @@ function Chip({
     </span>
   );
 }
+
+// ── Detail page ──────────────────────────────────────────────────────────────
 
 function LessonDetailPage({ id }: { id: string }) {
   const { activeId } = useProjectCtx();
@@ -396,7 +486,6 @@ function LessonDetailPage({ id }: { id: string }) {
 function LessonDetailBody({ lesson }: { lesson: LessonDetail }) {
   const navigate = useNavigate();
   const score = lesson.effectiveness?.score;
-  // gone + missing effectiveness is dropping, not the unmeasured default — quiet path is a miss.
   const trend =
     lesson.origin_path === "gone"
       ? (lesson.effectiveness?.trend ?? "dropping")
@@ -483,6 +572,14 @@ function LessonDetailBody({ lesson }: { lesson: LessonDetail }) {
             )}
           </section>
 
+          {/* S9: last-16 outcome strip */}
+          <section className="rounded-[10px] border border-line-2 bg-surface-2 p-3.5">
+            <div className="mb-2 font-mono text-[10.5px] uppercase tracking-wide text-faint">
+              Last surfaced
+            </div>
+            <OutcomeStrip history={history} />
+          </section>
+
           <details className="rounded-[10px] border border-line-2 bg-surface-2 p-3.5">
             <summary className="cursor-pointer select-none font-mono text-[10.5px] uppercase tracking-wide text-faint">
               Provenance
@@ -524,6 +621,53 @@ function LessonDetailBody({ lesson }: { lesson: LessonDetail }) {
   );
 }
 
+// ── S9: Outcome strip (last 16) ──────────────────────────────────────────────
+
+function OutcomeStrip({ history }: { history: { at: string; score: number | null; caught_state: string }[] }) {
+  const last16 = history.slice(-16);
+  if (last16.length === 0) {
+    return (
+      <p className="text-[12.5px] text-muted">
+        No outcomes recorded. Nothing links this lesson to a check, so a hit can&apos;t be told apart from noise.
+      </p>
+    );
+  }
+  return (
+    <div>
+      <div className="flex items-center gap-0.5">
+        {last16.map((h, i) => {
+          const tone = h.caught_state === "caught"
+            ? "bg-st-done"
+            : h.caught_state === "missed" || h.caught_state === "mixed"
+              ? "bg-st-blocked"
+              : "bg-faint";
+          return (
+            <div
+              key={`${h.at}-${i}`}
+              title={`${h.at}: ${h.caught_state}`}
+              className={cn("h-5 w-2.5 rounded-sm", tone)}
+            />
+          );
+        })}
+      </div>
+      <div className="mt-1.5 flex items-center gap-3 font-mono text-[9.5px] text-faint">
+        <span className="inline-flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-sm bg-st-done" /> caught
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-sm bg-st-blocked" /> missed
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-sm bg-faint" /> no outcome
+        </span>
+        <span className="ml-auto">{last16.length} of last 16</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Provenance ───────────────────────────────────────────────────────────────
+
 function Provenance({ lesson }: { lesson: LessonDetail }) {
   const events = lesson.events ?? [];
   if (events.length === 0 && !lesson.originating_item && !lesson.source) {
@@ -553,11 +697,12 @@ function Provenance({ lesson }: { lesson: LessonDetail }) {
   );
 }
 
+// ── Cluster section ──────────────────────────────────────────────────────────
+
 function ClusterSection({ lesson }: { lesson: LessonDetail }) {
   const scan = lesson.eligibility?.cluster_scan;
   const others = (lesson.cluster ?? []).filter((s) => s.id !== lesson.id);
   const unread = lesson.unread_cluster_tags ?? [];
-  // Anything other than a completed scan is "we did not look", not "we looked and found none".
   if (scan !== "scanned") {
     return (
       <p className="mt-2 text-[12.5px] text-muted">
@@ -589,6 +734,8 @@ function ClusterSection({ lesson }: { lesson: LessonDetail }) {
     </div>
   );
 }
+
+// ── Outcomes section ─────────────────────────────────────────────────────────
 
 function OutcomesSection({ lesson }: { lesson: LessonDetail }) {
   const { activeId } = useProjectCtx();
@@ -679,6 +826,34 @@ function OutcomesSection({ lesson }: { lesson: LessonDetail }) {
   );
 }
 
+function FilterChip({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "rounded-md border px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide transition-colors",
+        active
+          ? "border-line-hover bg-surface-3 text-fg"
+          : "border-line-2 text-faint hover:border-line-hover hover:text-muted",
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
+// ── History spark ────────────────────────────────────────────────────────────
+
 function HistorySpark({ history }: { history: { at: string; score: number | null }[] }) {
   const scores = history.map((h) => h.score).filter((s): s is number => s != null);
   if (scores.length === 0) {
@@ -706,6 +881,8 @@ function HistorySpark({ history }: { history: { at: string; score: number | null
     </svg>
   );
 }
+
+// ── Promote panel ────────────────────────────────────────────────────────────
 
 function PromotePanel({ lesson }: { lesson: LessonDetail }) {
   const { activeId } = useProjectCtx();
@@ -812,11 +989,6 @@ function MutationError({ err, fallback }: { err: unknown; fallback: string }) {
   return <p className="mt-2 text-[12.5px] text-st-blocked">{errorDetail(err, fallback)}</p>;
 }
 
-/** Missing caught_state is unknown — omitting it must not make the catalog look measured. */
-function rowIsUnmeasured(r: LessonListRow): boolean {
-  return !r.caught_state || r.caught_state === "unknown";
-}
-
 function dropReasonCopy(reason: string): string {
   if (reason === "contradicted") return "contradicted by a later incident of the same class";
   if (reason === "applied_and_recurred") return "applied and the issue still happened";
@@ -825,29 +997,4 @@ function dropReasonCopy(reason: string): string {
     return "corroboration went quiet while similar defects continued";
   }
   return reason.replace(/_/g, " ");
-}
-
-function trendLabel(v: string): string {
-  if (v === "dropping") return "Dropping";
-  if (v === "unmeasured") return "Unmeasured";
-  return v;
-}
-
-function caughtLabel(v: string): string {
-  if (v === "unknown") return "Unknown outcomes";
-  return v;
-}
-
-function eligLabel(v: string): string {
-  if (v === "eligible") return "Eligible for org";
-  return v;
-}
-
-function compactFilters(f: LessonFilters): LessonFilters {
-  const out: LessonFilters = {};
-  if (f.trend) out.trend = f.trend;
-  if (f.caught_state) out.caught_state = f.caught_state;
-  if (f.eligibility) out.eligibility = f.eligibility;
-  if (f.lesson_class) out.lesson_class = f.lesson_class;
-  return out;
 }
