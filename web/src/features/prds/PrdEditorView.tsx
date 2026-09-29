@@ -34,6 +34,11 @@ const AI_COMMANDS = [
   { key: "summarize", label: "Summarize" },
 ];
 
+/** PRD-47 S4 — six tabs over the existing editor. The ids are what the tab strip is
+ *  asserted on, so they travel into the DOM as `data-tab` rather than being reachable
+ *  only through the labels. */
+type RightTab = "preview" | "assistant" | "grill" | "coverage" | "acceptance" | "history";
+
 export function PrdEditorView() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
@@ -45,7 +50,7 @@ export function PrdEditorView() {
 
   const [title, setTitle] = React.useState("");
   const [body, setBody] = React.useState("");
-  const [rightTab, setRightTab] = React.useState<"preview" | "history" | "coverage" | "grill" | "assistant" | "acceptance">("preview");
+  const [rightTab, setRightTab] = React.useState<RightTab>("preview");
   const [diffVersion, setDiffVersion] = React.useState<PrdVersion | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [aiBusy, setAiBusy] = React.useState<string | null>(null);
@@ -154,13 +159,13 @@ export function PrdEditorView() {
         </button>
         <div className="ml-auto flex items-center gap-2">
           <LinkItemsMenu prdId={id} linked={prd.linked} onChange={refresh} />
-          <div className="flex items-center gap-1 rounded-lg border border-line-2 bg-surface-2 p-0.5">
-            <TabBtn active={rightTab === "preview"} onClick={() => setRightTab("preview")} icon={<Eye size={12} />} label="Preview" />
-            <TabBtn active={rightTab === "assistant"} onClick={() => setRightTab("assistant")} icon={<Sparkles size={12} />} label="Assistant" />
-            <TabBtn active={rightTab === "grill"} onClick={() => setRightTab("grill")} icon={<MessageCircleQuestion size={12} />} label="Grill" />
-            <TabBtn active={rightTab === "coverage"} onClick={() => setRightTab("coverage")} icon={<ListChecks size={12} />} label="Coverage" />
-            <TabBtn active={rightTab === "acceptance"} onClick={() => setRightTab("acceptance")} icon={<ShieldQuestion size={12} />} label="Acceptance" />
-            <TabBtn active={rightTab === "history"} onClick={() => setRightTab("history")} icon={<History size={12} />} label="History" />
+          <div className="flex items-center gap-1 rounded-lg border border-line-2 bg-surface-2 p-0.5" data-testid="prd-editor-tabs">
+            <TabBtn id="preview" active={rightTab === "preview"} onClick={() => setRightTab("preview")} icon={<Eye size={12} />} label="Preview" />
+            <TabBtn id="assistant" active={rightTab === "assistant"} onClick={() => setRightTab("assistant")} icon={<Sparkles size={12} />} label="Assistant" />
+            <TabBtn id="grill" active={rightTab === "grill"} onClick={() => setRightTab("grill")} icon={<MessageCircleQuestion size={12} />} label="Grill" />
+            <TabBtn id="coverage" active={rightTab === "coverage"} onClick={() => setRightTab("coverage")} icon={<ListChecks size={12} />} label="Coverage" />
+            <TabBtn id="acceptance" active={rightTab === "acceptance"} onClick={() => setRightTab("acceptance")} icon={<ShieldQuestion size={12} />} label="Acceptance" />
+            <TabBtn id="history" active={rightTab === "history"} onClick={() => setRightTab("history")} icon={<History size={12} />} label="History" />
           </div>
         </div>
       </div>
@@ -208,10 +213,12 @@ export function PrdEditorView() {
   );
 }
 
-function TabBtn({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+function TabBtn({ id, active, onClick, icon, label }: { id: RightTab; active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
   return (
     <button
       onClick={onClick}
+      data-testid="prd-editor-tab"
+      data-tab={id}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-[11.5px] transition-colors",
         active ? "bg-surface-4 text-fg" : "text-muted hover:text-fg-2",
