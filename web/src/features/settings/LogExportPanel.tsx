@@ -90,11 +90,17 @@ function Toggle({
   );
 }
 
+/** The strip's cell caption. Shared by all four cells so they cannot drift apart — `LastBatch`
+ *  renders three of its own shapes and each has to line up with the numeric ones beside it. */
+function StripLabel({ children }: { children: React.ReactNode }) {
+  return <div className="font-mono text-[10px] uppercase tracking-wide text-faint">{children}</div>;
+}
+
 /** One strip cell. `null` is unknown and renders an em dash — never a zero. */
 function Metric({ label, value, tone }: { label: string; value: number | null; tone?: string }) {
   return (
     <div className="min-w-0">
-      <div className="font-mono text-[10px] uppercase tracking-wide text-faint">{label}</div>
+      <StripLabel>{label}</StripLabel>
       <div className={cn("mt-0.5 font-mono text-[16px]", value === null ? "text-muted" : (tone ?? "text-fg"))}>
         {value === null ? UNKNOWN : value.toLocaleString()}
       </div>
@@ -109,7 +115,7 @@ function LastBatch({ status }: { status: LogExportStatus }) {
   if (status.last_batch_state === "never" || !status.last_batch) {
     return (
       <div className="min-w-0">
-        <div className="font-mono text-[10px] uppercase tracking-wide text-faint">Last batch</div>
+        <StripLabel>Last batch</StripLabel>
         <div className="mt-0.5 text-[13px] text-muted">never</div>
       </div>
     );
@@ -118,7 +124,7 @@ function LastBatch({ status }: { status: LogExportStatus }) {
   const when = b.ts ? new Date(b.ts).toLocaleString() : "";
   return (
     <div className="min-w-0">
-      <div className="font-mono text-[10px] uppercase tracking-wide text-faint">Last batch</div>
+      <StripLabel>Last batch</StripLabel>
       <div className={cn("mt-0.5 text-[13px]", b.ok ? "text-fg" : "text-st-blocked")}>
         {b.ok ? `${b.sent} sent` : b.error || "failed"}
         {b.kind === "test" ? <span className="ml-1.5 text-faint">test batch</span> : null}
