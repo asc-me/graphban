@@ -40,6 +40,7 @@ import type {
   GitopsPatch,
   GitopsView,
   UpdateCheck,
+  UsageAggregate,
   Invite,
   InvitePreview,
   Item,
@@ -178,6 +179,20 @@ async function request<T>(path: string, opts: RequestInit = {}, retry = true): P
   }
   if (res.status === 204) return undefined as T;
   return res.json();
+}
+
+async function requestText(path: string, retry = true): Promise<string> {
+  const headers: Record<string, string> = {};
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  const res = await fetch(`/api${path}`, { headers });
+  if (res.status === 401 && retry && (await refresh())) {
+    return requestText(path, false);
+  }
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new ApiError(res.status, detail);
+  }
+  return res.text();
 }
 
 export const api = {
@@ -383,6 +398,10 @@ export const api = {
       body: JSON.stringify(body),
     }),
   updateCheck: () => request<UpdateCheck>("/platform/update-check"),
+  usage: (rangeDays = 30) =>
+    request<UsageAggregate>(`/usage?range_days=${rangeDays}`),
+  usageCsv: (rangeDays = 30) =>
+    requestText(`/usage?range_days=${rangeDays}&format=csv`),
   // Is this box paying to reload models between calls? The reading behind
   // OLLAMA_KEEP_ALIVE — see the panel for why the setting is not a field.
   modelLoads: (projectId: string) =>

@@ -263,7 +263,7 @@ function HostedLeftNav() {
           </>
         )}
         {!hosted && <NavItem to="/organization" icon={<Building2 size={16} />} label="Organization" />}
-        <NavItem icon={<BarChart3 size={16} />} label="Usage" soon />
+        <NavItem to="/usage" icon={<BarChart3 size={16} />} label="Usage" />
         {isPlatformAdmin && <NavItem to="/admin" icon={<ShieldCheck size={16} />} label="Operator" />}
         <NavItem to={viewPath("feedback-kit")} icon={<Sparkles size={16} />} label="Feedback Kit" />
         <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
@@ -456,7 +456,7 @@ function SelfHostLeftNav() {
 
       <div className="mt-auto flex flex-col gap-0.5 border-t border-line pt-3">
         <OrgRailItem onOpenDialog={() => setOrgDialogOpen(true)} />
-        <NavItem icon={<BarChart3 size={16} />} label="Usage" soon />
+        <NavItem to="/usage" icon={<BarChart3 size={16} />} label="Usage" />
         <NavItem to="/feedback-kit" icon={<Sparkles size={16} />} label="Feedback Kit" />
         {isPlatformAdmin && <NavItem to="/admin" icon={<ShieldCheck size={16} />} label="Operator" />}
         <NavItem to="/settings" icon={<Settings size={16} />} label="Settings" />
