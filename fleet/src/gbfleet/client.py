@@ -47,7 +47,11 @@ ALLOWED_TOOLS: frozenset[str] = frozenset({"fleet_status", "propose_allocation"}
 #: surface on a credential with authority, reached by whoever thought of it first. Pinned by
 #: exact equality in `test_client.py` for the same reason the tool set is.
 ATTEMPTS_PATH = "/api/fleet/attempts"
-ALLOWED_PATHS: frozenset[str] = frozenset({ATTEMPTS_PATH})
+#: Names of skills and MCP servers, so the Harness page can show where harnesses differ.
+#: The same rule as attempts: a REST route on this credential is a deliberate widening,
+#: and the body is names only — the scanner drops URLs, headers and paths before posting.
+SURFACE_PATH = "/api/harness/surface"
+ALLOWED_PATHS: frozenset[str] = frozenset({ATTEMPTS_PATH, SURFACE_PATH})
 
 #: Short on purpose. This is a measurement posted beside real work; a supervisor waiting on it
 #: is a supervisor not starting a child.
@@ -179,6 +183,15 @@ class Graphban:
         the page shows rather than a gap it hides.
         """
         return self._post(ATTEMPTS_PATH, payload, timeout=ATTEMPT_TIMEOUT)
+
+    def post_surface(self, **payload: Any) -> dict | None:
+        """The skill and MCP names a child on this machine would load.
+
+        Same bargain as `post_attempt`: a report that cannot land returns None and never
+        raises. `gbfleet doctor` prints UNKNOWN when that happens; it does not refuse to
+        start a wave because the Harness page is a report behind.
+        """
+        return self._post(SURFACE_PATH, payload, timeout=10.0)
 
     def _post(self, path: str, payload: dict, *, timeout: float) -> dict | None:
         if path not in ALLOWED_PATHS:

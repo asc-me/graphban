@@ -19,6 +19,7 @@ from app.security.deps import get_agent_key, get_current_user
 from app.services import events as events_svc
 from app.services import harness as harness_svc
 from app.services import harness_rules
+from app.services import harness_surface as surface_svc
 
 router = APIRouter(prefix="/harness", tags=["harness"])
 
@@ -62,6 +63,33 @@ def harness_guidance(project_id: str | None = None, window_days: int | None = No
         raise HTTPException(422, "name a project_id")
     authz.require_readable(db, user.id, project_id)
     return harness_svc.guidance(db, project_id, caller_user_id=user.id, window_days=window_days)
+
+
+class SurfaceIn(BaseModel):
+    project_id: str
+    host: str
+    harnesses: list[dict]
+
+
+@router.post("/surface")
+def post_surface(body: SurfaceIn, db: Session = Depends(get_db),
+                 key=Depends(get_agent_key)):
+    """Names of the skills and MCP servers a child on this machine would load.
+
+    The supervisor posts this from `gbfleet surface` / `gbfleet doctor`. The body is
+    names and source types; `record` drops anything else, and a list marked complete
+    but omitted is stored as unknown rather than as empty. 404, never 403, when this
+    key cannot write the project.
+    """
+    if body.project_id not in authz.key_writable_ids(db, key):
+        raise HTTPException(404, "no such project")
+    try:
+        stored = surface_svc.record(
+            db, project_id=body.project_id, host=body.host, harnesses=body.harnesses)
+    except surface_svc.SurfaceRefused as exc:
+        raise HTTPException(422, str(exc)) from exc
+    db.commit()
+    return stored
 
 
 @router.get("/recommendations")

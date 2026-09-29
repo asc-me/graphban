@@ -179,10 +179,11 @@ def test_the_model_door_cannot_reach_graphban():
 #: the call gate refuses instead). Routing it through `call` would mean putting a
 #: pseudo-tool name in every allowlist to permit reading a public document.
 #: `post_attempt` (PRD-38 D3) posts telemetry to a REST route, which is not a tool and has no
-#: entry in any tool allowlist to route through. It is exempt from THIS check and governed by
-#: its own: `ALLOWED_PATHS`, pinned below, and the `_post` helper that refuses anything else.
+#: entry in any tool allowlist to route through. `post_surface` posts skill and MCP *names*
+#: to the Harness page, on the same terms. Both are exempt from THIS check and governed by
+#: `ALLOWED_PATHS`, pinned below, and the `_post` helper that refuses anything else.
 #: An exemption with no replacement gate would be the second door this file exists to prevent.
-NOT_TOOL_CALLS = {"list_tools", "post_attempt"}
+NOT_TOOL_CALLS = {"list_tools", "post_attempt", "post_surface"}
 
 
 def test_every_named_helper_goes_through_the_checked_call():
@@ -211,24 +212,25 @@ def test_every_named_helper_goes_through_the_checked_call():
         assert "post" not in calls, f"{helper.name} makes its own request"
 
 
-def test_the_exemptions_from_the_allowlist_are_exactly_two():
+def test_the_exemptions_from_the_allowlist_are_pinned():
     """`not in NOT_TOOL_CALLS` passes for every widening of NOT_TOOL_CALLS, so the set is
     pinned. The next method that skips the check should be an edit with a reason attached."""
-    assert NOT_TOOL_CALLS == {"list_tools", "post_attempt"}
+    assert NOT_TOOL_CALLS == {"list_tools", "post_attempt", "post_surface"}
 
 
-def test_the_rest_surface_is_one_path_and_every_post_is_checked_against_it():
-    """The replacement gate for `post_attempt`'s exemption.
+def test_the_rest_surface_is_pinned_and_every_post_is_checked_against_it():
+    """The replacement gate for the REST exemptions.
 
-    A credential with authority now reaches two surfaces on one connection pool. The tool
-    allowlist governs `/api/mcp` and says nothing about anything else, so the paths get an
-    allowlist of their own — pinned by exact equality here for the same reason the tool set
-    is, and enforced in `_post` rather than trusted to callers.
+    A credential with authority reaches `/api/mcp` and two REST paths on one connection
+    pool. The tool allowlist governs `/api/mcp` and says nothing about anything else, so
+    the paths get an allowlist of their own — pinned by exact equality here for the same
+    reason the tool set is, and enforced in `_post` rather than trusted to callers.
     """
-    from gbfleet.client import ALLOWED_PATHS, ATTEMPTS_PATH
+    from gbfleet.client import ALLOWED_PATHS, ATTEMPTS_PATH, SURFACE_PATH
 
-    assert ALLOWED_PATHS == {"/api/fleet/attempts"}
+    assert ALLOWED_PATHS == {"/api/fleet/attempts", "/api/harness/surface"}
     assert ATTEMPTS_PATH in ALLOWED_PATHS
+    assert SURFACE_PATH in ALLOWED_PATHS
 
     source = (FLEET_SRC / "gbfleet" / "client.py").read_text(encoding="utf-8")
     tree = ast.parse(source)

@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 
 from app.models import (Agent, AttemptTelemetry, Delegation, Enrolment,
                         HarnessRollup, Item)
+from app.services import harness_surface as surface_svc
 
 logger = logging.getLogger(__name__)
 
@@ -1051,6 +1052,7 @@ def report(db: Session, project_id: str, *, window_days: int | None = None,
     out["probe_suggestions"] = probe_suggestions(db, project_id)
     out["unavailable"] = unavailable_rows(db, [project_id], cutoff)
     out["snapshot_at"] = latest_snapshot_at(db)
+    out["surface"] = surface_svc.for_project(db, project_id)
     if overlay:
         attach_platform(db, out)
     return out
@@ -1477,6 +1479,7 @@ def org_report(db: Session, org_id: str, *, window_days: int | None = None,
     out["probe_suggestions"] = []
     out["unavailable"] = unavailable_rows(db, projects, cutoff)
     out["snapshot_at"] = latest_snapshot_at(db)
+    out["surface"] = surface_svc.for_org()
     if overlay:
         attach_platform(db, out)
     return out

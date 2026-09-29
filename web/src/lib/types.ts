@@ -1869,6 +1869,62 @@ export type HarnessPlatformCell =
   | { rate: number; n: string; orgs: number }
   | { rate: null; reason: string };
 
+/** One skill or MCP server name. `source` is a type (`user`, `project`, `seat`), never a path. */
+export interface HarnessSurfaceItem {
+  name: string;
+  source: string;
+}
+
+export interface HarnessSurfaceHarness {
+  vendor: string;
+  installed: boolean;
+  skills_status: "checked" | "partial" | "unknown";
+  skills_reason: string;
+  skills: HarnessSurfaceItem[];
+  disabled?: HarnessSurfaceItem[];
+  mcps_status: "checked" | "partial" | "unknown";
+  mcps_reason: string;
+  mcps: HarnessSurfaceItem[];
+}
+
+export interface HarnessSurfaceGap {
+  name: string;
+  present: string[];
+  absent: string[];
+  disabled_on: string[];
+  partial_present: string[];
+}
+
+export interface HarnessSurfaceKind {
+  compared: string[];
+  partial: string[];
+  rows: HarnessSurfaceGap[];
+  reason: string;
+}
+
+export interface HarnessSurfaceNote {
+  vendor: string;
+  kind: "skills" | "mcps";
+  status: string;
+  reason: string;
+}
+
+/**
+ * What a child on one machine loads. `reported: false` means nobody has posted a scan.
+ * That is not "the harnesses match".
+ */
+export interface HarnessSurface {
+  reported: boolean;
+  reason: string;
+  host?: string;
+  reported_at?: string | null;
+  other_hosts?: { host: string; reported_at: string | null }[];
+  harnesses: HarnessSurfaceHarness[];
+  skills?: HarnessSurfaceKind | null;
+  mcps?: HarnessSurfaceKind | null;
+  notes?: HarnessSurfaceNote[];
+}
+
 export interface HarnessReport {
   project_id?: string;
   org_id?: string;
@@ -1894,6 +1950,8 @@ export interface HarnessReport {
   probe_suggestions?: HarnessProbeSuggestion[];
   snapshot_at?: string | null;
   unavailable?: HarnessUnavailable[];
+  /** Absent on a response that predates the field. The page must not read that as a match. */
+  surface?: HarnessSurface;
 }
 
 export interface HarnessUnavailable {
