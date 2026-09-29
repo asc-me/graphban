@@ -91,8 +91,14 @@ describe("a failed fetch is not an empty project", () => {
     show(<ActivityView />);
     expect(await screen.findByText(FAILED_COPY)).toBeInTheDocument();
     expect(screen.queryByText(/no activity yet/i)).not.toBeInTheDocument();
-    // The event total would be a fabricated zero.
-    expect(screen.queryByText(/EVENTS/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/nothing in this selection/i)).not.toBeInTheDocument();
+    // Both of these used to assert the absence of the word "EVENTS", which the S10
+    // rebuild removed from the header entirely — so the assertion passed against a view
+    // that rendered the empty state under the failure, which is the exact defect this
+    // file exists to catch. These name things the success path DOES render: the header's
+    // "N of M recorded" count (a fabricated zero on a failed read) and the lens strip.
+    expect(screen.queryByText(/of .* recorded/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Activity lenses" })).not.toBeInTheDocument();
   });
 
   it("Triage names both failures instead of 'Queue is empty' and 'Nothing in flight'", async () => {

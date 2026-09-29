@@ -44,6 +44,7 @@ import type {
   InvitePreview,
   Item,
   EventPage,
+  EventsQuery,
   GrillMessage,
   LessonDetail,
   LessonFilters,
@@ -178,6 +179,33 @@ async function request<T>(path: string, opts: RequestInit = {}, retry = true): P
   }
   if (res.status === 204) return undefined as T;
   return res.json();
+}
+
+/**
+ * The Activity view's query string (PRD-47 S10).
+ *
+ * `undefined` and `null` omit a param; `""` sends it empty. That distinction IS the
+ * contract for `target_type`: most MCP writes record no target type, so an empty value
+ * selects those rows and only an absent one means "no object filter".
+ */
+function eventsQuery(q: EventsQuery): string {
+  const p = new URLSearchParams();
+  const put = (key: string, value: string | number | null | undefined) => {
+    if (value === undefined || value === null) return;
+    p.set(key, String(value));
+  };
+  put("project_id", q.projectId);
+  put("limit", q.limit ?? 100);
+  put("offset", q.offset);
+  put("action", q.action);
+  put("lens", q.lens);
+  put("actor", q.actor);
+  put("surface", q.surface);
+  put("target_type", q.targetType);
+  put("target_id", q.targetId);
+  put("bucket", q.bucket);
+  put("range", q.range);
+  return p.toString();
 }
 
 export const api = {
@@ -838,8 +866,7 @@ export const api = {
   links: (projectId?: string) =>
     request<GraphLink[]>(`/links${projectId ? `?project_id=${projectId}` : ""}`),
   mcpTools: () => request<{ live: number; tools: McpToolInfo[] }>("/mcp/tools"),
-  events: (projectId?: string, limit = 100) =>
-    request<EventPage>(`/events?limit=${limit}${projectId ? `&project_id=${projectId}` : ""}`),
+  events: (q: EventsQuery = {}) => request<EventPage>(`/events?${eventsQuery(q)}`),
 
   platform: (projectId: string) => request<PlatformConfig>(`/platform${projectQuery(projectId)}`),
   updatePlatform: (projectId: string, body: Partial<PlatformConfig>) =>
