@@ -6,6 +6,7 @@ import { PlaceHeader } from "@/components/shell/PlaceHeader";
 import {
   FETCH_FAILED,
   KpiGridSkeleton,
+  PlannerEmpty,
   PlannerError,
 } from "@/components/planner/PlannerStates";
 import { useProjectCtx } from "@/features/ProjectContext";
@@ -41,47 +42,74 @@ export function DashboardView() {
   );
 }
 
+/**
+ * True only when the project genuinely has nothing in it.
+ *
+ * Six zero tiles are a *measurement*: they say the counts were read and came back
+ * empty. That is the right answer for a project with work in some places and none in
+ * others, and the wrong answer for a project nobody has used, where the same zeros read
+ * as "we looked at your project and found nothing to report". PRD-47 §S3 asks for the
+ * empty state this dashboard has never had; §2.1 is the defect class it belongs to.
+ * Only reachable once the fetch succeeded — a failure takes the `PlannerError` branch.
+ */
+function nothingToSummarise(data: DashboardData): boolean {
+  return (
+    data.items_total === 0 &&
+    data.requests_total === 0 &&
+    data.shard_count === 0 &&
+    data.prd_count === 0 &&
+    data.mcp_calls === 0
+  );
+}
+
 function DashboardBody({ data }: { data: DashboardData }) {
   return (
-    <>
-      <div className="min-h-0 flex-1 overflow-y-auto p-6">
-        <AgentLoopInfo />
+    <div className="min-h-0 flex-1 overflow-y-auto p-6">
+      <AgentLoopInfo />
 
-        {/* KPI tiles (hero numbers — no plot, no hover) */}
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <Kpi icon={<Boxes size={15} />} label="Items" value={data.items_total} />
-          <Kpi icon={<CircleDot size={15} />} label="In progress" value={data.in_progress_count} accent="#c6f24e" />
-          <Kpi icon={<TriangleAlert size={15} />} label="Blocked" value={data.blocked_count} accent="#ff6b6b" />
-          <Kpi icon={<Brain size={15} />} label="Memory shards" value={data.shard_count} accent="#a78bfa" />
-          <Kpi icon={<FileText size={15} />} label="PRDs" value={data.prd_count} />
-          <Kpi icon={<Plug size={15} />} label="MCP calls" value={fmt(data.mcp_calls)} accent="#5fd07a" />
-        </div>
-
-        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
-          <div className="space-y-6">
-            <Panel title="Item status distribution">
-              <StatusBar data={data} />
-            </Panel>
-            <Panel title="Requests by type">
-              <TypeBars data={data} />
-            </Panel>
+      {nothingToSummarise(data) ? (
+        <PlannerEmpty
+          title="Nothing to summarise yet"
+          description="No items, requests, memory shards, PRDs or MCP calls are recorded for this project, so every tile here would read zero. That is an empty project, not a measured one — file the first item and the counts start."
+        />
+      ) : (
+        <>
+          {/* KPI tiles (hero numbers — no plot, no hover) */}
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <Kpi icon={<Boxes size={15} />} label="Items" value={data.items_total} />
+            <Kpi icon={<CircleDot size={15} />} label="In progress" value={data.in_progress_count} accent="#c6f24e" />
+            <Kpi icon={<TriangleAlert size={15} />} label="Blocked" value={data.blocked_count} accent="#ff6b6b" />
+            <Kpi icon={<Brain size={15} />} label="Memory shards" value={data.shard_count} accent="#a78bfa" />
+            <Kpi icon={<FileText size={15} />} label="PRDs" value={data.prd_count} />
+            <Kpi icon={<Plug size={15} />} label="MCP calls" value={fmt(data.mcp_calls)} accent="#5fd07a" />
           </div>
 
-          <Panel title="Recent activity">
-            <div className="space-y-1.5">
-              {data.recent_items.map((it) => (
-                <div key={it.id} className="flex items-center gap-2.5 rounded-lg border border-line-2 bg-surface-2 px-3 py-2">
-                  <span className="h-1.5 w-1.5 flex-none rounded-full" style={{ background: STATUS_META[it.status].color }} />
-                  <span className="w-[46px] flex-none font-mono text-[10px] text-faint">{it.id}</span>
-                  <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg-2">{it.title}</span>
-                  <span className="flex-none font-mono text-[10px] text-faint-2">{it.date}</span>
-                </div>
-              ))}
+          <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[1.4fr_1fr]">
+            <div className="space-y-6">
+              <Panel title="Item status distribution">
+                <StatusBar data={data} />
+              </Panel>
+              <Panel title="Requests by type">
+                <TypeBars data={data} />
+              </Panel>
             </div>
-          </Panel>
-        </div>
-      </div>
-    </>
+
+            <Panel title="Recent activity">
+              <div className="space-y-1.5">
+                {data.recent_items.map((it) => (
+                  <div key={it.id} className="flex items-center gap-2.5 rounded-lg border border-line-2 bg-surface-2 px-3 py-2">
+                    <span className="h-1.5 w-1.5 flex-none rounded-full" style={{ background: STATUS_META[it.status].color }} />
+                    <span className="w-[46px] flex-none font-mono text-[10px] text-faint">{it.id}</span>
+                    <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg-2">{it.title}</span>
+                    <span className="flex-none font-mono text-[10px] text-faint-2">{it.date}</span>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
