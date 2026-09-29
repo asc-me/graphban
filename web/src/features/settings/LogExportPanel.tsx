@@ -18,7 +18,7 @@
  */
 import * as React from "react";
 
-import { FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
+import { CardGridSkeleton, FETCH_FAILED, PlannerError } from "@/components/planner/PlannerStates";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/cn";
@@ -210,10 +210,12 @@ export function LogExportPanel() {
   const { data, isError, isPending, refetch } = useLogExport();
 
   if (isPending && !data) {
+    // The shared skeleton rather than a hand-rolled pulse: the panel is a stack of cards, and
+    // `PlannerStates` already has that shape with its own `aria-busy` contract.
     return (
-      <div className="max-w-2xl" aria-busy="true" aria-label="Loading log export">
+      <div className="max-w-2xl">
         <div className="mb-3 h-4 w-40 animate-pulse rounded-md bg-surface-3" />
-        <div className="h-24 animate-pulse rounded-[13px] bg-surface-3" />
+        <CardGridSkeleton cards={4} />
       </div>
     );
   }

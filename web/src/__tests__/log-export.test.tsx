@@ -232,6 +232,20 @@ describe("Log export settings page", () => {
 
   // ── the state floor: a failed read is not "off" ───────────────────────────
 
+  it("loading is the shared skeleton, not a blank pane that reads as off", async () => {
+    let resolve: (v: LogExportView) => void = () => {};
+    logExportSpy.mockReturnValue(new Promise<LogExportView>((r) => { resolve = r; }));
+    renderPage();
+    const busy = await screen.findByLabelText("Loading cards");
+    expect(busy).toHaveAttribute("aria-busy", "true");
+    // Neither the answer nor the probe's result may be on the page before the read lands.
+    expect(screen.queryByText("Paused")).not.toBeInTheDocument();
+    expect(screen.queryByText("Exporting")).not.toBeInTheDocument();
+    expect(screen.queryByText(TEST_NOT_RUN)).not.toBeInTheDocument();
+    resolve(payload());
+    expect(await screen.findByRole("heading", { name: "Log export" })).toBeInTheDocument();
+  });
+
   it("a failed fetch is an error affordance, not a panel saying off", async () => {
     logExportSpy.mockRejectedValue(new Error("boom"));
     renderPage();
