@@ -87,6 +87,25 @@ describe("acceptance panel", () => {
     expect(screen.getByText(/removed at v1\.1/)).toBeTruthy();
   });
 
+  it("labels the cut row itself CUT FROM SPEC", async () => {
+    // The heading above counts the cuts; this is the fate named on the section's own row,
+    // which is the one a reviewer scans. PRD-47 S4 names the copy explicitly and nothing
+    // asserted it — deleting `label: "CUT FROM SPEC"` left this suite green.
+    draw(report({
+      dropped: ["Judging"],
+      sections: report().sections.map((s) =>
+        s.section === "Judging"
+          ? { ...s, fate: "dropped" as const, dropped_at: "v1.1" }
+          : s),
+    }));
+
+    await screen.findByText(/Cut from the spec \(1\)/);
+    expect(screen.getByText("CUT FROM SPEC")).toBeTruthy();
+    // A cut must not borrow the label of the thing it is not: nobody delivered it, but
+    // "nothing delivered" says the work was skipped, not that the intent was removed.
+    expect(screen.queryByText("nothing delivered")).not.toBeInTheDocument();
+  });
+
   it("states plainly when nothing was cut, rather than showing an empty space", async () => {
     // An absence rendered as blank is one nobody reads. Five defects in this PRD were
     // exactly that shape.
