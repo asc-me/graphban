@@ -704,6 +704,7 @@ export interface ScoredCandidate {
   conflicts?: string[];
   judge_reason?: string;
   ungraded_reason?: string;
+  judge_source?: string;
 }
 
 /** On-demand LLM judge (GRPH-650). `verdict` XOR `cause` — a missing quality is not 0. */

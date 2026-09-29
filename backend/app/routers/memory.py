@@ -212,6 +212,7 @@ def scored_candidates(
             conflicts=list(r.get("conflicts") or []),
             judge_reason=str(r.get("judge_reason") or ""),
             ungraded_reason=str(r.get("ungraded_reason") or ""),
+            judge_source=str(r.get("judge_source") or ""),
         )
         for r in mem_svc.score_candidates(db, project_id=project_id)
     ]

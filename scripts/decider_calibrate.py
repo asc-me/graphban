@@ -478,6 +478,24 @@ def _run_head(endpoint: str, head: str, samples: list[ShardSample],
     return report
 
 
+def _load_id_set(path: str) -> set[str]:
+    """Shard ids from a text file (one per line) or JSON list / {holdout_ids: [...]}."""
+    raw = Path(path).read_text().strip()
+    if not raw:
+        return set()
+    if raw[0] in "[{":
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            data = data.get("holdout_ids") or data.get("ids") or []
+        return {str(x) for x in data}
+    return {ln.strip() for ln in raw.splitlines() if ln.strip() and not ln.startswith("#")}
+
+
+def _filter_samples(samples: list[ShardSample], ids: set[str]) -> list[ShardSample]:
+    """Keep only samples whose shard_id is in `ids`. Empty ids → empty result, not the full set."""
+    return [s for s in samples if s.shard_id in ids]
+
+
 def _get_session():
     """Bootstrap a DB session the same way the CLI does."""
     from app.db import SessionLocal
@@ -576,6 +594,15 @@ def main() -> None:
     parser.add_argument("--project", default=None, help="Project ID to scope shards (default: all)")
     parser.add_argument("--max-shards", type=int, default=0,
                         help="Cap on shards per corpus (0 = unlimited, useful for dry runs)")
+    parser.add_argument(
+        "--shard-ids-file",
+        default=None,
+        help=(
+            "Restrict every corpus to these shard ids (one per line, or JSON list / "
+            "object with holdout_ids). Use this for a frozen holdout; the default "
+            "full-DB load includes train shards and is not an honest S0."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -596,6 +623,18 @@ def main() -> None:
         judged = _load_judged_shards(db)
     finally:
         db.close()
+
+    if args.shard_ids_file:
+        want = _load_id_set(args.shard_ids_file)
+        labelled = _filter_samples(labelled, want)
+        scored = _filter_samples(scored, want)
+        judged = _filter_samples(judged, want)
+        logger.info("restricted to %d ids from %s (labelled %d, scored %d, judged %d)",
+                    len(want), args.shard_ids_file, len(labelled), len(scored), len(judged))
+        missing = want - {s.shard_id for s in labelled} - {s.shard_id for s in scored} - {s.shard_id for s in judged}
+        if missing:
+            logger.warning("shard-ids-file has %d ids not in any corpus, e.g. %s",
+                           len(missing), sorted(missing)[:5])
 
     if args.max_shards:
         labelled = labelled[:args.max_shards]

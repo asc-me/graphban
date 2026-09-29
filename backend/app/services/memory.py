@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -463,9 +464,9 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
     is offered for promotion ONCE with its recurrence as the evidence, and its other
     occurrences are offered as merges into it.
 
-    Similarity-only, so it degrades to noise (not an error) when embeddings are the
-    offline stub — it needs no chat provider. Does not call the chat model (GRPH-650);
-    on-demand judging is `advisory_judge`."""
+    Similarity always runs. When `memory_llm_judge` is on, a resolved decider scores
+    non-vetoed candidates until `DECIDER_QUEUE_BUDGET_S` (D9); the chat judge is still
+    capped at `REVIEW_JUDGE_MAX`. On-demand keep/quality is `advisory_judge`."""
     cands = [s for s in list_shards(db, project_id=project_id, status="candidate") if s.embedding is not None]
     published = [(s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="published") if s.embedding is not None]
     rejected = [(s, list(s.embedding)) for s in list_shards(db, project_id=project_id, status="rejected") if s.embedding is not None]
@@ -539,9 +540,19 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
 
     _, _, llm_judge = _triage_prefs(db, project_id)
     published_texts = [s.text for s, _ in published if (s.text or "").strip()][:8]
+    use_decider = bool(llm_judge and _resolved_decider(db, project_id) is not None)
+    if use_decider:
+        # D9: score in confidence order until the wall-clock budget is spent.
+        # REVIEW_JUDGE_MAX does not apply on this branch.
+        out.sort(key=lambda r: -float(r["confidence"]))
     asked = 0
+    t0 = time.monotonic()
     for row in out:
-        row.update(_empty_review_judge(cause="off" if not llm_judge else "capped"))
+        default_cause = "off" if not llm_judge else (
+            "unscored_budget" if use_decider else "capped"
+        )
+        row.update(_empty_review_judge(cause=default_cause))
+        row["judge_source"] = ""
         if not llm_judge:
             row["ungraded_reason"] = JUDGE_CAUSES["off"]
             continue
@@ -549,10 +560,15 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
             # Similarity already vetoed. Spending a judge call cannot un-duplicate.
             row["ungraded_reason"] = "similarity already vetoed — the judge is not asked"
             continue
+        if use_decider:
+            allow = (time.monotonic() - t0) < DECIDER_QUEUE_BUDGET_S
+        else:
+            allow = asked < REVIEW_JUDGE_MAX
         verdict, cause = review_judge(db, row["shard"], published_texts=published_texts,
-                                      allow_call=asked < REVIEW_JUDGE_MAX)
+                                      allow_call=allow)
         if cause == "capped":
-            # The row already reads as capped from the reset above.
+            if use_decider:
+                row.update(_empty_review_judge(cause="unscored_budget"))
             continue
         if cause != "cached":
             # The cap counts MODEL CALLS, not rows. A failed call spent the slot too, and
@@ -569,6 +585,7 @@ def score_candidates(db: Session, *, project_id: str | None = None) -> list[dict
             "conflicts": verdict["conflicts"],
             "judge_reason": verdict["reason"],
             "ungraded_reason": "",
+            "judge_source": verdict.get("source") or ("decider" if use_decider else "llm"),
         })
         if verdict["reason"]:
             row["reasons"] = list(row["reasons"]) + [f"review judge: {verdict['reason']}"]
@@ -644,6 +661,20 @@ JUDGE_SAMPLES = 3
 # clear positives (0.8-0.9). A number to move on evidence, which is the point of naming it.
 _JUDGE_PUBLISH_MIN = 0.75
 
+# D7 — S0 holdout 2026-09-29, graphban-memory-v3 served as `typed-decisions` on
+# ms-s1-ubt. Frozen 60 diverse human labels (29 keep / 31 reject). HTTP AUC 0.9733,
+# pass_keep and pass_quality. Operating point is the certainty tails, not 0.5 and
+# not the script's 2% cut (that cut auto-kept two holdout rejects). Highest reject
+# on the set was 0.461; one labelled keep sat at 0.147. Quality is the 90%-precision
+# level on human-published. `DECIDER_CHOICE_MIN` is unmeasured (review-pass
+# `contradicts` was not in S0) and is a conservative floor.
+DECIDER_KEEP_MIN = 0.55
+DECIDER_REJECT_MAX = 0.15
+DECIDER_QUALITY_MIN = 0.6468
+DECIDER_CHOICE_MIN = 0.70
+DECIDER_QUEUE_BUDGET_S = 2.0
+_DECIDER_QUALITY_LEVELS = ("useless", "weak", "fair", "good", "excellent")
+
 # The judge answering that it received NOTHING. Not a quality verdict — a report that the
 # prompt was empty — and `_parse_judge` was accepting it as quality 0.0, which reads as
 # "worthless" when it means "unread". Three shards were rejected on exactly this.
@@ -709,6 +740,9 @@ JUDGE_CAUSES = {
     "off": "llm judge is off for this project",
     "capped": "not asked this pass — the review judge is capped so a large queue cannot "
               "stall the page",
+    "undecided": "the decider's keep probability is inside the abstain band, so this "
+                 "candidate has no adjudication rather than a negative one",
+    "unscored_budget": "not scored yet — the decider queue budget ran out this pass",
 }
 
 # Extra causes the on-demand review endpoint can report (GRPH-650). Not in
@@ -740,6 +774,191 @@ _REVIEW_SYSTEM = (
 _REVIEW_QUESTION = "Score this candidate for a human reviewer. Return only the JSON object."
 
 
+def _resolved_decider(db: Session, project_id: str | None):
+    """A live Decider adapter, or None. Never raises — a broken pointer degrades."""
+    from app.services import platform as platform_svc  # lazy: avoid import cycle
+
+    try:
+        resolved = platform_svc.resolve_decider(db, project_id or "core")
+    except Exception:  # noqa: BLE001 — never let provider resolution break a write
+        logger.exception("decider: provider resolution failed")
+        return None
+    if resolved is None or getattr(resolved, "decider", None) is None:
+        return None
+    return resolved
+
+
+def _decider_keep_questions():
+    from app.providers import noul, score
+    return [
+        noul(
+            "keep",
+            "The note is a durable, specific, actionable fact, decision or "
+            "convention a future agent working on this project can act on.",
+            true="a rule, gotcha or decision with enough detail to act on",
+            false="vague, transient, obvious, redundant, or a status update",
+        ),
+        score(
+            "quality",
+            "How useful this note is to a future agent on this project.",
+            list(_DECIDER_QUALITY_LEVELS),
+        ),
+    ]
+
+
+def _decider_keep_state(text: str) -> dict:
+    """The measured S0 request shape. Bare shard text would un-calibrate D7."""
+    return {"instructions": _JUDGE_SYSTEM, "note": text, "question": _JUDGE_QUESTION}
+
+
+def _decider_judge(resolved, shard: MemoryShard) -> tuple[dict | None, str]:
+    """Keep/quality via D6's questions and D7's abstain band (PRD-45 S3)."""
+    from app.providers import llm_meter
+
+    text = " ".join((shard.text or "").split())
+    try:
+        with llm_meter.llm_context(feature="memory.decide", project_id=shard.project_id or ""):
+            decision = resolved.decider.decide(
+                state=_decider_keep_state(text),
+                questions=_decider_keep_questions(),
+            )
+    except Exception:  # noqa: BLE001 — a model outage must not fail the memory write
+        logger.exception("decider judge: decide call failed")
+        return None, "error"
+    keep_ans = (decision.answers or {}).get("keep")
+    if keep_ans is None:
+        return None, "unparseable"
+    try:
+        keep_p = float(keep_ans.value)
+    except (TypeError, ValueError):
+        return None, "unparseable"
+    # D7: quality is read only when keep is decided. An abstaining keep ignores
+    # quality entirely — a missing score must not turn "undecided" into "unparseable".
+    if DECIDER_REJECT_MAX < keep_p < DECIDER_KEEP_MIN:
+        return None, "undecided"
+    q_ans = (decision.answers or {}).get("quality")
+    if q_ans is None:
+        return None, "unparseable"
+    try:
+        q_raw = float(q_ans.value)
+    except (TypeError, ValueError):
+        return None, "unparseable"
+    top = len(_DECIDER_QUALITY_LEVELS) - 1
+    quality = min(max(q_raw / top, 0.0), 1.0)
+    head = decision.model or resolved.model
+    keep = keep_p >= DECIDER_KEEP_MIN
+    reason = f"decider: keep {keep_p:.2f} · quality {q_raw:.1f}/{top}"
+    return {
+        "keep": keep,
+        "quality": round(quality, 4),
+        "reason": reason,
+        "source": "decider",
+        "head": head,
+        "keep_prob": round(keep_p, 4),
+    }, "ok"
+
+
+def _decider_review_questions(published: list[tuple[str, str]]):
+    from app.providers import choice, noul
+    opts: dict[str, str] = {"none": "does not contradict any published note"}
+    for sid, _text in published:
+        opts[sid] = f"published shard {sid}"
+    return [
+        noul(
+            "grounded",
+            "The candidate is consistent with the numbered published memory; "
+            "it does not contradict any of it.",
+            true="consistent with the published notes",
+            false="contradicts a published note",
+        ),
+        noul(
+            "ready",
+            "Specific, durable and non-trivial enough to publish as-is.",
+            true="specific, durable and non-trivial enough to publish as-is",
+            false="vague, transient, or not ready to publish",
+        ),
+        choice(
+            "contradicts",
+            "Which published note, if any, the candidate contradicts.",
+            opts,
+        ),
+    ]
+
+
+def _decider_review_state(shard: MemoryShard, published: list[tuple[str, str]]) -> str:
+    parts = [f"CANDIDATE:\n{(shard.text or '').strip() or '(empty)'}"]
+    if published:
+        numbered = "\n".join(
+            f"{i}. [{sid}] {text}" for i, (sid, text) in enumerate(published, 1)
+        )
+        parts.append("PUBLISHED MEMORY (trusted):\n" + numbered)
+    else:
+        parts.append("PUBLISHED MEMORY: none — there is no trusted memory to contradict.")
+    return "\n\n".join(parts)
+
+
+def _decider_review_judge(
+    db: Session, resolved, shard: MemoryShard, *, allow_call: bool,
+) -> tuple[dict | None, str]:
+    """Grounded / ready / contradicts on the decider (PRD-45 D6 review pass)."""
+    from app.providers import llm_meter
+
+    pubs = [
+        (s.id, s.text) for s in list_shards(db, project_id=shard.project_id, status="published")
+        if (s.text or "").strip()
+    ][:5]
+    context = _decider_review_state(shard, pubs)
+    key = hashlib.sha256(
+        "\x00".join(["decider", str(resolved.model or ""), context]).encode("utf-8")
+    ).hexdigest()
+    if shard.review_judge_key == key and shard.review_judge_verdict:
+        return dict(shard.review_judge_verdict), "cached"
+    if not allow_call:
+        return None, "capped"
+    try:
+        with llm_meter.llm_context(feature="memory.decide", project_id=shard.project_id or ""):
+            decision = resolved.decider.decide(
+                state=context,
+                questions=_decider_review_questions(pubs),
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("decider review: decide call failed")
+        return None, "error"
+    g_ans = (decision.answers or {}).get("grounded")
+    r_ans = (decision.answers or {}).get("ready")
+    if g_ans is None or r_ans is None:
+        return None, "unparseable"
+    try:
+        grounded_p = float(g_ans.value)
+        ready_p = float(r_ans.value)
+    except (TypeError, ValueError):
+        return None, "unparseable"
+    conflicts: list[str] = []
+    contra = (decision.answers or {}).get("contradicts")
+    if contra is not None:
+        choice_val = str(contra.value or "")
+        conf = contra.confidence
+        if choice_val and choice_val != "none":
+            if conf is None or conf >= DECIDER_CHOICE_MIN:
+                conflicts = [choice_val]
+    reason = f"decider: grounded {grounded_p:.2f} · ready {ready_p:.2f}"
+    if conflicts:
+        reason += f" · contradicts {conflicts[0]}"
+    verdict = {
+        "grounded": grounded_p >= 0.5,
+        "ready": ready_p >= 0.5,
+        "conflicts": conflicts,
+        "reason": reason,
+        "source": "decider",
+        "head": decision.model or resolved.model,
+        "samples": 1,
+    }
+    shard.review_judge_key = key
+    shard.review_judge_verdict = verdict
+    db.commit()
+    return dict(verdict), "ok"
+
+
 def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
     """`(verdict, cause)` — the judge's answer and, when there is none, WHY (GRPH-351).
 
@@ -747,8 +966,15 @@ def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
     verdict; anything that reports a failure to a human should come through here, because
     "the model is missing" and "the model cannot decide about this shard" send a reader to
     completely different places.
+
+    D5: a resolved decider is the memory judge; otherwise the chat judge; otherwise
+    similarity. One judge per verdict, named on the shard.
     """
     from app.services import platform as platform_svc  # lazy: avoid import cycle
+
+    decider_res = _resolved_decider(db, shard.project_id)
+    if decider_res is not None:
+        return _decider_judge(decider_res, shard)
 
     try:
         _resolved = platform_svc.resolve_role(db, shard.project_id or "core", "memory.judge")
@@ -889,6 +1115,10 @@ def review_judge(db: Session, shard: MemoryShard, *,
     """
     from app.services import platform as platform_svc
 
+    decider_res = _resolved_decider(db, shard.project_id)
+    if decider_res is not None:
+        return _decider_review_judge(db, decider_res, shard, allow_call=allow_call)
+
     try:
         resolved = platform_svc.resolve_role(db, shard.project_id or "core", "memory.judge")
         provider, model = resolved.provider_id, resolved.chat
@@ -947,6 +1177,7 @@ def _empty_review_judge(*, cause: str) -> dict:
         "conflicts": [],
         "judge_reason": "",
         "ungraded_reason": JUDGE_CAUSES.get(cause, cause),
+        "judge_source": "",
     }
 
 
@@ -1083,23 +1314,33 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
         distinct_sources=distinct_sources, correction=_is_correction(shard),
     )
     source = "similarity"
+    head = ""
 
-    # LLM enrichment: refine the accept/quality view unless similarity already vetoed
-    # it as a structural duplicate / rejected-alike (those stay hard rejects).
+    # LLM / decider enrichment: refine the accept/quality view unless similarity
+    # already vetoed it as a structural duplicate / rejected-alike (those stay hard
+    # rejects). D8: vetoes win over every accept path.
     if llm_judge and suggestion != "reject":
         verdict = _llm_judge(db, shard)
         if verdict is not None:
-            source = "llm"
+            source = verdict.get("source") or "llm"
+            head = str(verdict.get("head") or "") if source == "decider" else ""
             reason = verdict["reason"]
+            quality_bar = (DECIDER_QUALITY_MIN if source == "decider"
+                           else _JUDGE_PUBLISH_MIN)
             if verdict["keep"]:
-                suggestion = ("accept" if verdict["quality"] >= _JUDGE_PUBLISH_MIN
+                suggestion = ("accept" if verdict["quality"] >= quality_bar
                               else "review")
-                confidence = verdict["quality"]
-                reasons = [f"LLM judge: {reason}"] if reason else ["LLM judge rated it publish-worthy"]
+                confidence = (verdict.get("keep_prob", verdict["quality"])
+                              if source == "decider" else verdict["quality"])
+                label = "decider" if source == "decider" else "LLM judge"
+                reasons = [f"{label}: {reason}"] if reason else [f"{label} rated it publish-worthy"]
             else:
                 suggestion = "reject"
-                confidence = round(1.0 - verdict["quality"], 3)
-                reasons = [f"LLM judge: {reason}"] if reason else ["LLM judge rated it low-quality"]
+                confidence = (round(1.0 - float(verdict.get("keep_prob", verdict["quality"])), 3)
+                              if source == "decider"
+                              else round(1.0 - verdict["quality"], 3))
+                label = "decider" if source == "decider" else "LLM judge"
+                reasons = [f"{label}: {reason}"] if reason else [f"{label} rated it low-quality"]
 
     # Vetoes win over every accept path, in every mode.
     if suggestion == "reject" and auto_reject:
@@ -1125,7 +1366,7 @@ def triage_candidate(db: Session, shard: MemoryShard) -> MemoryShard:
         db, actor_type="system", actor_label="memory-auto-triage", surface="system",
         action=action, target_type="shard", target_id=shard.id, project_id=shard.project_id,
         meta={"confidence": confidence, "source": source, "reasons": reasons,
-              "duplicate_of": duplicate_of},
+              "duplicate_of": duplicate_of, **({"head": head} if head else {})},
     )
     return shard
 
@@ -1219,7 +1460,9 @@ def agent_publish(db: Session, shard: MemoryShard, *, origin: str) -> tuple[Memo
             f"{JUDGE_CAUSES.get(cause, cause)}, so this candidate cannot be adjudicated; "
             f"a human publishes it from Memory review"
         )
-    keep = verdict["keep"] and verdict["quality"] >= _JUDGE_PUBLISH_MIN
+    quality_bar = (DECIDER_QUALITY_MIN if verdict.get("source") == "decider"
+                   else _JUDGE_PUBLISH_MIN)
+    keep = verdict["keep"] and verdict["quality"] >= quality_bar
     shard.status = "published" if keep else "rejected"
     shard.scoring_source = "agent"
     shard.auto_confidence = verdict["quality"]

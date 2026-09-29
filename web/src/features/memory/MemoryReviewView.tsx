@@ -205,6 +205,7 @@ const SOURCE_LABEL: Record<string, string> = {
   agent: "agent + judge",
   llm: "llm scorer",
   similarity: "similarity",
+  decider: "decider",
 };
 
 function AutoActionsLane({
@@ -360,6 +361,11 @@ function CandidateCard({
       <p className="mb-2 whitespace-pre-wrap text-[13px] leading-relaxed text-ink">{shard.text}</p>
       {score?.judged && (
         <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          {score.judge_source === "decider" && (
+            <span className="rounded border border-line-2 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-faint">
+              decider
+            </span>
+          )}
           <span
             className={cn(
               "rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide",
@@ -383,13 +389,32 @@ function CandidateCard({
         </div>
       )}
       {score && !score.judged && score.ungraded_reason && (
-        <p className="mb-2 font-mono text-[10.5px] text-faint">
-          not judged — {score.ungraded_reason}
-        </p>
+        (score.ungraded_reason.startsWith("not scored yet") ? (
+          <p className="mb-2 font-mono text-[10.5px] text-faint">not scored yet</p>
+        ) : score.ungraded_reason.includes("abstain band") ? (
+          <span className="mb-2 inline-block rounded border border-line-2 bg-surface-3 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-muted">
+            undecided
+          </span>
+        ) : (
+          <p className="mb-2 font-mono text-[10.5px] text-faint">
+            not judged — {score.ungraded_reason}
+          </p>
+        ))
       )}
       {score && (score.conflicts?.length ?? 0) > 0 && (
         <p className="mb-2 text-[11.5px] text-st-blocked">
-          Conflicts: {(score.conflicts ?? []).join(" · ")}
+          Conflicts:{" "}
+          {(score.conflicts ?? []).map((id, i) => (
+            <React.Fragment key={id}>
+              {i > 0 ? " · " : null}
+              <a
+                href="/memory-triage"
+                className="font-mono underline decoration-dotted underline-offset-2 hover:text-ink"
+              >
+                {id}
+              </a>
+            </React.Fragment>
+          ))}
         </p>
       )}
       {score && score.reasons.length > 0 && (
@@ -400,7 +425,12 @@ function CandidateCard({
           Judge: {Math.round(asked.verdict.quality * 100)}% — {asked.verdict.reason || (asked.verdict.keep ? "publish-worthy" : "not publish-worthy")}
         </p>
       )}
-      {asked && asked.verdict == null && (
+      {asked && asked.verdict == null && asked.cause === "undecided" && (
+        <span className="mb-3 inline-block rounded border border-line-2 bg-surface-3 px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide text-muted">
+          undecided
+        </span>
+      )}
+      {asked && asked.verdict == null && asked.cause !== "undecided" && (
         <p className="mb-3 text-[11.5px] text-faint">Judge unavailable: {asked.cause_detail}</p>
       )}
       <div className="flex items-center gap-2">

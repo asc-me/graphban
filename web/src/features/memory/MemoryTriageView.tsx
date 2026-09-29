@@ -544,15 +544,12 @@ function DetailPanel({
     (c) => c.representative.id === shard.id || c.members.some((m) => m.id === shard.id),
   );
 
-  const conflictTexts = (score?.conflicts ?? [])
-    .map((c) => {
-      const match = c.match(/published\s+(\S+)/i);
-      if (match) {
-        const pub = publishedById.get(match[1]);
-        if (pub) return pub.text;
-      }
-      return c;
-    });
+  const conflictRefs = (score?.conflicts ?? []).map((c) => {
+    const match = c.match(/published\s+(\S+)/i);
+    const id = match?.[1] ?? c;
+    const pub = publishedById.get(id);
+    return { id, text: pub?.text || c };
+  });
 
   const [pickedCanonical, setPickedCanonical] = React.useState<string | null>(null);
 
@@ -601,12 +598,20 @@ function DetailPanel({
         </span>
       </div>
 
-      {conflictTexts.length > 0 && (
+      {conflictRefs.length > 0 && (
         <div>
           <span className="mb-1 block text-[11px] text-faint">Contradicts</span>
-          {conflictTexts.map((t, i) => (
-            <p key={i} className="rounded border border-line-2 bg-surface p-2 text-[11.5px] text-ink">
-              {t}
+          {conflictRefs.map((c) => (
+            <p key={c.id} className="rounded border border-line-2 bg-surface p-2 text-[11.5px] text-ink">
+              <a
+                href="/memory-triage"
+                className="font-mono text-[10.5px] text-st-blocked underline decoration-dotted underline-offset-2"
+              >
+                {c.id}
+              </a>
+              {c.text && c.text !== c.id ? (
+                <span className="mt-1 block text-ink">{c.text}</span>
+              ) : null}
             </p>
           ))}
         </div>

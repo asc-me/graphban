@@ -221,6 +221,19 @@ def test_listing_used_by_includes_decider_pointers(db, project):
     assert "p1" in by_id[cred.id]["used_by"]
 
 
+def test_memory_decide_none_disables_even_with_default(db, project):
+    """Explicit `none` on memory.decide turns the decider off for this project (D5)."""
+    cred = _credential(db, "cred_decider", kind="systemone", state="valid")
+    db.add(DeploymentConfig(scope="", decider_credential_id=cred.id))
+    project.chat_roles = {"memory.decide": {"credential_id": platform_svc.DECIDER_ROLE_NONE}}
+    db.commit()
+
+    resolved = platform_svc.resolve_decider(db, "p1")
+    assert resolved.source == "none"
+    assert resolved.decider is None
+    assert resolved.credential_id == ""
+
+
 def test_listing_falling_back_includes_decider(db, project):
     """falling_back includes projects whose decider pointer is unreachable."""
     cred = _credential(db, "cred_decider", kind="systemone", state="unreachable")
