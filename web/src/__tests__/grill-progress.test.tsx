@@ -13,6 +13,10 @@ import type { GrillState } from "@/lib/types";
  *  still open versus what the author deliberately deferred, and whether a real model
  *  graded the answers or the offline stub merely counted them. */
 
+/** PRD-47 S4, verbatim — the line the grill tab has to carry. */
+const EARNED_APPROVAL =
+  "Approval is earned, not picked — Approved unlocks when every question has an answer the eval accepts.";
+
 function state(over: Partial<GrillState> = {}): GrillState {
   const dims = {
     scope_edges: { outcome: "resolved", note: "local only", turn_seq: 1,
@@ -68,8 +72,18 @@ describe("grill progress (AL-301)", () => {
 
   it("counts progress while the grill is unfinished", () => {
     show();
-    expect(screen.getByText("3/4")).toBeInTheDocument();
-    expect(screen.getByText(/approves itself/)).toBeInTheDocument();
+    expect(screen.getByText("3 / 4 answered")).toBeInTheDocument();
+  });
+
+  it("says approval is earned, not picked (PRD-47 S4)", () => {
+    /** The line this replaced ended "…and this PRD approves itself", which reads as
+     *  something that happens TO the PRD once enough answers exist — the opposite of the
+     *  point. Verbatim from S4. Asserted here and again through the editor in
+     *  `prd-editor-tabs.test.tsx`, because the panel having good tests is what let the
+     *  call site that mounts it have none. */
+    show();
+    expect(screen.getByText(EARNED_APPROVAL)).toBeInTheDocument();
+    expect(screen.queryByText(/approves itself/)).not.toBeInTheDocument();
   });
 
   it("says approval was reached, not set", () => {
