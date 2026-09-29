@@ -133,9 +133,16 @@ local = false
 evidence = []
 
 [[rows]]
-# Adapter landed 2026-09-05 (PRD-37 D13). No model named: qwen 0.23.0 replaces an unknown -m
-# silently with its configured default, so a model here would be a claim the binary does not
-# enforce; the walk ran on the operator's configured default (qwen3.7-plus at the time).
+# Adapter landed 2026-09-05 (PRD-37 D13). Model left empty because this walk never recorded
+# which model answered — qwen 0.23.0 replaces an unknown -m silently with its configured
+# default, and at the time that was believed unobservable. It is not: see the row below.
+#
+# What the fleet's own child logs show (1489 children with a readable stream, 2026-09-28):
+# init.model was qwen3.7-plus 1488 times and qwen3.8-max once. So in practice this row has
+# been measuring qwen3.7-plus, and every measured cell recorded against `alibaba` + model ""
+# is a cell about that model. The row still says "" rather than qwen3.7-plus because nothing
+# measured the model for THIS walk specifically, and a name here would be a guess dressed as
+# attribution. GRPH-982 makes the attribution real; rename the row then, not before.
 harness = "qwen-code"
 model = ""
 vendor = "alibaba"
@@ -148,3 +155,34 @@ local = false
 evidence = [
   { item = "GRPH-731", date = "2026-09-05", outcome = "review", note = "spawn walk on the deployed box: registered on the bound seat in 12s, claimed, appended the doc section, committed and pushed gb/p37walk3-1, moved the item to review in 61s" },
 ]
+
+[[rows]]
+# GRPH-982, measured 2026-09-28. The model qwen-code actually ran IS observable, which the
+# row above assumed it was not. The adapter already launches children with `-o json`, and the
+# first event of that stream is `{"type":"system","subtype":"init",...,"model":"<name>"}`
+# carrying the EFFECTIVE model, not an echo of argv. The control proves the difference:
+#
+#   qwen -m qwen3.8-max                 -> init.model = "qwen3.8-max"
+#   qwen -m definitely-not-a-model-zzz  -> init.model = "qwen3.7-plus"   (the silent default)
+#
+# So a named model in this row is checkable against what ran. It is not checkable BEFORE a
+# spawn — there is still no listing flag, so `known_models` stays None ("cannot be asked")
+# and a wrong name is still not refused. What changed is that the substitution is no longer
+# invisible after the fact.
+#
+# `status` stays unverified, and the gap is wider than "no walk yet": across 1489 measured
+# children exactly ONE ran this model. Every other qwen attempt on this machine — and so all
+# 123 measured cells, all of them filed under model "" — is evidence about qwen3.7-plus.
+# Nothing reads init.model yet, so no attempt is attributed to a model at all; that wiring is
+# GRPH-982. Do not promote this row on the strength of a wave whose children were not
+# measured, and do not read the row above as covering it.
+harness = "qwen-code"
+model = "qwen3.8-max"
+vendor = "alibaba"
+lane = "any"
+tier = "cheap"
+status = "unverified"
+order = 5
+cost_class = "cheap"
+local = false
+evidence = []
