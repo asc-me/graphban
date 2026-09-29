@@ -3,12 +3,15 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { App } from "@/App";
 import { LeftNav } from "@/components/shell/LeftNav";
+import { AuthProvider } from "@/features/auth/AuthContext";
 import { HomeView } from "@/features/home/HomeView";
 import { ProjectProvider } from "@/features/ProjectContext";
 import { SettingsView } from "@/features/settings/SettingsView";
+import { api } from "@/lib/api";
 
 const project = {
   id: "core", tag: "CORE", name: "Core", accent: "#c6f24e", visibility: "private",
@@ -21,9 +24,19 @@ const project = {
 const org = { id: "org1", name: "Acme", plan: "pro", role: "owner" as const };
 
 vi.mock("@/lib/api", () => ({
+  // The whole-app render at the bottom of this file signs in through the real AuthProvider.
+  hasSession: () => true,
   api: {
+    me: vi.fn(async () => ({
+      id: "u1", name: "Ada", handle: "ada", email: "ada@example.com", avatar: "#c6f24e", initials: "A",
+    })),
     projects: vi.fn(async () => [project]),
     counts: vi.fn(async () => ({ items: 41, items_in_progress: 3, requests: 7, review: 5 })),
+    // Collections the shell chrome asks for. Empty on purpose: the redirect tests assert on
+    // where the URL landed, and a populated palette/sidebar only adds noise around it.
+    items: vi.fn(async () => []),
+    prds: vi.fn(async () => []),
+    shards: vi.fn(async () => []),
     dashboard: vi.fn(async () => ({
       items_total: 41, items_by_status: { backlog: 10, next: 8, in_progress: 3, review: 5, done: 15, blocked: 2 },
       effort_total: 0, done_count: 15, in_progress_count: 3, blocked_count: 2,
@@ -301,5 +314,56 @@ describe("P28 Settings (self-host)", () => {
     expect(screen.queryByText(/^MCP$/)).not.toBeInTheDocument();
     expect(screen.queryByText("Users & access")).not.toBeInTheDocument();
     expect(screen.queryByText("Feedback Kit")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The whole app at one URL — real router, real shell, real views.
+ *
+ * GRPH-978: `/settings/project/feedback-kit` is a `<Navigate>` registered in App.tsx for
+ * both modes, and deleting it left the entire suite green, because every other test here
+ * mounts one component and never asks the router where a URL lands. The redirect IS the
+ * wiring, so the wiring is what has to be rendered.
+ */
+function renderAppAt(path: string, hosted: boolean) {
+  vi.mocked(api.config).mockResolvedValue({ hosted_mode: hosted, signup_mode: "closed" });
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={[path]}>
+        <AuthProvider>
+          <App />
+          <Here />
+        </AuthProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe("GRPH-978 the feedback-kit settings bookmark redirects", () => {
+  // `config` is module-scoped, so the hosted test would otherwise leak into every later one.
+  afterEach(() => {
+    vi.mocked(api.config).mockResolvedValue({ hosted_mode: false, signup_mode: "closed" });
+  });
+
+  it("self-host: lands on /feedback-kit with the Kit, not the settings pane", async () => {
+    renderAppAt("/settings/project/feedback-kit", false);
+
+    expect(await screen.findByRole("heading", { name: "Feedback Kit" })).toBeInTheDocument();
+    // Anchored: "/settings/project/feedback-kit" also CONTAINS "/feedback-kit", so a
+    // substring match would pass on the unredirected URL this test exists to catch.
+    expect(screen.getByTestId("here")).toHaveTextContent(/^\/feedback-kit$/);
+    // The quiet failure. Without the redirect this URL matches `/settings/*` and renders
+    // SettingsView — a real page, plausible in a screenshot, entirely the wrong one.
+    expect(screen.queryByText("This box")).not.toBeInTheDocument();
+  });
+
+  it("hosted: resolves through FlatRedirect to the project's tag URL", async () => {
+    renderAppAt("/settings/project/feedback-kit", true);
+
+    expect(await screen.findByRole("heading", { name: "Feedback Kit" })).toBeInTheDocument();
+    // Two hops: the Navigate to /feedback-kit, then the flat hosted resolver into /p/:tag.
+    expect(screen.getByTestId("here")).toHaveTextContent(/^\/p\/CORE\/feedback-kit$/);
+    expect(screen.queryByText("This box")).not.toBeInTheDocument();
   });
 });
