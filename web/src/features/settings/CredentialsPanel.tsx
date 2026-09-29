@@ -468,7 +468,9 @@ function TaskRoles({
       <div className="flex flex-col gap-2 border-t border-line pt-3" data-testid="decider-roles">
         <h4 className="text-[12px] font-medium text-fg">Memory adjudication</h4>
         <p className="text-[10.5px] text-faint">
-          Only decider credentials. Unset degrades to similarity, then the chat judge.
+          Only decider credentials. Inherit uses this project&apos;s or the deployment&apos;s
+          decider. <span className="font-mono">none</span> turns the decider off for this
+          project — chat judge, then similarity.
         </p>
         <div className="flex items-center gap-2">
           <span className="w-44 flex-none text-[12px] text-fg-2">memory.decide</span>
@@ -478,7 +480,8 @@ function TaskRoles({
             onChange={(e) => setRole("memory.decide", e.target.value)}
             className="min-w-0 flex-1 rounded border border-line-2 bg-transparent px-2 py-1 text-[12px]"
           >
-            <option value="">No decider configured</option>
+            <option value="">Inherit project / deployment decider</option>
+            <option value="none">none — chat judge, then similarity</option>
             {deciderCredentials.map((c) => (
               <option key={c.id} value={c.id}>
                 {(c.label || c.id)} — {c.kind} · {c.model}

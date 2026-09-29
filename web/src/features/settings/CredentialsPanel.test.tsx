@@ -476,10 +476,21 @@ describe("CredentialsPanel", () => {
     const panel = await screen.findByTestId("decider-roles");
     const select = within(panel).getByLabelText("memory.decide");
     const options = within(select).getAllByRole("option");
-    // "No decider configured" + the one decider credential. The chat credential is absent.
-    expect(options).toHaveLength(2);
+    // Inherit + explicit none + the one decider credential. The chat credential is absent.
+    expect(options).toHaveLength(3);
+    expect(within(select).getByRole("option", { name: /inherit/i })).toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: /^none/i })).toBeInTheDocument();
     expect(within(select).getByRole("option", { name: /^decider/i })).toBeInTheDocument();
     expect(within(select).queryByRole("option", { name: /chat only/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("project settings (PRD-45 S3)", () => {
+  it("relabels the judge toggle and names all three outcomes", async () => {
+    showSettings("/settings/project", false);
+    expect(await screen.findByText("Use a model judge to assess memories")).toBeInTheDocument();
+    expect(screen.getByText(/System One decider judges first/)).toBeInTheDocument();
+    expect(screen.queryByText("Use the LLM judge to assess memories")).not.toBeInTheDocument();
   });
 });
 

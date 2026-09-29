@@ -7,6 +7,7 @@ the pass bar meaningless, which is the whole point of S0.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -97,6 +98,33 @@ class TestQualityAtPrecision:
 
     def test_too_few_returns_none(self):
         assert cal._quality_at_precision([True], [0.9], 0.90) is None
+
+
+class TestHoldoutIdFilter:
+    """--shard-ids-file must not silently fall back to the full DB (S0 leak)."""
+
+    def test_json_holdout_ids(self, tmp_path):
+        p = tmp_path / "manifest.json"
+        p.write_text(json.dumps({"holdout_ids": ["m_a", "m_b"], "seed": 1}))
+        assert cal._load_id_set(str(p)) == {"m_a", "m_b"}
+
+    def test_text_lines(self, tmp_path):
+        p = tmp_path / "ids.txt"
+        p.write_text("# comment\nm_a\n\nm_b\n")
+        assert cal._load_id_set(str(p)) == {"m_a", "m_b"}
+
+    def test_filter_keeps_only_named(self):
+        samples = [
+            cal.ShardSample("m_a", "t", True, None, None, True),
+            cal.ShardSample("m_b", "t", False, None, None, False),
+            cal.ShardSample("m_c", "t", True, None, None, True),
+        ]
+        out = cal._filter_samples(samples, {"m_b", "m_z"})
+        assert [s.shard_id for s in out] == ["m_b"]
+
+    def test_empty_id_set_does_not_return_all(self):
+        samples = [cal.ShardSample("m_a", "t", True, None, None, True)]
+        assert cal._filter_samples(samples, set()) == []
 
 
 class TestShardLoading:

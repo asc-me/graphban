@@ -696,7 +696,7 @@ function ProjectPanel() {
   // AL-227: memory auto-triage — the scorer acts on agent candidates on write.
   const triageFlags: { key: keyof Project; label: string; hint?: string; disabled?: boolean }[] = [
     { key: "memory_auto_reject", label: "Auto-reject duplicate & rejected-alike memories", hint: "On: near-duplicates and shards resembling ones you've rejected drop straight to rejected (kept, never surfaced — undoable). Applies in every write mode." },
-    { key: "memory_llm_judge", label: "Use the LLM judge to assess memories", hint: "Needs a chat provider configured. The model rates each candidate's quality to refine the decisions above; falls back to similarity when no model is set." },
+    { key: "memory_llm_judge", label: "Use a model judge to assess memories", hint: "On: a configured System One decider judges first; otherwise the project's chat model; otherwise similarity. Structural vetoes (duplicates, rejected-alike) still win." },
     { key: "agent_adjudication", label: "Let agents adjudicate memory", hint: "Off by default. An agent can discard its own candidates, and can SUBMIT one for review by the configured model — it never publishes its own work, and with no model configured the shard stays here for you. Everything it publishes is labelled." },
   ];
 

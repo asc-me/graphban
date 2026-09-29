@@ -361,7 +361,7 @@ def set_project_roles(body: ProjectRolesIn, project_id: str = "core",
     except ValueError as e:
         raise HTTPException(422, str(e)) from None
     return {"project_id": project.id, "chat_roles": project.chat_roles or {},
-            "known_roles": list(platform_svc.CHAT_ROLES)}
+            "known_roles": list(platform_svc.CHAT_ROLES) + list(platform_svc.DECIDER_ROLES)}
 
 
 @router.get("", response_model=PlatformConfigOut)

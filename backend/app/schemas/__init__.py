@@ -539,6 +539,7 @@ class ScoredCandidate(BaseModel):
     conflicts: list[str] = []
     judge_reason: str = ""
     ungraded_reason: str = ""
+    judge_source: str = ""
 
 
 class JudgeVerdictOut(BaseModel):

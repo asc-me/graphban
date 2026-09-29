@@ -22,6 +22,12 @@ const autoRejected: Shard = {
   fresh: true, scoring_source: "similarity", auto_confidence: 0.97, created_at: "",
 };
 
+const autoDecider: Shard = {
+  id: "m12", text: "Always pin the pgvector image to pg16 in CI.", scope: "global", source: "",
+  status: "published", origin: "agent:loop-agent", item_id: null, project_id: "core",
+  fresh: true, scoring_source: "decider", auto_confidence: 0.91, created_at: "",
+};
+
 // Published with NO human involved (AL-280 trusted / AL-282 agent). Once agents run the
 // loop these are the reviewer's actual job, so they get their own label and filter.
 const unvetted: Shard = {
@@ -56,7 +62,7 @@ vi.mock("@/lib/api", () => ({
     candidateShards: vi.fn(async () => [candidate]),
     candidateClusters: vi.fn(async () => []),
     scoredCandidates: vi.fn(async () => []),
-    autoActions: vi.fn(async () => [autoRejected, unvetted]),
+    autoActions: vi.fn(async () => [autoRejected, unvetted, autoDecider]),
     publishShard: publishSpy,
     rejectShard: vi.fn(async () => ({ ...candidate, status: "rejected" })),
     promoteCluster: vi.fn(async () => ({ published: "", rejected: [] })),
@@ -146,6 +152,7 @@ describe("review judge signals (GRPH-79)", () => {
     expect(await screen.findByText("ungrounded")).toBeInTheDocument();
     expect(screen.getByText("not ready")).toBeInTheDocument();
     expect(screen.getByText(/Conflicts:/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "published m1: we never batch writes" })).toBeInTheDocument();
     expect(screen.queryByText("not judged")).not.toBeInTheDocument();
   });
 
@@ -171,6 +178,55 @@ describe("review judge signals (GRPH-79)", () => {
     expect(screen.queryByText("ungrounded")).not.toBeInTheDocument();
     expect(screen.queryByText("grounded")).not.toBeInTheDocument();
   });
+
+  it("renders unscored_budget as not scored yet, not a low score (PRD-45 D9)", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.scoredCandidates).mockResolvedValueOnce([
+      {
+        shard: candidate,
+        suggestion: "review",
+        confidence: 0.3,
+        reasons: ["novel — no strong signal either way"],
+        duplicate_of: null,
+        judged: false,
+        grounded: null,
+        ready: null,
+        conflicts: [],
+        judge_reason: "",
+        ungraded_reason: "not scored yet — the decider queue budget ran out this pass",
+        judge_source: "",
+      },
+    ]);
+    renderView();
+    expect(await screen.findByText("not scored yet")).toBeInTheDocument();
+    expect(screen.queryByText(/not judged/)).not.toBeInTheDocument();
+    expect(screen.queryByText("ungrounded")).not.toBeInTheDocument();
+  });
+
+  it("badges a decider verdict on the review card (PRD-45 D5)", async () => {
+    const { api } = await import("@/lib/api");
+    vi.mocked(api.scoredCandidates).mockResolvedValueOnce([
+      {
+        shard: candidate,
+        suggestion: "accept",
+        confidence: 0.8,
+        reasons: ["decider: grounded 0.91 · ready 0.84"],
+        duplicate_of: null,
+        judged: true,
+        grounded: true,
+        ready: true,
+        conflicts: ["m_abc123"],
+        judge_reason: "decider: grounded 0.91 · ready 0.84",
+        ungraded_reason: "",
+        judge_source: "decider",
+      },
+    ]);
+    renderView();
+    expect(await screen.findByRole("link", { name: "m_abc123" })).toHaveAttribute("href", "/memory-triage");
+    const card = screen.getByText(/Agent guess: batch writes/).closest("div")!;
+    expect(within(card).getByText("decider")).toBeInTheDocument();
+    expect(within(card).getByText("grounded")).toBeInTheDocument();
+  });
 });
 
 describe("unreviewed shards (AL-287)", () => {
@@ -180,6 +236,7 @@ describe("unreviewed shards (AL-287)", () => {
     // whole point is telling apart "the scorer was confident" from "nobody looked".
     expect(await screen.findByText("agent + judge")).toBeInTheDocument();
     expect(screen.getByText("similarity")).toBeInTheDocument();
+    expect(screen.getByText("decider")).toBeInTheDocument();
   });
 
   it("filters to only what nobody reviewed, in one click", async () => {

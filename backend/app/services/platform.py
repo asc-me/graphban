@@ -130,6 +130,10 @@ class Resolved:
     #: `source="deployment"` looks identical whether the project asked for that credential or
     #: was quietly moved onto it.
     fell_back_from: str = ""
+    #: Built only by `resolve_decider`. Chat resolution leaves this None. Typed as object
+    #: to avoid importing the Decider protocol into this module; callers treat it as
+    #: `providers.Decider | None`.
+    decider: object | None = None
 
     @property
     def substituted(self) -> bool:
@@ -243,6 +247,28 @@ def _from_credential(cred: Credential, source: str, model_override: str = "",
     )
 
 
+def _from_decider_credential(cred: Credential, source: str, *,
+                             fell_back_from: str = "",
+                             project_id: str = "") -> Resolved:
+    """Build a Decider adapter from a credential. `chat` is None — a systemone
+    credential is not a chat model, and routing it through `build_chat` would
+    silently construct a StubChat (PRD-45 D4)."""
+    model = cred.model
+    decider = providers.build_decider(
+        cred.kind, base_url=cred.base_url,
+        api_key=secrets.decrypt(cred.api_key), model=model, project_id=project_id,
+    )
+    return Resolved(
+        provider_id=cred.kind,
+        chat=None,
+        model=model,
+        credential_id=cred.id,
+        source=source,
+        fell_back_from=fell_back_from,
+        decider=decider,
+    )
+
+
 # Named tasks that may point at their own credential (GRPH-316). Unset = inherit
 # the project's chat pointer. A dedicated judge model is this set, not a new env
 # var — evals.py already deferred here.
@@ -254,12 +280,15 @@ CHAT_ROLES = (
     "spec.critique",
 )
 
-# Named tasks that may point at a decider credential (PRD-45 S2). Unset = inherit
-# the project's decider pointer. The decider is a System One model that returns
-# calibrated probabilities over a declared answer space; used for memory adjudication.
+# Named tasks that may point at a decider credential (PRD-45 S2 / D4). Unset = inherit
+# the project's decider pointer. `none` as the credential_id means this project does
+# not use a decider (grill on D5) — it falls to the chat judge, then similarity.
 DECIDER_ROLES = (
-    "memory.adjudicate",
+    "memory.decide",
 )
+#: Stored on `chat_roles["memory.decide"].credential_id` to disable the decider for
+#: one project without clearing the deployment default.
+DECIDER_ROLE_NONE = "none"
 
 
 def resolve_chat(db: Session, project_id: str) -> Resolved:
@@ -390,19 +419,30 @@ def set_project_roles(db: Session, project_id: str, roles: dict) -> Project:
         raise ValueError("chat_roles must be an object")
     cleaned: dict = {}
     scope = scope_for(db, project_id)
+    known = set(CHAT_ROLES) | set(DECIDER_ROLES)
     for name, spec in roles.items():
-        if name not in CHAT_ROLES:
-            raise ValueError(f"unknown chat role {name!r}; known: {', '.join(CHAT_ROLES)}")
+        if name not in known:
+            raise ValueError(f"unknown chat role {name!r}; known: {', '.join(sorted(known))}")
         if spec is None or spec == {}:
             continue
         if not isinstance(spec, dict):
             raise ValueError(f"chat role {name!r} must be an object")
         cred_id = spec.get("credential_id") or None
         model_over = spec.get("model_override") or ""
+        if cred_id == DECIDER_ROLE_NONE:
+            if name not in DECIDER_ROLES:
+                raise ValueError(f"{DECIDER_ROLE_NONE!r} is only valid on a decider role")
+            cleaned[name] = {"credential_id": DECIDER_ROLE_NONE}
+            continue
         if cred_id:
             cred = credential_in_scope(db, cred_id, scope)
             if cred is None:
                 raise LookupError(cred_id)
+            if name in DECIDER_ROLES and not provider_registry.serves_decide(cred.kind):
+                raise ValueError(
+                    f"{cred_id} is a {cred.kind} credential, which does not serve "
+                    "the decider role"
+                )
         if not cred_id and not model_over:
             continue
         entry: dict = {}
@@ -417,25 +457,47 @@ def set_project_roles(db: Session, project_id: str, roles: dict) -> Project:
     return project
 
 
+def _decider_role_spec(project: Project | None) -> dict:
+    """The `memory.decide` override on a project, or {}."""
+    if project is None:
+        return {}
+    spec = (project.chat_roles or {}).get("memory.decide") or {}
+    return spec if isinstance(spec, dict) else {}
+
+
 def resolve_decider(db: Session, project_id: str) -> Resolved:
-    """Which decider provider a project gets (PRD-45 S2).
+    """Which decider provider a project gets (PRD-45 S2 / D4).
 
     ```
+    0. the `memory.decide` role: `none` disables; a named credential wins
     1. the project's `decider_credential_id`
     2. the scope's default decider credential
     3. None (no decider; caller degrades to similarity or chat judge)
     ```
 
     Unlike chat, there is no stub fallback. A decider that does not answer degrades to
-    similarity, which is the fallback. The caller checks for None and handles it.
+    similarity, which is the fallback. The caller checks `resolved.decider`.
     """
     scope = scope_for(db, project_id)
     project = db.get(Project, project_id)
+    role = _decider_role_spec(project)
+    role_cred_id = (role.get("credential_id") or "") or None
+
+    if role_cred_id == DECIDER_ROLE_NONE:
+        return Resolved(provider_id="", chat=None, source="none")
+
+    if role_cred_id:
+        cred = credential_in_scope(db, role_cred_id, scope)
+        if usable(cred) and provider_registry.serves_decide(cred.kind):
+            return _from_decider_credential(cred, "role", project_id=project_id)
+        return Resolved(provider_id="", chat=None, source="role_unusable",
+                        fell_back_from=role_cred_id)
+
     pointer = getattr(project, "decider_credential_id", None) if project is not None else None
 
     cred = credential_in_scope(db, pointer, scope)
-    if usable(cred):
-        return _from_credential(cred, "project", "", db=db, scope=scope, project_id=project_id)
+    if usable(cred) and provider_registry.serves_decide(cred.kind):
+        return _from_decider_credential(cred, "project", project_id=project_id)
 
     # The project asked for something it is not getting.
     wanted = pointer or ""
@@ -454,8 +516,8 @@ def resolve_decider(db: Session, project_id: str) -> Resolved:
     # routing around it would hide a broken default forever; a project credential has
     # somewhere to fall to, so it falls.
     if default is not None:
-        return _from_credential(default, "deployment", fell_back_from=wanted,
-                                db=db, scope=scope, project_id=project_id)
+        return _from_decider_credential(default, "deployment", fell_back_from=wanted,
+                                        project_id=project_id)
 
     # No decider resolved. Return None-like Resolved so the caller can check.
     return Resolved(provider_id="",
