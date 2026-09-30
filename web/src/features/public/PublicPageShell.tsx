@@ -18,7 +18,7 @@ export function PublicPageShell({ children }: { children: ReactNode }) {
             </svg>
           </div>
           <div>
-            <div className="text-[14px] font-bold tracking-tight">Graphban</div>
+            <div className="text-lead font-bold tracking-tight">Graphban</div>
             <div className="font-mono text-[9px] tracking-[0.5px] text-faint">PUBLIC</div>
           </div>
         </div>

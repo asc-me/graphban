@@ -56,7 +56,7 @@ export function ReportIssueDialog({ open, onOpenChange }: { open: boolean; onOpe
 
         {done ? (
           <div className="space-y-3">
-            <div className="rounded-[11px] border border-accent/40 bg-[rgba(198,242,78,0.06)] p-3 text-[12.5px] text-fg-2">
+            <div className="rounded-[11px] border border-accent/40 bg-[rgba(198,242,78,0.06)] p-3 text-body text-fg-2">
               Thanks — your report was sent{done.request_id ? ` (${done.request_id})` : ""}.
             </div>
             <div className="flex justify-end">
@@ -64,7 +64,7 @@ export function ReportIssueDialog({ open, onOpenChange }: { open: boolean; onOpe
             </div>
           </div>
         ) : cfg && !cfg.enabled ? (
-          <p className="text-[12.5px] text-muted">Upstream reporting is turned off on this deployment.</p>
+          <p className="text-body text-muted">Upstream reporting is turned off on this deployment.</p>
         ) : (
           <form
             onSubmit={(e) => {
@@ -101,7 +101,7 @@ export function ReportIssueDialog({ open, onOpenChange }: { open: boolean; onOpe
               <p className="text-[11.5px] text-st-blocked">Couldn't send — the upstream intake may be unreachable.</p>
             )}
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] text-faint">
+              <span className="text-small text-faint">
                 {cfg?.target ? (
                   <>Sends to <span className="font-mono text-muted">{cfg.target}</span></>
                 ) : (

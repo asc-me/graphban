@@ -41,11 +41,11 @@ export function InviteAcceptPage() {
         </div>
 
         <div className="rounded-[16px] border border-line bg-surface-3/70 p-6 shadow-[0_24px_60px_rgba(0,0,0,0.4)]">
-          {preview.isLoading && <p className="text-[12.5px] text-muted">Loading invitation…</p>}
+          {preview.isLoading && <p className="text-body text-muted">Loading invitation…</p>}
           {preview.isError && (
             <>
               <h1 className="mb-1 text-[16px] font-semibold">Invitation unavailable</h1>
-              <p className="text-[12.5px] text-muted">
+              <p className="text-body text-muted">
                 This invitation link is invalid, has already been used, or has expired. Ask whoever
                 invited you to send a fresh one.
               </p>
@@ -79,7 +79,7 @@ function InviteBody({
           <h1 className="mb-1 text-[16px] font-semibold">
             Welcome to <span className="text-accent">Graphban</span>
           </h1>
-          <p className="mb-5 text-[12.5px] text-muted">
+          <p className="mb-5 text-body text-muted">
             {invitedBy} to Graphban. Create your account and you'll set up your
             organization next.
           </p>
@@ -89,7 +89,7 @@ function InviteBody({
           <h1 className="mb-1 text-[16px] font-semibold">
             Join <span className="text-accent">{preview.org_name}</span>
           </h1>
-          <p className="mb-5 text-[12.5px] text-muted">
+          <p className="mb-5 text-body text-muted">
             {invitedBy} to join <strong>{preview.org_name}</strong> as {preview.role}.
           </p>
         </>

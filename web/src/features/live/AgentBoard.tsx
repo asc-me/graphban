@@ -150,18 +150,18 @@ function AgentRow({
           )}
           {a.holdings.length > 0 && (
             <div className="mt-2">
-              <div className="font-mono text-[9.5px] uppercase tracking-wide text-faint">Recorded PRs</div>
+              <div className="font-mono text-meta uppercase tracking-wide text-faint">Recorded PRs</div>
               <ul className="mt-0.5 space-y-0.5 text-[12px]">
                 {a.holdings.map((h) => (
                   <li key={h.id} className="flex flex-wrap items-baseline gap-2">
-                    <span className="font-mono text-[11px] text-muted">{h.id}</span>
+                    <span className="font-mono text-small text-muted">{h.id}</span>
                     <span className="truncate text-fg-2">{h.title}</span>
                     {h.pr.state === "recorded" && h.pr.url ? (
-                      <a href={h.pr.url} className="truncate font-mono text-[11px]" target="_blank" rel="noreferrer">
+                      <a href={h.pr.url} className="truncate font-mono text-small" target="_blank" rel="noreferrer">
                         {h.pr.url}
                       </a>
                     ) : (
-                      <span className="font-mono text-[11px] text-muted">unrecorded</span>
+                      <span className="font-mono text-small text-muted">unrecorded</span>
                     )}
                   </li>
                 ))}
@@ -238,7 +238,7 @@ function StatusSummary({ agent: a, servedAt }: { agent: LiveAgent; servedAt: str
   }
   return (
     <span>
-      <span className="rounded border border-line-2 px-1 font-mono text-[9.5px] uppercase tracking-wide text-faint">
+      <span className="rounded border border-line-2 px-1 font-mono text-meta uppercase tracking-wide text-faint">
         reported
       </span>{" "}
       <span className={cn("text-fg-2", a.status.stale && "text-faint line-through decoration-faint")}>
@@ -334,7 +334,7 @@ function FeedRowView({
   if (r.source === "reported") {
     return (
       <li className="flex flex-wrap items-baseline gap-x-2 text-[11.5px]">
-        <span className="rounded border border-line-2 px-1 font-mono text-[9.5px] uppercase tracking-wide text-faint">
+        <span className="rounded border border-line-2 px-1 font-mono text-meta uppercase tracking-wide text-faint">
           reported
         </span>
         <span className="text-fg-2">{r.status}</span>

@@ -101,7 +101,7 @@ function FeedRowView({
   if (r.source === "reported") {
     return (
       <li className="flex flex-wrap items-baseline gap-x-2 text-[11.5px]">
-        <span className="rounded border border-line-2 px-1 font-mono text-[9.5px] uppercase tracking-wide text-faint">
+        <span className="rounded border border-line-2 px-1 font-mono text-meta uppercase tracking-wide text-faint">
           reported
         </span>
         <span className="text-fg-2">{r.status}</span>

@@ -72,7 +72,7 @@ function SelfHostSettings() {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-none border-b border-line px-5 py-4">
         <h1 className="text-[18px] font-semibold tracking-tight">Settings</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted">This project and this box.</p>
+        <p className="mt-0.5 text-body text-muted">This project and this box.</p>
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr]">
         <div className="flex flex-col gap-0.5 overflow-y-auto border-r border-line p-3">
@@ -167,7 +167,7 @@ function HostedSettingsTabs() {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-none border-b border-line px-5 py-4">
         <h1 className="text-[18px] font-semibold tracking-tight">Settings</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted">Providers, integrations, project config, members, and API keys.</p>
+        <p className="mt-0.5 text-body text-muted">Providers, integrations, project config, members, and API keys.</p>
       </div>
       <div className="grid min-h-0 flex-1 grid-cols-[200px_1fr]">
         <div className="flex flex-col gap-0.5 border-r border-line p-3">
@@ -233,10 +233,10 @@ function Section({ title, desc, extra, children }: {
   return (
     <div className="mb-6 max-w-2xl">
       <div className="flex items-center justify-between gap-3">
-        <div className="text-[14px] font-semibold">{title}</div>
+        <div className="text-lead font-semibold">{title}</div>
         {extra}
       </div>
-      {desc && <p className="mb-3 mt-0.5 text-[12.5px] text-muted">{desc}</p>}
+      {desc && <p className="mb-3 mt-0.5 text-body text-muted">{desc}</p>}
       <div className={desc ? "" : "mt-3"}>{children}</div>
     </div>
   );
@@ -303,7 +303,7 @@ function IntegrationsPanel() {
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
         <div className="mb-3 flex items-center gap-2.5">
           <Github size={17} className="text-fg" />
-          <div className="text-[14px] font-semibold">GitHub</div>
+          <div className="text-lead font-semibold">GitHub</div>
           <StatusPill connected={cfg.github_connected} />
         </div>
         {cfg.github_connected ? (
@@ -329,7 +329,7 @@ function IntegrationsPanel() {
         <div className="mt-4 border-t border-line pt-3">
           <Label>Inbound issues webhook</Label>
           <div className="flex items-center gap-2">
-            <code className="flex-1 overflow-x-auto rounded-md border border-line-2 bg-surface px-2.5 py-1.5 font-mono text-[11px] text-muted-2">
+            <code className="flex-1 overflow-x-auto rounded-md border border-line-2 bg-surface px-2.5 py-1.5 font-mono text-small text-muted-2">
               {origin}/api/public/github/webhook
             </code>
             <button
@@ -343,7 +343,7 @@ function IntegrationsPanel() {
               {copied ? <Check size={13} className="text-accent" /> : <Copy size={13} />}
             </button>
           </div>
-          <p className="mt-1.5 text-[11px] text-faint">
+          <p className="mt-1.5 text-small text-faint">
             Opened issues from the connected repo become tracker items <em>in this project</em>,
             each linked back to the GitHub issue.
           </p>
@@ -354,7 +354,7 @@ function IntegrationsPanel() {
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
         <div className="mb-3 flex items-center gap-2.5">
           <HardDrive size={17} className="text-fg" />
-          <div className="text-[14px] font-semibold">Google Drive</div>
+          <div className="text-lead font-semibold">Google Drive</div>
           <StatusPill connected={cfg.gdrive_connected} />
         </div>
         {cfg.gdrive_connected ? (
@@ -372,7 +372,7 @@ function IntegrationsPanel() {
             </div>
             {syncReport && (
               <div className="rounded-[11px] border border-line-2 bg-surface px-3 py-2.5 text-[12px]">
-                <div className="mb-1 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-[11px] text-muted">
+                <div className="mb-1 flex flex-wrap gap-x-3 gap-y-0.5 font-mono text-small text-muted">
                   <span>↑ exported {syncReport.exported.length + syncReport.updated_file.length}</span>
                   <span>↓ imported {syncReport.imported.length + syncReport.updated_db.length}</span>
                   <span>= in sync {syncReport.in_sync}</span>
@@ -397,7 +397,7 @@ function IntegrationsPanel() {
         )}
         <div className="mt-4 border-t border-line pt-3">
           <Label>How the folder is organized</Label>
-          <p className="mb-2 text-[11px] text-faint">
+          <p className="mb-2 text-small text-faint">
             The folder is this project's root. PRDs two-way sync with the <code>PRDs/</code>
             subfolder — drop a <code>.md</code> there to import a draft; conflicts are flagged, not
             clobbered. The sync directory is a mounted volume; point it at a Google Drive Desktop
@@ -408,7 +408,7 @@ function IntegrationsPanel() {
   Digests/      generated progress digests
   Exports/      memory & item snapshots (JSON)
   Attachments/  feedback screenshots`}</pre>
-          <p className="mt-1.5 text-[11px] text-faint">
+          <p className="mt-1.5 text-small text-faint">
             Files outside these subfolders are ignored; deleting a mirror never deletes the PRD.
           </p>
         </div>
@@ -418,11 +418,11 @@ function IntegrationsPanel() {
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
         <div className="mb-1 flex items-center gap-2.5">
           <ShieldCheck size={17} className="text-fg" />
-          <div className="text-[14px] font-semibold">Public surfaces</div>
+          <div className="text-lead font-semibold">Public surfaces</div>
         </div>
         <p className="mb-3 text-[12px] text-muted">
           Each surface is independent. Intake is not a board. A token is not a publication.
-          <code className="ml-1 font-mono text-[11px]">public_share_enabled</code> is a derived read — on when any surface below is.
+          <code className="ml-1 font-mono text-small">public_share_enabled</code> is a derived read — on when any surface below is.
         </p>
         <div className="space-y-2.5">
           {([
@@ -466,7 +466,7 @@ function IntegrationsPanel() {
         </div>
         {cfg.public_share_enabled && cfg.share_token && (
           <div className="mt-3 flex items-center gap-2 border-t border-line pt-3">
-            <code className="flex-1 overflow-x-auto rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 font-mono text-[11px] text-fg-2">
+            <code className="flex-1 overflow-x-auto rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 font-mono text-small text-fg-2">
               {origin}/embed/roadmap?token={cfg.share_token}
             </code>
             <button
@@ -484,26 +484,26 @@ function IntegrationsPanel() {
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
         <div className="mb-1 flex items-center gap-2.5">
           <KeyRound size={17} className="text-fg" />
-          <div className="text-[14px] font-semibold">Ingest token</div>
+          <div className="text-lead font-semibold">Ingest token</div>
         </div>
         <p className="mb-3 text-[12px] text-muted">
-          Bearer credential for <code className="font-mono text-[11px]">POST /api/public/requests</code>.
+          Bearer credential for <code className="font-mono text-small">POST /api/public/requests</code>.
           Rotating immediately invalidates the previous token.
         </p>
         {cfg.ingest_token_prefix ? (
           <div className="mb-3 flex items-center gap-2">
-            <span className="font-mono text-[11px] text-fg-2">{cfg.ingest_token_prefix}…</span>
+            <span className="font-mono text-small text-fg-2">{cfg.ingest_token_prefix}…</span>
           </div>
         ) : (
-          <p className="mb-3 text-[11px] text-faint">No token minted yet.</p>
+          <p className="mb-3 text-small text-faint">No token minted yet.</p>
         )}
         {mintedToken && (
           <div className="mb-3 rounded-md border border-accent/30 bg-accent/5 p-2.5">
-            <p className="mb-1.5 text-[11px] text-accent">
+            <p className="mb-1.5 text-small text-accent">
               Copy now — this is the only time the full token is shown.
             </p>
             <div className="flex items-center gap-2">
-              <code className="flex-1 break-all rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 font-mono text-[11px] text-fg-2">
+              <code className="flex-1 break-all rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 font-mono text-small text-fg-2">
                 {mintedToken}
               </code>
               <button
@@ -540,7 +540,7 @@ function IntegrationsPanel() {
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">
         <div className="mb-1 flex items-center gap-2.5">
           <ShieldCheck size={17} className="text-fg" />
-          <div className="text-[14px] font-semibold">Spam protection</div>
+          <div className="text-lead font-semibold">Spam protection</div>
         </div>
         <p className="mb-3 text-[12px] text-muted">
           Applies to the public feedback endpoints for this project. A honeypot is always on.
@@ -571,7 +571,7 @@ function IntegrationsPanel() {
             />
           </div>
           <Button size="sm" onClick={saveSpam}>{spamSaved ? "Saved" : "Save spam settings"}</Button>
-          <p className="text-[11px] text-faint">
+          <p className="text-small text-faint">
             When a secret is set, submissions must pass Turnstile. Leave both blank for no captcha
             (default). The widget renders the challenge automatically.
           </p>
@@ -715,7 +715,7 @@ function ProjectPanel() {
       <div className="mb-4"><Label>Description</Label><Textarea rows={2} value={form.description ?? ""} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} /></div>
       <div className="mb-4 space-y-2">
         {flags.map((fl) => (
-          <label key={fl.key} className="flex cursor-pointer items-center gap-2.5 text-[12.5px] text-fg-2">
+          <label key={fl.key} className="flex cursor-pointer items-center gap-2.5 text-body text-fg-2">
             <input type="checkbox" className="accent-accent" checked={!!form[fl.key]} onChange={(e) => setForm((f) => ({ ...f, [fl.key]: e.target.checked }))} />
             {fl.label}
           </label>
@@ -725,7 +725,7 @@ function ProjectPanel() {
         <Label>Agent memory writes</Label>
         <div className="mt-1 space-y-2.5">
           {writeModes.map((m) => (
-            <label key={m.value} className="flex cursor-pointer gap-2.5 text-[12.5px] text-fg-2">
+            <label key={m.value} className="flex cursor-pointer gap-2.5 text-body text-fg-2">
               <input
                 type="radio"
                 name="memory_write_mode"
@@ -735,7 +735,7 @@ function ProjectPanel() {
               />
               <span>
                 {m.label}
-                <span className="mt-0.5 block text-[11px] leading-snug text-faint">{m.hint}</span>
+                <span className="mt-0.5 block text-small leading-snug text-faint">{m.hint}</span>
               </span>
             </label>
           ))}
@@ -745,11 +745,11 @@ function ProjectPanel() {
         <Label>Memory auto-triage</Label>
         <div className="mt-1 space-y-2.5">
           {triageFlags.map((fl) => (
-            <label key={fl.key} className={cn("flex cursor-pointer gap-2.5 text-[12.5px] text-fg-2", fl.disabled && "cursor-not-allowed opacity-55")}>
+            <label key={fl.key} className={cn("flex cursor-pointer gap-2.5 text-body text-fg-2", fl.disabled && "cursor-not-allowed opacity-55")}>
               <input type="checkbox" className="accent-accent mt-0.5" disabled={fl.disabled} checked={!!form[fl.key]} onChange={(e) => setForm((f) => ({ ...f, [fl.key]: e.target.checked }))} />
               <span>
                 {fl.label}
-                {fl.hint && <span className="mt-0.5 block text-[11px] leading-snug text-faint">{fl.hint}</span>}
+                {fl.hint && <span className="mt-0.5 block text-small leading-snug text-faint">{fl.hint}</span>}
               </span>
             </label>
           ))}
@@ -885,11 +885,11 @@ function GateKeyInstall({ apiKey }: { apiKey: string }) {
     <div className="mt-3 border-t border-line-2 pt-3">
       <p className="mb-2 text-[12px] text-muted">
         Store as CI secrets — <span className="text-fg-2">not</span> in an agent&rsquo;s MCP
-        config. <code className="font-mono text-[11px] text-fg-2">scripts/attest_ci.py</code>{" "}
+        config. <code className="font-mono text-small text-fg-2">scripts/attest_ci.py</code>{" "}
         reads these after the check that decides CI is green.
       </p>
       <div className="flex items-start gap-2">
-        <pre className="flex-1 overflow-x-auto rounded-md border border-line-2 bg-surface-3 p-2 font-mono text-[11px] text-fg-2">
+        <pre className="flex-1 overflow-x-auto rounded-md border border-line-2 bg-surface-3 p-2 font-mono text-small text-fg-2">
           {snippet}
         </pre>
         <button
@@ -1165,7 +1165,7 @@ export function ApiKeysPanel() {
         <div className="mb-4">
           <div className="mb-1.5 text-[12px] text-muted">
             Scope — {scope === "global" ? (
-              <span>a global key: the agent passes <code className="font-mono text-[11px]">project_id</code> per call, or falls back to its default project.</span>
+              <span>a global key: the agent passes <code className="font-mono text-small">project_id</code> per call, or falls back to its default project.</span>
             ) : (
               <span>pinned to <span className="text-fg-2">{active?.name ?? "the active project"}</span>: the agent's writes target it without naming it.</span>
             )}
@@ -1216,15 +1216,15 @@ export function ApiKeysPanel() {
             <div className="flex items-center gap-3 px-3 py-2.5">
               <KeyRound size={14} className="text-muted" />
               <span className="text-[13px] text-fg-2">{k.name}</span>
-              <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
+              <code className="font-mono text-small text-faint">{k.prefix}…</code>
               {k.scopes?.includes("sync") && (
-                <span className="rounded border border-accent/40 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-accent">
+                <span className="rounded border border-accent/40 px-1.5 py-px font-mono text-meta uppercase tracking-wide text-accent">
                   sync
                 </span>
               )}
               <span
                 className={cn(
-                  "rounded border px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide",
+                  "rounded border px-1.5 py-px font-mono text-meta uppercase tracking-wide",
                   k.project_id
                     ? "border-line-2 text-muted"
                     : "border-[rgba(167,139,250,0.3)] text-purple-2",
@@ -1234,7 +1234,7 @@ export function ApiKeysPanel() {
               </span>
               {k.fleet_wave && (
                 <span
-                  className="font-mono text-[9.5px] uppercase tracking-wide text-[color:var(--color-st-review)]"
+                  className="font-mono text-meta uppercase tracking-wide text-[color:var(--color-st-review)]"
                   title="End wave sweeps this and never a hand-minted key"
                 >
                   {k.fleet_wave} · swept by End wave
@@ -1243,7 +1243,7 @@ export function ApiKeysPanel() {
               {k.expires_at && (
                 <span
                   className={cn(
-                    "font-mono text-[9.5px] uppercase tracking-wide",
+                    "font-mono text-meta uppercase tracking-wide",
                     new Date(k.expires_at) <= new Date() ? "text-st-blocked" : "text-faint-2",
                   )}
                   title={`Expires ${new Date(k.expires_at).toLocaleDateString()}`}
@@ -1267,7 +1267,7 @@ export function ApiKeysPanel() {
                 </button>
               )}
               {k.revoked
-                ? <span className="font-mono text-[9.5px] uppercase tracking-wide text-faint">revoked</span>
+                ? <span className="font-mono text-meta uppercase tracking-wide text-faint">revoked</span>
                 : <button className="text-faint hover:text-st-blocked" onClick={() => revoke(k.id)} title="Revoke">
                     <Trash2 size={14} />
                   </button>}
@@ -1299,15 +1299,15 @@ export function ApiKeysPanel() {
             <div className="flex items-center gap-3 px-3 py-2.5">
               <KeyRound size={14} className="text-muted" />
               <span className="text-[13px] text-fg-2">{k.name}</span>
-              <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
+              <code className="font-mono text-small text-faint">{k.prefix}…</code>
               {k.scopes?.includes("sync") && (
-                <span className="rounded border border-accent/40 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-accent">
+                <span className="rounded border border-accent/40 px-1.5 py-px font-mono text-meta uppercase tracking-wide text-accent">
                   sync
                 </span>
               )}
               <span
                 className={cn(
-                  "rounded border px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide",
+                  "rounded border px-1.5 py-px font-mono text-meta uppercase tracking-wide",
                   k.project_id
                     ? "border-line-2 text-muted"
                     : "border-[rgba(167,139,250,0.3)] text-purple-2",
@@ -1318,7 +1318,7 @@ export function ApiKeysPanel() {
               {k.expires_at && (
                 <span
                   className={cn(
-                    "font-mono text-[9.5px] uppercase tracking-wide",
+                    "font-mono text-meta uppercase tracking-wide",
                     new Date(k.expires_at) <= new Date() ? "text-st-blocked" : "text-faint-2",
                   )}
                   title={`Expires ${new Date(k.expires_at).toLocaleDateString()}`}
@@ -1342,7 +1342,7 @@ export function ApiKeysPanel() {
                 </button>
               )}
               {k.revoked
-                ? <span className="font-mono text-[9.5px] uppercase tracking-wide text-faint">revoked</span>
+                ? <span className="font-mono text-meta uppercase tracking-wide text-faint">revoked</span>
                 : <button className="text-faint hover:text-st-blocked" onClick={() => revoke(k.id)} title="Revoke">
                     <Trash2 size={14} />
                   </button>}
@@ -1360,7 +1360,7 @@ export function ApiKeysPanel() {
         title="Gate keys"
         blurb={
           <>
-            Attest that work was checked, so an item may reach <code className="font-mono text-[11px]">done</code>.
+            Attest that work was checked, so an item may reach <code className="font-mono text-small">done</code>.
             Give one to CI or to a reviewer — <em className="not-italic text-fg-2">never</em> to the
             agent doing the work, since the whole point is that the proof comes from somewhere else.
           </>
@@ -1373,17 +1373,17 @@ export function ApiKeysPanel() {
             <div className="flex items-center gap-3 px-3 py-2.5">
               <KeyRound size={14} className="text-muted" />
               <span className="text-[13px] text-fg-2">{k.name}</span>
-              <code className="font-mono text-[11px] text-faint">{k.prefix}…</code>
-              <span className="rounded border border-accent/40 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-accent">
+              <code className="font-mono text-small text-faint">{k.prefix}…</code>
+              <span className="rounded border border-accent/40 px-1.5 py-px font-mono text-meta uppercase tracking-wide text-accent">
                 gate
               </span>
-              <span className="ml-auto text-[11px] text-faint">{projectName(k.project_id ?? null)}</span>
+              <span className="ml-auto text-small text-faint">{projectName(k.project_id ?? null)}</span>
               <MintedWithToggle open={openDetails === k.id} onClick={() => setOpenDetails(openDetails === k.id ? null : k.id)} />
               {k.revoked
-                ? <span className="px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide text-faint">revoked</span>
+                ? <span className="px-1.5 py-0.5 font-mono text-meta uppercase tracking-wide text-faint">revoked</span>
                 : <button
                     onClick={() => revoke(k.id)}
-                    className="rounded px-1.5 py-0.5 text-[11px] text-muted hover:text-st-blocked"
+                    className="rounded px-1.5 py-0.5 text-small text-muted hover:text-st-blocked"
                   >
                     Revoke
                   </button>}
@@ -1409,7 +1409,7 @@ function MintedWithToggle({ open, onClick }: { open: boolean; onClick: () => voi
       aria-expanded={open}
       title="Minted with"
       className={cn(
-        "flex flex-none items-center gap-0.5 font-mono text-[9.5px] uppercase tracking-wide transition-colors hover:text-fg",
+        "flex flex-none items-center gap-0.5 font-mono text-meta uppercase tracking-wide transition-colors hover:text-fg",
         open ? "text-fg-2" : "text-faint",
       )}
     >
@@ -1436,13 +1436,13 @@ function MintedWith({ k, projectName }: { k: ApiKey; projectName: (id: string | 
   const isAgent = !scopes.includes("sync") && !scopes.includes("gate");
   return (
     <div className="border-t border-line px-3 py-2.5" data-testid="minted-with">
-      <div className="mb-1.5 font-mono text-[9.5px] uppercase tracking-wide text-faint">Minted with</div>
+      <div className="mb-1.5 font-mono text-meta uppercase tracking-wide text-faint">Minted with</div>
       <div className="flex flex-col gap-1.5 text-[12px]">
         <div className="flex items-baseline gap-3">
           <span className="w-20 flex-none font-mono text-[10px] uppercase tracking-wide text-faint">Scopes</span>
           <span className="flex flex-wrap gap-1">
             {scopes.map((s) => (
-              <span key={s} className="rounded border border-line-2 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-fg-2">
+              <span key={s} className="rounded border border-line-2 px-1.5 py-px font-mono text-meta uppercase tracking-wide text-fg-2">
                 {s}
               </span>
             ))}
@@ -1452,11 +1452,11 @@ function MintedWith({ k, projectName }: { k: ApiKey; projectName: (id: string | 
           <div className="flex items-baseline gap-3">
             <span className="w-20 flex-none font-mono text-[10px] uppercase tracking-wide text-faint">MCP tools</span>
             <span className="flex flex-wrap gap-1">
-              <span className="rounded border border-line-2 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-fg-2">
+              <span className="rounded border border-line-2 px-1.5 py-px font-mono text-meta uppercase tracking-wide text-fg-2">
                 core
               </span>
               {tiers.map((t) => (
-                <span key={t} className="rounded border border-accent/40 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-accent">
+                <span key={t} className="rounded border border-accent/40 px-1.5 py-px font-mono text-meta uppercase tracking-wide text-accent">
                   {TIER_LABEL[t] ?? t}
                 </span>
               ))}
@@ -1467,7 +1467,7 @@ function MintedWith({ k, projectName }: { k: ApiKey; projectName: (id: string | 
                   older server that does not report it gets nothing rather than a guess. */}
               {typeof k.tool_count === "number" && (
                 <span
-                  className="self-center font-mono text-[9.5px] uppercase tracking-wide text-faint-2"
+                  className="self-center font-mono text-meta uppercase tracking-wide text-faint-2"
                   title="Tools in this key's tools/list. A tool outside it is still callable — tiers change what is advertised, not what is allowed."
                 >
                   · {k.tool_count} tools
@@ -1529,7 +1529,7 @@ function KeyGroup({
             {children(k)}
           </div>
         ))}
-        {rows.length === 0 && <p className="text-[12.5px] text-faint">{empty}</p>}
+        {rows.length === 0 && <p className="text-body text-faint">{empty}</p>}
       </div>
     </div>
   );
@@ -1551,7 +1551,7 @@ function StatusPill({ connected }: { connected: boolean }) {
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center gap-3 text-[12.5px]">
+    <div className="flex items-center gap-3 text-body">
       <span className="w-24 flex-none font-mono text-[10px] uppercase tracking-wide text-faint">{label}</span>
       <span className="text-fg-2">{value}</span>
     </div>

@@ -38,11 +38,11 @@ export function OrgAdminShell() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="max-w-[1180px] px-6 pt-6">
-        <div className="font-mono text-[9.5px] uppercase tracking-[0.09em] text-faint-2">ADMIN</div>
+        <div className="font-mono text-meta uppercase tracking-[0.09em] text-faint-2">ADMIN</div>
         <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
           <h1 className="text-[19px] font-semibold tracking-[-0.3px]">{org?.name ?? "—"}</h1>
           {org && (
-            <span className="rounded-full border border-accent/30 bg-accent/[0.07] px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.05em] text-accent">
+            <span className="rounded-full border border-accent/30 bg-accent/[0.07] px-2 py-0.5 font-mono text-meta uppercase tracking-[0.05em] text-accent">
               {org.plan} plan
             </span>
           )}
@@ -51,7 +51,7 @@ export function OrgAdminShell() {
             {limit > 0 && ` · ${seats} / ${limit} seats`}
           </span>
         </div>
-        <p className="mt-2 max-w-[76ch] text-[12.5px] leading-relaxed text-muted">
+        <p className="mt-2 max-w-[76ch] text-body leading-relaxed text-muted">
           Everything here applies to this organization. Project settings live on the project.
         </p>
 
@@ -70,7 +70,7 @@ export function OrgAdminShell() {
             >
               {t.label}
               {!t.backed && (
-                <span className="rounded border border-purple/30 px-1.5 py-px font-mono text-[8.5px] uppercase tracking-[0.05em] text-purple">
+                <span className="rounded border border-purple/30 px-1.5 py-px font-mono text-micro uppercase tracking-[0.05em] text-purple">
                   not backed
                 </span>
               )}

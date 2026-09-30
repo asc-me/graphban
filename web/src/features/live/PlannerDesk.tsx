@@ -64,7 +64,7 @@ function PlannerBlock({ planner: p, trackerTo }: { planner: LiveAgent; trackerTo
         <span className={cn("rounded-md border px-1.5 py-0.5 font-mono text-[10px]", ROLE_TONE.planner)}>
           planner
         </span>
-        <span className="text-[12.5px] text-fg-2">{p.label || p.id}</span>
+        <span className="text-body text-fg-2">{p.label || p.id}</span>
         {verb && p.last_call && (
           <span className="rounded border border-line-2 px-1.5 py-0.5 font-mono text-[10px] text-fg-2">
             {verb} · {p.last_call.tool}

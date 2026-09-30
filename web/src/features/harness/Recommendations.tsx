@@ -22,7 +22,7 @@ export function Recommendations({ projectId }: { projectId?: string }) {
     return (
       <div
         data-testid="harness-no-cards"
-        className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+        className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted"
       >
         No recommended changes. R1–R6 fire on cells above the {data.floor}-attempt
         floor; nothing in the last {data.window_days} days met one.
@@ -65,14 +65,14 @@ function CardRow({
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-medium">{card.title}</div>
-          <p className="mt-0.5 text-[12.5px] text-muted">{card.detail}</p>
+          <p className="mt-0.5 text-body text-muted">{card.detail}</p>
           {Array.isArray(card.draft?.projects) && (card.draft.projects as string[]).length > 0 && (
-            <p data-testid="harness-card-projects" className="mt-1 font-mono text-[11px] text-faint">
+            <p data-testid="harness-card-projects" className="mt-1 font-mono text-small text-faint">
               projects: {(card.draft.projects as string[]).join(", ")}
             </p>
           )}
           {card.draft?.probe === true && (
-            <p data-testid="harness-card-probe" className="mt-1 font-mono text-[11px] text-faint">
+            <p data-testid="harness-card-probe" className="mt-1 font-mono text-small text-faint">
               probe samples contributed
             </p>
           )}
@@ -83,7 +83,7 @@ function CardRow({
               since.
             </p>
           )}
-          <p data-testid="harness-card-replay" className="mt-1.5 font-mono text-[11px] text-faint">
+          <p data-testid="harness-card-replay" className="mt-1.5 font-mono text-small text-faint">
             {card.replay?.summary}
             {(card.replay?.moves?.length ?? 0) > 0 &&
               ` — ${card.replay.moves
@@ -143,7 +143,7 @@ function CardRow({
           </div>
           <div
             data-testid="harness-card-apply"
-            className="rounded-[8px] border border-line-2 bg-surface px-2.5 py-2 font-mono text-[11px]"
+            className="rounded-[8px] border border-line-2 bg-surface px-2.5 py-2 font-mono text-small"
           >
             <div className="text-faint">apply by hand — this page changes nothing:</div>
             <div className="mt-1 break-all">{String(card.draft.where ?? "")}</div>
@@ -171,7 +171,7 @@ function Cells({
       <div className="font-mono text-[10.5px] text-faint">{label}</div>
       <ul className="mt-1 flex flex-col gap-0.5">
         {cells.map((c, i) => (
-          <li key={i} className="font-mono text-[11px]">
+          <li key={i} className="font-mono text-small">
             {c.cell.vendor}
             {c.cell.model ? `:${c.cell.model}` : ""} · {c.cell.capability}/
             {c.cell.size_band} · {c.signed_off}/{c.finished}

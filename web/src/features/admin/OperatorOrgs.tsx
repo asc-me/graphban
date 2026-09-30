@@ -48,7 +48,7 @@ export function OperatorOrgs() {
       />
 
       {isLoading ? (
-        <div className="rounded-[13px] border border-op-line bg-op-card px-5 py-8 text-center font-mono text-[11px] text-op-faint-2">
+        <div className="rounded-[13px] border border-op-line bg-op-card px-5 py-8 text-center font-mono text-small text-op-faint-2">
           loading…
         </div>
       ) : orgs.length === 0 ? (
@@ -95,7 +95,7 @@ function OrgRow({ org, open, onToggle }: { org: AdminOrg; open: boolean; onToggl
           <span className="truncate font-mono text-[12px] text-op-fg">{org.name}</span>
         </span>
         <span className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span className="shrink-0 font-mono text-[11px] text-st-next">
+          <span className="shrink-0 font-mono text-small text-st-next">
             {org.owner_handle ? `@${org.owner_handle}` : "no owner"}
           </span>
           <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-op-faint">
@@ -105,10 +105,10 @@ function OrgRow({ org, open, onToggle }: { org: AdminOrg; open: boolean; onToggl
         <span className="w-[80px] shrink-0">
           <Pill tone={PLAN_TONE[org.plan] ?? PLAN_TONE.free} label={planLabel(org.plan)} />
         </span>
-        <span className={`w-[74px] shrink-0 text-right font-mono text-[11px] ${LEVEL_TEXT[seats]}`}>
+        <span className={`w-[74px] shrink-0 text-right font-mono text-small ${LEVEL_TEXT[seats]}`}>
           {org.usage.seats} / {compact(org.limits.max_seats)}
         </span>
-        <span className="w-[68px] shrink-0 text-right font-mono text-[11px] text-op-muted-2">
+        <span className="w-[68px] shrink-0 text-right font-mono text-small text-op-muted-2">
           {org.usage.projects}
         </span>
         <span className="flex w-[150px] shrink-0 items-center justify-end gap-2">
@@ -173,13 +173,13 @@ function OrgDrawer({ org }: { org: AdminOrg }) {
                     @{m.handle}
                   </span>
                   <span
-                    className={`min-w-0 flex-1 font-mono text-[9.5px] uppercase tracking-[0.04em] ${
+                    className={`min-w-0 flex-1 font-mono text-meta uppercase tracking-[0.04em] ${
                       ROLE_TONE[m.role] ?? "text-op-muted-2"
                     }`}
                   >
                     {m.role}
                   </span>
-                  <span className="font-mono text-[9.5px] text-op-faint-2">
+                  <span className="font-mono text-meta text-op-faint-2">
                     joined {relTime(m.joined_at) ?? "—"}
                   </span>
                 </div>
@@ -187,14 +187,14 @@ function OrgDrawer({ org }: { org: AdminOrg }) {
             </div>
           )}
           {reserved > 0 && (
-            <p className="mt-2 text-[11px] leading-relaxed text-st-review/80">
+            <p className="mt-2 text-small leading-relaxed text-st-review/80">
               The seat counter reads {org.usage.seats}, not {org.members.length}: a
               still-pending invite holds a seat so an org cannot out-invite its cap and
               only discover it when everyone accepts. {reserved} {reserved === 1 ? "is" : "are"}{" "}
               reserved that way and nobody is in them yet.
             </p>
           )}
-          <p className="mt-2 text-[11px] leading-relaxed text-op-faint">
+          <p className="mt-2 text-small leading-relaxed text-op-faint">
             Every member, listed but not editable. Roles and removal belong to the org's
             own admins.
           </p>
@@ -210,7 +210,7 @@ function OrgDrawer({ org }: { org: AdminOrg }) {
               const limit = org.limits[c.limit];
               return (
                 <div key={c.key} className="flex items-center gap-2.5">
-                  <span className="w-[96px] shrink-0 font-mono text-[9.5px] tracking-[0.05em] text-op-faint">
+                  <span className="w-[96px] shrink-0 font-mono text-meta tracking-[0.05em] text-op-faint">
                     {c.label}
                   </span>
                   <Meter used={used} limit={limit} className="min-w-0 flex-1" />
@@ -239,7 +239,7 @@ function OrgDrawer({ org }: { org: AdminOrg }) {
                     setAssigned(p);
                     setPlan.mutate({ orgId: org.id, plan: p });
                   }}
-                  className={`h-[27px] flex-1 rounded-[7px] border font-mono text-[9.5px] tracking-[0.04em] disabled:opacity-60 ${
+                  className={`h-[27px] flex-1 rounded-[7px] border font-mono text-meta tracking-[0.04em] disabled:opacity-60 ${
                     org.plan === p ? PLAN_TONE[p] : "border-op-line bg-op-bg text-op-faint"
                   }`}
                 >
@@ -248,7 +248,7 @@ function OrgDrawer({ org }: { org: AdminOrg }) {
               ))}
             </div>
             <p
-              className={`mt-2 text-[11px] leading-relaxed ${
+              className={`mt-2 text-small leading-relaxed ${
                 assigned && assigned === org.plan
                   ? "text-st-next"
                   : atCap.length

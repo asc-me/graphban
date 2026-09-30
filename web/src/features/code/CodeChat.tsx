@@ -83,7 +83,7 @@ export function CodeChat({
             )}
             <div
               className={cn(
-                "max-w-[85%] whitespace-pre-wrap rounded-[12px] px-3 py-2 text-[12.5px] leading-relaxed",
+                "max-w-[85%] whitespace-pre-wrap rounded-[12px] px-3 py-2 text-body leading-relaxed",
                 m.role === "agent" ? "border border-line-2 bg-surface-2 text-fg-2" : "bg-accent/90 text-bg",
               )}
             >
@@ -91,7 +91,7 @@ export function CodeChat({
             </div>
           </div>
         ))}
-        {busy && <div className="pl-9 font-mono text-[11px] text-faint">thinking…</div>}
+        {busy && <div className="pl-9 font-mono text-small text-faint">thinking…</div>}
       </div>
 
       {grounding.length > 0 && (
@@ -105,7 +105,7 @@ export function CodeChat({
                 key={node.id}
                 onClick={() => onSelectPath?.(node.path)}
                 title={node.summary}
-                className="inline-flex items-center gap-1.5 rounded-md border border-control bg-surface-2 px-2 py-1 text-[11px] transition-colors hover:border-control-hover"
+                className="inline-flex items-center gap-1.5 rounded-md border border-control bg-surface-2 px-2 py-1 text-small transition-colors hover:border-control-hover"
               >
                 <span className="max-w-[180px] truncate font-mono text-fg-2">{node.path}</span>
                 <span className="font-mono text-[10px] text-accent">{score.toFixed(2)}</span>
@@ -121,7 +121,7 @@ export function CodeChat({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="What depends on the embedder?"
-            className="h-9 flex-1 bg-transparent text-[12.5px] outline-none placeholder:text-faint"
+            className="h-9 flex-1 bg-transparent text-body outline-none placeholder:text-faint"
           />
           <button type="submit" disabled={busy} className="rounded-md p-1 text-accent disabled:opacity-40">
             <ArrowUp size={15} />

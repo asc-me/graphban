@@ -27,7 +27,7 @@ export function OperatorUsers() {
       <PageHead
         title="Users"
         chip={
-          <span className="rounded-full border border-op-line px-2 py-0.5 font-mono text-[9.5px] tracking-[0.06em] text-op-muted-2">
+          <span className="rounded-full border border-op-line px-2 py-0.5 font-mono text-meta tracking-[0.06em] text-op-muted-2">
             READ-ONLY
           </span>
         }
@@ -47,7 +47,7 @@ export function OperatorUsers() {
       />
 
       {isLoading ? (
-        <div className="rounded-[13px] border border-op-line bg-op-card px-5 py-8 text-center font-mono text-[11px] text-op-faint-2">
+        <div className="rounded-[13px] border border-op-line bg-op-card px-5 py-8 text-center font-mono text-small text-op-faint-2">
           loading…
         </div>
       ) : rows.length === 0 && q ? (
@@ -73,7 +73,7 @@ export function OperatorUsers() {
               <UserRow key={u.id} user={u} />
             ))}
           </Table>
-          <p className="mt-2.5 px-1 text-[11px] leading-relaxed text-op-faint">
+          <p className="mt-2.5 px-1 text-small leading-relaxed text-op-faint">
             {q
               ? `${rows.length} ${rows.length === 1 ? "user matches" : "users match"} “${query}”.`
               : "A user can belong to several orgs. Membership is per-org — there is no platform-wide role."}
@@ -90,7 +90,7 @@ function UserRow({ user }: { user: AdminUser }) {
       <span className="flex w-[188px] min-w-0 shrink-0 items-center gap-2.5">
         <Avatar name={user.name} handle={user.handle} />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[12.5px] text-op-fg">{user.name}</span>
+          <span className="block truncate text-body text-op-fg">{user.name}</span>
           <span className="mt-px block font-mono text-[10px] text-op-faint">@{user.handle}</span>
         </span>
       </span>
@@ -109,7 +109,7 @@ function UserRow({ user }: { user: AdminUser }) {
               <span className="h-[5px] w-[5px] shrink-0 rounded-sm" style={{ background: tintFor(o.id) }} />
               <span className="font-mono text-[10px] text-op-fg-2">{o.name}</span>
               <span
-                className={`font-mono text-[8.5px] uppercase tracking-[0.04em] ${
+                className={`font-mono text-micro uppercase tracking-[0.04em] ${
                   ROLE_TONE[o.role] ?? "text-op-muted-2"
                 }`}
               >
@@ -136,7 +136,7 @@ function UserRow({ user }: { user: AdminUser }) {
  */
 function LastWrite({ at }: { at: string | null }) {
   const rel = relTime(at);
-  if (rel) return <span className="font-mono text-[11px] text-op-muted-2">{rel}</span>;
+  if (rel) return <span className="font-mono text-small text-op-muted-2">{rel}</span>;
   return (
     <span
       className="font-mono text-[10px] text-op-faint-3"

@@ -41,7 +41,7 @@ export function CreateFirstOrg() {
           <Building2 size={18} className="text-accent" />
         </div>
         <h1 className="mb-1 text-[17px] font-semibold tracking-tight">Create your organization</h1>
-        <p className="mb-6 text-[12.5px] leading-relaxed text-muted">
+        <p className="mb-6 text-body leading-relaxed text-muted">
           Your organization is the home for your team, projects, and billing. You can invite
           teammates once it's set up.
         </p>

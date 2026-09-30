@@ -84,12 +84,12 @@ export function MixAllocation({ projectId, profile, rows, recent, onSaved }: {
 
   return (
     <section className="mb-7" data-testid="fleet-mix">
-      <h2 className="text-[14px] font-semibold tracking-tight">Allocation</h2>
+      <h2 className="text-lead font-semibold tracking-tight">Allocation</h2>
       <p className="mb-3 mt-0.5 text-[12px] text-muted">
         Share of recent spawns across harnesses that can actually resolve. Off means the
         scorer always picks the winner. Unregistered adapters are not offered a share.
       </p>
-      <label className="mb-3 flex items-center gap-2 text-[12.5px]">
+      <label className="mb-3 flex items-center gap-2 text-body">
         <input
           type="checkbox"
           checked={enabled}
@@ -99,7 +99,7 @@ export function MixAllocation({ projectId, profile, rows, recent, onSaved }: {
         Allocate by share
       </label>
       {names.length === 0 ? (
-        <p className="rounded-[11px] border border-dashed border-line-2 px-3 py-4 text-[12.5px] text-muted">
+        <p className="rounded-[11px] border border-dashed border-line-2 px-3 py-4 text-body text-muted">
           No mixable harness in the catalog.
         </p>
       ) : (
@@ -109,7 +109,7 @@ export function MixAllocation({ projectId, profile, rows, recent, onSaved }: {
               ? Math.round(((recent.by_harness[name] ?? 0) / n) * 100)
               : null;
             return (
-              <label key={name} className="grid grid-cols-[7rem_1fr_3rem_auto] items-center gap-2 text-[12.5px]">
+              <label key={name} className="grid grid-cols-[7rem_1fr_3rem_auto] items-center gap-2 text-body">
                 <span className="font-mono text-[12px]">{name}</span>
                 <input
                   type="range"
@@ -121,16 +121,16 @@ export function MixAllocation({ projectId, profile, rows, recent, onSaved }: {
                   value={percents[name] ?? 0}
                   onChange={(e) => setPercents((prev) => ({ ...prev, [name]: Number(e.target.value) }))}
                 />
-                <span className="font-mono text-[11px] text-muted tabular-nums">
+                <span className="font-mono text-small text-muted tabular-nums">
                   {percents[name] ?? 0}%
                 </span>
-                <span className="text-[11px] text-faint">
+                <span className="text-small text-faint">
                   {actual === null ? (n > 0 && n < 3 ? `n=${n}, unmeasured` : "") : `now ${actual}%`}
                 </span>
               </label>
             );
           })}
-          <p className="pt-1 text-[11px] text-muted">
+          <p className="pt-1 text-small text-muted">
             Sum {total}%. The server normalises on save.
             {n > 0 ? ` Last ${n} matrix launch${n === 1 ? "" : "es"} in this project.` : ""}
           </p>

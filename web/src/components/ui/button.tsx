@@ -34,7 +34,7 @@ const buttonVariants = cva(
           "[@media(hover:hover)_and_(pointer:fine)]:hover:bg-[rgba(255,107,107,0.12)]",
       },
       size: {
-        default: "h-9 px-3.5 text-[12.5px]",
+        default: "h-9 px-3.5 text-body",
         sm: "h-8 px-3 text-[12px]",
         lg: "h-10 px-5 text-sm",
         icon: "h-9 w-9",

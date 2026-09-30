@@ -99,7 +99,7 @@ function Section({ section }: { section: IntentDiffSection }) {
             <div
               key={i}
               className={cn(
-                "whitespace-pre px-2.5 font-mono text-[11px] leading-[1.55]",
+                "whitespace-pre px-2.5 font-mono text-small leading-[1.55]",
                 l.op === "+" && "bg-[rgba(95,208,122,0.1)] text-st-done",
                 l.op === "-" && "bg-[rgba(255,107,107,0.09)] text-st-blocked",
                 l.op === "=" && "text-faint",

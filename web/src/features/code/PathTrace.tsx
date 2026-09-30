@@ -51,7 +51,7 @@ export function PathTrace({ path, onClear, onPick, edgeTypes, allEdgeTypes }: Pr
         <h2 className="text-[13px] font-semibold tracking-[-0.1px]">
           Path
           {path.found && (
-            <span className="ml-2 font-mono text-[11px] font-normal text-muted">
+            <span className="ml-2 font-mono text-small font-normal text-muted">
               {path.hops.length} {path.hops.length === 1 ? "hop" : "hops"}
             </span>
           )}
@@ -72,7 +72,7 @@ export function PathTrace({ path, onClear, onPick, edgeTypes, allEdgeTypes }: Pr
               a fact about the architecture. */}
           <p className="mb-1 text-fg-2">Not on the map.</p>
           {path.missing.map((m) => (
-            <p key={m} className="truncate font-mono text-[11px] text-faint">{m}</p>
+            <p key={m} className="truncate font-mono text-small text-faint">{m}</p>
           ))}
           <p className="mt-2 text-faint">
             Nothing has described {path.missing.length === 1 ? "it" : "them"} yet, so there is no

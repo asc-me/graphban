@@ -158,7 +158,7 @@ function ProjectNotFound() {
   return (
     <div className="mx-auto max-w-[520px] px-6 py-16 text-center">
       <h1 className="text-[17px] font-semibold">No such project</h1>
-      <p className="mt-2 text-[12.5px] leading-relaxed text-muted">
+      <p className="mt-2 text-body leading-relaxed text-muted">
         Nothing in your organizations answers to that tag. If a teammate sent you this link,
         they may need to give you access to the project first.
       </p>

@@ -17,7 +17,7 @@ export function KpiRow({ kpis }: { kpis: LiveKpis }) {
 function Kpi({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3 py-2">
-      <div className="font-mono text-[9.5px] uppercase tracking-wide text-faint">{label}</div>
+      <div className="font-mono text-meta uppercase tracking-wide text-faint">{label}</div>
       <div className="mt-0.5 text-[18px] font-semibold tabular-nums text-fg">{value}</div>
       {hint && <div className="mt-0.5 text-[10px] text-faint">{hint}</div>}
     </div>

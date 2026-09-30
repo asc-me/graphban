@@ -79,7 +79,7 @@ export function ItemRow({
         <StatusMenu status={item.status} onChange={onStatus} compact />
       </div>
 
-      <span className="w-[52px] flex-none font-mono text-[11px] text-faint">{item.id}</span>
+      <span className="w-[52px] flex-none font-mono text-small text-faint">{item.id}</span>
 
       <span className="min-w-0 flex-1 truncate text-[13.5px] text-fg-2">{item.title}</span>
 
@@ -142,7 +142,7 @@ export function ItemRow({
 
       {item.claimed_by ? (
         <span
-          className="flex flex-none items-center gap-1 rounded-md border border-[rgba(198,242,78,0.3)] bg-[rgba(198,242,78,0.06)] px-1.5 py-0.5 font-mono text-[9.5px] text-accent"
+          className="flex flex-none items-center gap-1 rounded-md border border-[rgba(198,242,78,0.3)] bg-[rgba(198,242,78,0.06)] px-1.5 py-0.5 font-mono text-meta text-accent"
           title={`Claimed by ${item.claimed_by}`}
         >
           <span className="blink h-1.5 w-1.5 rounded-full bg-accent" />
@@ -150,7 +150,7 @@ export function ItemRow({
         </span>
       ) : item.assignee ? (
         <span
-          className="flex-none rounded-md border border-line-2 px-1.5 py-0.5 font-mono text-[9.5px] text-muted"
+          className="flex-none rounded-md border border-line-2 px-1.5 py-0.5 font-mono text-meta text-muted"
           title={`Assigned to ${item.assignee}`}
         >
           {item.assignee}

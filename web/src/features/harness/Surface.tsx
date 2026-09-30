@@ -14,7 +14,7 @@ export function SurfaceReport({ surface }: { surface?: HarnessSurface }) {
     return (
       <section data-testid="harness-surface" className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3">
         <Heading />
-        <p data-testid="harness-surface-unreported" className="mt-1 text-[12.5px] text-muted">
+        <p data-testid="harness-surface-unreported" className="mt-1 text-body text-muted">
           This read did not include a surface report. That is not a finding that the harnesses match.
         </p>
       </section>
@@ -24,7 +24,7 @@ export function SurfaceReport({ surface }: { surface?: HarnessSurface }) {
     return (
       <section data-testid="harness-surface" className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3">
         <Heading />
-        <p data-testid="harness-surface-unreported" className="mt-1 text-[12.5px] text-muted">
+        <p data-testid="harness-surface-unreported" className="mt-1 text-body text-muted">
           {surface.reason}
         </p>
       </section>
@@ -46,7 +46,7 @@ export function SurfaceReport({ surface }: { surface?: HarnessSurface }) {
       )}
       <ul className="mt-2 flex flex-col gap-1.5">
         {surface.harnesses.map((harness) => (
-          <li key={harness.vendor} className="text-[12.5px]">
+          <li key={harness.vendor} className="text-body">
             <span className="font-mono">{harness.vendor}</span>
             <span className="text-muted">
               {" "}· skills {labelFor(harness.skills_status, harness.skills.length)}
@@ -105,9 +105,9 @@ function Kind({ title, kind }: { title: string; kind?: HarnessSurfaceKind | null
     <div className="mt-3">
       <h3 className="font-mono text-[10.5px] text-faint">{title.toUpperCase()}</h3>
       {kind.reason && kind.rows.length === 0 ? (
-        <p className="mt-1 text-[12.5px] text-muted">{kind.reason}</p>
+        <p className="mt-1 text-body text-muted">{kind.reason}</p>
       ) : kind.rows.length === 0 ? (
-        <p className="mt-1 text-[12.5px] text-muted">
+        <p className="mt-1 text-body text-muted">
           No {title.toLowerCase()} differ among {kind.compared.join(", ")}.
           {kind.partial.length > 0
             ? ` ${kind.partial.join(", ")} ${kind.partial.length === 1 ? "was" : "were"} only partly scanned, so a name not listed there is not counted as missing.`
@@ -117,7 +117,7 @@ function Kind({ title, kind }: { title: string; kind?: HarnessSurfaceKind | null
         <ul className="mt-1 flex flex-col gap-2">
           {groups.map((item) => (
             <li key={item.key} data-testid="harness-surface-gap">
-              <p className="text-[12.5px]">
+              <p className="text-body">
                 {item.label}{" "}
                 <span className="font-mono text-[10.5px] text-faint">({item.names.length})</span>
               </p>

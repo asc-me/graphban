@@ -52,7 +52,7 @@ export function OrgTeams() {
       </div>
 
       {isLoading ? (
-        <div className="rounded-[13px] border border-line bg-surface-2 px-5 py-8 text-center font-mono text-[11px] text-faint-2">
+        <div className="rounded-[13px] border border-line bg-surface-2 px-5 py-8 text-center font-mono text-small text-faint-2">
           loading…
         </div>
       ) : teams.length === 0 && !creating ? (
@@ -78,14 +78,14 @@ function NoTeams({ onCreate }: { onCreate: () => void }) {
   return (
     <div className="rounded-[13px] border border-line bg-surface-2 px-5 py-8">
       <div className="text-[15px] font-semibold">No teams yet</div>
-      <p className="mt-2 max-w-[58ch] text-[12.5px] leading-relaxed text-muted">
+      <p className="mt-2 max-w-[58ch] text-body leading-relaxed text-muted">
         Access is currently granted one person at a time. A team is worth making when the
         same set of people need the same projects — the grant becomes the thing you
         administer, instead of a list of individuals.
       </p>
       <button
         onClick={onCreate}
-        className="mt-4 h-[30px] rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-[12.5px] font-semibold text-accent"
+        className="mt-4 h-[30px] rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-body font-semibold text-accent"
       >
         Create a team
       </button>
@@ -118,8 +118,8 @@ function TeamList({
           }`}
         >
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-[12.5px] text-fg-2">{t.name}</span>
-            <span className="mt-0.5 block font-mono text-[9.5px] text-faint">
+            <span className="block truncate text-body text-fg-2">{t.name}</span>
+            <span className="mt-0.5 block font-mono text-meta text-faint">
               {t.members.length} member{t.members.length === 1 ? "" : "s"} ·{" "}
               {t.grants.length} grant{t.grants.length === 1 ? "" : "s"}
             </span>
@@ -128,7 +128,7 @@ function TeamList({
       ))}
       <button
         onClick={onCreate}
-        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-accent hover:bg-surface-3"
+        className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-body font-semibold text-accent hover:bg-surface-3"
       >
         <Plus size={13} /> Create team
       </button>
@@ -203,7 +203,7 @@ function Members({ team, orgId }: { team: Team; orgId: string }) {
             onChange={(e) =>
               e.target.value && add.mutate({ teamId: team.id, userId: e.target.value })
             }
-            className="h-[24px] rounded-md border border-control bg-surface px-1.5 text-[11px]"
+            className="h-[24px] rounded-md border border-control bg-surface px-1.5 text-small"
           >
             <option value="">+ add member</option>
             {addable.map((m) => (
@@ -228,7 +228,7 @@ function Members({ team, orgId }: { team: Team; orgId: string }) {
             >
               {u.initials || u.name.slice(0, 2).toUpperCase()}
             </span>
-            <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg-2">{u.name}</span>
+            <span className="min-w-0 flex-1 truncate text-body text-fg-2">{u.name}</span>
             <span className="font-mono text-[10.5px] text-faint">@{u.handle}</span>
             <button
               onClick={() => remove.mutate({ teamId: team.id, userId: u.id })}
@@ -264,7 +264,7 @@ function Grants({ team, orgId }: { team: Team; orgId: string }) {
               e.target.value &&
               setGrant.mutate({ teamId: team.id, projectId: e.target.value, access: "read" })
             }
-            className="h-[24px] rounded-md border border-control bg-surface px-1.5 text-[11px]"
+            className="h-[24px] rounded-md border border-control bg-surface px-1.5 text-small"
           >
             <option value="">+ grant project</option>
             {grantable.map((p) => (
@@ -335,11 +335,11 @@ function GrantRow({ team, grant, orgId }: { team: Team; grant: TeamGrant; orgId:
 
       {direct.length > 0 && (
         <div className="mt-2 rounded-md border border-line bg-surface px-2 py-1.5">
-          <div className="text-[11px] leading-relaxed text-muted">
+          <div className="text-small leading-relaxed text-muted">
             {direct.map((u) => (
               <span key={u!.id} className="mr-2 inline-flex items-center gap-1">
                 <span className="font-mono text-fg-2">@{u!.handle}</span>
-                <span className="rounded border border-line-2 px-1 font-mono text-[8.5px] uppercase tracking-[0.05em] text-faint">
+                <span className="rounded border border-line-2 px-1 font-mono text-micro uppercase tracking-[0.05em] text-faint">
                   direct
                 </span>
               </span>
@@ -412,23 +412,23 @@ function CreateTeam({ orgId, onDone }: { orgId: string; onDone: () => void }) {
         onChange={(e) => setName(e.target.value)}
         placeholder="Platform"
         aria-label="Team name"
-        className="h-[30px] min-w-[200px] flex-1 rounded-lg border border-control bg-surface px-2.5 text-[12.5px] outline-none focus:border-accent/50"
+        className="h-[30px] min-w-[200px] flex-1 rounded-lg border border-control bg-surface px-2.5 text-body outline-none focus:border-accent/50"
       />
       <button
         type="submit"
         disabled={create.isPending || !name.trim()}
-        className="h-[30px] rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-[12.5px] font-semibold text-accent disabled:opacity-50"
+        className="h-[30px] rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-body font-semibold text-accent disabled:opacity-50"
       >
         {create.isPending ? "Creating…" : "Create"}
       </button>
       <button
         type="button"
         onClick={onDone}
-        className="h-[30px] rounded-lg border border-control px-3 text-[12.5px] text-muted"
+        className="h-[30px] rounded-lg border border-control px-3 text-body text-muted"
       >
         Cancel
       </button>
-      {error && <span className="w-full text-[11px] text-st-blocked">{error}</span>}
+      {error && <span className="w-full text-small text-st-blocked">{error}</span>}
     </form>
   );
 }
@@ -451,17 +451,17 @@ function Confirm({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-6">
       <div className="w-full max-w-[460px] rounded-[13px] border border-line-2 bg-surface-2 p-5">
         <h2 className="text-[15px] font-semibold">{title}</h2>
-        <p className="mt-2 text-[12.5px] leading-relaxed text-muted">{body}</p>
+        <p className="mt-2 text-body leading-relaxed text-muted">{body}</p>
         <div className="mt-4 flex justify-end gap-2">
           <button
             onClick={onCancel}
-            className="h-[30px] rounded-lg border border-control px-3 text-[12.5px] text-muted hover:text-fg"
+            className="h-[30px] rounded-lg border border-control px-3 text-body text-muted hover:text-fg"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            className="h-[30px] rounded-lg border border-st-blocked/40 bg-st-blocked/[0.12] px-3 text-[12.5px] font-semibold text-st-blocked"
+            className="h-[30px] rounded-lg border border-st-blocked/40 bg-st-blocked/[0.12] px-3 text-body font-semibold text-st-blocked"
           >
             {confirmLabel}
           </button>

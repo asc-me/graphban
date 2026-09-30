@@ -74,7 +74,7 @@ function Toggle({
   label: string; hint?: string;
 }) {
   return (
-    <label className="flex items-start gap-2 text-[12.5px] text-fg-2">
+    <label className="flex items-start gap-2 text-body text-fg-2">
       <input
         type="checkbox"
         className="mt-0.5 accent-accent"
@@ -129,7 +129,7 @@ function LastBatch({ status }: { status: LogExportStatus }) {
         {b.ok ? `${b.sent} sent` : b.error || "failed"}
         {b.kind === "test" ? <span className="ml-1.5 text-faint">test batch</span> : null}
       </div>
-      {when ? <div className="mt-0.5 text-[11px] text-faint">{when}</div> : null}
+      {when ? <div className="mt-0.5 text-small text-faint">{when}</div> : null}
     </div>
   );
 }
@@ -163,13 +163,13 @@ function StatusStrip({ status }: { status: LogExportStatus }) {
 function TestResult({ result }: { result: LogExportTestResult }) {
   if (result.ok) {
     return (
-      <p role="status" className="mt-2 text-[12.5px] text-fg-2">
+      <p role="status" className="mt-2 text-body text-fg-2">
         <span className="font-medium text-accent">Accepted.</span> {result.detail}
       </p>
     );
   }
   return (
-    <p role="alert" className="mt-2 text-[12.5px] text-st-blocked">
+    <p role="alert" className="mt-2 text-body text-st-blocked">
       <span className="font-mono text-[11.5px]">{result.error}</span>
       <span className="mx-1.5 text-faint">·</span>
       {result.detail}
@@ -318,7 +318,7 @@ function LogExportForm({ view }: { view: LogExportView }) {
     <div className="max-w-2xl space-y-5">
       <div>
         <h2 className="text-[15px] font-semibold tracking-tight">Log export</h2>
-        <p className="mt-1 max-w-[62ch] text-[12.5px] leading-relaxed text-muted">
+        <p className="mt-1 max-w-[62ch] text-body leading-relaxed text-muted">
           Where this box hands its telemetry to an OTLP collector. One collector for the whole
           deployment — not per project — so a record names its project instead.
         </p>
@@ -331,7 +331,7 @@ function LogExportForm({ view }: { view: LogExportView }) {
             <Label>Status</Label>
             <div
               className={cn(
-                "text-[14px] font-semibold",
+                "text-lead font-semibold",
                 status.state === "exporting" && "text-accent",
                 status.state === "not_running" && "text-st-review",
                 status.state === "unknown" && "text-st-review",
@@ -367,14 +367,14 @@ function LogExportForm({ view }: { view: LogExportView }) {
             <Input
               id="le-endpoint"
               aria-label="Collector endpoint"
-              className="font-mono text-[12.5px]"
+              className="font-mono text-body"
               placeholder="http://localhost:4318"
               value={draft.endpoint}
               disabled={!writable}
               aria-invalid={Boolean(view.endpoint_problem) || undefined}
               onChange={(e) => set("endpoint", e.target.value)}
             />
-            <p className="mt-1.5 text-[11px] text-faint">
+            <p className="mt-1.5 text-small text-faint">
               The collector base, as OTEL_EXPORTER_OTLP_ENDPOINT defines it. Records go to
               /v1/logs, /v1/traces and /v1/metrics under it — so it needs a port.
             </p>
@@ -407,7 +407,7 @@ function LogExportForm({ view }: { view: LogExportView }) {
                   </option>
                 ))}
               </select>
-              <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
+              <p className="mt-1.5 text-small leading-relaxed text-faint">
                 {(view.protocols.find((p) => p.id === draft.protocol)?.note ?? "")}
               </p>
             </div>
@@ -480,7 +480,7 @@ function LogExportForm({ view }: { view: LogExportView }) {
               >
                 Add header
               </Button>
-              <p className="text-[11px] text-faint">
+              <p className="text-small text-faint">
                 Values are stored as typed and shown masked. Saving a masked value back keeps
                 the stored one; removing a row deletes the header.
               </p>
@@ -495,7 +495,7 @@ function LogExportForm({ view }: { view: LogExportView }) {
             </div>
             {/* Three states, and the first one is the point: an unrun probe is not a pass. */}
             {test === null && !probe.isPending ? (
-              <p className="mt-2 text-[12.5px] text-muted">{TEST_NOT_RUN}</p>
+              <p className="mt-2 text-body text-muted">{TEST_NOT_RUN}</p>
             ) : null}
             {test ? <TestResult result={test} /> : null}
           </div>
@@ -541,7 +541,7 @@ function LogExportForm({ view }: { view: LogExportView }) {
                     disabled={!writable}
                     aria-pressed={on}
                     className={cn(
-                      "rounded-md border px-2 py-0.5 font-mono text-[11px] disabled:pointer-events-none disabled:opacity-50",
+                      "rounded-md border px-2 py-0.5 font-mono text-small disabled:pointer-events-none disabled:opacity-50",
                       on
                         ? "border-accent/40 bg-accent/10 text-fg"
                         : "border-control text-muted hover:text-fg-2",
@@ -618,7 +618,7 @@ function LogExportForm({ view }: { view: LogExportView }) {
               </div>
               <dl className="overflow-x-auto rounded-md border border-line-2 bg-surface px-2.5 py-2">
                 {attrEntries.map(([k, v]) => (
-                  <div key={k} className="flex gap-2 font-mono text-[11px] leading-relaxed">
+                  <div key={k} className="flex gap-2 font-mono text-small leading-relaxed">
                     <dt className="flex-none text-muted">{k}</dt>
                     <dd className="min-w-0 break-all text-fg-2">{String(v)}</dd>
                   </div>

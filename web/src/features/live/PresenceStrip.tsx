@@ -26,7 +26,7 @@ export function PresenceStrip({
         aria-pressed={focusId === null}
         onClick={() => onFocus(null)}
         className={cn(
-          "shrink-0 rounded-lg border px-2.5 py-1 text-[11px] transition-colors",
+          "shrink-0 rounded-lg border px-2.5 py-1 text-small transition-colors",
           focusId === null
             ? "border-control-hover bg-surface-3 text-fg"
             : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg-2",
@@ -53,7 +53,7 @@ export function PresenceStrip({
           >
             <div className="truncate text-[12px] text-fg-2">{a.label || a.id}</div>
             <div className="mt-0.5 truncate text-[10.5px] text-muted">{agentActivity(a, servedAt)}</div>
-            <div className="mt-0.5 font-mono text-[9.5px] text-faint">
+            <div className="mt-0.5 font-mono text-meta text-faint">
               {a.role || "all-in-one"} · {ageLabel(a.last_seen_at, servedAt)}
             </div>
           </button>

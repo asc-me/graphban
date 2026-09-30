@@ -100,7 +100,7 @@ function DashboardBody({ data }: { data: DashboardData }) {
                   <div key={it.id} className="flex items-center gap-2.5 rounded-lg border border-line-2 bg-surface-2 px-3 py-2">
                     <span className="h-1.5 w-1.5 flex-none rounded-full" style={{ background: STATUS_META[it.status].color }} />
                     <span className="w-[46px] flex-none font-mono text-[10px] text-faint">{it.id}</span>
-                    <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg-2">{it.title}</span>
+                    <span className="min-w-0 flex-1 truncate text-body text-fg-2">{it.title}</span>
                     <span className="flex-none font-mono text-[10px] text-faint-2">{it.date}</span>
                   </div>
                 ))}
@@ -137,12 +137,12 @@ function AgentLoopInfo() {
         </span>
         <div className="min-w-0">
           <div className="text-[13px] font-semibold text-fg">Put agents on the backlog</div>
-          <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
+          <p className="mt-1 text-body leading-relaxed text-muted">
             Any MCP-connected agent can work the tracker as a queue:{" "}
-            <code className="font-mono text-[11px] text-fg-2">claim_cluster → work → update_item → review</code>. Claims
+            <code className="font-mono text-small text-fg-2">claim_cluster → work → update_item → review</code>. Claims
             are atomic and a cluster reserves the files it touches, so parallel agents never collide. Finished work goes
-            to <code className="font-mono text-[11px] text-fg-2">review</code>, and any other agent picks it up with{" "}
-            <code className="font-mono text-[11px] text-fg-2">claim_review</code> — no agent can sign off its own.
+            to <code className="font-mono text-small text-fg-2">review</code>, and any other agent picks it up with{" "}
+            <code className="font-mono text-small text-fg-2">claim_review</code> — no agent can sign off its own.
           </p>
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px]">
             <Link to="/settings" className="text-[#7ca2ff] transition-colors hover:text-fg">
@@ -208,7 +208,7 @@ function StatusBar({ data }: { data: DashboardData }) {
           <div key={s} className="flex items-center gap-1.5 text-[12px]">
             <span className="h-2 w-2 rounded-[2px]" style={{ background: STATUS_META[s].color }} />
             <span className="text-muted">{STATUS_META[s].label}</span>
-            <span className="font-mono text-[11px] text-fg-2">{data.items_by_status[s] ?? 0}</span>
+            <span className="font-mono text-small text-fg-2">{data.items_by_status[s] ?? 0}</span>
           </div>
         ))}
       </div>
@@ -231,7 +231,7 @@ function TypeBars({ data }: { data: DashboardData }) {
             <div className="h-2.5 flex-1">
               <div className="h-full rounded-[3px]" style={{ background: TYPE_META[t].color, width: `${(count / max) * 100}%`, minWidth: count ? 6 : 0 }} />
             </div>
-            <span className="w-6 flex-none text-right font-mono text-[11px] text-fg-2">{count}</span>
+            <span className="w-6 flex-none text-right font-mono text-small text-fg-2">{count}</span>
           </div>
         );
       })}

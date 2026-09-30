@@ -60,7 +60,7 @@ function Tab({ to, label, speculative }: { to: string; label: string; speculativ
     >
       {label}
       {speculative && (
-        <span className="rounded border border-purple/30 px-1.5 py-px font-mono text-[8.5px] uppercase tracking-[0.05em] text-purple">
+        <span className="rounded border border-purple/30 px-1.5 py-px font-mono text-micro uppercase tracking-[0.05em] text-purple">
           not backed
         </span>
       )}
@@ -85,7 +85,7 @@ function MembersTab() {
   return (
     <div className="pb-16 pt-5">
       <div className="mb-4 flex items-start gap-4">
-        <p className="min-w-0 max-w-[72ch] flex-1 text-[12.5px] leading-relaxed text-muted">
+        <p className="min-w-0 max-w-[72ch] flex-1 text-body leading-relaxed text-muted">
           Org role is <span className="font-mono text-fg-2">owner</span>,{" "}
           <span className="font-mono text-fg-2">admin</span> or{" "}
           <span className="font-mono text-fg-2">member</span> — those three, nothing else. What
@@ -95,8 +95,8 @@ function MembersTab() {
           <div className="text-right">
             <div className="font-mono text-[9px] uppercase tracking-[0.07em] text-faint-2">SEATS</div>
             <div className="mt-1 flex items-baseline justify-end gap-1.5">
-              <span className={`font-mono text-[14px] ${seatTone}`}>{seatsUsed}</span>
-              <span className="font-mono text-[11px] text-faint-2">/ {seatLimit || "—"}</span>
+              <span className={`font-mono text-lead ${seatTone}`}>{seatsUsed}</span>
+              <span className="font-mono text-small text-faint-2">/ {seatLimit || "—"}</span>
             </div>
             <div className="mt-1.5 h-[3px] w-[132px] overflow-hidden rounded-sm bg-line">
               <div
@@ -111,7 +111,7 @@ function MembersTab() {
           <button
             onClick={() => setInviting((v) => !v)}
             disabled={atCap}
-            className="inline-flex h-[30px] items-center gap-2 rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-[12.5px] font-semibold text-accent disabled:border-control disabled:bg-transparent disabled:text-faint-2"
+            className="inline-flex h-[30px] items-center gap-2 rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-body font-semibold text-accent disabled:border-control disabled:bg-transparent disabled:text-faint-2"
           >
             <UserPlus size={13} /> Invite
           </button>
@@ -144,7 +144,7 @@ function MembersTab() {
       )}
 
       {isLoading ? (
-        <div className="rounded-[13px] border border-line bg-surface-2 px-5 py-8 text-center font-mono text-[11px] text-faint-2">
+        <div className="rounded-[13px] border border-line bg-surface-2 px-5 py-8 text-center font-mono text-small text-faint-2">
           loading…
         </div>
       ) : members.length <= 1 && invites.length === 0 ? (
@@ -163,13 +163,13 @@ function JustYou({ onInvite }: { onInvite: () => void }) {
   return (
     <div className="rounded-[13px] border border-line bg-surface-2 px-5 py-8">
       <div className="text-[15px] font-semibold">It's just you in here</div>
-      <p className="mt-2 max-w-[56ch] text-[12.5px] leading-relaxed text-muted">
+      <p className="mt-2 max-w-[56ch] text-body leading-relaxed text-muted">
         You created this org, so you are the owner — the one role that cannot be changed. Nobody
         has been invited yet: that is a new org, not an empty table.
       </p>
       <button
         onClick={onInvite}
-        className="mt-4 h-[30px] rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-[12.5px] font-semibold text-accent"
+        className="mt-4 h-[30px] rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-body font-semibold text-accent"
       >
         Invite your first teammate
       </button>
@@ -199,7 +199,7 @@ function MemberTable({ members, orgId }: { members: OrgMember[]; orgId: string }
           <MemberRow key={m.user.id} member={m} orgId={orgId} />
         ))}
         <div className="flex gap-2.5 bg-surface px-3.5 py-2.5">
-          <span className="text-[11px] leading-relaxed text-muted">
+          <span className="text-small leading-relaxed text-muted">
             The owner's actions stay disabled: ownership belongs to the account that created
             the org, and one that can lose its last owner is one nobody can administer. You
             cannot change or remove yourself either.
@@ -230,11 +230,11 @@ function MemberRow({ member, orgId }: { member: OrgMember; orgId: string }) {
           {user.initials || user.name.slice(0, 2).toUpperCase()}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[12.5px] text-fg-2">{user.name}</span>
+          <span className="block truncate text-body text-fg-2">{user.name}</span>
           <span className="mt-px block font-mono text-[10px] text-faint">@{user.handle}</span>
         </span>
       </span>
-      <span className="w-[148px] min-w-0 shrink-0 truncate font-mono text-[11px] text-muted">
+      <span className="w-[148px] min-w-0 shrink-0 truncate font-mono text-small text-muted">
         {user.email}
       </span>
       <span className="w-[84px] shrink-0">
@@ -338,7 +338,7 @@ function RemoveConfirm({
         <h2 className="text-[15px] font-semibold">
           Remove {user.name} from this organization?
         </h2>
-        <p className="mt-2 text-[12.5px] leading-relaxed text-muted">
+        <p className="mt-2 text-body leading-relaxed text-muted">
           Their seat is freed immediately.{" "}
           {access.length === 0 ? (
             <>They have no project access, so nothing else changes.</>
@@ -360,14 +360,14 @@ function RemoveConfirm({
         <div className="mt-4 flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="h-[30px] rounded-lg border border-control px-3 text-[12.5px] text-muted hover:text-fg"
+            className="h-[30px] rounded-lg border border-control px-3 text-body text-muted hover:text-fg"
           >
             Cancel
           </button>
           <button
             disabled={remove.isPending}
             onClick={() => remove.mutate(user.id, { onSuccess: onClose })}
-            className="h-[30px] rounded-lg border border-st-blocked/40 bg-st-blocked/[0.12] px-3 text-[12.5px] font-semibold text-st-blocked disabled:opacity-50"
+            className="h-[30px] rounded-lg border border-st-blocked/40 bg-st-blocked/[0.12] px-3 text-body font-semibold text-st-blocked disabled:opacity-50"
           >
             {remove.isPending ? "Removing…" : "Remove"}
           </button>
@@ -436,11 +436,11 @@ function InviteForm({ orgId, onDone }: { orgId: string; onDone: () => void }) {
       <button
         type="submit"
         disabled={create.isPending || !email.trim()}
-        className="h-[30px] rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-[12.5px] font-semibold text-accent disabled:opacity-50"
+        className="h-[30px] rounded-lg border border-accent/35 bg-accent/[0.14] px-3 text-body font-semibold text-accent disabled:opacity-50"
       >
         {create.isPending ? "Sending…" : "Send invite"}
       </button>
-      {error && <span className="w-full text-[11px] text-st-blocked">{error}</span>}
+      {error && <span className="w-full text-small text-st-blocked">{error}</span>}
     </form>
   );
 }
@@ -462,7 +462,7 @@ function PendingInvites({ invites, orgId }: { invites: Invite[]; orgId: string }
       ) : (
         invites.map((i) => <InviteRow key={i.id} invite={i} orgId={orgId} />)
       )}
-      <div className="border-t border-line px-3.5 py-2.5 text-[11px] leading-relaxed text-faint">
+      <div className="border-t border-line px-3.5 py-2.5 text-small leading-relaxed text-faint">
         Expiry is one deployment-wide setting applied to every invite this deployment issues.
         There is no per-invite choice to make here.
       </div>
@@ -479,7 +479,7 @@ function InviteRow({ invite, orgId }: { invite: Invite; orgId: string }) {
         <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-st-review" />
         <span className="truncate font-mono text-[12px] text-fg-2">{invite.email}</span>
       </span>
-      <span className="w-[74px] shrink-0 font-mono text-[9.5px] uppercase text-muted">
+      <span className="w-[74px] shrink-0 font-mono text-meta uppercase text-muted">
         {invite.role}
       </span>
       <span className="flex w-[152px] shrink-0 justify-end gap-1">

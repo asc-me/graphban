@@ -46,7 +46,7 @@ export function StatusMenu({
             className="justify-start"
           >
             <Dot color={STATUS_META[s].color} />
-            <span className="font-mono text-[11px] uppercase tracking-wide" style={{ color: STATUS_META[s].color }}>
+            <span className="font-mono text-small uppercase tracking-wide" style={{ color: STATUS_META[s].color }}>
               {STATUS_META[s].label}
             </span>
             {s === status && <Check size={12} className="ml-auto text-fg" aria-hidden />}

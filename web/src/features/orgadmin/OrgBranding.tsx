@@ -33,7 +33,7 @@ export function OrgBranding() {
             <div className="flex h-[104px] items-center justify-center rounded-[10px] border border-dashed border-line-2 bg-surface text-[12px] text-faint">
               Drop a PNG or SVG — transparent reads best on the dark canvas
             </div>
-            <p className="mt-2 text-[11px] leading-relaxed text-muted">
+            <p className="mt-2 text-small leading-relaxed text-muted">
               Previewed at both sizes it actually appears in — 20px in the rail, 40px on the
               sign-in card. A logo that works at one and dies at the other is the normal
               outcome, so the screen shows both rather than one flattering crop.
@@ -64,13 +64,13 @@ export function OrgBranding() {
               <div className="font-mono text-[9px] uppercase tracking-[0.06em] text-st-blocked">
                 candidate rejected
               </div>
-              <p className="mt-1 text-[11px] leading-relaxed text-muted">
+              <p className="mt-1 text-small leading-relaxed text-muted">
                 <span className="font-mono text-st-blocked">#3b4a2e</span> was pulled from the
                 logo but reaches 1.9:1 against the canvas. It cannot be accepted as the accent,
                 and the reason is stated rather than left as a red border.
               </p>
             </div>
-            <p className="mt-2 text-[11px] leading-relaxed text-muted">
+            <p className="mt-2 text-small leading-relaxed text-muted">
               Extraction proposes; you accept. Nothing changes because a logo was uploaded.
             </p>
           </Card>
@@ -88,7 +88,7 @@ export function OrgBranding() {
                 <div className={`font-mono text-[9px] uppercase tracking-[0.06em] ${tone}`}>
                   {label}
                 </div>
-                <p className="mt-1.5 text-[11px] leading-relaxed text-muted">{body}</p>
+                <p className="mt-1.5 text-small leading-relaxed text-muted">{body}</p>
               </div>
             ))}
           </div>
@@ -114,7 +114,7 @@ function Card({
 }) {
   return (
     <section className={`rounded-[13px] border border-line bg-surface-2 p-4 ${className}`}>
-      <h3 className="mb-3 text-[14px] font-semibold">{title}</h3>
+      <h3 className="mb-3 text-lead font-semibold">{title}</h3>
       {children}
     </section>
   );

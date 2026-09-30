@@ -66,7 +66,7 @@ export function ResetPasswordPage() {
           {!token ? (
             // A link that lost its token cannot be completed, and saying so beats a form that
             // fails on submit for a reason the user cannot see.
-            <p className="text-[12.5px] text-muted">
+            <p className="text-body text-muted">
               This link is missing its token. Ask for a new one from the sign-in page.
             </p>
           ) : (

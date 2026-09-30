@@ -90,7 +90,7 @@ export function LoginPage() {
           <LogoMark />
           <div className="leading-none">
             <div className="text-[17px] font-bold tracking-tight">Graphban</div>
-            <div className="mt-1 font-mono text-[9.5px] tracking-[0.6px] text-muted-2">
+            <div className="mt-1 font-mono text-meta tracking-[0.6px] text-muted-2">
               AGENT MEMORY · LINEAR EXECUTION
             </div>
           </div>
@@ -103,7 +103,7 @@ export function LoginPage() {
           <h1 className="mb-1 text-[16px] font-semibold">
             {isSignup ? "Create your account" : "Sign in"}
           </h1>
-          <p className="mb-5 text-[12.5px] text-muted">
+          <p className="mb-5 text-body text-muted">
             {isSignup
               ? "Set up a workspace and start capturing agent memory."
               : "Welcome back. Pick up where the agents left off."}
@@ -214,7 +214,7 @@ export function LoginPage() {
                   <p
                     id={FORGOT_HINT_ID}
                     className={cn(
-                      "mt-1.5 text-[11px] text-muted-2",
+                      "mt-1.5 text-small text-muted-2",
                       email.trim() && "sr-only",
                     )}
                   >

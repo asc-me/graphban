@@ -30,7 +30,7 @@ function StateCopy({ data }: { data: UpdateCheck }) {
   if (data.state === "current") {
     return (
       <div className="space-y-1">
-        <p className="text-[14px] font-semibold">On the latest release</p>
+        <p className="text-lead font-semibold">On the latest release</p>
         <p className="text-[13px] text-fg-2">
           This box is on <Cut version={v} sha={sha} />.
         </p>
@@ -40,7 +40,7 @@ function StateCopy({ data }: { data: UpdateCheck }) {
   if (data.state === "available" && data.latest) {
     return (
       <div className="space-y-2">
-        <p className="text-[14px] font-semibold">Update available</p>
+        <p className="text-lead font-semibold">Update available</p>
         <p className="text-[13px] text-fg-2">
           <span className="font-mono text-fg">{data.latest.tag}</span> is available. This
           box is on <Cut version={v} sha={sha} />.
@@ -55,7 +55,7 @@ function StateCopy({ data }: { data: UpdateCheck }) {
   }
   return (
     <div className="space-y-2">
-      <p className="text-[14px] font-semibold">Could not check</p>
+      <p className="text-lead font-semibold">Could not check</p>
       <p className="text-[13px] text-fg-2">
         Could not tell whether a newer cut exists. This box reports <Cut version={v} sha={sha} />.
       </p>
@@ -190,8 +190,8 @@ export function UpdatesPanel() {
 
   return (
     <div className="max-w-2xl">
-      <div className="text-[14px] font-semibold">Updates</div>
-      <p className="mb-3 mt-0.5 text-[12.5px] text-muted">
+      <div className="text-lead font-semibold">Updates</div>
+      <p className="mb-3 mt-0.5 text-body text-muted">
         Whether this box is on the published stable cut.
       </p>
       <div className="rounded-[13px] border border-line-2 bg-surface-2 p-4">

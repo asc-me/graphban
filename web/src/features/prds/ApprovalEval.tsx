@@ -55,14 +55,14 @@ export function ApprovalEval({
         ))}
       </div>
 
-      <p className="mt-2 text-[11px] leading-snug text-faint">{data.coverage_note}</p>
+      <p className="mt-2 text-small leading-snug text-faint">{data.coverage_note}</p>
       {data.coverage_gaps.length > 0 && (
-        <p className="mt-1 text-[11px] text-[#e0b34a]">
+        <p className="mt-1 text-small text-[#e0b34a]">
           No work linked: {data.coverage_gaps.join(" · ")}
         </p>
       )}
       {data.shaped && data.empty_sections.length > 0 && (
-        <p className="mt-1 text-[11px] text-[#e0b34a]">
+        <p className="mt-1 text-small text-[#e0b34a]">
           Empty headings: {data.empty_sections.join(" · ")}
         </p>
       )}
@@ -143,7 +143,7 @@ function CompletenessRow({ row }: { row: PrdEvalCompleteness }) {
         {meta.label}
       </span>
       {row.section && row.state !== "present" && (
-        <span className="min-w-0 truncate text-[11px] text-faint">{row.section}</span>
+        <span className="min-w-0 truncate text-small text-faint">{row.section}</span>
       )}
     </div>
   );
@@ -159,7 +159,7 @@ function JudgedBlock({ data }: { data: PrdEval }) {
 function GrillWarning({ data }: { data: PrdEval }) {
   if (!data.judged) {
     return (
-      <p className="mt-2.5 flex items-start gap-1.5 text-[11px] leading-snug text-faint">
+      <p className="mt-2.5 flex items-start gap-1.5 text-small leading-snug text-faint">
         <AlertTriangle size={12} className="mt-0.5 flex-none" />
         The grill approved this; the quality judge was not asked — ungraded is not a pass.
       </p>
@@ -167,7 +167,7 @@ function GrillWarning({ data }: { data: PrdEval }) {
   }
   if (data.ready === false) {
     return (
-      <p className="mt-2.5 flex items-start gap-1.5 text-[11px] leading-snug text-[#e0b34a]">
+      <p className="mt-2.5 flex items-start gap-1.5 text-small leading-snug text-[#e0b34a]">
         <AlertTriangle size={12} className="mt-0.5 flex-none" />
         The grill approved this; the judge still flagged issues. Approval is not blocked.
       </p>

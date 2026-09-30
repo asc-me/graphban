@@ -62,11 +62,11 @@ export function PrdListView() {
                   className="flex w-full items-center gap-3 rounded-[12px] border border-control bg-surface-2 px-4 py-3 text-left transition-colors hover:border-control-hover"
                 >
                   <FileText size={16} className="flex-none text-muted" />
-                  <span className="w-[52px] flex-none font-mono text-[11px] text-faint">{p.id}</span>
+                  <span className="w-[52px] flex-none font-mono text-small text-faint">{p.id}</span>
                   <span className="min-w-0 flex-1 truncate text-[13.5px] text-fg-2">{p.title}</span>
                   <div className="flex flex-none items-center gap-1.5">
                     {p.linked.slice(0, 4).map((id) => (
-                      <span key={id} className="rounded-md border border-line-2 px-1.5 py-0.5 font-mono text-[9.5px] text-muted">
+                      <span key={id} className="rounded-md border border-line-2 px-1.5 py-0.5 font-mono text-meta text-muted">
                         {id}
                       </span>
                     ))}
@@ -155,7 +155,7 @@ function NewPrdDialog({ onCreated }: { onCreated: (id: string) => void }) {
           <Input placeholder="PRD title" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
 
           {imported ? (
-            <div className="flex items-center gap-2 rounded-lg border border-line-2 bg-surface-2 px-3 py-2 text-[12.5px]">
+            <div className="flex items-center gap-2 rounded-lg border border-line-2 bg-surface-2 px-3 py-2 text-body">
               <FileText size={14} className="flex-none text-accent" />
               <span className="min-w-0 flex-1 truncate text-fg-2">{imported.name}</span>
               <span className="flex-none font-mono text-[10px] text-faint">
@@ -174,7 +174,7 @@ function NewPrdDialog({ onCreated }: { onCreated: (id: string) => void }) {
                     type="button"
                     onClick={() => setTemplate(t)}
                     className={
-                      "flex-1 rounded-lg border px-3 py-2 text-[12.5px] capitalize transition-colors " +
+                      "flex-1 rounded-lg border px-3 py-2 text-body capitalize transition-colors " +
                       (template === t
                         ? "border-control-hover bg-surface-3 text-fg"
                         : "border-control bg-surface-2 text-muted hover:text-fg-2")
@@ -184,7 +184,7 @@ function NewPrdDialog({ onCreated }: { onCreated: (id: string) => void }) {
                   </button>
                 ))}
               </div>
-              <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-line-2 bg-surface-2 px-3 py-2 text-[12.5px] text-muted hover:border-line-hover hover:text-fg-2">
+              <label className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-line-2 bg-surface-2 px-3 py-2 text-body text-muted hover:border-line-hover hover:text-fg-2">
                 <Upload size={14} />
                 Import a .md file
                 <input type="file" accept=".md,.markdown,.txt,text/markdown" className="hidden" onChange={onFile} />

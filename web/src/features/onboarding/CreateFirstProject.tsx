@@ -54,7 +54,7 @@ export function CreateFirstProject() {
           <Sparkles size={18} className="text-accent" />
         </div>
         <h1 className="mb-1 text-[17px] font-semibold tracking-tight">Create your first project</h1>
-        <p className="mb-6 text-[12.5px] leading-relaxed text-muted">
+        <p className="mb-6 text-body leading-relaxed text-muted">
           A project is a workspace for your tracker, agent memory, requests, and PRDs. You can add
           more later.
         </p>

@@ -38,7 +38,7 @@ export function AcceptancePanel({ prdId }: { prdId: string }) {
     // this whole PRD exists to stop.
     return (
       <div className="rounded-[11px] border border-line-2 bg-surface-2 p-4">
-        <p className="text-[12.5px] text-fg-2">This PRD has no baseline.</p>
+        <p className="text-body text-fg-2">This PRD has no baseline.</p>
         <p className="mt-1 text-[11.5px] text-faint">
           Nothing was ever agreed, so there is nothing to check delivery against. Finish the
           grill to freeze intent — that is what makes acceptance answerable at all.
@@ -122,7 +122,7 @@ function Header({ report }: { report: CloseReport }) {
         )}
       </p>
       {report.closed && (
-        <p className="mt-2 rounded-[8px] border border-line-2 bg-surface px-2 py-1.5 text-[11px] text-fg-2">
+        <p className="mt-2 rounded-[8px] border border-line-2 bg-surface px-2 py-1.5 text-small text-fg-2">
           Closed {report.closed.mode === "mechanical" ? "mechanically" : "with a judge"} against{" "}
           {report.closed.baseline_version}.
           {report.closed.disclosure && (
@@ -176,7 +176,7 @@ function Finding({ icon, tone, title, empty, rows }: {
           {rows.map((r) => (
             <li key={r.key} className="text-[12px] text-fg-2">
               {r.text}
-              {r.note && <span className="ml-1.5 text-[11px] text-faint">— {r.note}</span>}
+              {r.note && <span className="ml-1.5 text-small text-faint">— {r.note}</span>}
             </li>
           ))}
         </ul>
@@ -200,10 +200,10 @@ function Sections({ sections }: { sections: CloseReportSection[] }) {
               {/* A rename is not a drop. Showing both names is what stops a reviewer
                   reading one piece of intent as two. */}
               {s.current_title !== s.section && (
-                <span className="ml-1.5 text-[11px] text-faint">→ {s.current_title}</span>
+                <span className="ml-1.5 text-small text-faint">→ {s.current_title}</span>
               )}
             </span>
-            <span className="font-mono text-[9.5px] text-faint">
+            <span className="font-mono text-meta text-faint">
               {s.delivered_items.length}/{s.planned_items.length}
             </span>
             <span className="w-[104px] shrink-0 text-right font-mono text-[9px] uppercase tracking-wide"

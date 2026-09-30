@@ -98,7 +98,7 @@ export function HarnessView() {
             data-tab={t.id}
             aria-selected={tab === t.id}
             onClick={() => setTab(t.id)}
-            className={`border-b-2 px-3 py-2 text-[12.5px] transition-colors ${
+            className={`border-b-2 px-3 py-2 text-body transition-colors ${
               tab === t.id
                 ? "border-accent text-fg-2"
                 : "border-transparent text-muted hover:text-fg-2"
@@ -161,7 +161,7 @@ function PerformanceTab({
       {data.coverage && data.coverage.attempts > 0 && (
         <div
           data-testid="harness-coverage"
-          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted"
         >
           Coverage {data.coverage.rate === null ? "—" : `${Math.round(data.coverage.rate * 100)}%`}
           {" — "}
@@ -172,7 +172,7 @@ function PerformanceTab({
       {data.platform === null && data.platform_reason && (
         <div
           data-testid="harness-no-platform"
-          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted"
         >
           {data.platform_reason}
         </div>
@@ -180,7 +180,7 @@ function PerformanceTab({
       {data.below_floor_count > 0 && (
         <div
           data-testid="harness-floor-note"
-          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted"
+          className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted"
         >
           {data.below_floor_count} of {data.cells.length} cells are below the{" "}
           {data.floor}-attempt floor. Their rates are shown because hiding them would read
@@ -198,7 +198,7 @@ function PerformanceTab({
           className="rounded-[10px] border border-dashed border-line-2 bg-surface-2 px-3.5 py-3 text-faint"
         >
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="font-mono text-[12.5px]">
+            <span className="font-mono text-body">
               {row.vendor}{row.model ? `:${row.model}` : ""}
             </span>
             <span className="font-mono text-[10.5px]">{row.capability}</span>
@@ -239,7 +239,7 @@ function ChangesTab({
 }) {
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-3">
-      <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-[12.5px] text-muted">
+      <div className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-2.5 text-body text-muted">
         This page changes nothing. Each card below is a draft — accepting one records that
         you have seen it, not that anything was applied.
       </div>
@@ -331,7 +331,7 @@ function CellRow({ cell, floor }: { cell: HarnessCell; floor: number }) {
       className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3"
     >
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="font-mono text-[12.5px]">
+        <span className="font-mono text-body">
           {k.vendor}
           {k.model ? `:${k.model}` : ""}
         </span>
@@ -450,7 +450,7 @@ function CellRow({ cell, floor }: { cell: HarnessCell; floor: number }) {
               key={cellId(leaf)}
               data-testid="harness-leaf"
               data-below-floor={leaf.below_floor ? "true" : "false"}
-              className={`flex items-baseline gap-2 font-mono text-[11px] ${
+              className={`flex items-baseline gap-2 font-mono text-small ${
                 leaf.below_floor ? "text-faint" : "text-muted"
               }`}
             >
@@ -490,7 +490,7 @@ function ReviewRow({ cell, floor }: { cell: HarnessReviewCell; floor: number }) 
       className="rounded-[10px] border border-line-2 bg-surface-2 px-3.5 py-3"
     >
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="font-mono text-[12.5px]">
+        <span className="font-mono text-body">
           {cell.key.vendor}
           {cell.key.model ? `:${cell.key.model}` : ""}
         </span>
@@ -671,7 +671,7 @@ function ProbePanel({
                 type="button"
                 data-testid="harness-probe-suggestion"
                 onClick={() => { setPickedSuggestion(active ? null : i); setError(null); }}
-                className={`rounded-[6px] border px-2 py-1 font-mono text-[11px] transition-colors ${
+                className={`rounded-[6px] border px-2 py-1 font-mono text-small transition-colors ${
                   active
                     ? "border-st-done bg-[rgba(80,200,120,0.12)] text-st-done"
                     : "border-control bg-surface text-muted hover:border-control"
@@ -692,7 +692,7 @@ function ProbePanel({
             const selected = pickedItems[group.key] ?? [];
             return (
               <div key={group.key} data-testid="harness-probe-group">
-                <div className="flex items-baseline gap-2 font-mono text-[11px]">
+                <div className="flex items-baseline gap-2 font-mono text-small">
                   <span className="text-muted">{group.label}</span>
                   <span className="text-faint">{group.items.length} candidates</span>
                   {selected.length > 0 && (
@@ -706,7 +706,7 @@ function ProbePanel({
                       <label
                         key={item.id}
                         data-testid="harness-probe-item"
-                        className={`flex cursor-pointer items-start gap-2 rounded-[4px] px-2 py-1 font-mono text-[11px] transition-colors ${
+                        className={`flex cursor-pointer items-start gap-2 rounded-[4px] px-2 py-1 font-mono text-small transition-colors ${
                           checked ? "bg-[rgba(80,200,120,0.06)]" : "hover:bg-surface"
                         }`}
                       >
@@ -729,7 +729,7 @@ function ProbePanel({
       )}
 
       {error && (
-        <div data-testid="harness-probe-error" className="mt-2 rounded-[6px] border border-[rgba(240,100,100,0.3)] bg-[rgba(240,100,100,0.08)] px-2.5 py-1.5 font-mono text-[11px] text-[#f06464]">
+        <div data-testid="harness-probe-error" className="mt-2 rounded-[6px] border border-[rgba(240,100,100,0.3)] bg-[rgba(240,100,100,0.08)] px-2.5 py-1.5 font-mono text-small text-[#f06464]">
           {error}
         </div>
       )}

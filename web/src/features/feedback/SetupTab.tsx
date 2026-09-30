@@ -103,7 +103,7 @@ export function SetupTab({ platform }: { platform: PlatformConfig | undefined })
               >
                 <div className="flex items-center gap-2">
                   <span className="text-[13px] font-medium text-fg">{r.label}</span>
-                  <span className="rounded border border-line-2 px-1.5 py-px font-mono text-[9.5px] uppercase tracking-wide text-faint-2">
+                  <span className="rounded border border-line-2 px-1.5 py-px font-mono text-meta uppercase tracking-wide text-faint-2">
                     {r.tag}
                   </span>
                 </div>
@@ -128,8 +128,8 @@ export function SetupTab({ platform }: { platform: PlatformConfig | undefined })
               ) : (
                 <span className="flex-none h-3.5 w-3.5 rounded-full border border-line-2" />
               )}
-              <span className={cn("text-[12.5px]", r.met ? "text-fg" : "text-muted")}>{r.label}</span>
-              <span className="ml-auto text-[11px] text-faint">{r.hint}</span>
+              <span className={cn("text-body", r.met ? "text-fg" : "text-muted")}>{r.label}</span>
+              <span className="ml-auto text-small text-faint">{r.hint}</span>
             </div>
           ))}
         </div>
@@ -137,7 +137,7 @@ export function SetupTab({ platform }: { platform: PlatformConfig | undefined })
 
       <div className="rounded-lg border border-line-2 bg-surface-2 p-4">
         <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">Why the cloud org?</div>
-        <p className="text-[12.5px] text-muted">
+        <p className="text-body text-muted">
           It's the only public piece. It holds submissions for up to 7 days and never sees your code or memory.
         </p>
         <a
@@ -219,9 +219,9 @@ function CustomDomainSection({ records, origin }: { records: DnsRecord[]; origin
                 const result = results[dnsRecordKey(r)] ?? { status: "unknown", detail: "Not checked yet" };
                 return (
                   <tr key={dnsRecordKey(r)} className="border-b border-line-2 last:border-b-0">
-                    <td className="px-3 py-2 font-mono text-[11px] text-fg-2">{r.type}</td>
-                    <td className="px-3 py-2 font-mono text-[11px] text-muted">{r.name}</td>
-                    <td className="max-w-[200px] truncate px-3 py-2 font-mono text-[11px] text-muted-2" title={r.value}>
+                    <td className="px-3 py-2 font-mono text-small text-fg-2">{r.type}</td>
+                    <td className="px-3 py-2 font-mono text-small text-muted">{r.name}</td>
+                    <td className="max-w-[200px] truncate px-3 py-2 font-mono text-small text-muted-2" title={r.value}>
                       {r.value}
                     </td>
                     <td className="px-3 py-2">
@@ -233,7 +233,7 @@ function CustomDomainSection({ records, origin }: { records: DnsRecord[]; origin
             </tbody>
           </table>
         </div>
-        <p className="mt-1.5 text-[11px] text-faint">
+        <p className="mt-1.5 text-small text-faint">
           TLS is provisioned automatically once both records resolve. No certificate to paste.
         </p>
       </div>
@@ -321,7 +321,7 @@ function Step({
 }) {
   return (
     <li className="flex gap-3">
-      <span className="flex h-6 w-6 flex-none items-center justify-center rounded-full border border-line-2 bg-surface-3 font-mono text-[11px] text-muted">
+      <span className="flex h-6 w-6 flex-none items-center justify-center rounded-full border border-line-2 bg-surface-3 font-mono text-small text-muted">
         {n}
       </span>
       <div className="flex flex-col gap-1">

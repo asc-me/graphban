@@ -35,7 +35,7 @@ export function TriageView() {
         purpose={
           <span className="flex items-center gap-2.5">
             Clustering reasons over this project's code graph only. Overlaps across repos are not computed — a shared package name is a galaxy edge, not a collision.
-            <span className="rounded-full border border-st-next/30 bg-st-next/[0.07] px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.06em] text-st-next">
+            <span className="rounded-full border border-st-next/30 bg-st-next/[0.07] px-2 py-0.5 font-mono text-meta uppercase tracking-[0.06em] text-st-next">
               per-project · {active?.tag ?? "—"}
             </span>
           </span>
@@ -82,8 +82,8 @@ function IncomingQueue({
     <section className="overflow-hidden rounded-[13px] border border-line bg-surface-2">
       <div className="flex items-center gap-2.5 border-b border-line px-3.5 py-3">
         <MessageSquare size={15} className="shrink-0 text-accent" />
-        <h2 className="flex-1 text-[14px] font-semibold">Incoming</h2>
-        <span className="font-mono text-[9.5px] text-faint-2">{rows.length}</span>
+        <h2 className="flex-1 text-lead font-semibold">Incoming</h2>
+        <span className="font-mono text-meta text-faint-2">{rows.length}</span>
       </div>
 
       {failed ? (
@@ -117,15 +117,15 @@ function QueueRow({ row, projectId }: { row: TriageRow; projectId: string }) {
     <div className="border-b border-line px-3.5 py-3 hover:bg-surface-3">
       <div className="flex items-start gap-2.5">
         <span
-          className="mt-0.5 shrink-0 rounded border px-1.5 py-px font-mono text-[8.5px] uppercase tracking-[0.04em]"
+          className="mt-0.5 shrink-0 rounded border px-1.5 py-px font-mono text-micro uppercase tracking-[0.04em]"
           style={{ color: meta?.color, borderColor: `${meta?.color}44` }}
         >
           {req.type}
         </span>
-        <span className="min-w-0 flex-1 text-[12.5px] leading-snug text-fg-2">{req.title}</span>
+        <span className="min-w-0 flex-1 text-body leading-snug text-fg-2">{req.title}</span>
       </div>
 
-      <div className="mt-2 flex items-center gap-2.5 font-mono text-[9.5px] text-faint-2">
+      <div className="mt-2 flex items-center gap-2.5 font-mono text-meta text-faint-2">
         <span>{req.by || "anonymous"}</span>
         <span className="text-faint">·</span>
         <button
@@ -139,7 +139,7 @@ function QueueRow({ row, projectId }: { row: TriageRow; projectId: string }) {
         <button
           onClick={() => accept.mutate(req.id)}
           disabled={accept.isPending}
-          className="h-5 rounded-[5px] border border-accent/30 px-2 font-mono text-[8.5px] uppercase tracking-[0.04em] text-accent hover:bg-accent/10 disabled:opacity-50"
+          className="h-5 rounded-[5px] border border-accent/30 px-2 font-mono text-micro uppercase tracking-[0.04em] text-accent hover:bg-accent/10 disabled:opacity-50"
         >
           {accept.isPending ? "…" : "Accept"}
         </button>
@@ -148,7 +148,7 @@ function QueueRow({ row, projectId }: { row: TriageRow; projectId: string }) {
       {duplicate && (
         <div className="mt-2 flex items-center gap-2 rounded-md border border-line bg-surface px-2 py-1.5">
           <Copy size={11} className="shrink-0 text-st-next" />
-          <span className="min-w-0 flex-1 text-[11px] text-muted">
+          <span className="min-w-0 flex-1 text-small text-muted">
             looks like <span className="font-mono text-st-next">{duplicate.id}</span> —{" "}
             {Math.round(duplicate.score * 100)}% similar
           </span>
@@ -191,8 +191,8 @@ function Clusters({
           size={15}
           className={failed ? "text-muted" : overlapping.length ? "text-st-review" : "text-st-done"}
         />
-        <h2 className="text-[14px] font-semibold">Collision clusters</h2>
-        <span className="font-mono text-[9.5px] uppercase tracking-[0.05em] text-faint-2">
+        <h2 className="text-lead font-semibold">Collision clusters</h2>
+        <span className="font-mono text-meta uppercase tracking-[0.05em] text-faint-2">
           {failed
             ? "unavailable"
             : overlapping.length
@@ -215,7 +215,7 @@ function Clusters({
             )}
           </span>
           <div className="min-w-0 flex-1">
-            <div className="text-[14px] font-semibold text-st-done">
+            <div className="text-lead font-semibold text-st-done">
               {anyInFlight ? "No overlaps in flight" : "Nothing in flight"}
             </div>
             <div className="mt-1 text-[12px] leading-relaxed text-st-done/70">
@@ -259,7 +259,7 @@ function ClusterCard({ cluster }: { cluster: Cluster }) {
           {cluster.items.length} items overlap
         </span>
         {cluster.predicted && (
-          <span className="rounded border border-purple/30 px-1.5 py-px font-mono text-[8.5px] uppercase tracking-[0.05em] text-purple">
+          <span className="rounded border border-purple/30 px-1.5 py-px font-mono text-micro uppercase tracking-[0.05em] text-purple">
             predicted
           </span>
         )}

@@ -52,7 +52,7 @@ function LensTile({
       )}
     >
       <span className="flex items-baseline justify-between gap-2">
-        <span className={cn("text-[12.5px]", active ? "text-fg" : "text-muted")}>{lens.label}</span>
+        <span className={cn("text-body", active ? "text-fg" : "text-muted")}>{lens.label}</span>
         <span className="font-mono text-[15px] leading-none text-fg">{lens.count.toLocaleString()}</span>
       </span>
       {lens.covers ? (
@@ -60,7 +60,7 @@ function LensTile({
         // refusal kinds and nothing else, at 0 and at 100 alike.
         <span className="text-[10.5px] leading-snug text-faint">
           {lens.covers.length} recorded refusal kinds only
-          <span className="mt-0.5 block font-mono text-[9.5px] text-faint-2">
+          <span className="mt-0.5 block font-mono text-meta text-faint-2">
             {lens.covers.join(" · ")}
           </span>
         </span>

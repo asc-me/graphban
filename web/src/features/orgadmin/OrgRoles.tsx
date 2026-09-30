@@ -93,7 +93,7 @@ function Variant({
         <span className="rounded border border-purple/30 px-1.5 py-px font-mono text-[9px] uppercase tracking-[0.06em] text-purple">
           {tag}
         </span>
-        <h3 className="text-[14px] font-semibold">{title}</h3>
+        <h3 className="text-lead font-semibold">{title}</h3>
       </div>
       <p className="mt-2 text-[12px] leading-relaxed text-muted">{body}</p>
       <div className="mt-2 font-mono text-[10px] text-faint">COST — {cost}</div>
@@ -108,7 +108,7 @@ function Variant({
               <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted">
                 {grants}
               </span>
-              <span className="shrink-0 rounded border border-line px-1.5 font-mono text-[8.5px] uppercase tracking-[0.05em] text-faint">
+              <span className="shrink-0 rounded border border-line px-1.5 font-mono text-micro uppercase tracking-[0.05em] text-faint">
                 {kind}
               </span>
             </div>

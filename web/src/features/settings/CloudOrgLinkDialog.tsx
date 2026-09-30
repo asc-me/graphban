@@ -153,7 +153,7 @@ function StepIndicator({ step }: { step: Step }) {
           >
             {i + 1}
           </span>
-          <span className={cn("text-[11px]", i <= idx ? "text-fg-2" : "text-faint")}>{s.label}</span>
+          <span className={cn("text-small", i <= idx ? "text-fg-2" : "text-faint")}>{s.label}</span>
           {i < steps.length - 1 && <span className="mx-1 h-px flex-1 bg-line-2" />}
         </React.Fragment>
       ))}
@@ -217,13 +217,13 @@ function PlanStep({
               <div className="mt-1 text-[12px] text-muted">
                 {price === -1 ? "Custom" : price === 0 ? "Free" : `$${price}/mo`}
               </div>
-              <div className="mt-0.5 text-[11px] text-faint">{t.note}</div>
+              <div className="mt-0.5 text-small text-faint">{t.note}</div>
             </button>
           );
         })}
       </div>
 
-      <p className="text-[11px] leading-relaxed text-faint">
+      <p className="text-small leading-relaxed text-faint">
         Seats are people — agents and API keys are not seats.
       </p>
 
@@ -284,7 +284,7 @@ function AccountStep({
           placeholder="jane@acme.com"
           type="email"
         />
-        {emailError && <p className="mt-1 text-[11px] text-st-blocked">{emailError}</p>}
+        {emailError && <p className="mt-1 text-small text-st-blocked">{emailError}</p>}
       </div>
       <div>
         <label className="mb-1 block text-[12px] font-medium text-fg-2">Organization name</label>
@@ -292,7 +292,7 @@ function AccountStep({
       </div>
       {slug && (
         <div className="rounded-[9px] border border-line-2 bg-surface-2 px-3 py-2">
-          <span className="text-[11px] text-faint">URL: </span>
+          <span className="text-small text-faint">URL: </span>
           <code className="font-mono text-[11.5px] text-fg-2">cloud.graphban.dev/{slug || "…"}</code>
         </div>
       )}
@@ -405,8 +405,8 @@ function ReviewStep({
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-3">
-      <span className="text-[11px] text-faint">{label}</span>
-      <span className="text-[12.5px] text-fg-2">{value}</span>
+      <span className="text-small text-faint">{label}</span>
+      <span className="text-body text-fg-2">{value}</span>
     </div>
   );
 }

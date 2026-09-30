@@ -341,11 +341,11 @@ export function LinksGraphView() {
                   {LINK_META[selLink.type].label} · {Math.round(selLink.confidence * 100)}%
                 </div>
                 <div className="mb-1.5 font-mono text-[12px] text-fg-2">{selLink.a} ↔ {selLink.b}</div>
-                <p className="text-[12.5px] leading-relaxed text-muted">{selLink.reason}</p>
+                <p className="text-body leading-relaxed text-muted">{selLink.reason}</p>
               </>
             ) : (
               <>
-                <div className="mb-1 font-mono text-[11px] text-faint">{(sel as { id: string }).id}</div>
+                <div className="mb-1 font-mono text-small text-faint">{(sel as { id: string }).id}</div>
                 <div className="mb-2 font-mono text-[10px] uppercase tracking-wide text-faint">
                   {selNodeLinks.length} connection{selNodeLinks.length === 1 ? "" : "s"}
                 </div>

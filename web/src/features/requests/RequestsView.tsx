@@ -134,11 +134,11 @@ function RequestRow({
           title="Upvote"
         >
           <ChevronUp size={13} className="text-accent" />
-          <span className="font-mono text-[11px] text-fg-2">{request.votes}</span>
+          <span className="font-mono text-small text-fg-2">{request.votes}</span>
         </button>
 
         <span
-          className="flex-none rounded-md border px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-wide"
+          className="flex-none rounded-md border px-1.5 py-0.5 font-mono text-meta uppercase tracking-wide"
           style={{ color: meta.color, background: meta.bg, borderColor: meta.border }}
         >
           {meta.label}
@@ -195,7 +195,7 @@ function RequestRow({
       {open && (
         <div className="animate-fade space-y-3 border-t border-line px-3 py-3">
           {request.detail && (
-            <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-fg-2">{request.detail}</p>
+            <p className="whitespace-pre-wrap text-body leading-relaxed text-fg-2">{request.detail}</p>
           )}
           <div>
             <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wide text-faint">Linked code</div>
@@ -211,7 +211,7 @@ function RequestRow({
               className="w-full rounded-md border border-control bg-surface px-2 py-1.5 text-[12px] text-fg-2 placeholder:text-faint focus:border-accent/50 focus:outline-none"
             />
             <div className="flex items-center gap-2">
-              <label className="flex items-center gap-1.5 text-[11px] text-fg-2">
+              <label className="flex items-center gap-1.5 text-small text-fg-2">
                 <input
                   type="checkbox"
                   checked={commentVis === "public"}

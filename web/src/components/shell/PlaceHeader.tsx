@@ -29,14 +29,14 @@ export function PlaceHeader({
       <div className="flex items-baseline gap-2">
         {projectName && (
           <>
-            <span className="text-[12.5px] text-muted">{projectName}</span>
+            <span className="text-body text-muted">{projectName}</span>
             <span className="text-faint-2">·</span>
           </>
         )}
         <h1 className="text-[15px] font-semibold tracking-tight text-fg">{viewName}</h1>
       </div>
       <div className="mt-1 flex items-center gap-3">
-        <p className="flex-1 text-[12.5px] text-muted">{purpose}</p>
+        <p className="flex-1 text-body text-muted">{purpose}</p>
         {action && <div className="flex-none">{action}</div>}
       </div>
     </div>

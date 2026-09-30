@@ -3,10 +3,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+import { TYPE_ROLES } from "./typeScale";
+
 const CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../index.css"), "utf8");
 
 /** Parsed from index.css @theme — sabotage reverts there must fail these assertions. */
 export const TOKENS = parseThemeTokens(CSS);
+
 
 export function parseThemeTokens(css: string): Record<string, string> {
   const tokens: Record<string, string> = {};
@@ -122,20 +125,28 @@ describe("design token foundation (GRPH-908)", () => {
     expect(contrastRatio(TOKENS["color-faint"]!, TOKENS["color-surface-3"]!)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it("defines a collapsed type scale (≤7 steps, ≥1.2× apart)", () => {
-    const roles = [
-      "text-micro",
-      "text-meta",
-      "text-secondary",
-      "text-body",
-      "text-title",
-      "text-display",
-    ] as const;
-    const sizes = roles.map((r) => parseFloat(TOKENS[r]!) * 16);
+  // The floor was 1.2×, which no design ever asserted — it was invented alongside a scale
+  // nothing consumed. The design set is tighter: 9.5/8.5 is 1.118, 14/12.5 is 1.12. The
+  // designs win, so the floor is 1.1. Do NOT round a size back up to restore 1.2× — that
+  // is how the shipped scale drifted away from the designs in the first place (GRPH-1004).
+  it("defines a collapsed type scale (≤7 steps, ≥1.1× apart)", () => {
+    const sizes = TYPE_ROLES.map((r) => parseFloat(TOKENS[r]!) * 16);
     expect(sizes.length).toBeLessThanOrEqual(7);
     for (let i = 1; i < sizes.length; i++) {
-      expect(sizes[i]! / sizes[i - 1]!).toBeGreaterThanOrEqual(1.2);
+      expect(sizes[i]! / sizes[i - 1]!).toBeGreaterThanOrEqual(1.1);
     }
+  });
+
+  it("matches the sizes the design set actually uses", () => {
+    const px = Object.fromEntries(TYPE_ROLES.map((r) => [r, parseFloat(TOKENS[r]!) * 16]));
+    expect(px).toEqual({
+      "text-micro": 8.5,
+      "text-meta": 9.5,
+      "text-small": 11,
+      "text-body": 12.5,
+      "text-lead": 14,
+      "text-title": 20,
+    });
   });
 
   it("defines three radius steps", () => {

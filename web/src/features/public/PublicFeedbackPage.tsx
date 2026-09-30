@@ -29,7 +29,7 @@ export function PublicFeedbackPage() {
     <PublicPageShell>
       <div className="mx-auto max-w-lg">
         <div className="mb-6">
-          <h1 className="text-[20px] font-bold tracking-tight">Feedback</h1>
+          <h1 className="text-title font-bold tracking-tight">Feedback</h1>
           <p className="mt-1 text-[12px] text-muted">Public feedback form</p>
         </div>
         <FeedbackWidget config={config} />

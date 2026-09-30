@@ -49,7 +49,7 @@ export function OrgDeployments() {
 
   return (
     <div className="max-w-[1180px] px-6 pb-16 pt-5">
-      <p className="mb-4 max-w-[80ch] text-[12.5px] leading-relaxed text-muted">
+      <p className="mb-4 max-w-[80ch] text-body leading-relaxed text-muted">
         Local deployments push their code graph here using a link key.{" "}
         <span className="text-fg-2">The key is the deployment's identity</span> — one
         key, one box — so the name you give it is the name you will see here. Same object
@@ -66,7 +66,7 @@ export function OrgDeployments() {
       </div>
 
       {isLoading ? (
-        <div className="rounded-[13px] border border-line bg-surface-2 px-5 py-8 text-center font-mono text-[11px] text-faint-2">
+        <div className="rounded-[13px] border border-line bg-surface-2 px-5 py-8 text-center font-mono text-small text-faint-2">
           loading…
         </div>
       ) : deployments.length === 0 ? (
@@ -91,7 +91,7 @@ function NoDeployments() {
   return (
     <div className="rounded-[13px] border border-line bg-surface-2 px-5 py-8">
       <div className="text-[15px] font-semibold">Nothing is linked yet</div>
-      <p className="mt-2 max-w-[62ch] text-[12.5px] leading-relaxed text-muted">
+      <p className="mt-2 max-w-[62ch] text-body leading-relaxed text-muted">
         No link key has been minted for this org's projects, so no local box is
         pushing a code graph here. Mint one from API keys → Link key, or Settings →
         Sync / Link, then run{" "}
@@ -144,7 +144,7 @@ function DeploymentCard({
       }`}
     >
       <div className="flex flex-wrap items-center gap-2.5">
-        <span className="text-[14px] font-semibold">{d.label}</span>
+        <span className="text-lead font-semibold">{d.label}</span>
         <span className="rounded border border-line-2 px-1.5 py-px font-mono text-[10px] text-muted">
           {d.prefix}…
         </span>
@@ -207,7 +207,7 @@ function DeploymentCard({
               {address}
             </a>
             {override && (
-              <span className="rounded border border-line-2 px-1.5 py-px font-mono text-[8.5px] uppercase tracking-[0.05em] text-faint">
+              <span className="rounded border border-line-2 px-1.5 py-px font-mono text-micro uppercase tracking-[0.05em] text-faint">
                 your override
               </span>
             )}
@@ -237,7 +237,7 @@ function DeploymentCard({
         )}
       </div>
 
-      <p className="mt-1.5 text-[11px] leading-relaxed text-faint">
+      <p className="mt-1.5 text-small leading-relaxed text-faint">
         Self-reported by the box, and a hint rather than a guarantee — the same machine
         answers at different addresses from different networks. An override is stored for
         you alone.

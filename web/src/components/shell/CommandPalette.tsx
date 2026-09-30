@@ -272,7 +272,7 @@ export function CommandPalette({
                     onMouseEnter={() => setActiveIndex(index)}
                     onClick={() => activate(row)}
                   >
-                    <span className="w-[88px] flex-none font-mono text-[11px] text-faint">{row.label}</span>
+                    <span className="w-[88px] flex-none font-mono text-small text-faint">{row.label}</span>
                     <span className="min-w-0 truncate text-fg-2">{row.title}</span>
                   </PaletteOption>
                 );
@@ -298,7 +298,7 @@ export function CommandPalette({
                     onMouseEnter={() => setActiveIndex(index)}
                     onClick={() => activate(row)}
                   >
-                    <span className="w-[88px] flex-none font-mono text-[11px] text-faint">{row.label}</span>
+                    <span className="w-[88px] flex-none font-mono text-small text-faint">{row.label}</span>
                     <span className="min-w-0 truncate text-fg-2">{row.title}</span>
                   </PaletteOption>
                 );
@@ -327,7 +327,7 @@ function PaletteGroup({ label, children }: { label: string; children: React.Reac
 }
 
 function PaletteMessage({ children }: { children: React.ReactNode }) {
-  return <div className="px-3 py-2 text-[12.5px] text-muted">{children}</div>;
+  return <div className="px-3 py-2 text-body text-muted">{children}</div>;
 }
 
 function PaletteOption({
