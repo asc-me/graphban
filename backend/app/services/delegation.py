@@ -484,6 +484,17 @@ def _cell_out(vendor: str, model: str, capability: str, layer: str, cell: dict) 
         out["inherited_from"] = cell["inherited_from"]
     if cell.get("n_band"):
         out["n_band"] = cell["n_band"]
+    sources = sorted(cell.get("model_sources") or ())
+    if sources:
+        # Which of the two names this cell is attributed by (GRPH-993): `measured` is what
+        # the child's own result record said answered, `declared` is what the child said it
+        # was, and `mixed` is a cell holding attempts known both ways under one name.
+        #
+        # Only the project layer can say, because only it is built from raw attempt rows
+        # where the distinction still exists. A rollup-backed layer carries the name its
+        # roll chose and not how it was known, so the key is ABSENT there rather than
+        # asserting `declared` for a model that may well have been measured.
+        out["model_source"] = sources[0] if len(sources) == 1 else "mixed"
     return out
 
 
@@ -517,6 +528,12 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
     assembled from four sources cannot hide which one decided. `bands` stay inside the
     cell (PRD-38 D9). Cost is tokens to a signed-off outcome, bounced included,
     suppressed below 80% reporting (D16).
+
+    The `model` in the key is the one that ANSWERED whenever the supervisor measured one,
+    and the child's declaration only when it did not (GRPH-993); `model_source` says which,
+    on every cell the project layer builds. A cell with no measurement keeps the declared
+    name — including the empty one, which is what 123 pre-measurement cells carry — rather
+    than borrowing the request, so a gap stays a gap instead of becoming an attribution.
 
     The project layer is aggregated live from finished delegations so a test that writes
     a row sees it without waiting on a roll. Probe attempts (`sampled=probe`) are
@@ -560,6 +577,13 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
         tel = telemetry.get(row.id)
         if tel is not None and tel.sampled == "probe":
             continue
+        # GRPH-993: the model that ANSWERED beats the one the child declared. Only an
+        # attempt row can carry a measurement — the delegation records what was requested,
+        # never what ran — so the declared name above stands whenever there is none, and a
+        # null measurement is never backfilled from the request.
+        model_source = "declared"
+        if tel is not None and tel.model_measured:
+            model, model_source = harness_svc.model_of(tel)
         cap_list = list(tel.capabilities or []) if tel is not None else capabilities_of(item)
         if not cap_list:
             cap_list = [harness_svc.FAMILY_OTHER]
@@ -582,6 +606,7 @@ def measured(db: Session, project_id: str | None, *, window_days: int | None = N
                          tokens_in=tin, tokens_out=tout)
             if version:
                 cell["binary_version"] = version
+            cell.setdefault("model_sources", set()).add(model_source)
     out = [_cell_out(v, m, c, "project", cell)
            for (v, m, _ver, c), cell in sorted(cells.items())]
 

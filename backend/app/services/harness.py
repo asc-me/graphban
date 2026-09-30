@@ -793,6 +793,7 @@ def row_dict(row: AttemptTelemetry) -> dict:
         "item_id": row.item_id,
         "vendor": row.vendor,
         "model": row.model,
+        "model_measured": row.model_measured,
         "binary_version": row.binary_version,
         "lane": row.lane,
         "tier_requested": row.tier_requested,
@@ -854,8 +855,33 @@ def _caps_of(row: AttemptTelemetry) -> list[str]:
     return [mapped]
 
 
+def model_of(row: AttemptTelemetry) -> tuple[str, str]:
+    """Which model this attempt is attributed to, and how that name came to be known.
+
+    The MEASURED name wins whenever the supervisor read one, because it is the model that
+    ANSWERED, while `row.model` is only what the child declared itself to be. The two come
+    apart silently: `-m` is passed through unchecked and an unknown name is replaced by the
+    vendor's configured default with no warning anywhere, so across 1489 real children the
+    measured name was `qwen3.7-plus` 1488 times and `qwen3.8-max` once while every cell was
+    filed under a declared model of `""` (GRPH-993).
+
+    One function because two surfaces read the rule — the rollup keys below and the live
+    project cells in `delegation.measured` — and a matrix that disagreed with the page about
+    which model an attempt belongs to would be worse than either answer on its own.
+
+    The source travels with the name so a cell can SAY which it used. A null measurement
+    stays null and reports `declared` rather than falling back to the request: "we could not
+    read the stream" and "it ran what we asked for" are different facts, and answering the
+    second when the first is true is a guess wearing a measurement's clothes.
+    """
+    if row.model_measured:
+        return row.model_measured, "measured"
+    return row.model or "", "declared"
+
+
 def _cell_keys_of(row: AttemptTelemetry) -> list[tuple]:
-    base = (row.vendor or "", row.model or "", row.binary_version or "", row.size_band or "")
+    model, _source = model_of(row)
+    base = (row.vendor or "", model, row.binary_version or "", row.size_band or "")
     return [(*base[:3], cap, base[3]) for cap in _caps_of(row)]
 
 

@@ -2206,9 +2206,21 @@ class AttemptTelemetry(Base):
     project_id: Mapped[str | None] = mapped_column(ForeignKey("projects.id"), nullable=True, index=True)
     item_id: Mapped[str | None] = mapped_column(ForeignKey("items.id"), nullable=True, index=True)
 
-    # ---- the runner (declared by the child, GRPH-732) ----
+    # ---- the runner (declared by the child, GRPH-732; measured at reap, GRPH-993) ----
     vendor: Mapped[str | None] = mapped_column(String(32), nullable=True)
     model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: The model that ANSWERED, read out of the child's own result record by the supervisor
+    #: at reap and posted on the exit shape (GRPH-993). A different fact from `model` above,
+    #: which is what the child declared itself to be: `-m` is passed through unchecked by at
+    #: least one vendor and an unknown name is replaced by its configured default with no
+    #: warning anywhere, so the two can differ silently. Across 1489 real children the
+    #: measured name was `qwen3.7-plus` 1488 times and `qwen3.8-max` once, while every cell
+    #: was filed under a declared model of `""`.
+    #:
+    #: NULL means the stream could not be read, and stays NULL: never defaulted to the
+    #: request, because a confident wrong attribution in the preference matrix is worse than
+    #: a gap in it.
+    model_measured: Mapped[str | None] = mapped_column(String(64), nullable=True)
     binary_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     # ---- the work ----

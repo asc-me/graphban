@@ -413,6 +413,16 @@ class AttemptIn(BaseModel):
     #: PRD-37 D8's explanation, recorded so a recommendation can replay it (PRD-38 D7).
     resolution: dict | None = None
     # --- the exit shape ---
+    #: The model that ANSWERED, out of the child's own result record (GRPH-993). Named
+    #: `model` on the wire because that is what the vendor's record calls it and the
+    #: supervisor already spreads those facts into this post verbatim — renaming it here
+    #: would mean renaming it in every adapter's reader for no gain. It is NOT the model the
+    #: operator requested, and the row keeps that one separately (`model`, declared by the
+    #: child) because the two differ silently: `-m` goes through unchecked and an unknown
+    #: name is replaced by the configured default with no warning anywhere. Absent when the
+    #: stream could not be read, and never defaulted to the request — a gap beats a
+    #: confident wrong attribution in the preference matrix.
+    model: str | None = None
     binary_version: str | None = None
     turns_used: int | None = None
     turn_budget: int | None = None
@@ -459,6 +469,7 @@ def post_attempt(body: AttemptIn, db: Session = Depends(get_db),
                                         adapter=body.adapter, resolution=body.resolution)
     else:
         row = harness_svc.record_exit(db, target=target, values={
+            "model_measured": body.model,
             "binary_version": body.binary_version, "turns_used": body.turns_used,
             "turn_budget": body.turn_budget, "wall_seconds": body.wall_seconds,
             "tokens_in": body.tokens_in, "tokens_out": body.tokens_out,
