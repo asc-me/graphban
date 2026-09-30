@@ -112,5 +112,9 @@ def test_reporting_is_derived_from_the_reader_not_a_second_declaration():
     """Two sources for one fact is how they drift. Adding a `result_facts` reader is what makes
     a vendor reportable, so a flag saying otherwise could only ever be wrong."""
     assert reports_tokens("gbagent") is True
-    assert [n for n in ADAPTERS if reports_tokens(n)] == ["gbagent"]
+    # GRPH-982 added qwen-code's reader, and this list is derived, so it moved by itself — which
+    # is the property the test is for. `--budget` is refused up front for an adapter that
+    # reports nothing, so this list is also exactly the set of adapters a budget can cap.
+    assert reports_tokens("qwen-code") is True
+    assert [n for n in ADAPTERS if reports_tokens(n)] == ["gbagent", "qwen-code"]
     assert reports_tokens("no-such-adapter") is False

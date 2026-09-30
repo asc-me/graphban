@@ -245,6 +245,11 @@ class Child:
     #: for the same reason `reported` is one, and checked by BOTH surfaces so the wave-end
     #: reap and the on-exit reap cannot run over each other.
     reaped: bool = False
+    #: The model the operator ASKED for, carried from the launch (GRPH-982). Kept so the reap
+    #: can compare it with the model that actually answered: `-m bogus-name` runs the
+    #: configured default with no warning anywhere, so a request and a result can differ and
+    #: only the child's own record knows which.
+    model: str = ""
     #: PRD-41 S1. Set by the on-exit reap so the exit post can carry the diff; None
     #: until then, which the server stores as null rather than as a zero-file shape.
     diff_shape: dict | None = None
@@ -335,6 +340,7 @@ def spawn(
 
     return Child(
         adapter=launch.adapter,
+        model=launch.model,
         worktree=worktree,
         branch=branch,
         base=base,

@@ -260,6 +260,10 @@ class Wave:
     #: summary reports the two separately for that reason: "412k tokens" reads as the wave's
     #: total, and it is not the total if four of six children were never counted.
     spend: dict[str, dict] = field(default_factory=dict)
+    #: branch -> (asked, answered) where a child ran a model nobody chose (GRPH-982). Present
+    #: and empty by default: "no substitution was observed" and "no stream could be read" are
+    #: different, and `spend` already says which children reported at all.
+    substituted: dict[str, tuple] = field(default_factory=dict)
     #: branch -> (commits behind, the ref it was measured against). How much had landed on
     #: the trunk that this worker never had in front of it (GRPH-786). A reviewer reading a
     #: branch cut from a base the trunk has moved past is reading a diff against a world
@@ -1787,6 +1791,28 @@ class Merger:
         observe.emit("merge_disabled", detail=why)
 
 
+def substitution(asked: str | None, answered: str | None) -> tuple[str, str] | None:
+    """`(asked, answered)` when a child ran a model nobody chose, else None (GRPH-982).
+
+    THREE INPUTS THAT ARE NOT SUBSTITUTIONS, and keeping them out is the whole care here:
+
+    * the two agree — the ordinary case;
+    * nothing was asked for (the vendor default was accepted), so there is no claim to break;
+    * nothing answered — a truncated or absent stream. "We could not read it" is not "it ran
+      something else", and reporting it as one would manufacture a finding out of an absence,
+      which is the defect this item belongs to.
+
+    Only the fourth case — both known, and different — is a substitution. `-m` is passed
+    through unchecked by at least one vendor and an unknown name is replaced by the configured
+    default with no warning anywhere, so this is the only place a wave can learn it ran
+    something the operator did not pick.
+    """
+    asked, answered = str(asked or ""), str(answered or "")
+    if not asked or not answered or asked == answered:
+        return None
+    return asked, answered
+
+
 def _report_exits(children: list[Child], client: Graphban, wave: "Wave | None" = None) -> None:
     """PRD-38 D3, the exit report: what only this process saw about a child that has ended.
 
@@ -1823,6 +1849,15 @@ def _report_exits(children: list[Child], client: Graphban, wave: "Wave | None" =
             # workspace's `logs/` directory and the reap removes the worktree beside it, so
             # the two are ordered by what the POST needs, not by what this reading needs.
             wave.spend[child.branch] = {"adapter": child.adapter, **facts}
+            # GRPH-982. The model that ANSWERED against the one that was asked for. `-m` is
+            # passed through unchecked by at least one vendor and an unknown name is replaced
+            # by the configured default with no warning anywhere — so a wave can run a model
+            # nobody chose and report the one they typed. Recorded only when both are known
+            # and they DIFFER: "we could not read the stream" is not a substitution, and
+            # flagging it as one would manufacture a finding out of an absence.
+            swap = substitution(child.model, facts.get("model"))
+            if swap is not None:
+                wave.substituted[child.branch] = swap
         if not child.seat_id:
             # No seat, so there is no attempt row to address — but the run still COST
             # something, and the wave summary is entitled to it (GRPH-834). The seat guard

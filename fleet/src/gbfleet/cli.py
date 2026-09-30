@@ -530,6 +530,9 @@ def report(wave: Wave, out=None) -> None:
               f"remote — a bounce here is not the builder's", file=out)
     if wave.review_unmeasured:
         print(f"REVIEW UNREADABLE unmeasured: {wave.review_unmeasured}", file=out)
+    for branch, (asked, ran) in sorted(wave.substituted.items()):
+        print(f"SUBSTITUTED {branch}: asked for {asked}, {ran} answered — the measured cell "
+              f"belongs to {ran}", file=out)
     for line in wave.lease_moved:
         print(f"LEASE MOVED {line}", file=out)
     for key, seconds in sorted(wave.silent.items()):

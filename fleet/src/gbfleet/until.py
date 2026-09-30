@@ -168,6 +168,10 @@ class Report:
             "published_in_review": dict(self.wave.published_in_review) if self.wave else {},
             "review_unreadable": dict(self.wave.review_unreadable) if self.wave else {},
             "review_unmeasured": self.wave.review_unmeasured if self.wave else "",
+            # GRPH-982: branches whose child ran a model nobody asked for. Always present and
+            # empty by default, so "none observed" cannot be read as "not checked".
+            "substituted": {k: list(v) for k, v in (self.wave.substituted.items()
+                                                    if self.wave else [])},
         }
         if self.detail:
             payload["detail"] = self.detail
