@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,9 +17,21 @@ vi.mock("@/features/ProjectContext", () => ({
 }));
 
 const fleet = vi.hoisted(() => ({ data: null as unknown, refetch: vi.fn() }));
+const tierMap = vi.hoisted(() => ({
+  data: null as { rows: unknown[]; cells: unknown[]; overridden: boolean } | null,
+  isFetching: false,
+  isError: false,
+  refetch: vi.fn(),
+}));
 vi.mock("@/lib/queries", () => ({
   useFleet: () => fleet,
   useConfig: () => ({ data: { hosted_mode: false } }),
+  // The tier map has its own query so a 15s poll cannot land under an unsaved edit; it is
+  // stubbed here because this file is about the catalog and the mix. `fleet-tier-map.test.tsx`
+  // drives the real hooks.
+  useFleetTierMap: () => tierMap,
+  useSaveFleetTierMap: () => ({ isPending: false, isError: false, error: null, mutate: vi.fn() }),
+  useClearFleetTierMap: () => ({ isPending: false, isError: false, error: null, mutate: vi.fn() }),
 }));
 
 function renderView() {
@@ -54,6 +66,7 @@ const rows = [
 describe("Fleet.v2 catalog and allocation", () => {
   beforeEach(() => {
     fleet.data = { ...BASE };
+    tierMap.data = null;
     fleet.refetch.mockReset();
     api.saveFleetProfile.mockReset();
   });
@@ -105,5 +118,35 @@ describe("Fleet.v2 catalog and allocation", () => {
     await user.click(screen.getByRole("button", { name: /Save allocation/ }));
     await waitFor(() => expect(api.saveFleetProfile).toHaveBeenCalledTimes(1));
     expect(api.saveFleetProfile.mock.calls[0][0].mix).toBeNull();
+  });
+
+  /**
+   * The CALL, not just the callee (AGENTS.md). `fleet-tier-map.test.tsx` renders the panel
+   * directly and can stay green against a panel nobody mounted; deleting `<TierMapPanel>`
+   * from FleetV2View, or handing it the wrong project, has to fail HERE.
+   */
+  it("renders the editable tier map on the page, scoped to the active project", () => {
+    fleet.data = { ...BASE, matrix: { rows } };
+    tierMap.data = {
+      rows: [],
+      overridden: false,
+      cells: [{
+        harness: "gbagent", tier: "cheap", packaged_model: "qwen3.6", override: null,
+        effective_model: "qwen3.6", overridden: false, models: ["qwen3.6", "haiku"],
+        graded_model: "haiku",
+      }],
+    };
+    renderView();
+    const panel = screen.getByTestId("fleet-tier-map");
+    expect(within(panel).getByRole("heading", { name: "Tier map" })).toBeInTheDocument();
+    // The read-only catalog is still there beside it — the panel is an addition, not a swap.
+    expect(screen.getByTestId("fleet-matrix")).toHaveTextContent("gbagent");
+    expect(within(panel).getByRole("button", { name: /Inherit from performance grading/ }))
+      .toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: /Clear overrides/ })).toBeInTheDocument();
+    expect(within(panel).getByRole("button", { name: /Save tier map/ })).toBeInTheDocument();
+    expect(within(panel).getByLabelText("Model for gbagent at cheap")).toBeInTheDocument();
+    expect(within(panel).getByTestId("tier-map-grading-link")).toHaveAttribute("href", "/harness");
+    expect(within(panel).getByTestId("tier-map-performance-link")).toHaveAttribute("href", "/harness");
   });
 });

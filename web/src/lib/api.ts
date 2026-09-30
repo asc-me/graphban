@@ -1,5 +1,5 @@
 import type { HarnessRecommendations, HarnessReport } from "@/lib/types";
-import type { Credential, CredentialIn, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
+import type { Credential, CredentialIn, FleetOverview, FleetPolicy, FleetPresence, FleetProfile, FleetProfileRead, FleetTierMap, LiveBoard, LiveFeed, ModelLoads, OrgOverview, ReindexStatus, ScopeDefaults, ShellCounts } from "@/lib/types";
 /**
  * Typed fetch client. Access token is kept in memory; the refresh token lives in
  * localStorage so a reload can silently re-auth. On a 401 the client attempts one
@@ -333,6 +333,20 @@ export const api = {
   saveFleetPolicy: (body: { project_id: string } & FleetPolicy) =>
     request<{ project_id: string; policy: FleetPolicy | null }>(
       "/fleet/policy", { method: "PUT", body: JSON.stringify(body) }),
+  // GRPH-1003: which model each harness runs at each tier, per deployment. Read separately
+  // from `fleet` on purpose — `fleet` is polled every 15s and a poll landing under an
+  // unsaved edit is the moment an operator loses what they typed. `model: null` (or "")
+  // clears that ONE cell's override, which falls back to the packaged matrix, not to blank.
+  fleetTierMap: (projectId?: string) =>
+    request<FleetTierMap>(`/fleet/tier-map${projectId ? `?project_id=${projectId}` : ""}`),
+  saveFleetTierMap: (body: { project_id: string;
+                             cells: { harness: string; tier: string; model: string | null }[] }) =>
+    request<FleetTierMap>("/fleet/tier-map", { method: "PUT", body: JSON.stringify(body) }),
+  /** Clears EVERY override for the project. Returns the map it produced, so the caller does
+   *  not have to re-read to learn what the packaged fallbacks are. */
+  clearFleetTierMap: (projectId?: string) =>
+    request<FleetTierMap>(`/fleet/tier-map${projectId ? `?project_id=${projectId}` : ""}`,
+                          { method: "DELETE" }),
   liveFeed: (projectId: string, agentId: string, limit = 50) => {
     const q = new URLSearchParams({ project_id: projectId, limit: String(limit) });
     return request<LiveFeed>(`/live/${encodeURIComponent(agentId)}/feed?${q.toString()}`);

@@ -1510,6 +1510,14 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
             "total": {"type": "integer"}, "roles": {"type": "array"},
             "presence_ttl_seconds": {"type": "integer"},
             "heartbeat_interval_seconds": {"type": "integer"},
+            # `tier_map` (GRPH-1003) is deliberately NOT declared here, alongside `measured`,
+            # `held`, `review_holds` and `probe_suggestions` which are not either: the manifest
+            # has no token headroom (`test_mcp_footprint` sits one token under its ceiling and
+            # its own failure text says to stop adding fields every key pays for). Declaring it
+            # would buy less than it looks like — the conformance check only asks that a
+            # declared field be emitted somewhere in a run, while
+            # `test_an_empty_map_on_fleet_status_is_present_and_not_omitted` asserts it is
+            # present in all three roster views. That test is the guarantee; this schema is not.
         },
     },
     "heartbeat": _ITEM_SCHEMA,

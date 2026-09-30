@@ -742,8 +742,9 @@ def _serve_stdio(args) -> int:
                 matrix=matrix_mod.load(Path(args.matrix)) if args.matrix else matrix_mod.load(),
                 shared=_shared_servers(args),
             )
-            fleet.profile, fleet.policy, pref_note, fleet.measured, fleet.cap_measured = read_preferences(client)
+            fleet.profile, fleet.policy, pref_note, fleet.measured, fleet.cap_measured, tier_map = read_preferences(client)
             print(f"gbfleet mcp: {pref_note}", file=sys.stderr)
+            _apply_tier_map(fleet, tier_map)
             if acquired.takeover:
                 leftover, _occupied, notes = adopt_mod.recover(root, workspace)
                 fleet.children.extend(leftover)
@@ -798,8 +799,9 @@ def _serve_attached(root: Path, workspace: Path, client: Graphban,
         attached_holder=holder,
     )
     fleet.children.extend(children)
-    fleet.profile, fleet.policy, pref_note, fleet.measured, fleet.cap_measured = read_preferences(client)
+    fleet.profile, fleet.policy, pref_note, fleet.measured, fleet.cap_measured, tier_map = read_preferences(client)
     print(f"gbfleet mcp: {pref_note}", file=sys.stderr)
+    _apply_tier_map(fleet, tier_map)
     serve(fleet)
     return 0
 
@@ -822,6 +824,23 @@ def _load_holders_children(root: Path) -> list:
             except OSError:
                 pass
     return attached
+
+
+def _apply_tier_map(fleet: Fleet, tier_map) -> None:
+    """Layer this deployment's tier map onto the packaged matrix, once, at wave start.
+
+    Fixed for the life of the process like the tier table beside it (PRD-36 D16): a map that
+    could change mid-wave would make "what did that child run" unanswerable from the record
+    afterwards. An unreachable server leaves the packaged matrix in place — `read_preferences`
+    already said so in the note printed beside this call, and `tier_map.reachable` keeps the
+    two states apart for anything that reads the fleet later.
+    """
+    fleet.tier_map = tier_map
+    if fleet.matrix is None:
+        return
+    fleet.matrix, notes = tier_map.apply(fleet.matrix)
+    for note in notes:
+        print(f"gbfleet mcp: {note}", file=sys.stderr)
 
 
 def _shared_servers(args) -> dict:

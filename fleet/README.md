@@ -535,7 +535,16 @@ read them off `fleet_status` **once at launch** (a change is read at the next la
 D16) — the profile is the API key owner's, with a per-project override, edited in the Fleet
 view under the Wave tab; the policy is the project's. A key whose owner has no profile, or a
 server that cannot be reached at launch, resolves on matrix order and policy alone and the
-explanation says `profile: none`. Cross-vendor review is the server's preference at `claim_review`,
+explanation says `profile: none`. **The tier map (GRPH-1003)** layers on top of the packaged
+matrix: a deployment may pin which model a harness runs for a tier in the Fleet page, and
+`gbfleet mcp` / `gbfleet until` read those overrides off the same `fleet_status` call, once at
+wave start, so the map outlives a restart and is not baked into the wheel. The committed
+`matrix.toml` stays the DEFAULT — an override can only pin a model the catalog already names
+for that harness and tier, never add one, and clearing the map falls back to the packaged
+rows rather than to an empty map that would route nothing. A server that cannot be reached is
+reported as *the tier map was not read, not empty* and the wave resolves on the packaged
+matrix, because the two states route identically and only the report can tell them apart.
+`gbfleet doctor` prints a `tier map` finding naming what it resolved under. Cross-vendor review is the server's preference at `claim_review`,
 not a matrix rule: `reviewer_cross_vendor` left with the `role` axis (PRD-39 S5). Every spawned child is told, in the same sentence
 as its enrolment code, to register with `capabilities={vendor, model?, tier}` for what the
 supervisor actually launched (GRPH-732), so the ledger can attribute its outcome; only a NAMED

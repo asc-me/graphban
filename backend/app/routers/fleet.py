@@ -54,7 +54,8 @@ def fleet_overview(project_id: str | None = None, db: Session = Depends(get_db),
         # Only waves that still own something. History is not a thing you can end.
         "waves": fleet_svc.live_waves(db, project_id),
         # GRPH-866: the committed catalog the Fleet page draws. Not a resolve.
-        "matrix": fleet_matrix.payload(),
+        # GRPH-1003: and the tier map drawn over it, which IS this deployment's choice.
+        "matrix": fleet_matrix.payload(db, project_id),
         # Recent matrix-launch shares for the mix sliders. n=0 is unmeasured, not 0%.
         "mix": delegation_svc.mix_counts(db, project_id),
     }
@@ -388,6 +389,80 @@ def write_policy(body: PolicyIn, db: Session = Depends(get_db),
                            target_id=body.project_id, project_id=body.project_id,
                            meta={"policy": policy})
     return {"project_id": body.project_id, "policy": policy}
+
+
+# ---- GRPH-1003: the tier map -----------------------------------------------------------------
+#
+# Which model each harness runs when. The design draws this as an editable panel and what
+# shipped beside it was a read-only catalog, so the map was retuned by hand in
+# `fleet/src/gbfleet/matrix.toml` — package data inside the published wheel, which meant a
+# deployment could not retune its own fleet without a release.
+#
+# These three routes are that release valve, and the packaged matrix stays the DEFAULT: an
+# override layers on top of it and clearing one falls back to it, never to empty.
+
+class TierCellIn(BaseModel):
+    harness: str
+    tier: str
+    #: Empty or null CLEARS this cell, which is a different act from omitting it only in that
+    #: omitting it clears it too — PUT replaces the map, so what the body does not carry is
+    #: what the operator does not want.
+    model: str | None = None
+
+
+class TierMapIn(BaseModel):
+    project_id: str
+    cells: list[TierCellIn] = []
+
+
+@router.get("/tier-map")
+def read_tier_map(project_id: str, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """The harness × tier map: packaged model, stored override, what the fleet will run.
+
+    Its own route rather than only a key on `/fleet` because the panel saves and re-reads the
+    map without wanting the roster, the review queue and the cluster board with it.
+    """
+    authz.require_readable(db, user.id, project_id)
+    return fleet_matrix.payload(db, project_id)
+
+
+@router.put("/tier-map")
+def write_tier_map(body: TierMapIn, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Save the tier map. Takes the project's WRITE gate: this changes how a wave routes.
+
+    422 names the cell it refuses and writes nothing — a model the catalog does not carry for
+    that harness and tier is refused because an override pins a committed row, and inventing
+    one here would hand the resolver a model no status describes.
+    """
+    authz.require_writable(db, user.id, body.project_id)
+    try:
+        out = fleet_matrix.set_overrides(db, body.project_id,
+                                         [c.model_dump() for c in body.cells])
+    except fleet_matrix.TierMapInvalid as e:
+        raise HTTPException(422, str(e))
+    events_svc.record_user(db, user, action="set_tier_map", target_type="project",
+                           target_id=body.project_id, project_id=body.project_id,
+                           meta={"overridden": out["overridden"],
+                                 "cells": sum(1 for c in out["cells"] if c["overridden"])})
+    return out
+
+
+@router.delete("/tier-map")
+def clear_tier_map(project_id: str, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """Clear every override. Returns the PACKAGED map, which is never empty.
+
+    The reply is the point: a clear that answered with an empty cell list would tell the
+    operator their deployment can now route nothing, and the truth is that it routes exactly
+    what the committed matrix says.
+    """
+    authz.require_writable(db, user.id, project_id)
+    out = fleet_matrix.clear_overrides(db, project_id)
+    events_svc.record_user(db, user, action="clear_tier_map", target_type="project",
+                           target_id=project_id, project_id=project_id, meta={})
+    return out
 
 
 class AttemptIn(BaseModel):

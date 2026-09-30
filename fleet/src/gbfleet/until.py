@@ -428,8 +428,18 @@ def _loop(
     base_branch: str | None = None,
 ) -> Report:
     from .mcp import _runner_up, read_preferences
-    profile, policy, pref_note, measured, cap_measured = read_preferences(supervisor)
+    profile, policy, pref_note, measured, cap_measured, tier_map = read_preferences(supervisor)
     observe.emit("preferences", detail=pref_note)
+    # GRPH-1003: this deployment's tier map layers onto the packaged matrix at WAVE START, on
+    # the fleet_status call already made — not per spawn, and not inferred from the wheel. Only
+    # when a matrix was handed in: `matrix=None` means "no matrix resolution, --tier only", and
+    # loading one here would quietly give this run a resolver its caller did not ask for.
+    # An unreachable server is already spelled out in pref_note, and what this wave then routes
+    # on is the packaged matrix — reported, not read as "no override".
+    if matrix is not None:
+        matrix, tier_notes = tier_map.apply(matrix)
+        for note in tier_notes:
+            observe.emit("preferences", detail=note)
     agent_id = str(identity.get("agent_id") or identity.get("id"))
     empty = 0
     delegated: set[str] = set()

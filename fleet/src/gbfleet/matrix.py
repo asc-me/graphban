@@ -943,6 +943,62 @@ def load_with_notes(path: Path | None = None) -> tuple[Matrix, list[str]]:
     return Matrix(rows=tuple(rows), path=path), notes
 
 
+def tier_map_of(raw: dict | None) -> dict[tuple[str, str], str]:
+    """`fleet_status.tier_map` as the resolver reads it: `{(harness, tier): model}` (GRPH-1003).
+
+    An absent or empty key yields `{}`, meaning the packaged matrix governs. That is a
+    DIFFERENT claim from "the server could not be reached", and the caller is what keeps them
+    apart — this parser only ever sees a payload that arrived.
+    """
+    out: dict[tuple[str, str], str] = {}
+    entries = (raw or {}).get("overrides") if isinstance(raw, dict) else None
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        harness = str(entry.get("harness") or "")
+        tier = str(entry.get("tier") or "")
+        model = str(entry.get("model") or "")
+        if harness and tier and model:
+            out[(harness, tier)] = model
+    return out
+
+
+def apply_tier_overrides(matrix: "Matrix",
+                         overrides: dict | None) -> tuple["Matrix", list[str]]:
+    """Pin each overridden cell to one committed row, leaving everything else alone (GRPH-1003).
+
+    The packaged matrix is the DEFAULT and this layers on top of it: for a (harness, tier)
+    cell carrying an override, only rows naming that model survive, so `resolve` picks the
+    pinned one without a second opinion. No override, no change — `apply_tier_overrides(mat,
+    {})` returns `mat`, which is what "cleared" and "never set" both mean, and the reason
+    neither can come back as an empty matrix that routes nothing.
+
+    An override naming a model the catalog has no row for leaves that cell PACKAGED and says
+    so in the notes. Dropping the cell's rows instead would empty it, and an empty cell reads
+    as an applied override while routing nothing — the same defect, one level down.
+    """
+    if not overrides:
+        return matrix, []
+    notes: list[str] = []
+    pinned: dict[tuple[str, str], str] = {}
+    for (harness, tier), model in overrides.items():
+        model = str(model or "")
+        if not model:
+            continue
+        if any(r.harness == harness and r.tier == tier and r.model == model
+               for r in matrix.rows):
+            pinned[(harness, tier)] = model
+        else:
+            notes.append(
+                f"tier override {harness}/{tier}={model!r} names a model the matrix carries no "
+                f"row for; the packaged rows for that cell stand")
+    if not pinned:
+        return matrix, notes
+    kept = [r for r in matrix.rows
+            if (r.harness, r.tier) not in pinned or r.model == pinned[(r.harness, r.tier)]]
+    return Matrix(rows=tuple(kept), path=matrix.path), notes
+
+
 def vendor_of(harness: str, matrix: "Matrix | None" = None) -> str:
     """The vendor a matrix row gives this harness, else the harness name itself."""
     rows = (matrix or load()).rows
