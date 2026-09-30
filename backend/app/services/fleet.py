@@ -2499,6 +2499,57 @@ def has_orphaned_branch(agent: Agent, state: str) -> bool:
     return bool(agent.branch) and state in ("offline", "quarantined")
 
 
+#: Why a review hold is no longer live. `None` from `review_claim_lapse` means it IS live, or
+#: that nobody ever took it — and those two are told apart by `item.review_claimed_by`, never
+#: by this value, which is the whole reason the reasons are named rather than folded into a
+#: boolean.
+REVIEW_LAPSE_REASONS = ("offline", "quarantined", "age", "untimed")
+
+#: Lapses that name an AGENT'S state rather than the clock. Only these are rendered as a
+#: holder the queue has lost: an age lapse is the lease working as designed, not somebody's
+#: process being gone.
+REVIEW_LAPSE_PRESENCE = ("offline", "quarantined")
+
+
+def review_claim_lapse(item: Item, *, now: datetime | None = None,
+                       lease_seconds: int = DEFAULT_LEASE_SECONDS) -> str | None:
+    """Why this item's review hold is NOT live, or None while it is (GRPH-991).
+
+    One definition, because "is this claim live" is one question: `claim_review` decides
+    whether to offer the item to somebody else with it, `held_review` decides what an agent is
+    holding with it, and `review_queue` decides what to render with it. Two answers is how a
+    board and a queue come to contradict each other in front of an operator.
+
+    The hold lapses on the CLOCK (GRPH-395/771) and on PRESENCE. Presence is the half PRD-48
+    S5 asks for — "a review claim must expire when its holder stops heartbeating, the way a
+    build lease does" — and a build lease is released by `requeue_offline_items` on presence,
+    not on age. Age alone left the gap it was written for: presence says "gone" after
+    `presence_ttl_seconds` (150s by default) while the item stayed unclaimable for the rest of
+    a 600s lease, which on a fleet polling every 50s is four and a half minutes of a review
+    queue that looks stocked and is not.
+
+    A holder with NO Agent row — a human, or a bare credential — is left to the clock. There is
+    no presence to consult, and "I could not find the holder" is not "the holder is gone"; that
+    is `_offline_holders`' rule and releasing on ignorance is how two agents end up on one item.
+    """
+    if not item.review_claimed_by:
+        return None
+    if item.review_claimed_at is None:
+        # Counts as expired, which is what made the 0071 backfill free every item the old
+        # no-expiry behaviour stranded rather than carrying the strand forward.
+        return "untimed"
+    now = now or datetime.now(timezone.utc)
+    if now - _aware(item.review_claimed_at) > timedelta(seconds=lease_seconds):
+        return "age"
+    db = object_session(item)
+    holder = db.get(Agent, item.review_claimed_by) if db is not None else None
+    if holder is not None:
+        state = presence_state(holder, lease_seconds=lease_seconds, now=now)
+        if state in REVIEW_LAPSE_PRESENCE:
+            return state
+    return None
+
+
 def review_claim_holder(item: Item, *, now: datetime | None = None,
                         lease_seconds: int = DEFAULT_LEASE_SECONDS) -> str | None:
     """Who is reviewing this right now, or None once their claim has gone stale (GRPH-395).
@@ -2508,16 +2559,10 @@ def review_claim_holder(item: Item, *, now: datetime | None = None,
     cleared it, so a reviewer that died removed the item from every other reviewer's candidate
     list for good — while it sat in `review` looking like ordinary queued work.
 
-    A claim with NO timestamp counts as expired. That is what makes the 0071 backfill free
-    every item the old behaviour stranded, rather than carrying the strand forward under new
-    column names.
+    The REASON lives in `review_claim_lapse`; this is the half of it callers ask for most, and
+    it must never grow a second definition of liveness.
     """
-    if not item.review_claimed_by:
-        return None
-    if item.review_claimed_at is None:
-        return None
-    claimed = _aware(item.review_claimed_at)
-    if (now or datetime.now(timezone.utc)) - claimed > timedelta(seconds=lease_seconds):
+    if review_claim_lapse(item, now=now, lease_seconds=lease_seconds) is not None:
         return None
     return item.review_claimed_by
 
@@ -3659,29 +3704,47 @@ def review_queue(db: Session, project_id: str | None = None) -> list[dict]:
     agents = list(db.scalars(select(Agent)).all())
     labels = {a.id: (a.label or a.id) for a in agents}
     holders = {a.id: a for a in agents}
-    return [{
-        "id": it.id, "key": it.key, "title": it.title, "branch": it.branch,
-        "built_by": it.built_by,
-        "built_by_label": labels.get(it.built_by) if it.built_by else None,
-        # WHO IS ON IT NOW. Items in this queue are `review`, so `reviewed_by` is empty here by
-        # definition — the verdict is written at sign-off, which is when the item leaves. The
-        # queue's question is "is somebody already looking at this", and after the split
-        # (GRPH-395) that is the live claim, not the verdict.
-        "reviewed_by": review_claim_holder(it),
-        # Taken this many times WITHOUT a verdict (GRPH-771).
-        "review_takes": it.review_takes or 0,
-        # HOW LONG, and by an agent in what state (GRPH-771). A hold renders identically to
-        # progress on the board, so a review that stalled and a review under way looked the
-        # same until somebody queried the database. `null` when nothing holds it.
-        "held_for_seconds": (int((datetime.now(timezone.utc) - _aware(it.review_claimed_at)).total_seconds())
-                             if review_claim_holder(it) and it.review_claimed_at else None),
-        # Derived from the LIVE HOLD, never from whether the agent has heartbeat since it
-        # claimed — the queue and the heartbeat path must not answer the same question two
-        # different ways.
-        "holder_state": (holder_presence(holders[it.review_claimed_by])
-                         if review_claim_holder(it) and it.review_claimed_by in holders
-                         else None),
-    } for it in rows]
+    out = []
+    for it in rows:
+        # ONE read of liveness, and every field below derives from it. Each field used to call
+        # `review_claim_holder` for itself, which was three chances per row to disagree about the
+        # same fact — and now that a hold can lapse on presence as well as on the clock, a row
+        # that got it wrong would say "nobody is on this" about work somebody died holding.
+        lapse = review_claim_lapse(it)
+        holder = it.review_claimed_by if (lapse is None and it.review_claimed_by) else None
+        out.append({
+            "id": it.id, "key": it.key, "title": it.title, "branch": it.branch,
+            "built_by": it.built_by,
+            "built_by_label": labels.get(it.built_by) if it.built_by else None,
+            # WHO IS ON IT NOW. Items in this queue are `review`, so `reviewed_by` is empty here by
+            # definition — the verdict is written at sign-off, which is when the item leaves. The
+            # queue's question is "is somebody already looking at this", and after the split
+            # (GRPH-395) that is the live claim, not the verdict.
+            "reviewed_by": holder,
+            # Taken this many times WITHOUT a verdict (GRPH-771).
+            "review_takes": it.review_takes or 0,
+            # HOW LONG the LIVE claim has run. Null when nothing holds it — "held for 0s" next to
+            # an item nobody has opened is a worse lie than saying nothing.
+            "held_for_seconds": (int((datetime.now(timezone.utc) - _aware(it.review_claimed_at)).total_seconds())
+                                 if holder and it.review_claimed_at else None),
+            # Derived from the LIVE HOLD, never from whether the agent has heartbeat since it
+            # claimed — the queue and the heartbeat path must not answer the same question two
+            # different ways.
+            "holder_state": (holder_presence(holders[holder]) if holder and holder in holders
+                             # A hold that lapsed ON PRESENCE still names the state that lapsed it
+                             # (GRPH-991). `reviewed_by` is null on this row and null for an item
+                             # nobody ever took, and those are not the same claim — dropping the
+                             # state as well would render a crashed reviewer as an empty queue,
+                             # which is the absence reading as clean in the one place an operator
+                             # looks. An age lapse renders nothing here: the clock working as
+                             # designed is not an agent's state.
+                             else (lapse if lapse in REVIEW_LAPSE_PRESENCE else None)),
+            # ...and WHO held it, so a lapsed row is not a state with no author. Mutually
+            # exclusive with `reviewed_by` by construction, which is what lets a reader tell
+            # "free, nobody has opened it" from "free, its reviewer is gone" at a glance.
+            "lapsed_holder": it.review_claimed_by if (lapse is not None and it.review_claimed_by) else None,
+        })
+    return out
 
 
 def cluster_board(db: Session, project_id: str | None = None) -> list[dict]:

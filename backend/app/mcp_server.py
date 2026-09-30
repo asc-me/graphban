@@ -804,13 +804,21 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "release_item",
-        "description": "Return a claimed item to the queue (e.g. you can't finish it); moves it back to `next` by default.",
+        # Cut from a 236-char draft that spelled out the unfetchable-branch case, per the
+        # GRPH-988 procedure (trim your own description before asking the budget for room).
+        # What survives is the two things a caller cannot get from the schema: that a REVIEW
+        # claim does NOT go to `next`, and that handing one back is not a bounce.
+        "description": (
+            "Hand back a hold. A BUILD claim goes to `next`; a REVIEW claim STAYS in `review` — "
+            "not a bounce, nothing counted against its builder. `reason` is recorded on the item."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {"type": "string"},
                 "agent_id": {"type": "string"},
                 "to_status": {"type": "string", "enum": items_svc.STATUSES},
+                "reason": {"type": "string"},
             },
             "required": ["id"],
         },
@@ -3005,6 +3013,18 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # reviewer heartbeats through here too and used to be filed as idle (GRPH-771).
             # The server owns the truth about that hold, so it derives the state rather than
             # taking the client's word or defaulting.
+            #
+            # STAMP PRESENCE BEFORE DERIVING THE STATE, not after (GRPH-991). A review claim
+            # now lapses when its holder stops heartbeating, and `presence_for_heartbeat`
+            # consults presence to decide whether the hold it reports is still live — so
+            # deriving from a stamp this same call was about to refresh let a reviewer coming
+            # back from one long round lapse its OWN hold and then report itself `idle`. The
+            # roster word is the cheap half of that: with the hold lapsed, `claim_review`
+            # offers the item to somebody else while its holder is on the phone to us.
+            # GRPH-932's principle is that this call IS the evidence the agent is alive; it has
+            # to be applied before the decision that reads it. Presence only — `touch` below
+            # still owns `state`, and a quarantined agent must not read its way back to healthy.
+            fleet_svc.seen(db, agent, api_key_id=key.id)
             live = fleet_svc.touch(db, agent,
                                    state=fleet_svc.presence_for_heartbeat(db, agent))
             if live is None:
@@ -3038,7 +3058,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "release_item":
         _scoped_item(db, args["id"], allowed)
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
-        item = items_svc.release_item(db, args["id"], agent, to_status=args.get("to_status", "next"))
+        item = items_svc.release_item(db, args["id"], agent,
+                                      to_status=args.get("to_status", "next"),
+                                      reason=args.get("reason"))
         if item is None:
             raise errors.Conflict(
                 f"not the lease holder for {args['id']!r}",

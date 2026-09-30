@@ -1693,6 +1693,11 @@ export interface FleetOverview {
      *  item every time its hold lapses looks, on any single read, exactly like a reviewer who
      *  started a moment ago; this is what separates them. */
     review_takes: number;
+    /** Who held a claim that has LAPSED, or null while the hold is live or nobody took it
+     *  (GRPH-991). A claim now expires when its holder stops heartbeating, which makes
+     *  `reviewed_by` null for both "free, nobody has opened it" and "free, its reviewer died"
+     *  — and those are not the same claim. Mutually exclusive with `reviewed_by`. */
+    lapsed_holder: string | null;
   }[];
   clusters: {
     items: string[]; areas: string[]; predicted: boolean;

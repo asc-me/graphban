@@ -313,13 +313,13 @@ enforcement point — a manifest can only fail to mention a tool, while the gate
 | `retire_wave` | `agent_id`, `wave` | PLANNER ONLY. Revoke the seats YOU minted and release what agents on them hold, in one step — it does NOT stop processes, and `agents_still_running` names the ones still building against dead seats |
 | `collision_clusters` | `project_id`, `status` | Partition ready work into clusters that provably share no touch-areas; `predicted` marks lower-confidence grouping |
 | `claim_cluster` | `agent_id`, `max_items`, `lease_seconds`, `wait_seconds` | Claim a whole non-colliding cluster and reserve its areas, checked against in-flight work. `max_items` is lowered to the project's `cluster_ceiling` for the cluster's lane (web: 1 by default); a bound seat is refused while its item is open (GRPH-948) |
-| `claim_review` | `agent_id`, `project_id`, `wait_seconds` | Lease an item in review you did **not** build, and are independent of — not your own call tree, and not the same credential on the same host |
+| `claim_review` | `agent_id`, `project_id`, `wait_seconds` | Lease an item in review you did **not** build, and are independent of — not your own call tree, and not the same credential on the same host. The lease lapses on the clock **and when its holder stops heartbeating** (GRPH-991), the way a build lease does, so a reviewer that died frees the item instead of stranding it |
 | `sign_off` | `id`, `agent_id`, `evidence`, `commit` | Take a reviewed item to `done`. Refused if you built it — and, above effort 3, refused without a `sabotage` receipt. With `commit`, mints an `attestation` |
 | `bounce` | `id`, `agent_id`, `reason` | Send it back to `next` with a reason, reserved for its author for one lease period |
 | `register_agent` | `label`, `capabilities`, `worktree`, `branch`, `role_hint`, `parent_agent_id` | Register THIS process as an agent and learn its role. Two terminals on one key become two agents. Returns `{agent_id, key, active_role, enrolled, tools_off_limits, heartbeat_interval_seconds}` — `tools_off_limits` names the tools this role will be refused, which the manifest cannot, having been fetched before the role existed Returns `assigned` (PRD-36): `{item, state, reason, held_by}` with `state` `claimed` (a bound seat handed you this item; it is yours, with its areas reserved), `taken` (someone else holds it, with who and why; exit), or `none` (an unbound seat or no seat). Never a missing key |
 | `fleet_status` | `project_id` | Who else is working this project: agents, roles, derived presence, and what each holds. Each row carries `assigned` (PRD-36): what a bound seat handed that agent — `claimed` while it holds the seat's item, `taken` with the holder once it does not, `null` on an unbound seat. Also carries **`profile`** (the key owner's harness preferences that resolve in this project — the project override, else the default, else `null`) and **`policy`** (the project's fleet constraints, `null` when none) for the supervisor that resolves a tier through the preference matrix (PRD-37 D9/D14), plus **`measured`** (D7): per declared vendor × model × lane × requested tier, `quality` (signed-off over finished) and `latency` (median claim-to-finish folded onto the hour), each with `n` — counts, never pooled; the reader decides whether `n` is enough. The server stores and serves, it never resolves |
 | `heartbeat` | `id`, `agent_id`, `status`, `files` | Extend the lease on an item you hold **and** your agent presence (so neither is reclaimed while you work). `status` (one line) and `files` (paths you are editing) are what the Live page shows as *reported*; written to the feed only when they change (PRD-34) |
-| `release_item` | `id`, `agent_id`, `to_status` | Return a claimed item to the queue |
+| `release_item` | `id`, `agent_id`, `to_status`, `reason` | Hand back a hold. A BUILD claim goes to `next`; a REVIEW claim **stays in `review`** and is not a bounce — nothing is recorded against its builder, and `reason` is kept on the item as a `NOT YET` note for the next reviewer (GRPH-991) |
 | `create_item` | `title`, `description`, `tags`, `touchpoints`, `effort`, `status`, `fidelity`, `project_id` | Create a tracker item (returns its `project_id`) |
 | `update_item` | `id`, `status`, `title`, `description`, `tags`, `touchpoints`, `effort`, `blocker`, `fidelity`, `prd_id`, `prd_section`, `evidence` | Patch / advance an item. `touchpoints` **unions** (like evidence appends); an empty list is not a write. A call that sends `evidence` gets **`evidence_intake`** back — `{sent, added, dropped: [{index, reason}]}` — so a receipt the server would not take is named rather than showing as an array that quietly did not grow (GRPH-839). A receipt sent as a bare string is stored as a `note` rather than discarded. Moving an item into `review` with no `built_by` stamps the caller as its author — `agent_id` if the call carries one, else `key:<credential name>` — and never overwrites an existing one (GRPH-848) |
 | `search_items` | `query`, `tags`, `status`, `fields`, `project_id` | Query the stream (query matches title, description, **and** tags); lean rows by default, `fields="full"` for all. Typed human waits are `status=blocked` plus a `wait:merge` / `decision` / `secret` / `access` / `deploy` tag — free-text `blocker` is not a wait |
@@ -607,6 +607,25 @@ Another agent takes it with `claim_review` and calls `sign_off` (which auto-extr
 memory) or `bounce(id, reason)`. **No agent can sign off work it built** — the server checks
 authorship, not the caller's current role, so no re-tasking launders it. A bounced item returns
 to `next` reserved for its author for one lease period, then opens to the fleet.
+
+**Not every unfinished review is a bounce** (GRPH-991). A reviewer that cannot READ the revision
+— a branch its supervisor has not pushed yet, a name that never existed, a 404 in the window
+between the status move and the reap — calls `release_item(id, reason=...)` instead. The item
+stays in `review` for the next reviewer and **nothing is written about its builder**, where a
+bounce writes `outcome="bounced"` into that builder's cell of the preference matrix: the number
+that decides who gets the next item, charged for a publishing race in the harness. The reason is
+kept on the item as a `NOT YET` note, because a release with no record is indistinguishable from
+a reviewer that never looked and the next one repeats the same failed fetch. It is deliberately
+not a third `record_review_verdict` value — `_recompute_check` treats every verdict that is not
+`bounced` as a sign-off, so a `not_yet` verdict would certify an undecided review as a confirmed
+one.
+
+A review claim lapses the way a build lease does: on the clock, **and** when its holder stops
+heartbeating. Age alone left the strand PRD-48 S5 names — presence says "gone" after 150s while
+the item stayed unclaimable for the rest of a 600s lease. The review queue still names the holder
+it lost (`lapsed_holder`, and `holder_state` carrying the state that released it), because
+`reviewed_by` is null for both "free, nobody has opened it" and "free, its reviewer died", and
+those are not the same claim.
 
 Authorship is recorded at the claim, and — for work built inline and never claimed — when the
 item enters `review`: a bare credential is stamped `key:<name>`, and that reads as an author

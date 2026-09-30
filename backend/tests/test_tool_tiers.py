@@ -354,7 +354,14 @@ def test_a_worker_credential_runs_on_core(client, auth):
 #: fail. This one disagrees the moment core moves, which forces whoever moved it to re-run
 #: the arithmetic — and moving core is the thing worth noticing, since core is what every
 #: key pays.
-CORE_TOKENS = 8897
+CORE_TOKENS = 8923
+# 8897 -> 8923 (GRPH-991): `release_item` gains `reason` and stops describing itself as
+# "moves it back to `next` by default", which was true of a build claim and false of a review
+# claim. Core by nature — every reviewer holds it on a core key, so there is no tier to put
+# the correction in. It buys back a wrong instruction rather than a new capability: the clause
+# it removes is what sent a reviewer with an unfetchable branch to `bounce`, the one verb the
+# manifest advertised for handing review work back, and a bounce is charged to the builder's
+# vendor/model. Description trimmed first, per GRPH-988 (236 chars -> 163).
 # 8887 -> 8897 (GRPH-839): `update_item` declares `evidence_intake`, so the reply says how
 # many receipts the server took. Core by nature — `update_item` is how every agent records
 # proof, and this is the tool that was discarding it in silence. Ten tokens is the whole

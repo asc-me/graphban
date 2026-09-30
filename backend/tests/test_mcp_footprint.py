@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 14250
+CEILING = 14280
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -110,7 +110,24 @@ CEILING = 14250
 # TIER_TOKENS["fleet"] 1051 -> 1100 is the whole bill and CORE_TOKENS does not move by a
 # token. Funding it out of core or read-tool prose would move the cost onto keys that cannot
 # use the flag at all. Headroom 3.
-MEASURED_TOKENS = 14247
+# 14247 -> 14273, and CEILING 14250 -> 14280 with it (GRPH-991). `release_item` gains
+# `reason`, and its description stops saying "moves it back to `next` by default" — true of a
+# BUILD claim, false of a REVIEW one, which stays in `review`. That one clause is why a
+# reviewer holding an item whose branch it cannot fetch reached for `bounce`: it was the only
+# verb the manifest advertised for handing review work back, and it writes
+# `outcome="bounced"` into the builder's cell of the preference matrix, so a supervisor that
+# had not published the branch yet was charged to the vendor that built the work. GRPH-987
+# tells reviewers NOT_YET instead, but a sentence in a prompt is not a control when the
+# manifest points the other way.
+#
+# Trimmed before raising, per the procedure above: the description started at 236 chars
+# arguing the unfetchable-revision case and was cut to 163 saying only what a caller cannot
+# get from the schema. The remaining 23-over is NOT funded out of unrelated core or read-tool
+# prose, which is GRPH-988's own argument turned the other way: that change landed entirely in
+# the opt-in `fleet` tier, so the tier paid and core did not move. This one lands in core and
+# cannot be tiered, because every reviewer holds `release_item` on a core key — the shape
+# `heartbeat`'s `status`/`files` set. Headroom 7.
+MEASURED_TOKENS = 14273
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.

@@ -275,20 +275,41 @@ describe("Fleet view", () => {
     expect(await screen.findByTestId("review-hold")).toHaveTextContent("GB-A2 · 15m");
   });
 
-  it("flags a holder that is not reviewing, because that is the contradiction", async () => {
-    // A DEAD holder on a live claim — the case the board most needs to catch. Deliberately
-    // not `idle`: the server no longer emits that for a live holder, and a test asserting on
-    // a value that cannot occur is a test of nothing (GRPH-771, found in review).
+  it("flags a holder that is gone, because that is the contradiction", async () => {
+    // A DEAD holder — the case the board most needs to catch. Since GRPH-991 a claim expires
+    // when its holder stops heartbeating, so this arrives as a LAPSED hold: `reviewed_by` is
+    // null (the item is claimable again) and `lapsed_holder` names who died on it. Rendering
+    // nothing here would be the absence reading as clean in the one place an operator looks.
+    // Deliberately not `idle`: the server does not emit that for a lapsed holder, and a test
+    // asserting on a value that cannot occur is a test of nothing (GRPH-771, found in review).
     fleet.data = { ...BASE, review_queue: [{
       id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
-      built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: "GB-A2",
-      held_for_seconds: 900, holder_state: "offline", review_takes: 1
+      built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: null,
+      held_for_seconds: null, holder_state: "offline", review_takes: 1,
+      lapsed_holder: "GB-A2",
     }] };
     renderView();
     await openWork(userEvent.setup());
     const hold = await screen.findByTestId("review-hold");
-    expect(hold).toHaveTextContent("offline");
+    expect(hold).toHaveTextContent("GB-A2 · hold lapsed · offline");
     expect(hold.className).toContain("st-blocked");
+  });
+
+  it("names a hold the clock released without inventing a state for it", async () => {
+    // The OTHER lapse. An age expiry is the lease working as designed, not an agent being
+    // gone, so `holder_state` is null — and the row must still not read as "nobody ever
+    // opened this", which is what `reviewed_by: null` alone says.
+    fleet.data = { ...BASE, review_queue: [{
+      id: "i1", key: "GB-12", title: "Add the guard", branch: "feat/x",
+      built_by: "GB-A1", built_by_label: "opus @ macbook", reviewed_by: null,
+      held_for_seconds: null, holder_state: null, review_takes: 1,
+      lapsed_holder: "GB-A2",
+    }] };
+    renderView();
+    await openWork(userEvent.setup());
+    const hold = await screen.findByTestId("review-hold");
+    expect(hold).toHaveTextContent("GB-A2 · hold lapsed");
+    expect(hold).not.toHaveTextContent("null");
   });
 
   it("says nothing at all when nothing holds the item", async () => {

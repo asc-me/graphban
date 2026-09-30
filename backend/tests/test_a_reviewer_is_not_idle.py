@@ -408,3 +408,240 @@ def test_an_agent_building_and_reviewing_at_once_reads_as_reviewing(client, auth
 
     queue = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["review_queue"][0]
     assert queue["holder_state"] == "reviewing"
+
+
+# ---- GRPH-991: a hold lapses when its holder stops heartbeating, not only on the clock --------
+
+
+def _stop_heartbeating(db, agent_id: str) -> None:
+    """Make an AGENT stale while leaving the age of its hold alone.
+
+    The separation is the whole test. Backdating `review_claimed_at` exercises the clock, which
+    already worked (GRPH-395/771) and is covered above; presence can only be exercised by
+    ageing the agent and not the claim.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Agent
+
+    db.get(Agent, agent_id).last_seen_at = datetime.now(timezone.utc) - timedelta(
+        seconds=fleet_svc.presence_ttl_seconds() + 60)
+    db.commit()
+
+
+def test_a_claim_whose_holder_stopped_heartbeating_returns_to_claimable(client, key, proj, db):
+    """PRD-48 S5, second half: "the claiming agent then went offline and the claim never lapsed,
+    leaving the item permanently unreviewable." A review claim must expire when its holder stops
+    heartbeating, THE WAY A BUILD LEASE DOES — and a build lease is released by
+    `requeue_offline_items` on presence, not on age.
+
+    Age alone left most of the strand standing: presence says "gone" after 150s while the hold
+    stayed unclaimable for the rest of a 600s lease, which on a fleet whose supervisor polls
+    every 50s is four and a half minutes of a review queue that looks stocked and is not.
+
+    The hold here is YOUNG — well inside the lease — so nothing but presence can release it.
+
+    Sabotage: delete the presence branch of `review_claim_lapse` and `other` keeps getting an
+    empty answer for the rest of the lease."""
+    builder = _agent(client, key, "builder", "worker")
+    dead = _agent(client, key, "the one that died", "worker")
+    other = _agent(client, key, "somebody else", "worker")
+    _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": dead}))
+
+    # The state the release has to change, asserted first: without this the test would also
+    # pass if `claim_review` simply never held anything back.
+    assert not _ok(_mcp(client, key, "claim_review",
+                        {"project_id": proj, "agent_id": other})).get("claimed"), \
+        "a live hold must not be offered to a second reviewer"
+
+    _stop_heartbeating(db, dead)
+
+    assert _ok(_mcp(client, key, "claim_review",
+                    {"project_id": proj, "agent_id": other})).get("claimed"), \
+        "a hold whose holder stopped heartbeating must go back in the queue"
+
+
+def test_a_holder_still_heartbeating_keeps_the_item(client, auth, key, proj, db):
+    """The other direction, and the one that makes the change safe: presence-lapse must not
+    become "every hold is stale". A reviewer doing the work has to keep it, or `claim_review`
+    hands one item to two agents — the collision the hold exists to prevent.
+
+    Sabotage: lapse unconditionally and `reviewed_by` goes null on a healthy review."""
+    from app.models import Item
+
+    builder = _agent(client, key, "builder", "worker")
+    reviewer = _agent(client, key, "reviewer", "worker")
+    _item_in_review(client, key, proj, builder)
+    claimed = _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+    _ok(_mcp(client, key, "heartbeat", {"agent_id": reviewer}))
+
+    row = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["review_queue"][0]
+    assert row["reviewed_by"] == reviewer
+    assert row["lapsed_holder"] is None
+    assert row["holder_state"] == "reviewing"
+    assert fleet_svc.review_claim_lapse(db.get(Item, claimed["item"]["id"])) is None
+
+
+def test_a_reviewer_returning_from_a_long_round_does_not_lapse_its_own_hold(
+        client, auth, key, proj, db):
+    """GRPH-932's principle, applied to the review hold — and a defect the presence-lapse above
+    introduced, found by reading the call order rather than by a test.
+
+    `heartbeat` derived the state it reports from a presence stamp the SAME CALL was about to
+    refresh, and a review claim now lapses when its holder stops heartbeating. So a reviewer
+    coming back from one long round — a diff read, a slow suite, the ordinary case here rather
+    than the exotic one — lapsed its OWN hold and then reported itself `idle`. That is GRPH-771's
+    defect arriving through the fix for PRD-48 S5, and the roster word is the cheap half: with
+    the hold lapsed, `claim_review` offers the item to somebody else while its holder is on the
+    phone to us.
+
+    Sabotage: move the `fleet_svc.seen` stamp back below `presence_for_heartbeat` and this fails
+    on the state, on the holder, and on the other reviewer's claim."""
+    from app.models import Item
+
+    builder = _agent(client, key, "builder", "worker")
+    reviewer = _agent(client, key, "reviewer", "worker")
+    item_id = _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": reviewer}))
+
+    # One long round: presence has gone stale, the hold itself is still young.
+    _stop_heartbeating(db, reviewer)
+
+    assert _ok(_mcp(client, key, "heartbeat", {"agent_id": reviewer}))["state"] == "reviewing", \
+        "an agent that is calling us is not offline, and is still reviewing"
+
+    db.expire_all()
+    stored = db.get(Item, item_id)
+    assert stored.review_claimed_by == reviewer, "its own heartbeat lapsed its hold"
+    assert fleet_svc.review_claim_holder(stored) == reviewer
+
+    # The consequence that matters, not just the column: nobody else can take it.
+    other = _agent(client, key, "somebody else", "worker")
+    assert not _ok(_mcp(client, key, "claim_review",
+                        {"project_id": proj, "agent_id": other})).get("claimed"), \
+        "a reviewer that just called us must not lose the item to the next one"
+
+
+def test_a_holder_the_roster_cannot_find_is_left_to_the_clock(client, key, proj, db):
+    """"I could not find the holder" is NOT "the holder is gone" — `_offline_holders`' rule, and
+    the safe direction to be wrong in. A hold written for a human or a bare credential has no
+    Agent row, so there is no presence to consult; it must still lapse, but on the clock it
+    always had.
+
+    Sabotage: treat a missing row as offline and this releases a hold on ignorance."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Item
+
+    builder = _agent(client, key, "builder", "worker")
+    item_id = _item_in_review(client, key, proj, builder)
+    row = db.get(Item, item_id)
+    row.review_claimed_by = "a-human-or-a-key"
+    row.review_claimed_at = datetime.now(timezone.utc)
+    db.commit()
+
+    db.expire_all()
+    assert fleet_svc.review_claim_lapse(db.get(Item, item_id)) is None
+    assert fleet_svc.review_claim_holder(db.get(Item, item_id)) == "a-human-or-a-key"
+
+    fresh = db.get(Item, item_id)
+    fresh.review_claimed_at = datetime.now(timezone.utc) - timedelta(
+        seconds=DEFAULT_LEASE_SECONDS + 30)
+    db.commit()
+    db.expire_all()
+    assert fleet_svc.review_claim_lapse(db.get(Item, item_id)) == "age"
+
+
+def test_the_queue_names_the_holder_it_lost_rather_than_reading_as_unheld(client, auth, key, proj, db):
+    """THE TRAP IN THE FIX. `review_queue` derives `reviewed_by`, `held_for_seconds` and
+    `holder_state` from the live hold, so making the hold lapse on presence renders a crashed
+    reviewer as an EMPTY row — the absence reading as clean in the one place an operator looks,
+    and a regression against the row that used to say `offline`.
+
+    Sabotage: drop `lapsed_holder`, or the `holder_state` fallback that names the state which
+    lapsed the hold, and this row says nothing at all."""
+    builder = _agent(client, key, "builder", "worker")
+    dead = _agent(client, key, "the one that died", "worker")
+    _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": dead}))
+    _stop_heartbeating(db, dead)
+
+    row = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["review_queue"][0]
+    assert row["reviewed_by"] is None, "nothing holds it now — that is the point of lapsing"
+    assert row["lapsed_holder"] == dead
+    assert row["holder_state"] == "offline", "the state that lapsed it is the point of the row"
+    assert row["review_takes"] == 1, "the take outlives the lapse; it is the count that says so"
+
+
+@pytest.mark.parametrize("reason", ["offline", "quarantined", "age", "untimed"])
+def test_whatever_lapsed_the_hold_the_queue_still_names_who_held_it(
+        client, auth, key, proj, db, reason):
+    """Every reason `review_claim_lapse` can give, driven for real. The acceptance clause is
+    that neither half of this item may report an unmeasured case as clean, and the case most
+    likely to go unmeasured is a lapse reason the queue has no rendering for: `reviewed_by`
+    goes null for ALL of them, so a reason the board does not special-case silently turns
+    "its reviewer died" back into "nobody has opened this".
+
+    Parametrised over the reasons rather than over the two I happened to think of while writing
+    it — a fifth reason added to `review_claim_lapse` fails here until somebody decides what
+    the row should say.
+
+    Sabotage: make the queue answer from `review_claim_holder` alone and every arm fails."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import Agent, Item
+
+    builder = _agent(client, key, "builder", "worker")
+    dead = _agent(client, key, "the one that died", "worker")
+    item_id = _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review", {"project_id": proj, "agent_id": dead}))
+
+    row = db.get(Item, item_id)
+    if reason in ("offline", "quarantined"):
+        _stop_heartbeating(db, dead)
+        if reason == "quarantined":
+            # Checked BEFORE the clock in `presence_state`, so a quarantined agent may still be
+            # heartbeating — which is what got it quarantined.
+            db.get(Agent, dead).last_seen_at = datetime.now(timezone.utc)
+            db.get(Agent, dead).state = "quarantined"
+            db.commit()
+    elif reason == "age":
+        row.review_claimed_at = datetime.now(timezone.utc) - timedelta(
+            seconds=DEFAULT_LEASE_SECONDS + 30)
+        db.commit()
+    elif reason == "untimed":
+        row.review_claimed_at = None
+        db.commit()
+
+    db.expire_all()
+    assert fleet_svc.review_claim_lapse(db.get(Item, item_id)) == reason, \
+        f"the fixture did not produce the {reason} lapse it claims to"
+
+    queue = client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["review_queue"][0]
+    assert queue["reviewed_by"] is None
+    assert queue["lapsed_holder"] == dead, f"a {reason} lapse must still name who held it"
+    # The presence reasons say which state released the hold; the clock ones have no agent state
+    # to report, and inventing one is how `idle` came to be rendered for a healthy reviewer.
+    assert queue["holder_state"] == (reason if reason in ("offline", "quarantined") else None)
+
+
+def test_an_item_nobody_opened_is_not_the_row_a_dead_reviewer_leaves(client, auth, key, proj, db):
+    """The two nulls told apart. `reviewed_by` is null for BOTH rows, so if the rest of the row
+    is null too the board has one rendering for "free, never looked at" and "free, its reviewer
+    died" — and the second is the one that needs somebody.
+
+    Sabotage: drop `lapsed_holder` from the payload and the two rows become the same row."""
+    builder = _agent(client, key, "builder", "worker")
+    dead = _agent(client, key, "the one that died", "worker")
+    untouched = _item_in_review(client, key, proj, builder)
+    held = _item_in_review(client, key, proj, builder)
+    _ok(_mcp(client, key, "claim_review",
+             {"project_id": proj, "agent_id": dead, "skip": [untouched]}))
+    _stop_heartbeating(db, dead)
+
+    rows = {r["id"]: r for r in
+            client.get(f"/api/fleet?project_id={proj}", headers=auth).json()["review_queue"]}
+    hold_fields = ("reviewed_by", "lapsed_holder", "holder_state", "review_takes")
+    assert [rows[untouched][k] for k in hold_fields] == [None, None, None, 0]
+    assert [rows[held][k] for k in hold_fields] == [None, dead, "offline", 1]
