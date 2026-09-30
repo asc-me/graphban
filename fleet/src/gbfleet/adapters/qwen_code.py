@@ -46,6 +46,7 @@ Exit codes measured: 0 normal; 55 `FatalBudgetExceededError` when `--max-wall-ti
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -92,6 +93,63 @@ class QwenCode(Adapter):
     # not refused before the spawn. It is legible AFTER one: the child's `-o json` init event
     # names the model that answered, and a substituted name shows up there as the default
     # rather than as what was asked for. See the docstring; the reader is GRPH-982.
+
+    @staticmethod
+    def result_facts(stdout: str) -> dict:
+        """Read qwen's own result record out of the `-o json` stream (GRPH-982).
+
+        The mechanism already existed — PRD-38 D3's `result_facts` — and only `gbagent`
+        implemented it, which is the whole reason a qwen wave reports `tokens: 0,
+        unreported: N` while the numbers sit unread in `stdout.log`. Across 1489 real children
+        that was 436,054,029 tokens; one child alone spent 12,170,125.
+
+        The stream is a single JSON array written at EXIT, so a running child's log is 0 bytes
+        and this is a reap-time reading. `usage` totals come from the last `result` event.
+
+        `model` is the one that ANSWERED, from the init event, and it is a different fact from
+        the one the operator requested: `-m bogus-name` runs the configured default with no
+        warning anywhere. Measured on 0.23.0:
+
+            -m qwen3.8-max                 ->  init.model = "qwen3.8-max"
+            -m definitely-not-a-model-zzz  ->  init.model = "qwen3.7-plus"
+
+        Recording the REQUEST as measurement would be worse than recording nothing: it puts a
+        confident wrong number in the preference matrix instead of a gap. 123 measured cells
+        are filed under `alibaba` + model "" today, unable to tell two models of one vendor
+        apart.
+
+        A truncated stream — a child killed mid-write, 69 of 1567 real logs — returns {}. "We
+        could not read it" and "it used nothing" are different facts, and `{}` leaves the
+        ledger's fields NULL, which renders as "not reported" rather than as zero.
+        """
+        import json as _json
+
+        text = (stdout or "").strip()
+        if not text.startswith("["):
+            return {}
+        try:
+            events = _json.loads(text)
+        except ValueError:
+            return {}
+        if not isinstance(events, list):
+            return {}
+        out: dict = {}
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if "model" not in out and event.get("subtype") == "init" and event.get("model"):
+                out["model"] = str(event["model"])
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                # Last wins: a resumed run describes the same attempt twice and the later
+                # record is the one that finished — the same rule gbagent's reader states.
+                for key, field in (("input_tokens", "tokens_in"),
+                                   ("output_tokens", "tokens_out")):
+                    if isinstance(usage.get(key), (int, float)):
+                        out[field] = int(usage[key])
+            if isinstance(event.get("num_turns"), int):
+                out["turns_used"] = event["num_turns"]
+        return out
 
     def debug_argv(self, path: Path) -> list[str]:
         """`-d` exists but writes to stderr with no file flag; a path cannot be honoured, so
