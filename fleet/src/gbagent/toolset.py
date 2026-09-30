@@ -17,6 +17,11 @@ stops. This is the same ceiling discipline GRPH-474 applied to the MCP manifest.
 The toolset also *watches* what it dispatched. When the loop gives up it has to write a note
 saying where the tests stand and what changed (D6), and the honest source for that is what
 actually ran — not what the model claimed in prose.
+
+**Two layers are added to the seven, and neither is optional-looking.** `orientation` is the
+graph (S6) and `build_servers` is whatever MCP server the seat grants (GRPH-997). Both are
+`None` when there is nothing to talk to, and both are consulted before the `_do_*` handlers so
+that a name they answer for is never mistaken for a tool that does not exist.
 """
 from __future__ import annotations
 
@@ -24,7 +29,7 @@ import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import tools, verify
+from . import buildtools, tools, verify
 from .config import VerifyConfig
 from .llm import ToolCall, ToolResult, ToolSpec
 from .workspace import ToolError
@@ -113,6 +118,11 @@ class Toolset:
     #: the execution tools, because the order a model reads a tool list in is the cheapest
     #: nudge available and the whole point of D1 is that it reaches for the graph first.
     orientation: object | None = None
+    #: The build servers the seat grants (GRPH-997), or None when it granted none. Advertised
+    #: after the graph and before the filesystem: a docs server or a browser is closer to
+    #: "ask before you crawl" than `grep` is, and the graph is what this agent is told to
+    #: reach for first.
+    build_servers: object | None = None
     #: The last `run_tests` outcome, as returned by `verify.run_tests`. `None` means the tests
     #: were never run — which is NOT the same as a clean run, and the handoff note says so.
     last_tests: dict | None = None
@@ -141,9 +151,10 @@ class Toolset:
 
     @property
     def specs(self) -> list[ToolSpec]:
+        granted = list(self.build_servers.specs) if self.build_servers is not None else []
         if self.orientation is None:
-            return SPECS
-        return [*self.orientation.specs, *SPECS]
+            return [*granted, *SPECS]
+        return [*self.orientation.specs, *granted, *SPECS]
 
     #: Statuses that CLAIM the work is finished. Moving to either without having written
     #: anything is the failure the S7 walk found — see `_completion_guard`.
@@ -162,6 +173,12 @@ class Toolset:
                 return refusal
             call = self._with_measured_touchpoints(call)
             return self.orientation.execute(call)
+        if self.build_servers is not None and self.build_servers.handles(call.name):
+            # A granted server answers for EVERY name under it, including one it does not
+            # have. Falling through to "no tool named X" would be the wrong sentence for a
+            # server that was granted and failed to connect, and the model would spend the
+            # rest of the run believing the grant does not exist (GRPH-997).
+            return self.build_servers.execute(call)
         handler = getattr(self, f"_do_{call.name}", None)
         if handler is None or not call.name:
             self.refusals += 1
@@ -335,6 +352,12 @@ def _describe(call: ToolCall) -> str:
     """One line for the Live page. Names the tool and the one argument that says what it was
     about — the same shape the server's own feed uses, so the two read alike."""
     args = call.input if isinstance(getattr(call, "input", None), dict) else {}
+    if (call.name or "").startswith(buildtools.PREFIX):
+        # A build-server call: the interesting part is which server, which the prefixed name
+        # already carries, and `mcp__browser-use__navigate https://…` is not a line anybody
+        # wants to read on the Live page.
+        server, _, tool = call.name[len(buildtools.PREFIX):].partition(buildtools.SEPARATOR)
+        return f"calling {server} {tool}".strip()[:200]
     target = args.get("path") or args.get("id") or args.get("query") or args.get("pattern") or ""
     verb = {
         "run_tests": "running tests",

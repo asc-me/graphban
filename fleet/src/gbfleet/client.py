@@ -25,10 +25,13 @@ reach for no reason but sharing a transport.
 from __future__ import annotations
 
 import itertools
+import json
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
 import httpx
+
+from . import __version__
 
 #: Every Graphban tool the supervisor is permitted to call. Pinned exactly by
 #: `test_client.py`, so an addition fails a test rather than passing review.
@@ -286,3 +289,183 @@ def _text_of(result: dict) -> str:
         if isinstance(block, dict) and block.get("type") == "text":
             return str(block.get("text") or "")
     return "the server reported a tool error with no message"
+
+
+# --- a build server the seat grants --------------------------------------------------
+
+
+#: The protocol version named in the handshake. The same string `gbfleet.mcp` answers with,
+#: pinned equal by a test rather than imported from there: `mcp.py` imports THIS module, so
+#: sharing the constant the other way round would be a cycle.
+SHARED_PROTOCOL_VERSION = "2025-06-18"
+
+#: One request to a granted server. `Graphban`'s own default, and short enough that a
+#: browser tool that hangs costs a turn rather than the run.
+SHARED_TIMEOUT = 30.0
+
+
+@dataclass
+class McpServer:
+    """One MCP server the seat grants, spoken to as streamable HTTP (GRPH-997).
+
+    **Transport only.** What gets advertised to a model, and turning every failure into a
+    result it can read, is `gbagent.buildtools`; this class raises and knows nothing about
+    models.
+
+    **No allowlist here, and that is not an oversight.** `Graphban.allowed` exists because
+    the supervisor holds a credential with authority over the ledger and PRD-22 §4 limits
+    what it may do with it. A granted build server carries no ledger authority at all: it is
+    a docs server or a browser, reached with the OPERATOR's own credential for it, and the
+    grant is the exact name somebody typed at `--mcp-server` (`mcpshare.select` refuses a
+    pattern and refuses the ledger's own names). The boundary is the seat file, and it is
+    enforced where the file is written rather than again where it is read.
+
+    **Not `Graphban` with a different URL, either.** That class appends `/api/mcp`, injects
+    `project_id` into every call, and answers `structuredContent` only. A third-party server
+    has its own endpoint, has never heard of a project, and answers `content` blocks — so
+    reusing it would have meant un-pinning the tests that hold its shape.
+    """
+
+    name: str
+    url: str
+    #: The stanza's own headers, sent as given. These are the operator's credential for that
+    #: server; nothing here logs them, and the reason a server failed is reported without them.
+    headers: dict = field(default_factory=dict)
+    timeout: float = SHARED_TIMEOUT
+    #: Injected by tests via `httpx.MockTransport`, exactly as on `Graphban`: one code path.
+    transport: httpx.BaseTransport | None = None
+    _ids: Iterator[int] = field(default_factory=lambda: itertools.count(1), repr=False)
+    _http: httpx.Client | None = field(default=None, repr=False)
+    #: What the server issued at `initialize`, echoed on every later request.
+    _session: str = field(default="", repr=False)
+
+    def _client(self) -> httpx.Client:
+        if self._http is None:
+            self._http = httpx.Client(
+                timeout=self.timeout,
+                transport=self.transport,
+                # Both shapes are named because a streamable-HTTP server refuses (406) a
+                # request that does not say it can take either — and which one it ANSWERS in
+                # is its choice, not ours.
+                headers={"Accept": "application/json, text/event-stream", **(self.headers or {})},
+            )
+        return self._http
+
+    def close(self) -> None:
+        if self._http is not None:
+            self._http.close()
+            self._http = None
+
+    def initialize(self) -> None:
+        """The handshake, best-effort.
+
+        A server that keeps session state issues `Mcp-Session-Id` here and expects it back on
+        every later request; Graphban's own does (`backend/app/mcp_server.py` sets it on the
+        `initialize` reply and reads it on `tools/call`).
+
+        Best-effort rather than fatal on purpose. A server that wants no handshake answers
+        this with a JSON-RPC error, and the request that actually matters is the next one —
+        so refusing to continue here would turn "this server is stateless" into "this grant
+        is broken", which is the absence reading as a failure instead of as what it is.
+        """
+        try:
+            self._rpc("initialize", {
+                "protocolVersion": SHARED_PROTOCOL_VERSION,
+                "capabilities": {"tools": {}},
+                "clientInfo": {"name": "gbagent", "version": __version__},
+            }, label="initialize")
+            self._notify("notifications/initialized")
+        except (ServerUnreachable, ProtocolError):
+            pass
+
+    def list_tools(self) -> list[dict]:
+        """The server's own manifest — name, description, inputSchema.
+
+        Fetched rather than declared, for the reason `orient.build` gives: a copy of somebody
+        else's tool contract goes stale quietly and is discovered as a model calling with
+        arguments nobody accepts, at thirty seconds a turn.
+        """
+        tools = self._rpc("tools/list", {}, label="tools/list").get("tools")
+        return [t for t in tools if isinstance(t, dict)] if isinstance(tools, list) else []
+
+    def call_tool(self, tool: str, arguments: dict) -> dict:
+        """The raw MCP result: `content` blocks, and `isError` when the server refused.
+
+        **`isError` is returned, not raised.** A refusal here is an answer from a server with
+        no authority over anything, and the caller hands it to a model that can read it and do
+        something else. `Graphban.call` raises `ToolFailed` on the same flag because there a
+        refusal means the ledger declined a change of state, which the caller must not treat
+        as data.
+        """
+        return self._rpc("tools/call", {"name": tool, "arguments": arguments}, label=tool)
+
+    def _send(self, body: dict, *, label: str) -> httpx.Response:
+        """The single outbound request. There is no second one, for the reason `Graphban`
+        gives: a door with two hinges is not a door."""
+        headers = {"Mcp-Session-Id": self._session} if self._session else {}
+        try:
+            response = self._client().post(self.url, json=body, headers=headers)
+        except httpx.HTTPError as exc:
+            raise ServerUnreachable(f"{self.name}: {self.url}: {exc}") from exc
+        if response.status_code >= 500:
+            # Same split as `Graphban._rpc`: a 5xx is a server failing to answer, a 4xx is an
+            # answer.
+            raise ServerUnreachable(f"{self.name}: {self.url}: HTTP {response.status_code}")
+        session = response.headers.get("mcp-session-id")
+        if session:
+            self._session = session
+        return response
+
+    def _rpc(self, method: str, params: dict, *, label: str) -> dict:
+        request_id = next(self._ids)
+        response = self._send(
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+            label=label,
+        )
+        if response.status_code not in (200, 202):
+            raise ProtocolError(
+                f"{self.name}: {label}: HTTP {response.status_code}: {response.text[:200]}"
+            )
+        payload = _json_reply(response)
+        if payload is None:
+            raise ProtocolError(f"{self.name}: {label}: reply was not JSON")
+        if payload.get("id") != request_id:
+            raise ProtocolError(
+                f"{self.name}: reply id {payload.get('id')!r} does not match request "
+                f"{request_id!r}"
+            )
+        if "error" in payload:
+            err = payload["error"] or {}
+            raise ProtocolError(f"{self.name}: {label}: {err.get('code')}: {err.get('message')}")
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise ProtocolError(f"{self.name}: {label}: reply had no result object")
+        return result
+
+    def _notify(self, method: str) -> None:
+        """A JSON-RPC notification: no id, no reply body, and a 2xx is the whole contract."""
+        response = self._send({"jsonrpc": "2.0", "method": method}, label=method)
+        if response.status_code >= 400:
+            raise ProtocolError(f"{self.name}: {method}: HTTP {response.status_code}")
+
+
+def _json_reply(response: httpx.Response) -> dict | None:
+    """The JSON-RPC reply out of a response that may be in either of the two shapes.
+
+    Graphban's server answers `application/json` and says so in its own docstring ("Single
+    JSON responses (no SSE)"), but a granted server is somebody else's, and streamable HTTP
+    lets it answer `text/event-stream` — where the reply is the last `data:` frame. Reading
+    only `response.json()` would report a working server as unreadable, and the model would
+    be told the grant was broken.
+    """
+    text = response.text or ""
+    if "text/event-stream" in (response.headers.get("content-type") or ""):
+        frames = [line[len("data:"):].strip() for line in text.splitlines()
+                  if line.startswith("data:")]
+        text = frames[-1] if frames else ""
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+

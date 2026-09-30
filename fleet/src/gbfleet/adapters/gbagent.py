@@ -5,7 +5,9 @@ ownership rather than cleverness:
 
 - **The seat never enters the worktree.** Like `claude` it takes a config path, so the
   credential lives in a private temp file that git cannot see and salvage cannot commit.
-  Unlike `claude`, that is not a lucky flag — we chose it.
+  Unlike `claude`, that is not a lucky flag — we chose it. The build servers a wave grants
+  ride in that same file (GRPH-997), so an operator's docs-server credential is outside the
+  worktree too, and nothing has to be added to `worktree.SEAT_FILES` for it.
 - **The instruction reaches it by path**, so the enrolment code never appears on argv where
   every `ps` on the machine can read it, and never needs a stdin pipe.
 - **The model can be checked before spawning.** `gbagent models` asks the configured endpoint
@@ -59,6 +61,8 @@ class GbAgent(Adapter):
         "First-party (PRD-24). Exact version pin rather than a range, because it ships in "
         "this same distribution and the only mismatch possible is a binary from another "
         "install. Seat stays out of the worktree; instruction arrives by path, never argv. "
+        "Calls the seat's other MCP servers as build tools, so a `--mcp-server` grant means "
+        "the same thing here as it does for a vendor child. "
         "Exits 75 when it gives up, which is distinct from a crash."
     )
 
