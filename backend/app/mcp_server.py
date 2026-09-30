@@ -1305,6 +1305,10 @@ _OUTPUT_SCHEMAS: dict[str, dict] = {
     # opaque object, the same shape `evidence` itself uses: the manifest has ~12 tokens of
     # headroom and spelling the three keys out costs 36, which is not what a caller needs
     # told in advance. It needs the field to EXIST, and to be there the one time it matters.
+    # `touchpoint_intake` is NOT declared here. The footprint ceiling has no room — adding it
+    # measured 14257 against a 14250 budget — and the test's own message names the remedy:
+    # gate it to the keys that can use it. `_with_fleet_args` does that, so the property is
+    # advertised to the fleet tier and simply returned to everyone else (GRPH-985).
     "update_item": {**_ITEM_SCHEMA,
                     "properties": {**_ITEM_SCHEMA["properties"],
                                    "evidence_intake": {"type": "object"}}},
@@ -1719,6 +1723,16 @@ _SEAT_SCOPE_ARG = {"scope": {
     "description": "PRD this seat may claim within — the child cannot claim past it.",
 }}
 
+#: GRPH-985. An OUTPUT property rather than an argument, advertised to the fleet tier for the
+#: reason every entry in `_FLEET_ONLY_ARGS` exists: the ceiling has no headroom for a field on
+#: every agent's manifest. Advertisement, never a boundary — the dispatcher returns
+#: `touchpoint_intake` to any caller that sends touchpoints, whether or not it was advertised.
+#: The fleet tier is where the bulk writes come from: a wave reaps, measures paths, and sends
+#: them, which is the call whose narrowing was being discarded in silence.
+_FLEET_ONLY_OUT = {
+    "update_item": {"touchpoint_intake": {"type": "object"}},
+}
+
 _FLEET_ONLY_ARGS = {
     "collision_clusters": {
         "prd_id": {"type": "string", "description": "Only this PRD's work."},
@@ -1764,11 +1778,15 @@ def _with_fleet_args(tools: list[dict]) -> list[dict]:
     out: list[dict] = []
     for t in tools:
         extra = _FLEET_ONLY_ARGS.get(t["name"])
-        if not extra:
+        extra_out = _FLEET_ONLY_OUT.get(t["name"])
+        if not extra and not extra_out:
             out.append(t)
             continue
         widened = copy.deepcopy(t)
-        widened["inputSchema"].setdefault("properties", {}).update(copy.deepcopy(extra))
+        if extra:
+            widened["inputSchema"].setdefault("properties", {}).update(copy.deepcopy(extra))
+        if extra_out and isinstance(widened.get("outputSchema"), dict):
+            widened["outputSchema"].setdefault("properties", {}).update(copy.deepcopy(extra_out))
         out.append(widened)
     return out
 
@@ -2441,6 +2459,10 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
                 "reach is not an agent's to set: it says whether this item's work acts on a "
                 "running system, and only a signed-in person can declare or clear it.",
                 hint="a human sets it on the item in the UI")
+        # Captured BEFORE the write, because `union_touchpoints` mutates the stored list and
+        # the reply has to say what the caller's list left behind (GRPH-985).
+        before_tps = list(getattr(_scoped_item(db, args["id"], allowed), "touchpoints", None) or []) \
+            if args.get("touchpoints") is not None else []
         item = items_svc.update_item(
             db,
             args["id"],
@@ -2475,6 +2497,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # Attached HERE and only when the call carried evidence: the counts on a payload
             # nobody sent would read as a clean intake rather than as no intake at all.
             out.update(items_svc.evidence_intake(args["evidence"]))
+        if args.get("touchpoints") is not None:
+            # GRPH-985. Same reason, worse silence: `union_touchpoints` cannot remove a path,
+            # so a narrowing write is accepted and then ignored with nothing in the reply to
+            # say so. `retained` names the stored paths this call did not, which is the only
+            # signal that the narrowing did not happen. Computed against `before`, captured
+            # before the write.
+            out.update(items_svc.touchpoint_intake(before_tps, args["touchpoints"]))
         return out
     if name == "search_items":
         rows = items_svc.search_items(
