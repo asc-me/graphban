@@ -30,7 +30,7 @@ const BASE_CHIPS = ["stage", "test", "main", "develop"] as const;
 const TOKEN_CHIPS = ["{item_id}", "{tag}", "{slug}", "{version}", "{date}"] as const;
 
 const SELECT_CLASS =
-  "h-9 rounded-[9px] border border-line-2 bg-surface-2 px-2 text-[13px] text-fg outline-none focus:border-line-hover";
+  "h-9 rounded-[9px] border border-control bg-surface-2 px-2 text-[13px] text-fg outline-none focus:border-control-hover";
 const CHIP_CLASS =
   "rounded-[5px] border border-line px-1.5 py-px font-mono text-[10px] text-muted hover:border-line-hover hover:text-fg disabled:opacity-50";
 
@@ -485,7 +485,7 @@ function TextField({
             aria-label={`Clear ${ariaLabel}`}
             disabled={!writable}
             onClick={onClear}
-            className="flex h-9 w-9 items-center justify-center rounded-[9px] border border-line text-faint hover:text-fg disabled:opacity-50"
+            className="flex h-9 w-9 items-center justify-center rounded-[9px] border border-control text-faint hover:text-fg disabled:opacity-50"
           >
             <X size={12} />
           </button>
@@ -554,7 +554,7 @@ function SelectField({
             aria-label={`Clear ${ariaLabel}`}
             disabled={!writable}
             onClick={onClear}
-            className="flex h-9 w-9 items-center justify-center rounded-[9px] border border-line text-faint hover:text-fg disabled:opacity-50"
+            className="flex h-9 w-9 items-center justify-center rounded-[9px] border border-control text-faint hover:text-fg disabled:opacity-50"
           >
             <X size={12} />
           </button>

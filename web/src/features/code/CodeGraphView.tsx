@@ -405,7 +405,7 @@ export function CodeGraphView() {
     <span className="flex items-center gap-1.5">
       <button
         onClick={() => setEntered(null)}
-        className="rounded border border-line-2 px-1.5 py-px font-mono text-[10.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+        className="rounded border border-control px-1.5 py-px font-mono text-[10.5px] text-muted transition-colors hover:border-control-hover hover:text-fg"
       >
         ← all components
       </button>
@@ -434,7 +434,7 @@ export function CodeGraphView() {
                   onKeyDown={(e) => e.key === "Escape" && find.clear()}
                   placeholder="Find  /"
                   aria-label="Find a node"
-                  className="w-[168px] rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-line-hover focus:outline-none"
+                  className="w-[168px] rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-fg placeholder:text-faint focus:border-control-hover focus:outline-none"
                 />
                 {find.active && (
                   <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 font-mono text-[10px] text-faint">
@@ -446,7 +446,7 @@ export function CodeGraphView() {
               <button
                 onClick={view.reset}
                 title="Reset the view (or double-click the background)"
-                className="mr-1 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+                className="mr-1 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-control-hover hover:text-fg"
               >
                 Reset view
               </button>
@@ -455,7 +455,7 @@ export function CodeGraphView() {
               <button
                 onClick={pinsApi.clearPins}
                 title="Release every pinned node"
-                className="mr-1 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+                className="mr-1 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-control-hover hover:text-fg"
               >
                 Unpin {pinsApi.pinCount}
               </button>
@@ -467,7 +467,7 @@ export function CodeGraphView() {
                 onClick={() => relayout(edges.map((e) => ({ a: e.src, b: e.dst })))}
                 disabled={pending}
                 title="Recompute positions from the visible edges only"
-                className="mr-1 inline-flex items-center gap-1.5 rounded-lg border border-line-2 bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-line-hover hover:text-fg disabled:opacity-50"
+                className="mr-1 inline-flex items-center gap-1.5 rounded-lg border border-control bg-surface-2 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:border-control-hover hover:text-fg disabled:opacity-50"
               >
                 {pending ? "Laying out…" : "Re-layout to visible"}
               </button>
@@ -481,7 +481,7 @@ export function CodeGraphView() {
                   "mr-1 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
                   armed
                     ? "border-accent/60 bg-surface-3 text-accent"
-                    : "border-line-2 bg-surface-2 text-muted hover:border-line-hover hover:text-fg",
+                    : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg",
                 )}
               >
                 {armed ? "Pick the far end…" : "Path from here"}
@@ -494,8 +494,8 @@ export function CodeGraphView() {
               className={cn(
                 "mr-1 inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
                 hubsOpen
-                  ? "border-line-hover bg-surface-3 text-fg"
-                  : "border-line-2 bg-surface-2 text-muted hover:border-line-hover hover:text-fg",
+                  ? "border-control-hover bg-surface-3 text-fg"
+                  : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg",
               )}
             >
               Hubs
@@ -506,7 +506,7 @@ export function CodeGraphView() {
                 onClick={() => setEnabled((e) => ({ ...e, [t]: !e[t] }))}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
-                  enabled[t] ? "border-line-hover bg-surface-3 text-fg" : "border-line-2 bg-surface-2 text-faint",
+                  enabled[t] ? "border-control-hover bg-surface-3 text-fg" : "border-control bg-surface-2 text-faint",
                 )}
               >
                 <span
@@ -1068,7 +1068,7 @@ function NodeInspector({
           <button
             onClick={onExpand}
             title="Widen the highlight by one ring (or Shift-click the node)"
-            className="rounded border border-line-2 px-1.5 py-px font-mono text-[10px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+            className="rounded border border-control px-1.5 py-px font-mono text-[10px] text-muted transition-colors hover:border-control-hover hover:text-fg"
           >
             expand +1
           </button>
@@ -1374,7 +1374,7 @@ function InteractionHint({
               <button
                 key={sn.id}
                 onClick={() => onJump(sn.id)}
-                className="rounded border border-line-2 bg-surface px-2 py-1 text-left font-mono text-[10px] text-muted transition-colors hover:border-line-hover hover:text-fg"
+                className="rounded border border-control bg-surface px-2 py-1 text-left font-mono text-[10px] text-muted transition-colors hover:border-control-hover hover:text-fg"
                 title={`${sn.size} nodes`}
               >
                 <span className="block truncate">{label(sn.anchor, "")}</span>

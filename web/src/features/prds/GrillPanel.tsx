@@ -122,12 +122,12 @@ export function GrillPanel({ prdId, onApply }: { prdId: string; onApply: (body: 
             }}
             rows={2}
             placeholder="Answer the questions, or steer the grill…"
-            className="min-h-0 flex-1 resize-none rounded-lg border border-line-2 bg-surface-2 px-3 py-2 text-[12.5px] outline-none placeholder:text-faint focus:border-line-hover"
+            className="min-h-0 flex-1 resize-none rounded-lg border border-control bg-surface-2 px-3 py-2 text-[12.5px] outline-none placeholder:text-faint focus:border-control-hover"
           />
           <button
             onClick={send}
             disabled={!draft.trim() || streaming}
-            className="flex-none rounded-lg border border-line-2 bg-surface-2 p-2 text-muted transition-colors hover:text-fg disabled:opacity-40"
+            className="flex-none rounded-lg border border-control bg-surface-2 p-2 text-muted transition-colors hover:text-fg disabled:opacity-40"
           >
             <ArrowUp size={15} />
           </button>

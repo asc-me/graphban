@@ -48,7 +48,7 @@ export function OrganizationView() {
           <select
             value={org.id}
             onChange={(e) => setActiveId(e.target.value)}
-            className="h-8 rounded-[8px] border border-line-2 bg-surface-2 px-2 text-[12px]"
+            className="h-8 rounded-[8px] border border-control bg-surface-2 px-2 text-[12px]"
           >
             {orgs.map((o) => (
               <option key={o.id} value={o.id}>
@@ -201,7 +201,7 @@ function InviteForm({ org }: { org: Org }) {
       <select
         value={role}
         onChange={(e) => setRole(e.target.value)}
-        className="h-9 rounded-[8px] border border-line-2 bg-surface-2 px-2 text-[12px]"
+        className="h-9 rounded-[8px] border border-control bg-surface-2 px-2 text-[12px]"
       >
         <option value="member">Member</option>
         <option value="admin">Admin</option>

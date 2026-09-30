@@ -98,7 +98,7 @@ export function SetupTab({ platform }: { platform: PlatformConfig | undefined })
                 onClick={() => setRoute(r.value)}
                 className={cn(
                   "flex flex-col gap-1 rounded-lg border px-3.5 py-3 text-left transition-colors",
-                  active ? "border-line-hover bg-surface-3" : "border-line-2 bg-surface-2 hover:border-line-hover",
+                  active ? "border-control-hover bg-surface-3" : "border-control bg-surface-2 hover:border-control-hover",
                 )}
               >
                 <div className="flex items-center gap-2">
@@ -198,7 +198,7 @@ function CustomDomainSection({ records, origin }: { records: DnsRecord[]; origin
           <button
             onClick={checkDns}
             disabled={checking}
-            className="inline-flex items-center gap-1.5 rounded-md border border-line-2 bg-surface-3 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:text-fg disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-md border border-control bg-surface-3 px-2.5 py-1 text-[11.5px] text-muted transition-colors hover:text-fg disabled:opacity-50"
           >
             <RefreshCw size={11} className={cn(checking && "animate-spin")} />
             {checking ? "Checking…" : "Check DNS"}

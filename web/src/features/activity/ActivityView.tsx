@@ -214,7 +214,7 @@ export function ActivityView() {
                 setRange(e.target.value as ActivityRange);
                 setBucket(null);
               }}
-              className="rounded-md border border-line-2 bg-surface px-2 py-0.5 text-[12px] text-ink focus:border-line-hover focus:outline-none"
+              className="rounded-md border border-control bg-surface px-2 py-0.5 text-[12px] text-ink focus:border-control-hover focus:outline-none"
             >
               {RANGE_CHOICES.map((r) => (
                 <option key={r.id} value={r.id}>
@@ -229,7 +229,7 @@ export function ActivityView() {
             <select
               value={groupBy}
               onChange={(e) => setGroupBy(e.target.value as GroupBy)}
-              className="rounded-md border border-line-2 bg-surface px-2 py-0.5 text-[12px] text-ink focus:border-line-hover focus:outline-none"
+              className="rounded-md border border-control bg-surface px-2 py-0.5 text-[12px] text-ink focus:border-control-hover focus:outline-none"
             >
               <option value="time">Time</option>
               <option value="target">Target</option>
@@ -258,7 +258,7 @@ export function ActivityView() {
               <button
                 type="button"
                 onClick={clearFilters}
-                className="rounded-md border border-line px-1.5 py-0.5 text-[10.5px] text-faint transition-colors hover:border-line-hover hover:text-muted"
+                className="rounded-md border border-control px-1.5 py-0.5 text-[10.5px] text-faint transition-colors hover:border-control-hover hover:text-muted"
               >
                 Clear all
               </button>

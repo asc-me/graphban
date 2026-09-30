@@ -27,7 +27,7 @@ export function StatusMenu({
           type="button"
           onClick={(e) => e.stopPropagation()}
           aria-label={`Status: ${meta.label}`}
-          className="inline-flex items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 transition-colors hover:border-line-2 hover:bg-surface-3"
+          className="inline-flex items-center gap-1.5 rounded-md border border-transparent px-1.5 py-1 transition-colors hover:border-control hover:bg-surface-3"
         >
           <Dot color={meta.color} glow={status === "in_progress"} />
           {!compact && (

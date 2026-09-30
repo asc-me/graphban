@@ -28,8 +28,8 @@ export function PresenceStrip({
         className={cn(
           "shrink-0 rounded-lg border px-2.5 py-1 text-[11px] transition-colors",
           focusId === null
-            ? "border-line-hover bg-surface-3 text-fg"
-            : "border-line-2 bg-surface-2 text-muted hover:border-line-3 hover:text-fg-2",
+            ? "border-control-hover bg-surface-3 text-fg"
+            : "border-control bg-surface-2 text-muted hover:border-control-hover hover:text-fg-2",
         )}
       >
         All agents
@@ -46,9 +46,9 @@ export function PresenceStrip({
             onClick={() => onFocus(active ? null : a.id)}
             className={cn(
               "min-w-[9rem] shrink-0 rounded-lg border px-2.5 py-1.5 text-left transition-colors",
-              active ? "border-line-hover bg-surface-3" : "border-line-2 bg-surface-2 hover:border-line-3",
+              active ? "border-control-hover bg-surface-3" : "border-control bg-surface-2 hover:border-control-hover",
               offline && "opacity-55",
-              ROLE_TONE[a.role ?? "all-in-one"] ?? "text-muted border-line-2",
+              ROLE_TONE[a.role ?? "all-in-one"] ?? "text-muted border-control",
             )}
           >
             <div className="truncate text-[12px] text-fg-2">{a.label || a.id}</div>

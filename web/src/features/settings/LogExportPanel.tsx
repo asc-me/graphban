@@ -210,7 +210,7 @@ function fromConfig(config: LogExportConfig): Draft {
 }
 
 const selectClass =
-  "h-9 w-full rounded-[9px] border border-line-2 bg-surface-2 px-3 text-[13px] text-fg outline-none disabled:cursor-not-allowed";
+  "h-9 w-full rounded-[9px] border border-control bg-surface-2 px-3 text-[13px] text-fg outline-none disabled:cursor-not-allowed";
 
 export function LogExportPanel() {
   const { data, isError, isPending, refetch } = useLogExport();
@@ -544,7 +544,7 @@ function LogExportForm({ view }: { view: LogExportView }) {
                       "rounded-md border px-2 py-0.5 font-mono text-[11px] disabled:pointer-events-none disabled:opacity-50",
                       on
                         ? "border-accent/40 bg-accent/10 text-fg"
-                        : "border-line-2 text-muted hover:text-fg-2",
+                        : "border-control text-muted hover:text-fg-2",
                     )}
                     onClick={() =>
                       set("event_types", on

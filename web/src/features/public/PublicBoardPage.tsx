@@ -106,7 +106,7 @@ function BoardRowCard({ row }: { row: BoardRow }) {
         <button
           onClick={handleVote}
           disabled={voted}
-          className="flex flex-none flex-col items-center gap-0.5 rounded-lg border border-line-2 bg-surface px-2.5 py-1.5 transition-colors hover:border-accent/40 disabled:opacity-50"
+          className="flex flex-none flex-col items-center gap-0.5 rounded-lg border border-control bg-surface px-2.5 py-1.5 transition-colors hover:border-accent/40 disabled:opacity-50"
         >
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none" className={voted ? "text-accent" : "text-faint"}>
             <path d="M8 2l6 10H2L8 2z" fill="currentColor" />

@@ -102,7 +102,7 @@ export function CloudOrgLinkPanel() {
           <select
             value={target}
             onChange={(e) => setProjectId(e.target.value)}
-            className="rounded-md border border-line-2 bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
+            className="rounded-md border border-control bg-surface-3 px-2 py-1.5 text-[12px] text-muted"
             aria-label="Link key target project"
           >
             {projects.map((p) => (

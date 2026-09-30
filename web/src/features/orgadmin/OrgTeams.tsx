@@ -113,7 +113,7 @@ function TeamList({
         <button
           key={t.id}
           onClick={() => onSelect(t.id)}
-          className={`flex w-full items-center gap-2.5 border-b border-line px-3.5 py-2.5 text-left hover:bg-surface-3 ${
+          className={`flex w-full items-center gap-2.5 border-b border-control px-3.5 py-2.5 text-left hover:bg-surface-3 ${
             t.id === selectedId ? "bg-surface-3" : ""
           }`}
         >
@@ -203,7 +203,7 @@ function Members({ team, orgId }: { team: Team; orgId: string }) {
             onChange={(e) =>
               e.target.value && add.mutate({ teamId: team.id, userId: e.target.value })
             }
-            className="h-[24px] rounded-md border border-line-2 bg-surface px-1.5 text-[11px]"
+            className="h-[24px] rounded-md border border-control bg-surface px-1.5 text-[11px]"
           >
             <option value="">+ add member</option>
             {addable.map((m) => (
@@ -264,7 +264,7 @@ function Grants({ team, orgId }: { team: Team; orgId: string }) {
               e.target.value &&
               setGrant.mutate({ teamId: team.id, projectId: e.target.value, access: "read" })
             }
-            className="h-[24px] rounded-md border border-line-2 bg-surface px-1.5 text-[11px]"
+            className="h-[24px] rounded-md border border-control bg-surface px-1.5 text-[11px]"
           >
             <option value="">+ grant project</option>
             {grantable.map((p) => (
@@ -310,7 +310,7 @@ function GrantRow({ team, grant, orgId }: { team: Team; grant: TeamGrant; orgId:
               access: e.target.value,
             })
           }
-          className="h-[23px] rounded-md border border-line-2 bg-surface px-1.5 font-mono text-[10px]"
+          className="h-[23px] rounded-md border border-control bg-surface px-1.5 font-mono text-[10px]"
         >
           <option value="read">read</option>
           <option value="write">write</option>
@@ -412,7 +412,7 @@ function CreateTeam({ orgId, onDone }: { orgId: string; onDone: () => void }) {
         onChange={(e) => setName(e.target.value)}
         placeholder="Platform"
         aria-label="Team name"
-        className="h-[30px] min-w-[200px] flex-1 rounded-lg border border-line-2 bg-surface px-2.5 text-[12.5px] outline-none focus:border-accent/50"
+        className="h-[30px] min-w-[200px] flex-1 rounded-lg border border-control bg-surface px-2.5 text-[12.5px] outline-none focus:border-accent/50"
       />
       <button
         type="submit"
@@ -424,7 +424,7 @@ function CreateTeam({ orgId, onDone }: { orgId: string; onDone: () => void }) {
       <button
         type="button"
         onClick={onDone}
-        className="h-[30px] rounded-lg border border-line-2 px-3 text-[12.5px] text-muted"
+        className="h-[30px] rounded-lg border border-control px-3 text-[12.5px] text-muted"
       >
         Cancel
       </button>
@@ -455,7 +455,7 @@ function Confirm({
         <div className="mt-4 flex justify-end gap-2">
           <button
             onClick={onCancel}
-            className="h-[30px] rounded-lg border border-line-2 px-3 text-[12.5px] text-muted hover:text-fg"
+            className="h-[30px] rounded-lg border border-control px-3 text-[12.5px] text-muted hover:text-fg"
           >
             Cancel
           </button>

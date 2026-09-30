@@ -127,7 +127,7 @@ function QueueRow({ row, projectId }: { row: TriageRow; projectId: string }) {
 
       <div className="mt-2 flex items-center gap-2.5 font-mono text-[9.5px] text-faint-2">
         <span>{req.by || "anonymous"}</span>
-        <span className="text-line-3">·</span>
+        <span className="text-faint">·</span>
         <button
           onClick={() => vote.mutate({ id: req.id, delta: 1 })}
           className="inline-flex items-center gap-1 text-muted hover:text-accent"

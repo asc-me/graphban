@@ -83,7 +83,7 @@ export function ReportIssueDialog({ open, onOpenChange }: { open: boolean; onOpe
                     "rounded-lg border px-2.5 py-1 text-[11.5px] transition-colors",
                     type === t.key
                       ? "border-accent/50 bg-surface-2 text-fg"
-                      : "border-line-2 bg-surface-2 text-muted hover:text-fg-2",
+                      : "border-control bg-surface-2 text-muted hover:text-fg-2",
                   )}
                 >
                   {t.label}

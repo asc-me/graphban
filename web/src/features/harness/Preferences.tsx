@@ -151,7 +151,7 @@ export function Preferences({ projectId, scope, profile, policy, onSaved }: {
     }
   }
 
-  const field = "h-8 w-full rounded-md border border-line-2 bg-transparent px-2 text-[12.5px]";
+  const field = "h-8 w-full rounded-md border border-control bg-transparent px-2 text-[12.5px]";
   return (
     <Section
       title="Harness preferences"

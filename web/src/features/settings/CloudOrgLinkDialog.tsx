@@ -181,7 +181,7 @@ function PlanStep({
           type="button"
           className={cn(
             "rounded-[8px] border px-2.5 py-1 text-[12px] transition-colors",
-            billing === "monthly" ? "border-accent/40 bg-accent/[0.08] text-accent" : "border-line-2 text-muted",
+            billing === "monthly" ? "border-accent/40 bg-accent/[0.08] text-accent" : "border-control text-muted",
           )}
           onClick={() => onBillingChange("monthly")}
         >
@@ -191,7 +191,7 @@ function PlanStep({
           type="button"
           className={cn(
             "rounded-[8px] border px-2.5 py-1 text-[12px] transition-colors",
-            billing === "annual" ? "border-accent/40 bg-accent/[0.08] text-accent" : "border-line-2 text-muted",
+            billing === "annual" ? "border-accent/40 bg-accent/[0.08] text-accent" : "border-control text-muted",
           )}
           onClick={() => onBillingChange("annual")}
         >
@@ -210,7 +210,7 @@ function PlanStep({
               onClick={() => onTierChange(t.id)}
               className={cn(
                 "rounded-[10px] border p-3 text-left transition-colors",
-                selected ? "border-accent/50 bg-accent/[0.05]" : "border-line-2 hover:border-line-hover",
+                selected ? "border-accent/50 bg-accent/[0.05]" : "border-control hover:border-control-hover",
               )}
             >
               <div className="text-[13px] font-semibold">{t.label}</div>

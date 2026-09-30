@@ -89,8 +89,8 @@ export function FleetLegend({
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-lg border px-1.5 py-1 text-[11.5px] transition-colors",
                   active
-                    ? "border-line-hover bg-surface-4 text-fg"
-                    : "border-transparent text-muted hover:border-line-2 hover:text-fg",
+                    ? "border-control-hover bg-surface-4 text-fg"
+                    : "border-transparent text-muted hover:border-control hover:text-fg",
                 )}
               >
                 <Avatar initials={h.initials} color={h.color} size={18} />
@@ -110,7 +110,7 @@ export function FleetLegend({
               "ml-auto rounded-lg border px-2 py-1 font-mono text-[10.5px] transition-colors",
               trayOpen
                 ? "border-st-review/50 bg-st-review/10 text-st-review"
-                : "border-line-2 text-muted hover:border-line-hover hover:text-fg",
+                : "border-control text-muted hover:border-control-hover hover:text-fg",
             )}
           >
             {offMap.length} held area{offMap.length === 1 ? "" : "s"} not on this map

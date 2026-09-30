@@ -147,12 +147,12 @@ function DimensionRow({
             if (e.key === "Escape") onCancel();
           }}
           placeholder={`Why is ${(DIMENSION_LABEL[name] ?? name).toLowerCase()} being left open?`}
-          className="min-w-0 flex-1 rounded-md border border-line-2 bg-surface-2 px-2 py-1 text-[11.5px] outline-none placeholder:text-faint focus:border-line-hover"
+          className="min-w-0 flex-1 rounded-md border border-control bg-surface-2 px-2 py-1 text-[11.5px] outline-none placeholder:text-faint focus:border-control-hover"
         />
         <button
           onClick={() => onConfirm(reason.trim())}
           disabled={!reason.trim() || pending}
-          className="flex-none rounded-md border border-line-2 px-2 py-1 font-mono text-[9.5px] uppercase text-[#e0b34a] transition-colors hover:bg-surface-3 disabled:opacity-40"
+          className="flex-none rounded-md border border-control px-2 py-1 font-mono text-[9.5px] uppercase text-[#e0b34a] transition-colors hover:bg-surface-3 disabled:opacity-40"
         >
           Defer
         </button>
@@ -191,7 +191,7 @@ function DimensionRow({
           onClick={onDefer}
           disabled={pending}
           title="Leave this dimension deliberately open, with a reason. Deferring completes the grill; it does not skip it."
-          className="ml-auto flex-none rounded border border-line-2 px-1 font-mono text-[9px] uppercase text-faint transition-colors hover:text-[#e0b34a] disabled:opacity-40"
+          className="ml-auto flex-none rounded border border-control px-1 font-mono text-[9px] uppercase text-faint transition-colors hover:text-[#e0b34a] disabled:opacity-40"
         >
           defer
         </button>

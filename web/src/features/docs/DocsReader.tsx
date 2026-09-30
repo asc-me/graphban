@@ -133,7 +133,7 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
               </div>
               <button
                 onClick={() => closeDocs("pointer")}
-                className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg border border-line-2 bg-surface text-muted transition-colors hover:border-line-hover hover:text-fg"
+                className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded-lg border border-control bg-surface text-muted transition-colors hover:border-control-hover hover:text-fg"
                 aria-label="Close"
               >
                 <X size={13} />
@@ -201,14 +201,14 @@ export function DocsReader({ agentOpen = false }: { agentOpen?: boolean }) {
                   <button
                     onClick={() => setThanks(true)}
                     aria-label="Helpful"
-                    className="flex h-7 w-[30px] items-center justify-center rounded-[7px] border border-line-2 bg-surface text-muted transition-colors hover:border-[#2a3d20] hover:text-accent"
+                    className="flex h-7 w-[30px] items-center justify-center rounded-[7px] border border-control bg-surface text-muted transition-colors hover:border-[#2a3d20] hover:text-accent"
                   >
                     <ThumbsUp size={14} />
                   </button>
                   <button
                     onClick={() => setThanks(true)}
                     aria-label="Not helpful"
-                    className="flex h-7 w-[30px] items-center justify-center rounded-[7px] border border-line-2 bg-surface text-muted transition-colors hover:border-[#3a2626] hover:text-st-blocked"
+                    className="flex h-7 w-[30px] items-center justify-center rounded-[7px] border border-control bg-surface text-muted transition-colors hover:border-[#3a2626] hover:text-st-blocked"
                   >
                     <ThumbsDown size={14} />
                   </button>
