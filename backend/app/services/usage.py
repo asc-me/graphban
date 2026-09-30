@@ -1,7 +1,7 @@
 """Deployment-wide usage aggregate (PRD-47 S14 / GRPH-965).
 
 One service function backs the Usage page: identity, KPIs, the per-day MCP chart,
-by-project table, license limits, busiest API keys, and optional harness spawns.
+by-project table, license limits, model usage by harness, and busiest API keys.
 Agent-call telemetry is retained for only ``AGENT_CALL_RETENTION_DAYS``; longer
 ranges are served from what exists and named ``partial`` rather than padded with zeroes.
 """
@@ -16,13 +16,31 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Agent, AgentCall, ApiKey, Item, MemoryShard, OrgMembership, Organization, Project, User
+from app.models import (
+    Agent,
+    AgentCall,
+    ApiKey,
+    AttemptTelemetry,
+    Item,
+    MemoryShard,
+    OrgMembership,
+    Organization,
+    Project,
+    User,
+)
+from app.providers import llm_meter
 from app.security import authz
 from app.services import instance_update, items as items_svc, quotas
 from app.services.fleet import presence_ttl_seconds
 
 RANGE_CHOICES = (7, 30, 90)
 MAX_BUCKETS = 45
+
+#: Harnesses whose compute runs on hardware the deployment already pays for, so their cost is a
+#: REAL zero and not an unknown one. ``llm_meter.LOCAL_PROVIDERS`` covers the local LLM providers;
+#: ``gbagent`` is the local agent runtime gbfleet ships, and PRD-47 S14's footnote names it:
+#: *"Local models (gbagent) show $0."*
+LOCAL_HARNESSES = frozenset(llm_meter.LOCAL_PROVIDERS) | {"gbagent"}
 
 
 def _now() -> datetime:
@@ -154,6 +172,89 @@ def _on_pace_note(limits: list[dict[str, Any]]) -> str | None:
         elif pace < limit * 0.5 and day_of_month > 10:
             notes.append("MCP calls are well under a linear month pace.")
     return " ".join(notes) if notes else None
+
+
+def _model_usage(db: Session, project_ids: list[str], since: datetime) -> dict[str, Any]:
+    """Spawns, tokens and estimated cost per harness and model (PRD-47 S14 / GRPH-1002).
+
+    Read from PRD-38 attempt records over the same finished-delegation population
+    ``harness.roll`` grades, so this panel and the Harness page its link leads to cannot
+    disagree about a window.
+
+    Absence keeps its meaning on the way out, which is why every sum carries the count it
+    rests on. ``tokens`` is None when NO attempt for that pair reported; it does not become
+    0, because a zero in a token column claims the harness ran and used nothing. Cost adds
+    the third answer: 0.0 is a real zero (local compute), None is unpriced, and neither is
+    a number this deployment did not produce.
+    """
+    from app.services.delegation import UNDECLARED
+
+    rows = db.execute(
+        select(
+            AttemptTelemetry.vendor,
+            AttemptTelemetry.model,
+            AttemptTelemetry.tokens_in,
+            AttemptTelemetry.tokens_out,
+        ).where(
+            AttemptTelemetry.project_id.in_(project_ids),
+            # `derived_at` NOT NULL IS the population: finished delegations only. Redundant
+            # beside the window filter today (NULL >= since is never true), but it is the line
+            # that keeps a launch which never reached an outcome out of the panel if that
+            # filter is ever widened to coalesce(derived_at, reported_at).
+            AttemptTelemetry.derived_at.is_not(None),
+            AttemptTelemetry.derived_at >= since,
+        )
+    ).all() if project_ids else []
+
+    groups: dict[tuple[str, str], dict[str, int]] = {}
+    for vendor, model, tin, tout in rows:
+        g = groups.setdefault((vendor or UNDECLARED, model or ""), {
+            "spawns": 0, "tokens_in": 0, "tokens_out": 0, "tokens_reported": 0,
+        })
+        g["spawns"] += 1
+        # Summed over the attempts that REPORTED, with that count kept beside them — the
+        # `harness.roll` convention, and what stops a pair nobody measured from aggregating
+        # into a zero.
+        if tin is not None or tout is not None:
+            g["tokens_in"] += tin or 0
+            g["tokens_out"] += tout or 0
+            g["tokens_reported"] += 1
+
+    out: list[dict[str, Any]] = []
+    for (vendor, model), g in groups.items():
+        reported = g["tokens_reported"] > 0
+        if vendor in LOCAL_HARNESSES:
+            cost: float | None = 0.0
+        elif not reported:
+            # Pricing an unmeasured pair would multiply a list price by a fabricated zero
+            # token count and print money nobody spent.
+            cost = None
+        else:
+            cost = llm_meter.estimate_cost(vendor, model, g["tokens_in"], g["tokens_out"])
+        out.append({
+            "vendor": vendor,
+            "model": model or UNDECLARED,
+            "spawns": g["spawns"],
+            "tokens": (g["tokens_in"] + g["tokens_out"]) if reported else None,
+            "tokens_reported": g["tokens_reported"],
+            "cost_usd": cost,
+        })
+
+    # Measured rows first, gaps after: a pair that reported nothing is not competing with one
+    # that did, and interleaving them is how a column of gaps gets read as a column of zeroes.
+    out.sort(key=lambda r: (r["tokens"] is None, -(r["tokens"] or 0), -r["spawns"]))
+
+    spawns = sum(r["spawns"] for r in out)
+    reported_total = sum(r["tokens_reported"] for r in out)
+    return {
+        "rows": out,
+        "spawns": spawns,
+        "tokens_reported": reported_total,
+        "note": (
+            f"{reported_total} of {spawns} attempts in this window reported tokens; "
+            f"the rest are shown as not reported rather than as zero."
+        ) if spawns and reported_total < spawns else None,
+    }
 
 
 def aggregate(db: Session, user_id: str, range_days: int = 30) -> dict[str, Any]:
@@ -320,6 +421,7 @@ def aggregate(db: Session, user_id: str, range_days: int = 30) -> dict[str, Any]
         "by_project": by_project,
         "limits": limits,
         "on_pace_note": _on_pace_note(limits),
+        "model_usage": _model_usage(db, project_ids, cur_since),
         "busiest_keys": busiest,
     }
 

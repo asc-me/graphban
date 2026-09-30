@@ -117,6 +117,30 @@ export interface UsageKeyRow {
   last_seen: string | null;
 }
 
+/** One harness + model pair's spend (PRD-47 S14 / GRPH-1002), from PRD-38 attempt records.
+ *
+ * Absence is load-bearing in both numeric columns, so neither is ever a bare zero:
+ * `tokens` null means NO attempt for this pair reported, and `cost_usd` null means unpriced
+ * while `0` means the compute is local and genuinely free. `tokens_reported` is the count
+ * the sum rests on — kept beside it so a partial numerator cannot read as a full one.
+ */
+export interface UsageModelRow {
+  vendor: string;
+  model: string;
+  spawns: number;
+  tokens: number | null;
+  tokens_reported: number;
+  cost_usd: number | null;
+}
+
+export interface UsageModelUsage {
+  rows: UsageModelRow[];
+  spawns: number;
+  tokens_reported: number;
+  /** Present when some attempts reported tokens and others did not. */
+  note: string | null;
+}
+
 export interface UsageAggregate {
   identity: {
     mode: "hosted" | "self-host";
@@ -139,6 +163,7 @@ export interface UsageAggregate {
   by_project: UsageProjectRow[];
   limits: UsageLimitRow[];
   on_pace_note: string | null;
+  model_usage: UsageModelUsage;
   busiest_keys: UsageKeyRow[];
 }
 
