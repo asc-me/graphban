@@ -591,3 +591,127 @@ def test_the_reap_runs_before_the_early_publish_in_a_tick():
     source = inspect.getsource(sup.watch_tick)
     assert source.index("_reap_exited(") < source.index("_publish_in_review(")
     assert source.index("_publish_in_review(") < source.index("_report_exits(")
+
+
+# ---- the operator-facing surfaces (GRPH-987, bounce 1) -----------------------------------
+#
+# The reviewer of PR #898 re-ran the CALL-SITE mutations this item's absence rule depends on
+# and found two of them green: deleting the three keys from `Report.as_json`, and deleting the
+# `REVIEW UNREADABLE` loop from `cli.report`, each failed nothing. The comment in `as_json`
+# claimed the keys are "always present and empty by default, so 'no item reached review early'
+# cannot be read as 'the check did not run'" — and nothing pinned it, so the claim was prose.
+#
+# The attempt-row call site WAS covered (`test_the_marker_reaches_the_posted_attempt_row`
+# fails when `unreadable=None` is passed), which is exactly why the gap was easy to miss: one
+# call site of three was proved and the conclusion was generalised to all of them.
+
+
+def _report_with(wave=None):
+    from gbfleet.until import Report
+    return Report(ok=True, reason="idle", exit=0, wave=wave).as_json()
+
+
+def test_the_three_review_keys_are_present_on_a_clean_wave():
+    """Empty is "nothing of this kind happened", not "we did not look". A reader who cannot
+    tell those apart has to guess, and this repo's recurring defect is that the guess is
+    always the reassuring one.
+
+    Sabotage: drop any of the three keys from `as_json` → this fails.
+    """
+    from gbfleet.supervisor import Wave
+    payload = _report_with(Wave())
+
+    for key in ("published_in_review", "review_unreadable", "review_unmeasured"):
+        assert key in payload, f"{key} must be in the report even when nothing happened"
+    assert payload["published_in_review"] == {}
+    assert payload["review_unreadable"] == {}
+    assert payload["review_unmeasured"] == ""
+
+
+def test_the_three_review_keys_are_present_with_no_wave_at_all():
+    """A report built before a wave exists must still carry them. Otherwise the keys are
+    present exactly when there is something to say, which is the shape that lets a consumer
+    treat `KeyError` as "clean"."""
+    payload = _report_with(None)
+
+    assert payload["published_in_review"] == {}
+    assert payload["review_unreadable"] == {}
+    assert payload["review_unmeasured"] == ""
+
+
+def test_an_unreadable_branch_reaches_the_json_with_its_items():
+    """Named, not counted: an operator deciding whether a bounce was the builder's fault needs
+    the branch and the items, not a number."""
+    from gbfleet.supervisor import Wave
+    wave = Wave()
+    wave.published_in_review = {"gb/w-1": "a" * 40}
+    wave.review_unreadable = {"gb/w-2": ["GRPH-1", "GRPH-2"]}
+    payload = _report_with(wave)
+
+    assert payload["published_in_review"] == {"gb/w-1": "a" * 40}
+    assert payload["review_unreadable"] == {"gb/w-2": ["GRPH-1", "GRPH-2"]}
+
+
+def test_a_ledger_that_could_not_be_asked_is_its_own_answer_in_the_json():
+    """The third state. "No item was in review" and "we could not ask which items were in
+    review" are different facts, and collapsing them is what the whole item is about."""
+    from gbfleet.supervisor import Wave
+    wave = Wave()
+    wave.review_unmeasured = "fleet_status refused: 401"
+    payload = _report_with(wave)
+
+    assert payload["review_unmeasured"] == "fleet_status refused: 401"
+    assert payload["review_unreadable"] == {}, "unmeasured must not masquerade as measured-empty"
+
+
+def test_report_prints_the_unreadable_branches_for_an_operator():
+    """`cli.report` is the surface an operator actually reads. The JSON being right does not
+    help someone watching the terminal.
+
+    Sabotage: delete the `REVIEW UNREADABLE <branch>` loop from `cli.report` → this fails.
+    """
+    import io
+
+    from gbfleet.cli import report
+    from gbfleet.supervisor import Wave
+
+    wave = Wave()
+    wave.review_unreadable = {"gb/w-2": ["GRPH-1", "GRPH-2"]}
+    out = io.StringIO()
+    report(wave, out=out)
+    text = out.getvalue()
+
+    assert "REVIEW UNREADABLE gb/w-2" in text
+    assert "GRPH-1" in text and "GRPH-2" in text
+    # The whole point of printing it: the bounce that follows is not the builder's fault.
+    assert "not the builder" in text
+
+
+def test_report_prints_the_unmeasured_line_separately():
+    """Sabotage: delete the `REVIEW UNREADABLE unmeasured` line → this fails."""
+    import io
+
+    from gbfleet.cli import report
+    from gbfleet.supervisor import Wave
+
+    wave = Wave()
+    wave.review_unmeasured = "fleet_status refused: 401"
+    out = io.StringIO()
+    report(wave, out=out)
+
+    assert "REVIEW UNREADABLE unmeasured: fleet_status refused: 401" in out.getvalue()
+
+
+def test_report_says_nothing_about_review_on_a_clean_wave():
+    """The other half, and the one that stops the two tests above being satisfied by a line
+    that always prints. A wave with nothing unreadable must not mention it at all — a standing
+    "REVIEW UNREADABLE: none" would train an operator to skip the line that matters."""
+    import io
+
+    from gbfleet.cli import report
+    from gbfleet.supervisor import Wave
+
+    out = io.StringIO()
+    report(Wave(), out=out)
+
+    assert "REVIEW UNREADABLE" not in out.getvalue()
