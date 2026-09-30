@@ -1379,7 +1379,7 @@ def test_a_git_merged_member_occupies_the_glob(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(wt, "reaches", lambda repo, base, ref: ref == "gb/merged")
     brief = {"lane": {"value": "backend"}, "tier": {"value": "cheap"}, "blocked_by": []}
     details = {
-        "MERGED": {"id": "MERGED", "status": "next", "branch": "gb/merged",
+        "MERGED": {"id": "MERGED", "status": "next", "branch": "gb/merged", "pr": "https://github.com/o/r/pull/1",
                    "brief": brief, "evidence": []},
         "READY": {"id": "READY", "status": "next", "branch": "gb/ready",
                   "brief": brief, "evidence": []},

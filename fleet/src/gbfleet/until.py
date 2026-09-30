@@ -13,6 +13,8 @@ with leftover `review` is a failed run (`review-unsigned`).
 
 from __future__ import annotations
 
+import re
+
 import json
 import time
 from dataclasses import dataclass, field, replace
@@ -1246,6 +1248,33 @@ def _seed_ready(details: dict) -> bool:
     return True
 
 
+def _attested_here(entry: dict, branch: str) -> bool:
+    """Is this evidence entry about `branch`? (GRPH-983, reading 2)
+
+    A CI attestation records the ref it ran on in its predicate detail — `CI passed on <branch>
+    at <sha>` — so an attestation naming a DIFFERENT branch is about a different PR and says
+    nothing about this item. An entry that names no branch is believed: receipts written before
+    the ref was recorded are still good evidence, and refusing them would trade one false
+    reading for another.
+    """
+    if not branch:
+        return True
+    named = str(entry.get("branch") or "").strip()
+    if not named:
+        # Receipts written before the field existed carry the ref only in the predicate prose.
+        # Read as a fallback, never as the primary: a consumer that depended on this regex
+        # would read every receipt as unnamed after a wording change, and unnamed is the
+        # BELIEVED case — the guard would switch itself off silently.
+        for pred in entry.get("predicates") or []:
+            if not isinstance(pred, dict):
+                continue
+            found = re.search(r"CI passed on (\S+) at ", str(pred.get("detail") or ""))
+            if found:
+                named = found.group(1)
+                break
+    return not named or named == branch
+
+
 def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
     """True when this item's branch or an attested commit is already in `base`.
 
@@ -1256,18 +1285,49 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
     whose work IS in the base via the squash. When the forge says the PR is MERGED, the
     work is carried by the squash SHA — same fallback as `deps.check` (GRPH-868). Without
     it, a squash-merged item still `next` would be re-delegated and rebuilt for nothing.
+
+    GRPH-983 closes two ways this said "delivered" about work that did not exist. Both cost
+    real items, and both presented as a supervisor exiting `idle, spawned 0` with ready work
+    on the board — the failure looking exactly like having nothing to do.
+
+    1. **An empty branch.** A branch cut from the base and never committed to still points AT
+       the base, so it is trivially an ancestor and `reaches` says True. A child that produced
+       nothing marked its item delivered. Counting the branch's own commits does NOT separate
+       the two — once a branch merges, `rev-list base..branch` is 0 for the same reason — so
+       the branch's ancestry is treated as necessary and never sufficient: it needs a receipt
+       that work existed. Wave p48a left GRPH-982/983/984/985 undelegable this way in one wave.
+
+    2. **A sibling PR's attestation.** An attestation says CI ran green on a sha, not that the
+       sha implements this item, and CI attaches receipts by scanning a PR body for item keys —
+       so a PR that merely MENTIONS an id, including to say "this is not that item", leaves a
+       merged sha here. GRPH-955 was made permanently undelegable by two of my own PRs that
+       way, and evidence only appends, so it could not be undone: the work had to be re-filed
+       as GRPH-981 and the item's bounce history was lost. An attestation that NAMES a branch
+       is therefore only believed about that branch. One with no branch recorded is still
+       believed, because refusing it would drop the receipts written before that was recorded.
     """
     if not base or repo is None:
         return False
     from .worktree import reaches as wt_reaches
 
     branch = str(details.get("branch") or "").strip()
+    # COMMIT-BEARING only. A plain `note`, or a `test` receipt with no commit, says nothing
+    # about whether a revision exists — and an item accumulates notes as a matter of course, so
+    # "has evidence" was satisfied by any item anyone had written on. GRPH-983 itself carries
+    # two notes, which would have held its own empty branch gb/p48a-1 under the first version
+    # of this fix.
+    usable = [e for e in (details.get("evidence") or [])
+              if isinstance(e, dict) and str(e.get("commit") or "").strip()
+              and _attested_here(e, branch)]
+
+    # Ancestry is necessary, not sufficient (1): an empty branch is an ancestor too. A receipt
+    # that work existed — a commit recorded for this branch, or this item's PR — is the second
+    # signal, and git cannot supply it.
     if branch and wt_reaches(repo, base, branch) is True:
-        return True
+        if usable or str(details.get("pr") or "").strip():
+            return True
     seen: list[str] = []
-    for entry in details.get("evidence") or []:
-        if not isinstance(entry, dict):
-            continue
+    for entry in usable:
         commit = str(entry.get("commit") or "").strip()
         if not commit or commit in seen:
             continue
