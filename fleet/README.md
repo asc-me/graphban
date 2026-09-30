@@ -259,6 +259,41 @@ publishes the branch and simply has nobody to hand the receipt to. A tree whose 
 uncommitted file was the seat is still not published: `ONLY_CREDENTIAL` is not `SALVAGED`, and
 a pushed empty branch per dead child would make every crash look like work.
 
+### When a branch reaches the reviewer
+
+A child hands work over by moving its item to `review`, and that makes the item visible to
+every reviewer everywhere at once. The push is the supervisor's, and it used to happen at reap —
+when the child *exited*. A bound seat does not exit when it finishes building: PRD-39 D-h tells
+it to review other work in the same process, so its branch stayed local for the rest of that run
+while the item advertised it.
+
+Wave p47f lost that race. A cross-vendor reviewer took GRPH-961 and bounced it for `Branch
+gb/p47f-1 and commit 63b46358 are not on origin` — correctly, since reviewing a diff you cannot
+read is what GRPH-973 prevents — minutes before `origin/gb/p47f-1` was that exact sha and the
+reviewer's own clone fetched it fine. The bounce still went back on the item as a reason that
+reads like a verdict on the work, and still counted against the builder's vendor and model in
+the preference matrix. A reviewer sharing the builder's checkout never sees this, and that is
+usually a same-vendor reviewer, because `until` spawns reviewers with its own `--adapter`: the
+arrangement that earns a `reviewer_diversity` receipt was the one the race broke.
+
+The supervisor now publishes on observing the transition rather than at reap (GRPH-987): each
+watch tick, a still-running child with a commit beyond its base and an item in `review` gets its
+branch pushed and its attempt marked `branch_published`, which is what releases the item to
+`claim_review` (GRPH-754). **A push here is not a proposal.** The refusals that decide whether a
+branch may be proposed at all — undeclared files (GRPH-949) and a base the trunk has moved past
+(GRPH-786) — are measured at reap, so the draft PR still waits for it.
+
+Two lines in the wave report, because an empty `published_in_review` reads as a clean wave
+whether or not anything was ever looked at:
+
+- `REVIEW UNREADABLE <branch>` — an item was in `review` while its branch could not be made
+  readable. A bounce on one of those is not the builder's, and the same fact is appended to the
+  child's `exit_meaning` so the attempt row says so too.
+- `REVIEW UNREADABLE unmeasured` — the ledger could not be asked what was in review, so no
+  observation was made. `ALLOWED_TOOLS` is two reads and `search_items` is not one of them, so
+  this is the normal state for a pure supervisor client; `until` passes the planner, which can
+  read items.
+
 ### Why a wave is not spawning
 
 `--max-workers 3` yielding one running child is a symptom anyone can see. Why, used not to be

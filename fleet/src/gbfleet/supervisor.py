@@ -32,7 +32,7 @@ from . import adopt as adopt_mod
 from . import worktree as wt_mod
 from . import adapters
 from .adapters import explain_exit
-from .client import Graphban, NotPermitted, ServerUnreachable, ToolFailed
+from .client import Graphban, NotPermitted, ProtocolError, ServerUnreachable, ToolFailed
 from . import headroom as headroom_mod
 from gbagent.config import SetupFailed, prepare
 from .headroom import Headroom
@@ -311,6 +311,31 @@ class Wave:
     #: Branches pushed but NOT proposed as a PR, with why (GRPH-949): a change outside every
     #: declared touchpoint, or a base the trunk has moved past. Also in `proposed` as skipped.
     unproposed: dict[str, str] = field(default_factory=dict)
+    #: branch -> the head this wave pushed while its child was STILL RUNNING, because one of
+    #: the child's items had already reached `review` (GRPH-987). Kept apart from `published`,
+    #: which is the reap's: an early push is the one that closes the window a reviewer outside
+    #: this checkout loses, and it happens before there is any diff shape, staleness or
+    #: touchpoint measurement to propose against. Empty means no item reached review ahead of
+    #: its child, which is the ordinary case and not a failure to publish.
+    published_in_review: dict[str, str] = field(default_factory=dict)
+    #: branch -> the items this wave saw in `review` while their branch was NOT readable off
+    #: this machine (GRPH-987). A reviewer handed one of these can only bounce for a reason
+    #: that is not the diff, and that bounce lands on the builder's vendor and model, so the
+    #: exposure is recorded rather than left to be inferred from a bounce_reason. Empty means
+    #: every item seen in review was published before it could be claimed.
+    review_unreadable: dict[str, list[str]] = field(default_factory=dict)
+    #: Set when the ledger could not be asked what is in `review`. "We could not ask" is not
+    #: "nothing was awaiting review", and an empty `review_unreadable` reads as the second —
+    #: the same shape as `stale_unmeasured`, for the same reason.
+    review_unmeasured: str = ""
+    #: branch -> the head already put to the remote by the early publish, whatever it answered
+    #: (GRPH-987). The retry guard, and deliberately not folded into `published_in_review`:
+    #: that one says what a reviewer can read, this one says what has already been asked. A
+    #: watch tick runs every poll interval — every second on `gbfleet mcp` — so without it a
+    #: refused push becomes a `git push` per tick against a remote that already said no, inside
+    #: the loop everything else waits on. One attempt per REVISION: the reap pushes again at the
+    #: end of the wave, so a transient refusal costs the early publish and not the work.
+    review_publish_tried: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -889,6 +914,18 @@ def watch_tick(
     # than its parent. Measured on a real wave: both children's logs were still readable
     # after their worktrees were gone.
     _reap_exited(wave, children, client, base_branch=base_branch)
+    # And then publish for the children the reap skipped because they are STILL ALIVE
+    # (GRPH-987). A bound seat keeps running after it moves its item to review, so waiting for
+    # the reap left the branch local for the rest of that run — long enough for a reviewer in
+    # any other checkout to be handed the item and bounce it for a reason that is not the diff.
+    #
+    # The order is not cosmetic. `_reap_exited` owns a child that has EXITED and does the fuller
+    # job — salvage, touchpoints, receipts — while `_reap_all` at the end of a wave writes the
+    # give-up line and the observe record only for children it reaped itself. Giving this the
+    # first turn put three local git calls ahead of the reap, which was enough wall time for a
+    # child to die mid-tick and be taken by the wrong one of the two: fifteen tests lost their
+    # records. A child that exits during this tick belongs to the reap, exactly as it did before.
+    _publish_in_review(wave, children, client)
     _report_exits(children, client, wave)
     if persist is not None:
         persist()
@@ -1087,6 +1124,140 @@ def _note_touchpoints(wave: Wave, child: Child) -> None:
     # Recomputed over every branch measured so far, so the last reap holds the whole wave's
     # answer — a pairwise check at each reap would miss the pair reaped either side of it.
     wave.collided = tp_mod.overlaps(wave.touched)
+
+
+#: What `exit_meaning` says when this supervisor saw an item in `review` whose branch it could
+#: not make readable (GRPH-987). A bounce for "not on origin" is not a verdict on the diff, but
+#: it is recorded as one against the builder's vendor and model, and the builder's own attempt
+#: row is the one place this process can say so.
+REVIEW_UNREADABLE = "review unreadable"
+
+
+def _ids_in_review(client: Graphban | None) -> set[str] | None:
+    """Every item id the ledger reads `review`, or None when it could not be asked.
+
+    None is NOT the empty set, and the difference is the whole point: both decide "publish
+    nothing" here, but only one is a fact about the board. A supervisor whose client may not
+    read items, or whose server stopped answering, would otherwise report a wave in which
+    nothing was ever awaiting review.
+
+    `fields="lean"` on purpose. This runs on every watch tick beside `_roster`, and the only
+    thing the early publish needs is the id — `until` already reads the full review rows for
+    its own purposes and this is not that read.
+    """
+    if client is None or "search_items" not in client.allowed:
+        return None
+    try:
+        payload = client.call("search_items", status="review", fields="lean", limit=10_000)
+    except (NotPermitted, ToolFailed, ServerUnreachable, ProtocolError):
+        # All four of `client`'s errors, because this runs on every watch tick: a reply this
+        # process cannot parse must cost one observation, not the wave.
+        return None
+    rows = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return None
+    return {str(r["id"]) for r in rows if isinstance(r, dict) and r.get("id")}
+
+
+def _publish_in_review(wave: Wave, children: Sequence[Child],
+                       client: Graphban | None) -> None:
+    """Push a RUNNING child's branch the moment one of its items reaches `review` (GRPH-987).
+
+    `_publish` runs at reap, and reap runs when the child EXITS. A bound seat does not exit
+    when it finishes building: it is told to review other work in the same process (PRD-39
+    D-h), so the branch it committed stayed local for the rest of that run while its item sat
+    in `review` advertising it. Wave p47f lost exactly that race — `gb/p47f-1` at `63b46358`
+    was bounced by a cursor-agent reviewer for "not on origin", and minutes later
+    `origin/gb/p47f-1` was the same sha and the reviewer's own clone fetched it fine.
+
+    The item's status is the signal, not the existence of commits. Pushing a branch a child is
+    still building would publish half-work; a child says it is done by moving the item, and
+    that is what this waits for.
+
+    **A push here is not a proposal.** `_propose` stays at reap because the refusals that
+    decide whether a branch may be proposed at all — UNDECLARED files (GRPH-949) and a base
+    the trunk has moved past (GRPH-786) — are measured there, and neither measurement exists
+    yet. An early push puts the work where a reviewer can read it and asks nobody to merge it.
+
+    Cheap by construction: the ledger is not asked until some running child has a commit beyond
+    its base that this wave has not already published, so an idle tick costs two local git calls
+    and no network.
+    """
+    pending = [c for c in children
+               if c.running and c.base and c.branch and c.worktree is not None]
+    if not pending:
+        return
+    unpublished = []
+    for child in pending:
+        try:
+            repo = _repo_of(child)
+            # Nothing beyond the base is nothing to publish, so it is also nothing to ask the
+            # ledger about. Without this gate a wave of freshly cut children read the review
+            # queue on every poll interval and found nothing to do with it.
+            if not wt_mod.commits_beyond_base(repo, child.branch, child.base):
+                continue
+            head = _branch_head(repo, child.branch)
+        except Exception as exc:  # noqa: BLE001 — reported, never fatal to the watch loop
+            _note_once(wave, f"{child.branch}: could not resolve its tree ({exc})")
+            continue
+        if not head or wave.review_publish_tried.get(child.branch) == head:
+            continue
+        unpublished.append((child, repo, head))
+    if not unpublished:
+        return
+
+    in_review = _ids_in_review(client)
+    if in_review is None:
+        wave.review_unmeasured = ("this supervisor may not read items, or the server did not "
+                                  "answer, so an item awaiting review could not be published "
+                                  "early")
+        return
+    if not in_review:
+        return
+
+    for child, repo, head in unpublished:
+        items = [i for i in (child.held_items or []) if i and i in in_review]
+        if not items:
+            continue
+        wave.review_publish_tried[child.branch] = head
+        try:
+            pushed = wt_mod.push_branch(repo, child.branch, child.base)
+        except Exception as exc:  # noqa: BLE001 — a failed publish is reported, never fatal
+            _note_once(wave, f"{child.branch}: publish on review failed ({exc})")
+            wave.review_unreadable[child.branch] = list(items)
+            continue
+        wave.published[child.branch] = pushed
+        if pushed.ok:
+            wave.published_in_review[child.branch] = head
+            wave.review_unreadable.pop(child.branch, None)
+            # The release, and only on a real push: `publish_pending` withholds the item from
+            # `claim_review` until this lands, so posting it for a branch that did not reach
+            # the remote would hand a reviewer exactly the 404 it exists to prevent.
+            if client is not None and child.seat_id:
+                client.post_attempt(enrolment_id=child.seat_id, branch_published=True)
+        else:
+            # `skipped` is a real outcome and not a failure — a branch at its base has nothing
+            # to publish, and there is no remote is the honest answer where there is none. Both
+            # still leave an item in `review` that only this machine can read, which is the
+            # exposure worth recording and is not the same claim as a clean publish.
+            wave.review_unreadable[child.branch] = list(items)
+            if not pushed.skipped:
+                _note_once(wave, f"{child.branch}: {pushed.reason}")
+
+
+def _note_once(wave: Wave, line: str) -> None:
+    """Append a failure line unless this BRANCH already has one.
+
+    Deduped per branch rather than per message, and that is a deliberate loss: the watch tick
+    runs every poll interval and these conditions do not change between ticks, so an unguarded
+    append turns one refused push into a page of identical FAILED lines — which is how the real
+    failure beside them gets buried. `_note_lease_moved` dedupes per item for the same reason.
+    A second, different complaint about one branch's publish waits for the report.
+    """
+    branch = line.split(":", 1)[0]
+    if any(f.startswith(f"{branch}:") for f in wave.failures):
+        return
+    wave.failures.append(line)
 
 
 def _publish(wave: Wave, tree: Worktree, *, client: Graphban | None = None,
@@ -1665,24 +1836,44 @@ def _report_exits(children: list[Child], client: Graphban, wave: "Wave | None" =
             binary_version=child.binary_version or None,
             wall_seconds=int(time.monotonic() - child.started_at),
             turn_budget=child.turn_budget,
-            exit_meaning=_exit_meaning(child, code),
+            exit_meaning=_exit_meaning(
+                child, code,
+                unreadable=(wave.review_unreadable.get(child.branch)
+                            if wave is not None else None)),
             diff_shape=child.diff_shape,
             **facts,
         )
 
 
-def _exit_meaning(child: Child, code: int | None) -> str:
+def _exit_meaning(child: Child, code: int | None, *,
+                  unreadable: list[str] | None = None) -> str:
     """What the adapter says its exit code means, or the reason this supervisor stopped it.
 
     The supervisor's own reason wins when it has one: a child killed for running past the
     wall clock exits with whatever the signal produced, and reporting that number as the
     vendor's verdict would attribute the supervisor's decision to the harness.
+
+    `unreadable` appends the one thing only this process knows (GRPH-987): that an item this
+    child built was in `review` while its branch could not be read off this machine. A
+    reviewer handed that item can only bounce for a reason that is not the diff, and the
+    bounce lands on the builder's vendor and model as a failed attempt. Nothing here can
+    un-record it — the outcome is the server's, derived from the delegation — but the attempt
+    row is this process's to describe, and a reader who finds the bounce there can now tell an
+    environmental one from a verdict. Truncated to the column's width: `exit_meaning` is
+    VARCHAR(256) on Postgres, and a long item list must not turn a measurement into a failed
+    post.
     """
     if child.stopped_because is not None:
-        return f"stopped: {child.stopped_because.value}"
-    if code is None:
-        return ""
-    return explain_exit(child.adapter, code) or ("ok" if code == 0 else f"exit {code}")
+        meaning = f"stopped: {child.stopped_because.value}"
+    elif code is None:
+        meaning = ""
+    else:
+        meaning = explain_exit(child.adapter, code) or ("ok" if code == 0 else f"exit {code}")
+    if unreadable:
+        names = ", ".join(list(unreadable)[:3])
+        note = f"{REVIEW_UNREADABLE}: {names} in review before its branch was readable"
+        meaning = f"{meaning}; {note}" if meaning else note
+    return meaning[:256]
 
 
 def _wait_out(

@@ -520,6 +520,16 @@ def report(wave: Wave, out=None) -> None:
         print(f"BEHIND {branch}: cut from a base {behind} commit(s) behind {ref}", file=out)
     if wave.stale_unmeasured:
         print(f"BEHIND unmeasured: {wave.stale_unmeasured}", file=out)
+    # THE REVIEWER'S OTHER PRECONDITION (GRPH-987). `BEHIND` says the diff is against a stale
+    # world; this says there was no diff to read at all — an item in `review` whose branch never
+    # reached the remote. A bounce for that is not a verdict on the work, but it is recorded as
+    # one against the builder's vendor and model, so the exposure is printed where an operator
+    # can see it rather than left to be inferred from the bounce_reason.
+    for branch, items in sorted(wave.review_unreadable.items()):
+        print(f"REVIEW UNREADABLE {branch}: {', '.join(items)} in review, branch not on the "
+              f"remote — a bounce here is not the builder's", file=out)
+    if wave.review_unmeasured:
+        print(f"REVIEW UNREADABLE unmeasured: {wave.review_unmeasured}", file=out)
     for line in wave.lease_moved:
         print(f"LEASE MOVED {line}", file=out)
     for key, seconds in sorted(wave.silent.items()):

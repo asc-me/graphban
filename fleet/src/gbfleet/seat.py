@@ -213,13 +213,43 @@ COMMIT = (
 )
 
 
+#: GRPH-987. The reviewer half of the same race. A child says its work is done by moving the
+#: item to `review`, which makes it visible to every reviewer everywhere — but the branch is
+#: pushed by its supervisor, and until `_publish_in_review` that happened at reap, i.e. when the
+#: child exited. A reviewer in any other checkout could win that race, and on wave p47f one did:
+#: a cursor-agent reviewer bounced GRPH-961 for "Branch gb/p47f-1 and commit 63b46358 are not on
+#: origin", minutes before `origin/gb/p47f-1` was that exact sha and its own clone fetched it
+#: fine.
+#:
+#: The refusal to review a diff it cannot read is right and stays right (GRPH-973). What is wrong
+#: is the channel it travels down: `bounce` puts the item back in `next` with a `bounce_reason`
+#: that reads like a verdict on the work, a later reader cannot tell the difference, and the
+#: preference matrix counts it as a failed attempt for the BUILDER's vendor and model. An
+#: environmental failure degrades the measured quality of whichever harness happened to be
+#: building.
+#:
+#: Like BOUNDARY and DEPENDENCY this is a sentence and not a control — a model that ignores it is
+#: not stopped by it. The control is the supervisor publishing the branch the moment it sees the
+#: item reach `review`, which closes the window instead of asking anybody to behave inside it.
+#: This is what to do in the window that is left: a push that failed, a supervisor that died, or
+#: a reviewer that reached the item inside one poll interval.
+NOT_YET = (
+    "If an item handed to you in review names a branch or commit you cannot fetch from the "
+    "remote, that is NOT a verdict on the work — its builder's supervisor publishes the branch, "
+    "and you may have reached the item first. Do not `bounce` for it: a bounce is recorded as a "
+    "failed attempt against the builder's vendor and model, and it reads later as a judgement on "
+    "the diff. Leave the item in `review`, say in your output that the revision was not readable, "
+    "and take the next one.\n"
+)
+
+
 INSTRUCTION = (
     "Register with `register_agent` using enrolment_code={code!r}, worktree={worktree!r} "
     "and branch={branch!r}.\n"
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY + COMMIT +
+    + BOUNDARY + DEPENDENCY + COMMIT + NOT_YET +
     "Call claim_review with wait_seconds=0. If there is nothing to review, call "
     "claim_cluster with wait_seconds=0 to take the next ready non-colliding cluster. "
     "EXIT when both are empty — exiting on an empty queue is the normal end of your "
@@ -237,7 +267,7 @@ BOUND_INSTRUCTION = (
     "You are a SEPARATE PROCESS, not a subagent. Do NOT set parent_agent_id — you have "
     "no parent. Declaring one would make you and your reviewer count as one call tree, "
     "and review across this fleet would stop meaning anything.\n"
-    + BOUNDARY + DEPENDENCY + COMMIT +
+    + BOUNDARY + DEPENDENCY + COMMIT + NOT_YET +
     "This seat is BOUND to {item}: registering on it claims that item for you. Read the "
     "reply's `assigned`. If `assigned.state` is `claimed`, you HOLD {item} — read it with "
     "get_item_details, build it, COMMIT it, then move it to review with evidence. Then, "
