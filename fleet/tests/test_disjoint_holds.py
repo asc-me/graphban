@@ -34,9 +34,9 @@ class _Planner:
         raise AssertionError(tool)
 
 
-def _item(key, status, touchpoints, branch=""):
+def _item(key, status, touchpoints, branch="", pr=""):
     return {"id": key, "status": status, "touchpoints": touchpoints, "branch": branch,
-            "brief": BRIEF, "evidence": []}
+            "brief": BRIEF, "evidence": [], "pr": pr}
 
 
 def test_two_named_files_in_one_directory_do_not_collide():
@@ -64,7 +64,7 @@ def test_a_merged_member_holds_only_its_own_files(tmp_path: Path, monkeypatch):
     planner = _Planner(
         [{"items": ["MERGED", "SIB"]}],
         {"MERGED": _item("MERGED", "next", ["web/src/CueQueue.tsx", "web/src/styles/queue.css"],
-                         branch="gb/merged"),
+                         branch="gb/merged", pr="https://github.com/o/r/pull/1"),
          "SIB": _item("SIB", "next", ["web/src/NeedsYou.tsx", "web/src/styles/needs.css"],
                       branch="gb/sib")},
     )
@@ -82,7 +82,7 @@ def test_a_sibling_that_shares_a_file_stays_held(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(wt, "reaches", lambda repo, base, ref: ref == "gb/merged")
     planner = _Planner(
         [{"items": ["MERGED", "SIB"]}],
-        {"MERGED": _item("MERGED", "next", ["web/src/CueQueue.tsx"], branch="gb/merged"),
+        {"MERGED": _item("MERGED", "next", ["web/src/CueQueue.tsx"], branch="gb/merged", pr="https://github.com/o/r/pull/1"),
          "SIB": _item("SIB", "next", ["web/src/CueQueue.tsx", "web/src/Other.tsx"],
                       branch="gb/sib")},
     )
