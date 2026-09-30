@@ -158,6 +158,14 @@ class Report:
             # and leases a reaped child no longer held (info, not failures).
             "unproposed": dict(self.wave.unproposed) if self.wave else {},
             "lease_moved": list(self.wave.lease_moved) if self.wave else [],
+            # GRPH-987: what this wave pushed while the child was STILL RUNNING because its item
+            # had already reached `review`, and the items it saw in review with nothing readable
+            # off this machine. Both always present and empty by default, so "no item reached
+            # review early" cannot be read as "the check did not run" — and `review_unmeasured`
+            # is the third answer, for a ledger that could not be asked at all.
+            "published_in_review": dict(self.wave.published_in_review) if self.wave else {},
+            "review_unreadable": dict(self.wave.review_unreadable) if self.wave else {},
+            "review_unmeasured": self.wave.review_unmeasured if self.wave else "",
         }
         if self.detail:
             payload["detail"] = self.detail
