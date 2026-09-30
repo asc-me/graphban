@@ -1259,14 +1259,19 @@ def _attested_here(entry: dict, branch: str) -> bool:
     """
     if not branch:
         return True
-    named = ""
-    for pred in entry.get("predicates") or []:
-        if not isinstance(pred, dict):
-            continue
-        found = re.search(r"CI passed on (\S+) at ", str(pred.get("detail") or ""))
-        if found:
-            named = found.group(1)
-            break
+    named = str(entry.get("branch") or "").strip()
+    if not named:
+        # Receipts written before the field existed carry the ref only in the predicate prose.
+        # Read as a fallback, never as the primary: a consumer that depended on this regex
+        # would read every receipt as unnamed after a wording change, and unnamed is the
+        # BELIEVED case — the guard would switch itself off silently.
+        for pred in entry.get("predicates") or []:
+            if not isinstance(pred, dict):
+                continue
+            found = re.search(r"CI passed on (\S+) at ", str(pred.get("detail") or ""))
+            if found:
+                named = found.group(1)
+                break
     return not named or named == branch
 
 
@@ -1306,8 +1311,14 @@ def _already_in_base(details: dict, repo: Path | None, base: str) -> bool:
     from .worktree import reaches as wt_reaches
 
     branch = str(details.get("branch") or "").strip()
+    # COMMIT-BEARING only. A plain `note`, or a `test` receipt with no commit, says nothing
+    # about whether a revision exists — and an item accumulates notes as a matter of course, so
+    # "has evidence" was satisfied by any item anyone had written on. GRPH-983 itself carries
+    # two notes, which would have held its own empty branch gb/p48a-1 under the first version
+    # of this fix.
     usable = [e for e in (details.get("evidence") or [])
-              if isinstance(e, dict) and _attested_here(e, branch)]
+              if isinstance(e, dict) and str(e.get("commit") or "").strip()
+              and _attested_here(e, branch)]
 
     # Ancestry is necessary, not sufficient (1): an empty branch is an ancestor too. A receipt
     # that work existed — a commit recorded for this branch, or this item's PR — is the second

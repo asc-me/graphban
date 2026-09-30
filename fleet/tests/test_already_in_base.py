@@ -160,3 +160,90 @@ def test_an_attestation_naming_no_branch_is_still_believed(git_repo: Path):
     details = {"branch": "gb/mine-3", "evidence": [{"kind": "sabotage", "commit": mine}]}
 
     assert _already_in_base(details, git_repo, base) is True
+
+
+# ---- bounce 1: a receipt has to be commit-bearing ----------------------------------------
+#
+# The reviewer of PR #901 probed the head with reaches=True and found the second signal was
+# satisfied by anything at all:
+#
+#   empty branch + no evidence        -> False   (the reported defect, fixed)
+#   empty branch + one `note`         -> True    (still broken)
+#   empty branch + `test`, no commit  -> True    (still broken)
+#
+# An item accumulates notes as a matter of course, so "has evidence" is true of almost every
+# item that anyone has written on. GRPH-983 itself carries two notes, so its own empty branch
+# gb/p48a-1 would still have been held by the fix meant to release it.
+
+
+def test_a_plain_note_is_not_evidence_that_a_revision_exists(git_repo: Path):
+    """THE BOUNCE. A note is prose somebody typed; it says nothing about whether work was
+    committed. Every item picks these up, which is what made the first version of this fix
+    hold the very items it was written to release."""
+    _empty_branch(git_repo, "gb/noted")
+
+    details = {"branch": "gb/noted", "evidence": [{"kind": "note", "detail": "looked at it"}]}
+
+    assert _already_in_base(details, git_repo, _base(git_repo)) is False
+
+
+def test_a_test_receipt_with_no_commit_is_not_evidence_either(git_repo: Path):
+    """The reviewer's third probe. `test` receipts usually carry counts, not revisions — "4582
+    passed" is not a revision anyone can read."""
+    _empty_branch(git_repo, "gb/tested")
+
+    details = {"branch": "gb/tested",
+               "evidence": [{"kind": "test", "detail": "4582 passed, 34 skipped"}]}
+
+    assert _already_in_base(details, git_repo, _base(git_repo)) is False
+
+
+def test_a_commit_bearing_receipt_on_this_branch_is_evidence(git_repo: Path):
+    """The control: narrowing to commit-bearing receipts must not throw away the real case."""
+    base = _base(git_repo)
+    head = _commit_on(git_repo, "gb/real", "r.txt")
+    _git(git_repo, "merge", "-q", "--no-ff", "-m", "merge real", "gb/real")
+
+    details = {"branch": "gb/real", "evidence": [{"kind": "test", "commit": head}]}
+
+    assert _already_in_base(details, git_repo, base) is True
+
+
+# ---- bounce 2: the ref is a field, not prose ---------------------------------------------
+
+def test_the_ref_is_read_from_the_field_not_the_prose(git_repo: Path):
+    """The reviewer noted the discrimination read `CI passed on <ref> at` out of the predicate
+    detail. `attest_ci` now writes the ref as a field and this reads that first.
+
+    Why it matters more than tidiness: an unnamed receipt is the BELIEVED case, so a wording
+    change in the prose would make every receipt read as unnamed and switch the guard off
+    silently — the exact shape of defect this item is about."""
+    base = _base(git_repo)
+    sibling = _commit_on(git_repo, "gb/sib", "s.txt")
+    _git(git_repo, "merge", "-q", "--no-ff", "-m", "merge sib", "gb/sib")
+    _empty_branch(git_repo, "gb/mine-4")
+
+    # No prose at all — only the field. The old regex would have read this as unnamed.
+    details = {"branch": "gb/mine-4",
+               "evidence": [{"kind": "attestation", "commit": sibling, "branch": "gb/sib",
+                             "predicates": [{"name": "suite_green", "passed": True,
+                                             "detail": "the suite passed"}]}]}
+
+    assert _already_in_base(details, git_repo, base) is False
+
+
+def test_the_prose_fallback_still_reads_older_receipts(git_repo: Path):
+    """Receipts written before the field existed carry the ref only in the detail, and there
+    are plenty of them on this board. Dropping the fallback would make every one of them
+    unnamed, which is believed — so the guard would weaken, not break loudly."""
+    base = _base(git_repo)
+    sibling = _commit_on(git_repo, "gb/sib-2", "s2.txt")
+    _git(git_repo, "merge", "-q", "--no-ff", "-m", "merge sib-2", "gb/sib-2")
+    _empty_branch(git_repo, "gb/mine-5")
+
+    details = {"branch": "gb/mine-5",
+               "evidence": [{"kind": "attestation", "commit": sibling,
+                             "predicates": [{"name": "suite_green", "passed": True,
+                                             "detail": f"CI passed on gb/sib-2 at {sibling[:12]}"}]}]}
+
+    assert _already_in_base(details, git_repo, base) is False

@@ -128,6 +128,11 @@ def attestation(*, commit: str, branch: str, run_url: str = "") -> dict:
         "kind": "attestation",
         "adapter": "github-actions",
         "commit": commit,
+        # GRPH-983: the ref as a FIELD, not only inside the predicate prose. A consumer that
+        # has to regex `CI passed on <ref> at` is one rename away from silently reading every
+        # receipt as unnamed — and "unnamed" is the believed case, so the failure would be a
+        # guard quietly switching itself off.
+        "branch": branch,
         "run_ref": run_url,
         "predicates": [{
             "name": "suite_green",
