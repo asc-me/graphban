@@ -336,6 +336,18 @@ MUST_NOT_FIRE = {
     "a migration": (
         "Add enrolments.prd_id (nullable) and set it at mint time. Prove the Alembic chain "
         "from empty on Postgres."),
+    # GRPH-989. `render` is a platform name AND the ordinary English verb for what a UI does,
+    # and the rule matched it followed by any lowercase word. These three sentences refused a
+    # Settings panel three times in one day: the item being built, a note explaining the trap,
+    # and GRPH-989 itself, which had to quote the phrase in order to report it.
+    "UI prose about rendering": (
+        "A failed status read must not render as \"off\". Off and unknown are different "
+        "states, and this repo ships the wrong one by default."),
+    "a confident zero while pending": (
+        "The counts render a confident 0 while the request is still pending, so a slow read "
+        "and an empty project look the same."),
+    "an em dash instead of a number": (
+        "An unavailable counter should render an em dash rather than a zero."),
 }
 
 
@@ -350,6 +362,35 @@ def test_it_stays_quiet_on_ordinary_work(name):
     """`vercel logs` and `kubectl get` are how a worker investigates. Refusing reads would make
     this fire on every diagnostic, and the acknowledgement would become reflex."""
     assert not reach_svc.signals(MUST_NOT_FIRE[name]), name
+
+
+def test_a_platform_name_used_as_english_is_not_a_command():
+    """GRPH-989, stated as the discriminator rather than as three examples. An infrastructure
+    subcommand is a verb or a noun — `deploy`, `up`, `apply`, `variables`. It is never `as`,
+    `the` or `it`. A function word after the platform name means the sentence is using the word
+    as English, which is the whole difference between "render as" and "render deploy"."""
+    assert not reach_svc.signals("must not render as off")
+    assert not reach_svc.signals("we render the page")
+    assert not reach_svc.signals("it will render it twice")
+
+    assert reach_svc.signals("render deploy"), "a real subcommand must still fire"
+
+
+def test_the_guard_is_not_weakened_into_uselessness():
+    """The other half, and the reason the fix is a stop-list of GRAMMAR rather than a longer
+    exception list: every command shape that mattered before must still refuse. Sabotage: add
+    `deploy` or `up` to `_NOT_SUBCOMMANDS` and these fail."""
+    for command in ("render deploy", "fly launch", "fly deploy", "railway up",
+                    "kubectl apply -f k8s/api.yaml", "vercel promote", "wrangler publish",
+                    "Run `railway up` to ship it"):
+        assert reach_svc.signals(command), command
+
+
+def test_reading_subcommands_are_still_quiet():
+    """The original half of the stop-list, pinned so extending it cannot drop it: `vercel logs`
+    and `kubectl get` are how a worker investigates."""
+    for reading in ("vercel logs", "kubectl get pods", "railway status", "fly version"):
+        assert not reach_svc.signals(reading), reading
 
 
 def test_a_match_is_scoped_to_one_line():
