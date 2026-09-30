@@ -81,6 +81,25 @@ def test_the_same_item_named_twice_is_attested_once():
     assert keys == ["GRPH-1"]
 
 
+def test_the_receipt_records_how_the_item_was_matched():
+    """GRPH-992's shippable half: provenance, with no change to WHICH items are attested.
+
+    `explicit` means a human named it in an `Attests:` line. `prose` means it was found by
+    scanning, which is the weaker claim — scanning cannot tell an implementation from a
+    reference, and that is how GRPH-955 acquired receipts from two PRs that named it only to
+    say what they were NOT. A reader seeing `prose` now has something to go on.
+
+    Whether prose should be a source AT ALL remains GRPH-992: removing it means a PR with no
+    `Attests:` line mints nothing, the completion gate refuses `done` without an attestation,
+    and eight tests here encode the current behaviour. That is a product decision."""
+    assert attest_ci.matched_by("Attests: GRPH-1") == "explicit"
+    assert attest_ci.matched_by("Fixes GRPH-1") == "prose"
+
+    receipt = attest_ci.attestation(commit="a" * 40, branch="gb/grph-1", matched="prose")
+    assert receipt["matched"] == "prose"
+    assert receipt["branch"] == "gb/grph-1", "the ref is a field, not only prose (GRPH-983)"
+
+
 # ---- what the receipt claims ---------------------------------------------------------
 
 def test_the_receipt_names_the_one_thing_ci_checked():
