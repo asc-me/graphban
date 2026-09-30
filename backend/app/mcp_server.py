@@ -804,13 +804,21 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "release_item",
-        "description": "Return a claimed item to the queue (e.g. you can't finish it); moves it back to `next` by default.",
+        # Cut from a 236-char draft that spelled out the unfetchable-branch case, per the
+        # GRPH-988 procedure (trim your own description before asking the budget for room).
+        # What survives is the two things a caller cannot get from the schema: that a REVIEW
+        # claim does NOT go to `next`, and that handing one back is not a bounce.
+        "description": (
+            "Hand back a hold. A BUILD claim goes to `next`; a REVIEW claim STAYS in `review` — "
+            "not a bounce, nothing counted against its builder. `reason` is recorded on the item."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "id": {"type": "string"},
                 "agent_id": {"type": "string"},
                 "to_status": {"type": "string", "enum": items_svc.STATUSES},
+                "reason": {"type": "string"},
             },
             "required": ["id"],
         },
@@ -3038,7 +3046,9 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
     if name == "release_item":
         _scoped_item(db, args["id"], allowed)
         agent = fleet_svc.caller_identity(args.get("agent_id"), key)
-        item = items_svc.release_item(db, args["id"], agent, to_status=args.get("to_status", "next"))
+        item = items_svc.release_item(db, args["id"], agent,
+                                      to_status=args.get("to_status", "next"),
+                                      reason=args.get("reason"))
         if item is None:
             raise errors.Conflict(
                 f"not the lease holder for {args['id']!r}",

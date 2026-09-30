@@ -2184,12 +2184,50 @@ def heartbeat(db: Session, item_id: str, agent_id: str,
     return item
 
 
-def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "next") -> Item | None:
+def _record_handback(db: Session, item: Item, agent_id: str, reason: str | None,
+                     *, review: bool) -> None:
+    """Record a hold handed back UNDECIDED, on the item (GRPH-991).
+
+    This is the control behind "an unreadable revision is not a bounce". A reviewer whose fetch
+    of the branch 404s has two verbs, and until now the manifest advertised one of them:
+    `bounce`, which returns the item to `next` AND writes `outcome="bounced"` into the builder's
+    cell of the preference matrix — so a supervisor that had not published the branch yet was
+    charged to the vendor that built the work. GRPH-987's fleet brief tells a reviewer NOT_YET
+    instead, but a sentence in a prompt is not a control: the server has to make the
+    non-punitive outcome reachable and legible, or the punitive one stays the default.
+
+    Deliberately NOT a `harness.record_review_verdict` value. `_recompute_check` treats every
+    verdict that is not `bounced` as a sign-off, so a third verdict in there would certify an
+    undecided review as a confirmed one — the absence reading as clean, wearing the clothes of
+    the thing that removes it. Nor a `delegation.on_outcome`: an outcome CLOSES the attempt, and
+    this attempt has not ended, it has been handed to somebody else.
+
+    Written as `evidence`, not a new column: it is a receipt about the work, which is what that
+    field already holds, and it is the first thing the next reviewer reads. `review_takes` is
+    left alone on purpose — it counts takes without a verdict, and this is one of them.
+    """
+    text = (reason or "").strip()
+    if not text:
+        # Optional, and stays optional. A reviewer that correctly refused an item (its own work,
+        # say) has no reason to give, and requiring one would send it back to the only verb that
+        # does not ask — `bounce`, the punitive one. The count survives either way.
+        return
+    item.evidence = append_evidence(item.evidence, [{
+        "kind": "note",
+        "detail": f"{'NOT YET' if review else 'RELEASED'} ({agent_id}): {text}",
+    }])
+
+
+def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "next",
+                 reason: str | None = None) -> Item | None:
     """Give a claimed item back to the queue. Returns the item, or None if not the holder.
 
     Also drops the item's area reservations (PRD-17 D-d). They expire lazily anyway, but an
     area held for the rest of a lease that nobody is editing is a cluster the divvy will not
     hand out — so the fleet would idle for up to ten minutes on work that had already stopped.
+
+    `reason` is recorded on the item either way it is handed back, so the argument is never
+    silently dropped — see `_record_handback`.
     """
     from app.services import fleet as fleet_svc
 
@@ -2201,9 +2239,14 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
     # reviewer that correctly refused an item (its own work, say) was stuck holding it for a
     # full lease while `claim_review` handed it the same item on every call (GRPH-429).
     # Releasing whichever hold the caller actually has keeps one release verb instead of two.
+    #
+    # It returns BEFORE `on_outcome` and before any verdict, which is what makes it the
+    # non-punitive path (GRPH-991): the item stays in `review` for the next reviewer and
+    # nothing at all is written about its builder.
     if item.review_claimed_by == agent_id and item.claimed_by != agent_id:
         item.review_claimed_by = None
         item.review_claimed_at = None
+        _record_handback(db, item, agent_id, reason, review=True)
         db.commit()
         db.refresh(item)
         return item
@@ -2253,6 +2296,12 @@ def release_item(db: Session, item_id: str, agent_id: str, to_status: str = "nex
     if (item.built_by == agent_id and item.claimed_at
             and item.updated_at <= item.claimed_at and not reserved):
         item.built_by = None
+    # AFTER the authorship decision, never before: a handback note is a write to `evidence`, so
+    # it moves `updated_at`, and the test above reads `updated_at` to decide whether this agent
+    # wrote anything at all. Recording first would let an agent that claimed, typed a reason and
+    # wrote no code keep the authorship — and with `built_by` set, `independent()` bars it from
+    # reviewing the item it just handed back (GRPH-434/435).
+    _record_handback(db, item, agent_id, reason, review=False)
     item.claimed_by = None
     item.claimed_at = None
     item.assignee = ""

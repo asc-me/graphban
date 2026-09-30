@@ -1131,15 +1131,25 @@ export function FleetView() {
                       exactly like progress, so a review that had stalled and one under way
                       were the same row — the deployed diagnosis needed a database query to
                       tell them apart. A holder reporting anything but `reviewing` while
-                      holding a claim is the contradiction worth showing, not hiding. */}
-                  {r.reviewed_by && (
+                      holding a claim is the contradiction worth showing, not hiding.
+                      A LAPSED hold renders too, and says so (GRPH-991): a claim now expires
+                      when its holder stops heartbeating, which makes `reviewed_by` null for
+                      both "free, nobody has opened it" and "free, its reviewer died". Those
+                      are not the same claim, and rendering nothing for the second is the
+                      absence reading as clean in the one place an operator looks. */}
+                  {(r.reviewed_by || r.lapsed_holder) && (
                     <span data-testid="review-hold"
                           className={cn("font-mono text-[11px]",
                                         r.holder_state === "reviewing"
                                           ? "text-faint"
                                           : "text-[color:var(--color-st-blocked)]")}>
-                      {r.reviewed_by} · {Math.floor((r.held_for_seconds ?? 0) / 60)}m
-                      {r.holder_state !== "reviewing" && ` · ${r.holder_state}`}
+                      {r.reviewed_by
+                        ? `${r.reviewed_by} · ${Math.floor((r.held_for_seconds ?? 0) / 60)}m`
+                        : `${r.lapsed_holder} · hold lapsed`}
+                      {/* Guarded on truthiness, not just on `!== "reviewing"`: a lapse on the
+                          clock has no agent state to report, and the unguarded version
+                          rendered the string "null" beside it. */}
+                      {r.holder_state && r.holder_state !== "reviewing" && ` · ${r.holder_state}`}
                     </span>
                   )}
                   {/* TAKEN N TIMES, NO VERDICT. A hold that lapses and is immediately
