@@ -261,7 +261,7 @@ somebody's long-lived key, and revoking it would be a surprise that button never
 | GET | `/api/roadmap` | JWT | Phases + milestones + progress |
 | GET | `/api/links` | JWT | Typed links |
 | GET | `/api/mcp/tools` | JWT | Tool schemas + live call counts |
-| GET | `/api/usage` | JWT | The Usage page's one aggregate (PRD-47 S14) over every project the caller can read: KPIs with deltas and sparklines, a per-project stacked series, the by-project table, and plan limits (`declared: false` on self-host, never a fake zero). `coverage` is `partial` when agent-call retention is shorter than the range. `range_days` is 7, 30 or 90 (anything else falls back to 30); `format=csv` exports the by-project table only |
+| GET | `/api/usage` | JWT | The Usage page's one aggregate (PRD-47 S14) over every project the caller can read: KPIs with deltas and sparklines, a per-project stacked series, the by-project table, plan limits (`declared: false` on self-host, never a fake zero), and `model_usage` — spawns, tokens and estimated cost per harness and model, from PRD-38 attempt records. There `tokens` is `null` for a pair nobody measured and `cost_usd` is `null` when no list price matches, while `0` is reserved for local compute that really is free, and `tokens_reported` is the count each sum rests on. `coverage` is `partial` when agent-call retention is shorter than the range. `range_days` is 7, 30 or 90 (anything else falls back to 30); `format=csv` exports the by-project table only |
 
 ## Platform & integrations
 
