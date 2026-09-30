@@ -72,6 +72,7 @@ import type {
   RequestItem,
   RoadmapPhase,
   CandidateJudge,
+  JudgeStatus,
   ScoredCandidate,
   AssistantThread,
   AssistantThreadDetail,
@@ -630,6 +631,9 @@ export const api = {
     request<Shard>(`/memory/shards/${id}/undo-auto`, { method: "POST" }),
   judgeShard: (id: string) =>
     request<CandidateJudge>(`/memory/shards/${id}/judge`, { method: "POST" }),
+  // GRPH-995: whether the judge this project asked for can actually answer.
+  judgeStatus: (projectId?: string) =>
+    request<JudgeStatus>(`/memory/judge-status${projectId ? `?project_id=${projectId}` : ""}`),
 
   harness: (projectId: string, opts: { windowDays?: number; versions?: "current" | "all" } = {}) => {
     const q = new URLSearchParams({ project_id: projectId });
