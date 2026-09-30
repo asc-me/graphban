@@ -811,9 +811,10 @@ def _decider_keep_state(text: str) -> dict:
     return {"instructions": _JUDGE_SYSTEM, "note": text, "question": _JUDGE_QUESTION}
 
 
-def _decider_judge(resolved, shard: MemoryShard) -> tuple[dict | None, str]:
+def _decider_judge(db: Session, resolved, shard: MemoryShard) -> tuple[dict | None, str]:
     """Keep/quality via D6's questions and D7's abstain band (PRD-45 S3)."""
     from app.providers import llm_meter
+    from app.services import platform as platform_svc
 
     text = " ".join((shard.text or "").split())
     try:
@@ -822,8 +823,13 @@ def _decider_judge(resolved, shard: MemoryShard) -> tuple[dict | None, str]:
                 state=_decider_keep_state(text),
                 questions=_decider_keep_questions(),
             )
-    except Exception:  # noqa: BLE001 — a model outage must not fail the memory write
+    except Exception as exc:  # noqa: BLE001 — a model outage must not fail the memory write
         logger.exception("decider judge: decide call failed")
+        # The row said `valid` because the probe only asks about health. Record that it was
+        # actually asked and did not answer, or nothing downstream can tell this decider
+        # from a working one (GRPH-995).
+        platform_svc.note_decide_failure(
+            db, resolved.credential_id, f"{type(exc).__name__}: {exc}")
         return None, "error"
     keep_ans = (decision.answers or {}).get("keep")
     if keep_ans is None:
@@ -902,6 +908,7 @@ def _decider_review_judge(
 ) -> tuple[dict | None, str]:
     """Grounded / ready / contradicts on the decider (PRD-45 D6 review pass)."""
     from app.providers import llm_meter
+    from app.services import platform as platform_svc
 
     pubs = [
         (s.id, s.text) for s in list_shards(db, project_id=shard.project_id, status="published")
@@ -921,8 +928,13 @@ def _decider_review_judge(
                 state=context,
                 questions=_decider_review_questions(pubs),
             )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.exception("decider review: decide call failed")
+        # Same recording as the keep/quality path: this is the call the Memory review page
+        # depends on, so a failure here that only shows as one ungraded row leaves the page
+        # looking like a queue nobody has asked about yet (GRPH-995).
+        platform_svc.note_decide_failure(
+            db, resolved.credential_id, f"{type(exc).__name__}: {exc}")
         return None, "error"
     g_ans = (decision.answers or {}).get("grounded")
     r_ans = (decision.answers or {}).get("ready")
@@ -974,7 +986,7 @@ def judge_verdict(db: Session, shard: MemoryShard) -> tuple[dict | None, str]:
 
     decider_res = _resolved_decider(db, shard.project_id)
     if decider_res is not None:
-        return _decider_judge(decider_res, shard)
+        return _decider_judge(db, decider_res, shard)
 
     try:
         _resolved = platform_svc.resolve_role(db, shard.project_id or "core", "memory.judge")
@@ -1224,6 +1236,66 @@ def advisory_judge_view(db: Session, shard: MemoryShard) -> dict:
         "cause": cause,
         "cause_detail": ADVISORY_CAUSES.get(cause, cause),
     }
+
+
+def judge_status(db: Session, project_id: str | None) -> dict:
+    """Which judge will answer this project's next candidate, and can it (GRPH-995).
+
+    The review queue could not answer that. Its rows look the same whether the decider
+    graded them, could not be reached, or was never configured, and the page's only
+    project-level fact was the `memory_llm_judge` toggle — which says what was ASKED for,
+    not what happened. So a deployment whose decider row was `valid` (the probe only asks
+    about health) and whose `decide()` failed on every call rendered as a queue with
+    nothing wrong with it, and the operator's only clue was one ungraded row.
+
+    `judge` is a positive answer for that reason, not an absence: `similarity` means
+    nothing else will grade this project's memory, and `falling_back` says whether that was
+    the operator's choice. A judge that is OFF is not falling back — `judge_on: false`
+    reports it, and the two have completely different remedies.
+    """
+    _mode, _reject, judge_on = _triage_prefs(db, project_id)
+    out = {
+        "judge_on": judge_on,
+        "judge": "off",
+        "decider_configured": False,
+        "credential_label": "",
+        "falling_back": False,
+        "reason": JUDGE_CAUSES["off"] if not judge_on else "",
+    }
+    if not judge_on:
+        return out
+
+    from app.services import platform as platform_svc  # lazy: avoid import cycle
+
+    health = platform_svc.decider_health(db, project_id or "core")
+    out["decider_configured"] = health["configured"]
+    out["credential_label"] = health["label"]
+    if health["configured"]:
+        if health["usable"]:
+            out["judge"] = "decider"
+            return out
+        # `resolve_decider` still hands back an unreachable DEFAULT — the S2 asymmetry — so
+        # a resolution that succeeded is not evidence adjudication is happening.
+        out["judge"] = "similarity"
+        out["falling_back"] = True
+        out["reason"] = (
+            f"the decider ({health['label']}) could not be reached"
+            + (f": {health['last_error']}" if health["last_error"] else "")
+        )
+        return out
+
+    try:
+        provider = platform_svc.resolve_role(db, project_id or "core", "memory.judge").provider_id
+    except Exception:  # noqa: BLE001 — a broken pointer degrades, and says so
+        logger.exception("judge status: provider resolution failed")
+        provider = "stub"
+    if provider == "stub":
+        out["judge"] = "similarity"
+        out["falling_back"] = True
+        out["reason"] = JUDGE_CAUSES["no_provider"]
+    else:
+        out["judge"] = "chat"
+    return out
 
 
 # Origins whose shards may be auto-REJECTED but never auto-PUBLISHED (GRPH-358).

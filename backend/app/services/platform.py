@@ -185,6 +185,79 @@ def usable(cred: "Credential | None") -> bool:
     return cred is not None and cred.state != UNREACHABLE
 
 
+def note_decide_failure(db: Session, credential_id: str, detail: str = "") -> bool:
+    """Record that a decider credential was ASKED and did not answer (GRPH-995).
+
+    The probe cannot see this. `_probe_state` asks the provider's health/models endpoint,
+    so an empty-model row comes back `valid` — and a `valid` row is indistinguishable from
+    a working judge right up to the moment a shard comes back ungraded. `unreachable`
+    already means exactly "it WAS asked and did not answer", so a runtime `decide()`
+    failure is the same fact from better evidence, and writing it there means every reader
+    of `state` — `usable`, `resolve_decider`, `list_credentials`'s `falling_back`, the
+    console chip — agrees without a second vocabulary.
+
+    Never raises: this is called from inside an exception handler on the memory write path,
+    where the original failure is the one that matters. An empty id is normal, not an error
+    — a decider built by a test or by a caller that did not come from a credential row has
+    nothing to record against.
+    """
+    if not credential_id:
+        return False
+    try:
+        cred = db.get(Credential, credential_id)
+        if cred is None:
+            return False
+        message = f"decide() failed at runtime: {detail}".rstrip(": ")[:500]
+        if cred.state == UNREACHABLE and cred.last_error == message:
+            return True
+        cred.state = UNREACHABLE
+        cred.last_error = message
+        db.commit()
+        logger.warning("decider credential %s could not answer a live request: %s",
+                       credential_id, detail[:200])
+        return True
+    except Exception:  # noqa: BLE001 — recording a failure must not become one
+        db.rollback()
+        logger.exception("decider failure: could not record state on %s", credential_id)
+        return False
+
+
+def decider_health(db: Session, project_id: str) -> dict:
+    """Can this project's decider answer? (GRPH-995)
+
+    `configured` and `usable` are separate facts and collapsing them is the defect this
+    exists to prevent: the deployment default is returned even when unreachable (the S2
+    asymmetry), so a resolution that succeeded says nothing about whether adjudication is
+    happening. `configured and not usable` is the falling-back case.
+
+    Reads only. Safe on a request path — resolution builds an adapter but makes no call.
+
+    Resolution is guarded for the same reason `_resolved_decider` guards it: this feeds the
+    page that reports a broken judge, and a 500 there renders as NO banner, which is the
+    absence reading as a clean result one level up. An unresolvable decider reports
+    `configured: False` and lets the caller fall through to the next rung, which says so.
+    """
+    try:
+        resolved = resolve_decider(db, project_id)
+    except Exception:  # noqa: BLE001 — a broken pointer must not break the page reporting it
+        logger.exception("decider health: resolution failed for project %s", project_id)
+        return {
+            "configured": False, "usable": False, "credential_id": "", "label": "",
+            "state": "", "last_error": "", "source": "unresolved", "fell_back_from": "",
+        }
+    cred = db.get(Credential, resolved.credential_id) if resolved.credential_id else None
+    return {
+        "configured": cred is not None,
+        "usable": usable(cred),
+        "credential_id": resolved.credential_id,
+        "label": (cred.label or cred.id) if cred is not None else "",
+        "state": cred.state if cred is not None else "",
+        "last_error": cred.last_error if cred is not None else "",
+        "source": resolved.source,
+        "fell_back_from": resolved.fell_back_from,
+    }
+
+
 def _fallback_for(db: Session, scope: str, primary_id: str):
     """The scope's fallback credential, if it is usable and is not the one that just resolved.
 
@@ -816,6 +889,32 @@ def list_credentials(db: Session, scope: str = "") -> list[dict]:
     fallback_id = row.fallback_credential_id if row else None
     embed_id = row.embed_credential_id if row else None
     decider_id = row.decider_credential_id if row else None
+
+    # Projects that INHERIT the scope's default decider (GRPH-995). `decider_used` above
+    # only ever sees an explicit `decider_credential_id`, so a default that cannot answer
+    # reported an empty `falling_back` — the console showed a green row while every project
+    # on the deployment scored memory on similarity alone. Same derivation as resolution
+    # (`resolve_decider`): a role override or a usable pointer of its own means the project
+    # is not inheriting, and `memory.decide: none` means it asked for no decider at all,
+    # which is a choice and not a fallback.
+    decider_inherited: list[str] = []
+    if decider_id and not usable(in_scope.get(decider_id)):
+        for pid, org_id, pointer, chat_roles in db.query(
+            Project.id, Project.org_id, Project.decider_credential_id, Project.chat_roles
+        ).all():
+            if (org_id or "") != (scope or ""):
+                continue
+            spec = (chat_roles or {}).get("memory.decide") or {}
+            role_cred = spec.get("credential_id") if isinstance(spec, dict) else None
+            if role_cred:
+                continue
+            own = in_scope.get(pointer) if pointer else None
+            if own is not None and usable(own) and provider_registry.serves_decide(own.kind):
+                continue
+            decider_inherited.append(pid)
+        decider_fallen[decider_id] = sorted(
+            set(decider_fallen.get(decider_id, [])) | set(decider_inherited)
+        )
 
     return [
         {

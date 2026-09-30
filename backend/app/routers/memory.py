@@ -218,6 +218,36 @@ def scored_candidates(
     ]
 
 
+class JudgeStatusOut(BaseModel):
+    """Which judge answers this project's next candidate (GRPH-995).
+
+    `falling_back` is the fact the review page was missing: `judge` says what will actually
+    grade memory here (`decider` | `chat` | `similarity` | `off`), and `falling_back` says
+    whether that was chosen or imposed. Both are present when nothing is wrong, so a page
+    that renders no banner is a page that was told the judge is working.
+    """
+
+    judge_on: bool
+    judge: str
+    decider_configured: bool
+    credential_label: str
+    falling_back: bool
+    reason: str
+
+
+@router.get("/judge-status", response_model=JudgeStatusOut)
+def judge_status(
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Can this project's memory judge answer? Advisory and read-only — it resolves the
+    pointer and reads the credential row, and never calls a model. Scoped like the queue
+    it describes."""
+    authz.require_readable(db, user.id, project_id)
+    return JudgeStatusOut(**mem_svc.judge_status(db, project_id))
+
+
 class ShardCluster(BaseModel):
     size: int
     representative: ShardOut

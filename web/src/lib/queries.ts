@@ -730,11 +730,23 @@ export function useAutoActions(projectId?: string) {
   });
 }
 
+/** GRPH-995: which judge grades this project's candidates, and whether it can answer.
+ *  Read alongside the queue, never derived from it — a queue of ungraded rows cannot tell
+ *  you whether the judge is off, absent, or failing. */
+export function useJudgeStatus(projectId?: string) {
+  return useQuery({
+    queryKey: ["memory-judge-status", projectId],
+    queryFn: () => api.judgeStatus(projectId),
+    enabled: !!projectId,
+  });
+}
+
 function invalidateReview(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: ["shard-candidates"] });
   qc.invalidateQueries({ queryKey: ["shard-clusters"] });
   qc.invalidateQueries({ queryKey: ["shard-scored"] });
   qc.invalidateQueries({ queryKey: ["shard-auto-actions"] });
+  qc.invalidateQueries({ queryKey: ["memory-judge-status"] });
   qc.invalidateQueries({ queryKey: keys.shards });
 }
 
@@ -756,10 +768,16 @@ export function useUndoAutoShard() {
   });
 }
 
-/** On-demand LLM judge (GRPH-650). Advisory — does not mutate the queue. */
+/** On-demand LLM judge (GRPH-650). Advisory — does not mutate the queue.
+ *
+ *  It CAN change the judge's own status: asking a decider that cannot answer is what records
+ *  the failure against its credential row (GRPH-995), so the banner is re-read rather than
+ *  left displaying the answer from before the question was asked. */
 export function useJudgeShard() {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.judgeShard(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["memory-judge-status"] }),
   });
 }
 

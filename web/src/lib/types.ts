@@ -721,6 +721,22 @@ export interface CandidateJudge {
   cause_detail: string;
 }
 
+/** Which judge grades this project's memory, and can it (GRPH-995).
+ *
+ *  `judge` is a positive answer, not an absence: `similarity` means nothing else will grade
+ *  this project's candidates. `falling_back` separates that from the operator's own choice —
+ *  a decider that probed `valid` and then failed every `decide()` is `similarity` WITH
+ *  `falling_back`, and the review page has to say so, because a queue of ungraded rows
+ *  otherwise looks like a queue nobody has asked about yet. */
+export interface JudgeStatus {
+  judge_on: boolean;
+  judge: "decider" | "chat" | "similarity" | "off";
+  decider_configured: boolean;
+  credential_label: string;
+  falling_back: boolean;
+  reason: string;
+}
+
 export interface RequestItem {
   id: string;
   project_id: string;
