@@ -3,9 +3,11 @@
 Two endpoints share this wire:
 
 - **laya** (self-host) — `POST {base_url}/v1/systemone`. `model` selects a **head**
-  (`english`, `multilingual`, `typed-decisions`); an unknown name such as `laya` is routed
-  to `english` and the reply says so in `routing.model`. The reply's `model` is always
-  `laya-rl-agent`. Measured on ms-s1-ubt 2026-09-23: 70–270 ms, deterministic.
+  (`english`, `multilingual`, `typed-decisions`, or a name the box was taught);
+  an unknown name such as `laya` is routed to `english` and the reply says so in
+  `routing.model`. That reply is refused: a verdict from a head that was not asked
+  is not a verdict. The reply's `model` is always `laya-rl-agent`. Measured on
+  ms-s1-ubt 2026-09-23: 70–270 ms, deterministic.
 - **TypeSafe cloud** — `POST https://api.typesafe.ai/v1/systemone`, bearer auth, `model`
   a pinned name such as `jev-1.13.0`.
 
@@ -17,15 +19,11 @@ the System One shape" (D10) — never a Decision with a made-up 0.5 in it.
 """
 from __future__ import annotations
 
-import logging
-
 import httpx
 
 from app import errors
 from app.providers.base import provider_errors
 from app.providers.decide import CHOICE, NOUL, SCORE, Answer, Decision, Question
-
-logger = logging.getLogger("graphban.providers.systemone")
 
 PATH = "/v1/systemone"
 
@@ -109,11 +107,18 @@ class SystemOneDecider:
         if not isinstance(data, dict):
             raise _shape_error(endpoint, "the body is not an object")
         decision = _parse_response(data, questions, endpoint=endpoint)
-        if isinstance(data.get("routing"), dict) and decision.model and decision.model != self.model:
-            # laya routes a name it does not serve to a default head and says so. A verdict
-            # attributed to a head that never answered is the substitution PRD-45 §12 names.
-            logger.warning("systemone: model %r was answered by %r (endpoint routed the name)",
-                           self.model, decision.model)
+        routing = data.get("routing")
+        routed = routing.get("model") if isinstance(routing, dict) else None
+        if isinstance(routed, str) and routed and routed != self.model:
+            # laya answers an unknown name with a default head and names it in
+            # `routing.model`. Returning that decision would apply this head's
+            # thresholds to a different model. No verdict — callers already
+            # degrade on Unavailable.
+            raise errors.Unavailable(
+                f"systemone ({endpoint}) was asked for {self.model!r} but {routed!r} answered",
+                hint="the endpoint routed the name to a different head; fix the model "
+                     "on the credential, or register the head on the server",
+            )
         from app.providers import llm_meter
 
         usage = data.get("usage") or {}

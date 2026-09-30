@@ -143,13 +143,24 @@ class TestAdapter:
     def test_round_trip_against_laya(self, monkeypatch):
         seen: list = []
         _serve(monkeypatch, 200, LAYA_REPLY, seen)
-        d = SystemOneDecider("http://ms-s1-ubt:8090", "", "multilingual").decide(
+        d = SystemOneDecider("http://ms-s1-ubt:8090", "", "english").decide(
             state="Always run pnpm install --frozen-lockfile", questions=[KEEP, QUALITY, KIND])
         url, body, headers = seen[0]
         assert url == "http://ms-s1-ubt:8090/v1/systemone"
+        assert body["model"] == "english"
         assert "questions" in body and "answer_space" not in str(body)
         assert "Authorization" not in headers  # no key, no header
         assert d.answers["keep"].value == pytest.approx(0.4361)
+
+    def test_a_substituted_head_is_unavailable_not_a_verdict(self, monkeypatch):
+        """laya auto-routes a name it does not serve and says so in `routing.model`.
+        The recorded reply is a real english answer; asking for another head must
+        not turn it into that head's verdict.
+        Sabotage: log the mismatch and return the decision; this must fail."""
+        _serve(monkeypatch, 200, LAYA_REPLY, [])
+        with pytest.raises(errors.Unavailable, match="graphban-memory-v3"):
+            SystemOneDecider("http://box:8090", "", "graphban-memory-v3").decide(
+                state="t", questions=[KEEP])
 
     def test_a_key_travels_as_a_bearer(self, monkeypatch):
         seen: list = []
