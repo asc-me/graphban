@@ -24,13 +24,39 @@ number in the matrix instead of a gap.
 """
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
+import time
+from pathlib import Path
 
 from gbfleet import adapters
 from gbfleet.cli import report
-from gbfleet.supervisor import Wave
+from gbfleet.spawn import Child
+from gbfleet.supervisor import Limits, Wave, watch_tick
 from gbfleet.until import Report
+
+
+class _Dead:
+    def __init__(self, code: int = 0) -> None:
+        self._code = code
+
+    def poll(self) -> int | None:
+        return self._code
+
+
+class _Quiet:
+    """The least client `watch_tick` will accept. Nothing here is under test — the reading is
+    off the child's own log, not off the server."""
+
+    def fleet_status(self) -> dict:
+        return {"agents": []}
+
+    def post_attempt(self, **payload):
+        return None
+
+    def call(self, tool, **args):
+        return {}
 
 
 def _stream(*, model: str = "qwen3.8-max", tokens_in: int = 951247,
@@ -149,3 +175,100 @@ def test_the_summary_is_silent_on_a_clean_wave():
     report(Wave(), out=out)
 
     assert "SUBSTITUTED" not in out.getvalue()
+
+
+# ---- the WIRING, which the PR #904 bounce found had no test at all -----------------------
+#
+# The reviewer ran four mutations at the call sites and every one stayed green, because
+# `substitution` and `cli.report` were tested as units and nothing exercised the path between
+# spawn and the wave:
+#
+#   M1  delete the parser call in _report_exits    -> 5 red, all older gbagent tests
+#   M2  facts.setdefault("model", child.model)     -> 101 passed  <- bullet 4's exact concern
+#   M3  drop model=launch.model from Child(...)    -> 101 passed
+#   M4  substitution(child.model, child.model)     -> 101 passed
+#
+# M2 is the one that matters: an unreadable stream would silently record the REQUESTED model,
+# which is the confident wrong number the item exists to prevent, shipping green.
+#
+# The fixture is a REAL stream, trimmed from p43-qwen-906's stdout.log — its init event names
+# qwen3.7-plus and its result carries 185,200 tokens. The synthetic two-event version could not
+# have caught a parser that tripped over the assistant/user events real runs interleave.
+
+FIXTURE = Path(__file__).parent / "fixtures" / "qwen_stdout.json"
+
+
+def _qwen_child(log_dir: Path, *, model: str, stream: str | None) -> Child:
+    """An exited qwen-code child whose stdout.log holds `stream` (None writes no file)."""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    if stream is not None:
+        (log_dir / "stdout.log").write_text(stream)
+    return Child(adapter="qwen-code", worktree=Path("/tmp/wt"), branch="gb/q-1", base="",
+                 seat_path=Path("/tmp/seat.json"), process=_Dead(0),
+                 started_at=time.monotonic() - 30, log_dir=log_dir,
+                 binary_version="0.23.0", seat_id=None, model=model)
+
+
+def test_a_real_stream_reaches_the_wave_and_names_the_substitution(tmp_path: Path):
+    """(a) from the bounce. Asked for qwen3.8-max; the recorded stream says qwen3.7-plus, which
+    is what 1488 of 1489 real children actually ran."""
+    wave = Wave()
+    child = _qwen_child(tmp_path / "logs", model="qwen3.8-max", stream=FIXTURE.read_text())
+
+    watch_tick(wave, [child], Limits(), _Quiet(), debug=False)
+
+    assert wave.spend["gb/q-1"]["model"] == "qwen3.7-plus"
+    assert wave.spend["gb/q-1"]["tokens_in"] == 184566
+    assert wave.substituted["gb/q-1"] == ("qwen3.8-max", "qwen3.7-plus")
+
+
+def test_an_unreadable_stream_records_no_model_and_no_substitution(tmp_path: Path):
+    """(b), and THE ONE THAT KILLS M2. With `facts.setdefault("model", child.model)` the wave
+    would record qwen3.8-max — a model that never ran — from a stream nobody could read. A gap
+    is the correct output; a confident wrong number is the defect."""
+    wave = Wave()
+    child = _qwen_child(tmp_path / "logs", model="qwen3.8-max",
+                        stream=FIXTURE.read_text()[:120])  # truncated mid-array
+
+    watch_tick(wave, [child], Limits(), _Quiet(), debug=False)
+
+    assert "model" not in wave.spend.get("gb/q-1", {})
+    assert "gb/q-1" not in wave.substituted
+
+
+def test_no_stream_at_all_records_no_model_and_no_substitution(tmp_path: Path):
+    """The other absence: a child killed before it wrote anything. 9 of 1567 real logs were
+    empty, so this is the ordinary case rather than a corner."""
+    wave = Wave()
+    child = _qwen_child(tmp_path / "logs", model="qwen3.8-max", stream=None)
+
+    watch_tick(wave, [child], Limits(), _Quiet(), debug=False)
+
+    assert "model" not in wave.spend.get("gb/q-1", {})
+    assert "gb/q-1" not in wave.substituted
+
+
+def test_a_stream_naming_the_model_that_was_asked_for_is_no_substitution(tmp_path: Path):
+    """The control, and it kills M4 (`substitution(child.model, child.model)`): agreement must
+    record nothing, or every wave would report a substitution against itself."""
+    wave = Wave()
+    stream = FIXTURE.read_text().replace("qwen3.7-plus", "qwen3.8-max")
+    child = _qwen_child(tmp_path / "logs", model="qwen3.8-max", stream=stream)
+
+    watch_tick(wave, [child], Limits(), _Quiet(), debug=False)
+
+    assert wave.spend["gb/q-1"]["model"] == "qwen3.8-max"
+    assert "gb/q-1" not in wave.substituted
+
+
+def test_spawn_carries_the_requested_model_onto_the_child():
+    """(c), which kills M3. Without `model=launch.model` the child's request is always "", so
+    `substitution` can never fire in a real wave however correct it is in isolation."""
+    import inspect
+
+    from gbfleet import spawn as spawn_mod
+
+    src = inspect.getsource(spawn_mod.spawn)
+    assert "model=launch.model" in src, "the launch's model is not carried onto the Child"
+    # And the field exists to be carried into.
+    assert "model" in {f.name for f in dataclasses.fields(Child)}
