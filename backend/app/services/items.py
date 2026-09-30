@@ -317,6 +317,20 @@ def normalize_evidence_report(raw) -> tuple[list[dict], list[dict]]:
                     # Opaque, deliberately. Graphban never resolves it on a critical path —
                     # that is what keeps the core independent and offline-capable.
                     "run_ref": str(e.get("run_ref") or "").strip(),
+                    # GRPH-983 / GRPH-992. This row is rebuilt from a CLOSED SET, so a key the
+                    # adapter sends and this does not name is silently discarded — which is
+                    # what happened to `branch` for two weeks: attest_ci started sending it,
+                    # the receipts on GRPH-983 for 33b193be and dc7e24a3 carry no `branch`,
+                    # and the test only asserted the dict CI builds rather than what the
+                    # server stores. So the fix shipped green and did nothing.
+                    #
+                    # `branch` is the ref CI ran on, which is how `_already_in_base` tells this
+                    # item's own attestation from a sibling PR's. `matched` is how the id was
+                    # found — `explicit` or `prose` — so a reader can weigh a scanned match.
+                    # Empty when absent: an older receipt names neither, and an empty string is
+                    # "not recorded" rather than a claim about either.
+                    "branch": str(e.get("branch") or "").strip(),
+                    "matched": str(e.get("matched") or "").strip(),
                     "schema_version": schema_version,
                 })
                 if not detail:

@@ -519,3 +519,80 @@ def test_declared_distinguishes_absent_from_empty():
     assert attest_ci.declared("Attests: none") == []
     assert attest_ci.declared("Attests: GRPH-1 GRPH-2") == ["GRPH-1", "GRPH-2"]
     assert attest_ci.declared("attests:   GRPH-1") == ["GRPH-1"], "case-sensitive"
+
+
+# ---- the ROUND TRIP, which PR #905's bounce found had no test ---------------------------
+#
+# `append_evidence` rebuilds an attestation row from a CLOSED SET of keys, so anything the
+# adapter sends and it does not name is silently discarded. That is what happened to GRPH-983's
+# `branch` for two weeks: attest_ci started sending it, and the receipts stored on GRPH-983 for
+# 33b193be and dc7e24a3 carry no `branch` key at all. The test asserted the dict CI BUILDS and
+# never what the server STORES, so the fix shipped green and did nothing.
+#
+# Producer-side tests cannot see this. Only a round trip can.
+
+
+@pytest.fixture()
+def gate_key(client, auth):
+    """A key that may write an attestation — the `gate` scope, held by completion adapters."""
+    return client.post("/api/api-keys",
+                       json={"name": "ci", "scopes": ["read", "write", "gate"],
+                             "project_id": "core"}, headers=auth).json()["plaintext"]
+
+
+@pytest.fixture()
+def an_item(client, gate_key):
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "create_item", "arguments": {"title": "attested work"}}}
+    res = client.post("/api/mcp", json=body,
+                      headers={"X-API-Key": gate_key}).json()["result"]
+    assert not res.get("isError"), res
+    return res["structuredContent"]["id"]
+
+
+def _post_attestation(client, key, item_id, **extra):
+    """Send a receipt through the real `update_item` and read the stored row back."""
+    args = {"id": item_id, "evidence": [{
+        "kind": "attestation", "adapter": "github-actions", "commit": "a" * 40,
+        "predicates": [{"name": "suite_green", "passed": True, "detail": "CI passed"}],
+        **extra,
+    }]}
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "update_item", "arguments": args}}
+    res = client.post("/api/mcp", json=body, headers={"X-API-Key": key}).json()["result"]
+    assert not res.get("isError"), res
+    stored = [e for e in res["structuredContent"]["evidence"] if e.get("kind") == "attestation"]
+    assert stored, "the attestation was dropped entirely"
+    return stored[-1]
+
+
+def test_the_branch_and_matched_fields_survive_the_round_trip(client, gate_key, an_item):
+    """THE BOUNCE. Both fields are useless unless they are stored: `_already_in_base` reads
+    `branch` to tell this item's own attestation from a sibling PR's, and a reader weighs
+    `matched` to know whether an id was named or merely mentioned."""
+    row = _post_attestation(client, gate_key, an_item,
+                            branch="gb/grph-992", matched="explicit")
+
+    assert row["branch"] == "gb/grph-992"
+    assert row["matched"] == "explicit"
+
+
+def test_an_older_receipt_naming_neither_stores_empty_not_missing(client, gate_key, an_item):
+    """Receipts written before these fields existed name neither. Empty is "not recorded",
+    which is what a consumer must be able to read — and for `branch` specifically, absent is
+    the BELIEVED case in `_already_in_base`, so the difference between "" and a missing key
+    must not decide anything."""
+    row = _post_attestation(client, gate_key, an_item)
+
+    assert row["branch"] == ""
+    assert row["matched"] == ""
+
+
+def test_the_fields_are_stripped(client, gate_key, an_item):
+    """A ref with whitespace would never equal the item's branch, so the comparison in
+    `_already_in_base` would silently read every receipt as naming a different ref."""
+    row = _post_attestation(client, gate_key, an_item,
+                            branch="  gb/grph-992  ", matched=" prose ")
+
+    assert row["branch"] == "gb/grph-992"
+    assert row["matched"] == "prose"
