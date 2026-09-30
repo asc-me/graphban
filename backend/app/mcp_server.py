@@ -735,7 +735,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "PLANNER ONLY. Mint a seat for an agent you are spawning, bounded by your credential. "
             "Returned once — pass it as `enrolment_code`. One seat per agent: two on one cannot review "
-            "each other."
+            "each other. `review_only` mints a seat that may review but never TAKE build work — "
+            "the claim tools refuse it. A seat kind, not a role: the child still holds `worker`."
         ),
         "inputSchema": {
             "type": "object",
@@ -743,6 +744,7 @@ TOOLS: list[dict[str, Any]] = [
                 "agent_id": {"type": "string"},
                 "role": {"type": "string", "enum": list(fleet_svc.ROLES) + [fleet_svc.ALL_IN_ONE]},
                 "wave": {"type": "string"},
+                "review_only": {"type": "boolean"},
             },
             "required": ["agent_id", "role"],
         },
@@ -2902,6 +2904,13 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             # seat role and what an un-enrolled agent gets, so a client cannot tell the
             # deliberate case from the forgotten one without being told (PRD-19 A2).
             "enrolled": agent.enrolment_id is not None,
+            # GRPH-988: the seat's KIND, stated by the authority that set it. Always present
+            # rather than conditional, so a child can tell "not review-only" from "this server
+            # has never heard of the flag" — the distinction `check_review_only_is_honoured`
+            # depends on. Advisory exactly like `tools_off_limits`, and for the same reason it
+            # cannot live there: that list is derived from the ROLE, and this is not a role.
+            # The gate in `claim_next`/`claim_item` is what enforces it.
+            "review_only": items_svc.review_only_seat(db, agent.id),
             # The boundary, stated once, at the moment the role is granted. The MANIFEST cannot
             # say this: `tools/list` is fetched at connect, before any role exists, so a fleet
             # agent holds the full list all session and finds the edge by walking into it — and
@@ -2929,11 +2938,16 @@ def _call_tool(db: Session, name: str, args: dict[str, Any], key: ApiKey,
             row, code = fleet_svc.mint_enrolment_as(
                 db, minter_id=args["agent_id"], project_id=pid, role=args["role"],
                 api_key=key, wave=args.get("wave"),
-                prd_id=_scope_id(db, pid, args.get("scope")))
+                prd_id=_scope_id(db, pid, args.get("scope")),
+                review_only=bool(args.get("review_only")))
         except ValueError as e:
             raise errors.Validation(str(e))
-        # Returned ONCE, like every other credential-shaped thing here.
+        # Returned ONCE, like every other credential-shaped thing here. `review_only` is
+        # echoed because it is the one property of the seat the minter cannot read back later:
+        # the code is gone, and a planner that cannot confirm what it just minted cannot tell
+        # a review-only wave from one that quietly is not (GRPH-988).
         return {"enrolment_code": code, "role": row.role, "seat_id": row.id,
+                "review_only": bool(row.review_only),
                 "expires_at": row.expires_at.isoformat() if row.expires_at else None}
     if name == "fleet_status":
         minted_by = None
@@ -3842,6 +3856,17 @@ async def mcp_endpoint(
             return _fail("conflict", str(e),
                                "finish the grill so the PRD reaches approved, then send "
                                "create=true again")
+        except items_svc.ReviewOnlySeat as e:
+            # CONFLICT, mapped here rather than in each claim handler because this is the one
+            # place every path into those service calls passes through (GRPH-988) —
+            # `claim_next`, `next_cluster`'s seed, and `claim_item` from anywhere. Left to the
+            # generic handler it becomes `internal`, whose hint is "safe to retry once": for a
+            # property of the SEAT that is a lie, and a child that believes it spends its whole
+            # turn budget retrying a refusal that cannot change.
+            return _fail("conflict", str(e),
+                         "nothing is wrong with the call and no item would have been the right "
+                         "one: this seat may review and may not build. claim_review, then exit "
+                         "when it answers claimed=false")
         except errors.AppError as e:
             # Expected, agent-correctable failure: not_found | validation | conflict.
             return _fail(e.code, str(e), e.hint)

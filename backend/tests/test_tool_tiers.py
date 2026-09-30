@@ -373,7 +373,10 @@ CORE_TOKENS = 8897
 #: Per tier, so a tier cannot quietly grow back to the untiered weight — the item's
 #: acceptance, in a form that fails when it stops being true.
 # fleet 1055 → 1046: `reviewer` left the role enums (PRD-39 S3).
-TIER_TOKENS = {"prd": 1998, "codegraph": 1009, "fleet": 1051, "misc": 1238}
+# fleet 1051 → 1100: `mint_enrolment` gains `review_only` (GRPH-988), a seat that may review
+# and may never take build work. The whole bill is in this tier and CORE_TOKENS does not move,
+# which is the argument for not funding it out of prose every key pays for.
+TIER_TOKENS = {"prd": 1998, "codegraph": 1009, "fleet": 1100, "misc": 1238}
 # PRD-36: fleet +`seat`/`wave` on delegate and its `enrolment_code`; misc trims (learning_loop,
 # publish_memory, reject_memory); codegraph and prd moved by the shared-description trims.
 # PRD-35: fleet 799 -> 1008 (`delegate`, ~209 after its own trim). prd 2002 -> 1998,

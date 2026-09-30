@@ -857,6 +857,15 @@ class Enrolment(Base):
     #: entity's frozen id, and a delete there must not reach into a credential's history.
     prd_id: Mapped[str | None] = mapped_column(String, nullable=True)
     delegation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: A REVIEW-ONLY seat (GRPH-988): may hold review work, may never take build work. Not a
+    #: role — `reviewer` merged into `worker` in S3 (PRD-39) and a worker both builds and
+    #: reviews, so the distinction this carries is about ONE POWER, not about a job title.
+    #: A supervisor told to build nothing (`--max-workers 0`) mints these for the children it
+    #: spawns to drain the review queue; before this, those children held plain worker seats
+    #: and the first one that called `claim_next` built an item its own wave was forbidden to
+    #: build. False is the default and what every seat minted before this column was.
+    review_only: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(),
+                                              nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consumed_by: Mapped[str | None] = mapped_column(String, nullable=True)

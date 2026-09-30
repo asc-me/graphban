@@ -2888,6 +2888,15 @@ def claim_cluster(db: Session, *, agent_id: str, project_id: str | None = None,
     """
     from app.services import collision as collision_svc
 
+    # GRPH-988: a review-only seat may not take build work, and a cluster IS build work. Each
+    # member would raise from `claim_item`; answered once, here, with the sentence instead —
+    # for the reason the two bound-seat refusals below give, that a refusal surfaced out of a
+    # loop is a worse answer than the same refusal given before it starts.
+    if items_svc.review_only_seat(db, agent_id):
+        return {"claimed": False, "items": [], "areas": [], "predicted": False,
+                "held_by": [], "reason": items_svc.REVIEW_ONLY_REFUSAL,
+                "scope": items_svc.seat_scope(db, agent_id)}
+
     # GRPH-886: a bound seat already holds one item. Refuse to hand out more.
     bound_item = _holds_bound_item(db, agent_id)
     if bound_item:
@@ -3121,7 +3130,8 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
                     issued_by: str | None = None, minted_by: str | None = None,
                     reissued_from: str | None = None, item_id: str | None = None,
                     delegation_id: str | None = None,
-                    prd_id: str | None = None) -> tuple[Enrolment, str]:
+                    prd_id: str | None = None,
+                    review_only: bool = False) -> tuple[Enrolment, str]:
     """Mint one SEAT and return (row, plaintext). The code is shown once.
 
     One seat per agent, never one per role: two agents redeeming the same code would share an
@@ -3138,6 +3148,17 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
         # PRD-36 D1: a bound seat is worker-only — a worker takes review through claim_review
         # and must not be steered to one item by whoever minted its seat.
         raise ValueError(f"a bound seat is worker-only; cannot bind an item to a {role!r} seat")
+    if item_id and review_only:
+        # GRPH-988. A bound seat's item is BUILD-claimed at registration (`_claim_bound_seat`
+        # goes through `claim_item`), which would make this reviewer the author of the one
+        # item it was steered to — and the self-review ban is keyed on authorship, so the seat
+        # would be refused the sign-off it was minted for. The two seat kinds answer opposite
+        # questions ("which one item may you take" against "may you take any"), so a seat
+        # carrying both carries no usable instruction. Refused at MINT, where it is a
+        # planner's typing mistake, rather than at registration, where it is a dead child.
+        raise ValueError("a review-only seat cannot also be bound to an item: binding "
+                         "build-claims the item at registration, which would make the "
+                         "reviewer its author and the self-review ban would then refuse it")
     body = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(6))
     code = f"{role.upper().replace('-', '')}-{body}"
     row = Enrolment(
@@ -3149,6 +3170,9 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
         # outlives whatever typed it, and a key that gets retagged would silently widen the
         # scope to everything.
         prd_id=prd_id or None,
+        # GRPH-988. Stored, not inferred: a seat that may review but not build is a fact
+        # about the wave that minted it, and nothing downstream can reconstruct it.
+        review_only=bool(review_only),
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=ENROLMENT_TTL_MINUTES),
     )
     db.add(row)
@@ -3160,7 +3184,8 @@ def issue_enrolment(db: Session, *, project_id: str, role: str, wave: str | None
 def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str,
                       api_key, wave: str | None = None, item_id: str | None = None,
                       delegation_id: str | None = None,
-                      prd_id: str | None = None) -> tuple[Enrolment, str]:
+                      prd_id: str | None = None,
+                      review_only: bool = False) -> tuple[Enrolment, str]:
     """A planner mints a seat for an agent it is about to spawn (PRD-19 E7 / D-g).
 
     An orchestrator cannot paste a code out of a UI, so the capability has to exist for an
@@ -3188,7 +3213,8 @@ def mint_enrolment_as(db: Session, *, minter_id: str, project_id: str, role: str
             f"this credential is eligible for {', '.join(allowed)}; cannot mint a {role!r} seat",
             hint="mint a credential for that role in the Fleet view first")
     return issue_enrolment(db, project_id=project_id, role=role, wave=wave, minted_by=minter_id,
-                           item_id=item_id, delegation_id=delegation_id, prd_id=prd_id)
+                           item_id=item_id, delegation_id=delegation_id, prd_id=prd_id,
+                           review_only=review_only)
 
 
 def reissue_enrolment(db: Session, *, enrolment_id: str) -> tuple[Enrolment, str]:
@@ -3202,7 +3228,13 @@ def reissue_enrolment(db: Session, *, enrolment_id: str) -> tuple[Enrolment, str
         raise EnrolmentError("no such seat")
     return issue_enrolment(db, project_id=old.project_id, role=old.role, wave=old.wave,
                            issued_by=old.issued_by, minted_by=old.minted_by,
-                           reissued_from=old.id)
+                           reissued_from=old.id,
+                           # GRPH-988. Carried across, because the alternative is a recovery
+                           # path that silently WIDENS: a review-only seat reissued as a plain
+                           # worker seat hands the replacement child the `claim_next` its wave
+                           # was forbidden, and nothing in the reissue reply would say so. A
+                           # control that a crash removes is not a control.
+                           review_only=old.review_only)
 
 
 def enrolment_state(row: Enrolment, *, now: datetime | None = None) -> str:

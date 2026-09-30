@@ -24,7 +24,7 @@ from app.services import tool_tiers
 #
 # Raising CEILING is a decision, not a fix. The history below is a series of raises that the
 # docstring itself argues should have been trims.
-CEILING = 14200
+CEILING = 14250
 # 13592 -> 13595 (GRPH-146). `get_code_map` gained `limit`/`offset` so a bounded read is
 # possible at all, and that two-property addition did NOT fit: it cost ~73 tokens against 8 of
 # headroom. It was paid for inside the manifest rather than by raising the ceiling — four
@@ -96,7 +96,21 @@ CEILING = 14200
 # tool that could report a completion whose proof it had discarded. Declared as one opaque
 # object rather than three properties precisely because of this number — spelling out
 # {sent, added, dropped} costs 36 and would have needed a raise. Headroom 2.
-MEASURED_TOKENS = 14198
+# 14198 -> 14247 (GRPH-988), and CEILING 14200 -> 14250 with it. `mint_enrolment` gains
+# `review_only`: a seat kind that may review and may never TAKE build work. Without it a
+# supervisor started with `--max-workers 0` — which does pin its own `need` at zero — still
+# minted its reviewer children plain worker seats, and one claimed GRPH-965 and built it while
+# the child actually assigned to that item produced nothing. The sign-off that was supposed to
+# be cross-vendor came from the vendor that built the work.
+#
+# Trimmed before raising, per the procedure: the description started at ~113 tokens naming
+# every tool that refuses and arguing why a seat kind is not a role, and was cut to ~49 saying
+# only what a caller has to know. The remaining 47-over was NOT paid by trimming unrelated
+# descriptions, and the reason is who pays: this lands entirely in the opt-in `fleet` tier, so
+# TIER_TOKENS["fleet"] 1051 -> 1100 is the whole bill and CORE_TOKENS does not move by a
+# token. Funding it out of core or read-tool prose would move the cost onto keys that cannot
+# use the flag at all. Headroom 3.
+MEASURED_TOKENS = 14247
 # 14187 -> 14199. `heartbeat` gains `status` and `files` (PRD-34 D5) — every agent reports what
 # it is doing, so this is core by nature and cannot be gated to a key class. Paid by trimming
 # heartbeat's own descriptions to the bone; caps live in `fleet.report_status`, not the schema.
