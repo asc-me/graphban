@@ -335,6 +335,11 @@ export function MemoryTriageView() {
             <option value="oldest">Oldest</option>
             <option value="confidence">Confidence</option>
           </select>
+          {/* handleKeyDown has always bound these; only the affordance was missing, so a
+              keyboard-first queue nobody could discover was not keyboard-first (GRPH-1005).
+              Says "Enter open" and not the design's "Enter first action" because Enter opens
+              the detail panel here — there is no default bulk action to take. */}
+          <span className="font-mono text-meta text-faint">J/K move · X select · Enter open</span>
         </div>
       </div>
 

@@ -248,6 +248,32 @@ describe("Memory triage — canonical wording", () => {
   });
 });
 
+describe("Memory triage — keyboard affordance", () => {
+  // The handler has bound J/K/X/Enter since S8; only the affordance was missing, so a
+  // keyboard-first queue nobody could discover was not keyboard-first (GRPH-1005). Each
+  // key the hint names is asserted against what it does, so the line cannot outlive the
+  // behaviour it describes.
+  it("shows the shortcut hint, and every key it names does what it says", async () => {
+    const user = userEvent.setup();
+    renderView();
+    await screen.findByText(/Use retry with exponential backoff/);
+
+    expect(screen.getByText("J/K move · X select · Enter open")).toBeInTheDocument();
+
+    // Focus a control inside the view so the keys reach the handler. Not the search field:
+    // the handler ignores keystrokes from an input or a select.
+    await user.click(screen.getByText("Needs review"));
+
+    expect(screen.queryByText("Detail")).not.toBeInTheDocument();
+
+    await user.keyboard("x");
+    expect(await screen.findByText("1 selected")).toBeInTheDocument();
+
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("Detail")).toBeInTheDocument();
+  });
+});
+
 describe("Memory triage — CALL sabotage", () => {
   it("undo toast actually calls undoAutoShard for each swept id", async () => {
     const user = userEvent.setup();
