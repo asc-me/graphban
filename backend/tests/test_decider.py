@@ -256,8 +256,8 @@ class TestProbe:
         result = probe._systemone("http://localhost:8090", "")
         assert result == {"english", "multilingual"}
 
-    def test_systemone_probe_404_returns_none(self, monkeypatch):
-        """A 404 from /health means 'cannot be asked', not 'has nothing'."""
+    def test_systemone_probe_404_is_an_empty_catalog_not_unreachable(self, monkeypatch):
+        """No /health endpoint is not a failure — decide is the authority (PRD-45 D10)."""
         from app.providers import probe
 
         class Fake404:
@@ -271,4 +271,19 @@ class TestProbe:
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: Fake404())
 
         result = probe._systemone("http://typesafe.example.com", "key")
-        assert result is None
+        assert result == set()
+
+
+class TestPingDecide:
+    def test_ping_uses_the_protocol_smoke_question(self, monkeypatch):
+        from app.providers.systemone import PING_QUESTION, PING_STATE, ping_decide
+
+        seen: list = []
+
+        def fake_decide(self, *, state, questions):
+            seen.append((state, questions))
+            return None
+
+        monkeypatch.setattr(SystemOneDecider, "decide", fake_decide)
+        ping_decide("https://api.typesafe.ai", "sk", "jev-1.13.0")
+        assert seen == [(PING_STATE, [PING_QUESTION])]

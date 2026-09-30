@@ -59,8 +59,11 @@ def _systemone(base_url: str, api_key: str) -> set[str] | None:
     try:
         r = httpx.get(f"{base_url.rstrip('/')}/health", headers=headers, timeout=TIMEOUT)
         r.raise_for_status()
-    except httpx.HTTPStatusError:
-        # The endpoint does not serve /health — cannot be asked, not "has nothing".
+    except httpx.HTTPStatusError as e:
+        # No /health is not a failure for decide (PRD-45 D10) — TypeSafe has no listing
+        # endpoint. Return an empty catalog so callers do not treat health as authoritative.
+        if e.response.status_code == 404:
+            return set()
         return None
     data = r.json()
     loaded = data.get("loaded") if isinstance(data, dict) else None

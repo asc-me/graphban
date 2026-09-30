@@ -36,8 +36,9 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, update
 from sqlalchemy.orm import Session
 
+from app import errors
 from app.models import Credential
-from app.providers import probe
+from app.providers import probe, registry, systemone
 from app.security import secrets
 
 logger = logging.getLogger("graphban.credential_retry")
@@ -53,6 +54,10 @@ MAX_ATTEMPTS = len(BACKOFF)
 PENDING = "pending_validation"
 VALID = "valid"
 UNREACHABLE = "unreachable"
+
+#: Auth failures from decide are settled — retrying cannot mint a key (PRD-45 D10).
+_AUTH_FAILURE = frozenset({401, 403})
+_SHAPE_REFUSAL = "answered, but not in the System One shape"
 
 
 def _now() -> datetime:
@@ -102,6 +107,56 @@ def claim(db: Session, cred: Credential, now: datetime | None = None) -> bool:
     return result.rowcount == 1
 
 
+def _settled_unreachable(db: Session, cred: Credential, message: str) -> str:
+    cred.state = UNREACHABLE
+    cred.last_error = message[:500]
+    cred.next_attempt_at = None
+    db.commit()
+    return UNREACHABLE
+
+
+def _attempt_systemone(db: Session, cred: Credential, api_key: str) -> str:
+    """System One validation: optional /health catalog, then one smoke decide (PRD-45 D10)."""
+    base = cred.base_url or ""
+    try:
+        known = probe.known_models(cred.kind, base, api_key)
+    except Exception as exc:  # noqa: BLE001
+        known, exc_text = None, str(exc)
+        cred.last_error = exc_text[:500]
+    else:
+        exc_text = ""
+
+    try:
+        systemone.ping_decide(base, api_key, cred.model or "english")
+    except errors.Unavailable as exc:
+        status = getattr(exc, "status", None)
+        msg = str(exc)
+        if status in _AUTH_FAILURE or _SHAPE_REFUSAL in msg:
+            return _settled_unreachable(db, cred, msg)
+        cred.last_error = msg[:500]
+    except Exception as exc:  # noqa: BLE001
+        cred.last_error = str(exc)[:500]
+    else:
+        if known and cred.model and cred.model not in known:
+            return _settled_unreachable(
+                db, cred, f"{cred.kind} does not have model {cred.model!r}")
+        cred.state = VALID
+        cred.last_error = ""
+        cred.next_attempt_at = None
+        db.commit()
+        return VALID
+
+    if not cred.last_error:
+        cred.last_error = (
+            exc_text or f"{cred.kind} at {base or '(no endpoint)'} could not be asked"
+        )[:500]
+    if cred.validation_attempts >= MAX_ATTEMPTS:
+        cred.state = UNREACHABLE
+        cred.next_attempt_at = None
+    db.commit()
+    return cred.state
+
+
 def attempt(db: Session, credential_id: str, now: datetime | None = None) -> str:
     """Probe one credential and record what happened. Returns the resulting state.
 
@@ -112,9 +167,12 @@ def attempt(db: Session, credential_id: str, now: datetime | None = None) -> str
     if cred is None:
         return ""
 
+    api_key = secrets.decrypt(cred.api_key) if cred.api_key else ""
+    if registry.kind(cred.kind) == "systemone":
+        return _attempt_systemone(db, cred, api_key)
+
     try:
-        known = probe.known_models(cred.kind, cred.base_url or "",
-                                   secrets.decrypt(cred.api_key) if cred.api_key else "")
+        known = probe.known_models(cred.kind, cred.base_url or "", api_key)
     except Exception as exc:  # noqa: BLE001 — a probe must never propagate into the loop
         known, exc_text = None, str(exc)
         cred.last_error = exc_text[:500]

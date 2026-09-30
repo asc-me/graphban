@@ -48,6 +48,15 @@ def _answers(monkeypatch, models):
                         lambda *a, **k: None if models is None else frozenset(models))
 
 
+def _unavailable(message: str, *, status: int | None = None):
+    from app import errors
+
+    exc = errors.Unavailable(message)
+    if status is not None:
+        exc.status = status
+    raise exc
+
+
 # ---- the race -----------------------------------------------------------------------------
 
 
@@ -257,6 +266,101 @@ def test_the_retry_endpoint_404s_for_another_scope(client, auth, db):
     r = client.post("/api/platform/credentials/cred_theirs/retry", headers=auth)
 
     assert r.status_code == 404
+
+
+# ---- System One: health is not enough; decide is the authority (PRD-45 D10) ---------------
+
+def _systemone_cred(db, cid="cred_so", *, model="jev-1.13.0", kind="typesafe",
+                    base_url="https://api.typesafe.ai"):
+    c = _cred(db, cid, kind=kind, model=model)
+    c.base_url = base_url
+    db.commit()
+    return c
+
+
+def test_systemone_health_without_decide_is_not_valid(db, monkeypatch):
+    """Sabotage the CALL: a green /health must not mark the row valid without decide."""
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: frozenset())
+    monkeypatch.setattr(cr.systemone, "ping_decide",
+                        lambda *a, **k: _unavailable(
+                            "systemone returned HTTP 403: Must supply an API key!", status=403))
+    _systemone_cred(db)
+
+    cr.run_once(db)
+
+    row = db.get(Credential, "cred_so")
+    assert row.state == cr.UNREACHABLE
+    assert "403" in row.last_error
+    assert "Must supply an API key" in row.last_error
+
+
+def test_systemone_decide_403_with_green_health_is_unreachable(db, monkeypatch):
+    monkeypatch.setattr(cr.probe, "known_models",
+                        lambda *a, **k: frozenset({"status": "ok"}))
+    monkeypatch.setattr(cr.systemone, "ping_decide",
+                        lambda *a, **k: _unavailable(
+                            "systemone returned HTTP 403: Must supply an API key!", status=403))
+    _systemone_cred(db)
+
+    cr.run_once(db)
+
+    row = db.get(Credential, "cred_so")
+    assert row.state == cr.UNREACHABLE
+    assert "Must supply an API key" in row.last_error
+
+
+def test_systemone_health_404_still_runs_decide(db, monkeypatch):
+    pinged = {"n": 0}
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: None)
+    monkeypatch.setattr(cr.systemone, "ping_decide",
+                        lambda *a, **k: pinged.__setitem__("n", pinged["n"] + 1))
+    _systemone_cred(db)
+
+    cr.run_once(db)
+
+    assert pinged["n"] == 1
+    assert db.get(Credential, "cred_so").state == cr.VALID
+
+
+def test_systemone_wrong_shape_is_unreachable(db, monkeypatch):
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: frozenset())
+    monkeypatch.setattr(cr.systemone, "ping_decide",
+                        lambda *a, **k: _unavailable(
+                            "systemone answered, but not in the System One shape: no `answers`"))
+    _systemone_cred(db)
+
+    cr.run_once(db)
+
+    row = db.get(Credential, "cred_so")
+    assert row.state == cr.UNREACHABLE
+    assert "answered, but not in the System One shape" in row.last_error
+
+
+def test_systemone_empty_health_catalog_does_not_422_a_named_head(db, monkeypatch):
+    """Empty `loaded` is not a model list — decide success is enough."""
+    monkeypatch.setattr(cr.probe, "known_models", lambda *a, **k: frozenset())
+    monkeypatch.setattr(cr.systemone, "ping_decide", lambda *a, **k: None)
+    _systemone_cred(db, model="jev-1.13.0")
+
+    cr.run_once(db)
+
+    row = db.get(Credential, "cred_so")
+    assert row.state == cr.VALID
+    assert row.last_error == ""
+
+
+def test_systemone_a_listed_head_that_health_named_still_refuses(db, monkeypatch):
+    monkeypatch.setattr(cr.probe, "known_models",
+                        lambda *a, **k: frozenset({"english", "multilingual"}))
+    monkeypatch.setattr(cr.systemone, "ping_decide", lambda *a, **k: None)
+    _systemone_cred(db, kind="systemone", model="typed-decisions",
+                    base_url="http://localhost:8090")
+
+    cr.run_once(db)
+
+    row = db.get(Credential, "cred_so")
+    assert row.state == cr.UNREACHABLE
+    assert "does not have model" in row.last_error
 
 
 def test_the_button_defers_when_the_loop_already_took_the_attempt(db, monkeypatch):
