@@ -1720,8 +1720,10 @@ export interface FleetOverview {
   /** What finished delegations measured, per declared vendor × model × lane × requested tier
    *  (PRD-37 D7). Counts, never pooled; the supervisor decides whether `n` is enough. */
   measured: FleetMeasured[];
-  /** Committed preference-matrix catalog (GRPH-866). Always present. */
-  matrix?: { rows: FleetMatrixRow[] };
+  /** Committed preference-matrix catalog (GRPH-866) plus this deployment's tier map
+   *  (GRPH-1003). `rows` are facts a commit changes; `cells` carry the per-deployment
+   *  override beside them. Always present. */
+  matrix?: FleetTierMap;
   /** Recent matrix-launch histogram for mix sliders. n=0 is unmeasured, not 0%. */
   mix?: { n: number; by_harness: Record<string, number>; unreported: number };
 }
@@ -1735,6 +1737,45 @@ export interface FleetMatrixRow {
   status: "verified" | "unverified" | "failed" | "unregistered" | string;
   cost_class: "local" | "cheap" | "frontier" | string;
   local: boolean;
+}
+
+/**
+ * One harness × tier square of the editable tier map (GRPH-1003 / PRD-47 G3).
+ *
+ * Three models are carried, not one, and collapsing them is the defect this shape exists to
+ * prevent: `packaged_model` is what the committed `matrix.toml` says, `override` is what this
+ * deployment chose (null = it chose nothing), and `effective_model` is what `gbfleet` will
+ * actually run. A cleared override falls back to `packaged_model` — never to blank, because an
+ * absent override reading as an absent model is the "absence reads as clean" class.
+ */
+export interface FleetTierCell {
+  harness: string;
+  /** The real tier name from the server. Not a `cheap | frontier` union: a third tier has to
+   *  appear here without a frontend change. */
+  tier: string;
+  /** What the committed matrix says. `""` is legal — a harness with no packaged model. */
+  packaged_model: string;
+  /** The saved per-deployment override, or null when there is none. */
+  override: string | null;
+  /** `override ?? packaged_model` — what will run. */
+  effective_model: string;
+  /** `override !== null`. */
+  overridden: boolean;
+  /** Every model the catalog names for this harness: the picklist. */
+  models: string[];
+  /** Best-measured model per performance grading, or null when NOT MEASURED. A null here must
+   *  never be filled in by a guess (PRD-47 G3). */
+  graded_model: string | null;
+}
+
+/** The catalog facts and this deployment's overrides, served together. */
+export interface FleetTierMap {
+  rows: FleetMatrixRow[];
+  /** One per harness × tier. Empty means the catalog has not been served — which is not the
+   *  same as a failed read, and not the same as "no overrides". */
+  cells: FleetTierCell[];
+  /** True when any cell carries a SAVED override. */
+  overridden: boolean;
 }
 
 export interface FleetMeasured {

@@ -2114,6 +2114,45 @@ class FleetProfile(Base):
     )
 
 
+class TierOverride(Base):
+    """One cell of a deployment's tier map: which model a harness runs for a tier (GRPH-1003).
+
+    `fleet/src/gbfleet/matrix.toml` is TOML package data inside the published wheel, so before
+    this a deployment could not retune its own fleet without a release. This row is the retune.
+
+    **It is an override, never the source of truth** — the packaged matrix stays the default
+    and this layers on top of it. Two consequences the shape carries rather than a comment
+    promising:
+
+    - A cell with no row resolves from the packaged matrix. Clearing the tier map DELETES rows,
+      so "cleared" and "never set" are the same state and neither can read as an empty map —
+      an empty tier map would silently route nothing, which is this repo's recurring defect
+      class wearing a new hat.
+    - `model` names a model the catalog already carries for this harness, refused at write time
+      by `fleet_matrix.set_overrides`. Nothing here can add a harness or a model the committed
+      facts do not name, which is the same containment `FleetProfile` states for taste.
+
+    Per-project, like `fleet_policy`: the Fleet page is project-scoped and the supervisor reads
+    it off the project's `fleet_status`. The cost is understood and deliberate — two boxes on
+    the same release can route a wave differently, so anything reading a wave's routing must
+    read this and never infer it from the wheel version.
+    """
+
+    __tablename__ = "tier_overrides"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    harness: Mapped[str] = mapped_column(String)
+    tier: Mapped[str] = mapped_column(String)
+    model: Mapped[str] = mapped_column(String)
+    #: When this cell was last retuned. A map nobody can date is a map nobody can argue with.
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    __table_args__ = (
+        Index("ix_tier_overrides_cell", "project_id", "harness", "tier", unique=True),
+    )
+
+
 class Delegation(Base):
     """One delegation: what a planner asked for, and what turned up to do it (PRD-35).
 

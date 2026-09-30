@@ -80,6 +80,15 @@ the stage record (what each step dropped, and the winner's four axes with their 
 the platform snapshot date beside the local grid (PRD-41 D12), and what each tier would
 resolve to under the operator's profile. See `fleet/README.md`.
 
+**This file is the default, not the whole answer (GRPH-1003).** A deployment can pin which
+model a harness runs for a tier in the Fleet page's **Tier map**, and `gbfleet` reads those
+overrides off `fleet_status` at wave start. An override can only pin a model this table
+already names for that harness and tier — it decides *which* committed row a tier runs and
+cannot add one — so a resolution is still explainable against the row that proved it. Reading
+a wave's routing therefore means reading the override: the wheel version no longer determines
+it, and two boxes on the same release can route differently by design. `gbfleet doctor`'s
+`tier map` finding says which map the resolutions beside it were drawn under.
+
 ## Naming a model (GRPH-483)
 
 Every vendor takes one and spells it differently. The supervisor **carries** the value and

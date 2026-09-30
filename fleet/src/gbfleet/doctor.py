@@ -795,15 +795,37 @@ def check_matrix(report: Report, matrix_path: str | None = None, *, server: str 
     if server and api_key:
         client = Graphban(base_url=server, api_key=api_key, project_id=project or None)
         try:
-            profile, policy, note, measured, bands, cap_measured, suggestions = read_status(client)
+            (profile, policy, note, measured, bands, cap_measured, suggestions,
+             tier_map) = read_status(client)
             looked_up = "unreachable" not in note
         finally:
             client.close()
         report.add("matrix preferences", PASS if "unreachable" not in note else UNKNOWN, note,
                    "" if "unreachable" not in note else "the resolutions below assume no profile and no policy")
+        # GRPH-1003: the tier map is ROUTING, so the resolutions below are drawn under it.
+        # Printing the packaged answer for a deployment that pinned something else would have
+        # the doctor contradict its own promise — that this is the answer a spawn would give.
+        mat, tier_notes = tier_map.apply(mat)
+        for tier_note in tier_notes:
+            report.add("tier map", UNKNOWN, tier_note,
+                       "the packaged rows for that cell stand; fix the map in the Fleet page")
+        if not tier_map.reachable:
+            report.add("tier map", UNKNOWN, "not read — the server was unreachable",
+                       "the resolutions below use the packaged matrix. A saved tier map is not "
+                       "being ignored, it was never asked: re-run against a reachable server")
+        elif tier_map.overrides:
+            report.add("tier map", PASS, "; ".join(
+                f"{h}/{t} = {mdl}" for (h, t), mdl in sorted(tier_map.overrides.items())),
+                "saved per deployment, so it outlives a restart and is not in the wheel")
+        else:
+            report.add("tier map", PASS, "no override — the packaged matrix governs",
+                       "read from the server, not assumed: clearing a saved map lands here, "
+                       "and never on an empty map that would route nothing")
     else:
         report.add("matrix preferences", UNKNOWN, "no server or key: resolving with no profile, no policy, nothing measured",
                    "pass --server and set GBFLEET_API_KEY to see what a spawn would actually resolve")
+        report.add("tier map", UNKNOWN, "no server or key: only the packaged matrix can be shown",
+                   "pass --server and set GBFLEET_API_KEY to see the tier map this deployment saved")
     _probe_suggestion_lines(report, suggestions, looked_up=looked_up)
     snapshot_at = None
     for cell in (cap_measured or {}).values():

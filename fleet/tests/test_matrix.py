@@ -11,7 +11,7 @@ import pytest
 
 from gbfleet import matrix as m
 from gbfleet.adapters import ADAPTERS
-from gbfleet.mcp import Fleet, handle
+from gbfleet.mcp import Fleet, TierMap, handle
 from gbfleet.tiers import TierTable
 from gbfleet import doctor
 from tests.test_supervisor import _factory, _server
@@ -342,7 +342,7 @@ class _Server:
 def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
     from gbfleet.mcp import read_preferences
 
-    profile, policy, note, measured, cap = read_preferences(_Server({
+    profile, policy, note, measured, cap, _tiers = read_preferences(_Server({
         "agents": [],
         "profile": {"user": "u1", "defaults": ["gbagent", "claude"], "weights": {"cost": 1.0}, "excludes": ["grok"]},
         "policy": {"local_only": True, "allowed_harnesses": []},
@@ -361,7 +361,7 @@ def test_read_preferences_takes_the_profile_and_policy_off_fleet_status():
 def test_read_preferences_parses_capability_cells_as_cap_measured():
     from gbfleet.mcp import read_preferences
 
-    profile, policy, note, measured, cap = read_preferences(_Server({
+    profile, policy, note, measured, cap, _tiers = read_preferences(_Server({
         "agents": [],
         "measured": [
             {"vendor": "gbagent", "model": "q", "capability": "A4", "layer": "project",
@@ -380,12 +380,368 @@ def test_read_preferences_parses_capability_cells_as_cap_measured():
 def test_read_preferences_spells_absence_and_unreachability_rather_than_inventing_a_default():
     from gbfleet.mcp import read_preferences
 
-    profile, policy, note, measured, cap = read_preferences(_Server({"agents": [], "profile": None, "policy": None}))
+    profile, policy, note, measured, cap, _tiers = read_preferences(_Server({"agents": [], "profile": None, "policy": None}))
     assert profile is None and policy == m.Policy() and "profile: none" in note and "policy: none" in note
     assert measured == {} and cap == {}
-    profile, policy, note, measured, cap = read_preferences(_Server(fail=True))
+    profile, policy, note, measured, cap, _tiers = read_preferences(_Server(fail=True))
     assert profile is None and policy == m.Policy() and measured == {} and cap == {}
     assert "unreachable" in note and "connection refused" in note
+
+
+# ---- GRPH-1003: the tier map — a deployment's override, read at wave start -------------------
+#
+# The packaged matrix.toml is wheel data, so before this a deployment retuned its fleet by
+# hand-editing a file inside an installed package. The override lives on the SERVER and is read
+# once per wave start, which is what makes the three properties below worth testing separately:
+# it outlives the process that saved it, clearing it lands on the packaged matrix rather than on
+# nothing, and an unreadable server is a third answer rather than a quiet "no override".
+
+
+class _TierServer:
+    """A server whose tier map lives in a list — standing in for the DB, not for this process.
+
+    Deliberately not a fixture holding parsed state: the point of the restart test is that a
+    NEW supervisor reads the map again, so the map has to live somewhere the supervisor does
+    not own. `calls` is what makes "it never asked" visible.
+    """
+
+    def __init__(self, overrides=None, fail=False):
+        self.overrides = list(overrides or [])
+        self.fail, self.calls = fail, 0
+
+    def fleet_status(self, **kw):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("connection refused")
+        return {"agents": [],
+                "tier_map": {"overrides": self.overrides, "overridden": bool(self.overrides)}}
+
+
+def _tiered_matrix() -> m.Matrix:
+    """Two committed rows for one cell, so a pin is observable as a change of winner."""
+    return _matrix(
+        _row("gbagent", "qwen3.6:35b-a3b-coding-mtp-det", vendor="gbagent", order=1),
+        _row("gbagent", "qwen3-coder:30b", vendor="gbagent", order=9),
+        _row("claude", "opus", vendor="anthropic", tier="frontier", order=1),
+    )
+
+
+def _wave_start(server, mat):
+    """What a supervisor does at wave start: read the server once, layer the map."""
+    from gbfleet.mcp import read_preferences
+    _profile, _policy, note, _measured, _cap, tier_map = read_preferences(server)
+    layered, notes = tier_map.apply(mat)
+    return tier_map, layered, notes, note
+
+
+def test_a_tier_override_survives_a_fleet_restart():
+    """Criterion: an override survives a fleet restart.
+
+    Two wave starts against one server, the second a fresh read with nothing carried over —
+    which is what a restart is, since the map is in the deployment's DB and not in the wheel
+    or in the process that saved it. `server.calls == 2` is the half that matters: a supervisor
+    that cached the first read would still route correctly here and would stop honouring a
+    retune, and that is the failure this pins down.
+    """
+    from gbfleet.mcp import read_preferences
+
+    mat = _tiered_matrix()
+    assert mat.resolve(tier="cheap").winner.model == "qwen3.6:35b-a3b-coding-mtp-det", (
+        "control: the packaged matrix resolves the cell by order, so the pin has something to change")
+
+    server = _TierServer([{"harness": "gbagent", "tier": "cheap", "model": "qwen3-coder:30b"}])
+
+    first, layered, notes, note = _wave_start(server, mat)
+    assert notes == [] and first.reachable is True
+    assert first.overrides == {("gbagent", "cheap"): "qwen3-coder:30b"}
+    assert "tier map: 1 override(s)" in note
+    assert layered.resolve(tier="cheap").winner.model == "qwen3-coder:30b"
+
+    # THE RESTART. A new supervisor process: fresh read_preferences, fresh Fleet, no state.
+    second, relayered, _notes, _note = _wave_start(server, mat)
+    assert second is not first
+    assert second.overrides == first.overrides
+    assert relayered.resolve(tier="cheap").winner.model == "qwen3-coder:30b"
+    assert server.calls == 2, "the restarted wave did not read the tier map — it would have " \
+                              "routed on a copy of the one the last process happened to see"
+
+    # And the operator retuned it between the two waves, which is the reason to re-read.
+    server.overrides = [{"harness": "gbagent", "tier": "cheap", "model": "qwen3.6:35b-a3b-coding-mtp-det"}]
+    _profile, _policy, _n, _meas, _cap, third = read_preferences(server)
+    again, _notes = third.apply(mat)
+    assert again.resolve(tier="cheap").winner.model == "qwen3.6:35b-a3b-coding-mtp-det"
+    assert server.calls == 3
+
+
+def test_clearing_a_tier_override_falls_back_to_the_packaged_matrix_and_not_to_empty():
+    """Criterion: clearing falls back to the packaged matrix, never to empty.
+
+    An empty tier map routes nothing, and "you cleared it, so now you have no fleet" is the
+    reassuring-looking reading of a cleanup button. Both halves of the clear are asserted —
+    no overrides at all, and one cell of a two-cell map cleared — because emptying a single
+    cell while leaving the rest is the quieter version of the same defect.
+    """
+    mat = _tiered_matrix()
+    pinned, _notes = m.apply_tier_overrides(
+        mat, {("gbagent", "cheap"): "qwen3-coder:30b", ("claude", "frontier"): "opus"})
+    assert len(pinned.rows) == 2 and pinned.resolve(tier="cheap").winner.model == "qwen3-coder:30b"
+
+    # Cleared entirely: the whole committed matrix stands, rows and resolution.
+    cleared, notes = m.apply_tier_overrides(mat, {})
+    assert notes == []
+    assert len(cleared.rows) == len(mat.rows) == 3, "clearing emptied the map"
+    assert {r.model for r in cleared.rows} == {r.model for r in mat.rows}
+    assert cleared.resolve(tier="cheap").winner.model == "qwen3.6:35b-a3b-coding-mtp-det"
+    assert cleared.resolve(tier="frontier").winner.model == "opus"
+
+    # One cell cleared: the other cell's pin survives, and the cleared one is packaged again.
+    partial, _notes = m.apply_tier_overrides(mat, {("claude", "frontier"): "opus"})
+    assert len(partial.rows) == 3
+    assert partial.resolve(tier="cheap").winner.model == "qwen3.6:35b-a3b-coding-mtp-det"
+
+    # Through a server reporting the map cleared — reachable, and saying "packaged".
+    tier_map, layered, notes, note = _wave_start(_TierServer([]), mat)
+    assert tier_map.reachable is True and tier_map.overrides == {} and notes == []
+    assert len(layered.rows) == 3 and "tier map: packaged" in note
+
+
+def test_an_unreachable_server_is_reported_and_is_not_read_as_no_override():
+    """Criterion: an unreachable server is reported, not treated as "no override".
+
+    The two states route identically — both end up on the packaged matrix — so routing cannot
+    tell them apart and the report has to. A deployment that saved a tier map and then lost
+    its server must be told its map was NOT READ, because the alternative reads as "your
+    override was dropped" and sends somebody to re-save a map that is still there.
+    """
+    mat = _tiered_matrix()
+
+    tier_map, layered, notes, note = _wave_start(_TierServer(fail=True), mat)
+    assert tier_map.reachable is False, "unreachability was flattened into an empty map"
+    assert tier_map.overrides == {}
+    assert layered is mat and notes == []
+    assert "unreachable" in note and "connection refused" in note
+    assert "packaged matrix" in note, "the note does not say what the wave routes on"
+    assert "not read" in note, "the note does not distinguish unread from empty"
+
+    # THE CONTROL. A reachable server with genuinely no override: same routing, same empty
+    # dict — and it must not be the same ANSWER, or the distinction above is decoration.
+    ok_map, _layered, _notes, ok_note = _wave_start(_TierServer([]), mat)
+    assert ok_map.reachable is True and ok_map.overrides == {}
+    assert "unreachable" not in ok_note and "not read" not in ok_note
+    assert (ok_map.reachable, ok_note) != (tier_map.reachable, note)
+
+
+def test_an_override_naming_a_model_the_matrix_lacks_keeps_the_cell_packaged():
+    """The server refuses such a map at write time; this is the belt behind it.
+
+    Dropping the cell's rows would empty the cell, and an empty cell reads as an applied
+    override while routing nothing — the same defect one level down, in the layer whose whole
+    job is to not do that.
+    """
+    mat = _tiered_matrix()
+    out, notes = m.apply_tier_overrides(mat, {("gbagent", "cheap"): "gpt-9-nobody-committed"})
+    assert len(out.rows) == len(mat.rows), "the cell was emptied instead of left packaged"
+    assert out.resolve(tier="cheap").winner.model == "qwen3.6:35b-a3b-coding-mtp-det"
+    assert len(notes) == 1 and "carries no row for" in notes[0]
+    assert "packaged rows for that cell stand" in notes[0]
+
+
+def test_an_override_pins_one_cell_and_leaves_the_others_alone():
+    """Layering, not replacing: a map that retuned cheap must not touch frontier."""
+    mat = _tiered_matrix()
+    out, notes = m.apply_tier_overrides(mat, {("gbagent", "cheap"): "qwen3-coder:30b"})
+    assert notes == []
+    assert [(r.harness, r.tier, r.model) for r in out.rows] == [
+        ("gbagent", "cheap", "qwen3-coder:30b"), ("claude", "frontier", "opus")]
+    assert out.resolve(tier="frontier").winner.model == "opus"
+    assert out.path == mat.path
+
+
+def test_tier_map_of_skips_a_cell_it_cannot_pin():
+    """A payload is not a promise: a half-formed entry is dropped, not guessed at."""
+    assert m.tier_map_of(None) == {}
+    assert m.tier_map_of({}) == {}
+    assert m.tier_map_of({"overrides": []}) == {}
+    assert m.tier_map_of({"overrides": [
+        {"harness": "gbagent", "tier": "cheap", "model": "qwen3-coder:30b"},
+        {"harness": "", "tier": "cheap", "model": "x"},
+        {"harness": "claude", "tier": "frontier", "model": ""},
+        {"tier": "cheap", "model": "y"},
+        "not a cell",
+        None,
+    ]}) == {("gbagent", "cheap"): "qwen3-coder:30b"}
+
+
+def _two_model_matrix_file(tmp_path: Path) -> Path:
+    """A committed matrix with one cell and two candidate models, so a pin is observable in
+    the doctor's own resolution line. The packaged matrix cannot serve here: its only
+    two-model cell pairs a verified row with a FAILED one, and the resolver drops failed rows,
+    so a pin would read as a refusal rather than as a change of winner."""
+    path = tmp_path / "matrix.toml"
+    path.write_text("""
+[[rows]]
+harness = "gbagent"
+model = "model-a"
+vendor = "gbagent"
+lane = "any"
+tier = "cheap"
+status = "unverified"
+order = 1
+cost_class = "local"
+local = true
+
+[[rows]]
+harness = "gbagent"
+model = "model-b"
+vendor = "gbagent"
+lane = "any"
+tier = "cheap"
+status = "unverified"
+order = 9
+cost_class = "local"
+local = true
+""", encoding="utf-8")
+    return path
+
+
+def test_doctor_says_which_tier_map_it_resolved_under(git_repo: Path, tmp_path: Path, monkeypatch):
+    """The doctor promises its resolutions are what a spawn would give, so it must resolve
+    UNDER the saved map and name it — a packaged answer printed beside a deployment that
+    pinned something else is the doctor contradicting itself.
+
+    Asserted on the RESOLUTION, not only on the `tier map` finding: the finding is built from
+    the overrides it read, so it survives a doctor that reads the map and then resolves
+    without it. Sabotage proved that — dropping `mat, _ = tier_map.apply(mat)` left the
+    finding green and the answer wrong.
+    """
+    from gbfleet import doctor as doctor_mod
+
+    def fake_read(client):
+        return (None, m.Policy(), "profile: none; policy: none; measured cells: 0; "
+                "tier map: 1 override(s)", {}, {}, {}, [],
+                TierMap(overrides={("gbagent", "cheap"): "model-b"}))
+
+    import gbfleet.mcp as mcp_mod
+    monkeypatch.setattr(mcp_mod, "read_status", fake_read)
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
+    matrix_path = str(_two_model_matrix_file(tmp_path))
+
+    report = doctor_mod.run(repo=git_repo, out=io.StringIO(), server="http://gb.invalid",
+                            api_key="k", project="p", matrix_path=matrix_path)
+    by = {f.name: f for f in report.findings}
+    assert "tier map" in by, "the doctor drew resolutions without saying what routed them"
+    assert by["tier map"].status == "PASS"
+    assert "gbagent/cheap = model-b" in by["tier map"].detail
+    # THE POINT: the resolution beside it was drawn under the override.
+    assert by["resolve cheap"].detail.startswith("gbagent:model-b"), (
+        f"the doctor resolved on the packaged matrix while reporting an override: "
+        f"{by['resolve cheap'].detail}")
+
+    # Control: the same matrix with no override resolves to the packaged winner, so the
+    # assertion above is about the pin and not about which row sorts first.
+    monkeypatch.setattr(mcp_mod, "read_status", lambda client: (
+        None, m.Policy(), "profile: none; policy: none; measured cells: 0; tier map: packaged",
+        {}, {}, {}, [], TierMap()))
+    plain = doctor_mod.run(repo=git_repo, out=io.StringIO(), server="http://gb.invalid",
+                           api_key="k", project="p", matrix_path=matrix_path)
+    plain_by = {f.name: f for f in plain.findings}
+    assert plain_by["resolve cheap"].detail.startswith("gbagent:model-a")
+    assert "no override" in plain_by["tier map"].detail
+
+
+def test_doctor_without_a_server_does_not_present_the_packaged_matrix_as_the_tier_map(git_repo: Path):
+    from gbfleet import doctor as doctor_mod
+    report = doctor_mod.run(repo=git_repo, out=io.StringIO())
+    by = {f.name: f for f in report.findings}
+    assert by["tier map"].status == "UNKNOWN"
+    assert "no server or key" in by["tier map"].detail
+
+
+def test_doctor_separates_an_unread_tier_map_from_an_empty_one(git_repo: Path, monkeypatch):
+    """The doctor's own copy of the absence rule: `no override` and `not read` are different
+    findings, and the second must not be printed in the first's reassuring words."""
+    from gbfleet import doctor as doctor_mod
+
+    def fake_read(client):
+        return (None, m.Policy(), "fleet_status unreachable (connection refused); resolving "
+                "with no profile or policy and the packaged matrix — the tier map was not "
+                "read, not empty", {}, {}, {}, [], TierMap(reachable=False))
+
+    import gbfleet.mcp as mcp_mod
+    monkeypatch.setattr(mcp_mod, "read_status", fake_read)
+    monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
+    report = doctor_mod.run(repo=git_repo, out=io.StringIO(), server="http://gb.invalid",
+                            api_key="k", project="p")
+    by = {f.name: f for f in report.findings}
+    assert by["tier map"].status == "UNKNOWN"
+    assert "unreachable" in by["tier map"].detail
+    assert "never asked" in by["tier map"].remedy
+
+
+# ---- THE CALLS: a correct layer nobody invokes is the defect this repo keeps shipping ---------
+
+
+def test_cli_layers_the_map_onto_the_fleet_matrix_and_records_what_it_read(tmp_path: Path):
+    """What `_apply_tier_map` does, driven rather than read: the Fleet's matrix is pinned and
+    the map it was pinned by is kept, so a wave's routing can be explained afterwards.
+
+    `matrix=None` means "--tier flags only, no resolver" and must stay None — loading one
+    here would hand the run a resolver its caller deliberately did not ask for.
+    """
+    from gbfleet import cli as cli_mod
+
+    tm = TierMap(overrides={("gbagent", "cheap"): "qwen3-coder:30b"})
+    fleet = Fleet(repo=tmp_path, workspace=tmp_path, client=None,
+                  launch_for=lambda *a, **k: None, matrix=_tiered_matrix())
+    cli_mod._apply_tier_map(fleet, tm)
+    assert fleet.tier_map is tm
+    assert fleet.matrix is not None
+    assert fleet.matrix.resolve(tier="cheap").winner.model == "qwen3-coder:30b"
+    assert fleet.matrix.resolve(tier="frontier").winner.model == "opus"
+
+    bare = Fleet(repo=tmp_path, workspace=tmp_path, client=None,
+                 launch_for=lambda *a, **k: None, matrix=None)
+    cli_mod._apply_tier_map(bare, tm)
+    assert bare.matrix is None, "a run with no resolver was given one"
+    assert bare.tier_map is tm
+
+
+def test_both_mcp_entry_points_hand_the_tier_map_to_the_fleet():
+    """THE CALL. `_apply_tier_map` is correct and driven above; this pins that the two
+    processes that build a Fleet actually call it. Deleting either call leaves every other
+    test in this file green and ships a supervisor that reads the tier map, prints it in the
+    launch note, and then resolves without it — a correct function nobody calls, which in this
+    repo means a wave that routes on the wheel while the operator believes they retuned it.
+    """
+    import inspect
+    from gbfleet import cli as cli_mod
+
+    for fn in (cli_mod._serve_stdio, cli_mod._serve_attached):
+        src = inspect.getsource(fn)
+        assert "_apply_tier_map(fleet, tier_map)" in src, (
+            f"{fn.__name__} reads the tier map off read_preferences and never applies it")
+        assert "cap_measured, tier_map = read_preferences(client)" in src, (
+            f"{fn.__name__} no longer takes the tier map off the launch read")
+    assert "tier_map.apply(fleet.matrix)" in inspect.getsource(cli_mod._apply_tier_map), (
+        "_apply_tier_map records the map without layering it onto the matrix")
+
+
+def test_the_until_loop_layers_the_tier_map_at_wave_start():
+    """THE CALL, in the other wave-start path. `_loop` is where `gbfleet until` resolves a
+    tier. Adding the map to its `read_preferences` unpack without layering it would leave
+    `until` routing on the packaged matrix while `mcp` honoured the override — two supervisors
+    on one release giving two answers, which is the cost the item's decision accepts only when
+    the override is actually read.
+    """
+    import inspect
+    from gbfleet.until import _loop
+
+    src = inspect.getsource(_loop)
+    assert "cap_measured, tier_map = read_preferences(supervisor)" in src, (
+        "_loop no longer takes the tier map off the launch read")
+    assert "tier_map.apply(matrix)" in src, "_loop reads the tier map and never applies it"
+    assert "if matrix is not None:" in src, (
+        "_loop must not load a matrix its caller deliberately left None")
 
 
 def test_spawn_under_the_launch_profile_and_policy_explains_who_and_what_decided(fleet: Fleet, monkeypatch):
@@ -508,7 +864,8 @@ def test_doctor_resolves_under_the_servers_profile_policy_and_measured_cells(git
                 {("gbagent", "qwen3.6:35b-a3b-coding-mtp-det", "backend", "cheap"):
                     {"S": m.Sample(1.0, 2), "L": m.Sample(0.67, 3)}},
                 {},
-                [])
+                [],
+                TierMap())
     import gbfleet.mcp as mcp_mod
     monkeypatch.setattr(mcp_mod, "read_status", fake_read)
     monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
@@ -542,7 +899,8 @@ def test_doctor_prints_probe_suggestions_from_fleet_status(git_repo: Path, monke
         return (None, m.Policy(), "profile: none; policy: none; measured cells: 0",
                 {}, {}, {},
                 [{"vendor": "acme", "model": "nova", "binary_version": "1.0.0",
-                  "trigger": "new_row", "n": 1}])
+                  "trigger": "new_row", "n": 1}],
+                TierMap())
     import gbfleet.mcp as mcp_mod
     monkeypatch.setattr(mcp_mod, "read_status", fake_read)
     monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))
@@ -560,7 +918,7 @@ def test_doctor_empty_probe_suggestions_are_none_only_after_a_lookup(
 
     def fake_read(client):
         return (None, m.Policy(), "profile: none; policy: none; measured cells: 0",
-                {}, {}, {}, [])
+                {}, {}, {}, [], TierMap())
     import gbfleet.mcp as mcp_mod
     monkeypatch.setattr(mcp_mod, "read_status", fake_read)
     monkeypatch.setattr(m, "installed_checker", lambda *a, **k: (lambda r: (True, "")))

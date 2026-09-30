@@ -36,6 +36,9 @@ export const keys = {
   prdEvidence: (id: string) => ["prd-evidence", id] as const,
   auditCoverage: (id: string) => ["audit-coverage", id] as const,
   gitops: (projectId: string) => ["gitops", projectId] as const,
+  /** Per-deployment tier map (GRPH-1003). Keyed by project because an override IS a
+   *  per-deployment choice: the same committed catalog resolves differently in two projects. */
+  fleetTierMap: (projectId?: string) => ["fleet-tier-map", projectId] as const,
   updateCheck: ["update-check"] as const,
   /** No project id: log export is one config for the whole box (PRD-47 S15). */
   logExport: ["log-export"] as const,
@@ -966,6 +969,56 @@ export function useFleet(projectId?: string) {
     // one arrives. Harmless-looking, and exactly the class of thing D1 deleted.
     enabled: !!projectId,
     refetchInterval: 15000,
+  });
+}
+
+/**
+ * The editable tier map (GRPH-1003 / PRD-47 G3).
+ *
+ * Its own query rather than a read off `useFleet`, which polls every 15s: the panel holds an
+ * unsaved draft, and a poll landing underneath it is how an operator loses an edit they were
+ * mid-way through. Not polled for the same reason. Gated on the project id exactly like
+ * `useFleet` — without one the server resolves against its default project, which would
+ * render (and then SAVE) another deployment's tier map.
+ */
+export function useFleetTierMap(projectId?: string) {
+  return useQuery({
+    queryKey: keys.fleetTierMap(projectId),
+    queryFn: () => api.fleetTierMap(projectId),
+    enabled: !!projectId,
+  });
+}
+
+/**
+ * Save the draft overrides. Both writes seed the cache from the response, so the panel's
+ * "what is saved" baseline moves without a second round trip — and `fleet` is invalidated
+ * because its `matrix` carries the same cells.
+ *
+ * `projectId` is required here where the read above gates on it: a write with no project has
+ * no honest fallback, and `project_id: ""` would be a wrong-project write rather than a
+ * refused one (PRD-21 D1.1).
+ */
+export function useSaveFleetTierMap(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (cells: { harness: string; tier: string; model: string | null }[]) =>
+      api.saveFleetTierMap({ project_id: projectId, cells }),
+    onSuccess: (map) => {
+      qc.setQueryData(keys.fleetTierMap(projectId), map);
+      qc.invalidateQueries({ queryKey: ["fleet", projectId] });
+    },
+  });
+}
+
+/** Drop every override for the project. What remains is the packaged matrix, not blanks. */
+export function useClearFleetTierMap(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.clearFleetTierMap(projectId),
+    onSuccess: (map) => {
+      qc.setQueryData(keys.fleetTierMap(projectId), map);
+      qc.invalidateQueries({ queryKey: ["fleet", projectId] });
+    },
   });
 }
 

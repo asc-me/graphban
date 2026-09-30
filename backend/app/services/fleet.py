@@ -871,6 +871,7 @@ def fleet_status(db: Session, project_id: str | None = None, *,
     makes on every tick — no new tool, no schema property.
     """
     from app.services import delegation as delegation_svc
+    from app.services import fleet_matrix
     from app.services import fleet_profiles
 
     # GRPH-850: release items held by offline agents BEFORE building the roster, so the
@@ -918,6 +919,14 @@ def fleet_status(db: Session, project_id: str | None = None, *,
         # styles/queue.css" is the sentence an operator watching an idle wave needed and
         # could not read anywhere. Always present: empty means nothing is in review.
         "review_holds": review_holds(db, project_id),
+        # GRPH-1003: this deployment's tier map — which model each harness runs for a tier.
+        # It rides here because the supervisor reads it at wave start on the call it already
+        # makes, and because a wave's routing must be READ rather than inferred from the wheel
+        # version: two boxes on one release can now route differently, by design.
+        # Always present, and an empty `overrides` means the packaged matrix governs — a
+        # different claim from "the server could not be reached", which never gets this far
+        # (`gbfleet.mcp.read_status` catches that and spells it out instead).
+        "tier_map": fleet_matrix.overrides_for(db, project_id),
     }
 
 
