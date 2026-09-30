@@ -245,6 +245,19 @@ def run(
                 f"--prd {prd} cannot be combined with pre-minted seats: a seat from --seats "
                 "carries no scope, so those children could claim past the wave. Drop --seats "
                 "and let the loop mint scoped seats, or drop --prd and accept an unscoped wave")
+        if pool and limits.max_workers <= 0:
+            # GRPH-988. `--max-workers 0` pins `need` at 0, so the delegation branch can never
+            # fire and the review branch is this supervisor's ONLY spawner — every child it
+            # starts is a reviewer, and every one needs a seat that cannot claim build work.
+            # A pre-minted seat cannot be that: a `--seats` file carries codes, and only the
+            # server can grant the limit. Refused rather than worked around, because the
+            # alternative is an operator who typed "build nothing" watching a child build.
+            #
+            # Inside the try for the same reason as the `--prd` refusal above.
+            raise ConfigError(
+                "--max-workers 0 cannot be combined with pre-minted seats: every child this "
+                "supervisor spawns is a reviewer, and only the server can mint a seat that may "
+                "review but not claim. Drop --seats and let the loop mint review-only seats")
         with hold(repo, state) as acquired:
             wave.lock = acquired
             leftover: list[Child] = []
@@ -431,6 +444,9 @@ def _loop(
     # check in `supervisor` exists to avoid, on the check built to stop it.
     if prd:
         check_scope_is_honoured(planner, prd)
+    # GRPH-988: a wave that builds nothing must be able to mint seats that cannot claim.
+    if limits.max_workers <= 0:
+        check_review_only_is_honoured(planner)
     remote = wt_mod.remote_for(repo)
     # GRPH-847. An explicit `--base` resolves to `origin/<branch>` and refuses when the
     # branch does not exist on the remote — no silent fallback to the default ref. A fallback
@@ -711,6 +727,15 @@ def _loop(
         # fact it measures — a child was spawned against unheld review rows, exited,
         # and the rows are still unheld — not off a role that no longer exists.
         # A live child blocks a second spawn (just as live_reviewers did before).
+        #
+        # GRPH-988: the ROLE stays `worker` — `reviewer` merged into it in S3, and a worker
+        # builds and reviews — but the SEAT is review-only, because the child this branch
+        # spawns was never meant to build. Minting a plain worker seat here meant a supervisor
+        # started with `--max-workers 0` (need pinned at 0, so this branch is its ONLY
+        # spawner) still put a child on the board that could `claim_next`: one claimed
+        # GRPH-965 and built it on the reviewer's branch while the child actually assigned to
+        # that item produced nothing. The authority is the seat, not the prompt, so the gate is
+        # server-side (`items.review_only_seat`) and this is only the mint that asks for it.
         unheld_review = [r for r in rows if not r.get("review_claimed_by")]
         # No memory gate on this branch, deliberately (GRPH-842): `not live` means nothing
         # is running, and the gate never refuses the first child — so a check here could
@@ -725,7 +750,7 @@ def _loop(
             seat, minted_one = _take_seat(
                 pool, planner, agent_id, wave_name, server, api_key,
                 mint_left=mint_left, mint_deadline=mint_deadline, sleep=sleep,
-                role="worker", prd=prd,
+                role="worker", prd=prd, review_only=True,
             )
             if minted_one:
                 minted += 1
@@ -925,6 +950,44 @@ def check_seat_scope_is_honoured(planner: Graphban, prd: str) -> None:
     # `delegate` absent from the manifest entirely is a different problem, and the loop's own
     # handling of a missing tool reports it better than a guess here would.
     observe.emit("scope_unverified", detail="delegate is not in the tool manifest")
+
+
+def check_review_only_is_honoured(planner: Graphban) -> None:
+    """Refuse `--max-workers 0` when the server cannot mint a review-only seat (GRPH-988).
+
+    The same argument as the two probes above and the same instrument as the second: read
+    `tools/list`, do not mint a seat to find out. A server that has never heard of
+    `review_only` does not refuse it — `_validate_args` ignores an unknown extra — so it
+    answers with a plain worker seat and nothing downstream can tell. That is the defect this
+    exists to close, reintroduced silently against an older server, while the operator reads
+    the flag they typed as a promise.
+
+    Probed only at `--max-workers 0`, and the narrowing is the point rather than an
+    optimisation. At any other value the review branch is one spawner among several and a
+    reviewer child that can also claim is today's behaviour — unfixed, not newly broken. At
+    zero it is the whole wave: `need` is pinned at 0, the delegation branch cannot fire, and
+    every child this supervisor starts comes from the review branch.
+    """
+    try:
+        tools = planner.list_tools()
+    except (ToolFailed, NotPermitted, ServerUnreachable) as exc:
+        observe.emit("review_only_unverified",
+                     detail=f"could not read the tool manifest: {exc}")
+        return
+    for tool in tools:
+        if not isinstance(tool, dict) or tool.get("name") != "mint_enrolment":
+            continue
+        props = ((tool.get("inputSchema") or {}).get("properties") or {})
+        if "review_only" in props:
+            return
+        raise ConfigError(
+            "--max-workers 0 was given, but this server's `mint_enrolment` takes no "
+            "`review_only`: every child this supervisor spawns is a reviewer, and a seat the "
+            "server cannot limit is a seat that can claim build work — so this wave would "
+            "build while reporting that it builds nothing. Upgrade the server, or raise "
+            "--max-workers and accept that its children can claim")
+    observe.emit("review_only_unverified",
+                 detail="mint_enrolment is not in the tool manifest")
 
 
 class _Repeats:
@@ -1599,6 +1662,7 @@ def _take_seat(
     sleep: Callable[[float], None],
     role: str = "worker",
     prd: str | None = None,
+    review_only: bool = False,
 ) -> tuple[Seat, bool]:
     """Pre-minted pool first (workers). S6: all seats are workers now.
 
@@ -1606,12 +1670,21 @@ def _take_seat(
     is none. That is not silently accepted: `run` refuses `--prd` together with pre-minted
     seats, because a wave that reports as scoped while half its children are not is the failure
     mode this scope exists to remove.
+
+    GRPH-988: `review_only` NEVER takes from the pool, for the same reason at one layer down.
+    A seats file carries codes and not powers — there is no way to pre-mint a seat that may
+    review but may not claim — so popping one here would hand a reviewer child the
+    `claim_next` its own wave was forbidden. Enforced at the one place a seat is chosen rather
+    than left to the startup refusal, because `--max-workers 0` is not the only way to reach
+    the review branch: a wave at full worker capacity reaches it too, and its pool is live.
     """
-    if pool:
+    if pool and not review_only:
         return pool.pop(0), False
     code = _mint(planner, agent_id, wave_name, mint_left=mint_left,
-                 mint_deadline=mint_deadline, sleep=sleep, role=role, prd=prd)
-    return Seat(code=code, server_url=server, api_key=api_key, role=role), True
+                 mint_deadline=mint_deadline, sleep=sleep, role=role, prd=prd,
+                 review_only=review_only)
+    return Seat(code=code, server_url=server, api_key=api_key, role=role,
+                review_only=review_only), True
 
 
 def _mint(
@@ -1624,6 +1697,7 @@ def _mint(
     sleep: Callable[[float], None],
     role: str = "worker",
     prd: str | None = None,
+    review_only: bool = False,
 ) -> str:
     last: Exception | None = None
     tries = max(1, mint_left)
@@ -1633,7 +1707,7 @@ def _mint(
         try:
             payload = planner.call(
                 "mint_enrolment", agent_id=agent_id, role=role, wave=wave_name,
-                **_seat_scope(prd),
+                review_only=review_only, **_seat_scope(prd),
             )
         except NotPermitted as exc:
             raise ConfigError(str(exc)) from exc

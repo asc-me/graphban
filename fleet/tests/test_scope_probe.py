@@ -120,3 +120,75 @@ def test_an_unreadable_manifest_does_not_refuse_the_wave():
     """Same rule as the unreachable server above: could not ask is not evidence."""
     until.check_scope_is_honoured(
         Server(filters=True, manifest_error=ServerUnreachable("down")), "SA-P11")
+
+
+# ---- the third probe: can this server mint a seat that cannot claim? (GRPH-988) --------------
+
+class MintServer:
+    """Answers `tools/list` and nothing else — the review-only probe reads the manifest, so a
+    `call` reaching this class is the probe doing the thing it must not."""
+
+    def __init__(self, review_only=True, manifest_error=None):
+        self.review_only, self.manifest_error = review_only, manifest_error
+        self.asked = []
+
+    def call(self, tool, **kw):
+        self.asked.append((tool, kw))
+        raise AssertionError(f"the review-only probe called {tool}; it must only read the "
+                             "manifest, because the alternative is minting a real seat to find "
+                             "out whether seats can be limited")
+
+    def list_tools(self):
+        if self.manifest_error is not None:
+            raise self.manifest_error
+        props = {"agent_id": {"type": "string"}, "role": {"type": "string"}}
+        if self.review_only:
+            props["review_only"] = {"type": "boolean"}
+        return [{"name": "mint_enrolment", "inputSchema": {"properties": props}}]
+
+
+def test_a_server_that_cannot_mint_a_review_only_seat_is_refused():
+    """THE POINT for GRPH-988. A server that has never heard of `review_only` drops the
+    argument and mints a plain worker seat, so a supervisor started with `--max-workers 0` —
+    a promise that it builds nothing — would put a child on the board that can `claim_next`,
+    and every report would say the wave was review-only."""
+    with pytest.raises(until.ConfigError) as exc:
+        until.check_review_only_is_honoured(MintServer(review_only=False))
+
+    said = str(exc.value)
+    assert "no `review_only`" in said
+    assert "claim build work" in said, "did not say what it would actually do"
+    assert "Upgrade the server" in said, "refused without a remedy"
+
+
+def test_a_server_that_can_mint_review_only_is_accepted():
+    until.check_review_only_is_honoured(MintServer(review_only=True))
+
+
+def test_the_review_only_probe_reads_the_manifest_rather_than_minting_a_seat():
+    """The same instrument as the seat-scope probe, for the same reason: a seat is the thing
+    being bounded, and minting one to find out whether it can be bounded leaves a live
+    credential behind on every server that passes."""
+    server = MintServer(review_only=True)
+
+    until.check_review_only_is_honoured(server)
+
+    assert server.asked == [], "the probe called a tool"
+
+
+def test_an_unreadable_manifest_does_not_refuse_a_review_only_wave():
+    """Could not ask is not evidence either way, and refusing here would turn a transient
+    outage into a config error — the rule the two probes above already follow."""
+    until.check_review_only_is_honoured(
+        MintServer(manifest_error=ServerUnreachable("down")))
+
+
+def test_a_manifest_with_no_mint_enrolment_does_not_refuse_the_wave():
+    """`mint_enrolment` absent entirely is a different problem — a credential that cannot mint
+    at all — and the loop's own handling of the first failed mint reports it better than a
+    guess here would. Same fallthrough as the seat-scope probe's missing `delegate`."""
+    class NoMint(MintServer):
+        def list_tools(self):
+            return [{"name": "delegate", "inputSchema": {"properties": {}}}]
+
+    until.check_review_only_is_honoured(NoMint())

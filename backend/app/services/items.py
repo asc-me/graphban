@@ -1739,6 +1739,32 @@ class BoundSeatBusy(OutOfScope):
     """
 
 
+class ReviewOnlySeat(Exception):
+    """This agent's SEAT may review work and may never TAKE build work (GRPH-988).
+
+    Deliberately NOT a subclass of `OutOfScope`, and the difference is the whole design.
+    Every `except OutOfScope` in this codebase SKIPS the candidate and carries on —
+    `next_cluster`'s neighbour loop, the bound seat's registration — which is right for one
+    item outside a scope and wrong here: a review-only seat is outside EVERY item's scope, so
+    a skip loop would sweep the whole board and hand back an empty batch. That reads as
+    "nothing was ready", the reassuring answer, in place of "you may not take any". Inheriting
+    the scope hierarchy would make that the behaviour of every path that already handles
+    scope, and nothing would fail.
+    """
+
+
+#: One sentence for both claim writes (GRPH-988), for the reason `claim_item`'s docstring
+#: gives for there being only two of them: the message a child acts on should not depend on
+#: which door it knocked at. It names the remedy the child actually has — `claim_review` —
+#: and says that an empty answer there is a normal exit rather than a failure, because a
+#: review-only child that reads the refusal as "try something else" has nothing else to try.
+REVIEW_ONLY_REFUSAL = (
+    "this seat is review-only: it was minted to drain the review queue and may not take build "
+    "work. Call claim_review; when that answers claimed=false, exit — an empty review queue "
+    "is the normal end of a review-only run, not a failure."
+)
+
+
 def open_bound_item(db: Session, agent_id: str | None) -> str | None:
     """The key of the item this agent's seat is BOUND to, while it is not yet in review or
     done — else None (GRPH-948). An unbound seat, or none, has no bound item."""
@@ -1794,6 +1820,30 @@ def held_by_a_seat(db: Session, agent_id: str | None) -> bool:
         return False
     agent = db.get(Agent, agent_id)
     return bool(agent is not None and agent.enrolment_id)
+
+
+def review_only_seat(db: Session, agent_id: str | None) -> bool:
+    """Is this agent on a seat minted REVIEW-ONLY (GRPH-988)?
+
+    Answered through the AGENT's enrolment rather than passed in, for the reason `seat_scope`
+    gives: the caller that would pass it is the child, and the whole point is that the child
+    does not get a vote. A supervisor told to build nothing mints these for the children it
+    spawns to drain the review queue; without a server-side flag the only thing saying
+    "review, do not build" was the child's prompt, which is not a control.
+
+    NOT keyed on role. `reviewer` merged into `worker` in S3 (PRD-39) precisely so that one
+    agent claims, builds and reviews, and the self-review ban is keyed on authorship — so a
+    role check here would either refuse every worker (including a person's own agent, which
+    `held_by_a_seat` exists to leave alone) or nothing at all. An agent with no enrolment
+    reads False and behaves exactly as it did.
+    """
+    if not agent_id:
+        return False
+    agent = db.get(Agent, agent_id)
+    if agent is None or not agent.enrolment_id:
+        return False
+    seat = db.get(Enrolment, agent.enrolment_id)
+    return bool(seat is not None and seat.review_only)
 
 
 def in_scope(item: Item, scope: str) -> bool:
@@ -1863,6 +1913,16 @@ def claim_next(
     # Caller-supplied rather than remembered server-side: a decline is a fact about this
     # agent's turn, not about the item, and storing it would mean deciding when it expires.
     declined = {s for s in (skip or [])}
+    # GRPH-988. Refused BEFORE any candidate is considered, and refused rather than filtered
+    # to an empty result. The scope and `reach=deploy` checks below SKIP a candidate because
+    # the caller asked for "whatever is next" and the next one may be fine; here no candidate
+    # can ever be fine, so a sweep that returned None would answer "nothing was ready" — the
+    # reassuring reading, and the one that sent a reviewer supervisor's child home believing
+    # the board was empty when the truth is that it was forbidden. Checked first of all
+    # because it is a property of the SEAT: unlike a held lease, no wait and no release makes
+    # the answer different.
+    if review_only_seat(db, agent_id):
+        raise ReviewOnlySeat(REVIEW_ONLY_REFUSAL)
     # ONE AT A TIME (GRPH-504). Checked before any candidate is considered, so a caller that
     # already holds something is refused rather than quietly given a second item to abandon.
     held = live_claim(db, agent_id, lease_seconds=lease_seconds)
@@ -2007,7 +2067,8 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     are the only writes that put an item into a holder's hands, so every path above them —
     `claim_cluster`'s members, `next_cluster`'s neighbours, the bound seat's item at
     registration — inherits the rule instead of restating it. A rule restated per tool is a
-    rule that one tool will be added without.
+    rule that one tool will be added without. The review-only seat gate (GRPH-988) lives in
+    exactly the same two places for exactly that reason.
 
     `OutOfScope` rather than `None`: see the class. A caller that treats the refusal as a lost
     race will loop through every candidate in the project and take none of them, which is a
@@ -2017,6 +2078,11 @@ def claim_item(db: Session, item_id: str, agent_id: str, lease_seconds: int = DE
     it = db.get(Item, keys.resolve_item(db, item_id) or item_id)
     if it is None or not _is_claimable(it, cutoff) or pinned_elsewhere(it, agent_id):
         return None
+    # GRPH-988, and first among the seat checks: the seat's KIND is the one fact here that no
+    # wait, release or retry can change, so it is the one worth answering before anything that
+    # can. `claim_next` says the same sentence; see REVIEW_ONLY_REFUSAL.
+    if review_only_seat(db, agent_id):
+        raise ReviewOnlySeat(REVIEW_ONLY_REFUSAL)
     if (it.reach or "repo") == "deploy" and held_by_a_seat(db, agent_id):
         # GRPH-832. The reported escape was SELF-CLAIMED, not delegated: the ops item was the
         # highest-scored row in the project, so it sat at the top of every worker's queue and
